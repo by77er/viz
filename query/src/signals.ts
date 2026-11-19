@@ -26,7 +26,7 @@
  */
 import type { FileEntry, LiveFile, Plan, Watermark } from '../../contracts/ledger'
 import type { SignalFilePlan } from '../../contracts/engine'
-import { ApiError, type Context, MAX_REFUSALS, MAX_VERSION_RETRIES, MissingFile, type Planned, checkDeadline, fetchFiles, hooks, inPrecedenceOrder, plannedBytes, readTails, reserveBytes, tooMuch } from './coordinator'
+import { ApiError, type Context, MAX_REFUSALS, MAX_VERSION_RETRIES, MissingFile, type Planned, checkDeadline, fetchFiles, hooks, inPrecedenceOrder, plannedBytes, readTails, reserveBytes } from './coordinator'
 import { signalByte, signalShards } from './shards'
 import type { SignalBudget } from '../../engine/wasm-query/js/index'
 import { MAX_NS, NS_PER_MS, msRange } from './sigparams'
@@ -82,20 +82,37 @@ const pruning = (): boolean => hooks.signalPruning !== false
  * The refusals before anything is fetched: files and bytes of every round so far from the
  * ledger, and rows from the fragments. `rowRounds` are the rounds whose rows count against
  * `rowsLimit` together (a trace query's `trace_index` round and its `spans` round are checked
- * each on its own: a fragment is not a span).
+ * each on its own: a fragment is not a span; trace by ID checks no rows here: the engine counts
+ * the trace's own spans, review r2 R2-M4a). `help` says what would make the query fit; it is
+ * never advice that cannot help (review r2, R2-m5).
  */
-function capsBeforeFetch(c: Context, rounds: Round[], rowsLimit: number, rowsName: 'max_spans' | 'max_log_rows', rowRounds: Round[] = rounds): void {
+function capsBeforeFetch(c: Context, rounds: Round[], rowsLimit: number, rowsName: 'max_spans' | 'max_log_rows', rowRounds: Round[], help: string): void {
   const files = rounds.reduce((a, r) => a + r.files.length, 0)
   const bytes = rounds.reduce((a, r) => a + r.bytes, 0)
   const rows = rowRounds.reduce((a, r) => a + r.rows, 0)
   c.cost.filesListed = rounds.reduce((a, r) => a + r.listed, 0)
   c.cost.filesSkipped = c.cost.filesListed - files
   c.cost.scanRows = rounds.reduce((a, r) => a + r.rows, 0)
-  if (files > c.limits.maxFiles) throw new ApiError('execution', `query exceeded limit max_files: ${files} data files to read, the limit is ${c.limits.maxFiles}. Narrow the time range.`)
-  if (bytes > c.limits.maxFetchBytes) throw tooMuch(c, 'the data files in range', bytes)
+  if (files > c.limits.maxFiles) throw new ApiError('execution', `query exceeded limit max_files: ${files} data files to read, the limit is ${c.limits.maxFiles}. ${help}`)
+  if (bytes > c.limits.maxFetchBytes) throw tooMuchSignal(c, 'the data files to read', bytes, help)
   if (rows > rowsLimit) {
-    throw new ApiError('execution', `query exceeded limit ${rowsName}: the data files in range hold ${rows} rows the query would decode, the limit is ${rowsLimit}. Narrow the time range, or select fewer streams.`)
+    throw new ApiError('execution', `query exceeded limit ${rowsName}: the data files to read hold ${rows} rows the query would hold, the limit is ${rowsLimit}. ${help}`)
   }
+}
+
+/** `max_fetch_bytes` for a span or log read, with what would help (not the metrics' "select fewer metrics by name"). */
+const tooMuchSignal = (c: Context, what: string, bytes: number, help: string, atLeast = false): ApiError =>
+  new ApiError('execution', `query exceeded limit max_fetch_bytes: ${what} ${atLeast ? 'are at least' : 'are'} ${bytes} bytes, the limit is ${c.limits.maxFetchBytes}. ${help}`)
+
+/** What helps a query refused before it reads (review r2, R2-m5). */
+const HELP = {
+  logs: 'Narrow the time range, or select fewer streams.',
+  labels: 'Narrow the time range, or pass a stream selector that matches fewer streams.',
+  spans: 'Narrow the time range.',
+  /** The `trace_index` read of a search or a hinted trace by ID: the window plus the margin on each side. */
+  bound: (c: Context) => `Narrow the time range: a trace query reads trace_index over its window widened by traceMarginMs (${c.limits.traceMarginMs} ms) on each side.`,
+  /** A trace by ID without a hint: every `trace_index` file the tenant holds. */
+  allTime: 'Send start and end (seconds) with the trace id: without them every trace_index file the tenant holds is read; with them, those of the range and traceMarginMs around it.',
 }
 
 /** What an engine call may hold (`maxDecodedBytes`, README "Memory"), and for traces the spans that are its data. */
@@ -156,7 +173,7 @@ async function readSignalTail(
   // page checked against the query's deadline (`readShared`, review of D54 M-2 and m-7).
   const t = await readTails(c, shards, watermarks, rf.known, rf.refused, msRange(bound.lo, bound.hi), c.limits.maxFetchBytes - lakeBytes, signalByte(signal))
   if (t.again) return null
-  if (t.over) throw tooMuch(c, 'the data files in range plus the unflushed tail', lakeBytes + t.atLeast, !t.exact)
+  if (t.over) throw tooMuchSignal(c, `the data files to read plus the unflushed ${signal === 'traces' ? 'span' : 'log'} batches that overlap the query's range`, lakeBytes + t.atLeast, signal === 'traces' ? 'Narrow the time range (a search reads the unflushed spans of its window and traceMarginMs around it), or retry once the tail is flushed.' : 'Narrow the time range, or retry once the tail is flushed.', !t.exact)
   return t.reads.flatMap((r) => r.batches.map((b) => b.payload))
 }
 
@@ -203,7 +220,7 @@ export async function logQuery(c: Context, q: LogQuery): Promise<string> {
     if (hooks.afterPlan) await hooks.afterPlan(c.tenant, attempt)
     const r = round(p.files, pruning() ? c.engine.lqFilePlan(p.files.map((f) => f.index), plan.selectors) : null)
     c.cost.pruning = pruning() ? 'fragments' : 'off'
-    capsBeforeFetch(c, [r], c.limits.maxLogRows, 'max_log_rows')
+    capsBeforeFetch(c, [r], c.limits.maxLogRows, 'max_log_rows', [r], HELP.logs)
     const release = reserveBytes(r.bytes)
     try {
       const [files, tails] = await Promise.all([fetchRound(c, r, have, rf.refused), readSignalTail(c, 'logs', p.watermarks, r.bytes, rf, { lo, hi })])
@@ -238,10 +255,12 @@ export async function logLabels(c: Context, kind: 'names' | 'values' | 'series',
     const r = round(toRead, plans)
     r.listed = p.files.length
     c.cost.pruning = pruning() ? 'fragments' : 'off'
-    capsBeforeFetch(c, [r], c.limits.maxLogRows, 'max_log_rows')
+    capsBeforeFetch(c, [r], c.limits.maxLogRows, 'max_log_rows', [r], HELP.labels)
     const [files, tails] = await Promise.all([fetchRound(c, r, have, rf.refused), readSignalTail(c, 'logs', p.watermarks, r.bytes, rf, { lo: startNs, hi: endNs })])
     if (!files || !tails) continue
-    return engineCall(c, () => c.engine.lqLabels(kind, name, selectors, startNs, endNs, inPrecedenceOrder(fromFragments).map((f) => f.index), files, tails))
+    // What the engine reads, keeps and answers is bounded by the tenant's budget (review r2,
+    // R2-M1: before, nothing was counted): past it 422 `max_decoded_bytes`, never a shortened list.
+    return engineCall(c, () => c.engine.lqLabels(kind, name, selectors, startNs, endNs, inPrecedenceOrder(fromFragments).map((f) => f.index), files, tails, budget(c)))
   }
 }
 
@@ -267,12 +286,15 @@ export function traceBound(c: Context, window: { lo: bigint; hi: bigint }): { lo
  *   1. `plan(trace_index, bound)`, where `bound` is the window widened by `traceMarginMs`; the
  *      row groups whose fragments overlap the bound (and, by ID, whose trace-id range holds
  *      the id); with the tail, the engine finds the traces whose extent, merged over every
- *      fragment and tail span inside the bound, overlaps the window, and the hull of those
- *      extents cut to the bound (`tqExtent`);
+ *      fragment and tail span inside the bound, overlaps the window, the hull of those extents
+ *      cut to the bound, and the ranges their pieces cover (`tqExtent`; it holds the window's
+ *      traces and the ids of those after it, not every trace of the bound: review r2 R2-M3a);
  *   2. `plan(spans, hull)` at the same version (else start again); the span row groups whose
- *      starts overlap the hull (by ID, only the hours the fragments name);
+ *      starts overlap one of the ranges (ABI 8; before, the whole hull: one long trace stretched
+ *      the read to the margin, review r2 R2-M3b), by ID only in the hours the fragments name;
  *   3. the engine call, with the bound: every span of a found trace that starts inside the bound
- *      has been read, and the engine drops every span that starts outside it.
+ *      has been read (it lies within its own unit's fragment, one of the ranges), and the engine
+ *      drops every span that starts outside it.
  *
  * With pruning off, both tables are read whole over the bound: the same answer.
  */
@@ -286,6 +308,7 @@ async function traceRounds<T>(
 ): Promise<T> {
   const rf = refusals()
   const have = new Map<string, Uint8Array>()
+  const hintless = id !== undefined && bound.lo === 0n && bound.hi === MAX_NS
   for (let attempt = 1; attempt <= MAX_VERSION_RETRIES * (MAX_REFUSALS + 1); attempt++) {
     checkDeadline(c)
     const b = msRange(bound.lo, bound.hi)
@@ -293,26 +316,32 @@ async function traceRounds<T>(
     c.cost.ledgerVersion = first.version
     if (hooks.afterPlan) await hooks.afterPlan(c.tenant, attempt)
     const r1 = round(first.files, pruning() ? c.engine.tqFilePlan('trace_index', first.files.map((f) => f.index), bound.lo, bound.hi, id) : null)
-    // Files and bytes only: a fragment is not a span. The engine holds one extent per trace
-    // under the byte budget (`tqExtent`).
-    capsBeforeFetch(c, [r1], c.limits.maxSpans, 'max_spans', [])
+    // Files and bytes only: a fragment is not a span. The engine holds the traces it finds under
+    // the byte budget (`tqExtent`).
+    capsBeforeFetch(c, [r1], c.limits.maxSpans, 'max_spans', [], hintless ? HELP.allTime : HELP.bound(c))
     const [indexFiles, tails] = await Promise.all([fetchRound(c, r1, have, rf.refused), readSignalTail(c, 'traces', first.watermarks, r1.bytes, rf, bound)])
     if (!indexFiles || !tails) continue
     const ext = engineCall(c, () => c.engine.tqExtent(indexFiles, tails, window.lo, window.hi, id, budget(c, bound)))
     if (ext.traces === 0 || ext.lo === undefined || ext.hi === undefined) return empty()
-    // Every span of every trace found that starts inside the bound starts inside its hull.
+    // Every span of every trace found that starts inside the bound starts inside its hull, and
+    // inside one of the ranges (an engine before ABI 8 gives none: the hull is read).
     const hull = pruning() ? { lo: BigInt(ext.lo), hi: BigInt(ext.hi) } : bound
+    const ranges = pruning() && ext.ranges ? ext.ranges.map(([a, z]) => ({ lo: BigInt(a), hi: BigInt(z) })) : undefined
     const h = msRange(hull.lo, hull.hi)
     const second = await planTable(c, 'spans', h.minTs, h.maxTs)
     if (second.version !== first.version || second.ledgerIncarnation !== first.ledgerIncarnation) continue
     // By ID: only the hours the trace's fragments (and its tail spans) name hold its spans.
     const hours = new Set(ext.hours)
     const candidates = id && pruning() ? second.files.filter((f) => { const x = hourOf(f); return x === null || hours.has(x) }) : second.files
-    const r2 = round(candidates, pruning() ? c.engine.tqFilePlan('spans', candidates.map((f) => f.index), hull.lo, hull.hi) : null)
+    const r2 = round(candidates, pruning() ? c.engine.tqFilePlan('spans', candidates.map((f) => f.index), hull.lo, hull.hi, undefined, ranges) : null)
     r2.listed = second.files.length
     const tailBytes = tails.reduce((a, b) => a + b.byteLength, 0)
-    capsBeforeFetch(c, [r1, r2], c.limits.maxSpans, 'max_spans', [r2])
-    if (r1.bytes + r2.bytes + tailBytes > c.limits.maxFetchBytes) throw tooMuch(c, 'the data files in range plus the unflushed tail', r1.bytes + r2.bytes + tailBytes)
+    // Trace by ID counts no rows here: a row group holds other traces' spans, which the engine
+    // reads and passes over without holding them; it counts the trace's own (review r2, R2-M4a).
+    // Its cost is bounded by the bytes fetched. A search's rows are checked with what would help.
+    if (!id) spanRows(c, window, candidates, r2)
+    capsBeforeFetch(c, [r1, r2], c.limits.maxSpans, 'max_spans', [], hintless ? HELP.allTime : HELP.bound(c))
+    if (r1.bytes + r2.bytes + tailBytes > c.limits.maxFetchBytes) throw tooMuchSignal(c, 'the trace_index and span files to read plus the unflushed span batches', r1.bytes + r2.bytes + tailBytes, hintless ? HELP.allTime : HELP.bound(c))
     const release = reserveBytes(r2.bytes)
     try {
       const spanFiles = await fetchRound(c, r2, have, rf.refused)
@@ -324,6 +353,26 @@ async function traceRounds<T>(
     }
   }
   throw new ApiError('unavailable', 'the ledger kept changing while the query was being planned; retry')
+}
+
+/**
+ * A search's (or whole-trace metrics query's) span rows against `maxSpans`, before anything is
+ * fetched. When the window's own row groups fit and the found traces' pieces outside it do not,
+ * the refusal says that the margin, not the window, is what does not fit (review r2, R2-M3 and
+ * R2-m5: "Narrow the time range" cannot help a one-minute search whose traces reach 2 h out).
+ */
+function spanRows(c: Context, window: { lo: bigint; hi: bigint }, files: LiveFile[], r: Round): void {
+  const limit = c.limits.maxSpans
+  c.cost.scanRows = r.rows
+  if (r.rows <= limit) return
+  const inWindow = round(files, c.engine.tqFilePlan('spans', files.map((f) => f.index), window.lo, window.hi)).rows
+  if (inWindow > limit) {
+    throw new ApiError('execution', `query exceeded limit max_spans: the span files of the window alone hold ${inWindow} spans the query would hold, the limit is ${limit}. Narrow the time range: every span of every trace that overlaps the window is held, whatever the query's conditions.`)
+  }
+  throw new ApiError(
+    'execution',
+    `query exceeded limit max_spans: the traces that overlap the window have spans up to traceMarginMs (${c.limits.traceMarginMs} ms) outside it, and the span files that hold those pieces hold ${r.rows} spans (${inWindow} in the window's own files); the limit is ${limit}. A shorter window helps only if it leaves out the traces that reach far outside it; a smaller traceMarginMs (the operator's limit) reads less around them and answers longer traces in part.`,
+  )
 }
 
 /**
@@ -395,7 +444,7 @@ async function spansIn<T>(c: Context, window: { lo: bigint; hi: bigint }, finish
     if (hooks.afterPlan) await hooks.afterPlan(c.tenant, attempt)
     const r = round(p.files, pruning() ? c.engine.tqFilePlan('spans', p.files.map((f) => f.index), window.lo, window.hi) : null)
     c.cost.pruning = pruning() ? 'fragments' : 'off'
-    capsBeforeFetch(c, [r], c.limits.maxSpans, 'max_spans')
+    capsBeforeFetch(c, [r], c.limits.maxSpans, 'max_spans', [r], HELP.spans)
     const release = reserveBytes(r.bytes)
     try {
       const [files, tails] = await Promise.all([fetchRound(c, r, have, rf.refused), readSignalTail(c, 'traces', p.watermarks, r.bytes, rf, window)])

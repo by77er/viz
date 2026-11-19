@@ -3,7 +3,7 @@
  *
  * One Worker, `viz-s11-ledger`, with:
  *   Ledger                      the growing tenant ledger (G0), the ledger as built, its R2 calls timed
- *   LedgerR16/R64/R300/R300B    the same class under other names: one object of the same tenant on
+ *   LedgerR16/R64/R150/R150B/R300/R300B  the same class under other names: one object of the same tenant on
  *                               EMPTY storage per measurement, i.e. a ledger whose storage was lost;
  *                               it rebuilds from R2 on its first request
  *   Publisher                   the publisher as built; `cellOf` (its test seam) maps `cell-0~pNN` to
@@ -41,6 +41,8 @@ interface Env extends LedgerEnv, PublisherEnv {
   LEDGER_R64: DurableObjectNamespace<LedgerR64>
   LEDGER_R300: DurableObjectNamespace<LedgerR300>
   LEDGER_R300B: DurableObjectNamespace<LedgerR300B>
+  LEDGER_R150: DurableObjectNamespace<LedgerR150>
+  LEDGER_R150B: DurableObjectNamespace<LedgerR150B>
   PUBLISHER: DurableObjectNamespace<Publisher>
   WRITER: DurableObjectNamespace<Writer>
   DRIVER: DurableObjectNamespace<Driver>
@@ -167,10 +169,12 @@ export class LedgerR16 extends LedgerReplica {}
 export class LedgerR64 extends LedgerReplica {}
 export class LedgerR300 extends LedgerReplica {}
 export class LedgerR300B extends LedgerReplica {}
+export class LedgerR150 extends LedgerReplica {}
+export class LedgerR150B extends LedgerReplica {}
 
-type Gen = 'G0' | 'R16' | 'R64' | 'R300' | 'R300B'
+type Gen = 'G0' | 'R16' | 'R64' | 'R150' | 'R150B' | 'R300' | 'R300B'
 function ledgerOf(env: Env, gen: Gen): DurableObjectStub<LedgerReplica> {
-  const ns = { G0: env.LEDGER, R16: env.LEDGER_R16, R64: env.LEDGER_R64, R300: env.LEDGER_R300, R300B: env.LEDGER_R300B }[gen] as unknown as DurableObjectNamespace<LedgerReplica>
+  const ns = { G0: env.LEDGER, R16: env.LEDGER_R16, R64: env.LEDGER_R64, R150: env.LEDGER_R150, R150B: env.LEDGER_R150B, R300: env.LEDGER_R300, R300B: env.LEDGER_R300B }[gen] as unknown as DurableObjectNamespace<LedgerReplica>
   return ns.get(ns.idFromName(TENANT))
 }
 

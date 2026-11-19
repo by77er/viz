@@ -16,13 +16,17 @@
       { "name": "LEDGER_R64", "class_name": "LedgerR64" },
       { "name": "LEDGER_R300", "class_name": "LedgerR300" },
       { "name": "LEDGER_R300B", "class_name": "LedgerR300B" },
+      { "name": "LEDGER_R150", "class_name": "LedgerR150" },
+      { "name": "LEDGER_R150B", "class_name": "LedgerR150B" },
       { "name": "PUBLISHER", "class_name": "Publisher" },
       { "name": "WRITER", "class_name": "Writer" },
       { "name": "DRIVER", "class_name": "Driver" }
     ]
   },
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["Ledger", "LedgerR16", "LedgerR64", "LedgerR300", "LedgerR300B", "Publisher", "Writer", "Driver"] }
+    { "tag": "v1", "new_sqlite_classes": ["Ledger", "LedgerR16", "LedgerR64", "LedgerR300", "LedgerR300B", "Publisher", "Writer", "Driver"] },
+    // Added after the 64 MiB step, for a 150 MiB point (README, "Runs").
+    { "tag": "v2", "new_sqlite_classes": ["LedgerR150", "LedgerR150B"] }
   ],
   "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "viz-s11-lake" }],
   "vars": {

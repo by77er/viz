@@ -410,12 +410,20 @@ fn span_files(b: &[u8]) -> (Vec<viz_storage::SignalFile>, Vec<viz_storage::Signa
     viz_storage::encode_spans(&[b]).expect("encode").into_iter().partition(|f| f.table == viz_storage::SignalTable::Spans)
 }
 
-/// `viz_q_tq_metrics` over `files` for 11,000 points over a day (the review's request).
-fn metrics(files: &[Vec<u8>], q: &str, max_bytes: u64) -> Result<Vec<u8>, String> {
-    let step = 7_854_000_000i64;
-    let start = T0 - 12 * 60 * MIN;
-    let w = W::default().u64(18_000).u64(max_bytes).i64(ALL.0).i64(ALL.1).u64(10_000).u64(11_000).u8(0).i64(start).i64(start + 10_999 * step).i64(step).item(q.as_bytes()).files(files).files(&[]);
-    run(traces::do_tq_metrics, w)
+/// `viz_q_tq_metrics` over `files` for 11,000 points over a day (the review's request), or
+/// `points` points of a minute; the request is made before the heap is measured.
+fn metrics_req(files: &[Vec<u8>], q: &str, max_bytes: u64, points: Option<i64>) -> W {
+    let (step, n) = match points {
+        None => (7_854_000_000i64, 11_000),
+        Some(n) => (60_000_000_000, n),
+    };
+    let start = T0 - (n / 2) * step;
+    W::default().u64(18_000).u64(max_bytes).i64(ALL.0).i64(ALL.1).u64(10_000).u64(11_000).u8(0).i64(start).i64(start + (n - 1) * step).i64(step).item(q.as_bytes()).files(files).files(&[])
+}
+
+fn metrics(files: &[Vec<u8>], q: &str, max_bytes: u64) -> (Result<Vec<u8>, String>, u64) {
+    let w = metrics_req(files, q, max_bytes, None);
+    peak(|| run(traces::do_tq_metrics, w))
 }
 
 /// The review's histogram and quantile data: `g` groups of `k` spans whose durations are 2^0 to 2^(k-1) ns.
@@ -436,12 +444,14 @@ fn grouped(g: u64, k: u64) -> Vec<Vec<u8>> {
 fn r2_m2_histogram_series_are_charged_as_each_bucket_appears_and_refused_before_they_are_built() {
     // 8 groups x 60 buckets x 11,000 points (513.7 MiB of WASM memory before, refused after).
     let files = grouped(8, 60);
-    let (r, held) = peak(|| metrics(&files, "{ } | histogram_over_time(duration) by (span.g)", BUDGET));
+    let (r, held) = metrics(&files, "{ } | histogram_over_time(duration) by (span.g)", BUDGET);
+    eprintln!("PEAK r2_m2_histogram_series_are_charged_as_each_bucket_appears_and_refused_before_they_are_built r: {} bytes, {}", held, limit_name(&r.as_ref().map(|_| Vec::new()).map_err(|e| e.clone())));
     assert_eq!(limit_name(&r), "limit max_decoded_bytes");
     assert!(held <= BUDGET + SLACK, "held {held}");
-    // One group of a few buckets fits and answers.
-    let small = grouped(1, 4);
-    let (ok, held) = peak(|| metrics(&small, "{ } | histogram_over_time(duration) by (span.g)", BUDGET));
+    // The same data over an hour of minutes answers.
+    let w = metrics_req(&files, "{ } | histogram_over_time(duration) by (span.g)", BUDGET, Some(61));
+    let (ok, held) = peak(|| run(traces::do_tq_metrics, w));
+    eprintln!("PEAK r2_m2_histogram_series_are_charged_as_each_bucket_appears_and_refused_before_they_are_built ok: {} bytes, {}", held, limit_name(&ok.as_ref().map(|_| Vec::new()).map_err(|e| e.clone())));
     assert!(ok.is_ok(), "{ok:?}");
     assert!(held <= BUDGET + SLACK, "held {held}");
 }
@@ -452,11 +462,14 @@ fn r2_m2_one_series_per_quantile_is_charged_when_its_group_is_made() {
     let files = grouped(8, 60);
     let qs: Vec<String> = (1..=100).map(|i| format!("{:.4}", i as f64 / 101.0)).collect();
     let q = format!("{{ }} | quantile_over_time(duration, {}) by (span.g)", qs.join(", "));
-    let (r, held) = peak(|| metrics(&files, &q, BUDGET));
+    let (r, held) = metrics(&files, &q, BUDGET);
+    eprintln!("PEAK r2_m2_one_series_per_quantile_is_charged_when_its_group_is_made r: {} bytes, {}", held, limit_name(&r.as_ref().map(|_| Vec::new()).map_err(|e| e.clone())));
     assert_eq!(limit_name(&r), "limit max_decoded_bytes");
     assert!(held <= BUDGET + SLACK, "held {held}");
-    // Three quantiles of the same data answer.
-    let (ok, held) = peak(|| metrics(&files, "{ } | quantile_over_time(duration, .5, .9, .99) by (span.g)", BUDGET));
+    // Three quantiles of the same data over an hour of minutes answer.
+    let w = metrics_req(&files, "{ } | quantile_over_time(duration, .5, .9, .99) by (span.g)", BUDGET, Some(61));
+    let (ok, held) = peak(|| run(traces::do_tq_metrics, w));
+    eprintln!("PEAK r2_m2_one_series_per_quantile_is_charged_when_its_group_is_made ok: {} bytes, {}", held, limit_name(&ok.as_ref().map(|_| Vec::new()).map_err(|e| e.clone())));
     assert!(ok.is_ok(), "{ok:?}");
     assert!(held <= BUDGET + SLACK, "held {held}");
 }
@@ -466,7 +479,8 @@ fn r2_m2_a_metric_answer_is_charged_before_it_is_written() {
     // 60 groups x 11,000 points of rate(): series fit, the answer (about 33 MB of text, four
     // copies) does not; refused before it is written (65 MiB before).
     let files = grouped(60, 1);
-    let (r, held) = peak(|| metrics(&files, "{ } | rate() by (span.g)", BUDGET));
+    let (r, held) = metrics(&files, "{ } | rate() by (span.g)", BUDGET);
+    eprintln!("PEAK r2_m2_a_metric_answer_is_charged_before_it_is_written r: {} bytes, {}", held, limit_name(&r.as_ref().map(|_| Vec::new()).map_err(|e| e.clone())));
     assert_eq!(limit_name(&r), "limit max_decoded_bytes");
     assert!(held <= BUDGET + SLACK, "held {held}");
 }
@@ -476,17 +490,16 @@ fn r2_m2_tag_values_are_charged_as_the_set_grows() {
     // 500 spans with their own 60 KB value (107.7 MiB before).
     let rows: Vec<_> = (1..=500u64).map(|i| (id16(i), [1u8; 8], None, T0 + i as i64 * 1_000_000, T0 + i as i64 * 1_000_000 + 1000, vec![("blob".to_string(), format!("{i}{}", "x".repeat(60_000)))])).collect();
     let files: Vec<Vec<u8>> = rows.chunks(10).flat_map(|c| span_files(&spans_of(c)).0.into_iter().map(|f| f.bytes)).collect();
-    let call = |max: u64| {
-        let w = W::default().u8(2).item(b"span.blob").item(b"").i64(T0).i64(T0 + 60 * MIN).u32(0).u64(18_000).u64(max).files(&files).files(&[]);
-        run(traces::do_tq_tag_values, w)
-    };
-    let (r, held) = peak(|| call(BUDGET));
+    let w = W::default().u8(2).item(b"span.blob").item(b"").i64(T0).i64(T0 + 60 * MIN).u32(0).u64(18_000).u64(BUDGET).files(&files).files(&[]);
+    let (r, held) = peak(|| run(traces::do_tq_tag_values, w));
+    eprintln!("PEAK r2_m2_tag_values_are_charged_as_the_set_grows r: {} bytes, {}", held, limit_name(&r.as_ref().map(|_| Vec::new()).map_err(|e| e.clone())));
     assert_eq!(limit_name(&r), "limit max_decoded_bytes");
     assert!(held <= BUDGET + SLACK, "held {held}");
-    // A third of them answer.
-    let files: Vec<Vec<u8>> = files[..17].to_vec();
+    // Fifty of them answer (3 MB held, 3 MB of values, a 12 MB answer charged).
+    let files: Vec<Vec<u8>> = files[..5].to_vec();
     let w = W::default().u8(2).item(b"span.blob").item(b"").i64(T0).i64(T0 + 60 * MIN).u32(0).u64(18_000).u64(BUDGET).files(&files).files(&[]);
     let (ok, held) = peak(|| run(traces::do_tq_tag_values, w));
+    eprintln!("PEAK r2_m2_tag_values_are_charged_as_the_set_grows ok: {} bytes, {}", held, limit_name(&ok.as_ref().map(|_| Vec::new()).map_err(|e| e.clone())));
     assert!(ok.is_ok(), "{ok:?}");
     assert!(held <= BUDGET + SLACK, "held {held}");
 }
@@ -497,11 +510,9 @@ fn r2_m2_label_sets_from_regexp_and_label_format_are_charged_as_series_are_made(
     let lines: Vec<String> = (0..14_000).map(|i| format!("{i:08}{}", "y".repeat(2000))).collect();
     let tails: Vec<Vec<u8>> = lines.chunks(500).map(log_batch).collect();
     let q = r#"count(sum by (x, y, z) (count_over_time({job="a"} | regexp "(?P<x>.+)" | label_format y="{{.x}}{{.x}}", z="{{.y}}{{.y}}" [1h])))"#;
-    let call = |max_bytes: u64| {
-        let w = W::default().u64(30_000).u64(max_bytes).u64(20_000).u64(11_000).u32(100).u8(0).u8(1).i64(T0 + 60 * MIN).i64(T0 + 60 * MIN).i64(1).item(q.as_bytes()).files(&[]).files(&tails);
-        run(logs::do_lq_query, w)
-    };
-    let (r, held) = peak(|| call(BUDGET));
+    let w = W::default().u64(30_000).u64(BUDGET).u64(20_000).u64(11_000).u32(100).u8(0).u8(1).i64(T0 + 60 * MIN).i64(T0 + 60 * MIN).i64(1).item(q.as_bytes()).files(&[]).files(&tails);
+    let (r, held) = peak(|| run(logs::do_lq_query, w));
+    eprintln!("PEAK r2_m2_label_sets_from_regexp_and_label_format_are_charged_as_series_are_made r: {} bytes, {}", held, limit_name(&r.as_ref().map(|_| Vec::new()).map_err(|e| e.clone())));
     assert_eq!(limit_name(&r), "limit max_decoded_bytes");
     assert!(held <= BUDGET + SLACK, "held {held}");
     // The same rows grouped by nothing the lines make answer.
@@ -531,29 +542,31 @@ fn fat_streams(n: usize) -> Vec<Vec<u8>> {
     files
 }
 
-fn labels_call(kind: u8, name: &str, files: &[Vec<u8>], max_bytes: u64) -> Result<Vec<u8>, String> {
+fn labels_call(kind: u8, name: &str, files: &[Vec<u8>], max_bytes: u64) -> (Result<Vec<u8>, String>, u64) {
     let w = W::default().u8(kind).item(name.as_bytes()).i64(T0 - MIN).i64(T0 + 60 * MIN).u64(max_bytes).u32(1).item(br#"{job="a"}"#).u32(0).files(files).files(&[]);
-    run(logs::do_lq_labels, w)
+    peak(|| run(logs::do_lq_labels, w))
 }
 
 #[test]
 fn r2_m1_the_label_calls_have_a_budget_and_refuse_past_it_before_they_hold_it() {
     // 300 streams, 3.45 MiB of files: /series held 399 MiB and answered 71 MiB before.
     let files = fat_streams(300);
-    let (r, held) = peak(|| labels_call(2, "", &files, BUDGET));
+    let (r, held) = labels_call(2, "", &files, BUDGET);
+    eprintln!("PEAK r2_m1_the_label_calls_have_a_budget_and_refuse_past_it_before_they_hold_it r: {} bytes, {}", held, limit_name(&r.as_ref().map(|_| Vec::new()).map_err(|e| e.clone())));
     assert_eq!(limit_name(&r), "limit max_decoded_bytes");
     assert!(held <= BUDGET + SLACK, "held {held}");
     // Names keep only the names: they answer, in little memory, however fat the values.
-    let (names, held) = peak(|| labels_call(0, "", &files, BUDGET));
+    let (names, held) = labels_call(0, "", &files, BUDGET);
+    eprintln!("PEAK r2_m1_the_label_calls_have_a_budget_and_refuse_past_it_before_they_hold_it names: {} bytes, {}", held, limit_name(&names.as_ref().map(|_| Vec::new()).map_err(|e| e.clone())));
     let names: Vec<String> = serde_json::from_slice(&names.expect("names")).unwrap();
     assert_eq!(names.len(), 32);
     assert!(held <= BUDGET + SLACK, "held {held}");
     // Values of one label: 300 values of 8 KB, a 2.4 MB answer (four times charged) fit.
-    let values: Vec<String> = serde_json::from_slice(&labels_call(1, "l0", &files, BUDGET).expect("values")).unwrap();
+    let values: Vec<String> = serde_json::from_slice(&labels_call(1, "l0", &files, BUDGET).0.expect("values")).unwrap();
     assert_eq!(values.len(), 300);
     // A few streams' series answer, as `serde_json` wrote them before.
     let few = fat_streams(20);
-    let got = labels_call(2, "", &few, BUDGET).expect("series");
+    let got = labels_call(2, "", &few, BUDGET).0.expect("series");
     let parsed: Vec<serde_json::Map<String, serde_json::Value>> = serde_json::from_slice(&got).unwrap();
     assert_eq!(parsed.len(), 20);
     assert_eq!(serde_json::to_string(&parsed).unwrap().into_bytes(), got);
@@ -579,7 +592,9 @@ fn r2_m3_the_extent_pass_holds_the_window_s_traces_and_the_ids_after_it_not_ever
     }
     let bound = (t0 - 120 * MIN, t0 + MIN + 120 * MIN);
     let call = |max: u64| run(traces::do_tq_extent, W::default().i64(t0).i64(t0 + MIN).u8(0).i64(bound.0).i64(bound.1).u64(max).files(&index).files(&[]));
-    let (r, held) = peak(|| call(BUDGET));
+    let w = W::default().i64(t0).i64(t0 + MIN).u8(0).i64(bound.0).i64(bound.1).u64(BUDGET).files(&index).files(&[]);
+    let (r, held) = peak(|| run(traces::do_tq_extent, w));
+    eprintln!("PEAK r2_m3_the_extent_pass_holds_the_window_s_traces_and_the_ids_after_it_not_every_trace_of_the_bound r: {} bytes, {}", held, limit_name(&r.as_ref().map(|_| Vec::new()).map_err(|e| e.clone())));
     let e: serde_json::Value = serde_json::from_slice(&r.expect("answers")).unwrap();
     // The window's 721 or so traces, found with every piece of the bound read.
     assert!((700..=760).contains(&e["traces"].as_u64().unwrap()), "{e}");
@@ -659,6 +674,7 @@ fn r2_m4a_trace_by_id_counts_only_the_trace_s_spans() {
     w.0.extend_from_slice(&id16(7));
     let w = w.u64(18_000).u64(BUDGET).i64(ALL.0).i64(ALL.1).files(&files).files(&[]);
     let (r, held) = peak(|| run(traces::do_tq_trace, w));
+    eprintln!("PEAK r2_m4a_trace_by_id_counts_only_the_trace_s_spans r: {} bytes, {}", held, limit_name(&r.as_ref().map(|_| Vec::new()).map_err(|e| e.clone())));
     let out = r.expect("found");
     assert_eq!(out[0], 1);
     assert_eq!(u64::from_le_bytes(out[1..9].try_into().unwrap()), 20_000, "every span is read");

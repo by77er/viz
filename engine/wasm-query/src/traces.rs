@@ -283,8 +283,11 @@ impl<T> Latest<T> {
             }
         }
     }
-    fn values(self) -> impl Iterator<Item = T> {
-        self.kept.into_iter().flatten().map(|x| x.0)
+    /// The kept values, in the order they were first kept (collected in place where the
+    /// standard library can reuse the slots' allocation).
+    fn values(self) -> Vec<T> {
+        drop(self.index);
+        self.kept.into_iter().filter_map(|x| x.map(|y| y.0)).collect()
     }
 }
 
@@ -301,7 +304,7 @@ fn latest_records(files: &[&[u8]], tails: &[&[u8]], budget: &mut Budget, want: i
         }
         Ok(())
     })?;
-    Ok(by.values().collect())
+    Ok(by.values())
 }
 
 /// Traces of the spans read (later row wins), each with its spans in `(start, span_id)` order

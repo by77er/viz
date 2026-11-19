@@ -1,0 +1,183 @@
+ 13:20:19 up 12:39,  0 user,  load average: 2.38, 4.33, 6.26
+
+
+Reload while scrolled to a chart, and a jump to it after load (108 loads; fails at a layout shift of 0.05 or more, or a chart that moves or lands more than 1 px away):
+
+| Page | Layout | Chart | Jump: shift | Jump: moved, px | Reload: shift | Reload: landed, px |
+|---|---|---|---|---|---|---|
+| dist/preview/Chart.html | 1500 | 1 of 10, Latency by route, p99 | 0.0000 | 0 | 0.0963 | 0 |
+| dist/preview/Chart.html | 1500 | 2 of 10, Request rate by service | 0.0000 | 0 | 0.2500 | 0 |
+| dist/preview/Chart.html | 1500 | 3 of 10, CPU by pod | 0.0000 | 0 | 0.6407 | 0 |
+| dist/preview/Chart.html | 1500 | 4 of 10, CPU by pod, against the limit | 0.0000 | 0 | 0.6199 | -101 |
+| dist/preview/Chart.html | 1500 | 5 of 10, CPU by pod, three of Other picked out | 0.0000 | 0 | 0.1898 | -915 |
+| dist/preview/Chart.html | 1500 | 6 of 10, CPU by pod, the query narrowed to node-b | 0.0985 | 0 | 0.7157 | 0 |
+| dist/preview/Chart.html | 1500 | 7 of 10, Request rate, change on last week | 0.1827 | 0 | 0.7772 | 0 |
+| dist/preview/Chart.html | 1500 | 8 of 10, Memory by service | 0.1828 | 0 | 0.7903 | -408 |
+| dist/preview/Chart.html | 1500 | 9 of 10, Error ratio, if this rule had existed | 0.1896 | 0 | 0.7903 | 0 |
+| dist/preview/Chart.html | 1500 | 10 of 10, Request rate by service | 0.1896 | 25 | 0.7932 | 0 |
+| dist/preview/Panel.html | 1500 | 1 of 1, Request rate by service | 0.0000 | 0 | 0.0009 | 0 |
+| dist/reference.html | 1500 | 1 of 22, Request rate by service | 0.0894 | 0 | 0.0901 | 0 |
+| dist/reference.html | 1500 | 2 of 22, Latency by route, p99 | 0.3069 | 0 | 0.2969 | 0 |
+| dist/reference.html | 1500 | 3 of 22, Request rate by service | 0.5172 | 0 | 0.4960 | 0 |
+| dist/reference.html | 1500 | 4 of 22, CPU by pod | 0.5350 | 0 | 0.8835 | 0 |
+| dist/reference.html | 1500 | 5 of 22, CPU by pod, against the limit | 0.5579 | 0 | 0.5591 | 0 |
+| dist/reference.html | 1500 | 6 of 22, CPU by pod, three of Other picked out | 0.1486 | 0 | 0.8523 | 0 |
+| dist/reference.html | 1500 | 7 of 22, CPU by pod, the query narrowed to node-b | 0.1405 | 0 | 0.8825 | 0 |
+| dist/reference.html | 1500 | 8 of 22, Request rate, change on last week | 0.2612 | 0 | 0.0004 | 0 |
+| dist/reference.html | 1500 | 9 of 22, Memory by service | 0.2614 | 0 | 0.2618 | 0 |
+| dist/reference.html | 1500 | 10 of 22, Error ratio, if this rule had existed | 0.2711 | 0 | 0.0000 | -444 |
+| dist/reference.html | 1500 | 11 of 22, Request rate by service | 0.0000 | 0 | 0.0352 | 0 |
+| dist/reference.html | 1500 | 12 of 22, Request rate by service | 0.0894 | 0 | 0.0894 | 0 |
+| dist/reference.html | 1500 | 13 of 22, Latency by route, p99 | 0.3069 | 0 | 0.5214 | 0 |
+| dist/reference.html | 1500 | 14 of 22, Request rate by service | 0.5172 | 0 | 0.5235 | 0 |
+| dist/reference.html | 1500 | 15 of 22, CPU by pod | 0.5350 | 0 | 0.5744 | 0 |
+| dist/reference.html | 1500 | 16 of 22, CPU by pod, against the limit | 0.5579 | 0 | 0.5591 | 0 |
+| dist/reference.html | 1500 | 17 of 22, CPU by pod, three of Other picked out | 0.1486 | 0 | 0.2723 | 0 |
+| dist/reference.html | 1500 | 18 of 22, CPU by pod, the query narrowed to node-b | 0.1405 | 0 | 0.8825 | 0 |
+| dist/reference.html | 1500 | 19 of 22, Request rate, change on last week | 0.2612 | 0 | 0.0004 | 0 |
+| dist/reference.html | 1500 | 20 of 22, Memory by service | 0.2614 | 0 | 0.2618 | 0 |
+| dist/reference.html | 1500 | 21 of 22, Error ratio, if this rule had existed | 0.2711 | 0 | 0.0191 | -344 |
+| dist/reference.html | 1500 | 22 of 22, Request rate by service | 0.0000 | 0 | 0.0352 | 0 |
+| dist/fixture/index.html | 1500 | 1 of 7, Latency by route, p99 | 0.0000 | 0 | 0.0000 | 0 |
+| dist/fixture/index.html | 1500 | 2 of 7, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/fixture/index.html | 1500 | 3 of 7, CPU by pod | 0.0000 | 0 | 0.0000 | 0 |
+| dist/fixture/index.html | 1500 | 4 of 7, CPU by pod, every namespace | 0.0000 | 0 | 0.0000 | 0 |
+| dist/fixture/index.html | 1500 | 5 of 7, Error ratio by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/fixture/index.html | 1500 | 6 of 7, Error ratio of cart, 7 d | 0.0000 | 0 | 0.0000 | 0 |
+| dist/fixture/index.html | 1500 | 7 of 7, Pods | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v8/compositions/charts.html | 1500 | 1 of 4, CPU by pod | 0.0000 | 0 | 0.1229 | 0 |
+| reviews/system-v8/compositions/charts.html | 1500 | 2 of 4, CPU by pod | 0.0000 | 0 | 0.1269 | 0 |
+| reviews/system-v8/compositions/charts.html | 1500 | 3 of 4, Request rate by service | 0.0000 | 0 | 0.1764 | 0 |
+| reviews/system-v8/compositions/charts.html | 1500 | 4 of 4, Latency by route, p99 | 0.0000 | 0 | 0.1764 | 0 |
+| reviews/system-v8/compositions/claims.html | 1500 | 1 of 1, Latency by route, p99 | 0.0000 | 0 | 0.0000 | 1 |
+| reviews/system-v8/compositions/dashboard.html | 1500 | 1 of 7, Latency by route, p99 | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v8/compositions/dashboard.html | 1500 | 2 of 7, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v8/compositions/dashboard.html | 1500 | 3 of 7, CPU by pod | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v8/compositions/dashboard.html | 1500 | 4 of 7, CPU by pod, every service | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v8/compositions/dashboard.html | 1500 | 5 of 7, Memory by service | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v8/compositions/dashboard.html | 1500 | 6 of 7, Request rate by service, being edited | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v8/compositions/dashboard.html | 1500 | 7 of 7, Error ratio of cart, if the new rule had existed | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v8/compositions/monitor.html | 1500 | 1 of 1, p99 of checkout-api, by route | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v8/compositions/states.html | 1500 | 1 of 1, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 1 of 10, Latency by route, p99 | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 2 of 10, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 3 of 10, CPU by pod | 0.0000 | 0 | 0.0000 | 273 |
+| dist/preview/Chart.html | 400 coarse | 4 of 10, CPU by pod, against the limit | 0.0000 | 0 | 0.0000 | -547 |
+| dist/preview/Chart.html | 400 coarse | 5 of 10, CPU by pod, three of Other picked out | 0.0000 | 0 | 0.0000 | -1535 |
+| dist/preview/Chart.html | 400 coarse | 6 of 10, CPU by pod, the query narrowed to node-b | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 7 of 10, Request rate, change on last week | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 8 of 10, Memory by service | 0.0000 | 0 | 0.0000 | -595 |
+| dist/preview/Chart.html | 400 coarse | 9 of 10, Error ratio, if this rule had existed | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 10 of 10, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Panel.html | 400 coarse | 1 of 1, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 1 of 22, Request rate by service | 0.2042 | 0 | 0.0000 | 759 |
+| dist/reference.html | 400 coarse | 2 of 22, Latency by route, p99 | 0.8148 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 3 of 22, Request rate by service | 0.8400 | 0 | 0.0000 | 1149 |
+| dist/reference.html | 400 coarse | 4 of 22, CPU by pod | 0.8101 | 0 | 0.0000 | -161 |
+| dist/reference.html | 400 coarse | 5 of 22, CPU by pod, against the limit | 0.8400 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 6 of 22, CPU by pod, three of Other picked out | 0.0000 | 0 | 0.0000 | -1076 |
+| dist/reference.html | 400 coarse | 7 of 22, CPU by pod, the query narrowed to node-b | 0.3283 | 0 | 0.0000 | 1837 |
+| dist/reference.html | 400 coarse | 8 of 22, Request rate, change on last week | 0.6877 | 0 | 0.0000 | -584 |
+| dist/reference.html | 400 coarse | 9 of 22, Memory by service | 0.6877 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 10 of 22, Error ratio, if this rule had existed | 0.7131 | 0 | 0.0000 | -764 |
+| dist/reference.html | 400 coarse | 11 of 22, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 12 of 22, Request rate by service | 0.2046 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 13 of 22, Latency by route, p99 | 0.8139 | 0 | 0.0000 | 3476 |
+| dist/reference.html | 400 coarse | 14 of 22, Request rate by service | 0.8400 | 0 | 0.0000 | -933 |
+| dist/reference.html | 400 coarse | 15 of 22, CPU by pod | 0.0000 | 0 | 0.0000 | 3975 |
+| dist/reference.html | 400 coarse | 16 of 22, CPU by pod, against the limit | 0.8400 | 0 | 0.0000 | -1462 |
+| dist/reference.html | 400 coarse | 17 of 22, CPU by pod, three of Other picked out | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 18 of 22, CPU by pod, the query narrowed to node-b | 0.3289 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 19 of 22, Request rate, change on last week | 0.6877 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 20 of 22, Memory by service | 0.6877 | 0 | 0.0000 | -719 |
+| dist/reference.html | 400 coarse | 21 of 22, Error ratio, if this rule had existed | 0.7131 | 0 | 0.0000 | 3894 |
+| dist/reference.html | 400 coarse | 22 of 22, Request rate by service | 0.0000 | 0 | 0.0000 | -270 |
+| dist/fixture/index.html | 400 coarse | 1 of 7, Latency by route, p99 | 0.0000 | 0 | 0.0000 | 0 |
+| dist/fixture/index.html | 400 coarse | 2 of 7, Request rate by service | 0.0000 | 0 | 0.0000 | 18 |
+| dist/fixture/index.html | 400 coarse | 3 of 7, CPU by pod | 0.0000 | 0 | 0.0000 | 0 |
+| dist/fixture/index.html | 400 coarse | 4 of 7, CPU by pod, every namespace | 0.0000 | 0 | 0.0000 | 494 |
+| dist/fixture/index.html | 400 coarse | 5 of 7, Error ratio by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/fixture/index.html | 400 coarse | 6 of 7, Error ratio of cart, 7 d | 0.0000 | 0 | 0.0000 | 755 |
+| dist/fixture/index.html | 400 coarse | 7 of 7, Pods | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v8/compositions/charts.html | 400 coarse | 1 of 4, CPU by pod | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v8/compositions/charts.html | 400 coarse | 2 of 4, CPU by pod | 0.0000 | 0 | 0.0000 | 18 |
+| reviews/system-v8/compositions/charts.html | 400 coarse | 3 of 4, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v8/compositions/charts.html | 400 coarse | 4 of 4, Latency by route, p99 | 0.0000 | 0 | 0.0000 | 383 |
+| reviews/system-v8/compositions/claims.html | 400 coarse | 1 of 1, Latency by route, p99 | 0.0000 | 0 | 0.0000 | 139 |
+| reviews/system-v8/compositions/dashboard.html | 400 coarse | 1 of 7, Latency by route, p99 | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v8/compositions/dashboard.html | 400 coarse | 2 of 7, Request rate by service | 0.0000 | 0 | 0.0000 | 18 |
+| reviews/system-v8/compositions/dashboard.html | 400 coarse | 3 of 7, CPU by pod | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v8/compositions/dashboard.html | 400 coarse | 4 of 7, CPU by pod, every service | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v8/compositions/dashboard.html | 400 coarse | 5 of 7, Memory by service | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v8/compositions/dashboard.html | 400 coarse | 6 of 7, Request rate by service, being edited | 0.0000 | 0 | 0.0000 | 382 |
+| reviews/system-v8/compositions/dashboard.html | 400 coarse | 7 of 7, Error ratio of cart, if the new rule had existed | 0.0000 | 0 | 0.0000 | 782 |
+| reviews/system-v8/compositions/monitor.html | 400 coarse | 1 of 1, p99 of checkout-api, by route | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v8/compositions/states.html | 400 coarse | 1 of 1, Request rate by service | 0.0000 | 0 | 0.0000 | 145 |
+
+
+44 pages x 14 configurations (320; 400; 560; 640; 800; 1024; 1280; 1500; 320 coarse; 400 coarse; 768 coarse; 640 at 200%; 720 at 200%; 750 at 200%)
+
+System pages: 102 finding(s)
+  dist/preview/Chart.html
+    reload-shift  1500            reloaded while scrolled to chart 1 of 10 ("Latency by route, p99"): layout shift 0.0963, and the chart lands 0 px from where it was
+    reload-shift  1500            reloaded while scrolled to chart 2 of 10 ("Request rate by service"): layout shift 0.2500, and the chart lands 0 px from where it was  (and at 1500)
+    reload-shift  1500            reloaded while scrolled to chart 3 of 10 ("CPU by pod"): layout shift 0.6407, and the chart lands 0 px from where it was  (and at 400 coarse)
+    reload-shift  1500            reloaded while scrolled to chart 4 of 10 ("CPU by pod, against the limit"): layout shift 0.6199, and the chart lands -101 px from where it was  (and at 400 coarse)
+    reload-shift  1500            reloaded while scrolled to chart 5 of 10 ("CPU by pod, three of Other picked out"): layout shift 0.1898, and the chart lands -915 px from where it was  (and at 400 coarse)
+    reload-shift  1500            jumping to chart 6 of 10 ("CPU by pod, the query narrowed to node-b") shifts the page 0.0985 and the chart moves 0 px after the jump
+    reload-shift  1500            reloaded while scrolled to chart 6 of 10 ("CPU by pod, the query narrowed to node-b"): layout shift 0.7157, and the chart lands 0 px from where it was
+    reload-shift  1500            jumping to chart 7 of 10 ("Request rate, change on last week") shifts the page 0.1827 and the chart moves 0 px after the jump
+    reload-shift  1500            reloaded while scrolled to chart 7 of 10 ("Request rate, change on last week"): layout shift 0.7772, and the chart lands 0 px from where it was
+    reload-shift  1500            jumping to chart 8 of 10 ("Memory by service") shifts the page 0.1828 and the chart moves 0 px after the jump
+    reload-shift  1500            reloaded while scrolled to chart 8 of 10 ("Memory by service"): layout shift 0.7903, and the chart lands -408 px from where it was  (and at 400 coarse)
+    reload-shift  1500            jumping to chart 9 of 10 ("Error ratio, if this rule had existed") shifts the page 0.1896 and the chart moves 0 px after the jump
+    reload-shift  1500            reloaded while scrolled to chart 9 of 10 ("Error ratio, if this rule had existed"): layout shift 0.7903, and the chart lands 0 px from where it was
+    reload-shift  1500            jumping to chart 10 of 10 ("Request rate by service") shifts the page 0.1896 and the chart moves 25 px after the jump
+  dist/reference.html
+    reload-shift  1500            jumping to chart 1 of 22 ("Request rate by service") shifts the page 0.0894 and the chart moves 0 px after the jump  (and at 1500, 1500, 1500, 400 coarse, 400 coarse, 400 coarse, 400 coarse)
+    reload-shift  1500            reloaded while scrolled to chart 1 of 22 ("Request rate by service"): layout shift 0.0901, and the chart lands 0 px from where it was  (and at 1500, 1500, 1500, 400 coarse, 400 coarse)
+    reload-shift  1500            jumping to chart 2 of 22 ("Latency by route, p99") shifts the page 0.3069 and the chart moves 0 px after the jump  (and at 1500, 400 coarse, 400 coarse)
+    reload-shift  1500            reloaded while scrolled to chart 2 of 22 ("Latency by route, p99"): layout shift 0.2969, and the chart lands 0 px from where it was  (and at 1500, 400 coarse)
+    reload-shift  1500            jumping to chart 4 of 22 ("CPU by pod") shifts the page 0.5350 and the chart moves 0 px after the jump  (and at 1500, 400 coarse)
+    reload-shift  1500            reloaded while scrolled to chart 4 of 22 ("CPU by pod"): layout shift 0.8835, and the chart lands 0 px from where it was  (and at 1500, 400 coarse)
+    reload-shift  1500            jumping to chart 5 of 22 ("CPU by pod, against the limit") shifts the page 0.5579 and the chart moves 0 px after the jump  (and at 1500, 400 coarse, 400 coarse)
+    reload-shift  1500            reloaded while scrolled to chart 5 of 22 ("CPU by pod, against the limit"): layout shift 0.5591, and the chart lands 0 px from where it was  (and at 1500)
+    reload-shift  1500            jumping to chart 6 of 22 ("CPU by pod, three of Other picked out") shifts the page 0.1486 and the chart moves 0 px after the jump  (and at 1500)
+    reload-shift  1500            reloaded while scrolled to chart 6 of 22 ("CPU by pod, three of Other picked out"): layout shift 0.8523, and the chart lands 0 px from where it was  (and at 1500)
+    reload-shift  1500            jumping to chart 7 of 22 ("CPU by pod, the query narrowed to node-b") shifts the page 0.1405 and the chart moves 0 px after the jump  (and at 1500, 400 coarse, 400 coarse)
+    reload-shift  1500            reloaded while scrolled to chart 7 of 22 ("CPU by pod, the query narrowed to node-b"): layout shift 0.8825, and the chart lands 0 px from where it was  (and at 1500, 400 coarse)
+    reload-shift  1500            jumping to chart 8 of 22 ("Request rate, change on last week") shifts the page 0.2612 and the chart moves 0 px after the jump  (and at 1500, 400 coarse, 400 coarse)
+    reload-shift  1500            jumping to chart 9 of 22 ("Memory by service") shifts the page 0.2614 and the chart moves 0 px after the jump  (and at 1500, 400 coarse, 400 coarse)
+    reload-shift  1500            reloaded while scrolled to chart 9 of 22 ("Memory by service"): layout shift 0.2618, and the chart lands 0 px from where it was  (and at 1500)
+    reload-shift  1500            jumping to chart 10 of 22 ("Error ratio, if this rule had existed") shifts the page 0.2711 and the chart moves 0 px after the jump  (and at 1500, 400 coarse, 400 coarse)
+    reload-shift  1500            reloaded while scrolled to chart 10 of 22 ("Error ratio, if this rule had existed"): layout shift 0.0000, and the chart lands -444 px from where it was  (and at 1500, 400 coarse)
+    reload-shift  400 coarse      reloaded while scrolled to chart 4 of 22 ("CPU by pod"): layout shift 0.0000, and the chart lands -161 px from where it was
+    reload-shift  400 coarse      reloaded while scrolled to chart 6 of 22 ("CPU by pod, three of Other picked out"): layout shift 0.0000, and the chart lands -1076 px from where it was
+    reload-shift  400 coarse      reloaded while scrolled to chart 8 of 22 ("Request rate, change on last week"): layout shift 0.0000, and the chart lands -584 px from where it was
+    reload-shift  400 coarse      reloaded while scrolled to chart 14 of 22 ("Request rate by service"): layout shift 0.0000, and the chart lands -933 px from where it was  (and at 400 coarse)
+    reload-shift  400 coarse      reloaded while scrolled to chart 16 of 22 ("CPU by pod, against the limit"): layout shift 0.0000, and the chart lands -1462 px from where it was
+    reload-shift  400 coarse      reloaded while scrolled to chart 20 of 22 ("Memory by service"): layout shift 0.0000, and the chart lands -719 px from where it was
+    reload-shift  400 coarse      reloaded while scrolled to chart 21 of 22 ("Error ratio, if this rule had existed"): layout shift 0.0000, and the chart lands 3894 px from where it was
+  reviews/system-v8/compositions/charts.html
+    reload-shift  1500            reloaded while scrolled to chart 1 of 4 ("CPU by pod"): layout shift 0.1229, and the chart lands 0 px from where it was  (and at 1500, 400 coarse)
+    reload-shift  1500            reloaded while scrolled to chart 3 of 4 ("Request rate by service"): layout shift 0.1764, and the chart lands 0 px from where it was
+    reload-shift  1500            reloaded while scrolled to chart 4 of 4 ("Latency by route, p99"): layout shift 0.1764, and the chart lands 0 px from where it was  (and at 400 coarse)
+  dist/fixture/index.html
+    reload-shift  400 coarse      reloaded while scrolled to chart 2 of 7 ("Request rate by service"): layout shift 0.0000, and the chart lands 18 px from where it was
+    reload-shift  400 coarse      reloaded while scrolled to chart 4 of 7 ("CPU by pod, every namespace"): layout shift 0.0000, and the chart lands 494 px from where it was
+    reload-shift  400 coarse      reloaded while scrolled to chart 6 of 7 ("Error ratio of cart, 7 d"): layout shift 0.0000, and the chart lands 755 px from where it was
+  reviews/system-v8/compositions/claims.html
+    reload-shift  400 coarse      reloaded while scrolled to chart 1 of 1 ("Latency by route, p99"): layout shift 0.0000, and the chart lands 139 px from where it was
+  reviews/system-v8/compositions/dashboard.html
+    reload-shift  400 coarse      reloaded while scrolled to chart 2 of 7 ("Request rate by service"): layout shift 0.0000, and the chart lands 18 px from where it was
+    reload-shift  400 coarse      reloaded while scrolled to chart 6 of 7 ("Request rate by service, being edited"): layout shift 0.0000, and the chart lands 382 px from where it was
+    reload-shift  400 coarse      reloaded while scrolled to chart 7 of 7 ("Error ratio of cart, if the new rule had existed"): layout shift 0.0000, and the chart lands 782 px from where it was
+  reviews/system-v8/compositions/states.html
+    reload-shift  400 coarse      reloaded while scrolled to chart 1 of 1 ("Request rate by service"): layout shift 0.0000, and the chart lands 145 px from where it was
+
+Flow screens (read only, reported): 0 finding(s)
+
+real	6m21.624s
+user	0m11.077s
+sys	0m3.471s
+ 13:26:40 up 12:45,  0 user,  load average: 0.14, 1.66, 4.42

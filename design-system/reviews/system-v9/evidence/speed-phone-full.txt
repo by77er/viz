@@ -1,0 +1,66 @@
+
+
+BEFORE: http://127.0.0.1:8901/fixture/index.html
+10 runs, CPU 4x, Fast 4G, 400x800, coarse pointer and touch (presses and taps by CDP touch events). p75 is the budgeted figure.
+Load: 1-minute load average at the start of each run 2.7 to 4.3 (median 3.4) on 4 cores; at the end 4.2 3.6 3.8. Calibration task 298 ms (about 100 ms on an idle core). A timing row is judged only when most of its samples were taken at a load of 4 or less.
+
+| What | Budget | p75 | Median | Worst | Samples | Load when taken (median, range) | |
+|---|---|---|---|---|---|---|---|
+| Press: Run query | 50 ms | 24 ms | 16 ms | 25 ms | 10 | 3.6 (2.6 to 4.2) | within |
+| Typing in the query editor | 50 ms | 23 ms | 20 ms | 24 ms | 10 | 3.6 (2.8 to 4.2) | within |
+| Crosshair by touch drag, 36 series | 50 ms | 50 ms | 45 ms | 54 ms | 10 | 3.6 (2.8 to 4.2) | within |
+| Legend row toggle, 36 series | 100 ms | 76 ms | 71 ms | 120 ms | 10 | 3.5 (2.8 to 4.2) | within |
+| Legend row toggle, 200 series | 100 ms | 65 ms | 54 ms | 83 ms | 10 | 3.4 (2.8 to 4.2) | within |
+| One panel to table, 36 series | 100 ms | 80 ms | 74 ms | 173 ms | 10 | 3.4 (2.8 to 4.2) | within |
+| One panel to chart, 36 series | 100 ms | 51 ms | 40 ms | 54 ms | 10 | 3.4 (2.8 to 4.2) | within |
+| One panel to table, 200 series | 100 ms | 78 ms | 67 ms | 93 ms | 10 | 3.4 (2.8 to 4.2) | within |
+| Open a menu (Share…) | 100 ms | 37 ms | 33 ms | 53 ms | 10 | 3.4 (2.8 to 4.2) | within |
+| Change theme (to dark) | 100 ms | 88 ms | 75 ms | 104 ms | 10 | 3.5 (2.8 to 4.2) | within |
+| Change theme: transitions still running when it is drawn | 0 | 0 | 0 | 0 | 10 | 3.5 (2.8 to 4.7) | within |
+| Run a query: request sent and waiting state shown | 100 ms | 43 ms | 34 ms | 53 ms | 10 | 3.4 (2.8 to 4.7) | within |
+| Move to a view whose data is not loaded: its shell and waiting state | 100 ms | 42 ms | 37 ms | 52 ms | 10 | 3.6 (2.8 to 4.7) | within |
+| Response to paint, 36 series | 100 ms | 13 ms | 10 ms | 19 ms | 10 | 3.6 (2.8 to 4.7) | within |
+| Response to paint, 200 series | 100 ms | 28 ms | 26 ms | 30 ms | 10 | 3.6 (2.7 to 5.0) | within |
+| Layout shift, load and run | 0.05 | 0.0000 | 0.0000 | 0.0000 | 10 | 3.6 (2.7 to 5.0) | within |
+| Layout shift, loaded scrolled to CPU by pod | 0.05 | 0.0000 | 0.0000 | 0.0000 | 10 | 3.4 (2.7 to 4.3) | within |
+| Layout shift, loaded scrolled to Latency by route | 0.05 | 0.0000 | 0.0000 | 0.0000 | 10 | 3.4 (2.7 to 4.3) | within |
+| Layout shift, loaded scrolled to Request rate | 0.05 | 0.0000 | 0.0000 | 0.0000 | 10 | 3.4 (2.7 to 4.3) | within |
+| Layout shift, loaded scrolled to CPU by pod, every namespace | 0.05 | 0.0000 | 0.0000 | 0.0000 | 10 | 3.4 (2.7 to 4.3) | within |
+| Layout shift, loaded scrolled to the backtest | 0.05 | 0.0000 | 0.0000 | 0.0000 | 10 | 3.4 (2.7 to 4.3) | within |
+| Worst interaction (Event Timing) | 200 ms | 96 ms | 88 ms | 152 ms | 10 | 3.6 (2.7 to 5.0) | within |
+
+
+AFTER: http://127.0.0.1:8900/fixture/index.html
+10 runs, CPU 4x, Fast 4G, 400x800, coarse pointer and touch (presses and taps by CDP touch events). p75 is the budgeted figure.
+Load: 1-minute load average at the start of each run 2.7 to 5.0 (median 3.6) on 4 cores; at the end 4.2 3.6 3.8. Calibration task 298 ms (about 100 ms on an idle core). A timing row is judged only when most of its samples were taken at a load of 4 or less.
+
+| What | Budget | p75 | Median | Worst | Samples | Load when taken (median, range) | |
+|---|---|---|---|---|---|---|---|
+| Press: Run query | 50 ms | 22 ms | 19 ms | 28 ms | 10 | 3.4 (2.7 to 4.5) | within |
+| Typing in the query editor | 50 ms | 23 ms | 16 ms | 25 ms | 10 | 3.4 (2.7 to 4.5) | within |
+| Crosshair by touch drag, 36 series | 50 ms | 44 ms | 41 ms | 50 ms | 10 | 3.4 (2.7 to 4.5) | within |
+| Legend row toggle, 36 series | 100 ms | 70 ms | 58 ms | 73 ms | 10 | 3.4 (2.7 to 4.5) | within |
+| Legend row toggle, 200 series | 100 ms | 64 ms | 58 ms | 83 ms | 10 | 3.4 (2.7 to 4.5) | within |
+| One panel to table, 36 series | 100 ms | 65 ms | 57 ms | 90 ms | 10 | 3.7 (2.7 to 4.5) | within |
+| One panel to chart, 36 series | 100 ms | 68 ms | 53 ms | 78 ms | 10 | 3.7 (2.7 to 4.5) | within |
+| One panel to table, 200 series | 100 ms | 68 ms | 52 ms | 77 ms | 10 | 3.7 (2.7 to 4.5) | within |
+| Open a menu (Share…) | 100 ms | 40 ms | 34 ms | 76 ms | 10 | 3.7 (2.7 to 4.5) | within |
+| Change theme (to dark) | 100 ms | 99 ms | 74 ms | 116 ms | 10 | 3.6 (2.7 to 4.5) | within |
+| Change theme: transitions still running when it is drawn | 0 | 0 | 0 | 0 | 10 | 3.6 (2.7 to 4.5) | within |
+| Run a query: request sent and waiting state shown | 100 ms | 37 ms | 32 ms | 45 ms | 10 | 3.6 (2.7 to 4.5) | within |
+| Move to a view whose data is not loaded: its shell and waiting state | 100 ms | 53 ms | 42 ms | 83 ms | 10 | 3.6 (2.7 to 4.3) | within |
+| Response to paint, 36 series | 100 ms | 13 ms | 10 ms | 20 ms | 10 | 3.6 (2.7 to 4.3) | within |
+| Response to paint, 200 series | 100 ms | 27 ms | 24 ms | 45 ms | 10 | 3.4 (2.7 to 4.3) | within |
+| Layout shift, load and run | 0.05 | 0.0000 | 0.0000 | 0.0000 | 10 | 3.4 (2.7 to 4.3) | within |
+| Layout shift, loaded scrolled to CPU by pod | 0.05 | 0.0000 | 0.0000 | 0.0000 | 10 | 3.6 (2.7 to 5.0) | within |
+| Layout shift, loaded scrolled to Latency by route | 0.05 | 0.0000 | 0.0000 | 0.0000 | 10 | 3.6 (2.7 to 5.0) | within |
+| Layout shift, loaded scrolled to Request rate | 0.05 | 0.0000 | 0.0000 | 0.0000 | 10 | 3.6 (2.7 to 5.0) | within |
+| Layout shift, loaded scrolled to CPU by pod, every namespace | 0.05 | 0.0000 | 0.0000 | 0.0000 | 10 | 3.6 (2.7 to 5.0) | within |
+| Layout shift, loaded scrolled to the backtest | 0.05 | 0.0000 | 0.0000 | 0.0000 | 10 | 3.6 (2.7 to 5.0) | within |
+| Worst interaction (Event Timing) | 200 ms | 104 ms | 88 ms | 128 ms | 10 | 3.4 (2.7 to 4.3) | within |
+
+Every judged 75th percentile is within its budget (rows not judged are neither passed nor failed).
+
+real	9m7.476s
+user	0m36.764s
+sys	0m14.102s

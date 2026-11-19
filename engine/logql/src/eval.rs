@@ -209,19 +209,44 @@ pub(crate) fn eval_logs(src: &dyn LogSource, e: &LogExpr, start: i64, end: i64, 
     let req = SelectRequest { matchers: &e.matchers, start_ns: start, end_ns: end, required: &required };
     // Entries that share a timestamp are ordered by their stream's labels (ascending in both
     // directions, as observed in Loki), then by arrival (reversed for backward), so that the
-    // limit does not depend on the order streams are read in. Entries cut off are released.
-    let trim = |entries: &mut Vec<(i64, u64, usize, String)>, keys: &Vec<Vec<(String, String)>>, meter: &mut Meter| {
+    // limit does not depend on the order streams are read in. Entries cut off are released, and
+    // so are the label sets no kept entry refers to (structured metadata such as a trace id makes
+    // one per line: they were held to the end before, uncounted, 30,000 rows' worth); a label set
+    // seen again is made again. Returns whether slots moved (the stream cache is then stale).
+    let trim = |entries: &mut Vec<(i64, u64, usize, String)>, keys: &mut HashMap<Vec<(String, String)>, usize>, key_list: &mut Vec<Vec<(String, String)>>, meter: &mut Meter| -> bool {
         entries.sort_by(|a, b| {
             if fwd {
-                a.0.cmp(&b.0).then_with(|| keys[a.2].cmp(&keys[b.2])).then(a.1.cmp(&b.1))
+                a.0.cmp(&b.0).then_with(|| key_list[a.2].cmp(&key_list[b.2])).then(a.1.cmp(&b.1))
             } else {
-                b.0.cmp(&a.0).then_with(|| keys[a.2].cmp(&keys[b.2])).then(b.1.cmp(&a.1))
+                b.0.cmp(&a.0).then_with(|| key_list[a.2].cmp(&key_list[b.2])).then(b.1.cmp(&a.1))
             }
         });
         if entries.len() > limit {
             meter.release(entries[limit..].iter().map(|x| ENTRY + x.3.len() as u64).sum());
         }
         entries.truncate(limit);
+        let mut used = vec![false; key_list.len()];
+        for x in entries.iter() {
+            used[x.2] = true;
+        }
+        if used.iter().all(|u| *u) {
+            return false;
+        }
+        let mut slot = vec![usize::MAX; key_list.len()];
+        keys.clear();
+        for (i, k) in std::mem::take(key_list).into_iter().enumerate() {
+            if used[i] {
+                slot[i] = key_list.len();
+                keys.insert(k.clone(), key_list.len());
+                key_list.push(k);
+            } else {
+                meter.release(SLOT + 2 * labels_bytes(&k));
+            }
+        }
+        for x in entries.iter_mut() {
+            x.2 = slot[x.2];
+        }
+        true
     };
     // The slot of a label set, charged when it is first held.
     let slot_of = |key: Vec<(String, String)>, keys: &mut HashMap<Vec<(String, String)>, usize>, key_list: &mut Vec<Vec<(String, String)>>, meter: &mut Meter| -> Result<usize, Error> {
@@ -292,14 +317,14 @@ pub(crate) fn eval_logs(src: &dyn LogSource, e: &LogExpr, start: i64, end: i64, 
         }
         seq += 1;
         entries.push((row.ts_ns, seq, idx, line.into_owned()));
-        if entries.len() >= limit.saturating_mul(2).max(1024) {
-            trim(&mut entries, &key_list, &mut meter);
+        if entries.len() >= limit.saturating_mul(2).max(1024) && trim(&mut entries, &mut keys, &mut key_list, &mut meter) {
+            cache.3 = None;
         }
     })?;
     if let Some(e) = err.take() {
         return Err(e);
     }
-    trim(&mut entries, &key_list, &mut meter);
+    trim(&mut entries, &mut keys, &mut key_list, &mut meter);
     drop(keys);
     let mut streams: Vec<StreamOut> = Vec::new();
     let mut slot: HashMap<usize, usize> = HashMap::new();

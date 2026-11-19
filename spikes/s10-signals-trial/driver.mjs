@@ -29,7 +29,7 @@ const { wrangler } = await import(pathToFileURL(join(TREE, 'deploy', 'lib', 'wra
 const STAGE = 's10'
 const LOAD = `viz-${STAGE}-load-client`
 const GATEWAY = `viz-${STAGE}-gateway`
-export const TENANTS = ['s10-load', 's10-q', 's10-fat', 's10-fatattr']
+export const TENANTS = ['s10-load', 's10-q', 's10-fat', 's10-fatattr', 's10-hostile']
 mkdirSync(join(STATE, 'results'), { recursive: true })
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -335,7 +335,7 @@ async function hostile() {
     const headers = { 'Content-Type': isJson ? 'application/json' : 'application/x-protobuf' }
     // Loki protobuf goes snappy on the wire (bodies.mjs's realistic Loki case already is).
     if (path === '/loki/api/v1/push' && !isJson && !/snappy/i.test(f)) raw = snappy.compress(raw)
-    const r = await call({ op: 'raw', client: 'hostile', tenant: 's10-q', path, headers, bodyB64: gzipSync(raw).toString('base64'), gunzip: true })
+    const r = await call({ op: 'raw', client: 'hostile', tenant: 's10-hostile', path, headers, bodyB64: gzipSync(raw).toString('base64'), gunzip: true })
     out.push({ file: f, path, bytes: raw.length, ...r })
     console.log(`${f.padEnd(70)} ${String(r.status).padEnd(4)} ${r.ms} ms ${r.partial ? `partial ${JSON.stringify(r.partial).slice(0, 150)}` : (r.text ?? r.error ?? '').slice(0, 150).replace(/\s+/g, ' ')}`)
   }
@@ -345,11 +345,11 @@ async function hostile() {
     ['oversized: 9 MiB protobuf body', { 'Content-Type': 'application/x-protobuf' }, { bodyB64: gzipSync(nine).toString('base64'), gunzip: true }],
     ['oversized: gzip body inflating to 9 MiB', { 'Content-Type': 'application/x-protobuf', 'Content-Encoding': 'gzip' }, { bodyB64: gzipSync(nine).toString('base64'), gunzip: false }],
   ]) {
-    const r = await call({ op: 'raw', client: 'hostile', tenant: 's10-q', path: '/v1/traces', headers, ...body })
+    const r = await call({ op: 'raw', client: 'hostile', tenant: 's10-hostile', path: '/v1/traces', headers, ...body })
     out.push({ file: name, path: '/v1/traces', ...r })
     console.log(`${name.padEnd(70)} ${String(r.status).padEnd(4)} ${r.ms} ms ${(r.text ?? r.error ?? JSON.stringify(r.partial)).slice(0, 150).replace(/\s+/g, ' ')}`)
   }
-  mark('hostile', t0, Date.now(), { tenant: 's10-q' })
+  mark('hostile', t0, Date.now(), { tenant: 's10-hostile' })
   console.log(save('hostile', out))
 }
 
