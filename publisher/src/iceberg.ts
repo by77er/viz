@@ -679,6 +679,7 @@ export const STATUS_DELETED = 2
 export interface LiveFile {
   key: string
   tenant: string
+  /** UTC day (`FileEntry.day`). For `spans` the partition is the hour, which the key holds (`spanHour`). */
   day: string
   rows: number
   bytes: number
@@ -689,7 +690,18 @@ export interface LiveFile {
   stats: FileStats
 }
 
-export interface ManifestEntryRecord {
+/** The `partition` struct of a `data_file`: `{tenant, day}`, or for `spans` `{tenant, start_time_hour}`. */
+export interface MetricPartition {
+  tenant: string | null
+  day: number | null
+}
+export interface SpansPartition {
+  tenant: string | null
+  start_time_hour: number | null
+}
+export type AnyPartition = MetricPartition | SpansPartition
+
+export interface ManifestEntryRecord<P = MetricPartition> {
   status: number
   snapshot_id: number | null
   sequence_number: number | null
@@ -698,7 +710,7 @@ export interface ManifestEntryRecord {
     content: number
     file_path: string
     file_format: string
-    partition: { tenant: string | null; day: number | null }
+    partition: P
     record_count: number
     file_size_in_bytes: number
     column_sizes: null
@@ -721,13 +733,22 @@ const boundList = (m: Record<string, string>) => {
   return out.length > 0 ? out : null
 }
 
+/** The partition tuple of a file of `table` (spec, "Manifests": the partition struct, by partition field ids). */
+export function partitionOf(table: LedgerTable, f: { tenant: string; day: string; key: string }): AnyPartition {
+  if (table === 'spans') return { tenant: f.tenant, start_time_hour: spanHour(f.key, f.day) }
+  return { tenant: f.tenant, day: dayToInt(f.day) }
+}
+
+/** Field ids whose value and null counts a manifest entry states: every data column of a metric table (all required); the required top-level primitive columns of a span or log table. */
+const countedIds = (table: LedgerTable): number[] => (isMetricTable(table) ? TABLE_DEFS[table].data.map((c) => c.id) : requiredPrimitiveIds(table))
+
 /**
  * One manifest entry. An ADDED entry leaves both sequence numbers null so that they are
  * inherited from the manifest list; EXISTING and DELETED entries carry them explicitly, as
  * the spec requires. A DELETED entry's `snapshot_id` is the snapshot that removed the file.
  */
-export function manifestEntry(table: Table, f: LiveFile, status: number, uri: string, deletingSnapshot?: number): ManifestEntryRecord {
-  const counts = TABLE_DEFS[table].data.map((c) => c.id)
+export function manifestEntry(table: LedgerTable, f: LiveFile, status: number, uri: string, deletingSnapshot?: number): ManifestEntryRecord<AnyPartition> {
+  const counts = countedIds(table)
   return {
     status,
     snapshot_id: status === STATUS_DELETED ? (deletingSnapshot as number) : f.snapshotId,
@@ -737,11 +758,12 @@ export function manifestEntry(table: Table, f: LiveFile, status: number, uri: st
       content: 0,
       file_path: uri,
       file_format: 'PARQUET',
-      partition: { tenant: f.tenant, day: dayToInt(f.day) },
+      partition: partitionOf(table, f),
       record_count: f.rows,
       file_size_in_bytes: f.bytes,
       column_sizes: null,
-      // Every data column is required, so each has `rows` values and no nulls.
+      // Counted columns are required, so each has `rows` values and no nulls. Optional and nested
+      // columns are not counted: absent means unknown (spec, "Field-level Metrics and Statistics").
       value_counts: counts.map((key) => ({ key, value: f.rows })),
       null_value_counts: counts.map((key) => ({ key, value: 0 })),
       nan_value_counts: null,
@@ -755,10 +777,16 @@ export function manifestEntry(table: Table, f: LiveFile, status: number, uri: st
   }
 }
 
+/** The day a partition tuple says (for `spans`, the day of its hour), and for `spans` the hour. */
+export function partitionDay(p: AnyPartition): { tenant: string | null; day: number | null; hour: number | null } {
+  if ('start_time_hour' in p) return { tenant: p.tenant, day: p.start_time_hour === null ? null : Math.floor(p.start_time_hour / 24), hour: p.start_time_hour }
+  return { tenant: p.tenant, day: p.day, hour: null }
+}
+
 /** The reverse of `manifestEntry` for a live entry read back from R2. */
-export function liveFromEntry(e: ManifestEntryRecord, key: string, inherited: { snapshotId: number; seq: number }): LiveFile {
+export function liveFromEntry(e: ManifestEntryRecord<AnyPartition>, key: string, inherited: { snapshotId: number; seq: number }): LiveFile {
   const hexMap = (l: { key: number; value: Uint8Array }[] | null) => Object.fromEntries((l ?? []).map((x) => [String(x.key), toHex(x.value)]))
-  const p = e.data_file.partition
+  const p = partitionDay(e.data_file.partition)
   if (p.tenant === null || p.day === null) throw new Error(`publisher: manifest entry without a partition value: ${key}`)
   return {
     key,
@@ -773,7 +801,7 @@ export function liveFromEntry(e: ManifestEntryRecord, key: string, inherited: { 
   }
 }
 
-export const manifestHeader = (table: Table): Record<string, string> => ({
+export const manifestHeader = (table: LedgerTable): Record<string, string> => ({
   schema: JSON.stringify(icebergSchema(table)),
   'schema-id': '0',
   'partition-spec': JSON.stringify(partitionSpecFields(table)),
@@ -800,6 +828,9 @@ export interface ManifestInfo {
   tenantHi: string
   dayLo: number
   dayHi: number
+  /** `spans` only: the range of `start_time_hour`, the second partition field. */
+  hourLo?: number
+  hourHi?: number
 }
 
 export interface ManifestListRecord {
@@ -820,6 +851,7 @@ export interface ManifestListRecord {
   key_metadata: null
 }
 
+/** A manifest list row. Its `partitions` summarise each partition field in spec order: tenant, then day (or for `spans` the hour), as ints (spec, "Manifest Lists", `field_summary`). */
 export const manifestListRecord = (m: ManifestInfo, uri: string): ManifestListRecord => ({
   manifest_path: uri,
   manifest_length: m.length,
@@ -836,16 +868,18 @@ export const manifestListRecord = (m: ManifestInfo, uri: string): ManifestListRe
   deleted_rows_count: m.deletedRows,
   partitions: [
     { contains_null: false, contains_nan: false, lower_bound: utf8.encode(m.tenantLo), upper_bound: utf8.encode(m.tenantHi) },
-    { contains_null: false, contains_nan: false, lower_bound: intBytes(m.dayLo), upper_bound: intBytes(m.dayHi) },
+    m.hourLo !== undefined
+      ? { contains_null: false, contains_nan: false, lower_bound: intBytes(m.hourLo), upper_bound: intBytes(m.hourHi as number) }
+      : { contains_null: false, contains_nan: false, lower_bound: intBytes(m.dayLo), upper_bound: intBytes(m.dayHi) },
   ],
   key_metadata: null,
 })
 
-export function manifestInfoFromRecord(r: ManifestListRecord, path: string): ManifestInfo {
+export function manifestInfoFromRecord(r: ManifestListRecord, path: string, table: LedgerTable = 'metric_samples'): ManifestInfo {
   const [t, d] = r.partitions ?? []
   if (!t?.lower_bound || !t.upper_bound || !d?.lower_bound || !d.upper_bound) throw new Error(`publisher: manifest list row without partition summaries: ${path}`)
   const int = (b: Uint8Array) => new DataView(b.buffer, b.byteOffset, 4).getInt32(0, true)
-  return {
+  const info: ManifestInfo = {
     path,
     length: r.manifest_length,
     seq: r.sequence_number,
@@ -862,6 +896,13 @@ export function manifestInfoFromRecord(r: ManifestListRecord, path: string): Man
     dayLo: int(d.lower_bound),
     dayHi: int(d.upper_bound),
   }
+  if (table === 'spans') {
+    info.hourLo = info.dayLo
+    info.hourHi = info.dayHi
+    info.dayLo = Math.floor(info.hourLo / 24)
+    info.dayHi = Math.floor(info.hourHi / 24)
+  }
+  return info
 }
 
 /** Counts and partition ranges for a manifest about to be written. `seq` is the commit's. */
@@ -869,8 +910,9 @@ export function summarise(
   parts: { file: LiveFile; status: number }[],
   seq: number,
   snapshotId: number,
+  table: LedgerTable = 'metric_samples',
 ): Omit<ManifestInfo, 'path' | 'length'> {
-  const m = {
+  const m: Omit<ManifestInfo, 'path' | 'length'> = {
     seq,
     minSeq: seq,
     addedSnapshotId: snapshotId,
@@ -885,6 +927,7 @@ export function summarise(
     dayLo: 0,
     dayHi: 0,
   }
+  const spans = table === 'spans'
   let first = true
   for (const { file, status } of parts) {
     if (status === STATUS_ADDED) {
@@ -904,6 +947,11 @@ export function summarise(
     if (first || file.tenant > m.tenantHi) m.tenantHi = file.tenant
     if (first || day < m.dayLo) m.dayLo = day
     if (first || day > m.dayHi) m.dayHi = day
+    if (spans) {
+      const h = spanHour(file.key, file.day)
+      if (first || h < (m.hourLo as number)) m.hourLo = h
+      if (first || h > (m.hourHi as number)) m.hourHi = h
+    }
     first = false
   }
   return m
@@ -977,15 +1025,16 @@ export function metadataProblem(meta: TableMetadata): string | null {
 /** The version of a cursors object (`{ v, table, cell, snapshotId, cursors }`); absent = 1. */
 export const CURSORS_FORMAT_VERSION = 1
 
-export function emptyMetadata(table: Table, location: string, cell: string, uuid: string, now: number): TableMetadata {
-  const d = TABLE_DEFS[table]
+export function emptyMetadata(table: LedgerTable, location: string, cell: string, uuid: string, now: number): TableMetadata {
+  const metric = isMetricTable(table)
+  const sort = metric ? TABLE_DEFS[table].sort : SIGNAL_DEFS[table].sort
   return {
     'format-version': 2,
     'table-uuid': uuid,
     location,
     'last-sequence-number': 0,
     'last-updated-ms': now,
-    'last-column-id': d.day.id,
+    'last-column-id': metric ? TABLE_DEFS[table].day.id : SIGNAL_DEFS[table].lastColumnId,
     'current-schema-id': 0,
     schemas: [icebergSchema(table)],
     'default-spec-id': 0,
@@ -994,10 +1043,10 @@ export function emptyMetadata(table: Table, location: string, cell: string, uuid
     'default-sort-order-id': SORT_ORDER_ID,
     'sort-orders': [
       { 'order-id': 0, fields: [] },
-      { 'order-id': SORT_ORDER_ID, fields: d.sort.map((id) => ({ transform: 'identity', 'source-id': id, direction: 'asc', 'null-order': 'nulls-first' })) },
+      { 'order-id': SORT_ORDER_ID, fields: sort.map((id) => ({ transform: 'identity', 'source-id': id, direction: 'asc', 'null-order': 'nulls-first' })) },
     ],
     properties: {
-      'schema.name-mapping.default': JSON.stringify(nameMapping(table)),
+      'schema.name-mapping.default': JSON.stringify(metric ? nameMapping(table) : signalNameMapping(table)),
       'write.format.default': 'parquet',
       // viz is the only writer and deletes data files itself, after the ledger says so.
       'gc.enabled': 'false',

@@ -256,10 +256,14 @@ function guards({ fine, coarse, hitOnly }) {
     if (s.outlineStyle === 'none' || Math.abs(parseFloat(s.outlineWidth) - stroke) > 0.01 || s.outlineColor !== focus || ![stroke, hair, -stroke].some((o) => Math.abs(parseFloat(s.outlineOffset) - o) < 0.01)) return `${name(el)} focused draws outline ${s.outlineStyle} ${s.outlineWidth} ${s.outlineColor} offset ${s.outlineOffset}, not the ring (${stroke}px solid ${focus}, offset ${stroke}px)`
     const ring = parse(s.outlineColor), behind = bgOf(el.parentElement); if (ring && ratio(ring, behind) < 3) return `${name(el)} focused: its ring is ${ratio(ring, behind).toFixed(2)}:1 on what is behind it (needs 3:1)`
     const r = el.getBoundingClientRect(), d = parseFloat(s.outlineOffset) + parseFloat(s.outlineWidth), box = [r.left - d, r.top - d, r.right + d, r.bottom + d]
-    for (let x = el.parentElement; x && x !== document.body && x !== document.documentElement; x = x.parentElement) { const st = cs(x); if (st.overflowX === 'visible' && st.overflowY === 'visible') continue
-      const c = x.getBoundingClientRect(), bl = parseFloat(st.borderLeftWidth) || 0, bt = parseFloat(st.borderTopWidth) || 0, clip = [c.left + bl, c.top + bt, c.left + bl + x.clientWidth, c.top + bt + x.clientHeight]
-      if (r.left < clip[0] - 0.5 || r.right > clip[2] + 0.5) continue // scrolled partly out of a strip: reached by scrolling, and its ring with it
-      if (box[0] < clip[0] - 0.5 || box[1] < clip[1] - 0.5 || box[2] > clip[2] + 0.5 || box[3] > clip[3] + 0.5) return `${name(el)} focused: its ring is cut by ${name(x)} (overflow ${st.overflowX} ${st.overflowY})` }
+    for (let x = el.parentElement; x && x !== document.body && x !== document.documentElement; x = x.parentElement) { const st = cs(x)
+      // paint containment clips as overflow does (contain: paint, content or strict; content-visibility: auto or hidden), at its padding box
+      // grown by overflow-clip-margin (v8: charts are content-visibility: auto)
+      const contained = /paint|strict|content/.test(st.contain) || /auto|hidden/.test(st.contentVisibility); if (st.overflowX === 'visible' && st.overflowY === 'visible' && !contained) continue
+      const m = contained || st.overflowX === 'clip' ? parseFloat((st.overflowClipMargin.match(/-?[\d.]+px/) ?? ['0'])[0]) : 0
+      const c = x.getBoundingClientRect(), bl = parseFloat(st.borderLeftWidth) || 0, bt = parseFloat(st.borderTopWidth) || 0, clip = [c.left + bl - m, c.top + bt - m, c.left + bl + x.clientWidth + m, c.top + bt + x.clientHeight + m]
+      if (!contained && (r.left < clip[0] - 0.5 || r.right > clip[2] + 0.5)) continue // scrolled partly out of a strip: reached by scrolling, and its ring with it
+      if (box[0] < clip[0] - 0.5 || box[1] < clip[1] - 0.5 || box[2] > clip[2] + 0.5 || box[3] > clip[3] + 0.5) return `${name(el)} focused: its ring is cut by ${name(x)} (${contained ? `paint containment, clip margin ${m}px` : `overflow ${st.overflowX} ${st.overflowY}`})` }
     return null }
   window.__vzSwatch = (sw) => { const s = cs(sw), series = rgb(tok(sw, 'series')), ok = ['Left', 'Right'].every((k) => s[`border${k}Style`] === 'solid' && parseFloat(s[`border${k}Width`]) > 0 && s[`border${k}Color`] === series) && /rgba\(.*,\s*0\)|transparent/.test(s.backgroundColor)
     return ok ? null : `${name(sw)} is not drawn dashed as rendered (borders ${s.borderLeftStyle} ${s.borderLeftWidth} ${s.borderLeftColor} / ${s.borderRightStyle}, fill ${s.backgroundColor}; the series is ${series}): its slot is told from 1 to 4 by hue alone` }
@@ -397,8 +401,13 @@ async function pointerPress(page, how) {
       return { x, y, own: !!hit && (hit === el || el.contains(hit) || (el.matches('.vz-series') && el.closest('tr').contains(hit))), rest: getComputedStyle(p).backgroundColor, want: getComputedStyle(root).getPropertyValue(tone ? `--${tone}-pressed` : '--pressed').trim(), what: `${el.tagName.toLowerCase()}.${[...el.classList].join('.')} "${(el.textContent || '').trim().slice(0, 24)}"` } }, i)
     if (!at.own) continue
     let now, hover = at.rest
-    if (cdp) { await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: at.x, y: at.y }] }); now = await paint(i); await cdp.send('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] }) }
-    else { await page.mouse.move(at.x, at.y); hover = await paint(i); await page.mouse.down(); now = await paint(i); await page.mouse.move(1, 1); await page.mouse.up() } // released away from it: nothing is clicked
+    // while held, data-pressed is on the control and a pressable ancestor only, never on body: there it restyles every cell of every
+    // table on each press and release (v8: the theme change's trace)
+    const wide = () => page.evaluate(() => document.body.hasAttribute('data-pressed') ? [...document.querySelectorAll('[data-pressed]')].length : 0)
+    let marked = 0
+    if (cdp) { await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: at.x, y: at.y }] }); now = await paint(i); marked = await wide(); await cdp.send('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] }) }
+    else { await page.mouse.move(at.x, at.y); hover = await paint(i); await page.mouse.down(); now = await paint(i); marked = await wide(); await page.mouse.move(1, 1); await page.mouse.up() } // released away from it: nothing is clicked
+    if (marked) out.push(['press', `${how === 'touch' ? 'a finger' : 'a mouse'} held on ${at.what} marks body and ${marked - 1} other elements data-pressed: every ancestor, not the control and its pressable ancestors`])
     if (now === at.rest || now === hover || now !== rgb(at.want)) out.push(['press', `${how === 'touch' ? 'a finger' : 'a mouse'} held on ${at.what} paints ${now} (at rest ${at.rest}${how === 'mouse' ? ', hovered ' + hover : ''}); its press is ${rgb(at.want)}`])
   }
   return out.slice(0, 6)

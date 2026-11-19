@@ -6,11 +6,12 @@ use crate::otelpq::{
     ba, col, cut_groups, day_of_ns, fba, foot, json_str, perr, props, schema, write_group, Leaf, Levels, SResult, SignalError, SignalFile, SignalTable,
     SignalWriteOptions, LINE_CHUNK_BYTES, LINE_PAGE_CUT_BYTES, NS_PER_DAY,
 };
-use parquet::file::metadata::SortingColumn;
+use crate::tokens::{TokenFilterBuilder, TOKEN_FILTER_META};
+use parquet::file::metadata::{KeyValue, SortingColumn};
 use parquet::file::properties::EnabledStatistics;
 use parquet::file::writer::SerializedFileWriter;
 
-const LOGS_SCHEMA: &str = "message logs {
+pub(crate) const LOGS_SCHEMA: &str = "message logs {
   required binary service_name (UTF8);
   required int64 stream_id;
   required int64 ts;
@@ -52,17 +53,17 @@ fn logs_props(opts: &SignalWriteOptions) -> std::sync::Arc<parquet::file::proper
     props(cols, sorting, opts)
 }
 
-struct StreamInfo<'a> {
-    stream: &'a LogStream<&'a str>,
-    service: &'a str,
-    labels: String,
-    label_bytes: usize,
+pub(crate) struct StreamInfo<'a> {
+    pub stream: &'a LogStream<&'a str>,
+    pub service: &'a str,
+    pub labels: String,
+    pub label_bytes: usize,
 }
 
-struct RowRef<'a> {
-    row: &'a LogRow<&'a str>,
-    stream: usize,
-    day: i64,
+pub(crate) struct RowRef<'a> {
+    pub row: &'a LogRow<&'a str>,
+    pub stream: usize,
+    pub day: i64,
 }
 
 /// Turn a sealed segment's log batches (in sequence order) into Parquet files, one per UTC
@@ -133,19 +134,61 @@ pub fn encode_logs_with(batches: &[&[u8]], opts: &SignalWriteOptions) -> SResult
     Ok(out)
 }
 
+/// The weight of one log row for the row-group byte cap (`contracts/LOGS.md` §4).
+pub(crate) fn log_weight(row: &LogRow<&str>, label_bytes: usize) -> usize {
+    64 + row.line.len() + row.severity_text.len() + row.metadata.iter().map(|(n, v)| n.len() + v.len()).sum::<usize>() + label_bytes
+}
+
 fn write_logs_file(rows: &[RowRef<'_>], streams: &[StreamInfo<'_>], opts: &SignalWriteOptions) -> SResult<SignalFile> {
-    let weights: Vec<usize> = rows
-        .iter()
-        .map(|r| 64 + r.row.line.len() + r.row.severity_text.len() + r.row.metadata.iter().map(|(n, v)| n.len() + v.len()).sum::<usize>() + streams[r.stream].label_bytes)
-        .collect();
-    let mut w = SerializedFileWriter::new(Vec::new(), schema(LOGS_SCHEMA), logs_props(opts)).map_err(perr)?;
-    let mut index = String::from("{\"v\":1,\"rg\":[");
-    let mut groups_end = 4u64;
-    let (mut min_ts, mut max_ts) = (i64::MAX, i64::MIN);
-    // Streams of the file in order: (stream index, min ts, max ts, first rg, last rg).
-    let mut file_streams: Vec<(usize, i64, i64, usize, usize)> = Vec::new();
-    for (gi, (a, b)) in cut_groups(&weights, opts).into_iter().enumerate() {
-        let g = &rows[a..b];
+    let weights: Vec<usize> = rows.iter().map(|r| log_weight(r.row, streams[r.stream].label_bytes)).collect();
+    let mut w = LogsFileWriter::new(opts, false)?;
+    for (a, b) in cut_groups(&weights, opts) {
+        w.group(&rows[a..b], streams)?;
+    }
+    w.finish()
+}
+
+/// A `logs` file written one row group at a time: flush hands it the groups `cut_groups` makes
+/// of a whole segment, compaction (`sigmerge.rs`) the groups it fills while it merges. The bytes
+/// depend only on the rows and where the groups are cut; `tokens` adds the token filter
+/// (`contracts/LOGS.md` §6), which only compaction writes.
+pub(crate) struct LogsFileWriter {
+    w: SerializedFileWriter<Vec<u8>>,
+    index: String,
+    groups_end: u64,
+    min_ts: i64,
+    max_ts: i64,
+    rows: u64,
+    groups: usize,
+    first_ts: Option<i64>,
+    /// Streams of the file in order: (stream_id, labels, min ts, max ts, first rg, last rg).
+    file_streams: Vec<(i64, String, i64, i64, usize, usize)>,
+    tokens: Option<TokenFilterBuilder>,
+}
+
+impl LogsFileWriter {
+    pub(crate) fn new(opts: &SignalWriteOptions, token_filter: bool) -> SResult<LogsFileWriter> {
+        Ok(LogsFileWriter {
+            w: SerializedFileWriter::new(Vec::new(), schema(LOGS_SCHEMA), logs_props(opts)).map_err(perr)?,
+            index: String::from("{\"v\":1,\"rg\":["),
+            groups_end: 4,
+            min_ts: i64::MAX,
+            max_ts: i64::MIN,
+            rows: 0,
+            groups: 0,
+            first_ts: None,
+            file_streams: Vec::new(),
+            tokens: token_filter.then(TokenFilterBuilder::new),
+        })
+    }
+
+    pub(crate) fn rows(&self) -> u64 {
+        self.rows
+    }
+
+    /// Write one row group (non-empty, rows in the file's order).
+    pub(crate) fn group(&mut self, g: &[RowRef<'_>], streams: &[StreamInfo<'_>]) -> SResult<()> {
+        let gi = self.groups;
         let st = |r: &RowRef<'_>| &streams[r.stream];
         let opt_i64 = |f: &dyn Fn(&LogRow<&str>) -> Option<i64>| {
             let v: Vec<i64> = g.iter().filter_map(|r| f(r.row)).collect();
@@ -176,53 +219,82 @@ fn write_logs_file(rows: &[RowRef<'_>], streams: &[StreamInfo<'_>], opts: &Signa
             Leaf::Fixed(g.iter().filter_map(|r| sid(r.row)).map(|t| fba(&t)).collect(), Levels::optional(g.iter().map(|r| sid(r.row).is_some()))),
             opt_i32(&|r| (r.flags != 0).then_some(r.flags as i32)),
         ];
-        let (off, len) = write_group(&mut w, leaves)?;
-        groups_end = off + len;
+        let (off, len) = write_group(&mut self.w, leaves)?;
+        self.groups_end = off + len;
         let gmin = g.iter().map(|r| r.row.ts).min().unwrap();
         let gmax = g.iter().map(|r| r.row.ts).max().unwrap();
-        min_ts = min_ts.min(gmin);
-        max_ts = max_ts.max(gmax);
+        self.min_ts = self.min_ts.min(gmin);
+        self.max_ts = self.max_ts.max(gmax);
+        self.first_ts.get_or_insert(g[0].row.ts);
+        self.rows += g.len() as u64;
         for r in g {
             let id = streams[r.stream].stream.stream_id;
-            match file_streams.last_mut() {
-                Some(s) if streams[s.0].stream.stream_id == id && streams[s.0].labels == streams[r.stream].labels => {
-                    s.1 = s.1.min(r.row.ts);
-                    s.2 = s.2.max(r.row.ts);
-                    s.4 = gi;
+            match self.file_streams.last_mut() {
+                Some(s) if s.0 == id && s.1 == streams[r.stream].labels => {
+                    s.2 = s.2.min(r.row.ts);
+                    s.3 = s.3.max(r.row.ts);
+                    s.5 = gi;
                 }
-                _ => file_streams.push((r.stream, r.row.ts, r.row.ts, gi, gi)),
+                _ => self.file_streams.push((id, streams[r.stream].labels.clone(), r.row.ts, r.row.ts, gi, gi)),
+            }
+            if let Some(t) = self.tokens.as_mut() {
+                t.add_text(gi, r.row.line);
+                for (_, v) in &r.row.metadata {
+                    t.add_text(gi, v);
+                }
             }
         }
         if gi > 0 {
-            index.push(',');
+            self.index.push(',');
         }
-        index.push_str(&format!("{{\"rows\":{},\"off\":{off},\"len\":{len},\"min_name\":", g.len()));
-        json_str(&mut index, st(&g[0]).service);
-        index.push_str(",\"max_name\":");
-        json_str(&mut index, st(&g[g.len() - 1]).service);
-        index.push_str(&format!(
+        self.index.push_str(&format!("{{\"rows\":{},\"off\":{off},\"len\":{len},\"min_name\":", g.len()));
+        json_str(&mut self.index, st(&g[0]).service);
+        self.index.push_str(",\"max_name\":");
+        json_str(&mut self.index, st(&g[g.len() - 1]).service);
+        self.index.push_str(&format!(
             ",\"min_ts\":{gmin},\"max_ts\":{gmax},\"sid\":[{},{}]}}",
             st(&g[0]).stream.stream_id,
             st(&g[g.len() - 1]).stream.stream_id
         ));
+        self.groups += 1;
+        Ok(())
     }
-    w.finish().map_err(perr)?;
-    let bytes = std::mem::take(w.inner_mut());
-    let (fo, fl) = foot(groups_end, bytes.len());
-    index.push_str(&format!("],\"foot\":[{fo},{fl}]"));
-    let label_total: usize = file_streams.iter().map(|s| streams[s.0].labels.len()).sum();
-    if file_streams.len() <= FRAGMENT_MAX_STREAMS && label_total <= FRAGMENT_MAX_LABEL_BYTES {
-        index.push_str(",\"streams\":[");
-        for (k, (s, lo, hi, a, b)) in file_streams.iter().enumerate() {
-            if k > 0 {
-                index.push(',');
-            }
-            index.push_str(&format!("[{},", streams[*s].stream.stream_id));
-            json_str(&mut index, &streams[*s].labels);
-            index.push_str(&format!(",{lo},{hi},{a},{b}]"));
+
+    /// The token filter (when asked for and within its bound), the footer, the fragment.
+    pub(crate) fn finish(mut self) -> SResult<SignalFile> {
+        let first_ts = self.first_ts.ok_or_else(|| SignalError::Parquet("a logs file needs at least one row".into()))?;
+        let mut tok = None;
+        if let Some(filter) = self.tokens.take().and_then(|t| t.finish(self.groups)) {
+            let off = self.w.bytes_written() as u64;
+            self.w.write_all(&filter).map_err(|e| SignalError::Parquet(e.to_string()))?;
+            self.w.append_key_value_metadata(KeyValue::new(TOKEN_FILTER_META.to_string(), format!("{off},{}", filter.len())));
+            tok = Some((off, filter.len() as u64));
         }
-        index.push(']');
+        self.w.finish().map_err(perr)?;
+        let bytes = std::mem::take(self.w.inner_mut());
+        let (fo, fl) = match tok {
+            Some((o, l)) => foot(o + l, bytes.len()),
+            None => foot(self.groups_end, bytes.len()),
+        };
+        let mut index = self.index;
+        index.push_str(&format!("],\"foot\":[{fo},{fl}]"));
+        if let Some((o, l)) = tok {
+            index.push_str(&format!(",\"tok\":[{o},{l}]"));
+        }
+        let label_total: usize = self.file_streams.iter().map(|s| s.1.len()).sum();
+        if self.file_streams.len() <= FRAGMENT_MAX_STREAMS && label_total <= FRAGMENT_MAX_LABEL_BYTES {
+            index.push_str(",\"streams\":[");
+            for (k, (id, labels, lo, hi, a, b)) in self.file_streams.iter().enumerate() {
+                if k > 0 {
+                    index.push(',');
+                }
+                index.push_str(&format!("[{id},"));
+                json_str(&mut index, labels);
+                index.push_str(&format!(",{lo},{hi},{a},{b}]"));
+            }
+            index.push(']');
+        }
+        index.push('}');
+        Ok(SignalFile { table: SignalTable::Logs, day: day_of_ns(first_ts), hour: None, bytes, rows: self.rows, min_ts: self.min_ts, max_ts: self.max_ts, index })
     }
-    index.push('}');
-    Ok(SignalFile { table: SignalTable::Logs, day: day_of_ns(rows[0].row.ts), hour: None, bytes, rows: rows.len() as u64, min_ts, max_ts, index })
 }

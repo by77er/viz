@@ -27,10 +27,9 @@
  *                   the incarnation's base with every change checked against the state before it.
  *                   It holds that set in memory (README, "Not implemented").
  *
- * Tables. Every table the ledger lists (`LedgerTable`) is known here: the metric pair is published
- * (`PUBLISHED_TABLES`); the span and log tables are read and NOT published (`UNPUBLISHED_TABLES`):
- * a re-base counts their files instead of staging them, and their changes pass through to the
- * publisher, which records them (README, "Tables it does not publish").
+ * Tables. Every table the ledger lists (`LedgerTable`) is known here and published
+ * (`PUBLISHED_TABLES`): the metric pair, and since design/DECISIONS.md D65 the span and log tables.
+ * A re-base stages the files of every table.
  *
  * Refuse, never guess (contracts/COMPATIBILITY.md §3.2): a segment header `v` or `kind`, a change
  * `v` or `kind`, or a file table this code does not know stops the tenant BEFORE that segment
@@ -256,14 +255,9 @@ export interface BaseInfo {
   source: 'base' | 'checkpoint'
   /** For a checkpoint: format 1 (one object) or 2 (a manifest and parts). */
   format: 1 | 2 | null
-  /** Live files it holds, of every table (those of `unpublished` included). */
+  /** Live files it holds, of every table. */
   files: number
   tombstones: number
-  /**
-   * Of `files`, those of tables this publisher does not publish, by table: counted, not staged.
-   * Absent when there are none, so a metric-only re-base reports exactly what it did before.
-   */
-  unpublished?: Partial<Record<SignalTable, number>>
   /** Log objects read for it: 1, or a manifest and its parts. */
   objects: number
   /** The most checkpoint parts requested and not yet applied at any moment (at most `PART_WINDOW`). */
@@ -278,20 +272,19 @@ export interface BaseInfo {
 // contract adds stays unknown to this reader (and stops a tenant whose log names it) until this
 // reader is taught it; `test/signals.test.ts` fails until then (readers first, §3.3).
 
-/** Tables this publisher publishes as Iceberg tables (contracts/ledger.ts `Table`). */
-export const PUBLISHED_TABLES: readonly Table[] = ['metric_samples', 'metric_series']
 /**
- * Tables the ledger lists that this publisher reads and does not publish (yet): their files are
- * counted and their changes recorded, never staged, planned or committed; their removed files are
- * released to the janitor because no snapshot of this publisher can reference them (README,
- * "Tables it does not publish"; design/DECISIONS.md D64).
+ * Tables this publisher publishes as Iceberg tables: every table the ledger lists. The metric pair
+ * since the first release; the span and log tables since design/DECISIONS.md D65 (the release
+ * before, D64, read them and did not publish them).
  */
-export const UNPUBLISHED_TABLES: readonly SignalTable[] = ['spans', 'trace_index', 'logs']
+export const PUBLISHED_TABLES: readonly LedgerTable[] = ['metric_samples', 'metric_series', 'spans', 'trace_index', 'logs']
+/** Tables the ledger lists that this publisher reads and does not publish: none since D65 (D64 had the span and log tables here). */
+export const UNPUBLISHED_TABLES: readonly SignalTable[] = []
 const PUBLISHED: ReadonlySet<string> = new Set<string>(PUBLISHED_TABLES)
 /** Every table a ledger file may belong to, as far as this publisher knows. A file of any other table stops the tenant (`unsupported`). */
 const TABLES: ReadonlySet<string> = new Set<string>([...PUBLISHED_TABLES, ...UNPUBLISHED_TABLES])
-/** Whether this publisher publishes `table` (a known table it does not publish is counted instead). */
-export const isPublished = (table: string): table is Table => PUBLISHED.has(table)
+/** Whether this publisher publishes `table`. */
+export const isPublished = (table: string): table is LedgerTable => PUBLISHED.has(table)
 const CHANGE_OBJECT = /\/(\d{12,})\.json$/
 /** `{cell}/data/{table}/…` (contracts/TABLES.md): the table of a removed key in a log written before `removedFiles`. */
 const KEY_TABLE = /^[^/]+\/data\/([^/]+)\//
@@ -520,27 +513,10 @@ function tombstoneOf(x: unknown, where: string): { key: string; table: LedgerTab
   return { key: t.key, table: t.table as LedgerTable }
 }
 
-/** Files of tables this publisher does not publish, counted by table (`BaseInfo.unpublished`). */
-class Unpublished {
-  readonly counts: Partial<Record<SignalTable, number>> = {}
-  /** True if `f` is of such a table, which is then counted (never staged). */
-  took(f: FileEntry): boolean {
-    if (isPublished(f.table)) return false
-    const t = f.table as SignalTable
-    this.counts[t] = (this.counts[t] ?? 0) + 1
-    return true
-  }
-  /** The counts, or nothing when there were none (a metric-only re-base reports as before). */
-  get info(): { unpublished?: Partial<Record<SignalTable, number>> } {
-    return Object.keys(this.counts).length > 0 ? { unpublished: { ...this.counts } } : {}
-  }
-}
-
-/** Files and tombstones on their way to the sink, `BASE_BATCH` per transaction. Files of tables this publisher does not publish are only counted. */
+/** Files and tombstones on their way to the sink, `BASE_BATCH` per transaction: of every table, since every table is published (D65). */
 class Batches {
   private f: FileEntry[] = []
   private t: { key: string; table: LedgerTable }[] = []
-  readonly other = new Unpublished()
   files = 0
   tombstones = 0
   constructor(
@@ -549,7 +525,6 @@ class Batches {
   ) {}
   file(f: FileEntry): void {
     this.files++
-    if (this.other.took(f)) return
     this.f.push(f)
     if (this.f.length >= BASE_BATCH) this.flush()
   }
@@ -637,7 +612,7 @@ async function readBaseSegment(store: Store, tenant: string, incarnation: number
   }
   return {
     status: 'ok',
-    info: { version: seg.first, source: 'base', format: null, files: out.files, tombstones: out.tombstones, objects: 1, window: 0, passedOver, ...out.other.info },
+    info: { version: seg.first, source: 'base', format: null, files: out.files, tombstones: out.tombstones, objects: 1, window: 0, passedOver },
     changes,
   }
 }
@@ -732,7 +707,7 @@ async function readCheckpoint(
       const why = unsupported(streamed)
       if (why) throw new Stop('passed_over', `${where}: ${why}`)
       if (streamed.kind !== 'base' || streamed.ledgerIncarnation !== incarnation || streamed.version !== m.version) throw new Stop('corrupt', `${where}: its line is not the base at ${m.version}`)
-      return { status: 'ok', info: { version: m.version, source: 'checkpoint', format: 1, files: out.files, tombstones: out.tombstones, objects: 1, window: 0, passedOver: [], ...out.other.info } }
+      return { status: 'ok', info: { version: m.version, source: 'checkpoint', format: 1, files: out.files, tombstones: out.tombstones, objects: 1, window: 0, passedOver: [] } }
     }
 
     const d = decodeLedgerCheckpointManifest({ ...streamed, ...arrays }, h)
@@ -752,7 +727,6 @@ async function readCheckpoint(
     let tombstones = 0
     let lastFile: string | null = null
     let lastTombstone: string | null = null
-    const other = new Unpublished()
     for (let part = 0; part < man.parts; part++) {
       while (next < man.parts && ahead.length < PART_WINDOW) {
         const read = fetchPart(next++)
@@ -768,15 +742,13 @@ async function readCheckpoint(
       bytes += got.size
       const fs: FileEntry[] = []
       const ts: { key: string; table: LedgerTable }[] = []
-      let counted = 0
       for (const r of p.records) {
         if ('file' in r) {
           if (lastTombstone !== null) throw new Stop('corrupt', `${where}, part ${part}: a file after the tombstones`)
           const f = fileOf(r.file, `${where}, part ${part}`)
           if (lastFile !== null && compareKeys(f.key, lastFile) <= 0) throw new Stop('corrupt', `${where}, part ${part}: files out of key order (${f.key} after ${lastFile})`)
           lastFile = f.key
-          if (other.took(f)) counted++
-          else fs.push(f)
+          fs.push(f)
         } else {
           const t = tombstoneOf(r.tombstone, `${where}, part ${part}`)
           if (lastTombstone !== null && compareKeys(t.key, lastTombstone) <= 0) throw new Stop('corrupt', `${where}, part ${part}: tombstones out of key order (${t.key} after ${lastTombstone})`)
@@ -784,7 +756,7 @@ async function readCheckpoint(
           ts.push(t)
         }
       }
-      files += fs.length + counted
+      files += fs.length
       tombstones += ts.length
       if (fs.length > 0) sink.files(tenant, fs)
       if (ts.length > 0) sink.tombstones(tenant, ts)
@@ -794,7 +766,7 @@ async function readCheckpoint(
     }
     // The only size the format gives: the manifest's total of the parts' bytes, as R2 stored them.
     if (bytes !== man.bytes) throw new Stop('corrupt', `${where}: its parts are ${bytes} bytes, its manifest says ${man.bytes}`)
-    return { status: 'ok', info: { version: m.version, source: 'checkpoint', format: 2, files, tombstones, objects: 1 + man.parts, window, passedOver: [], ...other.info } }
+    return { status: 'ok', info: { version: m.version, source: 'checkpoint', format: 2, files, tombstones, objects: 1 + man.parts, window, passedOver: [] } }
   } catch (e) {
     if (e instanceof Stop) return { status: e.status === 'no_base' ? 'corrupt' : e.status, reason: e.message }
     if (malformed(e)) return { status: 'corrupt', reason: `${where}: ${e.message}` }
@@ -1018,7 +990,7 @@ async function streamObjectBase(store: Store, cell: string, tenant: string, inca
     const why = unsupported(streamed)
     if (why) throw new Stop('unsupported', `${where}: ${why}`)
     if (streamed.kind !== 'base' || streamed.ledgerIncarnation !== incarnation || !Number.isSafeInteger(streamed.version)) throw new Stop('corrupt', `${where} is not a base change`)
-    return { version: streamed.version as number, source: 'base', format: null, files: out.files, tombstones: out.tombstones, objects: 1, window: 0, passedOver: [], ...out.other.info }
+    return { version: streamed.version as number, source: 'base', format: null, files: out.files, tombstones: out.tombstones, objects: 1, window: 0, passedOver: [] }
   } catch (e) {
     if (e instanceof Stop) return e
     if (malformed(e)) return new Stop('corrupt', `${where}: ${e.message}`)
