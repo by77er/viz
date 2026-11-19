@@ -2,7 +2,7 @@
 // and fixture it imports) to $MUTANT_DIR, outside the shared tree, applies one mutant at a time
 // to the copy, runs the tests there with at most 2 workers, and restores the copy's file.
 // The shared tree is only read (AGENTS.md). Usage: MUTANT_DIR=<scratch> node mutants.mjs
-import { execFileSync, spawnSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import { cpSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -55,4 +55,3 @@ for (const [id, what, file, from, to] of mutants) {
 const clean = spawnSync(join(spike, 'node_modules/.bin/vitest'), ['run'], { cwd: spike, encoding: 'utf8', timeout: 300_000 })
 console.log(`unmutated copy: exit ${clean.status}`)
 console.log(`${results.filter((r) => r.killed).length} of ${results.length} killed`)
-void execFileSync
