@@ -79,7 +79,7 @@ const mutants = [
   ['S-5: a ledger with no log starts empty over the tenant\'s data objects', F, '        if (data.objects.length > 0) {', '        if (false) {', T.segments],
   ['S-7: a drain of a replaced incarnation is applied to the new one', F, '    if (this.meta(\'incarnation\') !== seg.incarnation) return\n', '', T.segments],
   ['S-7: rebuildFromLog does not wait for a drain in flight', F, '    // A drain in flight finishes (or fails) before the storage is judged (review S-7).\n    await this.draining\n', '', T.segments],
-  // ── review S-2's full fix: checkpoints in parts, a rebuild that streams (D41) ──
+  // ── review S-2's full fix: checkpoints in parts, a rebuild that streams (D47) ──
   // chunk boundaries
   ['parts: a record that does not fit still goes in (a part may pass its budget)', F, '    const fits = (line: string) => lines.length === 0 || size + line.length + 1 <= this.checkpointPartBytes', '    const fits = (_line: string) => true', T.checkpoint],
   ['parts: a key that was not live at the version is written (pre-image "absent" ignored)', F, '        const row = c < 0 ? (a.value as Row) : b.value.absent === 0 ? (b.value as Row) : null', '        const row = c < 0 ? (a.value as Row) : (b.value as Row)', T.checkpoint],

@@ -3,7 +3,7 @@
 Status: **built** (`ledger/src/ledger.ts`, 2026-11-18; revised 2026-11-19 after the review
 `design/reviews/segment-log-and-compaction.md`: checkpoint policy, the size limit, refusal of
 mixed layouts, the forward-only boundary; and again on 2026-11-19 for S-2's full fix:
-checkpoints in parts, a rebuild that streams into SQLite, the size limit raised, D41). It replaces the first layout, one R2 object per
+checkpoints in parts, a rebuild that streams into SQLite, the size limit raised, D47). It replaces the first layout, one R2 object per
 change, which made every mutation wait for its own R2 write and limited a ledger to about one
 flush unit per second. Measured before and after on Cloudflare in
 `spikes/s4-ledger-scale/README.md` ("Re-run after the segment log"); decision D36. Two
@@ -93,7 +93,7 @@ ledger/tenant={tenant}/{ledgerIncarnation}/seg-{firstVersion:012}-{lastVersion:0
   estimated): `ckpt-{version:012}.jsonl`, a header of kind `viz.ledger.checkpoint` with `v` 1
   and one line, a `base`-kind change holding the whole state. Built in the synchronous step
   that fixes the segment's bounds and written after that segment, as before.
-- **Format 2** (any larger state; D41). Nothing builds the state at once:
+- **Format 2** (any larger state; D47). Nothing builds the state at once:
   - The drain only **begins** the checkpoint in that synchronous step: it records the version,
     the streams at that version and a new 8-hex-digit `attempt` in SQLite (table `ckpt`).
   - Later drain steps write **parts**, `ckpt-{version:012}-{attempt}/{part:06}.jsonl`, one

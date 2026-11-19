@@ -13,9 +13,14 @@
     { "binding": "CONTROL", "service": "viz-control" },
     { "binding": "RULER", "service": "viz-ruler" }
   ],
+  // control's Tenant object, by script_name: OAuth access tokens are checked there on every
+  // request (contracts/oauth.ts introspectAccessToken). Nothing else is asked of it.
+  "durable_objects": { "bindings": [{ "name": "TENANT", "class_name": "Tenant", "script_name": "viz-control" }] },
   "vars": {
     // Base of deep links (the app's Explore view).
     "APP_URL": "https://vis.bitcru.sh",
+    // The public origin: this OAuth resource is <PUBLIC_URL>/mcp, its authorization server is <PUBLIC_URL> (control).
+    "PUBLIC_URL": "https://vis.bitcru.sh",
     // Comma-separated browser origins allowed to call. Empty: none (agents are not browsers).
     "ALLOWED_ORIGINS": ""
     // Optional: "MCP_LIMITS": "{\"maxSeries\":2000,\"maxPanels\":40,\"maxParallel\":6,\"deadlineMs\":10000}"

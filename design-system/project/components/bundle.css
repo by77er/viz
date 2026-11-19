@@ -672,10 +672,11 @@ textarea.vz-query { display: block; width: 100%; resize: none; color: var(--ink)
   .vz-check { min-height: var(--control-touch); } /* real height: a checkbox in a form stack cannot overlap its neighbours */
   .vz-button, .vz-segmented button, .vz-nav a { min-width: var(--control-touch); justify-content: center; }
   .vz-done { min-height: var(--control-touch); }
-  /* A link that stands alone is a control. A link inside running text (a paragraph, a list item, a help line, a definition, prose) is text
-     and keeps its line; it is never the main path (v5 review, m1). In a list of links and in a timeline line, a link that is the item's own
-     child stands alone: a sentence with a link in it goes in a p there. A key link fills its cell, which is control-touch tall. */
-  .vz-link:not(:is(p, li, dd, .vz-help, .vz-secondary, .vz-text, .vz-page-sub) .vz-link, .vz-table td[data-key] .vz-link), :is(.vz-links, .vz-timeline) > li > .vz-link, .vz-change > .vz-link { display: inline-flex; align-items: center; min-height: var(--control-touch); }
+  /* A link that stands alone is a control. A link inside running text (a paragraph, a list item, a help line, prose) is text and keeps its
+     line; it is never the main path (v5 review, m1). In a list of links and in a timeline line, a link that is the item's own child stands
+     alone: a sentence with a link in it goes in a p there. A link in a key-value list stands alone (a dd is a value, not prose). A key link
+     fills its cell, which is control-touch tall. */
+  .vz-link:not(:is(p, li, .vz-help, .vz-secondary, .vz-text, .vz-page-sub) .vz-link, .vz-table td[data-key] .vz-link), :is(.vz-links, .vz-timeline) > li > .vz-link, .vz-change > .vz-link { display: inline-flex; align-items: center; min-height: var(--control-touch); }
   .vz-links { gap: 0; }
   .vz-controls, .vz-dialog-actions, .vz-banner, .vz-secret-row, .vz-notice { row-gap: calc(var(--control-touch) - var(--control-sm)); } /* wrapped rows: even two rows of small buttons keep 44px between centres */
   .vz-table tr:has(a, button, input, select) td { height: calc(var(--control-touch) + var(--hairline)); } /* rows that hold a control; a table of figures keeps its density */

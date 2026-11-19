@@ -77,7 +77,7 @@ export interface ShardConfig {
    */
   groupWindowMs: number
   maxGroupBytes: number
-  /** A filtered tail read examines at most this many stored bytes per call; the rest is its next page (D42). */
+  /** A filtered tail read examines at most this many stored bytes per call; the rest is its next page (D48). */
   tailScanMaxBytes: number
 }
 
@@ -231,7 +231,7 @@ export interface TailBatch {
 export type TailResult =
   /**
    * `page` is present exactly when the call passed `TailReadOptions` and this shard applied
-   * them (added 2026-11-19, D42): `batches` hold only the rows the filter keeps, at most
+   * them (added 2026-11-19, D48): `batches` hold only the rows the filter keeps, at most
    * `maxBytes` of them, and `page.next` continues the read. A caller that passed options and
    * gets `ok` WITHOUT `page` is talking to an older shard: the batches are the whole tail,
    * unfiltered and unpaged, as before (COMPATIBILITY.md §3.3: callee first).
@@ -831,7 +831,7 @@ export class Shard extends DurableObject<ShardEnv> {
    * Rows of ONE tenant above a ledger watermark. If the shard has already discarded rows
    * the caller would need, it says so instead of returning a result with a hole in it.
    *
-   * Without `opts` (the form every caller used before D42): every batch above `aboveSeq`, whole,
+   * Without `opts` (the form every caller used before D48): every batch above `aboveSeq`, whole,
    * in one answer. With `opts`: only the rows the filter keeps (time range, metric names, exact
    * label values, a range of series keys), in pages of at most `maxBytes`, each with `page`;
    * `page.next` continues the read where it stopped, through the same `through`. A page never

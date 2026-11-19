@@ -191,7 +191,12 @@ calls through `engine/wasm-query` in a Worker on Cloudflare, one call per reques
 1. **The tail** (`shard/`): a filtered, paged `tailRead` (time range, metric names, series
    key range), so a query reads only the tail it needs and split leaves fetch their own key
    range. Until then a high-volume tenant is refused whenever its unflushed bytes pass
-   16 MiB. Interim, in `query/`: a separate, higher tail cap for split queries and the
+   16 MiB. **Status (2026-11-19): built on the shard's side** (D48; `shard/README.md`, "Tail
+   reads filtered and paged"): on a 22 MB tail of 100,000 series, one series reads 248 bytes
+   and a leaf of 8 reads 2.8 MB (measured here, workerd). **Not yet used by `query/`**: the
+   coordinator and leaves must pass the filter and follow pages (`shard/README.md`, "Needed
+   changes elsewhere"); until then nothing here changes. Interim, in `query/`: a separate,
+   higher tail cap for split queries and the
    report (the coordinator holds only the tail there); not done, because 20 MB is already
    most of what one RPC message may carry (32 MiB).
 2. **Series-level pruning** (`engine/storage`, `compact/`): resolve matchers against

@@ -1,5 +1,5 @@
 /**
- * Filtered, paged tail reads (CARDINALITY.md "What is left" 1; D42): the shard's side.
+ * Filtered, paged tail reads (CARDINALITY.md "What is left" 1; D48): the shard's side.
  *
  * A shard stores each acknowledged batch as the bytes `edge` sent (contracts/BATCH.md, `VZB1`).
  * Appends never look inside them. A FILTERED tail read does: for each stored batch above the

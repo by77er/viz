@@ -1,6 +1,6 @@
 /// <reference path="../../engine/wasm/js/wasm.d.ts" />
 /**
- * Filtered, paged tail reads (D42; query/CARDINALITY.md "What is left" 1):
+ * Filtered, paged tail reads (D48; query/CARDINALITY.md "What is left" 1):
  *
  *   - storage-location invariance (design/VERIFICATION.md I17): the engine selects the same
  *     samples, bit for bit, from the pages of a filtered read, from the whole tail, and from the

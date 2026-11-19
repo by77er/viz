@@ -302,7 +302,16 @@ and harmless edits H1 to H4. `npm test` runs it (`tools/test/check.test.mjs`; `V
 mutants that need a browser); `tools/mutants.mjs` prints it as a table. Every mutant is applied to a copy
 outside the tree (the runner refuses a directory inside it).
 
-<!-- CORPUS-RESULT -->
+**Result.** v5's `check.mjs` against the reviewer's 32 (each applied to a copy of v5): **2 of 32
+caught** (X24, X26), as the review found (`evidence/x-mutants-v5.txt`). v6, the whole corpus
+(`evidence/final-mutants.txt`, `tools/mutants.mjs`, browser mutants included): <!-- CORPUS-NUMBERS -->
+Three things the corpus taught on the way, each fixed: under `npm test` the chart mutants "survived"
+because the nested test runner inherited the parent's `NODE_TEST_CONTEXT` and reported to it instead of
+running (the runner now clears it); A2 survived three times, because the property it breaks (a state cut
+in a kept column) came to be held by three fixes (the status wraps, the fold rule, the column's minimum
+width), so A2 now restores all three as v5 had them; and a word overflowing its cell had moved from
+"past the table's edge" to "over the next cell", which the audit did not see until a cell became a
+boundary.
 
 ### M6. The dashboard composition's figures disagreed
 
@@ -334,7 +343,7 @@ as ages). It also found one in v5's traces composition ("13 spans …, 10 shown"
 
 | | Finding | Change | Shown by |
 |---|---|---|---|
-| m1 | A link in a list sentence or a help line opened its line on a phone | The coarse rule exempts links inside running text (`p`, `li`, `dd`, help lines, `vz-text`, `vz-secondary`, the page sub-line) and gives the touch height back to a link that is a list item's, a timeline line's or a change's own child. The monitor composition now holds image 08's two cases | `tools/audit.mjs` ("sentence-link": a link inside a sentence drawn taller than its line, or a standalone link under 44 px); structure check; mutants V7 and A4 |
+| m1 | A link in a list sentence or a help line opened its line on a phone | The coarse rule exempts links inside running text (`p`, `li`, help lines, `vz-text`, `vz-secondary`, the page sub-line; not `dd`: the final audit found that exempting a key-value value took the 44 px from flow 4's standalone "Checkout latency") and gives the touch height back to a link that is a list item's, a timeline line's or a change's own child. The monitor composition now holds image 08's two cases | `tools/audit.mjs` ("sentence-link": a link inside a sentence drawn taller than its line, or a standalone link under 44 px); structure check; mutants V7 and A4 |
 | m2 | Key links holding a `vz-cut` lost their underline | The link's decoration is inherited into the cut's two parts | structure check; mutant V8; `compare/v6-long-table-*` |
 | m3 | Error after a result was drawn: coloured swatches for lines not drawn | The legend keeps the previous figures, inert, with hollow swatches; the text form says the latest query failed and the figures are the previous query's. Not taken: drawing the previous plot under the message (it would lie under the message, covering data) | structure check; mutant V11; `compare/v6-states-*` |
 | m4 | The done state repeated the page state | The state line keeps its own words with the acknowledged mark ("Firing since 13:07"); `vz-done` says who and when, once. States rule and Status README say so | `compare/v6-monitor-*` |

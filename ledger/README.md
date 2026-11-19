@@ -66,7 +66,7 @@ optional `LEDGER_DRAIN_DELAY_MS` (default 200) and `LEDGER_CHECKPOINT_EVERY` (de
   leaves after the roll-forward. SQLite holds every committed change, so the ledger starts
   a new incarnation from SQLite, its base in R2 first (the fix the protocol model checked).
   For any other, an operator repairs R2 or calls `restartFromSqlite()`, which does the same.
-- **Checkpoints, in parts** (review S-2's full fix, D41; `contracts/LEDGER-LOG.md`,
+- **Checkpoints, in parts** (review S-2's full fix, D47; `contracts/LEDGER-LOG.md`,
   "Checkpoints"). After at least 256 segments AND once the segments written since the last
   checkpoint (or the base) are as large as it, when the segment being written ends at the
   committed version, the drain takes a checkpoint of the state at that version. A state of
@@ -149,45 +149,89 @@ drain in flight). A drain of an incarnation that has since been replaced changes
 - It refuses, and the object serves nothing, if R2 cannot be read, the log has a gap or
   overlap, a segment is corrupt or of an unknown version or kind, an incarnation holds both
   layouts, there is no log but there are data objects, or a change does not fit the state
-  before it. An unreadable checkpoint is passed over for the base (older checkpoints are
-  deleted once a newer one is written).
+  before it. A checkpoint that cannot be read whole is passed over for an older one or the
+  base (older checkpoints are deleted once a newer one is complete).
+- It never holds the state in memory: a checkpoint part, a few segments (at most 8 MiB in
+  flight) and 256 rows of a base at a time (tested: rows reach SQLite before the object holding
+  them has been read to its end, for a base, a format-1 and a format-2 checkpoint).
 - Changes committed but not yet in a segment are lost (one drain cycle). An unlogged unit
   must be re-sent (the shard still holds its rows; flush notices the watermark went back).
 
-**Checkpoint cost, before and after review S-2** (measured here, in local workerd,
-`bench/checkpoint.bench.test.ts`, 2026-11-19, two runs; the machine was shared, load average
-14–16; local workerd does not enforce the 128 MB isolate limit; peak RSS of the largest process
-803 MB at 100,000 files). S4-shaped files (an index fragment of about 460 characters):
+**Checkpoints and rebuilds, the release before against this one** (measured here, in local
+workerd, `bench/checkpoint.bench.test.ts`, 2026-11-19; raw lines in
+`bench/results/checkpoint.log`). The counterfactual: the frozen release before checkpoints in
+parts (`bench/before/`, `44649de`, its 16 MiB limit lifted as review S-2's benchmark did) and
+this one are filled with the same units of S4-shaped files (4,000 files a unit, an index
+fragment of about 460 characters); before any time is compared both must hold the identical
+state (a SHA-256 over every row: equal at every size), each must rebuild it exactly from its
+own checkpoint, and at 8,000 and 32,000 files each must rebuild it exactly from the other's
+log (this one streams the older one's base line; the older one reads the base this one wrote
+in pieces). "Blocked" is the longest a trivial call (`logStatus`) waited while the checkpoint
+was written, sampled every 5 ms: the longest synchronous step a caller meets. Memory is the
+resident size of the workerd process, sampled every 100 ms by `bench/rss.mjs` (it holds the
+test, SQLite and the simulated R2 too; workerd does not enforce the 128 MB isolate limit).
+The machine was shared: load average 6–10 (printed per run in the log).
 
-| Live files | Checkpoint | Synchronous part (state, JSON, body, bytes) | Drain that writes one | Next drain, before | Next drain, after |
-|---|---|---|---|---|---|
-| 8,000 | 8.3 MB | 165–262 ms | 0.41–0.72 s | the same again every 256 segments | 32–46 ms: none until the log since is 8.3 MB |
-| 32,000 | 33.3 MB | 0.70–0.96 s | 1.9–2.3 s | as above | 10–24 ms |
-| 100,000 | 104.6 MB | 2.5–3.3 s | 5.9–7.8 s | as above (and, on Cloudflare, over the isolate's memory) | 14–19 ms; and now refused before it gets there |
+| Live files | Release | Checkpoint written | Blocked at most | Objects (largest) | Process memory during it | Rebuild from its checkpoint | Memory during the rebuild | Peak |
+|---|---|---|---|---|---|---|---|---|
+| 8,000 | before | 0.16–0.19 s | 58–68 ms | 1 (8.4 MB) | not visible | 0.37–0.50 s | not visible | |
+| 8,000 | this | 0.23–0.27 s | 2–3 ms | 9 (1.05 MB) | not visible | 0.49 s | not visible | |
+| 32,000 | before | 0.71–0.78 s | 284–306 ms | 1 (33.5 MB) | +136 MB | 1.5–1.6 s | +43 MB | 624 MB |
+| 32,000 | this | 0.74–0.76 s | 2–3 ms | 30 (1.05 MB) | +10 MB | 1.7–1.9 s | +5 MB | |
+| 100,000 | before | 2.3 s | 928 ms | 1 (105.4 MB) | +410 MB | 3.9 s | +196 MB | 955 MB |
+| 100,000 | this | 2.5 s | 2 ms | 92 (1.05 MB) | +14 MB | 5.4 s | +12 MB | 490 MB |
+| 300,000 | this | 9.3 s | 3 ms | 272 (1.05 MB) | +27 MB | 20.3 s | none | 536 MB |
 
-After: `addUnit` answered `full` at 12,000 files when units carried 4,000 files each (the
-limit is about 15,800 such files), with the estimate at 12.7 MB. A checkpoint now costs R2 at
-most what the log since the last one did, instead of the whole state every 256 segments; older
-checkpoints are deleted. What did not change: a checkpoint, a base and a rebuild still hold
-the whole state at once, which is why the limit exists.
+- **What changed.** The longest step a caller waits for during a checkpoint no longer grows
+  with the state (0.93 s at 100,000 files before, 2–3 ms at every size now), and neither does
+  memory (+410 MB before, +14 MB now; a rebuild +196 MB before, +12 MB now). The checkpoint's
+  wall time is about the same (it is a few hundred PUTs instead of one; on Cloudflare a PUT
+  takes 0.17–0.4 s whatever its size up to 1 MB, so 92 parts written one after another is
+  modelled at 16–37 s there, against one 105 MB PUT before; nothing waits for it).
+- **What got slower.** A rebuild: 5.4 s against 3.9 s at 100,000 files, 20 s at 300,000. Half
+  of it is writing the new incarnation's base from SQLite in two passes (measure, then stream);
+  the rest is reading parts and inserting rows a transaction at a time. Rows inserted outside
+  a transaction made a 32,000-file base take 15.6 s; batching them (256 a transaction) made it
+  2.4 s (measured, then fixed). Reading another release's base line is slower than its own
+  checkpoint (2.4 s against 1.7 s at 32,000 files), the price of parsing it element by
+  element.
+- **Not measured:** the release before at 300,000 files (its checkpoint alone would add about
+  1.2 GB, over the 1.5 GB a process may use here; extrapolated from +136 MB at 32,000 and
+  +410 MB at 100,000); anything on Cloudflare.
+
+**R2 bytes per day for a busy tenant (modelled).** The log is about 870 bytes per file admitted
+(measured: 260.7 MB of segments for 300,000 files). At review S-2's busy tenant, 17 units a
+second of two files, that is 2.6 GB of log a day. Both releases write a checkpoint only once the
+log since the last one is as large as it, so checkpoints add at most the log's bytes: up to
+2.6 GB a day, whatever the state (format 2 is about 10% smaller than format 1: 94.5 MB against
+105.4 MB at 100,000 files). What changes is the count of writes: one PUT per checkpoint before,
+one per MiB now (plus a manifest, a listing and two deletes): at 100,000 files about 27
+checkpoints a day, 2,700 Class A operations, about $0.01 a day at $4.50 per million. Superseded
+checkpoints are deleted, so storage holds one or two. **Experiment that settles it:** S4's
+ledger on Cloudflare with 100,000 files at 17 units a second for an hour, R2 bytes and Class A
+operations read from the analytics API.
 
 **Time.** Measured on Cloudflare (`spikes/s4-ledger-scale/`, 2026-11-19): 5,008 changes in
 104 segments, no checkpoint, rebuilt in 5.4 s; a base of 5,000 files alone in 2.8–3.5 s; the
-first layout, 608 per-change objects, in 28.7 s. A checkpoint every 256 segments bounds the
-segments a rebuild reads; a reset during a rebuild starts it again (progress is not kept).
+first layout, 608 per-change objects, in 28.7 s. A checkpoint bounds the segments a rebuild
+reads; a reset during a rebuild starts it again (progress is not kept). A rebuild of 300,000
+files is modelled at 20–60 s on Cloudflare (20 s here; R2 reads of 272 parts four ahead at about
+0.05 s each, and the base's PUT); the tenant's requests are refused, retryably, meanwhile.
 
 ## How it was verified
 
 ```
 npm install
-npx vitest run --maxWorkers=2     # 87 tests in workerd, 5 files
+npx vitest run --maxWorkers=2     # 100 tests in workerd, 6 files
 npx tsc --noEmit                  # clean
 node scripts/mutants.mjs          # on a copy outside the git checkout (see the script)
-npm run bench                     # the workerd counterfactual (bench/)
+npm run bench                     # the workerd counterfactuals (bench/)
+BENCH=checkpoint BENCH_SIZES=100000 BENCH_VARIANTS=after node bench/rss.mjs -- npm run bench
 ```
 
-Last run, 2026-11-19 on the shared machine (load average 5 to 23): **87 passed, 0 failed**;
-`tsc --noEmit` clean. Before that run the suite failed 4 rebuild tests by timeout: they take
+Last run, 2026-11-19 on the shared machine (load average 6 to 10): **100 passed, 0 failed**;
+`tsc --noEmit` clean. `publisher/`'s suite, which pins the bytes of every log object a small
+scenario writes through this `Ledger`, passed against it (78 passed). Earlier: Before that run the suite failed 4 rebuild tests by timeout: they take
 1–3 s alone and over 20 s while other suites run, and the default limit is 5 s; the
 configuration now allows 60 s (`vitest.config.ts`). The crash property test
 (`segments.test.ts`) runs three seeds of 70 random steps with failed and half-failed PUTs,
@@ -286,14 +330,20 @@ drain is in flight, so S-7 is right by reading, not by test.
 
 ## Not implemented
 
-- **A state larger than 16 MiB** (review S-2). The full fix: the base and checkpoints
-  written as many lines across several drains from a snapshot (or from rows that record the
-  version that added and removed them), and a rebuild that streams them into SQLite instead
-  of building the state in memory; plans that page. Until then the limit refuses new files.
+- **A state larger than 300 MiB** (about 300,000 files). Nothing in the ledger holds the
+  state any more; what is left is time (a rebuild of 300,000 files took 20 s here, modelled
+  20–60 s on Cloudflare, with the tenant refused meanwhile). Above that: keeping rebuild
+  progress (below), a base written in one pass, and the time measured on Cloudflare. Plans
+  that page (below) are the other half of a large tenant.
+- **A base in parts.** A new incarnation's base is still one line (it is what the publisher
+  re-bases from); this ledger writes it in pieces and reads it element by element, but the
+  publisher reads it whole (Needed changes).
 - **Pruning the log.** No segment or old incarnation is ever deleted from R2; superseded
   checkpoints are (LEDGER-LOG.md, "Truncation").
 - **Keeping rebuild progress.** A reset during a rebuild starts it again from the newest
-  checkpoint.
+  checkpoint (the rows it streamed into SQLite are emptied first).
+- **Faster rebuilds.** Half of a rebuild is writing the new base in two passes; a rebuild could
+  instead start the new incarnation from the old one's checkpoint. Not tried.
 - **The alert** the design asks for when a stream changes incarnation (the boundary is
   recorded as a `register_stream` change with `previousIncarnation`; nothing is raised).
 - **Paging `plan`**, and plans that reference consolidated partition indexes instead of
@@ -311,11 +361,27 @@ drain is in flight, so S-7 is right by reading, not by test.
   first append of the stream, the ledger records it, flush stops being the registrar, and
   query treats a registered incarnation with watermark 0 as empty. That touches shard,
   ledger, flush and query; it is described here, not built.
-- **The state limit is modelled, not measured on Cloudflare.** 16 MiB of estimated state
-  assumes about four copies of it in memory at a checkpoint's peak against a 128 MB isolate.
-  A tenant that reaches it gets `full` until compaction or retention make room; flush treats
-  `full` as an answer it does not know and retries (fail closed), so its shards fill and its
-  senders get 429. Nothing alerts on it except the error log and `logStatus`.
+- **The state limit is set by time measured here, not on Cloudflare.** 300 MiB of estimated
+  state (about 300,000 files) is the largest measured: memory stayed flat, a rebuild took
+  20 s. On Cloudflare a rebuild of that size is modelled at 20–60 s, during which every
+  request of the tenant is refused (retryably); the CPU a start may use there is not
+  measured. A tenant that reaches the limit gets `full` until compaction or retention make
+  room; flush treats `full` as an answer it does not know and retries (fail closed), so its
+  shards fill and its senders get 429. Nothing alerts on it except the error log and
+  `logStatus`.
+- **The publisher reads a new incarnation's base whole** (`publisher/src/log.ts`). Above
+  about 16 MiB of state (what the limit used to be) a re-base after a ledger storage loss may
+  not fit a publisher isolate, and one publisher serves a whole cell: its publishing stops
+  (Iceberg readers see older data; nothing is lost; deletes wait). Until the publisher reads
+  the base with the contract's `readLedgerLogStream`, deployments should keep
+  `LEDGER_STATE_MAX_BYTES` at 16777216 (Needed changes).
+- **A rollback below this release with a state above 16 MiB** opens (the schema change is
+  additive) but its rebuild holds the state in memory; such a tenant is stuck, not lost, after a
+  storage loss in the rollback window.
+- **Pre-images cost row writes.** While a checkpoint in parts reads files (seconds to minutes),
+  each file a mutation adds or removes ahead of its cursor writes a `ckpt_pre` row, deleted
+  when the checkpoint completes: about two more row writes per such file. Not measured on
+  Cloudflare's bill.
 - **The release record must mark this release forward-only** for code from before schema
   versioning, which cannot read the version row. If it does not and such a rollback happens,
   the roll-forward heals it (above); a storage loss in the rollback window leaves the tenant
@@ -344,8 +410,15 @@ drain is in flight, so S-7 is right by reading, not by test.
   (`publisher/src/log.ts`, `design/UPGRADES.md` §7 item 2).
 - **shard, flush, query**: registration before writes, for F6 (above). F6(b) (a tail read
   for incarnation 0 answered `ok` and empty under lazy registration) is open, documented.
-- **deploy**: put `schemaRelease(LEDGER_SCHEMA)` (latest 2, compat 2) in the release record
-  and refuse a rollback below it (COMPATIBILITY.md §6; `deploy/` "Needed changes" 7).
+- **deploy**: put `schemaRelease(LEDGER_SCHEMA)` (now latest 3, compat 2) in the release
+  record and refuse a rollback below compat (COMPATIBILITY.md §6; `deploy/` "Needed changes"
+  7). Until the publisher change below is deployed, set `LEDGER_STATE_MAX_BYTES=16777216` on
+  `viz-ingest`'s ledger (the old limit).
+- **publisher**: re-base from a new incarnation's base without holding it: read the first
+  segment with `readLedgerLogStream(body, 1, onElement, onLine)` from `contracts/ledger.ts`
+  (elements of `added`, `tombstones` and `units` arrive one at a time; the other members come
+  back in `streamed`) instead of `decodeLedgerSegment(await o.text())`, and diff against the
+  published state in pieces. Same for `verify`. Checkpoints stay unread by the publisher.
 - **flush** may handle `full` explicitly (today it retries it as unknown, which is safe).
 
 ## Contract issues

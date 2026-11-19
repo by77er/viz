@@ -1,6 +1,6 @@
 /// <reference path="../../engine/wasm/js/wasm.d.ts" />
 /**
- * A filtered, paged tail read against the whole tail (D42; query/CARDINALITY.md "What is
+ * A filtered, paged tail read against the whole tail (D48; query/CARDINALITY.md "What is
  * left" 1), measured here in local workerd: the test, the shard and SQLite in one process, on a
  * shared machine (times ±2× with its load, printed). Times are taken around the RPC calls from
  * outside the object, so they include building and passing the answer.

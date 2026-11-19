@@ -196,7 +196,7 @@ export const CHECKPOINT_EVERY = 256
 /**
  * Default: `addUnit` refuses new files (`full`) once the state would exceed this many bytes, as
  * estimated by `entryBytes` (review S-2). Checkpoints are written in parts and a rebuild streams
- * into SQLite (contracts/LEDGER-LOG.md, "Checkpoints"; D41), so no step holds the state in
+ * into SQLite (contracts/LEDGER-LOG.md, "Checkpoints"; D47), so no step holds the state in
  * memory and memory no longer sets the bound (measured flat from 8,000 to 300,000 files). What
  * grows with the state is TIME: a rebuild or a new incarnation reads and writes all of it, and
  * requests are refused (retryably) meanwhile: 20 s at 300,000 files here. This is the largest
@@ -1215,7 +1215,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     // is at least as large as it, so checkpoints cost at most as much R2 as the log (review S-2).
     // A small state is written as before, in one object built now (format 1). A larger one is
     // only BEGUN here: its parts are written by later drain steps, from the state at this version
-    // (format 2; D41), and nothing holds the whole state.
+    // (format 2; D47), and nothing holds the whole state.
     if (fresh && this.checkpointRow() === null && (this.meta('segs_since_ckpt') ?? 0) + 1 >= this.checkpointEvery && last === this.version()
       && (!this.checkpointByLogBytes || (this.meta('log_bytes_since_ckpt') ?? 0) + body.length >= (this.meta('ckpt_bytes') ?? 0))) {
       if ((this.meta('state_bytes') ?? 0) <= this.checkpointOneObjectBytes) {

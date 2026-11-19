@@ -12,10 +12,11 @@ dedicated tenants run the same code.
 |---|---|
 | `src/shard.ts` | `Shard`: append, seal (and its notification), pending segments and tenants, read segment, recorded, tail read, active-series metering, alarm housekeeping |
 | `src/sketch.ts` | `SeriesWindow`: distinct series in a sliding window: exact set, then HyperLogLog + Bloom filter |
+| `src/tail.ts` | Filtered, paged tail reads (D48): the filter over stored `VZB1` batches, the page cursor, `splitKeyRange` |
 | `src/pool.ts` | Pool maps and routing: which slots a tenant may use, which slot a sender goes to; `validPoolName` |
 | `scripts/mutants.mjs` | Mutation check of the newer properties (runs only on a copy outside the git checkout) |
-| `test/` | 55 tests in 7 files, run inside the Workers runtime |
-| `bench/` | The counterfactual in workerd: this shard against the frozen as-built one (`bench/asbuilt/`, `dc2a1c3`) |
+| `test/` | 63 tests in 8 files, run inside the Workers runtime |
+| `bench/` | The counterfactual in workerd: this shard against the frozen as-built one (`bench/asbuilt/`, `dc2a1c3`); a 20 MB tail read whole and filtered (`tail.bench.test.ts`, results in `bench/results/tail.log`) |
 
 ## What is implemented
 
@@ -43,6 +44,23 @@ dedicated tenants run the same code.
 - **Tail reads scoped to one tenant.** A caller naming an incarnation the shard does not
   hold (it has no stream for the tenant) gets `incarnation_mismatch` with incarnation 0,
   never an empty `ok` (review R-10), so a lost stream shows.
+- **Tail reads filtered and paged** (D48; query/CARDINALITY.md "What is left" 1). `tailRead`
+  takes an optional fourth argument, `TailReadOptions` (`v` 1): a time range (`minTs`,
+  `maxTs`), `metrics` (`__name__` values), `labels` (exact values; `''` = absent) and a
+  `keyRange` of `series_id` read as unsigned (`splitKeyRange(j, n)` is the engine's split
+  part `j` of `n`), plus `maxBytes` (default and at most 16 MiB) and `cursor`. The shard reads
+  each stored batch above the watermark, keeps the series and rows the filter keeps and writes
+  them out as a new `VZB1` batch (series entries copied as stored, rows in their order, times
+  and values copied as raw bytes); a batch kept whole is returned as stored. The answer is
+  `ok` with `page: { v, next, scannedBatches, scannedBytes }`; `next` continues the same read
+  (bound to tenant, incarnation, watermark and filter; versioned `v1.` token) through the
+  `through` of its first page, so later appends are not in it. A page never holds part of a
+  batch's kept rows: if they alone pass `maxBytes` the answer is `page_limit` (nothing
+  returned, never truncated). A later page whose rows were discarded meanwhile is
+  `stale_watermark`; one call examines at most `tailScanMaxBytes` (32 MiB) and continues from
+  there. Bad options or a cursor of another read are `invalid`; an unknown `v` is
+  `unsupported_version`. **Without options the answer is exactly as before** (no `page`), and
+  an older shard ignores the options, so a caller knows the filter was applied only by `page`.
 - **Segment reads bound to what was listed** (spec F12): `readSegment(tenant, seqLo,
   incarnation, seqHi)` answers null unless the stream is still that incarnation and the
   segment is exactly that range.
@@ -153,13 +171,24 @@ per shard on an even share, so an unevenly spread tenant is refused before its w
 
 ```
 npm install
-npx vitest run --maxWorkers=2   # 55 tests in workerd, 7 files
+npx vitest run --maxWorkers=2   # 63 tests in workerd, 8 files
 npx tsc --noEmit                # clean
 node scripts/mutants.mjs        # on a copy outside the git checkout (see the script)
 npm run bench                   # the workerd counterfactual (bench/)
+BENCH=tail npm run bench        # a 20 MB tail, read whole and filtered
 ```
 
-Last run, 2026-11-19: **55 passed, 0 failed**; `tsc --noEmit` clean.
+Last run, 2026-11-19: **63 passed, 0 failed**; `tsc --noEmit` clean.
+
+- `test/tail.test.ts` (8): a tail of 24 random batches written with the engine's own test
+  encoder (`engine/wasm/test/vzb1.ts`), with duplicate `(series, ts)` and staleness markers,
+  read back by the engine (WASM `select`), never by the shard's filter: for one series, a
+  series lacking a label, two metrics in two minutes, a time range, no filter, and the four
+  key ranges of a split, the pages hold exactly what the engine selects from the whole tail,
+  and the same as from the tail flushed to Parquet by the engine (storage-location
+  invariance, VERIFICATION.md I17; the key ranges partition the series); a batch kept whole
+  is byte-identical; refusals (`page_limit`), the scan budget, a fixed `through`, cursors of
+  other reads, versions, a discard between pages, eviction.
 
 - `test/shard.test.ts` (isolation, sequencing, fences, R-10), `test/pool.test.ts` (routing,
   names), `test/trigger.test.ts` (the seal notification, its outbox, the marker; the
@@ -186,6 +215,36 @@ as-built shard the same day; at 200 clients refusals came back in 0–7 ms at th
 acknowledged requests kept a 99th of 137–276 ms. Not checked there: that the stored
 batches equal the acknowledged ones (the workerd counterfactual checks it).
 
+**Tail reads, whole against filtered** (measured here, in local workerd,
+`bench/tail.bench.test.ts`, 2026-11-19, three runs of five reads each at load average 8–11;
+raw lines in `bench/results/tail.log`). The tail: 100,000 series of one metric
+(`http_requests_total{job, instance}`, 20 jobs) at 60 s for seven minutes, 22.4 MB in 23
+stored batches of about 1 MB, all unsealed. "Before" is the read every caller makes today
+(no options); "after" the read each query needs. Before any time was compared, the engine
+selected the same samples, bit for bit, from what each read returned. Times are medians per
+run, around the RPC calls, so they include building and passing the answer in one process.
+
+| Read | Calls | Bytes returned | Series | Time (median, three runs) |
+|---|---|---|---|---|
+| before: the whole tail | 1 | 22,351,120 | 100,000 | 55–105 ms |
+| one series, `rate(m{instance="10.0.164.66:9100"}[5m])` | 1 | 248 | 1 | 37–142 ms |
+| selective, `sum(rate(m{job="job-7"}[5m]))` over the last 3 minutes | 1 | 715,616 | 5,000 | 30–74 ms |
+| one split leaf of 8 (its key range) | 1 | 2,782,832 | 12,448 | 55–86 ms |
+| no filter, paged (16 MiB pages) | 2 | 22,351,120 | 100,000 | 78–123 ms |
+
+What it says: the bytes a query takes from a shard drop with its selectivity (90,000× for one
+series, 31× for the selective query, 8× for a leaf of 8), so a query no longer pays for the
+whole tail against `maxFetchBytes` (16 MiB), and no answer passes one RPC message (32 MiB).
+Time does **not** drop here: the shard still reads every stored batch from SQLite and scans
+its series table and rows, which costs about what passing the whole tail costs in one local
+process (the first version decoded every label value as a string and took up to 273 ms for
+one series; comparing bytes instead brought it to the table's range). On Cloudflare, where
+the 22 MB would cross the network to the query Worker, the "before" read is modelled at
+0.2–1 s more than here (training knowledge of Durable Object RPC bandwidth, not measured);
+**experiment that settles it:** the same reads from a query Worker against a shard on
+Cloudflare. Skipping whole batches by time or metric without scanning them needs per-batch
+metadata at append (not built).
+
 ### Mutation checks
 
 `node scripts/mutants.mjs` on a copy of `contracts/` and `shard/` in a scratch directory
@@ -206,6 +265,15 @@ changes nothing observable; the rule (every statement names its tenant) is met b
 
 ## Not implemented yet
 
+- **Skipping stored batches without scanning them.** A filtered read decodes the series table
+  of every batch above the watermark. Per-batch time bounds and metric names, written at append
+  (a schema change and work on the append path), would let it skip batches outside the range.
+- **Key ranges of a split that leaves labels out** (`sum without (…)`): the split key is then a
+  hash of the other labels, not `series_id`; a filtered read cannot select it, and the
+  coordinator keeps cutting such tails itself (`engine.splitTails`).
+- **Regular-expression matchers** in the filter: only exact values, so a filter is a superset
+  of what a query with `=~` selects (the engine still applies the query's matchers).
+
 - **Map-epoch handover**: draining shards and moving fingerprints on a map change.
 - **Registration before writes** (spec F1). The shard only reports a new incarnation;
   `flush/` registers it with the ledger at its first flush. Until then queries naming the old
@@ -218,9 +286,51 @@ changes nothing observable; the rule (every statement names its tenant) is met b
 
 ## Known risks
 
+- **A filtered read costs the shard CPU in proportion to its whole tail** (above), once per
+  query per shard, on the object that acknowledges appends. 22 MB took 30–140 ms here. A tenant
+  with many concurrent queries over a large tail adds that much to its shard's thread each.
+
 - **A sealing group's acknowledgement waits for the queue send**, and once per marker
   period for a KV write (`deliver` runs before the answers go out). Neither is R2; the S3
   re-run includes them. Moving them behind the acknowledgement is a small change if they
   measure slow.
 - **The early refusal limit is per object, not per tenant**: a tenant flooding a shared
   shard gets other tenants refused as `overload` too (byte budgets stay per tenant).
+
+## Needed changes elsewhere
+
+**`query/`** (the coordinator and the leaves; not edited here). What makes a query read only
+the tail it needs, and split leaves fetch only their key range:
+
+1. **Coordinator, `readTail`** (`query/src/coordinator.ts`). Call
+   `stub.tailRead(c.tenant, incarnation, above, opts)` with `opts` from the query's selectors
+   (`engine.selectors(...)` / the plan's `FetchRange`s): `minTs`/`maxTs` the hull of every
+   selector's range including lookback; `metrics` the `__name__` equality values if EVERY
+   selector has one (else none); `labels` only the equality matchers that ALL selectors share
+   (a value `""` means absent); `maxBytes` the fetch budget still left, at most
+   `TAIL_PAGE_MAX_BYTES`; then follow `r.page.next` as `cursor` until null, concatenating
+   `batches` in order and counting their bytes against `maxFetchBytes` as they arrive
+   (refuse with `max_fetch_bytes` as soon as it is passed). Keep the handling of
+   `stale_watermark` and `incarnation_mismatch` exactly as now: they can come on any page, and
+   either means re-plan from the ledger (the pages read so far are dropped). New statuses:
+   `page_limit` is `max_fetch_bytes` (a single kept batch is larger than the budget left);
+   `invalid` and `unsupported_version` are a retryable `unavailable`, like any status it does
+   not know. **Release skew** (COMPATIBILITY.md §3.3, callee first): an `ok` WITHOUT `page`
+   comes from a shard that predates this; its batches are the whole tail, unfiltered and
+   unpaged, and the coordinator uses them as it does today (the engine applies the matchers and
+   ranges anyway; for a split, `engine.splitTails` still cuts them). Do not rely on `page`
+   until every `viz-ingest` version running sends it.
+2. **Split leaves** (`query/src/leaf.ts`, `runSplit`). When the split key has no `without`
+   labels, each leaf reads the tail itself: the coordinator passes each shard's
+   `(shard, incarnation, above)` it planned (including what `known` learned) to the leaf, and
+   leaf `j` of `L` calls `tailRead` with the coordinator's `opts` plus
+   `keyRange: splitKeyRange(j, L)` (exported by `shard/src/shard.ts`; the same bounds as the
+   engine's `SplitKey::part_of`), following pages as above. The coordinator then no longer
+   holds the tail at all for such queries; a leaf's `stale_watermark` or
+   `incarnation_mismatch` makes the coordinator re-plan. Keep `engine.splitTails` for splits
+   with `without` labels and for shards that answer without `page`.
+3. **Label endpoints and the cardinality report**: pass `metrics` (when a matcher names the
+   metric) and the time range, so `/label/…/values?match[]=m` and the report read only `m`'s
+   tail.
+4. **`query/README.md` "Needed changes" 3** (paging and a filter in `shard/`) is done on the
+   shard's side by this change; items 1–3 above are what remains in `query/`.

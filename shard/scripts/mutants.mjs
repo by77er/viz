@@ -51,10 +51,10 @@ const mutants = [
   // ── spec F12: a segment read is bound to what was listed ──
   ['F12: readSegment ignores the incarnation', F, '    if (incarnation !== undefined && s?.incarnation !== incarnation) return null\n', '', T.review],
   ['F12: readSegment ignores the range', F, '    if (!seg || (seqHi !== undefined && seg.seq_hi !== seqHi)) return null', '    if (!seg) return null', T.review],
-  // ── filtered, paged tail reads (D42) ──
+  // ── filtered, paged tail reads (D48) ──
   ['tail: the time range is ignored', 'src/tail.ts', '  const timed = f.minTs !== -Infinity || f.maxTs !== Infinity', '  const timed = false', T.tail],
   ['tail: series keys compared as signed, not unsigned', 'src/tail.ts', '      const id = (BigInt(dv.getUint32(p + 4, true)) << 32n) | BigInt(dv.getUint32(p, true))', '      const id = BigInt.asIntN(64, (BigInt(dv.getUint32(p + 4, true)) << 32n) | BigInt(dv.getUint32(p, true)))', T.tail],
-  ['tail: the metric names are ignored', 'src/tail.ts', '    let metricOk = f.metrics === null', '    let metricOk = true', T.tail],
+  ['tail: the metric names are ignored', 'src/tail.ts', '      if (f.metrics && equalBytes(NAME, payload, nameAt, nameLen)) metricOk = (f.metrics.get(valueLen) ?? []).some((m) => equalBytes(m, payload, valueAt, valueLen))', '      if (f.metrics && equalBytes(NAME, payload, nameAt, nameLen)) metricOk = true', T.tail],
   ['tail: a label with another value does not exclude the series', 'src/tail.ts', '        else ok = false\n', '', T.tail],
   ['tail: a wanted label the series lacks does not exclude it', 'src/tail.ts', '    if (ok && matched !== f.present) ok = false', '    void matched', T.tail],
   ['tail: values copied as numbers', 'src/tail.ts', '    out.set(payload.subarray(valAt + 8 * i, valAt + 8 * i + 8), oVal + 8 * k)', '    ov.setFloat64(oVal + 8 * k, dv.getFloat64(valAt + 8 * i, true), true)', T.tail],
