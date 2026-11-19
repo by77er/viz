@@ -115,13 +115,16 @@ against an independent implementation (statsmodels), which it matches to 1e-9.
 
 Every anomalous point carries `explanation`: one sentence built only from its own fields, and
 the fields themselves (`value`, `reference`, `referenceLabel`, `deviations`, `spread`, `at`,
-`direction`, `facts`). Examples produced by the tests:
+`direction`, `facts`). Actual output on the test scenarios (`test/explain.test.ts`,
+`test/synthetic.test.ts`):
 
-- `"262 is 17.7 robust standard deviations above the median of the same hour of the week over the last 4 weeks (199)"` (seasonal)
-- `"mean shifted from 121 ms to 309 ms at 2026-01-05 13:02 UTC (19 standard deviations)"` (PELT; CUSUM similar)
+- `"222 is 17.1 robust standard deviations above the median of the same hour of the week over the last 4 weeks (159)"` (seasonal)
+- `"mean shifted from 120 ms to 310 ms at 2026-01-05 13:02 UTC (20 standard deviations)"` (PELT)
+- `"mean shifted from 122 ms to 323 ms at 2026-01-05 13:02 UTC (20.4 standard deviations)"` (CUSUM, one point after the change)
+- `"pod-17: 940 ms is 113 robust standard deviations above the median of its 50 peers at the same time (209 ms)"`
 - `"612 req/s is above the threshold 500 req/s by 22.4% (fires above 500 req/s, recovers below 450 req/s)"`
-- `"pod-17: 940 ms is 140 robust standard deviations above the median of its 50 peers at the same time (210 ms)"`
-- `"error budget burning at 1000× over 1 hour and 1000× over 5 minutes (page threshold 14.4×); 2% of the 30 days budget for a 99.9% objective was spent in the last 1 hour"`
+- `"error budget burning at 16.7× over 1 hour and 200× over 5 minutes (page threshold 14.4×); 2.31% of the 30 days budget for a 99.9% objective was spent in the last 1 hour"`
+- `"90 is 4 times the 99th-percentile deviation, above the median of the last 1 day (32.1)"` (robust z, quantile spread)
 
 Tests check that the numbers in the text are the computed ones (value = point.value,
 reference = point.expected, deviations = point.score; PELT's means are the segment means).
@@ -286,7 +289,8 @@ rule fires equals the table's 2 % / 5 % / 10 % whatever the error ratio (window 
 | 24 | NAB scorer: 10 % probation instead of 15 % | `sweeper.py` fixtures |
 | 25 | NAB scorer: every detection in a window counts | `sweeper.py` fixtures |
 
-25 / 25 killed in the final run (two survived the first run and are listed above with what changed).
+25 / 25 killed, last on the final code with the copy-based procedure below (two survived the
+first run and are listed above with what changed).
 Procedure: the script copies `src`, `test`, `bench` and `scripts` to a fresh scratch directory
 (node_modules and the NAB data linked read-only), applies one mutant there, runs the named
 tests with vitest's JSON reporter, and deletes the copy; the shared tree is only read.
@@ -315,7 +319,10 @@ clean.
    identical numbers, and NAB's 15 published detectors re-scored from their per-row outputs give
    all 45 numbers of `final_results.json` to within 4.5e-11 (at NAB's stored thresholds; for 8
    of the 45 a fresh optimisation finds a better threshold than NAB's stored one).
-3. `node --experimental-strip-types bench/nab-run.ts` (13 minutes) produces both protocols:
+3. `node --experimental-strip-types bench/nab-run.ts` (13 minutes) produces both protocols.
+   The tables below are from the run on the final detector code (repeated twice with identical
+   result tables; the later timestamp-range guard cannot affect NAB, whose timestamps are near
+   1.4e12 ms):
    - **NAB protocol** (comparable with NAB's scoreboard, and optimistic): default parameters,
      continuous score s mapped to s/(1+s), every row ≥ the threshold a detection, threshold
      optimised per profile on the whole corpus — how NAB's published numbers were made.
