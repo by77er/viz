@@ -29,8 +29,8 @@ export interface ParsedSeries {
   times: Float64Array
   /** Sample values, as numbers (NaN, ±Infinity kept). */
   values: Float64Array
-  /** Where this series' `values` array is in `ParsedMatrix.text` ([from, to)), for the raw JSON form. */
-  valuesAt: [number, number]
+  /** This series' `values` array as JSON, for the raw JSON form: the text as it arrived on the fast path. */
+  valuesText: () => string
 }
 
 export interface ParsedMatrix {
@@ -109,6 +109,30 @@ export function readNumber(s: string, from: number, to: number): number {
   }
   const v = scale === 0 ? mantissa : mantissa / POW10[-scale]!
   return neg ? -v : v
+}
+
+/** Whether `s[from, to)` is a JSON number (`-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?`): what JSON.parse accepts as a time. */
+export function isJsonNumber(s: string, from: number, to: number): boolean {
+  let i = from
+  if (s.charCodeAt(i) === MINUS) i++
+  const first = s.charCodeAt(i)
+  if (first === ZERO) i++
+  else if (first > ZERO && first <= NINE) while (i < to && s.charCodeAt(i) >= ZERO && s.charCodeAt(i) <= NINE) i++
+  else return false
+  if (i < to && s.charCodeAt(i) === DOT) {
+    i++
+    const d = i
+    while (i < to && s.charCodeAt(i) >= ZERO && s.charCodeAt(i) <= NINE) i++
+    if (i === d) return false
+  }
+  if (i < to && (s.charCodeAt(i) === LOWER_E || s.charCodeAt(i) === UPPER_E)) {
+    i++
+    if (i < to && (s.charCodeAt(i) === PLUS || s.charCodeAt(i) === MINUS)) i++
+    const d = i
+    while (i < to && s.charCodeAt(i) >= ZERO && s.charCodeAt(i) <= NINE) i++
+    if (i === d) return false
+  }
+  return i === to
 }
 
 /** A sample value from the text between its quotes. */
@@ -212,7 +236,8 @@ export class MatrixParser {
 
   /** The whole body has arrived: the parsed matrix, or NotAMatrix with the parsed body. */
   finish(): ParsedMatrix {
-    const text = this.chunks.join('')
+    this.joined = null
+    const text = this.text()
     if (this.mode === Mode.After && this.pending.trim() === '') {
       let envelope: unknown
       try {
@@ -241,6 +266,8 @@ export class MatrixParser {
           i = j
           break
         }
+        case Mode.Failed:
+          return n
         case Mode.Result: {
           while (i < n && isSpace(s.charCodeAt(i))) i++
           if (i >= n) return i
@@ -255,7 +282,6 @@ export class MatrixParser {
           else if (c === RBRACKET) {
             // `result` is closed: the rest is envelope again.
             this.outside.push(']')
-            this.stack.length > 0 && (this.top().expectKey = true)
             this.mode = Mode.After
             i++
           } else throw new Error('unexpected character in result')
@@ -272,7 +298,8 @@ export class MatrixParser {
           if (c === RBRACE) {
             if (!this.metric || !this.samples) throw new Error('series without metric or values')
             const k = this.samples.n
-            this.series.push({ metric: this.metric, times: this.samples.times.subarray(0, k), values: this.samples.values.subarray(0, k), valuesAt: this.valuesAt })
+            const [from, to] = this.valuesAt
+            this.series.push({ metric: this.metric, times: this.samples.times.subarray(0, k), values: this.samples.values.subarray(0, k), valuesText: () => this.text().slice(from, to) })
             if (this.series.length === 1) this.capacity = Math.max(16, k)
             this.mode = Mode.Result
             i++
@@ -313,9 +340,10 @@ export class MatrixParser {
             while (isSpace(c)) c = s.charCodeAt(++i)
             if (i >= n) return i
             if (c === COMMA && samples.n > 0) {
+              const comma = i
               c = s.charCodeAt(++i)
               while (isSpace(c)) c = s.charCodeAt(++i)
-              if (i >= n) return i - 1
+              if (i >= n) return comma
             }
             if (c === RBRACKET) {
               this.valuesAt[1] = base + i + 1
@@ -354,9 +382,8 @@ export class MatrixParser {
             while (j < n && isSpace(s.charCodeAt(j))) j++
             if (j >= n) return start
             if (s.charCodeAt(j) !== RBRACKET) throw new Error('expected the end of a sample')
-            if (t1 === t0) throw new Error('an empty time')
+            if (!isJsonNumber(s, t0, t1)) throw new Error('a time that is not a JSON number')
             const t = readNumber(s, t0, t1)
-            if (t !== t) throw new Error('a time that is not a number')
             samples.push(t, readValue(s, v0, v1))
             i = j + 1
           }
@@ -369,8 +396,10 @@ export class MatrixParser {
     return i
   }
 
-  private top(): Frame {
-    return this.stack[this.stack.length - 1]!
+  private joined: string | null = null
+  /** The whole body as received so far (joined once). */
+  private text(): string {
+    return (this.joined ??= this.chunks.join(''))
   }
 
   /**
@@ -386,9 +415,10 @@ export class MatrixParser {
       if (this.outsideString >= 0) {
         // Inside a string (possibly begun in an earlier piece).
         if (c === BACKSLASH) {
+          // An escape cut in two by the network: rare enough to leave to JSON.parse.
           if (i + 1 >= n) {
-            this.outside.push(s.slice(from, i))
-            return i
+            this.mode = Mode.Failed
+            return -1
           }
           i += 2
           continue
