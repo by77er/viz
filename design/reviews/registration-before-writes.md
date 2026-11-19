@@ -10,7 +10,7 @@ design text `design/DESIGN.md` §4 and §6.1–6.2, `design/DECISIONS.md` D30, D
 D47, D48. Nothing is built yet; this reviews a design and its code plan.
 
 Model runs were made on a copy of `spec/bfs/` in a scratch directory, never in the tree (running
-`bfs/run.ts` in place rewrites `spec/results/`). The copy adds one invariant and one option, both
+`bfs/run.ts` in place rewrites `spec/results/`). The copy adds two invariants and one option,
 described under "Model runs"; every configuration of the proposal is otherwise unchanged.
 
 **Summary.** The safety core of R2 held under every attack I tried: an acknowledgement is
@@ -282,9 +282,8 @@ stepped back across a storage loss) refused "until an operator acts" (`spec/READ
 and no operator action exists. Under R2 a stream that has never been registered and holds no batch
 row has acknowledged nothing, so the shard can drop it and start one above the ledger's
 incarnation. (Not a stream from before the upgrade: those start with `registered = 0` and do hold
-acknowledged rows.) That needs the ledger's
-incarnation in the refusal (a status in a union rather than a throw), a contract change best made
-with the others.
+acknowledged rows.) That needs the ledger's incarnation in the refusal (a status in a union
+rather than a throw), a contract change best made with the others.
 
 ### m-8. `loggedIncarnation` on `Watermark` reaches the plan and the log
 
@@ -320,6 +319,8 @@ Additions in the copy, nothing else changed:
   writes under R2), the log replayed from R2 names that incarnation or a newer one, and so does a
   serving ledger. This is the proposal's central claim, "a registration in the logged prefix
   survives every rebuild", checked in every state instead of argued.
+- **Invariant `P_RegisteredKnownServing`**: the second clause of the one above on its own (a
+  serving ledger names every stream that accepts writes), used to give the invariant teeth.
 - **Option `reRegFaithful`**: the model's `reRegister` and "registration logged" steps fire only
   when the planned code would call the ledger: a pending write of that stream, a query in flight
   naming another incarnation for that shard, or the janitor's trigger; and `reRegister` only while
@@ -329,7 +330,48 @@ Bounds as in the proposal's rows unless the row says otherwise; one checker at a
 `--max-old-space-size=1024`, state caps of 2–7 million. "Stopped" means every state within that
 depth was checked, no violation; it is not exhaustive.
 
-<!-- RESULTS -->
+| Run | Configuration (the proposal's names) | Checked | Result | States | Depth | Time |
+|---|---|---|---|---|---|---|
+| `P_safety_inv` | `PROPOSED` + `FAULTS` (the proposal's `P_safety`) | all safety + `P_LoggedRegistrationKnown` | stopped, no violation | 2,000,003 | 18 | 85 s |
+| `P_2LL_inv` | `PROPOSED`, **two ledger losses** + shard loss, no client retry, ≤ 2 sweeps | the same | stopped, no violation | 2,500,001 | 20 | 106 s |
+| `P_2SL` | `PROPOSED`, **two shard losses** + ledger loss, no client retry, ≤ 2 sweeps | the same | stopped, no violation | 2,500,001 | 19 | 97 s |
+| `P_2SL_deep` | as `P_2SL` with one flush Worker instead of two (to reach deeper) | the same | stopped, no violation | 3,000,001 | 23 | 123 s |
+| `P_2shards` | `PROPOSED` (R2 **with the F16 fix**), 2 shards, ledger + shard loss, compaction | the same | stopped, no violation | 2,500,003 | 17 | 151 s |
+| `P_2tenants` | `PROPOSED`, 2 tenants in one pooled shard, identical bytes, ledger + shard loss, compaction | the same | stopped, no violation | 2,500,001 | 17 | 138 s |
+| `LIVE_P_2SL_noLL` | `PROPOSED` liveness, **two shard losses**, 1 send per batch | AG EF query done | **holds** (whole graph) | 831,178 | 43 | 47 s |
+| `LIVE_P_2SL` | as above **with** a ledger loss | AG EF query done | undecided: the graph passed the 3 M cap | 3,000,001 | 31 | 114 s |
+| `LEAK_P_2SL` | `PROPOSED`, no leaked compaction output, two shard losses + ledger loss | AG EF no leaked output | undecided: the graph passed the 3 M cap | 3,000,003 | 31 | 127 s |
+| `F_safety` | `PROPOSED` + `FAULTS` + `reRegFaithful` | all safety + `P_LoggedRegistrationKnown` | stopped, no violation | 2,000,001 | 18 | 116 s |
+| `F_LIVE_llsl` | `PROPOSED` + `reRegFaithful`, ledger + shard loss (as `LIVE_R2_llsl`) | AG EF query done | **holds** (whole graph) | 739,979 | 42 | 43 s |
+| `LIVE_P_2SL_noLL_faith` | `PROPOSED` + `reRegFaithful`, two shard losses | AG EF query done | **holds** (whole graph) | 784,346 | 43 | 36 s |
+| `F_LEAK` | `PROPOSED` + `reRegFaithful` at `LEAK_P_sl_comp2`'s bounds | AG EF no leaked output | **holds** (whole graph) | 6,150,844 | 58 | 305 s |
+| `TEETH_serving_R1` | R1 (accept once **committed**) + `FAULTS` | `P_RegisteredKnownServing` (the invariant's second clause: the serving ledger names the stream) | **violated in 4 steps**: register, ledger loss, start (base PUT), start (commit) | 91 | 4 | 0.1 s |
+| `TEETH_inv_R1` | the same | `P_LoggedRegistrationKnown` | violated in 1 step (its first clause: not yet durable at acceptance); shows only that the invariant tells R1 from R2 | 2 | 1 | 0 s |
+
+Reading them:
+
+- **Safety.** No violation anywhere, including the new invariant, with two ledger losses and with
+  two shard losses. All of these are bounded-depth results at depths 17–23, not exhaustive. A
+  second shard loss with its re-registration costs about five steps, so depth 19–23 reaches it with
+  little else around it: the two-loss safety result is weaker than its row suggests.
+- **The new invariant has teeth.** Its serving-ledger clause fails under R1 in 4 steps (a committed
+  registration rolled back by a rebuild), and holds under R2 in every run above.
+- **Liveness with two shard losses** holds on the whole graph without a ledger loss, with and
+  without the oracle. With a ledger loss as well, the graph is too large for the cap here.
+- **Fidelity (m-2).** With re-registration only where the planned code would call the ledger,
+  safety, query liveness and the no-leak property hold exactly where the proposal's rows did. The
+  model's `reRegister` oracle is not load-bearing.
+- **Not reproducible in the model:** B-1 (the model derives `loggedIncs` from the log; it has no
+  release skew for this change), M-1 and m-5 (no concurrency limit, memory or time), M-2 (no HTTP
+  or sender), m-3 and m-4 (no map changes, no deletion), m-7 (S5 not modelled). m-1 is
+  reproducible in principle (a drain that never runs refuses every new stream) and was not run:
+  the answer is immediate from the rule.
+
+Machine load during the runs was 7–13 on 4 cores, shared with other jobs; caps were kept at 2–7
+million states and one checker ran at a time. The scratch copy, runner and logs are not kept in
+the tree; to reproduce, copy `spec/bfs/` elsewhere, add the two properties and the option exactly
+as described above, and run the configurations named in the table with
+`node --max-old-space-size=1024`.
 
 ## Checked and found safe
 
@@ -392,10 +434,12 @@ every tenant of a shard that lost its storage pays a refused attempt and a re-pl
 tenant writes there again or the janitor's next sweep calls `ensureStream`, which F16 needs
 anyway; and it changes the coordinator as well. Nothing I found against R2 is fixed by R3.
 
-**Why not R4.** R4 avoids the write side's dependency on R2 (m-1) and the refusals (M-2), but its
-re-check covers only shards it read without a watermark. A shard that has left the tenant's pool
-after a map change, holding rows under a committed registration that a rebuild rolled back, is
-not read at all, so F6(b) returns there silently. Closing that means re-reading the whole
-watermark list after every query attempt's tail reads (one more ledger round trip on every
-query), and the F16 fix still needs a logged registration. R2 with the changes above pays only
-when a stream is new, and with registration ahead of map changes (m-4), almost never.
+**Why not R4.** R4 avoids the write side's dependency on the ledger's R2 writes (m-1) and the
+refusals (M-2), but its re-check covers only shards it read without a watermark. A shard that has
+left the tenant's pool after a map change, holding acknowledged rows under a committed
+registration that a rebuild rolled back, is not read at all, so those rows are missing from the
+answer, silently, until a flush re-registers the stream (F1's map-change case). Closing that
+means re-reading the whole watermark list after every query attempt's tail reads (one more ledger
+round trip on every query), and the F16 fix still needs a logged registration. R2 with the
+changes above pays only when a stream is new, and with registration ahead of map changes and at
+tenant creation (m-4), almost never.
