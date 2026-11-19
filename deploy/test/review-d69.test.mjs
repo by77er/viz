@@ -265,28 +265,6 @@ test('m-7 (RV-11): an upload shown for its first read without the key it inherit
   }
 })
 
-test('m-7: a Cloudflare API request that never answers is abandoned after VIZ_CF_TIMEOUT_MS and retried', { timeout: 20_000 }, async () => {
-  const { cf } = await import('../lib/cf.mjs')
-  const saved = globalThis.fetch
-  // A request that hangs holds a socket, which keeps the process alive; the stub below holds nothing.
-  const alive = setInterval(() => {}, 1000)
-  let calls = 0
-  globalThis.fetch = (url, init = {}) => {
-    calls++
-    // The first request hangs until it is aborted; the retry answers.
-    if (calls === 1) return new Promise((_, reject) => init.signal?.addEventListener('abort', () => reject(init.signal.reason)))
-    return Promise.resolve(new Response(JSON.stringify({ success: true, result: [] }), { status: 200 }))
-  }
-  try {
-    const j = await withEnv({ VIZ_CF_TIMEOUT_MS: '200' }, () => cf('GET', '/workers/scripts'))
-    assert.deepEqual(j.result, [])
-    assert.equal(calls, 2)
-  } finally {
-    globalThis.fetch = saved
-    clearInterval(alive)
-  }
-})
-
 // ───────────────────────── m-8: the one-Worker way out, as a command ─────────────────────────
 
 test('m-8 (RV-9): with the switch on, a viz-query left in a gradual deployment refuses every release; --only restores viz-query alone, moving nothing else, and the next release goes out', async () => {
@@ -304,4 +282,28 @@ test('m-8 (RV-9): with the switch on, a viz-query left in a gradual deployment r
   assert.deepEqual(restoredNames(), [QUERY], 'viz-query alone was restored')
   assert.equal(out.result.record.workers.length, 1)
   await shipped('r4', { signals: 'traces,logs' })
+})
+
+// Last: before the fix, the request below hangs, and the tests after it would be cancelled with it.
+test('m-7: a Cloudflare API request that never answers is abandoned after VIZ_CF_TIMEOUT_MS and retried', { timeout: 20_000 }, async () => {
+  const { cf } = await import('../lib/cf.mjs')
+  const saved = globalThis.fetch
+  // A request that hangs holds a socket, which keeps the process alive; the stub below holds nothing,
+  // so this does, for long enough (and not for ever: without the timeout the test fails, not hangs).
+  const alive = setTimeout(() => {}, 10_000)
+  let calls = 0
+  globalThis.fetch = (url, init = {}) => {
+    calls++
+    // The first request hangs until it is aborted; the retry answers.
+    if (calls === 1) return new Promise((_, reject) => init.signal?.addEventListener('abort', () => reject(init.signal.reason)))
+    return Promise.resolve(new Response(JSON.stringify({ success: true, result: [] }), { status: 200 }))
+  }
+  try {
+    const j = await withEnv({ VIZ_CF_TIMEOUT_MS: '200' }, () => cf('GET', '/workers/scripts'))
+    assert.deepEqual(j.result, [])
+    assert.equal(calls, 2)
+  } finally {
+    globalThis.fetch = saved
+    clearTimeout(alive)
+  }
 })
