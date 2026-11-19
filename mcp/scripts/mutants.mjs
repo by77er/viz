@@ -103,6 +103,10 @@ const MUTANTS = [
     changes: [['src/index.ts', "if (url.searchParams.has('tenant')) return problem(", "if (false) return problem("]],
   },
   {
+    name: 'Unknown metric names not checked in the write preview (no did-you-mean)',
+    changes: [['src/tools/common.ts', 'for (const sel of selectorsOf(parsePromQL(rq.expr).ast)) {', 'for (const sel of [] as ReturnType<typeof selectorsOf>) {']],
+  },
+  {
     name: 'No answer on mayApply (an older control release, or edge\'s fallback) is taken as yes',
     changes: [['src/tools/write.ts', "if (s.id.mayApply !== true) refuseApply(", 'if (false) refuseApply(']],
   },
@@ -113,10 +117,6 @@ const MUTANTS = [
   {
     name: 'read_dashboard lists panels in structure in layout order, not the order the text uses',
     changes: [['src/tools/dashboards.ts', 'const ordered = panelOrder(panels).map((i) => ({ p: panels[i]!, i }))', 'const ordered = panels.map((p, i) => ({ p, i }))']],
-  },
-  {
-    name: 'Unknown metric names not checked in the write preview (no did-you-mean)',
-    changes: [['src/tools/common.ts', 'for (const sel of selectorsOf(parsePromQL(rq.expr).ast)) {', 'for (const sel of [] as ReturnType<typeof selectorsOf>) {']],
   },
 ]
 

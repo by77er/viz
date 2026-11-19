@@ -741,12 +741,19 @@ export class Shard extends DurableObject<ShardEnv> {
       .map((r) => ({ tenant, incarnation: s.incarnation, seqLo: r.seq_lo as number, seqHi: r.seq_hi as number, bytes: r.bytes as number, rows: r.rows as number }))
   }
 
-  /** Payloads of one sealed segment, for the flush Worker. */
-  async readSegment(tenant: string, seqLo: number): Promise<TailBatch[] | null> {
+  /**
+   * Payloads of one sealed segment, for the flush Worker. With `incarnation` (and `seqHi`),
+   * null unless the stream is still that incarnation and the segment is exactly that range:
+   * a flush that listed a segment before the shard lost its storage must not read the new
+   * incarnation's batches under the old name (spec/README.md F12). Without them, as before.
+   */
+  async readSegment(tenant: string, seqLo: number, incarnation?: number, seqHi?: number): Promise<TailBatch[] | null> {
     if (this.refusal) this.refused()
+    const s = this.streams.get(tenant)
+    if (incarnation !== undefined && s?.incarnation !== incarnation) return null
     const sql = this.ctx.storage.sql
     const seg = sql.exec(`SELECT seq_hi FROM segment WHERE tenant = ? AND seq_lo = ?`, tenant, seqLo).toArray()[0]
-    if (!seg) return null
+    if (!seg || (seqHi !== undefined && seg.seq_hi !== seqHi)) return null
     return this.batches(tenant, seqLo, seg.seq_hi as number)
   }
 

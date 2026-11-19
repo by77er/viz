@@ -135,7 +135,7 @@ async function perLeaf(label: string, t: Tenant, params: Record<string, string>)
       console.log(
         `MEASURE   leaf ${l.part}: ${l.summary.gatheredSamples} samples of ${l.summary.gatheredSeries} series held, ${l.summary.loadedSamples} loaded | ` +
           `${l.stats.readerCalls} reader calls, ${mib(l.stats.extractBytes)} MiB of extracts received, ${mib(l.stats.bytesRead)} MiB of files read by its readers | ` +
-          `peak WASM memory ${mib(l.stats.wasmMemoryBytes)} MiB | ${l.stats.ms} ms (local, its readers included)`,
+          `peak WASM memory ${mib(l.stats.wasmMemoryBytes)} MiB | ${l.stats.ms} ms (local, its readers included): its own engine ${l.stats.ownEngineMs.toFixed(0)} ms, its readers' engine ${l.stats.readerEngineMs.toFixed(0)} ms (longest call ${l.stats.readerEngineMaxMs.toFixed(0)} ms)`,
       )
     }
     const peak = Math.max(...leaves.map((l) => l.stats.wasmMemoryBytes))
@@ -171,13 +171,19 @@ function splitEstimate(r: Run, per: LeafRun, pool = 32): void {
   const readers = n('Reader-Calls')
   const rounds = [1, Math.ceil(readers / pool)]
   const leaves = [0, 1].map((i) => DO_CALL[i]! + rounds[i]! * ROUND[i]!)
-  const slowest = Math.max(...per.leaves.map((l) => l.stats.ms))
-  const cpu = [0, 1].map((i) => 2 * (i === 0 ? Math.ceil(slowest / Math.max(1, Math.max(...per.leaves.map((l) => l.stats.readerCalls)))) : slowest) + 2 * n('Engine-Ms'))
+  // CPU on the critical path: the slowest leaf's own engine time, plus its readers' engine
+  // time either in parallel (one call's worth: the longest) or spread over the pool's
+  // objects (the sum of every leaf's reader time over `pool`), then the merge; all x 2 (S2).
+  const own = Math.max(...per.leaves.map((l) => l.stats.ownEngineMs))
+  const readerMax = Math.max(...per.leaves.map((l) => l.stats.readerEngineMaxMs))
+  const readerSum = per.leaves.reduce((a, l) => a + l.stats.readerEngineMs, 0)
+  const cpu = [2 * (own + readerMax + n('Engine-Ms')), 2 * (own + readerSum / pool + n('Engine-Ms'))]
   const total = [0, 1].map((i) => ledger[i]! + tail[i]! + leaves[i]! + cpu[i]!)
   console.log(
     `ESTIMATE ${r.label} (production, modelled): ledger ${plans} plan calls x ${DO_CALL.join('-')} ms + ${n('Files-Listed')} files x ${PER_FILE.join('-')} ms = ${ledger.map((x) => x.toFixed(0)).join('-')} ms; ` +
       `tail 1 call = ${tail.join('-')} ms; leaves: 1 DO call + ${rounds.join(' to ')} reader round(s) (${readers} reader calls over a pool of ${pool}) x ${ROUND.join('-')} ms = ${leaves.join('-')} ms; ` +
-      `CPU 2 x (slowest leaf ${slowest} ms local, its readers in parallel .. in series) + 2 x merge ${n('Engine-Ms')} ms = ${cpu.join('-')} ms; total ${total.map((x) => x.toFixed(0)).join('-')} ms with warm objects`,
+      `CPU 2 x (slowest leaf's own engine ${own.toFixed(0)} ms + readers ${readerMax.toFixed(0)} ms (longest call) .. ${(readerSum / pool).toFixed(0)} ms (all ${readerSum.toFixed(0)} ms over ${pool} objects) + merge ${n('Engine-Ms')} ms) = ${cpu.map((x) => x.toFixed(0)).join('-')} ms; ` +
+      `total ${total.map((x) => x.toFixed(0)).join('-')} ms with warm objects`,
   )
 }
 

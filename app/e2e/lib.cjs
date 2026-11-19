@@ -59,9 +59,12 @@ function makeChecker() {
   return { check, results, failed: () => failed }
 }
 
+/** The status of a GET, 0 when nothing answers; never waits more than 3 s (a port held by something that does not answer counts as taken). */
 function ping(u) {
   return new Promise((resolve) => {
-    http.get(u, (res) => { res.resume(); resolve(res.statusCode) }).on('error', () => resolve(0))
+    const req = http.get(u, (res) => { res.resume(); resolve(res.statusCode) })
+    req.on('error', () => resolve(0))
+    req.setTimeout(3000, () => { req.destroy(); resolve(-1) })
   })
 }
 async function waitFor(u, ms = 20000) {

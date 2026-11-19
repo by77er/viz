@@ -3,6 +3,7 @@ import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
 import { type Shard, pendingMarkerKey } from '../src/shard'
 
+// Ported unchanged from the reviewer's scratch copy; it failed against dc2a1c3 (see README).
 // Review (design/reviews/write-path-completion.md, R-6). `pendingTenants` deletes the KV pending
 // marker, notices that a seal happened during the delete, and puts the marker back. If that
 // put fails (KV allows about one write per second per key, and this is the second write to
@@ -63,5 +64,28 @@ describe('review: pending marker after a failed re-put', () => {
     expect(marked).toBe(true) // the shard believes the marker is there...
     expect(await stub.pendingSegments('b')).toHaveLength(2)
     expect(await env.CONFIG.get(key)).not.toBeNull() // ...and it is not: the sweep cannot find b's segments
+  })
+})
+
+describe('spec F12: a segment read is bound to the incarnation and range the flush listed', () => {
+  it('after a storage loss, the old incarnation\'s segment cannot be read as the new one\'s', async () => {
+    const stub = env.SHARD.get(env.SHARD.idFromName(`rv-f12-${Date.now().toString(36)}/0`))
+    const put = (fp: string) => stub.append({ tenant: 't', epoch: 1, fingerprint: fp, payload: new Uint8Array(64).fill(7), rows: 1 })
+    const a = await put('b0')
+    if (a.status !== 'ok') throw new Error(a.status)
+    await stub.seal('t')
+    const listed = (await stub.pendingSegments('t'))[0]!
+    expect(await stub.readSegment('t', listed.seqLo, listed.incarnation, listed.seqHi)).toHaveLength(1)
+    // The shard loses its storage; batch 1 of a new incarnation takes seq 1 and is sealed.
+    await runInDurableObject(stub, async (_i, state) => { await state.storage.deleteAll() })
+    const { evictDurableObject } = await import('cloudflare:test')
+    await evictDurableObject(stub)
+    const b = await put('b1')
+    if (b.status !== 'ok') throw new Error(b.status)
+    await stub.seal('t')
+    expect(b.incarnation).not.toBe(a.incarnation)
+    expect(await stub.readSegment('t', listed.seqLo, listed.incarnation, listed.seqHi)).toBeNull()
+    expect(await stub.readSegment('t', listed.seqLo, b.incarnation, listed.seqHi)).toHaveLength(1)
+    expect(await stub.readSegment('t', listed.seqLo, b.incarnation, listed.seqHi + 1)).toBeNull()
   })
 })
