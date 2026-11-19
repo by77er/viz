@@ -2171,3 +2171,53 @@ committed registration with its re-check, or registration ahead of map changes a
 creation, which `ensureStream` allows, m-4); the outbox read shows in the ledger's CPU (then a
 nullable `kind` column older code leaves NULL); or pool retirement or tenant deletion is built
 (then a stream-retirement change in the ledger, and both creating paths fenced).
+
+## D62. Traces and logs are read in one place under row caps; a trace is read whole through the `trace_index` hull and summarised from its spans; each tail read asks only its signal's shards by name and checks every batch's header
+
+**Decision.** The query Worker answers Tempo's and Loki's APIs (behind `QUERY_SIGNALS`,
+`query/README.md` "Traces and logs") in one place: files through the leaf pool, the signal's
+shard tails, one engine call. A query whose files, bytes or rows (the rows of the row groups its
+index fragments say it reads: `maxSpans` 40,000, `maxLogRows` 60,000) do not fit one isolate is
+refused (422), never split. A search, or a TraceQL metrics query that is not span-local, reads
+`trace_index` over its window first, finds the traces whose extent (fragments merged, plus the
+tail's spans) overlaps it, and reads the `spans` files over the hull of those extents, at the same
+ledger version; every trace the answer can name is then complete, and its summary (root,
+duration, per-service counts) is computed from its spans by the engine. Trace by ID reads only the
+`trace_index` row groups whose id range holds it, then only the `spans` files of the hours its
+fragments name. A tail read asks the shards of its signal by name (`…/traces/{slot}`,
+`…/logs/{slot}`, the rest metrics), and every batch it gets back is checked by its header: a batch
+of another signal refuses the query (503); none is read as the wrong signal or dropped.
+
+**Alternatives.** (a) Summaries from `trace_index` alone (merged fragments, as
+`contracts/TRACES.md` allows): no second read for search, but `span_count`, `error_count` and
+the per-service counts over-count spans retried into another unit (43 to 52 of 300 traces of the
+read-back corpus), so answers would differ from the engine's on the same spans. (b) Read only the
+spans files of the window, Tempo's "only the blocks of the range": traces at the window's edges
+summarised from part of their spans. (c) Split execution: search by trace-id hash with each part
+returning its top `limit`, metrics by span with partial aggregates; the engines expose no
+partials yet. (d) Wait for the shard's signal filter before reading span and log tails. (e) Skip
+batches of another signal silently.
+
+**Why.** (a) and (b) answer differently from the engine over the same data, which the tests
+compare against (`query/test/signals.test.ts`: 128 cases a seed over three seeds, identical with
+pruning on and off). (c) is the right end state but needs engine work in two crates for partials
+that merge exactly; the caps make one place safe meanwhile (measured here: about 1.5 KiB of WASM
+memory per span held and 1 KiB per log row, `query/README.md` "Measurements"). Without (d)'s
+fallback every metrics query of a tenant with a span or log stream registered failed, since the
+ledger names those streams in every plan (D57) and the shard's metric filter throws on their
+batches. (e) would turn a wrong shard choice into a silent hole; the header check makes it a
+refusal.
+
+**Cost of it.** A search reads its window's `trace_index` before any span: one more ledger plan
+and round of reads. A trace whose lake spans all lie outside the window and whose fragments do
+too, but whose unflushed spans fall inside it, is summarised from the spans read. Trace by ID
+decodes every span of the row groups of its hours (one row group per 20,000-span flush unit):
+about 240 ms for 20,000 spans here. Tenants with more than about 40,000 spans or 60,000 log rows
+in a query's window are refused until split execution exists. A metric pool whose name ends in
+`/traces` or `/logs` would be classified as a signal pool (edge allows such names today); its
+reads are then refused by the header check, not misread.
+
+**Would change if.** The engines gain exact partials (then (c), and the caps become per part);
+the shard's tail filter takes a signal (then tails are chosen by it and the name rule goes);
+`trace_index` re-aggregation at compaction removes the over-count (then (a) for search over
+compacted data); or projection by the plan's columns cuts the memory per span (then larger caps).

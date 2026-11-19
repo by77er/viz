@@ -18,7 +18,7 @@ import type { FileEntry } from '../../contracts/ledger'
 import { clearLimitsCache } from '../src/config'
 import { hooks } from '../src/coordinator'
 import query from '../src/index'
-import { signalOfShard } from '../src/shards'
+import { shardSignalFilter, signalOfShard } from '../src/shards'
 import { tailHooks } from '../src/tail'
 import seed1 from './fixtures/signals/seed-1.json'
 import seed2 from './fixtures/signals/seed-2.json'
@@ -274,6 +274,21 @@ describe('signals in shard tails', () => {
       }
       const r = await call(w.a.key, pick(fx, prefix))
       expect([prefix, r.status, /answered a tail read for signal/.test(await r.text())]).toEqual([prefix, 503, true])
+    }
+  })
+
+  it('with the signal field in the tail options (the shard filter being added, off until it lands): the same answers, from shards that do not know it yet', async () => {
+    const fx = SEEDS[1]!
+    const w = await world()
+    await ingest(w)
+    await load(w, w.a, fx)
+    shardSignalFilter.enabled = true
+    try {
+      const r = await runAll(w.a, { ...fx, cases: fx.cases.filter((_, k) => k % 5 === 0) })
+      expect(r.failures).toEqual([])
+      for (const q of QUERIES.filter((_, k) => k % 9 === 0)) expect(await (await run(w.a.key, q)).json(), q.id).toEqual(expected.a[q.id])
+    } finally {
+      shardSignalFilter.enabled = false
     }
   })
 

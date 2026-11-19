@@ -1,4 +1,4 @@
-<!-- @dsCard group="Data" height=4400 -->
+<!-- @dsCard group="Data" height=5000 -->
 <!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0}body{padding:var(--space-6)}.chartdemo{display:flex;flex-direction:column;gap:var(--space-8);max-width:calc(2 * var(--dialog))}</style></head><body class="vz">
 <div class="chartdemo">
   <section class="vz-panel">
@@ -30,6 +30,11 @@
     <div class="vz-panel-head"><h3 class="vz-panel-title">CPU by pod, three of Other picked out</h3><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min max</span></span></div>
     <p class="vz-panel-desc">Other opened and its three largest members chosen: each is drawn in ink, solid, dashed and dotted in the order chosen, and its swatch shows the same pattern. The other rows are off until one is chosen.</p>
     <div class="vz-panel-body"><div class="vz-chart" data-demo="s36" data-view="demo-picked" data-pick="3"></div></div>
+  </section>
+  <section class="vz-panel">
+    <div class="vz-panel-head"><h3 class="vz-panel-title">CPU by pod, the query narrowed to node-b</h3><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min max</span></span></div>
+    <p class="vz-panel-desc">The 36 pods, then the query edited to node-b: the pods that left are not on screen, so the eight largest pods left take the colours at once, as the same dashboard filter would. The four others are Other, where every figure is below 0.1, and "Colour the eight largest" is offered.</p>
+    <div class="vz-panel-body"><div class="vz-chart" data-demo="s36" data-then="nodeb" data-view="demo-nodeb"></div></div>
   </section>
   <section class="vz-panel">
     <div class="vz-panel-head"><h3 class="vz-panel-title">Request rate, change on last week</h3><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min mean</span></span></div>
@@ -80,7 +85,8 @@ if (!window.vzChart) (function () {
     s36() { return demos.many(36, 36) }, s200() { return demos.many(200, 200) },
     search() { return demos.many(36, 37, ['search']) }, // the same panel's query edited to another service's pods
     s36limit() { return { ...demos.s36(), threshold: { value: 3.5, label: '3.5 cores limit' } } },
-    limit() { const s = demos.s36limit(); s.series.push(newPod()); return s }, // a second result in which a new pod, larger than every coloured one, crosses the limit
+    limit() { const s = demos.s36limit(); s.series.push(newPod()); return s },
+    nodeb() { const s = demos.s36(); s.series = s.series.filter((x) => x.labels.node === 'node-b'); return s }, // the query narrowed to node="node-b": a second result (v7 review, M1) // a second result in which a new pod, larger than every coloured one, crosses the limit
     delta() { const n = 61, w = (i) => (2 * Math.PI * i) / 36
       return { unit: 'req/s', agg: 'mean', t0: NOW - 6 * H, step: 6 * MIN, series: [{ labels: { service: 'checkout-api' }, values: Array.from({ length: n }, (_, i) => +(120 * Math.sin(w(i))).toFixed(2)) }, { labels: { service: 'cart' }, values: Array.from({ length: n }, (_, i) => +(60 * Math.cos(w(i))).toFixed(2)) }] } },
     bytes() { const n = 61, r = lcg(23), MiB = 1048576
@@ -182,7 +188,9 @@ if (!window.vzChart) (function () {
      step 0.25: hundredths), never fewer than the ticks and at most three. A value below zero has a minus sign (U+2212). A value that is not zero
      but would print as zero says which side of zero it is at that precision: "< 0.1" or "> −0.1", never "0.0". */
   const MINUS = '−'
-  function numberFormat(step, suffix = '', div = 1) {
+  // a range of Other's figures, lowest to highest; one figure when both ends read the same ("< 0.1", not "< 0.1 to < 0.1")
+const span = (f, lo, hi) => { const a = f(lo), b = f(hi); return a === b ? a : a + ' to ' + b }
+function numberFormat(step, suffix = '', div = 1) {
     let tickDec = 0; while (tickDec < 3 && Math.abs(step * 10 ** tickDec - Math.round(step * 10 ** tickDec)) > 1e-9) tickDec++
     const dec = Math.min(3, Math.max(tickDec, 1 - Math.floor(Math.log10(step) + 1e-9)))
     const abs = (v, d) => Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }), f = (v, d) => (v < 0 && abs(v, d) !== abs(0, d) ? MINUS : '') + abs(v, d) + suffix
@@ -249,7 +257,7 @@ if (!window.vzChart) (function () {
     for (const s of vis.lines) lines.push(`${seriesName(m, s)}: last ${fmt(s.last)}, lowest ${fmt(s.min)}, highest ${fmt(s.max)}${s.v.some((p) => p == null) ? '; no data for part of the range' : ''}.`)
     vis.picked.forEach((s, i) => lines.push(`${seriesName(m, s)}, picked out in ink, ${['solid', 'dashed', 'dotted'][i]}: last ${fmt(s.last)}, lowest ${fmt(s.min)}, highest ${fmt(s.max)}.`))
     if (vis.band && m.other.length) { const lasts = m.other.map((s) => s.last).filter((p) => p != null), top = facts.otherHighest
-      lines.push(`Other, ${m.other.length} series as one band: last ${lasts.length ? fmt(Math.min(...lasts)) + ' to ' + fmt(Math.max(...lasts)) : 'no data'}; the highest, ${seriesName({ ...m, names: m.names }, { ...top, slot: 1 })}, reached ${fmt(top.max)}.`) }
+      lines.push(`Other, ${m.other.length} series as one band: last ${lasts.length ? span(fmt, Math.min(...lasts), Math.max(...lasts)) : 'no data'}; the highest, ${seriesName({ ...m, names: m.names }, { ...top, slot: 1 })}, reached ${fmt(top.max)}.`) }
     if (facts.note) lines.push(facts.note.text + '.')
     if (facts.threshold) lines.push(`${spec.threshold.label}. Above it at ${end}: ${list(facts.threshold.aboveAtEnd, (s) => s.last)}. Above it earlier in the range but not at ${end}: ${list(facts.threshold.aboveEarlier, (s) => s.max)}.`)
     for (const s of spec.spans || []) lines.push(`${s.label}: ${when(s.from)} to ${when(s.to)}.`)
@@ -393,8 +401,16 @@ if (!window.vzChart) (function () {
       const legendW = sizes.legendW, narrow = legendW < 640
       const cols = [['name', 'Series', 0], ['last', 'Last', 1], ['min', 'Min', 2], ['max', 'Max', 2]].filter((c) => !(narrow && c[2] === 2))
       // Column widths are fixed from the widest value each column can show (either end of the axis), so moving the crosshair never moves a column.
-      const ends = [g.ax.top * m.unit.div, g.ax.bottom * m.unit.div], endW = Math.max(...ends.map((v) => measure(fmt.value(v), t.data)))
-      const widest = (c) => Math.max(...m.coloured.map((s) => measure(fmt.value(c === 'last' ? s.max : s[c]), t.data)), m.other.length ? 2 * endW + measure(' to ', t.data) : 0, endW)
+      const tiny = 0.25 * 10 ** -fmt.dec * m.unit.div, ends = [g.ax.top * m.unit.div, g.ax.bottom * m.unit.div, ...(g.ax.top > 0 ? [tiny] : []), ...(g.ax.bottom < 0 ? [-tiny] : [])], endW = Math.max(...ends.map((v) => measure(fmt.value(v), t.data))) // the axis ends, and "< 0.1" beside zero
+      // Other's cells: Min and Max hold one range each; Last moves with the crosshair, between the lowest and highest of Other's figures, so it is
+      // as wide as two of the widest figures it can show (one when every figure of Other reads the same: "< 0.1")
+      const oLo = m.other.length ? Math.min(...m.other.map((s) => s.min ?? Infinity)) : null, oHi = m.other.length ? Math.max(...m.other.map((s) => s.max ?? -Infinity)) : null, oTh = 0.5 * 10 ** -fmt.dec * m.unit.div
+      const otherW = (c) => { if (!m.other.length || !isFinite(oLo)) return 0
+        if (c !== 'last') { const v = m.other.map((s) => s[c]).filter((p) => p != null); return v.length ? measure(span(fmt.value, Math.min(...v), Math.max(...v)), t.data) : 0 }
+        const a = fmt.value(oLo), b = fmt.value(oHi); if (a === b) return measure(a, t.data)
+        const fs = [a, b, ...(oLo < oTh && oHi > 0 ? [fmt.value(oTh / 2)] : []), ...(oLo < 0 && oHi > -oTh ? [fmt.value(-oTh / 2)] : [])]
+        return 2 * Math.max(...fs.map((x) => measure(x, t.data))) + measure(' to ', t.data) }
+      const widest = (c) => Math.max(...m.coloured.map((s) => measure(fmt.value(c === 'last' ? s.max : s[c]), t.data)), otherW(c), endW)
       const headW = (c, label) => measure(c === 'last' ? 'At ' + stamp(st.t1, g.long) + ', ' + unit : label, t.label) + t.sp(4)
       tbody.parentElement.querySelector('colgroup')?.remove()
       thead.insertAdjacentHTML('beforebegin', '<colgroup>' + cols.map(([c, label]) => (c === 'name' ? '<col>' : `<col style="width:${Math.ceil(Math.max(widest(c), headW(c, label)) + t.sp(4))}px">`)).join('') + '</colgroup>')
@@ -409,7 +425,7 @@ if (!window.vzChart) (function () {
       const row = (s, ds) => `<tr role="row" data-key="${esc(s.key)}" title="${title(s)}"><td role="cell"><button class="vz-series" tabindex="-1" aria-pressed="false" aria-label="${title(s)}"><span class="vz-swatch" data-series="${ds}"></span>${name(s)}</button></td>${cells(s)}</tr>`
       const by = st.sort.col, cmp = (a, b) => (by === 'name' ? (a.key < b.key ? -1 : 1) * st.sort.dir : by === 'rank' ? a.slot - b.slot : ((a[by] ?? -Infinity) - (b[by] ?? -Infinity)) * st.sort.dir)
       let h = [...m.coloured].sort(cmp).map((s) => row(s, s.slot)).join('')
-      if (m.other.length) { const rng = (c) => { const v = m.other.map((s) => s[c]).filter((p) => p != null); return v.length ? fmt.value(Math.min(...v)) + ' to ' + fmt.value(Math.max(...v)) : '' }
+      if (m.other.length) { const rng = (c) => { const v = m.other.map((s) => s[c]).filter((p) => p != null); return v.length ? span(fmt.value, Math.min(...v), Math.max(...v)) : '' }
         h += `<tr role="row" data-key="other" title="${m.other.length} series drawn as one band, lowest to highest"><td role="cell"><button class="vz-series" tabindex="-1" aria-pressed="false" aria-label="Other: ${m.other.length} series as one band"><span class="vz-swatch" data-series="other"></span><span class="vz-series-name">Other</span><span class="vz-series-rest">${m.other.length} series</span></button></td><td role="cell" class="vz-num vz-right" data-c="last">${rng('last')}</td>${narrow ? '' : `<td role="cell" class="vz-num vz-right" data-priority="2">${rng('min')}</td><td role="cell" class="vz-num vz-right" data-priority="2">${rng('max')}</td>`}</tr>`
         h += [...m.other].sort(by === 'rank' ? byRank : cmp).slice(0, st.open).map((s) => row(s, 'other')).join('')
         // the legend's last row: what can be done with Other. Its height is a legend row's, so the reserved height holds.
@@ -445,7 +461,7 @@ if (!window.vzChart) (function () {
       const m = g.m, fmt = g.fmt, t = tokens(), unit = m.unit.unit
       const th = thead.querySelector('[data-col="last"] .vz-sort'); if (th) th.textContent = (st.cursor == null ? 'Last' : 'At ' + stamp(spec.t0 + (m.i0 + st.cursor) * spec.step, g.long)) + ', ' + unit
       for (const tr of tbody.rows) { const s = m.byKey.get(tr.dataset.key), td = tr.querySelector('[data-c="last"]'); if (s && td) td.textContent = fmt.value(st.cursor == null ? s.last : s.v[st.cursor])
-        else if (tr.dataset.key === 'other' && td) { const v = m.other.map((q) => (st.cursor == null ? q.last : q.v[st.cursor])).filter((p) => p != null); td.textContent = v.length ? fmt.value(Math.min(...v)) + ' to ' + fmt.value(Math.max(...v)) : '' } }
+        else if (tr.dataset.key === 'other' && td) { const v = m.other.map((q) => (st.cursor == null ? q.last : q.v[st.cursor])).filter((p) => p != null); td.textContent = v.length ? span(fmt.value, Math.min(...v), Math.max(...v)) : '' } }
       if ((st.cursor == null) !== cursorWas) { cursorWas = st.cursor == null; legendState() }
       if (st.cursor == null) { c.innerHTML = ''; readout.innerHTML = ''; return }
       const i = st.cursor, px = g.x(i), facts = chartFacts(m, g.vis, spec), drawn = facts.drawn.filter((s) => s.v[i] != null), top = facts.highestAt(i)

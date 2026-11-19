@@ -581,6 +581,50 @@ const MUTANTS = [
     find: '            stats.foreign += answer.foreign ?? 0',
     replace: '            stats.foreign += 0',
   },
+  // ── Traces and logs (2026-11-19, ABI 6): mutants 74 to 79 ──
+  {
+    name: 'Wrong signal from the tail: metrics reads ask every shard the ledger names, span and log shards included',
+    tests: ['test/signals.test.ts'],
+    file: 'src/coordinator.ts',
+    find: "for (const w of watermarks) if (names.has(w.shard) || signalOfShard(w.shard) === 'metrics') names.add(w.shard)",
+    replace: 'for (const w of watermarks) names.add(w.shard)',
+  },
+  {
+    name: 'Wrong signal from the tail: a batch of another signal is read as the one asked for (no header check)',
+    tests: ['test/signals.test.ts'],
+    file: 'src/shards.ts',
+    find: '  if (got !== want) throw new WrongSignal(shard, got, want)',
+    replace: '  void got',
+  },
+  {
+    name: 'Pruning drops a matching hour: trace by ID reads the span files of the hour after each one its fragments name',
+    tests: ['test/signals.test.ts'],
+    file: 'src/signals.ts',
+    find: '  const h = Math.floor(f.minTs / 3_600_000)',
+    replace: '  const h = Math.floor(f.minTs / 3_600_000) + 1',
+  },
+  {
+    name: 'A cap not enforced: the rows the fragments say a span or log query decodes are not checked before fetching',
+    tests: ['test/signals.test.ts'],
+    file: 'src/signals.ts',
+    find: '  if (rows > rowsLimit) {',
+    replace: '  if (rows > rowsLimit * 1_000_000) {',
+  },
+  {
+    name: 'The tenant is taken from the query string (Tempo search: `orgId`)',
+    tests: ['test/signals.test.ts'],
+    file: 'src/sigroutes.ts',
+    find: "  const { start, end } = tempoWindow(params)\n  return traceSearch(c,",
+    replace: "  const { start, end } = tempoWindow(params)\n  c.tenant = params.get('orgId') ?? c.tenant\n  return traceSearch(c,",
+  },
+  {
+    name: 'A result shape field renamed: trace by ID answers `resourceSpans` for `batches` (Rust; rebuilds the module)',
+    tests: ['test/signals.test.ts'],
+    file: '../engine/wasm-query/src/traces.rs',
+    rust: true,
+    find: '    let mut out = String::from("{\\"batches\\":[");',
+    replace: '    let mut out = String::from("{\\"resourceSpans\\":[");',
+  },
 ]
 
 function run(cmd, args, opts = {}) {

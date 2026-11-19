@@ -1,4 +1,4 @@
-# node tools/shots.mjs scenario reviews/system-v8/shots.json reviews/system-v8/images (load before: 1.96 2.77 3.43 5/187 32549; after: 1.89 2.65 3.36 1/112 819)
+# node tools/shots.mjs scenario reviews/system-v8/shots.json reviews/system-v8/images (load at the start of the image run: 3.52 2.86 3.27; at the end: 7.37 4.12 3.68)
 v8-dashboard-1500-light: sideways overflow 0px; smallest text 11px; tabular sans 0
 v8-dashboard-1500-dark: sideways overflow 0px; smallest text 11px; tabular sans 0
 v8-dashboard-400-coarse-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 79 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 2 partly scrolled out of a strip (acme-prod, Settings)
@@ -37,4 +37,6 @@ v8-folded-list-400-coarse-hit-areas-light: sideways overflow 0px; smallest text 
 v8-folded-list-zoom-200-light: sideways overflow 0px; smallest text 13px; tabular sans 0
 v8-dialog-list-closed-400-coarse-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 12 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 2 partly scrolled out of a strip (acme-prod, Settings)
 v8-dialog-list-closed-400-coarse-dark: sideways overflow 0px; smallest text 13px; tabular sans 0; 12 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 2 partly scrolled out of a strip (acme-prod, Settings)
-v8-chart-controls-320-coarse-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 115 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences
+v8-chart-controls-320-coarse-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 130 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences
+v8-chart-query-node-b-panel-320-coarse-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 130 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences
+v8-chart-query-node-b-panel-320-coarse-dark: sideways overflow 0px; smallest text 11px; tabular sans 0; 130 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences

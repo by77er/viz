@@ -1,4 +1,4 @@
-import { TENANT_ID, type LoggedWatermark, type Table } from '../../contracts/ledger'
+import { LOG_TABLES, METRIC_TABLES, TABLES, TENANT_ID, TRACE_TABLES, type LoggedWatermark, type Table } from '../../contracts/ledger'
 import { COMPACTION_INPUTS_META, DEFAULT_POLICY, decodeCompactionInputs } from '../../compact/src/compact'
 import type { Ledger } from '../../ledger/src/ledger'
 import type { Publisher } from '../../publisher/src/publisher'
@@ -8,8 +8,10 @@ import type { EnsureStreamResult } from '../../shard/src/shard'
  * Retention and physical deletion for one tenant. Three stateless jobs; the state they
  * need (what was removed, when, and whether that is logged) is in the tenant's ledger.
  *
- *   expireTenant   ledger.expire for days older than the tenant's policy. Removes files
- *                  from the ledger only; no object is touched.
+ *   expireTenant   ledger.expire for days older than the tenant's policy: metrics by
+ *                  `metric_samples_days`, spans with their trace_index by `trace_days`, logs by
+ *                  `log_days` (stage 2 of traces and logs). Removes files from the ledger
+ *                  only; no object is touched.
  *   purgeTenant    deletes the objects of keys the ledger removed (by expire or by
  *                  compaction), but only those the ledger itself calls deletable: removal
  *                  logged, grace passed, not live (contracts/ledger.ts, tombstones); and,
@@ -90,16 +92,24 @@ async function within<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
 export interface RetentionPolicy {
   /** Keep this many whole UTC days of metric samples (and their series files) besides today. */
   metric_samples_days: number
+  /**
+   * Spans and their `trace_index` files, and log records (added 2026-11-19, stage 2 of traces
+   * and logs), by the fields control writes (`trace_days`, `log_days`, control/src/ops-settings.ts).
+   * A record without one keeps that signal for `DEFAULT_SIGNAL_DAYS`, whatever its metrics say.
+   */
+  trace_days: number
+  log_days: number
 }
 
-export const DEFAULT_RETENTION: RetentionPolicy = { metric_samples_days: 30 }
+/** Days of spans and of logs kept for a tenant whose record does not name them: the deployment default, as for metrics. */
+export const DEFAULT_SIGNAL_DAYS = 30
+export const DEFAULT_RETENTION: RetentionPolicy = { metric_samples_days: 30, trace_days: DEFAULT_SIGNAL_DAYS, log_days: DEFAULT_SIGNAL_DAYS }
 /** Grace between a key leaving the ledger and its object being deleted. Longer than any query may run. */
 export const DEFAULT_DELETE_GRACE_MS = 3_600_000
 /** Age at which an object the ledger does not know is taken for an orphan. */
 export const DEFAULT_ORPHAN_GRACE_MS = 24 * 3_600_000
 
 const DAY_MS = 86_400_000
-const TABLES: readonly Table[] = ['metric_samples', 'metric_series']
 const cellOf = (env: JanitorEnv): string => env.CELL || 'cell-0'
 const ledgerOf = (env: JanitorEnv, tenant: string): DurableObjectStub<Ledger> => {
   if (!TENANT_ID.test(tenant)) throw new Error('janitor: tenant id must match [A-Za-z0-9_-]{1,64}')
@@ -136,7 +146,16 @@ export function parseRetention(raw: string): RetentionRead {
   if (v !== RETENTION_RECORD_VERSION) return unreadable(`version ${JSON.stringify(v)}; this code reads version ${RETENTION_RECORD_VERSION}`)
   const days = (rec as Partial<RetentionPolicy>).metric_samples_days
   if (typeof days !== 'number' || !Number.isSafeInteger(days) || days < 1) return unreadable(`metric_samples_days is ${JSON.stringify(days)}, not a positive integer`)
-  return { status: 'ok', policy: { metric_samples_days: days }, source: 'record' }
+  // Optional; when present they must be readable too (a bad one refuses the record, never a guess).
+  const signal = (k: 'trace_days' | 'log_days'): number | string => {
+    const x = (rec as Record<string, unknown>)[k]
+    if (x === undefined) return DEFAULT_SIGNAL_DAYS
+    return typeof x === 'number' && Number.isSafeInteger(x) && x >= 1 ? x : `${k} is ${JSON.stringify(x)}, not a positive integer`
+  }
+  const [traceDays, logDays] = [signal('trace_days'), signal('log_days')]
+  if (typeof traceDays === 'string') return unreadable(traceDays)
+  if (typeof logDays === 'string') return unreadable(logDays)
+  return { status: 'ok', policy: { metric_samples_days: days, trace_days: traceDays, log_days: logDays }, source: 'record' }
 }
 
 export async function readRetention(env: Pick<JanitorEnv, 'CONFIG'>, tenant: string): Promise<RetentionRead> {
@@ -149,9 +168,23 @@ export async function readRetention(env: Pick<JanitorEnv, 'CONFIG'>, tenant: str
  * The first day that is kept: files of days strictly before it expire. A policy longer than
  * the time since 1970 keeps everything (no file has an earlier day: contracts/TABLES.md).
  */
-export const retentionCutoffDay = (now: number, policy: RetentionPolicy): string => {
-  const cutoff = now - policy.metric_samples_days * DAY_MS
+export const retentionCutoffDay = (now: number, policy: Pick<RetentionPolicy, 'metric_samples_days'>): string => cutoffDay(now, policy.metric_samples_days)
+
+/** The first day kept when `days` whole days are kept besides today. */
+export const cutoffDay = (now: number, days: number): string => {
+  const cutoff = now - days * DAY_MS
   return cutoff <= 0 ? '1970-01-01' : new Date(cutoff).toISOString().slice(0, 10)
+}
+
+/** What retention did for the span and log tables, one entry per ledger request (`ExpireResult.signals`). */
+export interface SignalExpiry {
+  tables: Table[]
+  /** The first day kept. */
+  beforeDay: string
+  keepDays: number
+  removed: number
+  /** The ledger refused or failed this request (a ledger of a release before these tables answers `unknown table`): nothing of it expired; the next run tries again. */
+  error?: string
 }
 
 export interface ExpireResult {
@@ -163,6 +196,12 @@ export interface ExpireResult {
   removed: string[]
   /** Set when the tenant's retention record cannot be read: nothing was expired. */
   refused?: string
+  /**
+   * The span and log tables (stage 2), after the metric tables and in requests of their own, so
+   * the metric expiry never depends on them: one request when `trace_days` and `log_days` give
+   * the same day, else one per signal. Absent when the run was refused.
+   */
+  signals?: SignalExpiry[]
 }
 
 export async function expireTenant(env: JanitorEnv, tenant: string, now = Date.now()): Promise<ExpireResult> {
@@ -178,8 +217,32 @@ export async function expireTenant(env: JanitorEnv, tenant: string, now = Date.n
   const beforeDay = retentionCutoffDay(now, policy)
   // Both tables in ONE ledger change, so a samples file and its series file leave together
   // (contracts/TABLES.md, "Pairing"; review R-5).
-  const expired = await ledger.expire({ tables: ['metric_samples', 'metric_series'], beforeDay })
-  return { beforeDay, keepDays: policy.metric_samples_days, removed: expired.removed }
+  const expired = await ledger.expire({ tables: [...METRIC_TABLES], beforeDay })
+  const removed = [...expired.removed]
+  // Spans with their trace_index files (one change: a unit's spans and trace_index files leave
+  // together, contracts/TRACES.md), and logs. A ledger with no such files removes nothing and
+  // uses no version, so a tenant without traces or logs sees no change in its log.
+  const groups = new Map<string, { tables: Table[]; keepDays: number }>()
+  for (const [tables, keepDays] of [[TRACE_TABLES, policy.trace_days], [LOG_TABLES, policy.log_days]] as const) {
+    const day = cutoffDay(now, keepDays)
+    const g = groups.get(day)
+    if (g) g.tables.push(...tables)
+    else groups.set(day, { tables: [...tables], keepDays })
+  }
+  const signals: SignalExpiry[] = []
+  for (const [day, g] of groups) {
+    const e: SignalExpiry = { tables: g.tables, beforeDay: day, keepDays: g.keepDays, removed: 0 }
+    try {
+      const r = await ledger.expire({ tables: g.tables, beforeDay: day })
+      e.removed = r.removed.length
+      removed.push(...r.removed)
+    } catch (err) {
+      e.error = (err instanceof Error ? err.message : String(err)).slice(0, 300)
+      console.error(`janitor: expiring ${g.tables.join(', ')} of ${tenant} failed (${e.error}); the next run tries again`)
+    }
+    signals.push(e)
+  }
+  return { beforeDay, keepDays: policy.metric_samples_days, removed, signals }
 }
 
 export interface PurgeResult {
@@ -357,7 +420,8 @@ export async function sweepOrphans(env: JanitorEnv, tenant: string, opts: { grac
 
   // 1. List first, with each object's metadata (a compaction output's inputs). Whatever is
   //    written after this is not a candidate in this run, and an object missing from this
-  //    listing was deleted before it.
+  //    listing was deleted before it. Every table's prefix of THIS tenant (spans keys lie one
+  //    level deeper, under `hour=HH/`, which the listing includes).
   const objects: { key: string; uploaded: number; inputs?: string }[] = []
   for (const table of TABLES) {
     let cursor: string | undefined

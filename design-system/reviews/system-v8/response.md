@@ -37,7 +37,7 @@ test worker, every server stopped.
 | m1 stacked folded rows cost density | The row is its key link's target; the key's line and "Actions…" are drawn at their own height; the 44 px are the row's | rows measured below; U5, U6 and the hit-area guard; `compare/v8-m2-m1-folded-list-400-*` |
 | m2 the audit's header names v6 | Rewritten: the latest review's compositions, every guard and context | `tools/audit.mjs` lines 1 to 44 |
 | m3 a segmented control drawn taller with a coarse pointer | Drawn at its own height; a wrapped one keeps its rows apart by a gap, so the 44 px hit areas do not meet | U8 and the hit-area guard at 320 px; `compare/v8-m3-segmented-preview-*`, `images/v8-chart-controls-320-coarse-light.png` |
-| Timings | The load beside every timing; every row above the stated load "not judged" | `speed/` |
+| Timings | The load beside every timing, every row above the stated load "not judged" (one row this time); the load was low enough that almost every row is judged: **two are over budget, in v7 and v8 alike** (the theme change at both layouts, the phone's touch crosshair) | `speed/`, Speed below |
 
 ## Majors
 
@@ -76,6 +76,13 @@ query's series leave the screen and free the slots.
   a new panel, "CPU by pod, three of Other picked out", picks three members of Other (for M3's W17).
 - Images: `compare/v8-m1-query-narrowed-to-node-b-{1440,400}-{light,dark}.png` (v7 left: one coloured, eleven grey, no recolour; v8
   right: eight coloured, four in Other, the recolour offered), `images/v8-chart-query-node-b-*` (by the page's own segment).
+
+**Found while composing the M1 images, fixed.** With the query narrowed to node-b, Other's four pods are all below 0.1 cores, and at
+1440 px the legend's Min and Max cells cut "< 0.1 to < 0.1": the cells were sized from the axis ends ("3", "0"), never from "< 0.1".
+Now a range whose ends read the same is one figure ("< 0.1"; Chart README, rule 6), Other's Min and Max cells are sized from their own
+range, and its Last cell (which moves with the crosshair) from the widest figures Other can show, "< 0.1" included. The narrowed state
+is now a panel of the Chart preview ("CPU by pod, the query narrowed to node-b"), so the audit's `cut` check reads it at every width;
+a first version of this fix widened the Last cell enough to cut the word "Other" at 320 px, which that check found.
 
 Not taken: the reviewer's first fix alone (the offer and a note, slots still reserved), because it leaves the picture the rule exists
 to prevent on screen until the person acts; and the second (lend a slot after its owner has been away more than one result), because
@@ -135,7 +142,64 @@ caught by the rendered focus and contrast guards. @@MUTANTS@@
 | m2 | The audit's header named v6 | Rewritten: it names the latest review's compositions, every check, the guards and their contexts | `tools/audit.mjs`, lines 1 to 44 |
 | m3 | A segmented control drawn 44 px tall with a coarse pointer | Drawn at its own height; when it wraps (320 px) its rows are kept apart by `control-touch − control-md + 2 hairline`, so the 44 px hit areas of stacked segments do not meet. `project/README.md` ("Every form factor") says so: no longer a drawn size | U8 (rows without the gap) caught by the hit-area guard at 320 px; `compare/v8-m3-segmented-preview-*`; `images/v8-chart-controls-320-coarse-light.png` (hit areas drawn) |
 
-@@SPEED@@
+## Speed
+
+`tools/speed.mjs --compare`, both shipped scenarios, v7's fixture (the v7 copy, built by its own tools) and v8's alternating run by
+run, **8 runs each, not 20** (scaled down to fit a shared machine; said here). Measured on this machine, on the system's fixture page
+(a floor, not the application), CPU 4x and Fast 4G. Results: `speed/phone.json`, `speed/desktop.json`; as printed:
+`evidence/speed-phone.txt`, `evidence/speed-desktop.txt`.
+
+**Load, beside every row.** 4 cores. The load was lower in this session than in any before: the 1-minute load at the start of each run
+was 2.3 to 6.4 (median 3.2 to 3.4) on the phone and 2.8 to 5.6 (median 3.6) on the desktop, and the median load at each row's samples
+is in the tables. The rule: a timing row is judged only when most of its samples were taken at a load of 4 or less. **For the first
+time, almost every timing row is judged.** One row is not (desktop, v8, press: median load 4.2). Calibration 300 ms (context only).
+p75 (median), ms; the load is the median at that row's samples:
+
+| Phone, 400 x 800, coarse pointer, touch | Budget | v7 | load | | v8 | load | |
+|---|---|---|---|---|---|---|---|
+| Press: Run query (a held finger, by the fill painted) | 50 | 27 (23) | 3.3 | within | 32 (25) | 3.4 | within |
+| Typing in the query editor | 50 | 24 (21) | 3.3 | within | 24 (23) | 3.5 | within |
+| **Crosshair by touch drag, 36 series** | 50 | 54 (52) | 3.3 | **over** | 54 (54) | 3.5 | **over** |
+| Legend row toggle, 36 / 200 series | 100 | 94 (85) / 71 (65) | 3.3 | within | 83 (78) / 71 (61) | 3.5 to 3.6 | within |
+| One panel to table, 36 / 200; to chart, 36 | 100 | 83 (71) / 75 (72); 71 (68) | 3.3 | within | 84 (79) / 89 (71); 85 (69) | 3.4 to 3.6 | within |
+| Open a menu (Share…) | 100 | 64 (58) | 3.3 | within | 61 (58) | 3.4 | within |
+| **Change theme (to dark)** | 100 | 172 (146) | 3.3 | **over** | 174 (120) | 3.4 | **over** |
+| Run a query: sent, waiting state shown | 100 | 76 (55) | 3.3 | within | 62 (51) | 3.4 | within |
+| Move to a view whose data is not loaded | 100 | 76 (56) | 3.3 | within | 64 (56) | 3.4 | within |
+| Response to paint, 36 / 200 series | 100 | 28 (25) / 31 (30) | 3.3 to 3.4 | within | 26 (22) / 32 (30) | 3.3 to 3.4 | within |
+| Worst interaction (Event Timing) | 200 | 200 (152) | 3.4 | within | 168 (136) | 3.3 | within |
+| Layout shift: load and run; loaded scrolled to each of five charts | 0.05 | 0.0000 everywhere | 3.3 to 3.4 | within | 0.0000 everywhere | 3.3 to 3.4 | within |
+
+| Desktop, 1440 x 900, fine pointer | Budget | v7 | load | | v8 | load | |
+|---|---|---|---|---|---|---|---|
+| Press: Run query | 50 | 24 (22) | 3.7 | within | 26 (20) | **4.2** | **not judged** |
+| Typing in the query editor | 50 | 21 (19) | 3.7 | within | 19 (17) | 4.0 | within |
+| Crosshair, 3 / 36 / 200 series | 50 | 36 / 37 / 36 | 3.7 | within | 28 / 40 / 33 | 4.0 | within |
+| Legend row toggle, 36 / 200 series | 100 | 69 (64) / 66 (51) | 3.7 | within | 75 (67) / 51 (49) | 3.9 to 4.0 | within |
+| One panel to table, 36 / 200; to chart, 36 | 100 | 74 (67) / 61 (59); 52 (48) | 3.7 | within | 68 (62) / 51 (49); 50 (43) | 3.9 | within |
+| Open a menu (Share…) | 100 | 42 (38) | 3.7 | within | 47 (39) | 3.9 | within |
+| **Change theme (to dark)** | 100 | 106 (98) | 3.7 | **over** | 117 (112) | 3.9 | **over** |
+| Run a query: sent, waiting state shown | 100 | 39 (31) | 3.6 | within | 36 (34) | 3.9 | within |
+| Move to a view whose data is not loaded | 100 | 51 (48) | 3.5 | within | 44 (41) | 3.9 | within |
+| Response to paint, 36 / 200 series | 100 | 51 (27) / 33 (29) | 3.5 to 3.6 | within | 40 (29) / 38 (27) | 3.8 to 3.9 | within |
+| Worst interaction (Event Timing) | 200 | 136 (112) | 3.6 | within | 128 (120) | 3.8 | within |
+| Layout shift: load and run; loaded scrolled to a chart | 0.05 | 0.0004; 0.0002 | 3.6 to 3.8 | within | 0.0004; 0.0002 | 3.6 to 3.8 | within |
+
+**What this says.** v8 and v7 are alike within the spread of eight runs: no row moves in one direction at both layouts beyond what
+the same version moves between runs. Nothing in v8 runs on a measured path except the colour step (O(series) per result) and a few
+rules. **Two rows are judged over budget, and were in v7 too** (and, unjudged, in every version since v4):
+- **Change theme**: phone 172 ms (v7) and 174 ms (v8) at p75 against 100; desktop 106 and 117. v7's trace showed where the time goes:
+  style recalculation of every element (a theme change moves every colour token on the root), then paint; no script runs. **This is
+  a failure of a blocker row, now measured, and v8 does not fix it.** It is the next change to make, and it needs a decision: restyle
+  less (for example `content-visibility: auto` on panels below the fold, which would need their reserved heights given as intrinsic
+  sizes so the layout-shift rows, judged and within, do not move) or a different budget for a change made once a session. I did not make
+  either within this revision.
+- **Crosshair by touch drag, 36 series** (phone): 54 ms at p75 in both, against 50.
+
+A first, shorter comparison (3 runs each) earlier in the session, with the load rising to 5.9 during v8's last run, showed v8 over in
+more rows (`evidence/speed-phone-first-3-runs.txt`); the 8-run comparison above, at a lower and evenly shared load, does not. Both
+are kept. These runs were taken before the last change to the chart (Other's legend cells sized from Other's own figures, see M1),
+which adds one pass over Other's members per legend draw; @@SPEED-AFTER@@
 
 ## The page audit, final run
 
@@ -180,7 +244,7 @@ fold (the row as the key's target) and rings without a change of markup; their p
   with a coarse pointer, and the log message's button.
 - `<b>` and `<strong>` inside `.vz` take `text-ui-strong-weight`.
 - A segmented control with a coarse pointer: segments at their own height, rows apart by a gap when it wraps.
-- Charts: `newMap()` is `{ v: 8, n, owner, s }`; maps are kept under `vz-series8:` (v7's are not read: v7 kept a reserved slot for
+- Charts: Other's legend figures read as one figure when both ends of the range read the same ("< 0.1", not "< 0.1 to < 0.1"), in the legend, the crosshair readout and the text form. `newMap()` is `{ v: 8, n, owner, s }`; maps are kept under `vz-series8:` (v7's are not read: v7 kept a reserved slot for
   a series away, which v8 does not). `vzChartRules.legendActions(model)` returns what the row under Other offers (`'more'`,
   `'recolour'`). The chart object has `otherKeys()`; a chart element may carry `data-pick="N"` to pick out N members of Other on load
   (the preview uses it).

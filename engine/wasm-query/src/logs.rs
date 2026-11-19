@@ -72,7 +72,7 @@ fn row_hash(r: &LogRec) -> u64 {
 pub(crate) fn rows(files: &[&[u8]], tails: &[&[u8]], max_rows: u64, decoded: &mut u64, want: Option<&[Sel]>) -> Res<Rows> {
     let compiled: Option<Vec<(Option<Compiled>, i64, i64)>> = want.map(|w| w.iter().map(|s| (Compiled::new(&s.matchers), s.start, s.end)).collect());
     // Per stream (by its shared labels), whether a selector's matchers admit it.
-    let mut admitted: HashMap<*const Vec<(String, String)>, Vec<bool>> = HashMap::new();
+    let mut admitted: HashMap<Vec<(String, String)>, Vec<bool>> = HashMap::new();
     let mut kept: Vec<Option<LogRec>> = Vec::new();
     let mut index: HashMap<u64, Vec<u32>> = HashMap::new();
     let mut put = |r: LogRec| -> Res<()> {
@@ -81,7 +81,11 @@ pub(crate) fn rows(files: &[&[u8]], tails: &[&[u8]], max_rows: u64, decoded: &mu
             return Err(Fail::Limit("max_rows", max_rows, *decoded, format!("query exceeded limit max_rows: more than {max_rows} log rows decoded, the limit is {max_rows}. Narrow the time range, or select fewer streams.")));
         }
         if let Some(c) = &compiled {
-            let ok = admitted.entry(std::rc::Rc::as_ptr(&r.labels)).or_insert_with(|| c.iter().map(|(m, _, _)| m.as_ref().is_none_or(|m| m.matches(&r.labels))).collect());
+            if !admitted.contains_key(r.labels.as_slice()) {
+                let v = c.iter().map(|(m, _, _)| m.as_ref().is_none_or(|m| m.matches(&r.labels))).collect();
+                admitted.insert((*r.labels).clone(), v);
+            }
+            let ok = &admitted[r.labels.as_slice()];
             if !c.iter().zip(ok.iter()).any(|((_, lo, hi), m)| *m && r.ts >= *lo && r.ts < *hi) {
                 return Ok(());
             }

@@ -104,10 +104,15 @@ export interface TenantLimits extends QueryLimits {
   /**
    * Traces (README, "Traces and logs"): spans one query may decode, checked against the rows
    * of the row groups it would read (from the index fragments, before anything is fetched) and
-   * again by the engine as it decodes (the tail's spans count too).
+   * again by the engine as it decodes (the tail's spans count too). Measured here: a search that
+   * held 40,000 spans peaked at 62 MiB of WASM memory (about 1.5 KiB a span, the files included).
    */
   maxSpans: number
-  /** Logs: log rows one query may decode, checked the same way. */
+  /**
+   * Logs: log rows one query may decode, checked the same way. Measured here: a query that
+   * kept 80,000 rows peaked at 83 MiB of WASM memory (about 1 KiB a row); one that kept the rows
+   * of one stream of the same files, at 15 MiB.
+   */
   maxLogRows: number
   /** TraceQL metrics: series in the answer, and points per series (the engine's `Limits`). */
   maxTraceSeries: number
@@ -145,8 +150,8 @@ export const DEFAULT_LIMITS: TenantLimits = {
   maxCardinalityPairs: 400_000,
   cardinalitySplitAboveSeries: 50_000,
   maxMetadataSeries: 200_000,
-  maxSpans: 200_000,
-  maxLogRows: 400_000,
+  maxSpans: 40_000,
+  maxLogRows: 60_000,
   maxTraceSeries: 10_000,
   maxTracePoints: 11_000,
 }

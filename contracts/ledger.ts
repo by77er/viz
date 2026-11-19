@@ -10,16 +10,22 @@
  * for every reader that ignores tables it does not act on; a reader that must act on every
  * file (the publisher) refuses a change naming a table it does not know (COMPATIBILITY.md
  * §3.2), so those readers deploy first (§3.3): `edge` writes these tables only where
- * `INGEST_SIGNALS` enables a signal.
+ * `INGEST_SIGNALS` enables a signal. For TypeScript the wider union is not additive where a
+ * `Record<Table, …>` maps every value: such code names `MetricTable` instead (the publisher's
+ * Iceberg definitions; publisher/README.md has the change).
  */
-export type Table = 'metric_samples' | 'metric_series' | 'spans' | 'trace_index' | 'logs'
+export type Table = MetricTable | SignalTable
+/** The metric tables: every value `Table` had before 2026-11-19. Code that maps each metric table (the publisher's Iceberg definitions) names this type. */
+export type MetricTable = 'metric_samples' | 'metric_series'
+/** The span and log tables (contracts/TRACES.md, contracts/LOGS.md). */
+export type SignalTable = 'spans' | 'trace_index' | 'logs'
 
 /** Every table, in the order the ledger, the janitor and the checks list them. */
 export const TABLES: readonly Table[] = ['metric_samples', 'metric_series', 'spans', 'trace_index', 'logs']
 /** The tables of each signal. A flush unit holds the files of ONE signal (one shard stream holds one signal: contracts/BATCH.md "Streams per signal"). */
-export const METRIC_TABLES: readonly Table[] = ['metric_samples', 'metric_series']
-export const TRACE_TABLES: readonly Table[] = ['spans', 'trace_index']
-export const LOG_TABLES: readonly Table[] = ['logs']
+export const METRIC_TABLES: readonly MetricTable[] = ['metric_samples', 'metric_series']
+export const TRACE_TABLES: readonly SignalTable[] = ['spans', 'trace_index']
+export const LOG_TABLES: readonly SignalTable[] = ['logs']
 
 /**
  * Where a file of `table` and `day` lies (contracts/TABLES.md, contracts/TRACES.md "Object

@@ -2,7 +2,10 @@
 
 The read path's WebAssembly module: `viz-query` (which brings `viz-storage` and
 `viz-promql`) behind a plain C ABI, and the TypeScript binding that implements the query
-half of `contracts/engine.ts`.
+half of `contracts/engine.ts`. Since ABI 6 (2026-11-19) the same module also links
+`viz-traceql` and `viz-logql` and answers the span and log operations of `contracts/engine.ts`
+`SignalEngine` (one module for the read path, not a second one: `viz-logql` evaluates its
+vector operations on `viz-promql`, which was linked already).
 
 It is a separate module from `engine/wasm` on purpose. The write path (`edge`, `flush`,
 compaction) encodes and merges Parquet and must not carry the PromQL parser and its
@@ -21,6 +24,10 @@ node tools/check.mjs          # load proof and size report, in Node
 | `js/viz_query.wasm` | Build output (not committed; `./build.sh` writes it) |
 | `js/wasm.d.ts` | Type of a `.wasm` import |
 | `tools/check.mjs` | Loads the module in Node with an empty import object and runs queries through the binding |
+| `src/sigfiles.rs` | ABI 6: index fragments of the span and log tables and the file plans made from them; the `spans`, `trace_index` and `logs` readers (row group by row group, record API, whole or sparse files); the signal 2 and 3 batch decoders |
+| `src/traces.rs`, `src/logs.rs` | ABI 6: the TraceQL and LogQL operations over those readers (the engines' read seams: `SpanSource` through `MemSource`, `LogSource`) and the results Tempo's and Loki's APIs answer |
+| `examples/signal_fixtures.rs` | The query tests' fixtures and their expected answers from the engines' in-memory sources (`query/tools/gen-signal-fixtures.sh`) |
+| `examples/signal_bench.rs` | Synthetic span and log files for `query/test/signals.bench.ts` |
 | `build.sh`, `.cargo/config.toml` | Build settings; `CARGO_TARGET_DIR` is `./target` (about 300 MB, kept so rebuilds are incremental; `engine/query/target`, 3.7 GB, was deleted after its tests ran) |
 
 ## What is implemented
@@ -52,6 +59,41 @@ node tools/check.mjs          # load proof and size report, in Node
 | `metaPart(kind, input, name, match, minTs, maxTs, part, parts, limits?)` | `viz_q_meta_part` | ABI 4: one part of a label call over leaves (`'names'`, `'values'`, `'series'`): what the call lists of the series whose `series_id` is in the part (`engine/query` `MetaPart`), as JSON text, and per `match[]` set the `series_id`s of the series listed, so that a part's files can be listed in several calls and counted exactly together |
 | `sparseFile(size, segments)`, `planBytes(plan, size)`, `RANGE_GAP` | (JavaScript only) | A sparse file container (`VZS1`) of the ranges read, which every call accepts in place of a whole file; the bytes a plan reads; the join distance (64 KiB) |
 | `memoryBytes()`, `instances()`, `reset()` | | The instance's linear memory (its high-water mark), how many instances were created, and dropping the instance so the memory can be reclaimed |
+
+### Traces and logs (ABI 6, 2026-11-19)
+
+| Binding call (`SignalEngine`) | C ABI operation | What it does |
+|---|---|---|
+| `tqPlan(kind, query, start, end, step)` | `viz_q_tq_plan` | What a TraceQL query reads, from its text: whether every span of a candidate trace is needed (`complete`: search, structural operators, `span:childCount`, trace-level intrinsics, pipelines that are not span-local), the window of span starts or trace extents, and a metrics request as Tempo's frontend aligns it (`viz_traceql::align_request`) |
+| `tqFilePlan(table, fragments, lo, hi, traceId?)` | `viz_q_tq_file_plan` | Per `spans` file the row groups whose span starts overlap `[lo, hi]`; per `trace_index` file those whose fragments overlap it and, with an id, whose `[min_tid, max_tid]` holds it; byte ranges with the footer (as `filePlan`) |
+| `tqExtent(indexFiles, tail, lo, hi, traceId?)` | `viz_q_tq_extent` | The traces whose extent overlaps the window (or the one id), from `trace_index` fragments merged per trace and the tail's spans: how many, the hull of their extents, and the `spans` hours holding them |
+| `tqSearch(spanFiles, tail, query, req)` | `viz_q_tq_search` | Tempo's `/api/search` body (`viz_traceql::search`) over the spans read; spans decoded and traces |
+| `tqMetrics(spanFiles, tail, query, req)` | `viz_q_tq_metrics` | Tempo's `/api/metrics/query_range` or `/query` body; a span-local plan keeps only the spans that start in the window (after de-duplication) |
+| `tqTrace(spanFiles, tail, id, version, maxSpans)` | `viz_q_tq_trace` | One trace as OTLP JSON in Tempo's form (`{"batches":[…]}`; v2 `{"trace":…}`), or null |
+| `tqTags`, `tqTagValues` | `viz_q_tq_tags`, `viz_q_tq_tag_values` | Tag names (v1 `tagNames`, v2 `scopes`) and values (v1 strings, v2 `{type, value}`; a `q` filter through `viz_traceql::matching_spansets`) of the spans that start in the window |
+| `lqPlan(kind, query, start, end, step)` | `viz_q_lq_plan` | `viz_logql::selectors`: matchers and half-open ranges per selector; an instant log query is `bad_data` |
+| `lqFilePlan(fragments, selectors)` | `viz_q_lq_file_plan` | Per `logs` file the row groups some selector reads: by time, and by the fragment's stream list (labels matched with Go's dialect, as LogQL does) when it has one, else by `service_name` bounds |
+| `lqQuery(logFiles, tail, query, req)` | `viz_q_lq_query` | Loki's `data` object (`viz_logql::query_range` / `query_instant`); rows of streams no selector matches, or outside every selector's range, are dropped before they are held |
+| `lqLabels(kind, name, selectors, start, end, fragments, logFiles, tail)` | `viz_q_lq_labels` | Loki's `/labels`, `/label/<name>/values`, `/series` arrays, from the fragments' stream lists, the `labels` and `ts` columns of files without one, and the tail |
+
+- **One logical view, wherever rows live.** Spans and log rows are rebuilt as the contracts'
+  logical views (`contracts/TRACES.md` "Logical view", `contracts/LOGS.md` §3) from Parquet
+  (promoted columns and residual maps merged) and from `VZB1` batches alike, and de-duplicated
+  on their row keys with the later row winning: files in the order given (ascending
+  precedence), then tail batches in order. A trace's summary is computed from the spans read,
+  never from `trace_index` counts (which over-count retried spans); fragments only say what to
+  read.
+- **Strict about signals.** A span operation fed a log or metric batch, or a log operation fed
+  anything but signal 3, is an `internal` error: the decoders check the header.
+- **Limits**: `max_spans`, `max_rows` bound the rows decoded (files and tail); past them, an
+  `execution` error naming the limit (the binding's `QueryError.limit`). TraceQL's series and
+  points limits and LogQL's steps and series are passed per call.
+- **Existing operations are byte-compatible.** No request or answer of ABI 5 changed;
+  `tools/check.mjs` passes unchanged. The ABI number moved to 6 because operations were added
+  (a binding of one version refuses a module of the other, as for ABI 3 and 4).
+- `serde_json` is built with `float_roundtrip`: doubles inside canonical OTLP JSON (arrays,
+  key-value lists) parse to the value written. Without it one value of the read-back corpus
+  (`-2.25e-300`) parsed one ulp off.
 
 - **No imports.** The crate applies the three `[patch.crates-io]` stand-ins of
   `../query/patches` (`web-time`, `js-sys`, `wasm-bindgen`), so the module has no
@@ -103,6 +145,13 @@ node tools/check.mjs          # load proof and size report, in Node
 
 ## What is not implemented
 
+- **Traces and logs** (ABI 6): column projection by the TraceQL plan's columns (every span is
+  decoded whole, every attribute held: the main memory cost); the trace id bloom filters and a
+  page-level read for trace by ID (a row group is decoded whole to find one trace); split
+  execution (partials) for TraceQL or LogQL; the logs token filter (no builder exists); a
+  streaming LogQL source (every row a query reads is held until it is evaluated); nested-set
+  columns; a native test of these operations below the ABI (they are tested through the
+  binding in workerd, and the in-memory oracle is native).
 - **The write half** (`encodeSegment`, `mergeFiles`): that is `engine/wasm`.
 - **Page reads.** A plan reads whole row groups and the footer; pages are skipped in memory
   (`engine/storage`, DECISIONS D41).
@@ -176,6 +225,38 @@ copied into linear memory, which agrees with the native figure in
 `engine/query/README.md` (20.2 MiB of heap above the inputs). Through the Worker, with
 24 small files instead of 2 and the last ten minutes in two tail batches, the same query
 peaked at 21.6 MiB (`query/README.md`, "Measurements").
+
+### 2026-11-19: traces and logs (ABI 6)
+
+Rebuilt with `./build.sh` (`-j 2`), measured here:
+
+| | ABI 5 (before) | ABI 6 (after) |
+|---|---:|---:|
+| `js/viz_query.wasm` | 3,165,021 | **4,442,611** (+1,277,590) |
+| `gzip -9` | 988,820 | **1,423,375** (+434,555) |
+| imports | 0 | **0** |
+| exports | 28 | **40** (twelve operations added) |
+
+For comparison, the engines' own probes: `viz-traceql` alone 1,275,756 B (428,833 gzip),
+`viz-logql` with `viz-promql` 2,436,954 B (762,419 gzip). Linked into this module they add
+1.28 MB (0.43 MB gzip): `viz-promql`, `promql-parser`, the `regex` engine and the Parquet
+reader were here already; what is new is the two engines' own code, `engine/goregex`, the
+`parquet` crate's record API that the span and log readers use, and exact float parsing.
+`wrangler deploy --dry-run` was not re-run (no deploy in this work); at about 1.4 MB gzip the
+module stays well under the Workers script size limits.
+
+**Memory on a large read** (measured here, local workerd through the whole query Worker,
+`query/test/signals.bench.ts`, each call on a fresh instance so the figure is its peak of
+linear memory; load average about 3): see `query/README.md`, "Traces and logs",
+"Measurements". In short: about 1.5 KiB of WASM memory per span held (a search over 40,000 spans
+peaked at 62 MiB, files included), about 1 KiB per log row held (83 MiB for 80,000 rows; a query
+selecting one stream of the same files, 15 MiB); trace by ID holds one trace but decodes every
+span of the row groups its hours name (37 MiB at 40,000 spans an hour). These are why the query
+Worker's `maxSpans` (40,000) and `maxLogRows` (60,000) defaults are what they are.
+
+`node tools/check.mjs`: every check passes (no new check: the span and log operations are
+exercised through the binding in workerd by `query/test/signals.test.ts`, 18 tests, against the
+engines' in-memory answers). `query/test/engine.test.ts` asserts the 40 exports and ABI 6.
 
 ### 2026-11-19: foreign series in the extract (ABI 5)
 
@@ -262,7 +343,9 @@ host the same day: `engine/query` `cargo test` 37 passed (3 min 9 s); `engine/pr
 
 ## Contract issues
 
-Against `contracts/engine.ts` (not edited). The first five repeat `engine/query/README.md`
+Against `contracts/engine.ts`. Since 2026-11-19 the contract has the span and log operations of
+this module (`SignalEngine`) and the TraceQL and LogQL result shapes (contracts first, in their
+own change); the PromQL items below still stand. The first five repeat `engine/query/README.md`
 because this binding is where they become visible to TypeScript.
 
 1. **No error channel.** The contract's calls return results; this binding throws

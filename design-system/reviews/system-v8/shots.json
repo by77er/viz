@@ -232,6 +232,24 @@
    ],
    "clip": ".vz-panel:has([data-view=\"demo-pods\"]) .vz-controls",
    "pad": 16
+  },
+  {
+   "name": "chart-query-node-b-panel-1500",
+   "url": "dist/preview/Chart.html",
+   "width": 1500,
+   "scale": 1,
+   "clip": ".vz-panel:has([data-view=\"demo-nodeb\"])",
+   "pad": 8
+  },
+  {
+   "name": "chart-query-node-b-panel-320-coarse",
+   "url": "dist/preview/Chart.html",
+   "width": 320,
+   "coarse": true,
+   "scale": 1,
+   "measure": true,
+   "clip": ".vz-panel:has([data-view=\"demo-nodeb\"])",
+   "pad": 8
   }
  ]
 }

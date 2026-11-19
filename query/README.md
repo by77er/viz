@@ -2,7 +2,9 @@
 
 The read path as a service: a Worker that answers the Prometheus HTTP API for one
 tenant from that tenant's Parquet files on R2 and the rows still held by its shards, and
-the `Leaf` Durable Object it reads files through.
+the `Leaf` Durable Object it reads files through. Since 2026-11-19 it also answers Tempo's
+and Loki's HTTP APIs over the tenant's span and log tables and shards, behind
+`QUERY_SIGNALS` (off by default until the write side of stage 2 lands: "Traces and logs").
 
 ```
  client ─► query Worker ──plan──► engine (WASM)            which matchers, which time ranges; split or one place
@@ -25,7 +27,14 @@ the `Leaf` Durable Object it reads files through.
 | `src/coordinator.ts` | Plan, one ledger version, pruning, leaf fan-out, tail reads with the fence, evaluation; split execution (`runSplit`); the cardinality report |
 | `src/leaf.ts` | `Leaf`: a stateless Durable Object that reads up to six objects from R2, extracts one part's rows from them (a reader), evaluates one part of a split query (a split leaf), summarises one part's series for the cardinality report, lists one part's series for a label call (`meta`), and reads the rest of a tail too large for its coordinator in its key range |
 | `src/tail.ts` | Tail reads (D48): the filter a read sends (`tailFilter`), pages under a byte budget (`readPages`), the cut of a tail by `series_id` (`cutById`), and a part's own reads of the rest (`readRests`) |
-| `src/config.ts` | Bindings, per-tenant limits (`limits:<tenant>` in KV) and their defaults |
+| `src/config.ts` | Bindings, per-tenant limits (`limits:<tenant>` in KV) and their defaults; `QUERY_SIGNALS` |
+| `src/sigroutes.ts`, `src/sigparams.ts` | Tempo's and Loki's paths, parameters and defaults (traces and logs, behind `QUERY_SIGNALS`) |
+| `src/signals.ts` | Traces and logs: one ledger version of the span or log tables, file plans from the index fragments, files through the leaves, the signal's shard tails, the engine |
+| `src/shards.ts` | Which signal a shard holds (by name), the header check of every tail batch, and the shard signal filter coded against (off until it lands) |
+| `CLEANROOM.md` | The documentation the Tempo and Loki endpoints were written from |
+| `test/signals.test.ts`, `test/signals-load.ts` | Traces and logs: every endpoint against the engines' in-memory answers over three seeds, pruning on and off, tenancy, caps, signals in tails, the seam, the flag (18 tests) |
+| `test/signals.bench.ts` | The trace and log measurements (`npm run measure -- test/signals.bench.ts`) |
+| `tools/gen-signal-fixtures.sh`, `vitest.ledger.ts` | The trace and log fixtures (git-ignored; run before the tests); the ledger lines the tests need, applied to the test bundle only |
 | `wrangler.jsonc` | The production shape (not deployed to production; deployed twice as a staged copy, `deploy/README.md`) |
 | `test/stack.ts`, `test/wrangler.jsonc` | One script for tests: edge + Shard + Ledger + Flush + query + Leaf |
 | `src/meta.ts` | The label endpoints over leaves: the engine's order (code points; label sets pair by pair) and the exact union of listings (`Listing`) |
@@ -47,7 +56,8 @@ the `Leaf` Durable Object it reads files through.
 (cd ../engine/wasm && ./build.sh)         # the write path's module (flush needs it; owned by engine/wasm)
 (cd ../engine/wasm-query && ./build.sh)   # the read path's module
 npm install
-npx vitest run --maxWorkers=2              # 110 tests in workerd, 13 files, 2 to 6 minutes on a loaded machine (`npm test` uses every core)
+tools/gen-signal-fixtures.sh               # the trace and log fixtures (test/fixtures/signals/, git-ignored; builds a native example)
+npx vitest run --maxWorkers=2              # 130 tests in workerd, 14 files, 2 to 6 minutes on a loaded machine (`npm test` uses every core)
 npx tsc --noEmit                           # clean
 npm run measure                            # both local measurements (split execution about 2 minutes, cardinality about 3)
 node tools/mutants.mjs                     # the mutation check, on a scratch copy of the tree (never edits this one)
@@ -518,6 +528,174 @@ fails the call (503, the RPC throws twice).
   gradual deployment a coordinator of one release can call a leaf of the other; both are
   in the same script, so this needs a `v` on the requests and an `unsupported_version`
   answer before either format changes.
+
+## Traces and logs (2026-11-19, behind `QUERY_SIGNALS`)
+
+Tempo's and Loki's HTTP APIs over a tenant's `spans`, `trace_index` and `logs` files
+(`contracts/TRACES.md`, `contracts/LOGS.md`) and the tails of its `{pool}/traces/{slot}` and
+`{pool}/logs/{slot}` shards (D57). **Off by default**: `QUERY_SIGNALS` (`traces`, `logs`, or
+both) turns the paths on; without it they are 404 as before. They stay off in production until
+the write side of stage 2 lands (shards, flush and the ledger's tables: "Needed changes
+elsewhere"). Written from the APIs' documentation only (`CLEANROOM.md`).
+
+| Endpoint | Supports | Not supported (answered `unsupported`, 422, or as noted) |
+|---|---|---|
+| `GET /api/traces/<id>`, `/api/v2/traces/<id>` | ids of up to 32 hex digits (shorter ones left-padded, Tempo's 64-bit ids); `start`/`end` (seconds) narrow the `trace_index` read; v1 `{"batches":[…]}`, v2 `{"trace":{"batches":[…]}}`; 404 when not found | `q`, `keep_hierarchy`, `match_depth`, `ancestor_depth`, `span_pruning*` (other than `span_pruning=false`); `Accept: application/protobuf` and the LLM format (JSON is always answered) |
+| `GET /api/search` | `q` (TraceQL; default `{ }`), `limit` (20), `spss` (3), `start`/`end` (seconds; default the last hour) | `tags`, `minDuration`, `maxDuration` (tag-based search) |
+| `GET /api/search/tags`, `/api/v2/search/tags` | `scope` (`resource`, `span`, `intrinsic`, `event`, `link`, `instrumentation`), `start`/`end`, `limit` per scope | `maxStaleValues` (ignored), `q` on v2 tags (ignored) |
+| `GET /api/search/tag/<tag>/values`, `/api/v2/search/tag/<tag>/values` | v1: string values of a span or resource attribute; v2: TraceQL identifiers (`.k`, `span.k`, `resource.k`, `event.k`, `link.k`, `instrumentation.k`, `name`, `status`, `kind`, `statusMessage`) with types, and `q` (a filter that does not parse filters nothing, as Tempo documents) | other intrinsics as tags (400), `maxStaleValues` (ignored) |
+| `GET /api/metrics/query_range`, `/api/metrics/query` | `q`, `start`/`end` (seconds, nanoseconds of 13 or more digits, or RFC 3339) or `since` (default 1 h), `step` (Go or Prometheus durations; default the range over 250 points), aligned as Tempo's frontend aligns it | `exemplars` (ignored; none are returned) |
+| `GET|POST /loki/api/v1/query_range` | `query`, `start`/`end`/`since` (integers are nanoseconds, floats seconds, RFC 3339; default the last hour), `step` (default as above), `limit` (100, at most 100,000), `direction` | `interval` |
+| `GET|POST /loki/api/v1/query` | `query` (metric queries; a log query is 400 as in Loki), `time` (default now), `limit`, `direction` | |
+| `GET|POST /loki/api/v1/labels`, `/loki/api/v1/label/<name>/values` | `start`/`end`/`since` (default 6 h), `query` (a stream selector) | |
+| `GET|POST /loki/api/v1/series` | `match[]` (at least one; the union), `start`/`end`/`since` | |
+
+Tempo bodies are Tempo's (no envelope) and its errors plain text; Loki's are
+`{"status":"success","data":…}` and errors the same envelope as the Prometheus API. Every answer
+carries the cost headers, with two new ones: `X-Viz-Scan-Rows` (rows of the row groups the
+fragments say the query reads) and `X-Viz-Rows-Decoded` (spans or log rows the engine decoded,
+the tail's included). `X-Viz-Pruning` is `fragments`, `hours` (trace by ID) or `off`.
+
+### How a query runs
+
+The same seam as for metrics (design §2): the ledger first, at one version for every table a
+query needs; then files through the leaf pool (at most six reads per leaf call, `fetchFiles`) and
+the shards' tails in parallel, strictly after the plan and above its watermarks
+(`readTails`: a `stale_watermark` or a newer stream sends the query back to the ledger, three
+times per shard at most, then 503; never an empty or partial tail). One place evaluates.
+
+- **Logs.** The engine's `lqPlan` gives each selector's matchers and half-open range; one
+  `plan(logs, hull)`; per file the row groups some selector reads, from the fragment's stream
+  list (labels matched as LogQL matches them) and times (`lqFilePlan`: byte ranges with the
+  footer, or the whole object when they would cover half of it); the engine drops, before it
+  holds them, rows of streams no selector matches and rows outside every selector's range (both
+  are parts of the row key, so de-duplication is unchanged). The token filter is not used: no
+  builder exists.
+- **Search, and metrics that are not span-local.** `plan(trace_index, window)`; the row groups
+  whose fragments overlap the window; with the tail, the engine finds the traces whose extent
+  overlaps it and the hull of their extents (`tqExtent`); `plan(spans, hull)`, which must be at
+  the same ledger version (else the query starts again); the span row groups whose starts
+  overlap the hull. So every span of every trace the answer can name is read, and a trace's
+  summary (root, duration, per-service counts) is computed from its spans, exactly as the
+  engine's in-memory source computes it (`trace_index` counts over-count retried spans: they
+  are used only to plan).
+- **Span-local metrics** (`{…} | rate() by (…)` without structural operators or trace-level
+  intrinsics): `plan(spans, window)` only, and the engine keeps the spans that start in the
+  window, after de-duplication.
+- **Trace by ID.** `plan(trace_index, start/end or all time)`; only the row groups whose
+  `[min_tid, max_tid]` holds the id (from the fragment, before any read); the trace's fragments
+  (and its tail spans) give its extent and its `spans` hours; `plan(spans, extent)` and of those
+  files only the ones whose hour the fragments name (a flush writes one `spans` file per hour, so
+  a file's hour is that of its `minTs`), their row groups by time.
+- **Tags and tag values**: `plan(spans, window)`, the spans that start in the window.
+
+### Which shard holds which signal
+
+A plan's watermarks name every stream the ledger has registered, metric, span and log alike
+(D57 registers the derived pools' streams too). A metric tail read sent to a span shard fails:
+the shard's filter throws on a batch that is not signal 1 (shard/src/tail.ts), and a shard of
+the previous release would hand span bytes to the metrics engine. **Before this change every
+metrics query of a tenant with a span or log stream registered would have failed.** Now:
+
+- every read asks only its signal's shards, by name (`src/shards.ts` `signalOfShard`:
+  `…/traces/{slot}` spans, `…/logs/{slot}` log records, anything else metrics; the tenant's
+  current metric slots are always metrics);
+- **every batch a tail read returns is checked by its header**: a batch of another signal refuses
+  the query with a retryable 503 naming the shard (`WrongSignal`), it is never read as the wrong
+  signal and never dropped;
+- span and log tails are read with paging only (no filter fields: the shard's filter reads
+  metric batches only), under what the files leave of `maxFetchBytes`.
+
+The shard's tail filter has no signal field yet; one is being added by the write side's
+engineer. `src/shards.ts` is coded against the shape `signals: [n]` (`shardSignalFilter`, off
+until the shard's contract text lands; a test runs every endpoint with it on against today's
+shards, which ignore the field).
+
+### Caps
+
+Checked before anything is fetched, from the ledger's sizes and the fragments' row counts:
+`maxFiles` (both rounds of a trace query together), `maxFetchBytes` (files; then files plus the
+tail, as for metrics), and **`maxSpans` (40,000) / `maxLogRows` (60,000)** on the rows of the row
+groups a query reads. The engine checks the same caps again as it decodes, the tail's rows
+included (`max_spans`, `max_rows`: 422 naming the limit). TraceQL: `maxTraceSeries` (10,000),
+`maxTracePoints` (11,000 per series); LogQL: `maxSeries`, `maxSteps`. The isolate's byte budget
+applies as for metrics. A query over a cap is refused (422); split execution is not built for
+traces and logs, so one isolate is the bound (below, and D62).
+
+### Measurements (measured here)
+
+Local workerd through the whole Worker (`test/signals.bench.ts`): ledger, leaves reading
+miniflare's R2, the shard tail, the engine. Synthetic data of `engine/wasm-query/examples/
+signal_bench.rs` (the generator of `engine/storage/examples/otel_bench.rs`: ~12 spans a trace
+over one hour, 6 to 8 attributes; logfmt lines of 80 to 260 bytes in 50 streams), flushed in
+units of 20,000 rows, the last batch of each signal left in the tail. Three runs per call, each
+on a fresh engine instance (so the memory is that call's peak); caps raised for the tenant.
+**Load average 2 to 3**, 4 shared cores, 2026-11-19 08:32 UTC. Not on Cloudflare.
+
+| Data | Call | Wall ms (median of 3) | Engine ms | Read | Rows decoded | Peak WASM |
+|---|---|---:|---:|---|---:|---:|
+| 20,000 spans, 50,000 log rows | trace by ID (4 ids) | 237–264 | 224–232 | 3 files, 1.8 MiB + 0.2 MiB tail | 20,000 | 21.1 MiB |
+| | LogQL `sum by (service_name) (count_over_time({service_name=~".+"} \| keep service_name [5m]))`, 1 h at 60 s | 402 | 386 | 3 files, 2.7 MiB + 0.4 MiB | 50,000 | 50.6 MiB |
+| | LogQL `{service_name="app-3"} \|= "level=error"`, limit 100 | 196 | 183 | 3 files, 2.7 MiB + 0.4 MiB | 50,000 (4,000 kept) | 11.4 MiB |
+| | TraceQL search `{ status = error }`, 1 h | 372 | 357 | 3 files, 1.8 MiB + 0.2 MiB | 20,000 | 32.0 MiB |
+| 40,000 spans, 80,000 log rows | trace by ID (4 ids) | 478–518 | 446–494 | 6 files, 3.6 MiB + 0.3 MiB | 40,000 | 36.7 MiB |
+| | LogQL metric query above | 596 | 571 | 4 files, 4.4 MiB + 0.4 MiB | 80,000 | 82.8 MiB |
+| | LogQL log query above | 300 | 280 | 4 files, 4.4 MiB + 0.4 MiB | 80,000 | 14.9 MiB |
+| | TraceQL search above | 784 | 753 | 6 files, 3.6 MiB + 0.3 MiB | 40,000 | 62.4 MiB |
+
+What this says: the engine dominates (the files are a few MiB and few: miniflare's reads are
+cheap, Cloudflare's cost about one round trip each, AGENTS.md). **Trace by ID costs the hour, not
+the trace**: a flush unit of 20,000 spans is one row group, and the record-API reader decodes
+every span of it to find one trace (12 µs a span here). Memory is about 1.5 KiB per span held
+and 1 KiB per log row held (every attribute and the resource are copied per span, as the
+engines' seams take them), which is what sets `maxSpans` and `maxLogRows` (about 60 MiB each, at
+the size of a tenant's busy hour of a few tens of thousands of rows). Two changes measured on the
+way: holding each log row once, its stream's labels shared (106.4 to 82.8 MiB at 80,000 rows,
+800 to 571 ms), and dropping rows no selector reads before holding them (82.8 to 14.9 MiB for the
+one-stream query). Not measured: larger sizes through the Worker (a fixture module over about
+12 MB does not reach the test runner: one message is at most 32 MiB), and anything on Cloudflare.
+
+### Verification
+
+`test/signals.test.ts` (18 tests, in workerd) against fixtures from
+`tools/gen-signal-fixtures.sh`: per seed (1, 2, 3), `edge/scripts/otel-corpus.mjs` makes OTLP and
+Loki push requests and decodes them with edge's own decoders into `VZB1` batches (239 to 302
+spans in 45 traces with retries, clamped ends, orphans and every attribute type; 859 to 976 log
+rows over 4 hours across a day boundary); `examples/signal_fixtures.rs` flushes the first 70 % of
+each signal's batches in three units with the stage-1 encoders and computes 128 cases' answers
+with the engines' **in-memory** sources over every batch (no Parquet, none of the read path's
+code; trace by ID, tags and labels written out by hand from the decoded rows). The test appends
+every batch to the tenant's shards, puts each unit's files in R2 and admits them with
+`ledger.addUnit`, so the tail is what lies above the units' watermark; another tenant's data
+(the next seed) shares every shard. The ledger accepts the tables through `vitest.ledger.ts`,
+which applies to the test bundle only the two ledger lines "Needed changes elsewhere" asks for.
+
+- every endpoint, 128 cases a seed, both tenants: the answer equals the in-memory one (Tempo
+  bodies byte for byte without their `metrics`, which count what was inspected; Loki bodies byte
+  for byte, `stats` included; trace JSON, tags and labels as JSON values);
+- pruning off (every file whole, every span hour, the span hull all time): the same answers, with
+  files skipped when on; trace by ID reads less than half the bytes with its hours;
+- tenancy: `X-Scope-OrgID`, `X-Viz-Tenant`, `tenant=` and `orgId=` naming the other tenant change
+  nothing; 401 and 403;
+- caps: `max_fetch_bytes`, `max_files`, `max_spans` and `max_log_rows` refused before any R2 read;
+  `max_spans` and `max_rows` by the engine when only the tail takes a query over;
+- signals in tails: a metrics query of a tenant whose ledger names span and log streams answers
+  exactly; a span batch in a metrics read, a span batch in a log read and a log batch in a span
+  read are each 503; the signal field on; shards of the previous release (unpaged);
+- the seam: a shard that refuses a read sends the query back to the ledger and the next attempt
+  answers exactly; one that keeps refusing is 503;
+- the flag: without `QUERY_SIGNALS` every Tempo and Loki path is 404.
+
+Run 2026-11-19 (08:35 UTC, load average 3): the whole suite **129 of 129** in 14 files (82 s),
+then 130 with the signal-field test; `npx tsc --noEmit` clean; `node
+../engine/wasm-query/tools/check.mjs` passes. Also added (shard/README.md, "Needed changes
+elsewhere", R2 item 2): `fence.test.ts` "registration before writes (D61)": spec F6(b) (shards in
+mode `logged`; flushed and logged after the plan, then the shards lose their storage: the exact
+answer, `Plan-Attempts` 2) and the F6 liveness trace (never flushed, storage lost: 200 without the
+rows in two attempts, then one), both against the real coordinator.
+
+**Mutants (on a scratch tree, `node tools/mutants.mjs 74 75 76 77 78 79`)**: see "Mutation
+check", rows 74 to 79.
 
 ## Not implemented
 
