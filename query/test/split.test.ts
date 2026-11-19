@@ -353,11 +353,16 @@ describe('split execution', () => {
     const obj = await env.BUCKET.get(victim)
     const bytes = new Uint8Array(await obj!.arrayBuffer())
     await env.BUCKET.delete(victim)
+    // Readers cache byte ranges under their own keys (`cacheUrl` with offset and length), which an
+    // earlier test may have filled; whole reads use the one key cleared here, so the missing object
+    // is met whatever ran before (a missing range goes through the same `missing` result).
+    leafHooks.wholeReads = true
     await fileCache().delete(cacheUrl({ key: victim }))
     try {
       const res = await run(w.a.key, rateSumBy)
       expect([res.status, (await res.json<{ errorType: string; data?: unknown }>()).errorType, cost(res, 'Plan-Attempts')]).toEqual([503, 'unavailable', 4])
     } finally {
+      leafHooks.wholeReads = undefined
       await env.BUCKET.put(victim, bytes)
     }
     expect(await (await run(w.a.key, rateSumBy)).json()).toEqual(expected.a['rate-sum-by'])
