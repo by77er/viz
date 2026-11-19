@@ -57,7 +57,7 @@ const NESTED = [
   ['by() argument', S, n => `{ } | by(.a${rep(' + .a', n)})`],
   ['metrics argument', M, n => `{ } | sum_over_time(.a${rep(' + .a', n)})`],
   ['metrics by() argument', M, n => `{ } | rate() by (.a${rep(' + .a', n)})`],
-  ['regex in field parentheses', S, n => `{ ${rep('(', n)}name =~ "${rep('(', 64)}op.${rep(')', 64)}"${rep(')', n)} }`],
+  ['regex in field parentheses', S, n => `{ ${rep('(', n)}name =~ "${rep('(', 64)}.*${rep(')', 64)}"${rep(')', n)} }`],
 ];
 const FLAT = [
   ['pipeline stages', S, n => `{ }${rep(' | { }', n)}`],

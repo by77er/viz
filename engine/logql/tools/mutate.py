@@ -4,7 +4,8 @@ scratch directory (never to the shared tree), run the suites, and report which c
 
     MUTATE_DIR=/path/to/scratch python3 -I tools/mutate.py [--loki-cases cases.json --loki loki.json]
 
-Suites: `unit` (cargo test --lib), `api` (tests/api.rs), `semantics` (tests/semantics.rs), `conformance` (tests/conformance.rs,
+Suites: `unit` (cargo test --lib), `api` (tests/api.rs), `semantics` (tests/semantics.rs),
+`limits` (tests/limits.rs), `conformance` (tests/conformance.rs,
 needs testdata/loki-oracle/cases.json), `props` (tests/props.rs, PROPTEST_CASES=32) and, with
 --loki-cases/--loki, `differential`: the case file is re-exported from the mutant with the
 same generator seed and rounds and compared with the Loki outputs already recorded for it
@@ -66,6 +67,22 @@ MUTANTS = [
      'LineFilterOp::Contains => {\n                    let lits', 'LineFilterOp::Contains | LineFilterOp::NotContains => {\n                    let lits'),
     (21, 'rate_counter ignores counter resets', 'src/eval.rs',
      'if v < prev {\n            increase += prev;\n        }', ''),
+    (23, 'query parser recursion not bounded', 'src/parser.rs',
+     'if self.depth > MAX_DEPTH {\n            return Err(self.err_here(', 'if false {\n            return Err(self.err_here('),
+    (24, 'syntax tree height not bounded (operator and label-filter chains)', 'src/parser.rs',
+     'if h > MAX_DEPTH {', 'if false && h > MAX_DEPTH {'),
+    (25, 'template parentheses not bounded', 'src/template/mod.rs',
+     'if self.depth > MAX_DEPTH {\n            return Err(too_deep());', 'if false {\n            return Err(too_deep());'),
+    (26, 'template blocks not bounded', 'src/template/mod.rs',
+     'if self.depth > MAX_DEPTH {\n            return Err(TemplateError::Parse(too_deep()));', 'if false {\n            return Err(TemplateError::Parse(too_deep()));'),
+    (27, 'JSON reader (fromJson) depth not bounded', 'src/json.rs',
+     'if depth > MAX_DEPTH {\n            return Err("document nested too deeply".into());', 'if false {\n            return Err("document nested too deeply".into());'),
+    (28, 'json/unpack skip of nested values not bounded', 'src/jsonwalk.rs',
+     'if depth > MAX_DEPTH {\n            return Err(E_MAL);\n        }\n        self.ws();', 'self.ws();'),
+    (29, 'json parser object walk not bounded', 'src/jsonwalk.rs',
+     'if depth > MAX_DEPTH {\n            return Err(E_MAL);\n        }\n        self.i += 1;', 'self.i += 1;'),
+    (30, 'regex nesting limit lifted', 'src/goregex.rs',
+     '.size_limit(16 << 20)', '.size_limit(16 << 20).nest_limit(u32::MAX)'),
     (22, 'equal timestamps in a backward log query tie-broken by descending stream labels', 'src/eval.rs',
      'b.0.cmp(&a.0).then_with(|| keys[a.2].cmp(&keys[b.2])).then(b.1.cmp(&a.1))',
      'b.0.cmp(&a.0).then_with(|| keys[b.2].cmp(&keys[a.2])).then(b.1.cmp(&a.1))'),
@@ -96,6 +113,7 @@ def main():
     env = {'CARGO_TARGET_DIR': os.path.join(work, 'target'), 'PROPTEST_CASES': '32', 'CARGO_BUILD_JOBS': '2'}
     suites = [('unit', ['cargo', 'test', '-q', '--lib']), ('api', ['cargo', 'test', '-q', '--test', 'api']),
               ('semantics', ['cargo', 'test', '-q', '--test', 'semantics']),
+              ('limits', ['cargo', 'test', '-q', '--test', 'limits']),
               ('conformance', ['cargo', 'test', '-q', '--test', 'conformance']),
               ('props', ['cargo', 'test', '-q', '--test', 'props', '--', '--test-threads', '2'])]
     if pick:

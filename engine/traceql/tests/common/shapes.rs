@@ -40,6 +40,11 @@ pub const NESTED: &[Shape] = &[
     Shape { name: "aggregate argument", make: |n| format!("{{ }} | avg(.a{}) > 0", rep(" + .a", n)), max: 196 },
     Shape { name: "by() argument", make: |n| format!("{{ }} | by(.a{})", rep(" + .a", n)), max: 196 },
     Shape { name: "metrics argument", make: |n| format!("{{ }} | sum_over_time(.a{})", rep(" + .a", n)), max: 196 },
+    Shape {
+        name: "regex in field parentheses",
+        make: |n| format!("{{ {}name =~ \"{}.*{}\"{} }}", rep("(", n), rep("(", 64), rep(")", 64), rep(")", n)),
+        max: 197,
+    },
     Shape { name: "metrics by() argument", make: |n| format!("{{ }} | rate() by (.a{})", rep(" + .a", n)), max: 196 },
 ];
 

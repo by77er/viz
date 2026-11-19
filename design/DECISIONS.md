@@ -1447,3 +1447,55 @@ not). CPU per filtered read is proportional to the shard's whole tail for that t
 **Would change if.** Filtered reads show on the shard's CPU under load (then (b)); queries need
 regular-expression matchers or `without` splits pushed down; or `query/` prefers failing on an
 old shard to filtering itself (then (c)).
+
+## D49. LogQL's vector operations run on viz-promql's evaluator, through its hooks
+
+**Decision.** `engine/logql` computes LogQL's range aggregations itself, then prints the rest of
+a metric query as PromQL whose leaves are placeholder selectors, and evaluates it with
+`viz-promql` (`query_range_expr` / `query_instant_expr` with an `EvalHooks::replace` that
+supplies the placeholders' values). Vector aggregations, binary operators with vector matching,
+`label_replace` and `vector()` therefore have one implementation for both languages. The
+translation applies the two LogQL rules that differ: a comparison between two scalars returns
+0 or 1 without `bool`, and `label_replace`'s regular expression is translated to the Go dialect.
+
+**Alternatives.** (a) A LogQL evaluator of its own for the vector layer. (b) One logical plan for
+PromQL, TraceQL and LogQL that all three lower into (§6.1), with one executor.
+
+**Why.** LogQL's documentation defines these operations as PromQL's; `viz-promql` is already
+checked against the Prometheus corpus and a Prometheus differential, and the LogQL differential
+run against Loki agrees with it except where Loki's own grouping of empty-valued labels creates
+duplicate series (`engine/logql/README.md`). (a) would duplicate about a thousand lines of subtle
+code (matching errors, compensated sums) and drift from it. (b) is the stated direction but does
+not exist yet; the hook keeps LogQL's own part small enough to move onto it later. The cost is
+that `viz-logql` links `promql-parser` (most of its 2.4 MB WASM module, none of it extra inside
+`engine/wasm-query`, which links it already) and evaluates a printed query.
+
+**Would change if.** Loki's vector semantics move away from PromQL's further than the translation
+can absorb, `viz-promql`'s evaluator changes in a way LogQL must not follow, or the shared plan of
+§6.1 is built.
+
+## D50. Where Loki's documentation is silent, viz-logql follows Loki's observed behaviour
+
+**Decision.** `engine/logql` is written clean-room from Loki's documentation (Loki is AGPL-3.0).
+Where the documentation does not decide a behaviour (window edges, error-label wording and
+precedence, parser corner cases, label-name sanitising, filter ordering, `rate_counter`'s
+arithmetic, ties at the log limit), it reproduces what Loki v3.7.10 returns when run as a black
+box, and records each finding (`engine/logql/README.md`, `CLEANROOM.md`). It departs only where
+Loki contradicts its own documentation or is inconsistent: metric queries whose samples carry
+parser errors fail even under `sum`, entries of merged streams are sorted by time, empty-valued
+labels do not produce duplicate series, and ties are broken deterministically.
+
+**Alternatives.** (a) Implement the documented behaviour only and leave the rest to judgement.
+(b) Port Loki's code. (c) Follow the documentation and Prometheus' conventions where Loki's
+differ from them.
+
+**Why.** viz serves Loki's HTTP API so that Grafana and existing queries work unchanged; a
+query that returns different lines or values than Loki is a bug to the people running it, and
+the documentation leaves dozens of observable details open. (a) gave 41 differences on the first
+generated differential run; following observed behaviour brought the run to zero unexplained
+differences over 7,895 evaluations. (b) is ruled out by the licence. (c) would be cleaner where
+Loki looks wrong (`rate_counter`) but surprises users comparing the two.
+
+**Would change if.** A Loki release changes an observed behaviour (the differential run is pinned
+to a tag and would show it), or viz decides a Loki behaviour is a bug worth diverging from; each
+divergence is then listed in the README's "Differences from Loki".
