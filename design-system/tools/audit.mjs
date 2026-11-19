@@ -102,7 +102,7 @@ function audit({ coarse, words }) {
       while ((t = w.nextNode())) { if (!t.textContent.trim() || a.contains(t) || t.parentElement.closest('a, button, input, select, textarea, .vz-sr') || flow(t) !== block) continue; other = true; break } }
     const rects = [...a.getClientRects()], tallest = Math.max(...rects.map((r) => r.height)), lh = parseFloat(cs(block ?? a).lineHeight) || 20
     if (other && tallest > lh + 6) out.push(['sentence-link', `${name(a)} is inside a sentence in ${name(block)} but drawn ${Math.round(tallest)} px tall: it breaks its line`])
-    if (!other && !a.closest('td[data-key]')) { const r = rects[0], cx = r.left + r.width / 2, cy = r.top + r.height / 2; if (cy < 0 || cy > innerHeight || cx < 0 || cx > vw) continue
+    if (!other && !a.closest('td[data-key]')) { a.scrollIntoView({ block: 'center', inline: 'nearest' }); const r = a.getClientRects()[0], cx = r.left + r.width / 2, cy = r.top + r.height / 2; if (cy < 0 || cy > innerHeight || cx < 0 || cx > vw) continue // measured in view: outside the viewport nothing is hit
       const own = (y) => { const e = document.elementFromPoint(cx, y); return e && (e === a || a.contains(e)) }; let top = cy, bottom = cy; while (top > cy - 40 && own(top - 0.5)) top -= 0.5; while (bottom < cy + 40 && own(bottom + 0.5)) bottom += 0.5
       if (bottom - top + 0.5 < 44 && own(cy)) out.push(['sentence-link', `${name(a)} stands alone in ${name(block)} but its hit area is ${bottom - top + 0.5} px tall`]) } }
   return out

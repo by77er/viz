@@ -15,6 +15,10 @@ use viz_query::{files_needed, plan, scan_rows, selectors, Limits, Options, ScanI
 #[global_allocator]
 static A: Counting = Counting;
 
+fn opts_default() -> Options {
+    Options::default()
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let out = args.next().expect("OUT_DIR");
@@ -69,6 +73,20 @@ fn main() {
                 }
             };
             std::fs::write(format!("{out}/{n}-{}.txt", shape.name.replace(['/', ' '], "_")), &text).unwrap();
+            // A split's readers: every part extracts its rows from every file, whole.
+            if let (Some(l), Kind::Range(q)) = (leaves_of(&v), &shape.kind) {
+                if let viz_query::split::SplitPlan::Split { key, .. } = viz_query::split_plan(q, &opts_default()) {
+                    let ((digest, rows), _, cpu, peak) = measure(|| {
+                        let mut all = Vec::new();
+                        for part in 0..l {
+                            all.push(viz_query::split::extract(&series, &samples, &key, part, l, &ranges).unwrap().batch);
+                        }
+                        (rows_digest(&all), all.iter().map(|b| b.len()).sum::<usize>())
+                    });
+                    std::fs::write(format!("{out}/{n}-{}-extracts.txt", shape.name.replace(['/', ' '], "_")), format!("{digest:?}")).unwrap();
+                    println!("|   readers of {} over {l} parts | every part reads every file whole | | {} | {:.1} MiB | | | CPU {cpu:.0} ms (all parts), peak heap {:.1} MiB, extracts {:.1} MiB | {} rows | |", shape.name, l as usize * n_gets, mib(l as u64 * bytes), mib(peak as u64), mib(rows as u64), digest.0);
+                }
+            }
             let short = match &answer {
                 Ok(j) => format!("{} B", j.len()),
                 Err(e) => e.chars().take(70).collect(),

@@ -40,12 +40,24 @@
     "rebuild": "strict",
     "drainRetrySame": true,
     "baseFirst": true,
+    "baseTombstones": false,
     "compKey": "unique",
     "compConflictDelete": true,
     "fpScope": "stream",
     "tailScope": "stream",
     "noRetryAcrossLoss": true,
-    "retain": false
+    "retain": false,
+    "sweepSteps": false,
+    "sweepAge": true,
+    "purgeSteps": false,
+    "startSteps": false,
+    "goal": "query",
+    "sweepGone": "both",
+    "sweepOrder": "listFirst",
+    "sweepNewerLogged": true,
+    "maxSweeps": 99,
+    "maxRB": 0,
+    "rbFix": "none"
   },
   "props": [
     "I4_NoGapAtSeam"
@@ -56,7 +68,7 @@
   "states": 57644,
   "transitions": 272184,
   "depth": 17,
-  "seconds": 3.9,
+  "seconds": 5.4,
   "collisionProb": 9e-11,
   "violated": "I4_NoGapAtSeam",
   "trace": [

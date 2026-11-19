@@ -12,6 +12,27 @@ guards it, and shows that check failing on v5 first. "Before" is v5 exactly as r
 md5 `a17b9866…`), built by its own tools. Nothing outside `design-system/` was edited; `flows/`,
 `reviews/system-v4/`, `reviews/system-v5/` and `app/` were not touched. Nothing was published.
 
+## How it was checked
+
+All on this machine: 4 cores shared with other sessions, 16 GB; the 1-minute load average was 7 to 15
+throughout. One browser at a time, at most one test worker, every server stopped.
+
+- **Failing first, on v5.** The new chart-rule tests, the page audit and the reviewer's 32 mutants were
+  each run against the v5 copy before any v6 result was taken (the numbers are under each finding).
+- **`npm test`**: `chart-rules.test.mjs` (10 tests: the reviewer's sequences, flow screen 5, a
+  server-side filter, 400 random sequences of 30 steps checking P1 to P6, M2's cases, image 06) and
+  `check.test.mjs` (the corpus without its browser mutants).
+- **`tools/mutants.mjs`**: the whole corpus, browser mutants included, on copies in the session's scratch
+  area, each deleted after its run.
+- **`tools/check.mjs`** on the component CSS (with the rendered audit), the previews, the compositions,
+  the fixtures and, read only, the flow screens.
+- **`tools/audit.mjs`**: every page at 14 configurations (B2).
+- **Images**: `tools/shots.mjs` before (v5 copy, v5's CSS and chart) and after, same states, composed
+  side by side in `compare/`; compositions rendered and measured at 1500 px and 400 px with a coarse
+  pointer in both themes, greyscale, 200% zoom and hit areas, in `images/`. <!-- LOOKED -->
+- **Speed**: `tools/speed.mjs --compare`, both shipped scenarios, v5's fixture and v6's alternating run by
+  run, 3 runs each (not 20: see Speed).
+
 ## Blockers
 
 ### B1. Colour slots: a filtered-out series returned grey; a query edited and back greyed everything
@@ -102,7 +123,10 @@ rule for content wider than a kept column (a status could not wrap; a phrase cou
   outside it, a head or cell outside its table, a folding table that scrolls, a word cut by a clipping
   edge or out of view (outside strips that scroll on purpose and text cut on purpose with an ellipsis),
   and text below micro. Run on v5 first (quick set: 320 and 400 coarse, 720 at 200%, 1500): **126
-  findings**, among them every image of B2: the Table preview 249 / 169 px wider than the window at 320 /
+  findings** at first; with the audit's link classifier corrected (it read a link in a row of controls as
+  a link in a sentence) and serving pages over HTTP, **77 findings on 9 pages** (8 pages that scroll
+  sideways, 16 escaping elements, 22 folding tables that scroll, 26 cut words, 3 captions, 2 ages), among
+  them every image of B2: the Table preview 249 / 169 px wider than the window at 320 /
   400 (image 03), `dist/reference.html` 177 px at 400, the dialog composition 38 px at 200% (image 05)
   with the `vz-sr` head named as escaping, "budget" of "Burning budget" and "Actions…" cut at 400 coarse
   (image 04), plus what the review did not list: the Monitors fold table in the Table preview and the
@@ -114,7 +138,19 @@ rule for content wider than a kept column (a status could not wrap; a phrase cou
 - Corpus A1 to A3: the audit itself catches the escaping head, the cut state and the cut "Actions…" when
   each fix is removed.
 
-<!-- AUDIT-RESULT -->
+**Result on v6** (`tools/audit.mjs`, all 55 pages, 14 configurations, 770 loads; load 7 to 11 on 4
+cores, which does not affect layout): **0 findings on the system's pages** (31 previews, the reference,
+the fixture, 10 compositions). Getting there found five more pattern-level causes, all fixed in the
+system rather than in a page: a long `vz-status` could not wrap (Waterfall's "3 spans inside, 1 failed"
+at 320 px; flows 3 and 7); a panel meta part could not wrap (flows 12 at 320 px); a segmented control
+could not wrap (the reference's "All services / Without the three largest" at 320 px); the Table
+preview's Monitors list did not fit 640 px and so scrolled at 200% zoom (now `data-fold="wide"`); and a
+standalone link inside a Change item was exempted as if it were text. Two flaws in the audit itself were
+also found and fixed on the way: its first link classifier, and measuring a link while it sat at the
+viewport's edge. And one in the corpus: removing only the status wrap no longer breaks the list (the
+kept column's minimum width holds the words), and a word that overflows its cell now lies over the
+next cell instead of past the table's edge; the audit now treats a cell as a boundary, and A2 is v5's
+fold in both forms.
 
 ## Majors
 
@@ -222,7 +258,7 @@ press (`[data-pressed]`) and, at both pointers, reserved against drawn height fo
 
 **The corpus.** `tools/mutants-corpus.mjs` holds the reviewer's 32 mutants as X1 to X32 (each written
 from the review's description; several plant more than one literal, and each must be reported), with
-v4's R1 to R18, v5's N1 to N13, v6's V1 to V16, chart-rule mutants C1 to C9, page-audit mutants A1 to A4
+v4's R1 to R18, v5's N1 to N13, v6's V1 to V17, chart-rule mutants C1 to C9, page-audit mutants A1 to A4
 and harmless edits H1 to H4. `npm test` runs it (`tools/test/check.test.mjs`; `VIZ_SLOW=1` adds the
 mutants that need a browser); `tools/mutants.mjs` prints it as a table. Every mutant is applied to a copy
 outside the tree (the runner refuses a directory inside it).
@@ -331,4 +367,50 @@ No class was renamed or removed. What changes under existing markup:
   ("No series is coloured: …").
 - `series-other` is `#656565` / `#828282`; a progress bar uses `--ease-measured`.
 
-<!-- SECTIONS -->
+## Disagreements, and what was not done
+
+- **Minors not taken as asked** (m3, m8, G27): reasons in their rows above.
+- **A grey series is never promoted while it stays on screen**, even when a slot is free. The reviewer's
+  fix allowed reclaiming only on return, which is what v6 does; the consequence (a narrowing query edit
+  can leave only Other on screen) is said by the note, with "Colour the eight largest" beside it.
+- **Unsaved series in a stored panel map** (M2.5) are answered by a sentence, not by code: the system
+  has no stored-map implementation, and making every viewer agree would need the server to store the map
+  on every load, which is the application's decision.
+- **G25 and G11 wait**, as above.
+- **Not checked**: a screen reader by ear, Safari and Firefox (the scroll edge uses a scroll timeline,
+  which they may not draw; the table still scrolls), real touch hardware (every touch result here is
+  Chromium's emulation: a real Android browser may apply `:active` after its own delay, which is why the
+  press no longer depends on it), enlarged text as distinct from zoom, and the application (`app/`),
+  which is still on v4.
+- **The chart-rule tests run the reference implementation**; an application's chart must be checked
+  against the same properties (the tests take `VIZ_DS_ROOT`, and the properties are written as plain
+  asserts over `chartModel`'s output, so an implementation that exposes the same model can reuse them).
+
+## Files
+
+- `src/components.css` (v6), `src/press.js` (new), `project/tokens.json` (version 6; `series-other`;
+  `ease-measured`), `project/README.md`, `project/review.md`, `project/method.md`.
+- Components: Chart (`preview.html` rules as pure functions; three new panels: query round trip,
+  against the limit, change on last week; `README.md`), Table, Status, Field, Nav, Log, Waterfall, Button
+  READMEs; Table, Field, Log, Waterfall, Cover previews.
+- Tools: `check.mjs` (rebuilt), `lib/lint.mjs`, `lib/structure.mjs`, `mutants-corpus.mjs`, `mutants.mjs`
+  (rewritten), `audit.mjs` (new), `test/chart-rules.test.mjs`, `test/check.test.mjs`, `speed.mjs`
+  (touch, `send`, `--compare`, load per sample), `shots.mjs` (link classification, scrim, sheet, labels),
+  `build.mjs` (`viz-press.js`), `reference.mjs` (`dist/preview/`).
+- `fixtures/`: `dashboard.json` (stats from the charts, a second view), `build.mjs` (menu, theme, view,
+  press script), `speed.json` and `speed-phone.json` (the missing rows), `README.md`.
+- `package.json` (scripts; `css-tree` 3.2.1 and `parse5` 8.0.1 as exact dev dependencies) and
+  `package-lock.json`; `node_modules/` is ignored.
+- `reviews/system-v6/`: this file, `compositions/` (v5's ten, fixed), `shots-compare.json` and
+  `shots.json`, `compare/`, `images/`, `speed/`.
+- `README.md` (version 6, tools, history, the flows' status).
+
+## Housekeeping
+
+No mutant was applied in the tree: every one ran on a copy under the session's scratch directory, and
+the copies are deleted (the runner refuses a directory inside the tree). No edit is half-finished:
+the last runs of `check.mjs`, `npm test`, the corpus and the audit are on the tree as it is now (results
+above). Servers started by the audit, the harness and the debugging scripts were stopped when each
+ended. Git: one read-only `git diff --stat` was run by mistake early in the session; nothing else (no
+commit, no checkout). No Cloudflare resource was touched; nothing was published.
+

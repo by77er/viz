@@ -21,7 +21,10 @@ and physical deletes wait. Nothing else.
 | `tools/mutants.mjs` | Mutation checks |
 
 Bindings: Durable Object `PUBLISHER`, R2 bucket `BUCKET`, variable `ICEBERG_LOCATION_PREFIX`
-(default `s3://viz-lake`).
+(default `s3://viz-lake`). Deployed as **viz-publisher**, before viz-ingest, which binds its
+`Publisher` class (`deploy/workers.json`). The Worker answers only `GET /healthz` (200 `ok`
+with both bindings, 503 naming a missing one, 404 for anything else; it calls no object), for
+the deploy's record of a health route; nothing reaches the publisher over HTTP.
 
 ## What is implemented
 
@@ -43,7 +46,8 @@ cursors-{snapshot}-{tag}.json      {tenant: {ledgerIncarnation, version}} for ev
 which itself makes the ledger's compactions and expiries) ends with `nudge(PUBLISHER, cell,
 [tenant])`. `nudge` waits at most 2 s and never throws; it returns false if the nudge may not
 have been recorded, and the run then marks the tenant due in an hour so the cron runs it
-again. (That wiring is two lines in `stack/`, not done here: "Needed changes".) `notify`
+again. (Wired in `stack/src/maintain.ts` since 2026-11-19; `stack/README.md`, "The publisher
+wired in".) `notify`
 writes the tenants to `pending` and a `publish` deadline `publishIntervalMs` (2 min) after the
 first nudge, so nudges coalesce into one commit per table; it writes nothing to R2 and never
 publishes itself.
@@ -245,17 +249,14 @@ contract change; see "Contract issues").
 
 ## Not implemented
 
-- **The nudge is not wired.** `stack/` does not yet bind `PUBLISHER` or call `nudge` from the
-  maintenance run ("Needed changes"); until it does, nothing publishes without a caller.
 - **No backoff for a stuck tenant.** A tenant stopped by a hole, a corrupt or unsupported
   segment or an inconsistent change is retried every `retryMs` (1 min) for as long as it lasts.
-- **Physical deletion does not wait for publication.** The janitor's purge releases a removed
-  file on the ledger's tombstone rules alone; DESIGN §5.2 wants it to wait for the removal to
-  be published and its snapshots expired (`safeToDelete`). "Needed changes", 3.
 - **Managed catalog.** Only the R2-native implementation exists. The catalog interface of
   D4 has not been extracted; a REST catalog commit would be a second implementation.
-- **The deleter.** `safeToDelete` and `acknowledgeDeleted` exist; nothing calls them or
-  deletes data objects.
+- **A release for the newest snapshot's removals in a quiet cell.** `minSnapshots` is 2, so a
+  file removed by a table's newest commit is released only after a later commit to that table
+  and the window; if the cell publishes nothing more, it is never released (its object stays;
+  the janitor looks again every 6 h). The deleter is the janitor's purge (`janitor/README.md`).
 - **Paging over tenants.** One `publish()` reads every requested tenant's log in one
   invocation. A cell with thousands of tenants needs the publish split across invocations
   (R2 calls are subrequests).
@@ -289,7 +290,12 @@ MUTANT_DIR=<scratch>/mutants npm run mutants   # on a copy under MUTANT_DIR; see
 ```
 
 Last run (2026-11-19, segment reader and triggers): **77 passed, 0 failed**; `tsc --noEmit`
-clean. Run against `ledger/src/ledger.ts` as committed at `54cc31f` (segments, base first,
+clean.
+
+With the health route (2026-11-19): **78 passed, 0 failed** (9 files, `npx vitest run --maxWorkers=2`); `tsc --noEmit` clean. The one test added
+(`test/smoke.test.ts`, "the Worker") calls `src/index.ts`'s `fetch`: `GET` and `HEAD /healthz` 200
+`ok`, 503 `misconfigured: no BUCKET binding` without the bucket, `POST` 405, `/` and `/publish`
+404. The publisher's interface did not change. Run against `ledger/src/ledger.ts` as committed at `54cc31f` (segments, base first,
 checkpoints). The pool sets `LEDGER_DRAIN_DELAY_MS` to 60 s, so a ledger drains when a test
 says (`drain()`, `mirror`), and `LEDGER_CHECKPOINT_EVERY` to 3, so most logs carry checkpoints
 the publisher must not read. Before this change, against that ledger, 45 of 59 tests failed:
@@ -574,7 +580,8 @@ about 290 kB per commit (modelled from that slope, not measured).
 
 ## Needed changes
 
-In components others own; not edited from here.
+In components others own; not edited from here. **1, 2 and 3 are done** (2026-11-19: `stack/`,
+`deploy/`, `janitor/`; their READMEs say how and how it was tested); kept below as asked.
 
 1. **stack: nudge the publisher from every maintenance run** (D34). In the Worker that consumes
    `viz-maint`, bind the publisher's namespace, `{ "name": "PUBLISHER", "class_name":

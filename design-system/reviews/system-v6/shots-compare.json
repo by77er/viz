@@ -153,7 +153,6 @@
    "name": "b1-filter-new-pod-clear-1440",
    "url": "dist/preview/Chart.html",
    "scale": 1,
-   "height": 900,
    "steps": [
     {
      "eval": "document.querySelector('[data-filter-for=\"demo-pods\"] [data-filter=\"top3\"]').click(); document.querySelector('[data-add-pod=\"demo-pods\"]').click(); document.querySelector('[data-filter-for=\"demo-pods\"] [data-filter=\"\"]').click()"
@@ -171,7 +170,6 @@
    "width": 400,
    "coarse": true,
    "scale": 1,
-   "height": 900,
    "steps": [
     {
      "eval": "document.querySelector('[data-filter-for=\"demo-pods\"] [data-filter=\"top3\"]').click(); document.querySelector('[data-add-pod=\"demo-pods\"]').click(); document.querySelector('[data-filter-for=\"demo-pods\"] [data-filter=\"\"]').click()"
@@ -187,7 +185,6 @@
    "name": "b1-query-edit-and-back-1440",
    "url": "dist/preview/Chart.html",
    "scale": 1,
-   "height": 900,
    "steps": [
     {
      "eval": "const el = document.querySelector('[data-view=\"demo-pods\"]'); const s = vzChartDemos.many(36, 37); s.series.forEach((x) => { x.labels.service = 'search'; x.labels.pod = x.labels.pod.replace(/^[a-z-]+?-7d9f8c6b5/, 'search-7d9f8c6b5') }); el.vz.setData(s); el.vz.setData(vzChartDemos.s36())"
@@ -205,7 +202,6 @@
    "width": 400,
    "coarse": true,
    "scale": 1,
-   "height": 900,
    "steps": [
     {
      "eval": "const el = document.querySelector('[data-view=\"demo-pods\"]'); const s = vzChartDemos.many(36, 37); s.series.forEach((x) => { x.labels.service = 'search'; x.labels.pod = x.labels.pod.replace(/^[a-z-]+?-7d9f8c6b5/, 'search-7d9f8c6b5') }); el.vz.setData(s); el.vz.setData(vzChartDemos.s36())"
@@ -221,7 +217,6 @@
    "name": "m2-values-below-zero-1440",
    "url": "dist/preview/Chart.html",
    "scale": 1,
-   "height": 900,
    "steps": [
     {
      "eval": "const el = document.querySelector('[data-view=\"demo-bytes\"]'); const n = 61, t0 = Date.UTC(2026, 10, 18, 9, 16), w = (i) => 2 * Math.PI * i / 36; el.vz.setData({ unit: 'req/s', agg: 'mean', t0, step: 360000, series: [{ labels: { service: 'checkout-api' }, values: Array.from({ length: n }, (_, i) => +(120 * Math.sin(w(i))).toFixed(2)) }, { labels: { service: 'cart' }, values: Array.from({ length: n }, (_, i) => +(60 * Math.cos(w(i))).toFixed(2)) }] })"
@@ -239,7 +234,6 @@
    "width": 400,
    "coarse": true,
    "scale": 1,
-   "height": 900,
    "steps": [
     {
      "eval": "const el = document.querySelector('[data-view=\"demo-bytes\"]'); const n = 61, t0 = Date.UTC(2026, 10, 18, 9, 16), w = (i) => 2 * Math.PI * i / 36; el.vz.setData({ unit: 'req/s', agg: 'mean', t0, step: 360000, series: [{ labels: { service: 'checkout-api' }, values: Array.from({ length: n }, (_, i) => +(120 * Math.sin(w(i))).toFixed(2)) }, { labels: { service: 'cart' }, values: Array.from({ length: n }, (_, i) => +(60 * Math.cos(w(i))).toFixed(2)) }] })"
@@ -257,6 +251,43 @@
    "width": 1440,
    "zoom": 2,
    "scale": 1,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "dialog-list-closed-1440",
+   "url": "reviews/system-v6/compositions/dialog.html",
+   "scale": 1,
+   "steps": [
+    {
+     "eval": "document.getElementById('dlg').close()"
+    }
+   ]
+  },
+  {
+   "name": "dialog-list-closed-400",
+   "url": "reviews/system-v6/compositions/dialog.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "steps": [
+    {
+     "eval": "document.getElementById('dlg').close()"
+    }
+   ]
+  },
+  {
+   "name": "dialog-list-closed-zoom-200",
+   "url": "reviews/system-v6/compositions/dialog.html",
+   "width": 1440,
+   "zoom": 2,
+   "scale": 1,
+   "steps": [
+    {
+     "eval": "document.getElementById('dlg').close()"
+    }
+   ],
    "themes": [
     "light"
    ]

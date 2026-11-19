@@ -2,7 +2,7 @@
  * The ingest Worker's service surface: what other viz Workers ask viz-ingest for over a
  * service binding, never over HTTP. (Senders use the HTTP API: Remote Write, OTLP.)
  *
- * Added 2026-11-19 (decision D41). One entrypoint so far:
+ * Added 2026-11-19 (decision D44). One entrypoint so far:
  *
  *   RecordedSamples.write  the ruler's recording-rule output, written to the tenant's shards
  *                          exactly as a Remote Write request would be, without an API key

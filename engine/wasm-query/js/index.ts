@@ -247,9 +247,11 @@ export interface QueryEngine {
    * Series-level pruning (`engine/query` `sample_plan`): resolve each read's matchers
    * against `seriesFiles` (whole or sparse), keep `part`'s series if given, and say how to
    * read each sample file (`indexes`: their fragments) so that only the footer and the row
-   * groups holding a selected series are fetched. `series`: what the reads select.
+   * groups holding a selected series are fetched. `series`: what the reads select. `pairs`:
+   * for each sample file, the index in `seriesFiles` of the series file written with it
+   * (null: unknown), so that it is planned for its own series only.
    */
-  samplePlan(seriesFiles: Uint8Array[], indexes: string[], reads: FetchRange[], part?: { without: string[]; part: number; parts: number }, gap?: number): ReadPlan
+  samplePlan(seriesFiles: Uint8Array[], indexes: string[], reads: FetchRange[], part?: { without: string[]; part: number; parts: number }, pairs?: (number | null)[], gap?: number): ReadPlan
   /**
    * One split part's reads from the fragments alone (`engine/query` `part_plan`): the row
    * groups whose key range holds its `series_id` range. Enough for every series of the part
@@ -633,11 +635,13 @@ export function createQueryEngine(module: WebAssembly.Module): QueryEngine {
     filesNeeded: (indexes, ranges) => scanRows(indexes, ranges).map((rows) => rows !== 0),
     scanRows,
     filePlan: (indexes, ranges, gap = RANGE_GAP) => call('viz_q_file_plan', new Request().u64(limit('gap', gap)).ranges(ranges).strs(indexes), json<FilePlan[]>),
-    samplePlan: (seriesFiles, indexes, reads, part, gap = RANGE_GAP) => {
+    samplePlan: (seriesFiles, indexes, reads, part, pairs, gap = RANGE_GAP) => {
       const req = new Request().u64(limit('gap', gap))
       if (part) req.u8(1).strs(part.without).count('part', part.part).count('parts', part.parts)
       else req.u8(0)
-      return call('viz_q_sample_plan', req.ranges(reads).files(seriesFiles).strs(indexes), (payload) => {
+      req.ranges(reads).files(seriesFiles).strs(indexes).u32(pairs?.length ?? 0)
+      for (const p of pairs ?? []) req.u32(p === null ? 0xffff_ffff : p)
+      return call('viz_q_sample_plan', req, (payload) => {
         const n = new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getUint32(0, true)
         const plan = JSON.parse(text.decode(payload.subarray(4, 4 + n))) as Omit<ReadPlan, 'carrier'>
         return { ...plan, carrier: payload.byteLength > 4 + n ? payload.slice(4 + n) : null }

@@ -107,6 +107,15 @@ async function mutate(l: Stub, r: ReturnType<typeof rng>, n: number, seqs: Map<s
   return 'register'
 }
 
+/** SQLite's order of TEXT (UTF-8 bytes), the order `dumpState` lists rows in. */
+const enc = new TextEncoder()
+function utf8Order(a: unknown, b: unknown): number {
+  const x = enc.encode(a as string)
+  const y = enc.encode(b as string)
+  for (let i = 0; i < Math.min(x.length, y.length); i++) if (x[i] !== y[i]) return x[i]! - y[i]!
+  return x.length - y.length
+}
+
 /** A format-2 checkpoint as R2 holds it, decoded with the contract's codec, as rows of the ledger's tables. */
 async function readCheckpoint(tenant: string, inc: number, version: number) {
   const body = await (await env.BUCKET.get(`${env.CELL}/${ledgerCheckpointKey(tenant, inc, version)}`))!.text()
@@ -146,9 +155,9 @@ async function readCheckpoint(tenant: string, inc: number, version: number) {
     /** In the shape of `dumpState` (without `logged`), tombstones of live keys left out as a rebuild does. */
     state: {
       version: m.version,
-      files: [...files].sort((a, b) => ((a.key as string) < (b.key as string) ? -1 : 1)),
+      files: [...files].sort((a, b) => utf8Order(a.key, b.key)),
       streams: m.watermarks.map((w) => ({ shard: w.shard, incarnation: w.incarnation, watermark: w.seq, prev_incarnation: prev.get(w.shard) ?? null })),
-      tombstones: tombstones.filter((t) => !live.has(t.key)).sort((a, b) => ((a.key as string) < (b.key as string) ? -1 : 1)),
+      tombstones: tombstones.filter((t) => !live.has(t.key)).sort((a, b) => utf8Order(a.key, b.key)),
     },
     fileKeysInOrder: files.map((f) => f.key as string),
   }
@@ -176,7 +185,8 @@ describe('a checkpoint in parts is the state at its version', () => {
       expect(st.checkpoint).toMatchObject({ version: atV.version, phase: 'files', parts: 0 })
       // One part at a time, and between parts every kind of change.
       const ops: string[] = []
-      for (let n = 0; (await l.logStatus()).checkpoint !== null; n++) {
+      // Until it is complete (a later one may begin as soon as it is).
+      for (let n = 0; (await l.logStatus()).checkpoint?.version === atV.version; n++) {
         expect(n, 'the checkpoint completes').toBeLessThan(500)
         await step(l, 0, 1)
         ops.push(await mutate(l, r, n, seqs, incs))
@@ -187,11 +197,12 @@ describe('a checkpoint in parts is the state at its version', () => {
       const ck = await readCheckpoint(tenant, inc, atV.version)
       expect(ck.manifest.parts, `seed ${seed}: written in several parts`).toBeGreaterThan(3)
       expect(ck.state, `seed ${seed}: the checkpoint holds exactly the state at its version`).toEqual(atV)
-      // A rebuild starts from it and replays what committed after it.
+      // A rebuild starts from the newest checkpoint and replays what committed after it.
       await l.drain()
       const live = await dumpState(l)
       const result = await rebuild(l)
-      expect(result).toMatchObject({ from: 'segments', checkpoint: atV.version })
+      expect(result.from).toBe('segments')
+      expect(result.checkpoint).toBeGreaterThanOrEqual(atV.version)
       expect(await dumpState(l), `seed ${seed}: rebuilt`).toEqual(live)
     }
   })
@@ -219,7 +230,7 @@ describe('a checkpoint in parts is the state at its version', () => {
     ck = await readCheckpoint(tenant, inc, v)
     const live = committed(await dumpState(l))
     expect(ck.state).toEqual(live)
-    expect(ck.fileKeysInOrder).toEqual([...ck.fileKeysInOrder].sort())
+    expect(ck.fileKeysInOrder).toEqual([...ck.fileKeysInOrder].sort(utf8Order))
     expect(new Set(ck.fileKeysInOrder).size).toBe(ck.fileKeysInOrder.length)
     for (const [n, p] of ck.parts.entries()) {
       // A part holds at most its budget of records, or one larger record alone.
@@ -480,7 +491,7 @@ describe('a rebuild streams into SQLite', () => {
               },
             })
             const text = () => new Response(bytes).text()
-            return Object.assign(Object.create(o) as R2ObjectBody, { body, text, arrayBuffer: async () => bytes.buffer, json: async () => JSON.parse(await text()) })
+            return { key: o.key, size: o.size, etag: o.etag, body, text, arrayBuffer: async () => bytes.buffer, json: async () => JSON.parse(await text()) } as unknown as R2ObjectBody
           }
         },
       })

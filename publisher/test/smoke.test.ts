@@ -19,7 +19,7 @@ describe('smoke', () => {
 
 describe('the Worker (src/index.ts)', () => {
   it('answers GET /healthz with 200 when bound, 503 naming a missing binding, and nothing else', async () => {
-    const get = (path: string, e: object, method = 'GET') => worker.fetch!(new Request(`https://publisher.internal${path}`, { method }) as never, e as never, {} as never) as Promise<Response>
+    const get = async (path: string, e: object, method = 'GET'): Promise<Response> => worker.fetch!(new Request(`https://publisher.internal${path}`, { method }) as never, e as never)
     const bound = { PUBLISHER: env.PUBLISHER, BUCKET: env.BUCKET }
     const ok = await get('/healthz', bound)
     expect([ok.status, await ok.text()]).toEqual([200, 'ok\n'])

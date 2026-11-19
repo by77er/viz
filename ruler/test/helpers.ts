@@ -73,3 +73,17 @@ export const alertsOf = async (stub: DurableObjectStub<TestRuler>, tenant: strin
   ok(await stub.rules(tenant)).rules.filter((r) => rule === undefined || r.name === rule).flatMap((r) => r.alerts)
 
 export const sqlWrites = async (stub: DurableObjectStub<TestRuler>, tenant: string) => ok(await stub.health(tenant)).counters.sqlRowsWritten
+
+/**
+ * The range queries made for `query` (from `rangeCalls`), and a check that they are windows that
+ * partition [from, to] at `step` exactly: in order, contiguous, without a gap or an overlap.
+ */
+export function expectWindows(calls: [string, number, number, number][], query: string, from: number, to: number, step: number): [number, number][] {
+  const ws = calls.filter((c) => c[0] === query).map((c) => [c[1], c[2], c[3]] as const)
+  expect(ws.length, `range queries for ${query}`).toBeGreaterThan(0)
+  expect(ws.every((w) => w[2] === step)).toBe(true)
+  expect(ws[0]![0]).toBe(from)
+  expect(ws.at(-1)![1]).toBe(to)
+  for (let i = 1; i < ws.length; i++) expect(ws[i]![0], `window ${i} starts one step after window ${i - 1} ends`).toBe(ws[i - 1]![1] + step)
+  return ws.map((w) => [w[0], w[1]])
+}

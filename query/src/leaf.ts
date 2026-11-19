@@ -271,7 +271,13 @@ export class Leaf extends DurableObject<LeafEnv> {
         // What the part's series really need, now that their labels are known; a sample file
         // whose first read does not cover it is read again as planned (a second round, only
         // for a series that carries a `without` label outside the part's id range).
-        const exact = own(() => leafEngine.samplePlan(seriesBytes, req.samples.map((f) => f.index!), req.ranges, { without: req.without, part: req.part, parts: req.parts }))
+        // A group lists each sample file with its series file at the same position.
+        const pairOf = req.samples.map((_, i) => (seriesAt[i] !== undefined && seriesAt[i]! >= 0 ? seriesAt.slice(0, i).filter((k) => k >= 0).length : null))
+        // The part's series by their split key, whatever the other matchers say (the extract
+        // applies them): with only the metric's name left, the engine places each series by
+        // its id unless its labels carry a `without` label, and parses no label set.
+        const byName = req.ranges.map((r) => ({ ...r, matchers: r.matchers.filter((m) => m.name === '__name__' && m.op === '=') }))
+        const exact = own(() => leafEngine.samplePlan(seriesBytes, req.samples.map((f) => f.index!), byName, { without: req.without, part: req.part, parts: req.parts }, pairOf))
         const again: { f: FileRef; read: 'whole' | [number, number][] }[] = []
         const againAt = new Map<number, number>()
         req.samples.forEach((f, i) => {

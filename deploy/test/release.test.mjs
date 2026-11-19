@@ -167,3 +167,26 @@ test('rollback_to a release before a forward-only one: REFUSED with the reason, 
   assert.equal(ok.exit, 0)
   assert.equal(restored.length, 1)
 })
+
+test('rollback_to after a rollback: a release that ran and was rolled back still counts (A → B → C, back to B, then to A)', async () => {
+  const a = recordOfRelease('sha-a', withSchemas(LEDGER_MIGRATIONS.slice(0, 1)), { 'viz-ingest': 'ia', 'viz-control': 'ca' })
+  const declare = (classes) => ({ resources: { bindings: [{ type: 'plain_text', name: 'VIZ_SCHEMAS', text: JSON.stringify({ v: 1, classes }) }] } })
+  const info = {
+    ia: { id: 'ia', number: 1 }, ca: { id: 'ca', number: 1 },
+    ib: { id: 'ib', number: 2, annotations: { 'workers/tag': 'sha-b' }, ...declare({ 'ledger.Ledger': { latest: 2, compat: 1, by: '1: x' } }) },
+    ic: { id: 'ic', number: 3, annotations: { 'workers/tag': 'sha-c' }, ...declare({ 'ledger.Ledger': { latest: 3, compat: 2, by: '3: c' } }) },
+    cb: { id: 'cb', number: 2, annotations: { 'workers/tag': 'sha-b' }, ...declare({ 'control.Tenant': { latest: 1, compat: 1 } }) },
+  }
+  const restored = []
+  const api = {
+    // B serves now: C was rolled back.
+    liveState: async (names) => Object.fromEntries(names.map((n) => [n, { exists: true, migrationTag: 'v1', versions: [{ version_id: n === 'viz-ingest' ? 'ib' : 'cb', percentage: 100 }], release: 'sha-b', schemas: null }])),
+    versionInfo: async (_w, id) => info[id] ?? null,
+    listVersions: async (w) => (w === 'viz-ingest' ? [{ id: 'ic', number: 3 }, { id: 'ib', number: 2 }, { id: 'ia', number: 1 }] : [{ id: 'cb', number: 2 }, { id: 'ca', number: 1 }]),
+    restore: async (...args) => void restored.push(args),
+  }
+  const r = await rollback({ stage: 'citest', record: a, reason: 'test', api })
+  assert.equal(r.exit, 3)
+  assert.equal(restored.length, 0)
+  assert.match(r.problems.join('\n'), /release sha-c \(viz-ingest version ic\) ran schema version 3, readable from 2, and sha-a knows only up to 1/)
+})

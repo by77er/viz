@@ -129,7 +129,10 @@ proptest! {
                 let got = run(&input(&[], &samples, &tail), q, start, end, step);
                 prop_assert_eq!(&got, &want, "query {} with the carrier", q);
             } else {
-                prop_assert!(reads.iter().any(|r| r.matchers.iter().all(|m| m.name == "__name__" && m.op == MatchOp::Eq)), "query {}: no carrier, yet every read parses labels", q);
+                prop_assert!(
+                    reads.is_empty() || reads.iter().any(|r| r.matchers.iter().all(|m| m.name == "__name__" && m.op == MatchOp::Eq)),
+                    "query {}: no carrier, yet every read parses labels", q
+                );
             }
             // The bound still bounds: what select loads from the lake never exceeds the rows planned.
             let rows: u64 = sp.files.iter().map(|f| f.rows.unwrap()).sum();

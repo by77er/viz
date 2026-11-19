@@ -168,6 +168,9 @@ export function lintHtml(text, { file, report, tokens, breakpoints }) {
   const check = (n, inside) => { const c = cls(n)
     if (n.nodeName === 'a' && inside) { const p = n.parentNode, ok = inside === 'timeline' ? p.nodeName === 'li' && cls(p.parentNode).includes('vz-timeline') : cls(p).includes('vz-banner') || cls(p).includes('vz-controls')
       if (!ok) report('main-path', file, n.sourceCodeLocation?.startLine ?? 1, [`a link in a ${inside} is inside <${p.nodeName}${cls(p)[0] ? '.' + cls(p).join('.') : ''}>: it must stand alone, the ${inside === 'timeline' ? "line's own child" : "banner's own child"}`]) }
+    // a status's words are one run of text: words with an element in them (a vz-qty, a time) are wrapped in one span, or the element
+    // becomes an item of its own beside the mark, off the words' line (Status)
+    if (c.includes('vz-status')) { const kids = (n.childNodes ?? []).filter((k) => k.nodeName !== '#comment' && !(k.nodeName === '#text' && !k.value.trim())); if (kids.length > 1 && kids.some((k) => k.nodeName === '#text')) report('status-run', file, n.sourceCodeLocation?.startLine ?? 1, ['a vz-status holds words and an element side by side: wrap its words in one span']) }
     const next = c.includes('vz-timeline') ? 'timeline' : c.includes('vz-banner') ? 'banner' : inside
     n.childNodes?.forEach((k) => check(k, next)) }
   check(doc, null)

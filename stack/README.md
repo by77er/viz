@@ -1,10 +1,12 @@
 # Stack
 
-The write path as **one script**: `edge` (the default export's `fetch`), the `Shard` and
-`Ledger` Durable Objects, `flush` (the `Flush` entrypoint and the flush queue's consumer),
-and the maintenance of each tenant's files (compaction, retention, deletion), behind one
-wrangler config that binds `SHARD`, `LEDGER`, R2 (`BUCKET`), KV (`CONFIG`), two queues
-(`FLUSH_QUEUE`, `MAINT_QUEUE`) with their dead-letter queues, and an hourly cron.
+The write path as **one script**: `edge` (the default export's `fetch`, and the
+`RecordedSamples` entrypoint for the ruler), the `Shard` and `Ledger` Durable Objects, `flush`
+(the `Flush` entrypoint and the flush queue's consumer), and the maintenance of each tenant's
+files (compaction, retention, deletion), behind one wrangler config that binds `SHARD`,
+`LEDGER`, `PUBLISHER` (the cell's publisher, in the viz-publisher Worker), R2 (`BUCKET`), KV
+(`CONFIG`), two queues (`FLUSH_QUEUE`, `MAINT_QUEUE`) with their dead-letter queues, and an
+hourly cron. It is deployed as viz-ingest (`deploy/`).
 
 ```
  senders ─► edge ─► Shard ──seal──► [flush queue] ─► flush ─► R2 Parquet ─► Ledger
@@ -19,7 +21,9 @@ wrangler config that binds `SHARD`, `LEDGER`, R2 (`BUCKET`), KV (`CONFIG`), two 
 |---|---|
 | `src/index.ts` | `default`: `fetch` = edge, `queue` = flush / maintenance / dead letters by queue name, `scheduled` = both sweeps. Re-exports `Flush`, `Shard`, `Ledger` |
 | `src/maintain.ts` | `maintainTenant` (expire → compact → purge → orphan sweep), its KV marker, `noteFlushed`, `enqueueDue`, `consumeMaintBatch` |
-| `wrangler.jsonc` | The single config: queues, consumers, dead-letter queues, cron |
+| `wrangler.jsonc` | The single config: queues, consumers, dead-letter queues, cron; what `deploy/configure.mjs` generates viz-ingest's config from |
+| `wrangler.test.jsonc`, `test/worker.ts` | The test script: the same config with the publisher's class (with a test clock) in the script as `TEST_PUBLISHER` instead of `PUBLISHER` bound to viz-publisher; `deploy/test/configure.test.mjs` holds the two configs equal otherwise |
+| `test/publisher.test.ts` | 5 tests: the publisher wired into maintenance, against the real `Publisher` and against ones that hang or refuse |
 | `test/e2e.test.ts` | 6 end-to-end tests that drive flush by hand |
 | `test/auto.test.ts` | 1 test where nothing is called: the simulated Queue delivers |
 | `test/triggers.test.ts` | 8 tests of the triggers, the maintenance marker, the orphan-sweep flag and the idle deployment |
@@ -43,6 +47,7 @@ wrangler config that binds `SHARD`, `LEDGER`, R2 (`BUCKET`), KV (`CONFIG`), two 
 | The cron fires (hourly) | (1) streams of shards with a pending marker whose segments have waited 10 minutes are re-enqueued, at most 500 shards per cron (a window that moves on each hour); (2) tenants whose maintenance marker is due are enqueued. The two sweeps run independently; a shard, a listing or a send that fails stops neither the other sweep nor the rest of its own, and every failure (and every retention record that cannot be read) is logged and fails the invocation after everything else ran (review R-7) | `handleScheduled`, `sweepPending`, `enqueueDue` |
 | A message exhausts its retries | the batch is written to ONE object `{cell}/dead-letters/{queue}/…json` (review R-12) and logged; the next sweep re-enqueues the work | `consumeDeadLetters` |
 | A message of a version this release does not know (`v` other than 1) | retried with backoff, never run and never dead-lettered (contracts/COMPATIBILITY.md §3.2) | `consumeFlushBatch`, `consumeMaintBatch` |
+| A maintenance run ends (with a publisher bound) | `nudge(PUBLISHER, CELL, [tenant])`: the publisher records the tenant and a `publish` deadline (2 min); its own alarm publishes. At most 2 s, never throws; not recorded → the tenant is due again within the hour. One log line per run (`maintenance <tenant>: merged …, deleted …, waiting … (for publication …), nudged …`) | `maintainTenant`, `summary` |
 
 **Idle means free.** Both sweeps read KV only. A shard has a `flush-pending:` key only
 while it has unrecorded segments; a tenant's `maint:` key carries the time it is next due
@@ -76,13 +81,48 @@ message and the cron's, in different batches). A run writes its marker only if i
 and retries a refused write after 1 s, 2 s and 4 s before failing (then the message is
 retried). `noteFlushed`'s write is best effort, because its message carries the same facts.
 
+## The publisher wired in (2026-11-19)
+
+publisher/README.md "Needed changes" 1 and 3, design/DECISIONS.md D34 and D15.
+
+- **Binding.** `wrangler.jsonc` binds `PUBLISHER` = class `Publisher` of script `viz-publisher`.
+  `deploy/workers.json` deploys viz-publisher before viz-ingest (callee first).
+- **The nudge** (`src/maintain.ts`, end of `maintainTenant`, after the run's own ledger changes,
+  before the marker is settled): `nudge(env.PUBLISHER, CELL, [tenant], publisherTimeoutMs)` from
+  `publisher/src/nudge.ts`, at most `publisherTimeoutMs` (default `NUDGE_TIMEOUT_MS`, 2 s), never
+  throws. Not recorded (a timeout, a refusal, a publisher that is gone): the tenant is due again
+  within the hour, so the cron runs it and it nudges again. Only with the binding: without one,
+  `nudged` is null and nothing is made due. `MaintReport.nudged` says which.
+- **Never on an ingest or flush acknowledgement path** (D15). The edge's `fetch`, the flush
+  consumer (`consumeFlushBatch`, `noteFlushed`) and the cron do not touch `PUBLISHER`; the
+  maintenance consumer is a separate queue invocation that acknowledges only its own messages.
+- **Deletion waits for publication** (`janitor/README.md`): `purgeTenant` gets the same env, so
+  with a publisher bound it deletes only what the ledger AND the publisher release. Tombstones
+  waiting only for the publisher (`PurgeResult.unpublished`) make the tenant due again after
+  `PUBLICATION_RECHECK_MS` (6 h; `publicationRecheckMs`) instead of every delete grace (1 h): a
+  release comes at the earliest a day after the removal is published (a snapshot is kept 24 h,
+  and at least until a newer commit). A publisher that could not be asked: due within the grace.
+
+| Test (`test/publisher.test.ts`, `test/triggers.test.ts`) | What it shows |
+|---|---|
+| a flush leads to a maintenance run … nobody calls publish | ingest, seal, the flush queue through the script's handler, the maintenance queue: `nudged: true`; the publisher has a `publish` deadline and an alarm and has published nothing; its alarm then publishes and the current snapshot lists exactly the ledger's live files for the tenant |
+| a publisher that hangs or refuses never slows or fails ingest or flush | with a stand-in that never answers, and one that throws `schema_too_new`: every Remote Write 204 in less than the nudge bound; every flush message acknowledged, nothing pending; **the stand-in was asked nothing** by either path; the maintenance run is acknowledged (not retried), `nudged: false`, deleted nothing, took at least the bound (hang) and well under twice it plus slack; the tenant is due within the hour; every acknowledged row still reads back (`checkTenant`) |
+| without a publisher bound | `nudged: null`, no `unpublished`: today's behaviour |
+| a nudge that may not have been recorded … | a tenant with nothing to do: no marker after a run whose nudge was recorded; due in (59 min, 60 min] after one that hung or was refused |
+| a removal waiting only for publication | compaction's inputs are deletable by the ledger, not released: nothing deleted, `unpublished = waiting`, due more than 5 h later |
+| an idle deployment (triggers) | the counted env now binds the real publisher: 168 hourly crons make **0 publisher calls** (and 0 shard, 0 ledger calls, 0 messages) |
+
+The four tests in `test/publisher.test.ts` that existed before the code was changed **failed
+against it** (no `nudged`, no recheck interval), and pass after it. Mutants: below, part
+"publication".
+
 ## Not implemented
 
 - **A query Worker.** The read path here is test code; nothing serves queries.
 - **Separate deployment.** In production these are several Workers bound to each other;
   that wiring (service bindings, `script_name` on the Durable Object bindings, the queue
   consumers in their own scripts) is not written.
-- **The ledger ↔ shard-map epoch**, the publisher, rollups.
+- **The ledger ↔ shard-map epoch**, rollups. (The publisher is wired in: above.)
 - **The compaction Workflow is not started from here**; the maintenance consumer calls the
   step function (see `compact/README.md`).
 - **Alerting** on dead letters; they are written to R2 and to the error log only.

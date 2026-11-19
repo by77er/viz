@@ -24,7 +24,7 @@ the `Leaf` Durable Object it reads files through.
 | `src/coordinator.ts` | Plan, one ledger version, pruning, leaf fan-out, tail reads with the fence, evaluation; split execution (`runSplit`); the cardinality report |
 | `src/leaf.ts` | `Leaf`: a stateless Durable Object that reads up to six objects from R2, extracts one part's rows from them (a reader), evaluates one part of a split query (a split leaf), and summarises one part's series for the cardinality report |
 | `src/config.ts` | Bindings, per-tenant limits (`limits:<tenant>` in KV) and their defaults |
-| `wrangler.jsonc` | The production shape (never deployed) |
+| `wrangler.jsonc` | The production shape (not deployed to production; deployed twice as a staged copy, `deploy/README.md`) |
 | `test/stack.ts`, `test/wrangler.jsonc` | One script for tests: edge + Shard + Ledger + Flush + query + Leaf |
 | `test/*.test.ts` | 86 tests in workerd, 11 files |
 | `test/pruning.test.ts` | Series-level pruning and the series-only read through the whole path (25,000 series, a samples file of eight row groups) |
@@ -462,8 +462,12 @@ every series file) when the series files are over `maxFetchBytes`. No sample is 
   (`shard/`); split readers still read every series file whole for every part; a streaming
   merge for the cardinality report; sketches.
 - **Production wiring.** `wrangler.jsonc` binds `SHARD` and `LEDGER` by `script_name` to
-  Workers that are themselves still combined scripts. Nothing was deployed, and the
-  bindings were only exercised in the one-script composition. `wrangler deploy --dry-run`
+  Workers that are themselves still combined scripts. Not deployed to production. It did run
+  on Cloudflare in two staged trials, `viz-trial-query` (2026-11-18) and `viz-trial2-query`
+  (2026-11-19), deployed by `deploy/deploy.sh --stage` with its bindings to the other staged
+  Workers and deleted afterwards; latencies and the cutover are in `deploy/README.md` ("Trial on
+  Cloudflare", "Trial 2"). Neither trial ran the series-level pruning of 2026-11-19, and neither
+  measured high cardinality. `wrangler deploy --dry-run`
   bundles (run with the Cloudflare credentials removed from its environment): 2,625.57 KiB
   to upload, 824.96 KiB gzip, of which 49 KB is JavaScript and the rest the WASM module.
 - **Warm leaves.** Nothing keeps the pool warm; first use of a leaf costs a few hundred

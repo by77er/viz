@@ -30,6 +30,10 @@ fn cut(bytes: &[u8], p: &FilePlan) -> Option<Vec<u8>> {
 }
 
 /// GETs for a plan of a file of `size` bytes (a range or object above 16 MiB is read in pieces).
+fn gets_of(p: &FilePlan, size: usize) -> usize {
+    gets(p, size)
+}
+
 fn gets(p: &FilePlan, size: usize) -> usize {
     match &p.read {
         FileRead::Skip => 0,
@@ -54,6 +58,7 @@ fn main() {
         println!("| shape | the Worker's plan (now) | files read | GETs | rounds | bytes | scan bound | series estimate | engine, one place: wall / CPU ms, peak heap | answer | same as before |");
         println!("|---|---|---:|---:|---:|---:|---:|---:|---|---|---|");
         let mut split_rows = Vec::new();
+        let mut reader_rows: Vec<String> = Vec::new();
         for shape in shapes(n) {
             let (ranges, reads, decomposes, meta) = match &shape.kind {
                 Kind::Range(q) => (plan(q, start, end, SCRAPE).unwrap(), ranges_of(selectors(q, start, end, SCRAPE).unwrap()), q.starts_with("sum"), false),
@@ -132,6 +137,68 @@ fn main() {
                 Err(e) if e == "SKIPPED" => "SKIPPED".to_string(),
                 Err(e) => format!("ERROR {e}"),
             };
+            // A split's readers: each part reads the series files by name and time, its id
+            // range of each sample file, and anything its series need beyond that.
+            if let (Some(l), Kind::Range(q)) = (leaves_of(&v), &shape.kind) {
+                if let viz_query::split::SplitPlan::Split { key, .. } = viz_query::split_plan(q, &Options::default()) {
+                    let by_name: Vec<viz_query::FetchRange> = ranges
+                        .iter()
+                        .map(|r| viz_query::FetchRange { matchers: r.matchers.iter().filter(|m| m.name == "__name__" && m.op == viz_query::MatchOp::Eq).cloned().collect(), ..r.clone() })
+                        .collect();
+                    let optimistic = key.without.iter().all(|w| w == "__type__" || w == "__unit__");
+                    let ((digest, xbytes, gets, rbytes), _, cpu, peak) = measure(|| {
+                        let (mut all, mut gets, mut rbytes) = (Vec::new(), 0usize, 0u64);
+                        for part in 0..l {
+                            let sp = file_plan(&s_idx, &ranges, RANGE_GAP);
+                            let pp = if optimistic { part_plan(&m_idx, &ranges, part, l, RANGE_GAP) } else { m_idx.iter().map(|_| FilePlan { read: FileRead::Skip, rows: Some(0) }).collect() };
+                            let ser: Vec<Vec<u8>> = files.iter().zip(&sp).filter_map(|((_, s), p)| cut(&s.bytes, p)).collect();
+                            let sref: Vec<&[u8]> = ser.iter().map(|b| &b[..]).collect();
+                            let pairs: Vec<Option<usize>> = (0..files.len()).map(|i| (sp[i].read != FileRead::Skip).then(|| sp[..i].iter().filter(|p| p.read != FileRead::Skip).count())).collect();
+                            let exact = sample_plan(&sref, &m_idx, &by_name, Some(viz_query::PartFilter { key: &key, part, parts: l }), Some(&pairs), RANGE_GAP).unwrap();
+                            let mut sam = Vec::new();
+                            for (i, (m, s)) in files.iter().enumerate() {
+                                gets += gets_of(&sp[i], s.bytes.len()) + gets_of(&pp[i], m.bytes.len());
+                                rbytes += sp[i].bytes(s.bytes.len() as u64) + pp[i].bytes(m.bytes.len() as u64);
+                                let need = &exact.files[i];
+                                let covered = match (&pp[i].read, &need.read) {
+                                    (_, FileRead::Skip) | (FileRead::Whole, _) => true,
+                                    (FileRead::Ranges(h), FileRead::Ranges(r)) => r.iter().all(|(o, l)| h.iter().any(|(ho, hl)| o >= ho && o + l <= ho + hl)),
+                                    _ => false,
+                                };
+                                let p = if covered { &pp[i] } else {
+                                    gets += gets_of(need, m.bytes.len());
+                                    rbytes += need.bytes(m.bytes.len() as u64);
+                                    need
+                                };
+                                if let Some(b) = cut(&m.bytes, p) {
+                                    sam.push(b);
+                                }
+                            }
+                            let mref: Vec<&[u8]> = sam.iter().map(|b| &b[..]).collect();
+                            all.push(viz_query::split::extract(&sref, &mref, &key, part, l, &ranges).unwrap().batch);
+                        }
+                        (rows_digest(&all), all.iter().map(|b| b.len()).sum::<usize>(), gets, rbytes)
+                    });
+                    let bpath = format!("{before}/{n}-{}-extracts.txt", shape.name.replace(['/', ' '], "_"));
+                    let same = match std::fs::read_to_string(&bpath) {
+                        Ok(b) if b == format!("{digest:?}") => "identical rows".to_string(),
+                        Ok(_) => {
+                            differ += 1;
+                            "**DIFFERENT ROWS**".to_string()
+                        }
+                        Err(_) => "(no before run)".to_string(),
+                    };
+                    reader_rows.push(format!(
+                        "|   readers of {} over {l} parts | each part: series files by name and time, its id range of the sample files{} | | {gets} | | {:.1} MiB | | | CPU {cpu:.0} ms (all parts), peak heap {:.1} MiB, extracts {:.1} MiB | {} rows | {same} |",
+                        shape.name,
+                        if optimistic { "" } else { " (after the series files: the key leaves out a label most series carry)" },
+                        mib(rbytes),
+                        mib(peak as u64),
+                        mib(xbytes as u64),
+                        digest.0
+                    ));
+                }
+            }
             let path = format!("{before}/{n}-{}.txt", shape.name.replace(['/', ' '], "_"));
             let same = match std::fs::read_to_string(&path) {
                 Ok(b) if b == text => "identical".to_string(),
@@ -151,6 +218,9 @@ fn main() {
                 mib(bytes),
                 mib(peak as u64)
             );
+        }
+        for r in &reader_rows {
+            println!("{r}");
         }
         // What split readers read: before, every part read every file whole; now each part
         // reads the series files by name and time and its id range of each sample file.

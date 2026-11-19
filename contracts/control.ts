@@ -24,6 +24,9 @@
  * notification body.
  *
  * Versions: 1.
+ *
+ * The OAuth RPCs on the same object (token, revocation, introspection for the agent surface)
+ * are in `oauth.ts`.
  */
 
 import type { SchemaTooNew } from './schema'

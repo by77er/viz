@@ -385,7 +385,9 @@ newer incarnation counts once its registration is logged), F6 (refuse an unknown
 by incarnation), F10 (a retried drain writes the same segment), F11 (base in R2 first),
 F12 (flush reads bound to the incarnation), F13/F14 (step-unique compaction keys), and the
 assumption that removes F3 (no client retry across a shard storage loss; *assumed*, not
-fixed).
+fixed). The code fixed F13/F14 with D30 instead; the same suite with D30 and the segment log
+as built is in 2b (`D30_*` rows). The `A_*` rows were recorded before this pass and not re-run
+(their configuration is unchanged); the liveness and no-leak rows were run in this pass.
 
 <!-- BEGIN BFS_AMENDED -->
 | Run | Bounds | Checked | Result | Distinct states | Transitions | Depth | Wall time | P(collision) |
@@ -483,9 +485,11 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new; F16 is against D
   a *shard* loss the same rollback leaves the ledger naming the old incarnation and nothing in
   the design repeats the registration: `LIVE_design` reaches a state from which no schedule
   completes a query.
-- **As built** the gap does not occur for a fixed shard map: `flush.ts` registers lazily and
-  the coordinator asks every pool shard the ledger does not know, from sequence 0 (`LIVE_impl`
-  holds). A map change, which moves keys to shards outside the plan, would bring it back.
+- **As built** the registration rollback does not hide rows for a fixed shard map: `flush.ts`
+  registers lazily and the coordinator asks every pool shard the ledger does not know, from
+  sequence 0 (`LIVE_impl_V1`, the code of 2026-11-18, holds). A map change, which moves keys
+  to shards outside the plan, would bring it back. Lazy registration is also what leaves
+  F6(b) and, since `tailRead` refuses a lost incarnation, the liveness gap `LIVE_impl` (F6).
 - **Fix.** A stream (first use or new incarnation) accepts writes only once its registration
   is **in the logged prefix** of the change log, and repeats the idempotent registration
   whenever `addUnit` / `loggedWatermarks` shows the ledger does not know its incarnation.
@@ -688,7 +692,9 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new; F16 is against D
 - §6.2: "Shards keep recorded segments for a short bounded time, and a refused split is
   retried on its own…". Untimed, an adversarial schedule refuses one query once per discarded
   segment (TLC `F5_restart_without_timing`: 3 refusals in 30 steps); with unbounded ingest that
-  is a livelock. With bounded ingest AG EF holds (`LIVE_amended`), and with the rule "a segment
+  is a livelock. With bounded ingest AG EF holds (`LIVE_amended_sl`, whole graph, with a shard
+  loss; with a ledger loss and compaction the graph passed the 3-million cap, undecided:
+  `LIVE_amended`, `LIVE_amended_ll`), and with the rule "a segment
   is not discarded while an attempt planned before it was recorded still waits for that shard"
   no attempt is ever refused (TLC `fixed_timing_no_restart`, exhaustive). **Fix:** state
   *plan-to-last-tail-read deadline < `retainRecordedMs`* and enforce it; today both are 30 s by

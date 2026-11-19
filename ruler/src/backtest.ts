@@ -88,43 +88,70 @@ export interface Tracked {
   steps: number
 }
 
+/** Most intervals one backtest may produce: past it the backtest stops and says so (they are all held until the answer). */
+export const MAX_BACKTEST_INTERVALS = 5_000
+
 /**
- * Run the alert state machine over [fromMs, toMs] at `stepMs`, with `step(ts)` giving each
- * step's result, and turn the states into intervals. Each interval keeps the annotations its
- * alert carried when it entered the state (templates expanded, an anomaly or SLO alert's
- * explanation among them). Every kind of backtest goes through here.
+ * The alert state machine over a range, one step at a time, turning states into intervals. Each
+ * interval keeps the annotations its alert carried when it entered the state (templates expanded,
+ * an anomaly or SLO alert's explanation among them). Every kind of backtest goes through here; it
+ * holds only the alerts and the intervals, so steps can be fed window by window as they are read.
  */
-export function trackIntervals(rule: AlertingRuleV2, compiled: CompiledAlertRule, opts: AlertEvalOptions, fromMs: number, toMs: number, stepMs: number, step: (ts: number) => StepInput): Tracked | { ok: false; error: string } {
-  let alerts: ReadonlyMap<string, Alert> = new Map()
-  const open = new Map<string, BacktestInterval>()
-  const intervals: BacktestInterval[] = []
-  let steps = 0
-  for (let ts = fromMs; ts <= toMs; ts += stepMs) {
-    steps++
-    const input = step(ts)
-    if ('error' in input) return { ok: false, error: `at ${new Date(ts).toISOString()}: ${input.error}` }
-    const r = evalAlertingRule(rule, compiled, alerts, input.series, ts, opts, input.presence)
-    if (!r.ok) return { ok: false, error: `at ${new Date(ts).toISOString()}: ${r.error}` }
-    alerts = r.alerts
-    for (const fp of new Set([...open.keys(), ...alerts.keys()])) {
-      const a = alerts.get(fp)
+export class IntervalTracker {
+  private alerts: ReadonlyMap<string, Alert> = new Map()
+  private readonly open = new Map<string, BacktestInterval>()
+  readonly intervals: BacktestInterval[] = []
+  steps = 0
+
+  constructor(
+    private readonly rule: AlertingRuleV2,
+    private readonly compiled: CompiledAlertRule,
+    private readonly opts: AlertEvalOptions,
+    private readonly toMs: number,
+    private readonly maxIntervals = MAX_BACKTEST_INTERVALS,
+  ) {}
+
+  /** One step, in time order. Returns an error (and the backtest stops) or null. */
+  step(ts: number, input: StepInput): string | null {
+    this.steps++
+    if ('error' in input) return `at ${new Date(ts).toISOString()}: ${input.error}`
+    const r = evalAlertingRule(this.rule, this.compiled, this.alerts, input.series, ts, this.opts, input.presence)
+    if (!r.ok) return `at ${new Date(ts).toISOString()}: ${r.error}`
+    this.alerts = r.alerts
+    for (const fp of new Set([...this.open.keys(), ...this.alerts.keys()])) {
+      const a = this.alerts.get(fp)
       const state = a && a.state !== 'inactive' ? a.state : null
-      const cur = open.get(fp)
+      const cur = this.open.get(fp)
       if (cur && cur.state === state) continue
       if (cur) {
         cur.endMs = ts
         cur.open = false
-        open.delete(fp)
+        this.open.delete(fp)
       }
       if (a && state) {
-        const next: BacktestInterval = { fingerprint: fp, labels: a.labels, state, startMs: ts, endMs: toMs, open: true, noData: isNoDataAlert(a), annotations: a.annotations }
-        intervals.push(next)
-        open.set(fp, next)
+        if (this.intervals.length >= this.maxIntervals) return `more than ${this.maxIntervals} intervals: the backtest stopped at ${new Date(ts).toISOString()}. Narrow the range or the expression.`
+        const next: BacktestInterval = { fingerprint: fp, labels: a.labels, state, startMs: ts, endMs: this.toMs, open: true, noData: isNoDataAlert(a), annotations: a.annotations }
+        this.intervals.push(next)
+        this.open.set(fp, next)
       }
     }
+    return null
   }
-  intervals.sort((a, b) => a.startMs - b.startMs || (a.fingerprint < b.fingerprint ? -1 : a.fingerprint > b.fingerprint ? 1 : 0))
-  return { ok: true, intervals, steps }
+
+  result(): Tracked {
+    this.intervals.sort((a, b) => a.startMs - b.startMs || (a.fingerprint < b.fingerprint ? -1 : a.fingerprint > b.fingerprint ? 1 : 0))
+    return { ok: true, intervals: this.intervals, steps: this.steps }
+  }
+}
+
+/** `IntervalTracker` over [fromMs, toMs] with every step's result from `step(ts)`, in one go. */
+export function trackIntervals(rule: AlertingRuleV2, compiled: CompiledAlertRule, opts: AlertEvalOptions, fromMs: number, toMs: number, stepMs: number, step: (ts: number) => StepInput): Tracked | { ok: false; error: string } {
+  const t = new IntervalTracker(rule, compiled, opts, toMs)
+  for (let ts = fromMs; ts <= toMs; ts += stepMs) {
+    const err = t.step(ts, step(ts))
+    if (err !== null) return { ok: false, error: err }
+  }
+  return t.result()
 }
 
 export function resultOf(t: Tracked, fromMs: number, toMs: number, stepMs: number, resolution: BacktestResult['resolution']): BacktestResult {

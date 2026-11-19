@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 import type { PromMatrix } from '../../contracts/engine'
 import type { Alert, BacktestInterval, BacktestResponse } from '../contracts-proposal/rules.v2'
 import { summarize } from '../src/backtest'
-import { alertsOf, MIN, nextTick, ok, setup } from './helpers'
+import { alertsOf, expectWindows, MIN, nextTick, ok, setup } from './helpers'
 
 type Ok = Extract<BacktestResponse, { status: 'ok' }>
 const good = (r: BacktestResponse): Ok => {
@@ -92,7 +92,8 @@ describe('live evaluation and backtest agree', () => {
       // History, as the range evaluator would return it: exactly what the live ticks saw.
       w.range = (_q, start, end, step) => matrix(Object.fromEntries(Object.keys(present).map((i) => [i, (ts: number) => plan.get(ts)?.[i] ?? null])), start, end, step)
       const bt = good(await stub.backtest(tenant, rule, from, to, MIN, MIN))
-      expect(w.rangeCalls).toEqual([['m > 0', from, to, MIN]])
+      // One read of [from, to], fetched in windows (history.ts): contiguous, no gap, no overlap.
+      expectWindows(w.rangeCalls, 'm > 0', from, to, MIN)
       expect(bt.steps).toBe(90)
       const want = intervalsOf(live, to)
       expect(want.filter((i) => i.state === 'firing').length).toBeGreaterThan(2) // the sequence exercises something
@@ -177,7 +178,8 @@ describe('one computation: intervals to shade, and the numbers quoted beside the
     // Data stops for minutes [30, 50): the comparison is empty the whole time (healthy), the bare query has a hole.
     w.range = (q, s, e, st) => (q.includes('>') ? matrix({}, s, e, st) : matrix({ cart: (ts) => ((ts - T) / MIN >= 30 && (ts - T) / MIN < 50 ? null : 0.001) }, s, e, st))
     const bt = good(await stub.backtest(tenant, { ...rule, no_data: 'alerting', no_data_for: '10m', no_data_expr: 'ratio' }, T, T + 90 * MIN, MIN, MIN))
-    expect(w.rangeCalls.map((c) => c[0])).toEqual(['(ratio) > 0.01', 'ratio'])
+    expect(new Set(w.rangeCalls.map((c) => c[0]))).toEqual(new Set(['(ratio) > 0.01', 'ratio']))
+    expect(expectWindows(w.rangeCalls, 'ratio', T, T + 90 * MIN, MIN)).toEqual(expectWindows(w.rangeCalls, '(ratio) > 0.01', T, T + 90 * MIN, MIN))
     expect(bt.intervals.map((i) => [i.state, i.noData, (i.startMs - T) / MIN, (i.endMs - T) / MIN])).toEqual([['pending', true, 30, 40], ['firing', true, 40, 50]])
   })
 })

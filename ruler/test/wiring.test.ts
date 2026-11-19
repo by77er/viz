@@ -233,10 +233,17 @@ describe('rule evaluation through the query API, with a service key from control
     const from = services.calls.length
     await tick(s)
     const mine = services.calls.slice(from).filter((c) => c.tenant === s.tenant)
-    expect(mine.map((c) => c.path)).toEqual(['/api/v1/plan', '/api/v1/plan', '/api/v1/query_range', '/api/v1/query_range', '/api/v1/query'])
-    // Each plan names the range it prices, as the query that follows reads it.
-    expect(mine.slice(0, 2).map((c) => [c.params.start, c.params.end, c.params.step])).toEqual(mine.slice(2, 4).map((c) => [c.params.start, c.params.end, c.params.step]))
-    expect(mine.slice(0, 2).map((c) => c.params.step)).toEqual(['60', '3600'])
+    const paths = mine.map((c) => c.path)
+    // Both reads priced first; then fetched window by window; then the tick's one query.
+    expect(paths.slice(0, 2)).toEqual(['/api/v1/plan', '/api/v1/plan'])
+    expect(paths.at(-1)).toBe('/api/v1/query')
+    expect(paths.slice(2, -1).every((p) => p === '/api/v1/query_range')).toBe(true)
+    expect(mine.slice(0, 2).map((c) => c.params.step)).toEqual(['3600', '60'])
+    // The windows of each read cover exactly the range its plan priced.
+    for (const plan of mine.slice(0, 2)) {
+      const ws = mine.slice(2, -1).filter((c) => c.params.step === plan.params.step)
+      expect([ws[0]!.params.start, ws.at(-1)!.params.end]).toEqual([plan.params.start, plan.params.end])
+    }
     const m = (await call(s.monitors.auth, 'GET', `/api/v1/monitors/${created.json.id}`)).json.monitor
     expect(m.slo.status.warmup).toMatchObject({ status: 'done', plan: { scanSamples: 0, bytesToRead: 0, queries: 2 } })
     // The engine's plan says a backtest would read too much: refused before any range query.

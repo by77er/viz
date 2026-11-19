@@ -40,8 +40,8 @@ import type {
   WarmupStatus,
 } from '../contracts-proposal/rules.v2'
 import { ANOMALY_LIMIT_DEFAULTS, anomalyLimits, emptyStatus, evalAnomaly, historyOf, maxClass, newAnomalyRt, readStateRows, stateRows, type AnomalyEval, type AnomalyRt } from './anomaly'
-import { MAX_BACKTEST_STEPS, runBacktest } from './backtest'
-import { anomalyWarmPoints, anomalyWarmReads, backtestAnomaly, backtestSlo, fetchHistory, HISTORY_LIMIT_DEFAULTS, historyBudgets, MAX_WARMUP_ATTEMPTS, readWarmup, sloWarmReads, warmAnomaly, warmSlo, warmupBody, warmupStatus, type Read } from './history'
+import { MAX_BACKTEST_STEPS, resolutionNote } from './backtest'
+import { anomalyWarmPoints, anomalyWarmReads, backtestAlert, backtestAnomaly, backtestSlo, HISTORY_LIMIT_DEFAULTS, historyBudgets, MAX_WARMUP_ATTEMPTS, readWarmup, sloWarmReads, warmAnomaly, warmSlo, warmupBody, warmupStatus, type HistoryIo, type Read } from './history'
 import { allRows, cloneSloRt, emptySloStatus, evalSlo, newSloRt, readSloRows, SLO_LIMIT_DEFAULTS, sliExpressions, sloHistory, tickRows, type SloEval, type SloRow, type SloRt } from './slo'
 import { classify } from './classify'
 import type { ServiceKeyResult, TenantServiceRpc } from '../../contracts/control'
@@ -963,7 +963,8 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
    */
   private async warmUp(g: GroupRt, endTs: number, current: () => boolean): Promise<Set<string>> {
     const waiting = new Set<string>()
-    const budget = historyBudgets(this.cfg.limits).warmup
+    const budgets = historyBudgets(this.cfg.limits)
+    const budget = budgets.warmup
     const aLimits = anomalyLimits(this.cfg)
     const I = g.spec.intervalMs
     for (const rule of stateRules(g.spec)) {
@@ -998,9 +999,11 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
         finish({ ...base, status: 'not_needed', finishedAt: this.now() })
         continue
       }
-      let fetched: Awaited<ReturnType<typeof fetchHistory>>
+      // Read in windows sized to the memory budget, planned first, fed in time order.
+      const io: HistoryIo = { planner: this.historyPlanner(), range: this.warmupRange(), budget, memoryBytes: budgets.warmupMemory }
+      let run: Awaited<ReturnType<typeof warmAnomaly>> | Awaited<ReturnType<typeof warmSlo>>
       try {
-        fetched = await fetchHistory(this.historyPlanner(), this.warmupRange(), reads, budget)
+        run = rule.kind === 'anomaly' ? await warmAnomaly(rule, reads[0]!, aLimits, io) : await warmSlo(rule, I, (slo as NonNullable<typeof slo>).fine, (slo as NonNullable<typeof slo>).coarse, io)
       } catch (e) {
         const attempts = job.attempts + 1
         const last = attempts >= MAX_WARMUP_ATTEMPTS
@@ -1009,30 +1012,24 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
         continue
       }
       if (!current()) return waiting
-      if (!fetched.ok) {
-        finish({ ...base, status: 'refused', attempts: job.attempts + 1, plan: fetched.plan, message: `${fetched.refused}; nothing was fetched and the rule started cold`, finishedAt: this.now() })
+      if (!run.ok) {
+        // Refused before anything was fetched (budget, memory, the engine's plan), or stopped in a
+        // window (the rule's own refusal: a series cap, a state limit): nothing is kept.
+        if ('refused' in run) finish({ ...base, status: 'refused', attempts: job.attempts + 1, plan: run.plan, message: `${run.refused}; nothing was fetched and the rule started cold`, finishedAt: this.now() })
+        else finish({ ...base, status: 'refused', attempts: job.attempts + 1, message: `${run.failed}; nothing was kept and the rule started cold`, finishedAt: this.now() })
         continue
       }
-      const done = (points: number): WarmupStatus => ({ ...base, status: 'done', attempts: job.attempts + 1, plan: fetched.plan, points, finishedAt: this.now() })
+      const done: WarmupStatus = { ...base, status: 'done', attempts: job.attempts + 1, plan: run.plan, points: run.points, finishedAt: this.now() }
       if (rule.kind === 'anomaly') {
-        const w = warmAnomaly(rule, fetched.matrices[0]!, reads[0]!, aLimits)
-        if (!w.ok) {
-          finish({ ...base, status: 'refused', attempts: job.attempts + 1, plan: fetched.plan, message: `${w.error}; nothing was kept and the rule started cold`, finishedAt: this.now() })
-          continue
-        }
-        finish(done(w.points), () => this.writeAnomalyState(g.spec.name, rule.key, w.rt.json))
-        if (current()) g.anomaly.set(rule.key, { ...w.rt, status: { ...w.rt.status, status: 'unknown', message: null } })
+        const rt = run.value as AnomalyRt
+        finish(done, () => this.writeAnomalyState(g.spec.name, rule.key, rt.json))
+        if (current()) g.anomaly.set(rule.key, { ...rt, status: { ...rt.status, status: 'unknown', message: null } })
       } else {
-        const sr = slo as NonNullable<typeof slo>
-        const w = warmSlo(rule, I, sr.fine, sr.coarse, fetched.matrices[0]!, sr.coarse ? (fetched.matrices[1] ?? null) : null)
-        if (!w.ok) {
-          finish({ ...base, status: 'refused', attempts: job.attempts + 1, plan: fetched.plan, message: `${w.error}; nothing was kept and the rule started cold`, finishedAt: this.now() })
-          continue
-        }
-        const rows = allRows(w.rt, rule, I)
-        w.rt.stateBytes = rows.reduce((n, r) => n + byteLength(r.body), 0)
-        finish(done(w.points), () => this.writeSloAll(g.spec.name, rule.key, rows))
-        if (current()) g.slo.set(rule.key, { ...w.rt, status: { ...emptySloStatus(rule.slo.maxSeries), stateSeries: w.rt.series.size, stateBytes: w.rt.stateBytes } })
+        const rt = run.value as SloRt
+        const rows = allRows(rt, rule, I)
+        rt.stateBytes = rows.reduce((n, r) => n + byteLength(r.body), 0)
+        finish(done, () => this.writeSloAll(g.spec.name, rule.key, rows))
+        if (current()) g.slo.set(rule.key, { ...rt, status: { ...emptySloStatus(rule.slo.maxSeries), stateSeries: rt.series.size, stateBytes: rt.stateBytes } })
       }
     }
     return waiting
@@ -1611,44 +1608,39 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     if (errors.length === 0 && (!parsedRule || parsedRule.kind === 'record')) errors.push({ path: 'rule', message: 'a recording rule cannot be backtested', fix: 'Give "alert" with "expr", an "anomaly" block or an "slo" block.' })
     if (errors.length > 0 || !parsedRule || parsedRule.kind === 'record') return { status: 'invalid', errors }
 
-    const budget = historyBudgets(this.cfg.limits).backtest
+    const budgets = historyBudgets(this.cfg.limits)
+    const budget = budgets.backtest
     const opts = { resolvedRetentionMs: this.cfg.resolvedRetentionMs, limit: this.cfg.limits.maxAlertsPerRule, maxAnnotationBytes: this.cfg.limits.maxAnnotationBytes, externalLabels: this.cfg.externalLabels }
-    const reads: Read[] = []
-    let warmFromMs = fromMs
-    let slo: ReturnType<typeof sloWarmReads> | null = null
-    if (parsedRule.kind === 'alert') reads.push({ promql: parsedRule.expr, fromMs, toMs, stepMs })
-    else if (parsedRule.kind === 'anomaly') {
-      warmFromMs = fromMs - anomalyWarmPoints(parsedRule, stepMs) * stepMs
-      reads.push({ promql: parsedRule.expr, fromMs: warmFromMs, toMs, stepMs })
-    } else {
-      slo = sloWarmReads(parsedRule, stepMs, fromMs - stepMs)
-      slo = { fine: { ...slo.fine, toMs }, coarse: slo.coarse }
-      warmFromMs = slo.fine.fromMs
-      reads.push(slo.fine)
-      if (slo.coarse) reads.push(slo.coarse)
-    }
-    const presenceAt = reads.length
-    if (parsedRule.noData?.expr) reads.push({ promql: parsedRule.noData.expr, fromMs, toMs, stepMs })
-    let fetched: Awaited<ReturnType<typeof fetchHistory>>
+    const io: HistoryIo = { planner: this.historyPlanner(), range: this.rangeEvaluator(), budget, memoryBytes: budgets.backtestMemory }
+    const input = { compiled: compileAlertRule(asAlerting(parsedRule as AnomalyRule)), fromMs, toMs, stepMs, opts, presence: parsedRule.noData?.expr ?? null, alertLimit: this.cfg.limits.maxAlertsPerRule }
+    const warmReads: { fromMs: number; toMs: number; stepMs: number }[] = []
+    let run: Awaited<ReturnType<typeof backtestAlert>>
     try {
-      fetched = await fetchHistory(this.historyPlanner(), this.rangeEvaluator(), reads, budget)
+      if (parsedRule.kind === 'alert') run = await backtestAlert(parsedRule, input, io)
+      else if (parsedRule.kind === 'anomaly') {
+        const warmFromMs = fromMs - anomalyWarmPoints(parsedRule, stepMs) * stepMs
+        if (warmFromMs < fromMs) warmReads.push({ fromMs: warmFromMs, toMs: fromMs - stepMs, stepMs })
+        run = await backtestAnomaly(parsedRule, warmFromMs, anomalyLimits(this.cfg), input, io)
+      } else {
+        // Warmed exactly as a rule created at `fromMs` would be, then on to `toMs` in the same read.
+        const w = sloWarmReads(parsedRule, stepMs, fromMs - stepMs)
+        if (w.coarse) warmReads.push({ fromMs: w.coarse.fromMs, toMs: w.coarse.toMs, stepMs: w.coarse.stepMs })
+        warmReads.unshift({ fromMs: w.fine.fromMs, toMs: fromMs - stepMs, stepMs })
+        run = await backtestSlo(parsedRule, { ...w.fine, toMs }, w.coarse, input, io)
+      }
     } catch (e) {
       return { status: 'failed', error: errorText(e) }
     }
-    if (!fetched.ok) return { status: 'over_budget', message: `${fetched.refused}. Nothing was fetched: shorten the range, lengthen the step (alerting rules only), or narrow the expression.`, plan: fetched.plan, budget }
-    const presence = parsedRule.noData?.expr ? (fetched.matrices[presenceAt] ?? null) : null
-    const cost = { ...fetched.plan, budget }
-    if (parsedRule.kind === 'alert') {
-      const r = runBacktest({ rule: parsedRule, compiled: compileAlertRule(parsedRule), matrix: fetched.matrices[0]!, presence, fromMs, toMs, stepMs, liveIntervalMs: live, opts })
-      return r.ok ? { status: 'ok', ...r.result, kind: 'alert', warmup: null, cost } : { status: 'failed', error: r.error }
+    if (!run.ok) {
+      if ('failed' in run) return { status: 'failed', error: run.failed }
+      return { status: 'over_budget', message: `${run.refused}. Nothing was fetched: shorten the range, lengthen the step (alerting rules only), or narrow the expression.`, plan: run.plan, budget, memory: run.sizing ? { peakBytes: run.sizing.peakBytes, budgetBytes: run.sizing.budgetBytes } : null }
     }
-    const input = { compiled: compileAlertRule(asAlerting(parsedRule)), fromMs, toMs, stepMs, opts, presence }
-    const r = parsedRule.kind === 'anomaly'
-      ? backtestAnomaly(parsedRule, fetched.matrices[0]!, warmFromMs, anomalyLimits(this.cfg), input)
-      : backtestSlo(parsedRule, (slo as NonNullable<typeof slo>).fine, (slo as NonNullable<typeof slo>).coarse, fetched.matrices[0]!, (slo as NonNullable<typeof slo>).coarse ? (fetched.matrices[1] ?? null) : null, input)
-    if (!r.ok) return { status: 'failed', error: r.error }
-    const warmReads = reads.slice(0, presenceAt).map((x) => ({ fromMs: x.fromMs, toMs: Math.min(x.toMs, fromMs - stepMs), stepMs: x.stepMs }))
-    return { status: 'ok', ...r.result, kind: parsedRule.kind, warmup: { reads: warmReads, points: r.warmPoints }, cost }
+    const cost = { ...run.plan, budget, memory: { peakBytes: run.sizing.peakBytes, budgetBytes: run.sizing.budgetBytes, windowSteps: run.sizing.windowSteps, queries: run.sizing.queries } }
+    if (parsedRule.kind === 'alert') {
+      const result = { ...run.value.result, resolution: { stepMs, liveIntervalMs: live, edgeErrorMs: Math.max(stepMs, live), note: resolutionNote(parsedRule, stepMs, live) } }
+      return { status: 'ok', ...result, kind: 'alert', warmup: null, cost }
+    }
+    return { status: 'ok', ...run.value.result, kind: parsedRule.kind, warmup: { reads: warmReads, points: run.value.warmPoints }, cost }
   }
 
   // ───────────────────────── moving a group between shards ─────────────────────────

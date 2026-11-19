@@ -24,7 +24,7 @@ const MUTANTS = [
   ['rollback: a newer version that declares nothing is ignored', 'release.mjs', '    if (v.schemas === null) {', '    if (v.schemas === null) continue\n    if (false) {'],
   ['rollback: a record without schema versions is accepted', 'release.mjs', '  if (!target.schemas) {', '  if (false) {'],
   ['rollback: only the version serving now is judged, not every version since the target', 'release.mjs',
-    '      if (ownNumber !== null && v.number !== undefined && v.number <= ownNumber) continue', '      if (ownNumber !== null && v.number !== undefined && v.number <= ownNumber) continue\n      if (v.number !== Math.max(...(await api.listVersions(w.name)).map((x) => x.number))) continue'],
+    '    for (const v of await api.listVersions(w.name)) {', '    const serving = ((await api.liveState([w.name]))[w.name]?.versions ?? []).map((x) => x.version_id)\n    for (const v of (await api.listVersions(w.name)).filter((x) => serving.includes(x.id))) {'],
   ['configure: a class with no declared schema is deployed', 'configure.mjs', '    if (!declared) throw new Error(', '    if (false) throw new Error('],
   ['configure: versions do not carry VIZ_SCHEMAS', 'configure.mjs', '  if (schemas.length > 0) vars[SCHEMAS_VAR] = schemasVar(schemas)\n', ''],
   ['schemas: compat recorded as the latest version', 'lib/schemas.mjs', '      compat: rel.compat,', '      compat: rel.latest,'],

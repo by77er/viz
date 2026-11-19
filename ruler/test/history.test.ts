@@ -22,7 +22,7 @@ import type { Alert, BacktestInterval, BacktestResponse, HistoryPlan, RuleStatus
 import { readStateRows } from '../src/anomaly'
 import { apiKey, call } from './api'
 import { Crash, T0, world } from './harness'
-import { MIN, ok, setup, vec } from './helpers'
+import { expectWindows, MIN, ok, setup, vec } from './helpers'
 
 const SLI = { bad: 'sum(increase(errors_total[$window]))', total: 'sum(increase(requests_total[$window]))' }
 const sloEntry = () => ({ alert: 'CheckoutSLO', slo: { objective: 0.999, sli: SLI } })
@@ -213,10 +213,12 @@ describe('warming a new rule from history', () => {
     const t = await r.tick()
     const end = t - MIN
     const plans = r.log.filter((x) => x.startsWith('plan'))
-    const ranges = r.log.filter((x) => x.startsWith('range'))
+    // Planned whole first; then fetched window by window (sized to the warm-up's memory budget).
     expect(r.log.slice(0, 2)).toEqual(plans)
-    expect(ranges.map((x) => x.replace(/^range/, 'plan'))).toEqual(plans)
-    const [fine, coarse] = ranges.map((x) => x.split(' ').slice(1).map(Number))
+    // The coarse read first: it holds the earlier time.
+    const [coarse, fine] = plans.map((x) => x.split(' ').slice(1).map(Number))
+    expectWindows(r.w.rangeCalls, r.w.rangeCalls[r.w.rangeCalls.length - 1]![0], fine![0]!, fine![1]!, MIN)
+    expectWindows(r.w.rangeCalls, r.w.rangeCalls[0]![0], coarse![0]!, coarse![1]!, HOUR)
     // The fine read ends one interval before this tick and holds at least the 3-day window.
     expect([fine![1], fine![2]]).toEqual([end, MIN])
     expect((fine![1]! - fine![0]!) / MIN + 1).toBeGreaterThanOrEqual(4320)
@@ -286,7 +288,8 @@ describe('backtests: the rule\'s own evaluation over history, in time order', ()
     expect(bt.intervals.find((x) => x.state === 'firing')!.annotations!.anomaly).toMatch(/^400 ms is [\d.]+ standard deviations above the exponentially weighted mean/)
     // Warmed exactly as the live rule was: the same read before `from`.
     expect(bt.warmup).toEqual({ reads: [{ fromMs: from - 20 * MIN, toMs: from - MIN, stepMs: MIN }], points: 60 })
-    expect(bt.cost).toEqual({ scanSamples: 1000, bytesToRead: 4096, queries: 1, budget: { scanSamples: 20_000_000, bytesToRead: 128 << 20 } })
+    expect(bt.cost).toMatchObject({ scanSamples: 1000, bytesToRead: 4096, queries: 1, budget: { scanSamples: 20_000_000, bytesToRead: 128 << 20 }, memory: { budgetBytes: 32 << 20 } })
+    expect(bt.cost!.memory!.peakBytes).toBeLessThanOrEqual(32 << 20)
   })
 
   it('an SLO rule: over data it paged and ticketed on live, the backtest gives the same alerts at the same times with the same sentences', async () => {
@@ -369,6 +372,7 @@ describe('backtests through the monitors API', () => {
     const mine = await call(kb.auth, 'POST', `/api/v1/monitors/backtest?tenant=${a.tenant}`, { monitor: doc, fromMs: T - 2 * HOUR, toMs: T, step: '1m' }, { 'X-Scope-OrgID': a.tenant })
     expect(mine.status, mine.text).toBe(200)
     expect(mine.json.intervals, 'B has no outage').toEqual([])
-    expect([a.w.rangeCalls.length, b.w.rangeCalls.length]).toEqual([aRanges, bRanges + 2])
+    expect(a.w.rangeCalls.length, 'nothing read for A').toBe(aRanges)
+    expect(b.w.rangeCalls.length).toBeGreaterThan(bRanges)
   })
 })

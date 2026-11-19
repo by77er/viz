@@ -8,7 +8,7 @@ import { type Limits, limitsFrom } from './limits'
 import { type RouteEnv, appendAll, refuseEarly } from './route'
 
 /**
- * Recorded samples from the ruler, over a service binding (contracts/ingest.ts, D41).
+ * Recorded samples from the ruler, over a service binding (contracts/ingest.ts, D44).
  *
  * The same path as a Remote Write request after its body is decoded: the same `Collector`
  * (label rules, accept window, limits), the same routing and appends. What differs is who the

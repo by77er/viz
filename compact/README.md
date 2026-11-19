@@ -101,6 +101,21 @@ queue retry gives the same guarantee for an idempotent step and keeps one mechan
 compaction, retention and deletion. The Workflow is the wrapper to use for a backlog too
 large for queue invocations; nothing starts it yet.
 
+## The index fragment of an output (2026-11-19)
+
+Outputs carry the fragment `engine.mergeFiles` writes (`engine/storage`), which since
+2026-11-19 holds each row group's first and last `series_id` and where the footer is
+(`contracts/TABLES.md`, "The index fragment"): the read path uses them to range-read only the
+row groups a query needs. Nothing in `src/` changed for it: `compactStep` passes the
+fragment through to `ledger.replace` as before, so compaction preserves it, and an output
+merged from flush files written before the change gets the new fields (the merge writes a
+fresh fragment). The Parquet bytes of a merge are unchanged (`engine/storage`,
+`the_parquet_bytes_are_those_the_previous_writer_wrote`). Checked by the first `compactStep`
+test, which now also asserts that every input's and output's fragment has `sid` for every row
+group and a `foot` that ends at the object's size; `engine/wasm/js/viz_engine.wasm` was
+rebuilt from the new `engine/storage` for it (a build artifact; no source of `engine/wasm`
+changed).
+
 ## Memory (measured here, Node 22, `engine/wasm/tools/measure_merge.mjs`)
 
 Inputs shaped like flush files of incompressible values (random doubles, jittered

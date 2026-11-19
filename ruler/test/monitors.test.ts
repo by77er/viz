@@ -11,7 +11,7 @@ import { verifySignature } from '../src/signature'
 import { ALL_SCOPES, apiKey, call } from './api'
 import kubernetesApps from './fixtures/kubernetes-apps.yaml?raw'
 import { tenantWorld, world, T0 } from './harness'
-import { MIN, newTenant, notifierStub, ok, rulerStub, runNotifierUntil, vec } from './helpers'
+import { expectWindows, MIN, newTenant, notifierStub, ok, rulerStub, runNotifierUntil, vec } from './helpers'
 
 const HOUR = 60 * MIN
 const SECRET = 'whsec-0123456789abcdef-payments'
@@ -486,7 +486,8 @@ describe('rule groups and rule files over HTTP', () => {
     const s = await scene()
     s.w.range = (q, from, to, step) => ({
       resultType: 'matrix',
-      result: [{ metric: { service: 'cart' }, values: Array.from({ length: Math.floor((to - from) / step) + 1 }, (_, i): [number, string] => [(from + i * step) / 1000, i >= 10 && i < 30 ? '0.02' : '0.004']).filter((v) => !q.includes('>') || Number(v[1]) > 0.01) }],
+      // By time, as an engine evaluates (a backtest may read the range in several windows).
+      result: [{ metric: { service: 'cart' }, values: Array.from({ length: Math.floor((to - from) / step) + 1 }, (_, i): [number, string] => [(from + i * step) / 1000, (from + i * step - T0) / step >= 10 && (from + i * step - T0) / step < 30 ? '0.02' : '0.004']).filter((v) => !q.includes('>') || Number(v[1]) > 0.01) }],
     })
     const body = { monitor: { name: 'cart error rate', query: 'ratio', condition: { op: '>', threshold: 0.01 }, for: '10m', noData: 'keep' }, fromMs: T0, toMs: T0 + HOUR, step: '1m' }
     const res = await call(s.key.auth, 'POST', '/api/v1/monitors/backtest', body)
@@ -494,7 +495,8 @@ describe('rule groups and rule files over HTTP', () => {
     expect(res.json.intervals.map((i: { state: string; startMs: number; endMs: number }) => [i.state, (i.startMs - T0) / MIN, (i.endMs - T0) / MIN])).toEqual([['pending', 10, 20], ['firing', 20, 30]])
     expect(res.json.summary).toMatchObject({ firingCount: 1, firingMs: 10 * MIN })
     expect(res.json.resolution.note).toMatch(/Evaluated every 1m/)
-    expect(s.w.rangeCalls.map((c) => c[0])).toEqual(['(ratio) > 0.01', 'ratio'])
+    expect(new Set(s.w.rangeCalls.map((c) => c[0]))).toEqual(new Set(['(ratio) > 0.01', 'ratio']))
+    expectWindows(s.w.rangeCalls, '(ratio) > 0.01', T0, T0 + HOUR, MIN)
     expect((await s.list()).total).toBe(0) // a backtest saves nothing
     expect((await call(s.key.auth, 'POST', '/api/v1/monitors/backtest', { ...body, step: undefined })).json.problems).toMatchObject([{ path: 'step' }])
     expect((await call(s.key.auth, 'POST', '/api/v1/monitors/backtest', { ...body, monitor: { name: 'x' } })).json.problems).toMatchObject([{ path: 'monitor.query' }])

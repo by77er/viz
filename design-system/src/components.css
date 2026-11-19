@@ -181,6 +181,7 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
   .vz-table[data-fold] th, .vz-table[data-fold] td { display: block; position: static; height: auto; min-width: 0; border-bottom: 0; box-shadow: none; white-space: normal; padding-left: var(--space-2); }
   .vz-table[data-fold] td { padding-block: var(--space-1); }
   .vz-table[data-fold] th:first-child, .vz-table[data-fold] td[data-key] { flex: 1 1 0; position: relative; }
+  .vz-table[data-fold] td[data-key] { display: flex; align-items: center; } /* its words centred in the key's line, which is control-touch tall with a coarse pointer, as "Actions…" at its end is */
   .vz-table[data-fold] [data-priority="1"] { flex: 0 0 var(--keep); min-width: min-content; order: 1; } /* never narrower than its longest phrase that cannot break ("for 10 min") */
   .vz-table[data-fold] th:not(:first-child):not([data-priority="1"]), .vz-table[data-fold] td:empty { display: none; }
   .vz-table[data-fold] td:not([data-key]):not([data-priority="1"]) { order: 2; font: var(--text-small); color: var(--ink); padding-top: 0; } /* folded words are read, so they are ink; their labels are muted */
@@ -208,6 +209,7 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
   .vz-table[data-fold="wide"] th, .vz-table[data-fold="wide"] td { display: block; position: static; height: auto; min-width: 0; border-bottom: 0; box-shadow: none; white-space: normal; padding-left: var(--space-2); }
   .vz-table[data-fold="wide"] td { padding-block: var(--space-1); }
   .vz-table[data-fold="wide"] th:first-child, .vz-table[data-fold="wide"] td[data-key] { flex: 1 1 0; position: relative; }
+  .vz-table[data-fold="wide"] td[data-key] { display: flex; align-items: center; }
   .vz-table[data-fold="wide"] [data-priority="1"] { flex: 0 0 var(--keep); min-width: min-content; order: 1; }
   .vz-table[data-fold="wide"] th:not(:first-child):not([data-priority="1"]), .vz-table[data-fold="wide"] td:empty { display: none; }
   .vz-table[data-fold="wide"] td:not([data-key]):not([data-priority="1"]) { order: 2; font: var(--text-small); color: var(--ink); padding-top: 0; }

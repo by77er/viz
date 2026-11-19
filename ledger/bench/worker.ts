@@ -9,6 +9,8 @@ import type { FileEntry, FlushUnit } from '../../contracts/ledger'
 import { Ledger } from '../src/ledger'
 export { Ledger }
 export { Ledger as LedgerAsBuilt } from './asbuilt/ledger'
+/** The release before checkpoints in parts (bench/before/): the counterfactual of checkpoint.bench.test.ts. */
+export { Ledger as LedgerBefore } from './before/ledger'
 
 interface Env {
   LEDGER: DurableObjectNamespace<Ledger>

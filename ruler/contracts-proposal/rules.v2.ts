@@ -228,8 +228,19 @@ export interface SloRuleV2 extends SloRule {
 /** Every rule a group can hold: `RuleGroup.rules`, `RuleGroup.anomalyRules` and `RuleGroup.sloRules`. */
 export type AnyRuleV2 = RuleV2 | AnomalyRuleV2 | SloRuleV2
 
+/**
+ * EXTENDED (`RulerLimits`). The modelled peak memory one warm-up and one backtest may hold (bytes):
+ * history is read and evaluated in time windows sized to it. Proposed for `contracts/rules.ts`
+ * (README, contract issue 18); defaults 16 MiB and 32 MiB.
+ */
+export interface RulerLimitsV2 extends RulerLimits {
+  maxWarmupMemoryBytes?: number
+  maxBacktestMemoryBytes?: number
+}
+
 /** EXTENDED (`RulerConfig`). */
-export interface RulerConfigV2 extends RulerConfig {
+export interface RulerConfigV2 extends Omit<RulerConfig, 'limits'> {
+  limits: RulerLimitsV2
   /** Entries kept per monitor in the transition log; the oldest are dropped and counted. */
   timelineLimit: number
 }
@@ -378,8 +389,19 @@ export interface BacktestResult {
    * have been live, as a warm-up leaves it. Null for alerting rules.
    */
   warmup?: { reads: { fromMs: number; toMs: number; stepMs: number }[]; points: number } | null
-  /** EXTENDED (with contract version 4). What the engine's plan said before the fetch, summed over the range queries. */
-  cost?: { scanSamples: number; bytesToRead: number; queries: number; budget: { scanSamples: number; bytesToRead: number } }
+  /**
+   * EXTENDED (with contract version 4). What the engine's plan said before the fetch, summed over the
+   * range queries; and the memory model: the modelled peak, the budget, the steps per window of each
+   * read (fetched and evaluated one window at a time, only the rule's state carried between them)
+   * and the range queries the windows took.
+   */
+  cost?: {
+    scanSamples: number
+    bytesToRead: number
+    queries: number
+    budget: { scanSamples: number; bytesToRead: number }
+    memory?: { peakBytes: number; budgetBytes: number; windowSteps: number[]; queries: number }
+  }
 }
 
 export type BacktestResponse =
@@ -391,7 +413,14 @@ export type BacktestResponse =
    * read is over the backtest budget (`RulerLimits.maxBacktest*`), the engine's own limits would
    * refuse it, or its cost could not be asked. Never answered with a part of the range.
    */
-  | { status: 'over_budget'; message: string; plan: { scanSamples: number; bytesToRead: number; queries: number } | null; budget: { scanSamples: number; bytesToRead: number } }
+  | {
+      status: 'over_budget'
+      message: string
+      plan: { scanSamples: number; bytesToRead: number; queries: number } | null
+      budget: { scanSamples: number; bytesToRead: number }
+      /** The memory model's peak and budget; null when the refusal came from the engine's plan before sizing. */
+      memory?: { peakBytes: number; budgetBytes: number } | null
+    }
   | Refused
 
 /** EXTENDED (`RulerRpc`). */
@@ -412,7 +441,7 @@ export interface RulerRpcV2 extends RulerRpc {
   dropTimelines(tenant: string, monitorIds: string[]): Promise<{ status: 'ok' } | Refused>
 }
 
-export type RulerConfigPatchV2 = Partial<Omit<RulerConfigV2, 'limits'>> & { limits?: Partial<RulerLimits> }
+export type RulerConfigPatchV2 = Partial<Omit<RulerConfigV2, 'limits'>> & { limits?: Partial<RulerLimitsV2> }
 
 // ───────────────────────────── 5. Notifier RPC additions ─────────────────────────────
 

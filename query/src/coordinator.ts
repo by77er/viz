@@ -674,7 +674,9 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
           continue
         }
         const t0 = performance.now()
-        const rp = c.engine.samplePlan(got, samples.map((f) => f.index), reads)
+        // Each sample file is planned for the series of its own series file (the pair).
+        const at = new Map(seriesPlans.map((p, i) => [pairKey(p.f.key), i]))
+        const rp = c.engine.samplePlan(got, samples.map((f) => f.index), reads, undefined, samples.map((f) => at.get(pairKey(f.key)) ?? null))
         c.cost.engineMs += Math.round(performance.now() - t0)
         scan = rp.files.reduce<number>((a, p, i) => a + (p.rows ?? samples[i]!.rows * reads.length), 0)
         samplePlans = toPlanned(samples, rp.files)

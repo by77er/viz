@@ -117,7 +117,7 @@ for (let run = 0; run < runs; run++) for (const side of sides) {
   }
   const { ctx, page, cdp } = await newPage()
   await page.goto(url, { waitUntil: 'load' }); await page.waitForSelector(sc.ready ?? 'body', { timeout: 60000 }); await page.waitForTimeout(500)
-  const centre = async (sel) => { const loc = page.locator(sel).first(); await loc.scrollIntoViewIfNeeded(); const b = await loc.boundingBox(); if (!b) throw new Error('not found: ' + sel); return b }
+  const centre = async (sel) => { const loc = page.locator(sel).first(); if (!(await loc.count())) throw new Error('not on this page: ' + sel); await loc.scrollIntoViewIfNeeded(); const b = await loc.boundingBox(); if (!b) throw new Error('not found: ' + sel); return b }
   const wait = (ms = 30000) => Promise.race([page.evaluate(() => window.__speed.p), new Promise((_, r) => setTimeout(() => r(new Error('timed out')), ms))])
   const loaded = () => page.evaluate(() => document.body.dataset.loaded ?? '')
   const tap = (m) => m.input ? m.input === 'tap' : coarse, act = async (m, sel = m.selector) => (tap(m) ? page.tap(sel) : page.click(sel))

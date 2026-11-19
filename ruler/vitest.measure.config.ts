@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { loadavg } from 'node:os'
 import { cloudflareTest } from '@cloudflare/vitest-plugin'
 import { defineConfig } from 'vitest/config'
@@ -57,8 +57,10 @@ export default defineConfig({
       wrangler: { configPath: './wrangler.test.jsonc' },
       miniflare: {
         serviceBindings: {
-          HOST: async () => {
+          HOST: async (request: Request) => {
             const cpu = workerdCpu()
+            // `?reset`: start a new peak (VmHWM) for the workerd processes ("5" to clear_refs, proc(5)).
+            if (new URL(request.url).searchParams.has('reset')) for (const pid of cpu.pids) writeFileSync(`/proc/${pid}/clear_refs`, '5')
             return Response.json({ ...cpu, ...workerdRss(cpu.pids), loadavg: loadavg() })
           },
           CAPTURE: async () => new Response('not captured in measurements', { status: 400 }),

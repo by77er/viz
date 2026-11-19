@@ -40,12 +40,24 @@
     "rebuild": "strict",
     "drainRetrySame": true,
     "baseFirst": true,
+    "baseTombstones": false,
     "compKey": "unique",
     "compConflictDelete": true,
     "fpScope": "stream",
     "tailScope": "stream",
     "noRetryAcrossLoss": true,
-    "retain": false
+    "retain": false,
+    "sweepSteps": false,
+    "sweepAge": true,
+    "purgeSteps": false,
+    "startSteps": false,
+    "goal": "query",
+    "sweepGone": "both",
+    "sweepOrder": "listFirst",
+    "sweepNewerLogged": true,
+    "maxSweeps": 99,
+    "maxRB": 0,
+    "rbFix": "none"
   },
   "props": [
     "I11_LiveFilesReadable"
@@ -56,7 +68,7 @@
   "states": 542904,
   "transitions": 2969229,
   "depth": 22,
-  "seconds": 39.2,
+  "seconds": 29.7,
   "collisionProb": 8e-9,
   "violated": "I11_LiveFilesReadable",
   "trace": [

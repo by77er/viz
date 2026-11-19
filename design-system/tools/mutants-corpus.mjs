@@ -3,7 +3,7 @@
 //   R1-R18  the v4 review's mutants (reviews/system-v4/review.md, "check.mjs mutants")
 //   N1-N13  v5's own (reviews/system-v5/response.md)
 //   X1-X32  the v5 review's (reviews/system-v5/review.md, M5): 30 of them survived v5's check
-//   V1-V16  v6's fixes, each removed
+//   V1-V17  v6's fixes, each removed
 //   C1-C9   the Chart rules (tools/test/chart-rules.test.mjs must fail)
 //   A1-A4   the rendered page audit (tools/audit.mjs must fail)
 //   H1-H4   harmless edits (everything must pass)
@@ -100,6 +100,7 @@ export const corpus = [
   { id: 'V13', what: 'the scroll edge back to an inset shadow under the cells (m14)', edit: css('.vz-table-wrap, .vz-nav, .vz-tabs { border-right: var(--stroke) solid transparent;', '.vz-table-wrap, .vz-nav, .vz-tabs { box-shadow: inset calc(-1 * var(--stroke)) 0 0 var(--rule-control);'), all: [/m14/] },
   { id: 'V14', what: 'status marks centred across lines, not on the first', edit: css('.vz-status { display: inline-flex; align-items: flex-start;', '.vz-status { display: inline-flex; align-items: center;'), all: [/first line/] },
   { id: 'V15', what: 'a kept column narrower than its phrase', edit: css('  .vz-table[data-fold] [data-priority="1"] { flex: 0 0 var(--keep); min-width: min-content;', '  .vz-table[data-fold] [data-priority="1"] { flex: 0 0 var(--keep); min-width: 0;'), all: [/longest phrase/] },
+  { id: 'V17', what: "a status's words and its time side by side, not one run (the time leaves the line)", edit: file('project/components/Table/preview.html', '<span class="vz-status" data-state="critical"><span>Firing since <span class="vz-qty">13:07</span>, <span class="vz-qty">2 h 9 min</span></span></span>', '<span class="vz-status" data-state="critical">Firing since <span class="vz-qty">13:07</span>, <span class="vz-qty">2 h 9 min</span></span>'), args: ['project/components'], all: [/status-run/] },
   { id: 'V16', what: 'a shadow-overlay on a panel (the one shadow off an overlay)', edit: append('.vz-panel { box-shadow: var(--shadow-overlay); }'), all: [/overlays only/] },
   // ---- the Chart rules: tools/test/chart-rules.test.mjs must fail ----
   { id: 'C1', what: "v5's order: the view's filter applied before colours are assigned (image 01)", run: 'chart', edit: chart('assignSeries(map, result, { filteredOut: view.filteredOut })\n    for (const s of result) s.slot = slotOf(map, s.key) || 0\n    const listed = view.filter ? result.filter(view.filter) : result', 'const listed = view.filter ? result.filter(view.filter) : result\n    assignSeries(map, listed, { filteredOut: view.filteredOut })\n    for (const s of result) s.slot = slotOf(map, s.key) || 0') },

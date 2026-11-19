@@ -21,10 +21,10 @@ import type { PromMatrix } from '../../contracts/engine'
 import type { SloDetail, SloRuleV2 } from '../contracts-proposal/rules.v2'
 import { parseRuleFile } from '../src/rules'
 import { DEFAULT_RULER_CONFIG } from '../src/ruler'
-import { warmSlo } from '../src/history'
+import { coarseExpr, warmSlo } from '../src/history'
 import { evalSlo, newSloRt, readSloRows, roughDuration, sloGeometry, type SloRow, type SloRt } from '../src/slo'
 import { toSeries, type Series } from '../src/statemachine'
-import { Crash, T0, tenantWorld, world } from './harness'
+import { Crash, FREE_PLAN, T0, tenantWorld, world } from './harness'
 import { MIN, notifierStub, ok, rulerStub, runNotifierUntil, setup, vec } from './helpers'
 
 const HOUR = 60 * MIN
@@ -263,19 +263,22 @@ async function rig(opts: { slo?: Record<string, unknown>; extra?: unknown[]; bad
      */
     reference: async () => {
       const rule = ok(await stub.listGroups(tenant)).groups[0]!.sloRules![0] as SloRuleV2
-      const reads = w.rangeCalls.slice(0, 2).map(([promql, fromMs, toMs, stepMs]) => ({ promql, fromMs, toMs, stepMs }))
-      const fine = reads.find((x) => x.stepMs === MIN)!
-      const coarse = reads.find((x) => x.stepMs !== MIN) ?? null
-      const warm = warmSlo(rule, MIN, fine, coarse, w.range!(fine.promql, fine.fromMs, fine.toMs, fine.stepMs) as PromMatrix, coarse ? (w.range!(coarse.promql, coarse.fromMs, coarse.toMs, coarse.stepMs) as PromMatrix) : null)
-      if (!warm.ok) throw new Error(warm.error)
+      // The warm-up's reads as its status records them; the reference reads them whole, in one window.
+      const status = ok(await stub.rules(tenant)).rules.find((x) => x.name === 'CheckoutSLO')!.slo!.warmup!
+      const fine = { promql: rule.expr, ...status.reads.find((x) => x.stepMs === MIN)! }
+      const c = status.reads.find((x) => x.stepMs !== MIN)
+      const coarse = c ? { promql: coarseExpr(rule, c.stepMs), ...c } : null
+      const io = { planner: { plan: async () => FREE_PLAN }, range: { range: async (q: string, s0: number, e: number, st: number) => w.range!(q, s0, e, st) as PromMatrix }, budget: { scanSamples: Infinity, bytesToRead: Infinity }, memoryBytes: 1 << 30 }
+      const warm = await warmSlo(rule, MIN, fine, coarse, io)
+      if (!warm.ok) throw new Error(JSON.stringify(warm))
       for (const t of times) {
-        const ev = evalSlo(rule, warm.rt, toSeries((await w.evaluate(rule.expr, t)) as never), t, MIN)
+        const ev = evalSlo(rule, warm.value, toSeries((await w.evaluate(rule.expr, t)) as never), t, MIN)
         if (!ev.ok) throw new Error(ev.error)
       }
       const rows = (await runInDurableObject(stub, (_i, s) => s.storage.sql.exec('SELECT part, block, body FROM slo_state WHERE tenant = ?', tenant).toArray())) as unknown as SloRow[]
       const stored = readSloRows(rule, MIN, rows)
       if ('error' in stored) throw new Error(stored.error)
-      return { stored: decode(stored.rt), reference: decode(warm.rt) }
+      return { stored: decode(stored.rt), reference: decode(warm.value) }
     },
   }
 }

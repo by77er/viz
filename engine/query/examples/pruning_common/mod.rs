@@ -193,6 +193,30 @@ pub fn verdict(decomposes: bool, scan: u64, series: u64, bytes: u64, files: usiz
     "one place".into()
 }
 
+/// An order-free digest of the rows of `VZB1` batches (series id, time, value bits), so that
+/// extracts cut into different numbers of parts can be compared.
+pub fn rows_digest(batches: &[Vec<u8>]) -> (u64, u64) {
+    let (mut n, mut h) = (0u64, 0u64);
+    for b in batches {
+        if b.is_empty() {
+            continue;
+        }
+        let d = batch::decode(b).unwrap();
+        for i in 0..d.n_rows() {
+            let s = d.series()[d.series_idx(i) as usize].series_id as u64;
+            let x = s.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ (d.ts(i) as u64).rotate_left(17) ^ d.value_bits(i).rotate_left(41);
+            h = h.wrapping_add(x.wrapping_mul(0xbf58_476d_1ce4_e5b9) ^ (x >> 29));
+            n += 1;
+        }
+    }
+    (n, h)
+}
+
+/// The leaves of a "split, L leaves" verdict.
+pub fn leaves_of(verdict: &str) -> Option<u32> {
+    verdict.strip_prefix("split, ")?.split(' ').next()?.parse().ok()
+}
+
 /// GETs the Worker issues for a whole object: one, or one per 16 MiB above that (`MAX_PART_BYTES`).
 pub fn whole_gets(size: usize) -> usize {
     size.div_ceil(16 << 20).max(1)
