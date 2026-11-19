@@ -1133,6 +1133,14 @@ All measured here, locally (Linux x86-64, 4 cores shared with other builds, Node
 workerd through `@cloudflare/vitest-plugin` 1.8), on 2026-11-18 and 19. Nothing in this
 section ran on Cloudflare (the Worker itself did, in two staged trials: `deploy/README.md`).
 
+**The review of spans and logs end to end, M-1, M-2, m-3, m-4 (2026-11-19, 13:19 to 13:21 UTC,
+load average 2.7 to 6.0):** `npx vitest run --maxWorkers=2`: **163 tests, all passing** in 19
+files (116 s); `npx tsc --noEmit`: clean; the module rebuilt (`b3761a9c…`) and
+`../engine/wasm-query/tools/check.mjs` passing; `cargo test -j 2 --lib` in `engine/wasm-query`
+9 of 9 and `cargo test -j 2` in `engine/traceql` as listed under "Traces and logs",
+"Verification". The fixtures were not regenerated: the seeds' 128 cases each still equal their
+in-memory answers. The mutants are under "Mutation check".
+
 **The review's fixes ported onto the development branch, over D62 (2026-11-19; 11:42 to 11:49 UTC, load average 8.9 to 10.7):**
 `npx vitest run --maxWorkers=2`, twice: **152 tests, all passing** in 16 files (213 s and 201 s; a run at 11:13, load 3.9 to 4.4, also passed all 152 in 133 s);
 `npx tsc --noEmit`: clean. No engine code changed (`engine/wasm-query`'s module was not rebuilt,

@@ -43,7 +43,7 @@ describe('measured here: traces and logs through the Worker', () => {
       const w = await world()
       await loadSignal(w, w.a, 'traces', fx.spans)
       await loadSignal(w, w.a, 'logs', fx.logs)
-      await env.CONFIG.put(`limits:${w.a.name}`, JSON.stringify({ maxSpans: 5_000_000, maxLogRows: 5_000_000, maxFetchBytes: 512 << 20, maxFiles: 20_000 }))
+      await env.CONFIG.put(`limits:${w.a.name}`, JSON.stringify({ maxSpans: 5_000_000, maxLogRows: 5_000_000, maxDecodedBytes: 1 << 30, maxFetchBytes: 512 << 20, maxFiles: 20_000 }))
       clearLimitsCache()
       const s = (ns: string) => String(BigInt(ns) / 1_000_000_000n)
       const cases: [string, string, [string, string][]][] = [
