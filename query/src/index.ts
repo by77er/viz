@@ -11,6 +11,16 @@
  *   GET|POST /api/v1/plan                  what a query would read and how it would run, without running it
  *   GET      /healthz                      no authentication
  *
+ * Behind `QUERY_SIGNALS` (off by default; README, "Traces and logs"), Tempo's and Loki's APIs:
+ *
+ *   GET      /api/traces/<id>, /api/v2/traces/<id>                       trace by ID
+ *   GET      /api/search                                                 TraceQL search
+ *   GET      /api/search/tags, /api/v2/search/tags                       tag names
+ *   GET      /api/search/tag/<tag>/values, /api/v2/search/tag/<tag>/values  tag values
+ *   GET      /api/metrics/query_range, /api/metrics/query                TraceQL metrics
+ *   GET|POST /loki/api/v1/query_range, /loki/api/v1/query                LogQL
+ *   GET|POST /loki/api/v1/labels, /loki/api/v1/label/<name>/values, /loki/api/v1/series
+ *
  * The tenant is the one the API key belongs to (`edge/src/auth.ts`, scope `read`). No
  * header, path segment, parameter or body field is read for it: a request cannot name a
  * tenant.
@@ -19,9 +29,11 @@ import { authenticate } from '../../edge/src/auth'
 import { HttpError } from '../../edge/src/errors'
 import { EngineLoadError, type Grid, QueryError, type SplitPlan, createQueryEngine } from '../../engine/wasm-query/js/index'
 import wasm from '../../engine/wasm-query/js/viz_query.wasm'
-import { ConfigError, type Env, tenantLimits } from './config'
+import { ConfigError, type Env, signalEnabled, tenantLimits } from './config'
 import { ApiError, type Context, type Cost, MAX_TS, MIN_TS, type QueryPlan, type SplitSpec, addStats, cardinality, gather, gatherSeries, newCost, timedOut } from './coordinator'
 import { cardinalityParams, limitParam, parseTime, rangeParams, readParams, required, timeoutParam, windowParams } from './params'
+import { WrongSignal } from './shards'
+import { lokiRoute, tempoRoute } from './sigroutes'
 
 export { Leaf } from './leaf'
 export type { Env } from './config'
@@ -80,6 +92,8 @@ const COST_HEADERS: [string, keyof Cost][] = [
   ['X-Viz-Pruning', 'pruning'],
   ['X-Viz-Tail-Mode', 'tailMode'],
   ['X-Viz-Series-Reads', 'seriesReads'],
+  ['X-Viz-Scan-Rows', 'scanRows'],
+  ['X-Viz-Rows-Decoded', 'rowsDecoded'],
 ]
 
 const allowedOrigins = (env: Env): string[] => (env.CORS_ORIGINS ?? '').split(',').map((s) => s.trim()).filter((s) => s !== '' && s !== '*')
@@ -180,6 +194,11 @@ function truncate<T>(c: Context, list: T[], limit: number): T[] {
   return list.slice(0, limit)
 }
 
+/** Tempo's API answers errors as plain text with the status code. */
+function plainFailure(errorType: string, error: string, headers: Record<string, string>): Response {
+  return new Response(`${error}\n`, { status: STATUS[errorType] ?? 500, headers: { 'Content-Type': 'text/plain; charset=utf-8', ...headers } })
+}
+
 function failure(errorType: string, error: string, headers: Record<string, string>): Response {
   return new Response(JSON.stringify({ status: 'error', errorType, error }), { status: STATUS[errorType] ?? 500, headers: { ...JSON_TYPE, ...headers } })
 }
@@ -210,7 +229,16 @@ function splitSpec(c: Context, plan: SplitPlan, query: string, grid: Grid): Spli
   }
 }
 
-type Handler = (c: Context, params: URLSearchParams, label: string) => Promise<string>
+export type Handler = (c: Context, params: URLSearchParams, label: string) => Promise<string>
+
+/** How an API answers: Prometheus' and Loki's envelope (`{"status":…}`), or Tempo's bare bodies with plain-text errors. */
+export type Dialect = 'prometheus' | 'tempo'
+export interface Route {
+  handler: Handler
+  methods: string[]
+  label: string
+  dialect?: Dialect
+}
 
 const instant: Handler = async (c, params) => {
   const query = required(params, 'query')
@@ -328,7 +356,9 @@ const cardinalityStatus: Handler = async (c, params) => {
 const metadata: Handler = async () => '{}'
 const buildinfo: Handler = async () => JSON.stringify({ version: '0.1.0-viz', revision: '', branch: '', buildUser: '', buildDate: '', goVersion: '' })
 
-function route(path: string): { handler: Handler; methods: string[]; label: string } | null {
+function route(path: string, env: Env): Route | null {
+  if (path.startsWith('/loki/')) return signalEnabled(env, 'logs') ? lokiRoute(path) : null
+  if (/^\/api\/(v2\/)?(traces|search|metrics)(\/|$)/.test(path)) return signalEnabled(env, 'traces') ? tempoRoute(path) : null
   switch (path) {
     case '/api/v1/query':
       return { handler: instant, methods: ['GET', 'POST'], label: '' }
@@ -369,9 +399,10 @@ function timeout(ms: number, why: string): { promise: Promise<never>; cancel: ()
 }
 
 async function api(req: Request, env: Env, path: string, corsHeaders: Record<string, string>): Promise<Response> {
-  const r = route(path)
+  const r = route(path, env)
   if (!r) return failure('not_found', 'not found', corsHeaders)
-  if (!r.methods.includes(req.method)) return failure('method_not_allowed', 'method not allowed', { ...corsHeaders, Allow: r.methods.join(', ') })
+  const fail = r.dialect === 'tempo' ? plainFailure : failure
+  if (!r.methods.includes(req.method)) return fail('method_not_allowed', 'method not allowed', { ...corsHeaders, Allow: r.methods.join(', ') })
 
   const cost = newCost()
   let headers = corsHeaders
@@ -394,33 +425,35 @@ async function api(req: Request, env: Env, path: string, corsHeaders: Record<str
       headers = { ...corsHeaders, ...costHeaders(cost) }
       if (engine.memoryBytes() > RESET_WASM_ABOVE) engine.reset()
     }
-    return success(data, headers, warnings)
+    return r.dialect === 'tempo' ? new Response(data, { status: 200, headers: { ...JSON_TYPE, ...headers } }) : success(data, headers, warnings)
   } catch (e) {
     // The engine could not be loaded: retrying cannot help, so 500, not a retryable 503.
     if (e instanceof EngineLoadError) {
       console.error('query: the engine did not load', e.message)
-      return failure('internal', 'the query engine could not be loaded', headers)
+      return fail('internal', 'the query engine could not be loaded', headers)
     }
     // A component whose storage is newer than this release reads (contracts/COMPATIBILITY.md
     // §2.4): retryable, nothing happened.
-    if (e instanceof Error && e.message.startsWith('schema_too_new')) return failure('unavailable', 'a storage component runs a newer schema than this release reads; retry', { ...headers, 'Retry-After': '5' })
-    if (e instanceof ApiError && e.errorType === 'unavailable') return failure(e.errorType, e.message, { ...headers, 'Retry-After': '1' })
-    if (e instanceof ApiError) return failure(e.errorType, e.message, headers)
-    if (e instanceof QueryError) return failure(e.errorType, e.message, headers)
-    if (e instanceof ConfigError) return failure('unavailable', e.message, { ...headers, 'Retry-After': '30' })
+    if (e instanceof Error && e.message.startsWith('schema_too_new')) return fail('unavailable', 'a storage component runs a newer schema than this release reads; retry', { ...headers, 'Retry-After': '5' })
+    // A shard answered a read for one signal with another's batch: nothing was misread (README, "Traces and logs").
+    if (e instanceof WrongSignal) return fail('unavailable', e.message, { ...headers, 'Retry-After': '1' })
+    if (e instanceof ApiError && e.errorType === 'unavailable') return fail(e.errorType, e.message, { ...headers, 'Retry-After': '1' })
+    if (e instanceof ApiError) return fail(e.errorType, e.message, headers)
+    if (e instanceof QueryError) return fail(e.errorType, e.message, headers)
+    if (e instanceof ConfigError) return fail('unavailable', e.message, { ...headers, 'Retry-After': '30' })
     if (e instanceof HttpError) {
       // From edge's key check (401, 403) and pool-map lookup (503).
       const type = e.status === 401 ? 'unauthorized' : e.status === 403 ? 'forbidden' : e.status === 503 ? 'unavailable' : 'internal'
-      return failure(type, e.message, { ...headers, ...e.headers })
+      return fail(type, e.message, { ...headers, ...e.headers })
     }
     // Nothing of the failure or of the request is echoed.
     if (e instanceof RangeError || e instanceof TypeError) {
       console.error('query: internal error', e.stack)
-      return failure('internal', 'internal error', headers)
+      return fail('internal', 'internal error', headers)
     }
     // A shard, the ledger or a leaf threw (overloaded, reset): retryable.
     console.error('query: unhandled error', e instanceof Error ? e.stack : String(e))
-    return failure('unavailable', 'a storage component did not answer; retry', { ...headers, 'Retry-After': '1' })
+    return fail('unavailable', 'a storage component did not answer; retry', { ...headers, 'Retry-After': '1' })
   }
 }
 

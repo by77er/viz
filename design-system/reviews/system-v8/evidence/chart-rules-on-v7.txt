@@ -1,4 +1,4 @@
-# the v8 chart tests against the v7 copy
+# the v8 chart tests against the v7 copy (VIZ_DS_ROOT), rerun at the end of the session
 ok 1 - B2, sequence D: a pod comes back while its slot is held only by a hidden series: it takes its slot back
 not ok 2 - B2, sequence D as the reviewer ran it (36 pods): hiding the newcomer gives its slot to the largest grey pod at once; the returning pod finds it held on screen
 not ok 3 - B2, sequence E: "Without the three largest", a larger pod arrives, "Colour the eight largest", clear: each step follows what is on screen
@@ -49,3 +49,7 @@ ok 19 - M2: negative values keep their sign, and a small one says which side of 
 ok 20 - M1 (v5), image 06: a member of Other above the threshold is in the text form
 # pass 16
 # fail 4
+
+# and on v8
+# pass 20
+# fail 0

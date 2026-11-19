@@ -1459,12 +1459,12 @@ the new "dryRun on every write" test.
 | 180 | conversion: version 1 rows left beside version 2 ones | anomalystore: "version 1 rows are read and rewritten as version 2 at the next tick …" |
 | 181 | rows renumbered by a release without version 2 not rewritten under their own chunks | anomalystore: "a shard move carries version 2 rows …; rows a release without version 2 renumbered … rewritten whole" |
 | 182 | CPU model: robust z priced by its stored (ring block) size, not by the points it scans | anomalystore: "the CPU and memory models price robust z by the points it scans …" |
-| 183 | save-time estimate: the blocks a window spans counted one short | anomaly: "an anomaly monitor is query + anomaly; its defaults follow the evidence …" (+1 more: saved again) |
-| 184 | readers first broken: this release writes version 2 while gated off (the gate shipped on) | MUT_184 |
-| 185 | readers first broken: gated off, this release cannot read version 2 (the next release's rows refused after a rollback) | MUT_185 |
+| 183 | save-time estimate: the blocks a window spans counted one short | anomaly: "saved again unchanged, a stored rule keeps the defaults …" (+1 more: anomalystore's caps by version) |
+| 184 | readers first broken: this release writes version 2 while gated off (the gate shipped on) | anomalystore: "readers first: this release (the gate as shipped) writes version 1; the next … reads those rows …" |
+| 185 | readers first broken: gated off, this release cannot read version 2 (the next release's rows refused after a rollback) | anomalystore: "the stored form is the state, bit for bit: robust_z, 50 points …" (+13 more, every reading of version 2) |
 
 **Readers first: mutants 184–185, and 146–157, 174–183 re-run with the gate off** (`VIZ_SCRATCH=<scratch>
-node scripts/mutants.mjs 184 185 174 … 183 146 … 157`, on a scratch copy, deleted after): MUT_GATE.
+node scripts/mutants.mjs 184 185 174 … 183 146 … 157`, on a scratch copy, deleted after): **24 of 24 killed on the first run**, shared tree unchanged.
 The two asked for: 184 (writes version 2 while gated off) and 185 (cannot read version 2 while gated
 off); 179 (version 2 written whatever the gate says) is the third way to break it. All 185 patterns
 match the source exactly once.

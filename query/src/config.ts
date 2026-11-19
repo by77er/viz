@@ -109,7 +109,7 @@ export interface TenantLimits extends QueryLimits {
   maxSpans: number
   /** Logs: log rows one query may decode, checked the same way. */
   maxLogRows: number
-  /** TraceQL metrics: series in the answer, and points (series x steps). */
+  /** TraceQL metrics: series in the answer, and points per series (the engine's `Limits`). */
   maxTraceSeries: number
   maxTracePoints: number
 }
@@ -148,7 +148,7 @@ export const DEFAULT_LIMITS: TenantLimits = {
   maxSpans: 200_000,
   maxLogRows: 400_000,
   maxTraceSeries: 10_000,
-  maxTracePoints: 1_000_000,
+  maxTracePoints: 11_000,
 }
 
 /** A configuration that cannot be trusted: the query is refused (503), never run on a guess. */

@@ -647,7 +647,7 @@ export function createQueryEngine(module: WebAssembly.Module): QueryEngine {
     },
     tqFilePlan: (table, indexes, lo, hi, id) =>
       call('viz_q_tq_file_plan', traceId(new Request().u64(BigInt(RANGE_GAP)).u8(table === 'spans' ? 0 : 1).i64(nanos('lo', lo)).i64(nanos('hi', hi)), id).strs(indexes), json<SignalFilePlan[]>),
-    tqExtent: (indexFiles, tailBatches, lo, hi, id) => call('viz_q_tq_extent', traceId(new Request().i64(nanos('lo', lo)).i64(nanos('hi', hi)), id).files(indexFiles).files(tailBatches), json),
+    tqExtent: (indexFiles, tailBatches, lo, hi, id) => call('viz_q_tq_extent', traceId(new Request().i64(nanos('lo', lo)).i64(nanos('hi', hi)), id).files(indexFiles).files(tailBatches), json<{ traces: number; lo?: string; hi?: string; hours: number[] }>),
     tqSearch: (files, tails, query, q) =>
       call('viz_q_tq_search', new Request().u64(limit('maxSpans', q.maxSpans)).count('limit', q.limit).count('spss', q.spss).i64(nanos('start', q.startNs)).i64(nanos('end', q.endNs)).str(query).files(files).files(tails), counted),
     tqMetrics: (files, tails, query, q) =>

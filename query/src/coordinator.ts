@@ -42,7 +42,7 @@ export const MAX_PART_BYTES = 16 << 20
 /** An error with a Prometheus `errorType`, on its way to an HTTP status. */
 export class ApiError extends Error {
   constructor(
-    readonly errorType: 'bad_data' | 'execution' | 'unavailable' | 'timeout' | 'internal',
+    readonly errorType: 'bad_data' | 'execution' | 'unavailable' | 'timeout' | 'internal' | 'not_found' | 'unsupported',
     message: string,
   ) {
     super(message)
