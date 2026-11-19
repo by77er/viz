@@ -1498,7 +1498,8 @@ rollback reads one version per Worker per version since its target (tens of API 
 module that does more than define values at load time breaks the read, loudly. Format versions
 (queue messages, R2 objects, KV records) were not recorded here, so the tool did not refuse a
 rollback below the reader of a format; since D69 they are recorded, in a var of their own
-(`VIZ_FORMATS`), and it does.
+(`VIZ_FORMATS`), and it does, judging what each Worker it restores reads against what was written
+since, also by the Workers it leaves serving (D69, as revised after its review).
 
 **Would change if.** Format versions join the record (the same var can carry them); components
 start publishing their specs in a form the deploy can read directly; or Cloudflare keeps

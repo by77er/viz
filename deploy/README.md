@@ -9,7 +9,7 @@ changes no component: everything it needs from one is under "Needed changes".
 | `workers.json` | Which Workers exist, in dependency order (callees first), which are deployed, and why the others are not. Deployment-wide settings: domain, observability sampling, Durable Object code-update mode, resource names, shared vars |
 | `configure.mjs` | Generates each Worker's production (or staged) wrangler config into `generated/` from the component's own `wrangler.jsonc` |
 | `resources.mjs` | Creates the R2 bucket, KV namespace and queues (idempotent); `destroy --stage` deletes a stage |
-| `release.mjs` | Upload every Worker, then promote callees first; the migration gate; release records (with schema and format versions, rollback floors, and whether the release is forward-only); rollback, refused across a forward-only release, below a rollback floor, or across the OAuth key's creation or rotation; `plan` |
+| `release.mjs` | Upload every Worker, then promote callees first; the migration gate; release records (with schema and format versions, rollback floors, and whether the release is forward-only); rollback of a record (or `--only` some of its Workers, the others judged as they serve), refused across a forward-only release, under a format version a restored Worker does not read, below a rollback floor, or across the OAuth key's creation or rotation; `plan` |
 | `lib/formats.mjs` | Reads each Worker's format versions (written and read) from its components' `FORMATS` maps and read lists, for the manifest, the `VIZ_FORMATS` var of each version, and the rollback check (D69) |
 | `lib/floors.mjs` | Rollback floors a switch raises (`INGEST_SIGNALS`): which Workers, how each is judged (schema version or a `VIZ_FLOORS` stamp), and the deploy and rollback refusals (D64, D69) |
 | `lib/secrets.mjs` | Worker secrets the deploy generates (viz-control's `OAUTH_CLIENT_KEY`): put on the release's upload only where missing, value on wrangler's stdin, replaced only when asked, never on another run's upload; rollbacks across its creation or rotation refused ("Worker secrets the deploy generates") |
@@ -24,7 +24,7 @@ changes no component: everything it needs from one is under "Needed changes".
 | `ci/matrix.mjs` | Which components CI checks in this checkout |
 | `scripts/mutants-release.mjs` | Mutation check of the schema, format and floor rules in `release.mjs`, `configure.mjs`, `lib/schemas.mjs`, `lib/formats.mjs`, `lib/floors.mjs`, of the class-binding allowlist and viz-mcp's bindings, and of the workflow's main-only gate (run on a copy) |
 | `scripts/mutants-secrets.mjs` | Mutation check of the generated secrets (`lib/secrets.mjs`, its use in `release.mjs`, stdin in `lib/wrangler.mjs`, the API timeout in `lib/cf.mjs`; run on a copy) |
-| `test/fake-wrangler.mjs` | A stand-in for wrangler that `test/secrets.test.mjs` runs as a real child process (`VIZ_WRANGLER_BIN`, tests only) |
+| `test/fake-wrangler.mjs` | A stand-in for wrangler that the end-to-end tests (`secrets`, `release-checks`, `review-d69`, `workflow`) run as a real child process (`VIZ_WRANGLER_BIN`, tests only), with `test/fake-account.mjs` answering the Cloudflare API from the same state |
 | `resources.json` | KV namespace ids by title (not secret; rewritten by `resources.mjs`) |
 | `generated/` | Build output: configs, manifests, release records. Git-ignored |
 
@@ -400,17 +400,18 @@ lists (`"reads": ["janitor/src/formats.ts#READS"]`; `"reads_of": { "store.anomal
 "ruler/src/schema.ts#ANOMALY_STATE_READS" }`, which also takes a reader's one-version constant such
 as `edge/src/auth.ts#KEY_RECORD_VERSION` or `contracts/control.ts#CONTROL_SERVICE_VERSION`), and
 the formats its code reads with no version of its own (`"reads_v1": { "kv.pool":
-"edge/src/route.ts: …" }`, read as version 1 only, with where; "Contract issues" lists them). A
+"edge/src/route.ts: …" }`, read as version 1 only, with where; "Needed changes in components" lists them). A
 Worker that reads none says so (`"formats": {}`, the gateway); configure refuses a deployed Worker
 without a `formats` block. A format a Worker does not list, it does not read. `lib/formats.mjs` reads
 them from the sources as schemas are read, into the manifest, the record (`formatsComplete: true`)
-and **every version's `VIZ_FORMATS` var** (`complete: true`, also when empty). Declared today:
-viz-publisher (5 formats), viz-ingest (flush, compact, janitor and stack: 8 written, among them
-`r2.dead-letters` written at 2 and read at 1 and 2; and control's `kv.settings`, `kv.key`, `kv.pool`
-and the API key read), viz-control (14), viz-query (reads `kv.key`, `kv.pool`, `kv.settings`, the API
-key), viz-ruler (14 written, `store.anomaly-state` at the gate `ANOMALY_STATE_WRITE`, 1 now, read at 1
-and 2; reads `kv.key`, the API key and control's two RPC answers), viz-mcp (reads `kv.key`, the API
-key, `rpc.oauth`, `credential.oauth`), viz-gateway (none). Two tests hold the declarations to the
+and **every version's `VIZ_FORMATS` var** (`complete: true`, also when empty). Declared today
+(read from the sources on 2026-11-19): viz-publisher (5 written), viz-ingest (flush, compact, janitor
+and stack: 7 written, among them `r2.dead-letters` at 2, read at 1 and 2; and 4 of control's read
+only: `kv.settings`, `kv.key`, `kv.pool`, the API key), viz-control (15 written), viz-query (4 read:
+`kv.key`, `kv.pool`, `kv.settings`, the API key), viz-ruler (14 written, `store.anomaly-state` at the
+gate `ANOMALY_STATE_WRITE`, 1 now, read at 1 and 2; 4 read: `kv.key`, the API key and control's two
+RPC answers), viz-mcp (4 read: `kv.key`, the API key, `rpc.oauth`, `credential.oauth`), viz-gateway
+(none). Two tests hold the declarations to the
 code: a `FORMATS` map in a deployed component that is not declared fails one; the other bundles each
 Worker's main as wrangler does (esbuild's list of inputs) and fails if its sources read one of
 control's KV records (`` `key:${…}` ``, `pool:`, `limits:`/`retention:`, `revocation:`), parse the
@@ -497,8 +498,9 @@ Refused, exit 3, before anything is uploaded or moved:
 with the switch on judges the serving floor Workers, a viz-query (say) left below its floor as it
 serves (a gradual deployment started by hand, a `wrangler rollback`, the dashboard) refuses every
 release, each push to main included. The way out keeps the switch on: restore that Worker alone, from
-a record in which it is at its floor, `node deploy/release.mjs rollback --record <release.json>
---only viz-query` (judged like any rollback; the others keep what serves), or deploy a stamped
+a record in which it is at its floor: the workflow with `rollback_to` and `rollback_only: viz-query`,
+or `node deploy/release.mjs rollback --record <release.json> --only viz-query` (judged like any
+rollback; the others keep what serves), or deploy a stamped
 version of it at 100% by hand (`wrangler versions deploy <version>@100% --name viz-query`). Turning
 the switch off in a release is not needed. **Never rename a rule** in `workers.json`: every version
 is stamped with the rule's name, so a renamed rule finds every serving version below its floor and
@@ -522,9 +524,9 @@ Cloudflare (`workers/tag`), which is how a later deploy finds the release servin
 
 ## Rollback
 
-**By hand**: Actions → Deploy → Run workflow, `rollback_to` = the full SHA of a commit whose
-deploy run succeeded. The job downloads that run's release record and runs `release.mjs
-rollback`: every Worker back to its recorded version id, callers first (viz-gateway,
+**By hand**: Actions → Deploy → Run workflow on `main`, `rollback_to` = the full SHA of a commit
+whose deploy run succeeded (and `rollback_only`, to restore only some of its Workers). The job
+downloads that run's release record and runs `release.mjs rollback`: every Worker back to its recorded version id, callers first (viz-gateway,
 viz-query, viz-control, viz-ingest), then the smoke test. Locally:
 `node deploy/release.mjs rollback --record <release.json> [--stage S] [--only viz-query,…]`;
 `--only` restores just the Workers it names (production or deployed names; an unknown one is
@@ -583,7 +585,7 @@ unless accepted). It does not restore routes, crons or queue consumers (not vers
 |---|---|---|
 | Refused (exit 3): unacknowledged migration | the previous release, untouched | add the trailer or the dispatch input, if the migration is intended |
 | Refused (exit 3): a rollback floor, the switch about to go on (`INGEST_SIGNALS` set while a floor Worker in this release, or serving, is below its floor) | the previous release, untouched | release the Workers at their floors without the switch first, let them serve, then set it ("Rollback floors") |
-| Refused (exit 3): a rollback floor with the switch already on in the serving release (a floor Worker off its floor as it serves: a gradual deployment or a `wrangler rollback` by hand) | the previous release, untouched; every later release is refused the same way | restore that Worker alone: `release.mjs rollback --record <a record where it is at its floor> --only <it>` ("Rollback floors", m-8); turning the switch off is not needed |
+| Refused (exit 3): a rollback floor with the switch already on in the serving release (a floor Worker off its floor as it serves: a gradual deployment or a `wrangler rollback` by hand) | the previous release, untouched; every later release is refused the same way | restore that Worker alone: the workflow with `rollback_to` and `rollback_only: viz-query`, or `release.mjs rollback --record <a record where it is at its floor> --only viz-query` ("Rollback floors", m-8); turning the switch off is not needed |
 | Refused (exit 3): a floor Worker of this release below its floor after the switch was on, or `INGEST_SIGNALS` a secret on viz-ingest | the previous release, untouched | deploy that Worker at or above its floor; remove the secret and set the switch as a var |
 | Stopped (exit 1) before anything changed: a serving viz-control version could not be read, so whether its key is set is unknown | the previous release, untouched | deploy again (S9 saw such reads fail for a moment) |
 | Phase 1 (upload) | the previous release, untouched (uploaded versions serve nothing) | fix the build |
@@ -679,6 +681,42 @@ module proxy and cross-checked against GitHub's tag pages). Rust comes from the 
 ## How it was verified
 
 All measured here unless it says Cloudflare.
+
+- **The review of D69, its findings fixed (2026-11-19)** (`design/reviews/d69-deploy-safety.md`,
+  approve with changes: 2 majors, 9 minors). Nothing deployed; the Cloudflare API not called. The
+  review's two fake extensions are now the tree's: `keep` (Cloudflare keeps only the n newest
+  versions, never a serving one) and `uploadSecretLag` (an upload shown without the secret it
+  inherited for its first n reads); `test/fake-account.mjs` also shows a non-string var as a JSON var.
+
+  | Finding | Disposition | Evidence |
+  |---|---|---|
+  | M-1 (a, b): format rollbacks judged only the Workers the record names | **Fixed.** The restored Workers are the only readers under the target (a record entry of a Worker left out is no reader); every kept version of each Worker that writes formats and is left out (since its version in the record, all when the record does not name it, its serving one always) is judged against them. `--only` (and the workflow's `rollback_only`) restores some Workers of a whole record. The rotation refusal and this README no longer offer a bare record without viz-control; they offer `--only`, judged | RV-1a, RV-1b, and a left-out viz-control rolled back since (its newer kept version counts); unit tests of the rule |
+  | M-1 (c): undeclared readers never counted | **Fixed.** Every deployed Worker declares, completely, what it reads (configure refuses one without a `formats` block); one that declares nothing reads version 1 of every format, per Worker; D69's declarations (no `complete`) read version 1 of what they do not list. Forward-only asks every serving Worker. Components declare where they had a constant (edge's `KEY_RECORD_VERSION`, contracts' `CONTROL_SERVICE_VERSION` and `OAUTH_VERSION`); elsewhere `workers.json` declares version 1 for them (`reads_v1`), listed under "Needed changes in components" | M-1 (c) end to end (a viz-query that declares nothing: the release writing `kv.settings` 2 forward-only, the rollback refused); configure tests: every Worker declares; each Worker's bundled sources (esbuild's inputs from its main) against the declarations, for control's KV records, the API key and OAuth credential layouts and control's RPC answers |
+  | M-2: an older commit's own tooling ran | **Fixed** (decision in D69, point 5): only main is deployed, with main's tooling. Both jobs with the credentials refuse any other ref first; the `production` environment allows main only (one-time setup, a setting); older code goes out again as a commit on main | `test/workflow.test.mjs`: the gate is the first step of both jobs and refuses `refs/heads/rv-b322599` (the review's RV-3), a `claude/…` branch and a tag; no checkout of another ref; no advice to run an older commit; and the release `b322599` makes is refused by main's tooling once the switch was on |
+  | m-1: the switch's evidence ages out of the 100 kept versions | **Known risk**, not fixed (the review's scenario and remedy under "Known risks"); the text now says "among the kept versions" | RV-4 not ported (it reproduces the risk) |
+  | m-2: a secret or JSON `INGEST_SIGNALS` unseen | **Fixed.** A binding of any type with the switch's name counts (a secret as on); a release is refused while viz-ingest's serving or newest version carries it as a secret | RV-5 (rollback refused, the next release refused, nothing uploaded); a JSON var seen |
+  | m-3: a floor Worker outside the release not judged at switch-on | **Fixed.** Judged as it serves | RV-6: refused, nothing uploaded |
+  | m-4: check, then act against a concurrent deploy | **Known risk**, not fixed; documented (local rollbacks must not overlap a deploy) | RV-10 not ported |
+  | m-5: the run-mark refusal on the `wrangler deploy` path is exit 1 with Workers promoted | **Text and messages made true**: that path cannot refuse before promotion (viz-control has no version before phase 2). D69 point 3, `deploy.sh` and the failure table say exit 3 in phase 1 and exit 1 in phase 2; the messages say what serves, and the log says "REFUSED in phase 2, after promotion began (exit 1)" | RV-7: exit 1, the message names what serves and no longer says "Nothing is promoted" |
+  | m-6: "set but missing from the upload" has no non-destructive exit | **Known risk**, documented with the review's scenario; the README's remedy (rollback or redeploy) corrected, and the refusal says neither lifts it | RV-8 now pins the message (k3 still refused) |
+  | m-7: re-read waits for existence; `fetch` has no timeout; `VIZ_FRESH_READ_MS=""` is 0 | **Fixed.** The upload is read until the key it inherited shows; the budget is wall-clock; every API request times out after 30 s (`VIZ_CF_TIMEOUT_MS`) and is retried; an empty variable is the default | RV-11 with budgets `300` and `""`: kept, no new put; a request that never answers is abandoned at 200 ms and retried |
+  | m-8: one off-floor Worker refuses every release; the remedy undocumented | **Fixed** in documentation and as a command: `--only` / `rollback_only` restores that Worker alone; never rename a rule | RV-9: refused, then `--only viz-query` restores viz-query alone (no other Worker moved), and the next release with the switch goes out |
+  | m-9: claims the code does not bear out | **Corrected**: `release.mjs`'s header, this README's "Contract issues" (§6 was edited in 799ea36, after the code), COMPATIBILITY §6's bullet (its own change), DESIGN.md's two paragraphs, `deploy.sh`'s exit codes, and the failure table's missing row (a serving viz-control version that cannot be read: exit 1, nothing changed) | text |
+
+  **Before and after.** The regression tests (`test/review-d69.test.mjs`, 12, and
+  `test/workflow.test.mjs`, 2) were copied, with the fakes, into a scratch copy of `deploy/`,
+  `contracts/` and `.github/` as the review read them (9958cb3, identical to this branch's head before
+  the change) and run there: **13 of 14 fail**, 12 on their assertions (exit 0 where 3 is expected:
+  RV-1a, RV-5, the JSON var, RV-6; not forward-only and the rollback allowed: M-1 (c); the old
+  messages: RV-1b, RV-7, RV-8; exit 3 where 0 is expected: RV-11; three Workers restored where one was
+  asked: RV-9; the left-out viz-control rolled back since: refused for another reason; no gate step:
+  the workflow), and one, the API timeout, hangs until the event loop drains and is cancelled, which
+  is the fault. The one that passes there is RV-3's half that already held: the tool of that commit
+  refuses the release `b322599` would make; what failed was that the workflow ran `b322599`'s own
+  tool. After the change all 14 pass. Not ported: RV-4 (m-1) and RV-10 (m-4), which reproduce risks
+  left open, and the review's "held" test.
+
+  **Suites, at the end** (`cd deploy`): MUTANTS_AND_SUITES_PLACEHOLDER
 
 - **D69: format versions, rollback floors, run marks, and S9's measurements in the secret steps
   (2026-11-19).** Nothing deployed; the Cloudflare API not called (another builder's stage
@@ -1430,7 +1468,9 @@ deployment and nothing here needs it: the gateway has no page and no static asse
   Cloudflare still keeps, m-1), and of the readers "in it and as it serves" (only those in the
   release, m-3; and the code judges every release with the switch on, not only the one turning it
   on). This change corrects the bullet in its own commit, to what the code does now (m-3 fixed; m-1
-  stated as the window it is), and keeps D69's per-Worker floors.
+  stated as the window it is), keeps D69's per-Worker floors, and adds to §6 what M-1 made the code
+  do: formats are read per Worker (one that declares nothing reads version 1 of every format), and a
+  rollback of some Workers judges the others as they wrote and write.
 - **§6 "per format the versions it reads and writes"** is implemented from the components' `FORMATS`
   maps, the read lists three keep (the janitor's and flush's `READS`, the ruler's
   `ANOMALY_STATE_READS`), the version constants three readers use (edge's `KEY_RECORD_VERSION`,

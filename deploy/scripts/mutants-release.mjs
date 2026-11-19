@@ -38,10 +38,11 @@ const MUTANTS = [
   // Format versions (D69; review of D60, m-13)
   ['formats: a release writing a version the serving release does not read is not marked forward-only', 'release.mjs',
     '      if (r.reads === null || r.reads.includes(f.writes)) continue // nothing serving reads it', '      if (true) continue // nothing serving reads it'],
-  ['formats rollback: the format check is never run', 'release.mjs', '    problems.push(...formatRollbackProblems(target, ran.filter((v) => fw.has(v.worker))))\n', ''],
+  ['formats rollback: the format check is never run', 'release.mjs', '    problems.push(...formatRollbackProblems(target, ran.filter((v) => fw.has(v.worker)), { left }))\n', ''],
   ['formats rollback: a version written since that the target does not read is accepted', 'release.mjs',
     '      if (r.reads === null || r.reads.includes(f.writes)) continue\n      problems.push(\n        `${format}: release', '      if (true) continue\n      problems.push(\n        `${format}: release'],
-  ['formats rollback: a newer version that declares no formats is ignored', 'release.mjs', '    if (v.formats === null) {', '    if (v.formats === null) continue\n    if (false) {'],
+  ['formats rollback: a newer version that declares no formats is ignored', 'release.mjs', '    if (v.formats === null) {\n      problems.push(`${v.worker}: version ${v.versionId}', '    if (v.formats === null) continue\n    if (false) {\n      problems.push(`${v.worker}: version ${v.versionId}'],
+  ['M-1: a kept version of a Worker left out that declares no formats is ignored', 'release.mjs', '    if (v.formats === null) {\n      problems.push(`${v.worker}: this rollback leaves it serving', '    if (v.formats === null) continue\n    if (false) {\n      problems.push(`${v.worker}: this rollback leaves it serving'],
   ['formats rollback: only the versions of schema-bearing Workers are read', 'release.mjs', 'new Set([...schemaWorkers(target), ...fw, ...specs.map((sp) => sp.worker)])', 'new Set([...schemaWorkers(target), ...specs.map((sp) => sp.worker)])'],
   ["formats rollback: Workers workers.json declares formats for are not judged when the record names none (an old record)", 'release.mjs', '  for (const w of plan.workers) if (w.formats?.writes?.length) out.add(stagedName(w.name, target.stage ?? undefined))\n', ''],
   ['formats: a release that declares nothing is taken to read every version (not version 1)', 'lib/formats.mjs', '  if (formatsByWorker === null || formatsByWorker === undefined) return { reads: [1],', '  if (formatsByWorker === null || formatsByWorker === undefined) return { reads: [1, 2, 3, 4, 5, 6, 7, 8, 9],'],

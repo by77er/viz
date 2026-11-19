@@ -199,7 +199,7 @@ export async function ensureSecrets({ worker, versionId, specs, now, rotate, rel
   let current = versionId
   // What a refusal leaves: an upload serves nothing; a version wrangler deploy made in phase 2 serves already (m-5).
   const left = deployed
-    ? `${worker} serves version ${versionId}, which wrangler deploy made in phase 2, without its generated secrets (/oauth/register answers 503), and the Workers before it in this release are promoted: the release fails in phase 2 (exit 1), not before promotion. The next deploy uploads from the newest version`
+    ? `${worker} serves version ${versionId}, which wrangler deploy made in phase 2, without its generated secrets (/oauth/register answers 503), and the Workers before it in this release are promoted: the release fails in phase 2 (exit 1), not before promotion`
     : 'nothing is promoted'
   // Secrets the newest version carries, which the upload inherits (S9), and that are not to be replaced: wait for them to show.
   const inherited = specs.filter((spec) => !rotate.has(spec.name) && now.find((n) => n.worker === worker && n.name === spec.name)?.known).map((spec) => spec.name)

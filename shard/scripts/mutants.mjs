@@ -29,8 +29,11 @@ const T = {
   tail: `npx vitest run ${W} test/tail.test.ts`,
   pool: `npx vitest run ${W} test/pool.test.ts`,
   registration: `npx vitest run ${W} test/registration.test.ts`,
+  bounds: `npx vitest run ${W} test/bounds.test.ts`,
   all: `npx vitest run ${W}`,
 }
+const TT = 'src/tail.ts'
+const HULL = '           AND (min_ts IS NULL OR max_ts IS NULL OR (max_ts >= ? AND min_ts <= ?)) ORDER BY seq`,'
 // [name, file, from, to, tests]
 const mutants = [
   // ── early refusal ──
@@ -40,7 +43,7 @@ const mutants = [
   ['early refusal: in-flight appends are never released', F, '    this.inFlight -= group.length\n', '', T.group],
   // ── group commit ──
   ['group commit: a failed group answers ok', F, '        p.reject(e)\n        for (const j of p.joined) j.reject(e)', "        p.resolve({ status: 'ok', incarnation: 0, seq: 0, duplicate: false })\n        for (const j of p.joined) j.reject(e)", T.group],
-  ['group commit: an append is answered before its group commits', F, '      this.group.push({ req, bytes, now, joined: [], resolve, reject })', "      this.group.push({ req, bytes, now, joined: [], resolve: () => undefined, reject })\n      resolve({ status: 'ok', incarnation: 0, seq: 0, duplicate: false })", T.group],
+  ['group commit: an append is answered before its group commits', F, '      this.group.push({ req, bytes, now, bounds, joined: [], resolve, reject })', "      this.group.push({ req, bytes, now, bounds, joined: [], resolve: () => undefined, reject })\n      resolve({ status: 'ok', incarnation: 0, seq: 0, duplicate: false })", T.group],
   ['group commit: a retry waiting in the open group is stored again', F, '    const twin = this.group.find((p) => p.req.tenant === req.tenant && p.req.fingerprint === req.fingerprint)', '    const twin = undefined as Pending | undefined', T.group],
   ['group commit: one transaction per append', F, '      else this.commitSoon(false)', '      else this.commitSoon(true)', T.group],
   ['group commit: the tenant cap ignores bytes waiting in the group', F, '    const held = (known?.bufferedBytes ?? 0) + waiting', '    const held = known?.bufferedBytes ?? 0', T.all],
@@ -78,6 +81,20 @@ const mutants = [
   ['D61: S5 is not healed (m-7)', F, '    if (!s || s.registered || s.incarnation !== r.incarnation || s.nextSeq !== 1) return', '    return', T.registration],
   ['D61: the alarm does not retry registrations', F, '    const due = [...this.regs].filter(([, r]) => r.inFlight === null && r.at <= now)', '    const due = [...this.regs].filter(() => false)', T.registration],
   ["D61: a new stream's registration is not rebuilt from storage", F, '        if (!s.registered && s.nextSeq === 1 && !this.regs.has(tenant)) this.regs.set(tenant, this.newRegistration(s.incarnation, at))', '', T.registration],
+  // ── time bounds of span and log batches (D72; review m-3 of design/reviews/signals-end-to-end.md) ──
+  ['D72: hull lower edge off by one (a batch whose last start is exactly minTs is skipped)', F, HULL, HULL.replace('max_ts >= ?', 'max_ts > ?'), T.bounds],
+  ['D72: hull upper edge off by one (a batch whose first start is exactly maxTs is skipped)', F, HULL, HULL.replace('min_ts <= ?', 'min_ts < ?'), T.bounds],
+  ['D72: recorded min one ms late', TT, '  return { minTs: ms(minHi, minLo), maxTs: ms(maxHi, maxLo) }', '  return { minTs: ms(minHi, minLo) + 1, maxTs: ms(maxHi, maxLo) }', T.bounds],
+  ['D72: recorded max one ms early', TT, '  return { minTs: ms(minHi, minLo), maxTs: ms(maxHi, maxLo) }', '  return { minTs: ms(minHi, minLo), maxTs: ms(maxHi, maxLo) - 1 }', T.bounds],
+  ['D72: recorded bounds rounded up, not floored', TT, '((BigInt(hi) << 32n) | BigInt(lo)) / NS_PER_MS)', '(((BigInt(hi) << 32n) | BigInt(lo)) + NS_PER_MS - 1n) / NS_PER_MS)', T.bounds],
+  ['D72: old rows (no bounds) dropped instead of kept', F, HULL, HULL.replace('(min_ts IS NULL OR max_ts IS NULL OR (max_ts >= ? AND min_ts <= ?))', '(max_ts >= ? AND min_ts <= ?)'), T.bounds],
+  ['D72: the signal filter ignored', TT, '  if (f.signals && !f.signals.has(signal)) return null\n', '', T.bounds],
+  ['D72: span bounds read from `end`, not `start`', TT, '  if (signal === 2) col += 32 * n', '  if (signal === 2) col += 40 * n', T.bounds],
+  ['D72: log bounds read from `observed_ts`, not `ts`', TT, '  if (signal === 2) col += 32 * n', '  col += signal === 2 ? 32 * n : 8 * n', T.bounds],
+  ['D72: a type-5 resource attribute is not walked', TT, '        if (type === 1 || type === 5) {', '        if (type === 1) {', T.bounds],
+  ['D72: a batch the walk cannot follow refuses the append', TT, '    if (hi >= 0x80000000) return null // negative', "    if (hi >= 0x80000000) throw new Error('negative') // negative", T.bounds],
+  ['D72: bounds computed but not stored (nothing is skipped)', F, 'p.bounds?.minTs ?? null, p.bounds?.maxTs ?? null,', 'null, null,', T.bounds],
+  ['D72: migration 3 adds no columns', F, "      if (!have.has('min_ts')) sql.exec(`ALTER TABLE batch ADD COLUMN min_ts INTEGER`)", '', T.compat],
   // ── names, versions ──
   ['names: a shard addressed outside SHARD_NAME serves', F, '    if (ctx.id.name !== undefined && !SHARD_NAME.test(ctx.id.name)) throw', '    if (false) throw', T.pool],
   ['names: a pool name with `_` is valid', 'src/pool.ts', "export const validPoolName = (pool: unknown): pool is string => typeof pool === 'string' && POOL_NAME.test(pool)", "export const validPoolName = (pool: unknown): pool is string => typeof pool === 'string' && pool !== ''", T.pool],

@@ -42,7 +42,8 @@
   },
   "revoked": {
     "v": 1,
-    "status": "ok"
+    "status": "ok",
+    "dead": true
   },
   "otherTenant": {
     "v": 1,

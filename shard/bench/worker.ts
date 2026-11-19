@@ -11,6 +11,8 @@ export { Shard }
 export { Shard as ShardAsBuilt } from './asbuilt/shard'
 /** The release before registration before writes (D61), for bench/registration.bench.test.ts. */
 export { Shard as ShardPrereg } from './prereg/shard'
+/** The release before span and log batches carried time bounds (D72), for bench/signaltail.bench.test.ts. */
+export { Shard as ShardPrebounds } from './prebounds/shard'
 /** The tenants' ledgers, in the same script as in viz-ingest (D61). */
 export { Ledger } from '../../ledger/src/ledger'
 

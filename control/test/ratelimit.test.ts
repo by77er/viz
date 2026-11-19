@@ -191,8 +191,14 @@ describe('the token endpoint and revocation: a request they refuse by themselves
     expect((await l.refresh(c.clientId, forged('vzr1', tenant, 1), net)).status).toBe(400)
     expect((await l.revoke(c.clientId, forged('vza1', tenant, 1), net)).status).toBe(200)
     expect((await l.form('/oauth/token', { grant_type: 'refresh_token', refresh_token: c.refresh }, net)).status).toBe(400) // no client_id
-    expect((await l.refresh(c.clientId, await expired('refresh', tenant), net)).status).toBe(400)
-    expect((await l.revoke(c.clientId, await expired('access', tenant), net)).status).toBe(200)
+    // A genuine credential past its expiry is answered as the object would and counts against
+    // nothing, its network included (round 2, m-2; before it, these two counted here).
+    for (let i = 0; i < 3; i++) {
+      expect((await l.refresh(c.clientId, await expired('refresh', tenant), net)).status).toBe(400)
+      expect((await l.revoke(c.clientId, await expired('access', tenant), net)).status).toBe(200)
+    }
+    expect((await l.form('/oauth/token', { client_id: c.clientId, refresh_token: c.refresh }, net)).status).toBe(400) // no grant_type
+    expect((await l.revoke(c.clientId, c.code, net)).status).toBe(200) // a code is not revoked: refused by the Worker
     expect(l.gets).toEqual([])
     const over = await l.refresh(c.clientId, forged('vzr1', tenant, 2), net)
     expect429(over)
@@ -235,12 +241,20 @@ describe('the token endpoint and revocation, after the tag and the expiry: per c
     expect((await refreshPlain(a.clientId, token)).status).toBe(200)
   })
 
-  it('the tenant fuse takes 12 ÷ 3 = 4 distinct unexpired credentials to spend; it refuses only that tenant; made-up and expired credentials count against nothing', async () => {
+  it('the tenant fuse takes 12 ÷ 3 = 4 distinct credentials that stay countable to spend; it refuses only that tenant; made-up and expired credentials count against nothing', async () => {
     const x = await newTenant('rltx')
     const y = await newTenant('rlty')
     const live = await connect(x.admin)
-    const dead = [await connect(x.admin), await connect(x.admin), await connect(x.admin), await connect(x.admin)]
-    for (const d of dead) expect((await revokeAtServer(d.clientId, d.refresh)).status).toBe(200)
+    // Four live grants, each at layer 2's limit: their refresh tokens stay live, and the object refuses
+    // them (rate_limited) without calling them dead, so each retry counts. (A dead credential counts
+    // once: the next test.)
+    const capped: { clientId: string; token: string }[] = []
+    for (let k = 0; k < 4; k++) {
+      const c = await connect(x.admin)
+      let token = c.refresh
+      for (let i = 1; i < OAUTH_LIMITS.refreshesPerGrantPerMinute; i++) token = (await refreshPlain(c.clientId, token)).body.refresh_token
+      capped.push({ clientId: c.clientId, token })
+    }
     const yc = await connect(y.admin)
     const l = limited(AFTER_TAG)
     // Made-up credentials naming tenant X, and X's own expired ones: refused before anything counts them.
@@ -251,10 +265,12 @@ describe('the token endpoint and revocation, after the tag and the expiry: per c
       expect((await l.revoke(live.clientId, await expired('access', x.tenant))).status).toBe(200)
     }
     expect(l.gets).toEqual([])
-    // Four dead credentials, three requests each (the fourth of each is refused at its own allowance), spend the 12.
-    for (const d of dead) {
-      for (let i = 0; i < 3; i++) expect((await l.revoke(d.clientId, d.access)).status).toBe(200)
-      expect429(await l.revoke(d.clientId, d.access))
+    // Four such credentials, three requests each (the object refuses each; the fourth of each is refused at its own allowance), spend the 12.
+    for (const c of capped) {
+      for (let i = 0; i < 3; i++) expect((await l.refresh(c.clientId, c.token)).body.error_description).toMatch(/refresh tokens in the last minute/)
+      const own = await l.refresh(c.clientId, c.token)
+      expect429(own)
+      expect(own.body.error_description).toMatch(/this code or token/)
     }
     // The fuse is spent: X's live client is refused before X's object, with the fuse named.
     l.gets.length = 0
@@ -265,6 +281,23 @@ describe('the token endpoint and revocation, after the tag and the expiry: per c
     // Tenant Y is served.
     expect((await l.refresh(yc.clientId, yc.refresh)).status).toBe(200)
     expect((await l.revoke(yc.clientId, yc.access)).status).toBe(200)
+  })
+
+  it('a dead credential counts once: its object calls it dead, the Worker lists it, and its later requests count against nothing (round 2, R2-M2)', async () => {
+    const x = await newTenant('rltd')
+    const live = await connect(x.admin)
+    const dead = [await connect(x.admin), await connect(x.admin), await connect(x.admin), await connect(x.admin)]
+    // Ended by their clients: the refresh tokens are listed then, the access tokens not yet.
+    for (const d of dead) expect((await revokeAtServer(d.clientId, d.refresh)).status).toBe(200)
+    const l = limited(AFTER_TAG)
+    for (const d of dead) {
+      for (let i = 0; i < 3; i++) expect((await l.revoke(d.clientId, d.access)).status).toBe(200)
+      for (let i = 0; i < 3; i++) expect((await l.refresh(d.clientId, d.refresh)).status).toBe(400)
+    }
+    // One object request per access token; none for the refresh tokens, listed when revoked. Before
+    // round 2 this was 12 + 12 requests, and the fuse was spent after the first 12.
+    expect(l.gets.length).toBe(4)
+    expect((await l.refresh(live.clientId, live.refresh)).status).toBe(200)
   })
 })
 
@@ -368,7 +401,7 @@ describe('a limiter that fails lets the request through (fails open, D70), says 
   const hanging = { limit: () => new Promise(() => {}) }
   const every = (b: unknown): Bindings => Object.fromEntries(LIMITERS.map((n) => [n, b]))
 
-  it('absent, throwing, rejecting or answering without "success": every endpoint and introspection serve, and each binding is logged once, not per request', async () => {
+  it('absent, throwing, rejecting or answering without "success": every endpoint and introspection serve; each absent binding is logged once, each failing one once, and a wider one is never asked while a narrower one fails (round 2, R2-M1)', async () => {
     const { admin } = await newTenant('rlopen')
     for (const [name, bindings] of [['absent', {}], ['throwing', every(throwing)], ['rejecting', every(rejecting)], ['malformed', every(malformed)]] as const) {
       const l = limited(bindings as Bindings)
@@ -389,7 +422,10 @@ describe('a limiter that fails lets the request through (fails open, D70), says 
       // (The helpers that connect use the plain environment, whose limiters are absent: those lines are the absent case's.)
       const kind = name === 'absent' ? / is not bound;/ : / failed;/
       const lines = log.mock.calls.map((a) => String(a[0])).filter((m) => m.startsWith('control: rate limiter') && kind.test(m))
-      for (const n of LIMITERS) expect(lines.filter((m) => m.includes(` ${n} `)).length, `${name} ${n}`).toBe(1)
+      // Absent: all six, whether or not a request came to ask them. Failing: the narrowest of each
+      // chain, once; the wider ones were never asked (before round 2 each was asked alone and logged).
+      const narrow = ['OAUTH_RL_SOURCE', 'OAUTH_RL_CREDENTIAL', 'OAUTH_RL_BEARER']
+      for (const n of LIMITERS) expect(lines.filter((m) => m.includes(` ${n} `)).length, `${name} ${n}`).toBe(name === 'absent' || narrow.includes(n) ? 1 : 0)
       log.mockRestore()
     }
   })
@@ -415,8 +451,8 @@ describe('a limiter that fails lets the request through (fails open, D70), says 
   }, 30_000)
 })
 
-describe('one budget per request (review m-1)', () => {
-  it('a binding that hangs takes the whole request\'s budget: the next binding of that request is not asked, and is tried by the next request', async () => {
+describe('one budget per request, a share per check (review m-1; round 2, m-1 and R2-M1)', () => {
+  it(`a binding that hangs takes only its own share (${CHECK_BUDGET_MS / 2} ms of ${CHECK_BUDGET_MS}); while it is skipped the wider binding is not asked at all`, async () => {
     const { admin } = await newTenant('rlbudget')
     const c = await connect(admin)
     const calls = { credential: 0, tenant: 0 }
@@ -428,8 +464,29 @@ describe('one budget per request (review m-1)', () => {
     const r = await l.refresh(c.clientId, c.refresh)
     expect(r.status).toBe(200)
     expect(calls).toEqual({ credential: 1, tenant: 0 })
+    // Before round 2 the next request asked the tenant's fuse alone (R2-M1).
     expect((await l.refresh(c.clientId, r.body.refresh_token)).status).toBe(200)
-    expect(calls).toEqual({ credential: 1, tenant: 1 })
+    expect(calls).toEqual({ credential: 1, tenant: 0 })
+  })
+
+  it('a check that answers within its share is not blamed for another\'s time, and two checks together stay within the budget', async () => {
+    const { admin } = await newTenant('rlshare')
+    const c = await connect(admin)
+    const answer = (ms: number) => ({ limit: async () => (await new Promise((r) => setTimeout(r, ms)), { success: true }) })
+    // The credential takes 40 ms of its 50; the first version left the tenant 60, this one gives it 50, and it answers in 45.
+    const l = limited({ OAUTH_RL_CREDENTIAL: answer(40), OAUTH_RL_TENANT: answer(45) })
+    const t0 = Date.now()
+    expect((await l.refresh(c.clientId, c.refresh)).status).toBe(200)
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(80)
+    expect(await l.health()).toMatch(/^OAUTH_RL_CREDENTIAL: bound$/m)
+    expect(await l.health()).toMatch(/^OAUTH_RL_TENANT: bound$/m)
+    // A tenant check of 60 ms overran its 50 ms share (the first version would have let it run to 100 ms in all).
+    const m = limited({ OAUTH_RL_CREDENTIAL: answer(5), OAUTH_RL_TENANT: answer(60) })
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const c2 = await connect(admin)
+    expect((await m.refresh(c2.clientId, c2.refresh)).status).toBe(200)
+    expect(await m.health()).toMatch(/^OAUTH_RL_TENANT: skipped$/m)
+    expect(await m.health()).toMatch(/^OAUTH_RL_CREDENTIAL: bound$/m)
   })
 })
 

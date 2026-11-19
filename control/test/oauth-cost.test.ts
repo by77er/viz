@@ -2,15 +2,17 @@
  * What each OAuth endpoint costs per request, as an unauthenticated caller or a client can drive it
  * (D70: what the rate limits have to bound, and per what key). Sequential requests in local
  * workerd: wall time, tenant objects reached, rows written there (`Tenant.rowsWritten`), alarm
- * writes (`setAlarm` + `deleteAlarm`, each billed as a row written) and KV writes from the object.
- * Printed as `OAUTH-COST` and recorded in control/README.md, "How it was verified"; the counts D70
- * rests on are asserted. Measured here, not on Cloudflare.
+ * writes (`setAlarm` + `deleteAlarm`, each billed as a row written), KV writes from the object, and
+ * the Worker's own KV reads and writes (the list of dead credentials, src/deadlist.ts; D70 after its
+ * second review). Printed as `OAUTH-COST` and recorded in control/README.md, "How it was verified";
+ * the counts D70 rests on are asserted. Measured here, not on Cloudflare.
  */
 import { runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { expect, it } from 'vitest'
 import worker from '../src/index'
 import { introspectFor } from '../src/introspection'
+import { resetLimiterState } from '../src/ratelimit'
 import type { Tenant } from '../src/tenant'
 import { newTenant, stubOf } from './helpers'
 import { ORIGIN, REDIRECT, RESOURCE, approve, authorize, authorizeUrl, codeOf, newClient, pkce } from './oauth'
@@ -48,7 +50,14 @@ it('what each OAuth endpoint costs: time, objects reached, rows, alarms and KV w
       return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(t) : v
     },
   })
-  const e = { ...env, TENANT }
+  // The Worker's own KV calls (the list of dead credentials), apart from the object's.
+  const workerKv = { reads: 0, writes: 0 }
+  const CONFIG = {
+    get: (...a: Parameters<KVNamespace['get']>) => (workerKv.reads++, (env.CONFIG.get as (...x: unknown[]) => unknown)(...a)),
+    put: (...a: Parameters<KVNamespace['put']>) => (workerKv.writes++, env.CONFIG.put(...a)),
+  } as unknown as KVNamespace
+  const e = { ...env, TENANT, CONFIG }
+  resetLimiterState()
   const send = async (path: string, init: RequestInit): Promise<{ status: number; body: any }> => {
     const res = await worker.fetch!(new Request(`${ORIGIN}${path}`, init) as never, e as never, {} as ExecutionContext)
     const text = await res.text()
@@ -65,18 +74,20 @@ it('what each OAuth endpoint costs: time, objects reached, rows, alarms and KV w
 
   const probe: Probe = { alarms: 0, kv: 0 }
   const tenants: string[] = []
-  const out: Record<string, { n: number; msPerRequest: number; objectsReached: number; rowsWritten: number; alarmWrites: number; kvWrites: number }> = {}
+  const out: Record<string, { n: number; msPerRequest: number; objectsReached: number; rowsWritten: number; alarmWrites: number; kvWrites: number; workerKvReads: number; workerKvWrites: number }> = {}
   async function measure(name: string, n: number, run: (i: number) => Promise<void>): Promise<void> {
     gets.length = 0
     const a0 = probe.alarms
     const k0 = probe.kv
+    const r0 = workerKv.reads
+    const p0 = workerKv.writes
     const w0 = await Promise.all(tenants.map(rowsOf))
     const t0 = performance.now()
     for (let i = 0; i < n; i++) await run(i)
     const ms = (performance.now() - t0) / n
     const w1 = await Promise.all(tenants.map(rowsOf))
     const rows = w1.reduce((s, w, i) => s + (w - w0[i]!), 0)
-    out[name] = { n, msPerRequest: Number(ms.toFixed(3)), objectsReached: gets.length, rowsWritten: rows, alarmWrites: probe.alarms - a0, kvWrites: probe.kv - k0 }
+    out[name] = { n, msPerRequest: Number(ms.toFixed(3)), objectsReached: gets.length, rowsWritten: rows, alarmWrites: probe.alarms - a0, kvWrites: probe.kv - k0, workerKvReads: workerKv.reads - r0, workerKvWrites: workerKv.writes - p0 }
   }
 
   // ---- no credential: registration, the authorization page, a made-up credential ----
@@ -147,24 +158,39 @@ it('what each OAuth endpoint costs: time, objects reached, rows, alarms and KV w
     const f = a[i]!
     expect((await form('/oauth/revoke', { client_id: f.clientId, token: f.access! })).status).toBe(200)
   })
-  await measure('token: rotated refresh token presented again (ends the grant)', G, async (i) => {
+  await measure('token: rotated refresh token presented again (ends the grant; listed)', G, async (i) => {
     const f = a[i]!
     expect((await form('/oauth/token', { grant_type: 'refresh_token', client_id: f.clientId, refresh_token: f.spent! })).status).toBe(400)
   })
-  await measure('token: replay of a genuine refresh token whose grant ended', G, async (i) => {
+  // The grant's newest refresh token, which nobody has presented since the grant ended: its first
+  // replay reaches the object, which calls it dead, and the Worker lists it (R2-M2).
+  await measure('token: first replay of a genuine refresh token whose grant ended (listed)', G, async (i) => {
+    const f = a[i]!
+    expect((await form('/oauth/token', { grant_type: 'refresh_token', client_id: f.clientId, refresh_token: f.refresh! })).status).toBe(400)
+  })
+  await measure('token: replay of a listed refresh token (this isolate)', G, async (i) => {
     const f = a[i]!
     expect((await form('/oauth/token', { grant_type: 'refresh_token', client_id: f.clientId, refresh_token: f.spent! })).status).toBe(400)
   })
-  await measure('introspection: replay of a genuine token whose grant ended', G, async (i) => {
-    expect((await introspectFor(e, 'viz-mcp', a[i]!.access, RESOURCE)).status).toBe('inactive')
+  await measure('token: replay of a listed refresh token (a new isolate: read from KV)', G, async (i) => {
+    const f = a[i]!
+    resetLimiterState()
+    expect((await form('/oauth/token', { grant_type: 'refresh_token', client_id: f.clientId, refresh_token: f.refresh! })).status).toBe(400)
   })
-  await measure('revoke: live refresh token (ends the grant)', G, async (i) => {
+  await measure('revoke: live refresh token (ends the grant; listed)', G, async (i) => {
     const f = b[i]!
     expect((await form('/oauth/revoke', { client_id: f.clientId, token: f.refresh! })).status).toBe(200)
   })
-  await measure('revoke: replay of a genuine token whose grant ended', G, async (i) => {
+  await measure('revoke: replay of a listed token (this isolate)', G, async (i) => {
     const f = b[i]!
     expect((await form('/oauth/revoke', { client_id: f.clientId, token: f.refresh! })).status).toBe(200)
+  })
+  // The access tokens of the grants just ended, which nobody has presented since.
+  await measure('introspection: first replay of a genuine token whose grant ended (listed)', G, async (i) => {
+    expect((await introspectFor(e, 'viz-mcp', b[i]!.access, RESOURCE)).status).toBe('inactive')
+  })
+  await measure('introspection: replay of a listed token (this isolate)', G, async (i) => {
+    expect((await introspectFor(e, 'viz-mcp', b[i]!.access, RESOURCE)).status).toBe('inactive')
   })
 
   // ---- the limiters themselves (D70), as miniflare implements them: a Durable Object with SQLite on
@@ -192,16 +218,30 @@ it('what each OAuth endpoint costs: time, objects reached, rows, alarms and KV w
     expect(r(name).objectsReached, name).toBe(0)
     expect(r(name).rowsWritten + r(name).alarmWrites + r(name).kvWrites, name).toBe(0)
   }
-  // A genuine credential reaches its tenant's object once per request.
-  for (const name of ['token: code exchange', 'token: refresh', 'revoke: live access token', 'token: rotated refresh token presented again (ends the grant)', 'token: replay of a genuine refresh token whose grant ended', 'revoke: live refresh token (ends the grant)', 'revoke: replay of a genuine token whose grant ended', 'introspection: live token (entrypoint logic)', 'introspection: replay of a genuine token whose grant ended']) {
+  // A genuine credential not listed dead reaches its tenant's object once per request.
+  const firstAnswers = ['token: rotated refresh token presented again (ends the grant; listed)', 'token: first replay of a genuine refresh token whose grant ended (listed)', 'revoke: live refresh token (ends the grant; listed)', 'introspection: first replay of a genuine token whose grant ended (listed)']
+  for (const name of ['token: code exchange', 'token: refresh', 'revoke: live access token', 'introspection: live token (entrypoint logic)', ...firstAnswers]) {
     expect(r(name).objectsReached, name).toBe(r(name).n)
   }
+  // The object's answer that it is dead lists it: one KV write each, by the Worker (R2-M2).
+  for (const name of firstAnswers) expect(r(name).workerKvWrites, name).toBe(r(name).n)
+  // A listed one reaches no object, and writes nothing anywhere; in a new isolate it costs one KV read.
+  const listed = ['token: replay of a listed refresh token (this isolate)', 'token: replay of a listed refresh token (a new isolate: read from KV)', 'introspection: replay of a listed token (this isolate)', 'revoke: replay of a listed token (this isolate)']
+  for (const name of listed) {
+    expect(r(name).objectsReached, name).toBe(0)
+    expect(r(name).rowsWritten + r(name).alarmWrites + r(name).kvWrites + r(name).workerKvWrites, name).toBe(0)
+  }
+  for (const name of ['token: replay of a listed refresh token (this isolate)', 'introspection: replay of a listed token (this isolate)', 'revoke: replay of a listed token (this isolate)']) expect(r(name).workerKvReads, name).toBe(0)
+  expect(r('token: replay of a listed refresh token (a new isolate: read from KV)').workerKvReads).toBe(G)
+  // A live token is read from the list once per isolate a minute at most.
+  expect(r('introspection: live token (entrypoint logic)').workerKvReads).toBeLessThanOrEqual(G)
+  expect(r('introspection: live token (entrypoint logic)').workerKvWrites).toBe(0)
   // What a client can make the object write: an exchange and a refresh write rows and re-arm the alarm.
   expect(r('token: code exchange').rowsWritten).toBeGreaterThanOrEqual(3 * 2 * G)
   expect(r('token: refresh').rowsWritten).toBeGreaterThanOrEqual(3 * G)
   expect(r('token: refresh').alarmWrites).toBeGreaterThan(0)
-  // A replay of a genuine credential whose grant ended reaches the object and writes nothing.
-  for (const name of ['token: replay of a genuine refresh token whose grant ended', 'revoke: replay of a genuine token whose grant ended', 'introspection: replay of a genuine token whose grant ended', 'introspection: live token (entrypoint logic)']) {
+  // The first answer about a dead credential reaches the object and writes nothing there.
+  for (const name of ['token: first replay of a genuine refresh token whose grant ended (listed)', 'introspection: first replay of a genuine token whose grant ended (listed)', 'introspection: live token (entrypoint logic)']) {
     expect(r(name).rowsWritten + r(name).alarmWrites + r(name).kvWrites, name).toBe(0)
   }
 })

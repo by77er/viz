@@ -33,6 +33,10 @@ on:
         description: 'Instead of deploying: restore the release that was deployed from this full commit SHA'
         type: string
         default: ''
+      rollback_only:
+        description: 'With rollback_to: restore only these Workers of that record, e.g. "viz-query" (the others keep what serves now and are judged as they serve)'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -168,7 +172,9 @@ jobs:
           gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name "release-$SHA" --dir release
           test -s release/release.json
       - name: Roll back (callers first; refused across a Durable Object migration)
-        run: node deploy/release.mjs rollback --record release/release.json --reason "workflow_dispatch by $GITHUB_ACTOR"
+        env:
+          ONLY: ${{ inputs.rollback_only }}
+        run: node deploy/release.mjs rollback --record release/release.json --only "$ONLY" --reason "workflow_dispatch by $GITHUB_ACTOR"
       - name: Smoke test
         env:
           SMOKE_KEY: ${{ secrets.SMOKE_KEY }}

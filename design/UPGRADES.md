@@ -190,14 +190,18 @@ COMPATIBILITY §6 states them; here is how they apply today.
   `VIZ_SCHEMAS`), marks a release forward-only by it, and refuses a rollback across it (D46,
   `deploy/README.md`, "Release record"); and since D69 the second: each Worker's written and read
   version of every format in its components' `FORMATS` maps and read lists (`VIZ_FORMATS` on every
-  version), a release forward-only when it writes a version the serving release does not read, and a
-  rollback refused below the reader of any version written since. A record from before format
-  versions is taken to read version 1 of every format.
-- **Rollback floors raised by a switch** (D69): once `INGEST_SIGNALS` has been on, no release or
+  version), a release forward-only when it writes a version some serving Worker does not read, and a
+  rollback refused when a Worker it restores does not read a version written since, or one that a
+  Worker it leaves serving wrote or writes. Since the review of D69 every Worker declares what it
+  reads, completely (where its code has no version for a format it reads, `deploy/workers.json` says
+  version 1 on its behalf); a Worker that declares nothing, and a record from before format
+  versions, are taken to read version 1 of every format.
+- **Rollback floors raised by a switch** (D69; COMPATIBILITY §6, "A floor raised by a switch"): once
+  a viz-ingest version with `INGEST_SIGNALS` on is among the versions Cloudflare keeps, no release or
   rollback may leave viz-publisher, viz-query or viz-ingest below the release that first reads span
-  and log data (D64, D62, D63); the switch goes on only when all three are at their floors in the
-  release and as they serve. COMPATIBILITY §6 defines the floor through forward-only releases only;
-  `deploy/README.md`, "Contract issues", proposes the wording for a floor a switch raises.
+  and log data (D64, D62, D63); every release with the switch on needs all three at their floors in
+  the release and as they serve. The tooling that enforces it is main's: production deploys only
+  from main, and older code goes out again as a new commit there (review of D69, M-2).
 - **Forward-only** for a class when `canOpen(target.latest, newest)` fails, when a format
   version is written that the target does not read, or across a class lifecycle change (F6).
 - Today every versioned class is at version 1 with `compat` 1, so every release since this

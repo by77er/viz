@@ -22,7 +22,7 @@
 // - `reads_v1`: a format the Worker's code reads without a version list or constant of its own
 //   (control's KV records, which edge, shard routing and query read "without checking a version
 //   yet", control/src/schema.ts): taken to read version 1 only (§3.1, "absent means 1"). Each entry
-//   says where; deploy/README.md, "Contract issues", lists them.
+//   says where; deploy/README.md, "Needed changes in components", lists them.
 // - `FORMATS` entries named `read.…` (the publisher's) are versions of formats ANOTHER component
 //   writes, as their reader declares them; that writer declares no format of that name, so nothing
 //   could ever be judged against them. They are not recorded.

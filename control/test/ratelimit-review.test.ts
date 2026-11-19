@@ -92,7 +92,7 @@ async function deadCredentials(admin: string) {
 const expired = (kind: 'code' | 'access' | 'refresh', tenant: string) => mintCredential(kind, tenant, KEY, Date.now() - 2 * 3_600_000)
 
 describe('B-1, R1 and R1b: a dead credential at the token endpoint spends at most its own allowance; the tenant\'s live client is served', () => {
-  it('R1: one dead refresh token sent 13 times with made-up client ids (the tenant fuse is 12) reaches the object 3 times; the live client refreshes', async () => {
+  it('R1: one dead refresh token sent 13 times with made-up client ids (the tenant fuse is 12) reaches no object; the live client refreshes', async () => {
     const { admin } = await newTenant('rr1')
     const dead = await deadCredentials(admin)
     const victim = await connect(admin)
@@ -102,9 +102,11 @@ describe('B-1, R1 and R1b: a dead credential at the token endpoint spends at mos
     const gets = l.gets.length
     const r = await l.refresh(victim.clientId, victim.refresh)
     expect(r.status, JSON.stringify(r.body)).toBe(200)
-    // Before the fix: 13 × 400, each reaching the object. Now: 3 reach it, then its own allowance refuses it.
-    expect(statuses).toEqual([400, 400, 400, ...new Array(10).fill(429)])
-    expect(gets).toBe(3)
+    // Before the fix: 13 × 400, each reaching the object. After round 1: 3 reached it, then its own
+    // allowance refused it ([400 × 3, 429 × 10]). Since round 2 (R2-M2) its client's revocation listed
+    // it dead, so every request is answered as the object would, before any limit or object.
+    expect(statuses).toEqual(new Array(13).fill(400))
+    expect(gets).toBe(0)
   })
 
   it('R1b: a dead credential sent with the victim client\'s own id spends nothing of that client\'s: it refreshes', async () => {
@@ -126,11 +128,15 @@ describe('B-1, R2: revocation counts the token itself first', () => {
     const l = limited(AFTER_TAG)
     const statuses: number[] = []
     for (let i = 0; i < 13; i++) statuses.push((await l.revoke(dead.clientId, dead.access)).status)
+    const gets = l.gets.length
     const rf = await l.refresh(victim.clientId, victim.refresh)
     expect(rf.status, JSON.stringify(rf.body)).toBe(200)
     const rv = await l.revoke(victim.clientId, rf.body.refresh_token)
     expect(rv.status, JSON.stringify(rv.body)).toBe(200)
-    expect(statuses).toEqual([200, 200, 200, ...new Array(10).fill(429)])
+    // After round 1: [200 × 3, 429 × 10]. Since round 2 the object's first answer calls it dead and the
+    // Worker lists it: the other 12 are answered 200 without a limit or an object.
+    expect(statuses).toEqual(new Array(13).fill(200))
+    expect(gets).toBe(1)
   })
 })
 
