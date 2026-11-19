@@ -26,8 +26,8 @@ MUTANTS = [
      "Tok::Desc => (3, Some(Ok(SpansetOp::Descendant))),",
      "Tok::Desc => (1, Some(Ok(SpansetOp::Descendant))),"),
     ("&& binds tighter than || inside filters", "src/parser.rs",
-     "            let rhs = self.field_cmp()?;\n            lhs = FieldExpr::Binary(op, Box::new(lhs), Box::new(rhs));\n        }\n        self.depth -= 1;",
-     "            let rhs = if op == BinOp::Or { self.field_and_only()? } else { self.field_cmp()? };\n            lhs = FieldExpr::Binary(op, Box::new(lhs), Box::new(rhs));\n        }\n        self.depth -= 1;"),
+     "            let (rhs, hr) = self.field_cmp()?;",
+     "            let (rhs, hr) = if op == BinOp::Or { self.field_and_only()? } else { self.field_cmp()? };"),
     ("metrics bucket by floor instead of ceil", "src/metrics.rs",
      "let k = ts.div_ceil(self.step_nano) - self.base() - 1;",
      "let k = (ts / self.step_nano).saturating_sub(self.base());"),
@@ -52,27 +52,50 @@ MUTANTS = [
     ("unscoped attribute looks at the resource first", "src/eval.rs",
      "Scope::None => attr(&span.attrs, name).or_else(|| attr(&span.resource, name)),",
      "Scope::None => attr(&span.resource, name).or_else(|| attr(&span.attrs, name)),"),
+    # Nesting and regex limits (tests/limits.rs).
+    ("tree height not bounded (chains build trees of any height)", "src/parser.rs",
+     "        let h = h + 1;\n        if h > MAX_DEPTH {",
+     "        let h = h + 1;\n        if h > usize::MAX - 1 {"),
+    ("tree height bound off by one", "src/parser.rs",
+     "        let h = h + 1;\n        if h > MAX_DEPTH {",
+     "        let h = h + 1;\n        if h > MAX_DEPTH + 1 {"),
+    ("parser recursion not bounded", "src/parser.rs",
+     "        if self.depth > MAX_DEPTH {", "        if self.depth > usize::MAX - 1 {"),
+    ("unary minus before a spanset or number recurses uncounted", "src/parser.rs",
+     "                self.enter()?;\n                let (n, hn) = self.atom()?;\n                self.leave();",
+     "                let (n, hn) = self.atom()?;"),
+    ("field parentheses count one level, not two", "src/parser.rs",
+     "            self.enter()?;\n            let (e, h) = self.field_or()?;\n            self.leave();",
+     "            let (e, h) = self.field_or()?;"),
+    ("regex nesting at the regex crate's default (250)", "src/parser.rs",
+     ".nest_limit(REGEX_NEST_LIMIT + 2)", ".nest_limit(250)"),
+    ("regex size at the regex crate's default (10 MiB)", "src/parser.rs",
+     ".size_limit(REGEX_SIZE_LIMIT)", ".size_limit(10 << 20)"),
+    ("regexes per query not counted", "src/parser.rs",
+     "        if self.regexes > MAX_REGEXES {", "        if self.regexes > usize::MAX - 1 {"),
 ]
 
 SUITES = [
     ("api", ["cargo", "test", "-j", "2", "--test", "api"]),
     ("conformance", ["cargo", "test", "-j", "2", "--test", "conformance"]),
     ("props", ["cargo", "test", "-j", "2", "--test", "props", "--", "--test-threads", "2"]),
+    ("limits", ["cargo", "test", "-j", "2", "--test", "limits", "--", "--test-threads", "2"]),
 ]
 
 # Helper used by the "&& binds tighter" mutant: a second precedence level for `&&`.
 AND_HELPER = '''
-    fn field_and_only(&mut self) -> Result<FieldExpr, Error> {
-        let mut lhs = self.field_cmp()?;
+    fn field_and_only(&mut self) -> Hp<FieldExpr> {
+        let (mut lhs, mut h) = self.field_cmp()?;
         while matches!(self.peek(), Tok::AndAnd) {
             self.next();
-            let rhs = self.field_cmp()?;
+            let (rhs, hr) = self.field_cmp()?;
+            h = h.max(hr) + 1;
             lhs = FieldExpr::Binary(BinOp::And, Box::new(lhs), Box::new(rhs));
         }
-        Ok(lhs)
+        Ok((lhs, h))
     }
 
-    fn field_cmp(&mut self) -> Result<FieldExpr, Error> {'''
+    fn field_cmp(&mut self) -> Hp<FieldExpr> {'''
 
 
 def main():
@@ -80,7 +103,7 @@ def main():
     copy = os.path.join(scratch, "traceql-mutants")
     if os.path.exists(copy):
         shutil.rmtree(copy)
-    shutil.copytree(CRATE, copy, ignore=shutil.ignore_patterns("target", ".work", "godiff"))
+    shutil.copytree(CRATE, copy, ignore=shutil.ignore_patterns("target", ".work", "godiff", "__pycache__"))
     env = dict(os.environ, CARGO_TARGET_DIR=os.path.join(scratch, "target-mutants"), PROPTEST_CASES="48")
     results = []
     for name, path, old, new in MUTANTS:
@@ -89,13 +112,15 @@ def main():
         assert original.count(old) == 1, f"{name}: pattern not found exactly once in {path}"
         mutated = original.replace(old, new)
         if "field_and_only" in new:
-            mutated = mutated.replace("\n    fn field_cmp(&mut self) -> Result<FieldExpr, Error> {", AND_HELPER, 1)
+            mutated = mutated.replace("\n    fn field_cmp(&mut self) -> Hp<FieldExpr> {", AND_HELPER, 1)
         open(f, "w").write(mutated)
         caught = []
         for suite, cmd in SUITES:
             r = subprocess.run(cmd, cwd=copy, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             if r.returncode != 0:
                 failing = [l.split()[1] for l in r.stdout.splitlines() if l.startswith("test ") and l.rstrip().endswith("FAILED")]
+                if not failing and "overflowed its stack" in r.stdout:
+                    failing = ["aborted: stack overflow"]
                 caught.append(f"{suite} ({', '.join(failing) or 'build failed'})")
         open(f, "w").write(original)
         results.append((name, caught))

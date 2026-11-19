@@ -57,11 +57,13 @@ pub const MAX_DEPTH: usize = 200;
 /// Most regular expressions in one query, and the limits each is compiled with: nesting
 /// (as the regex parser counts it in the pattern: each group, repetition, alternation and
 /// concatenation is a level; the regex compiler recurses over it), compiled size and
-/// lazy-DFA cache. Together they bound the memory a query's regexes can take to a few tens of MiB of
-/// a 128 MB isolate, whatever the query text.
-pub const MAX_REGEXES: usize = 32;
+/// lazy-DFA cache. A regex compiled at the size limit was measured to hold about 1.3 MiB,
+/// so a query's regexes hold at most about 26 MiB of a 128 MB isolate (16 x 1.3 MiB, plus
+/// 16 x 256 KiB of cache), whatever the query text. 1 MiB still compiles `\w{20}` (Unicode
+/// classes are large).
+pub const MAX_REGEXES: usize = 16;
 pub const REGEX_NEST_LIMIT: u32 = 64;
-pub const REGEX_SIZE_LIMIT: usize = 256 * 1024;
+pub const REGEX_SIZE_LIMIT: usize = 1 << 20;
 pub const REGEX_DFA_SIZE_LIMIT: usize = 256 * 1024;
 
 /// A parsed piece and the height of its syntax tree.

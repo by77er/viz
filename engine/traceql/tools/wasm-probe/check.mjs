@@ -96,12 +96,13 @@ for (const [name, kind, make] of FLAT) {
 const nestRe = n => `{ name =~ "${rep('(', n)}x${rep(')', n)}" }`;
 const regex = {
   nest64: attempt(S, nestRe(64)), nest65: attempt(S, nestRe(65)), nestFar: attempt(S, nestRe(fill(nestRe))),
-  size: attempt(S, '{ name =~ "(?:x{1000}){1000}" }'),
-  count32: attempt(S, `{ ${Array(32).fill('name =~ "op.*"').join(' && ')} }`),
-  count33: attempt(S, `{ ${Array(33).fill('name =~ "op.*"').join(' && ')} }`),
+  size: attempt(S, '{ name =~ "x{100000}" }'),
+  unicode: attempt(S, '{ name =~ "\\\\w{2}|\\\\w{16}" }'),
+  count16: attempt(S, `{ ${Array(16).fill('name =~ "op.*"').join(' && ')} }`),
+  count17: attempt(S, `{ ${Array(17).fill('name =~ "op.*"').join(' && ')} }`),
 };
-if (isErr(regex.nest64) || isErr(regex.count32)) failures.push('regex: a pattern at the limits was refused');
-for (const k of ['nest65', 'nestFar', 'size', 'count33']) if (!isErr(regex[k])) failures.push(`regex ${k}: ${regex[k].slice(0, 120)}`);
+for (const k of ['nest64', 'unicode', 'count16']) if (isErr(regex[k])) failures.push(`regex ${k} (within the limits): ${regex[k].slice(0, 120)}`);
+for (const k of ['nest65', 'nestFar', 'size', 'count17']) if (!isErr(regex[k])) failures.push(`regex ${k}: ${regex[k].slice(0, 120)}`);
 const { memory } = inst.exports;
 console.log(JSON.stringify({ bytes: bytes.length, gzip9: gzipSync(bytes, { level: 9 }).length, imports: imports.length, exports: WebAssembly.Module.exports(mod).map(e => e.name), instantiateMs: +instMs.toFixed(3), memoryBytes: memory.buffer.byteLength, results, limits, traps, failures }, null, 1));
 if (imports.length !== 0 || failures.length !== 0) process.exit(1);

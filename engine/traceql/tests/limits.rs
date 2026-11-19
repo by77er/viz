@@ -166,12 +166,13 @@ fn regexes_are_bounded_in_nesting_size_and_number() {
         let far = nested(fill(nested, MAX_QUERY_BYTES));
         assert!(matches!(run_all(&far), Err(Error::Validation { .. })));
 
-        // Compiled size: refused, not built.
-        let big = r#"{ .s =~ "(?:x{1000}){1000}" }"#;
-        let err = run_all(big).unwrap_err();
+        // Compiled size: refused, not built. `x{100000}` compiles under the regex crate's
+        // default limit (10 MiB) but not under REGEX_SIZE_LIMIT.
+        let err = run_all(r#"{ .s =~ "x{100000}" }"#).unwrap_err();
         assert!(matches!(&err, Error::Validation { msg, .. } if msg.contains("invalid regex")), "{err:?}");
-        // An ordinary Unicode-aware pattern fits comfortably.
+        // Ordinary patterns, Unicode classes included, fit.
         assert_eq!(run_all(r#"{ name =~ "(?i)\\w+[-_.]\\d{1,4}|s\\d" }"#).unwrap(), 1);
+        assert_eq!(run_all(r#"{ name =~ "\\w{2}|\\w{16}" }"#).unwrap(), 1);
 
         // Number per query.
         let many = |k: usize| format!("{{ {} }}", vec![r#"name =~ "s.*""#; k].join(" && "));

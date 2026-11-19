@@ -171,9 +171,9 @@ peaked at 21.6 MiB (`query/README.md`, "Measurements").
 
 ### 2026-11-19: series-level pruning (ABI 3)
 
-Rebuilt with `./build.sh` (`-j 2`) from the tree of this change: **3,153,747 bytes, 983,546
-gzip** (was 3,078,525 and 958,971: +75 KB, +24.6 KB gzip for the planners and the sparse
-reader). `node tools/check.mjs`: **17 of 17 checks pass** (12 before, plus `filePlan` by name
+Rebuilt with `./build.sh` (`-j 2`) from the tree of this change: **3,152,742 bytes, 983,968
+gzip**, SHA-256 `0bea92296051781e…` (was 3,078,525 and 958,971: +74 KB, +25 KB gzip for the
+planners and the sparse reader). `viz_q_extract`'s answer gained `u64 strays` before the batch. `node tools/check.mjs`: **17 of 17 checks pass** (12 before, plus `filePlan` by name
 and time with an unparsable fragment kept whole; `partPlan` reading one row group and the
 footer for the part holding the smallest ids; `samplePlan` selecting nothing without series
 files and keeping an unknown fragment whole; a malformed sparse file an `internal` error with

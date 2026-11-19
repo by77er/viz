@@ -13,7 +13,7 @@ deterministic simulator. Nothing panics on input. Builds for the host and for
 
 ```
 export CARGO_TARGET_DIR=$PWD/target
-cargo test -j 2 -- --test-threads 2                         # 47 tests, about 6 minutes on a loaded machine
+cargo test -j 2 --no-fail-fast -- --test-threads 2          # 55 tests, about 12 minutes on a loaded machine
 cargo test --test corpus -- --nocapture                     # upstream corpus through storage, per file
 cargo build --release --target wasm32-unknown-unknown       # the library
 (cd wasm && cargo build --release --target wasm32-unknown-unknown) && node tools/wasm_check.mjs
@@ -311,6 +311,27 @@ own report.
 
 All numbers measured here (Linux x86-64, 4 cores shared with other builds, rustc
 1.97.0, Node 22.23), not on Cloudflare.
+
+**2026-11-19, series-level pruning and the series-only read:** `cargo test -j 2` with two
+test threads: **55 tests, all passing** (lib 2, api 10, corpus 1, invariance 3, limits 10,
+plan 5, prune 3, pruning 8, split 8, staleness 5), from 05:06 to 05:21 UTC at a load average of
+10 to 16. That run first found a bug in this work: `pruning`'s property failed for part 1 of 3
+of `count(label_join(n, …))`, because `split::extract` returned early, with no `strays`, when
+it was given no sample file, so a reader whose id range held nothing would have taken "no
+strays" for an answer and missed a relabelled series' rows. The count is now made before that
+return; `pruning` and `split` were run again and pass, and so do `staleness`, `api` and `lib`
+(the others do not reach `extract`). New tests (`tests/pruning.rs`): `the_sample_plan_never_changes_a_result`
+(property, 32 cases, I14): every query of the pool and three relabelled ones, over the files
+read as `sample_plan` (with and without file pairs) and `file_plan` say, gives the same JSON and
+statistics as over whole files, also when evaluated with the carrier instead of the series
+files, and loads no more lake samples than the planned rows; and for split parts 1 and 3,
+the extract over planned files (and over the id-range plan wherever it covers) is identical;
+`label_calls_list_exactly_the_series_in_the_window_per_file` (property, I17): in every placement
+the label calls equal a reference computed from the history and the layout alone, include every
+series a query over the window sees, and do not change without the sample files;
+`part_sids_are_the_parts_key_range` (property, 256 cases); directed tests for one series of a
+20-row-group file (one row group and the footer), a part's key range, older and broken
+fragments, a sample "file" that is not Parquet, and inclusive windows.
 
 `cargo test`: **47 tests, all passing** (lib 2, api 10, corpus 1, invariance 3, limits 10,
 plan 5, prune 3, split 8, staleness 5), run on 2026-11-18 with `-j 2` and two test threads

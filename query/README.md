@@ -323,9 +323,10 @@ one-place limits. `X-Viz-Execution` and `X-Viz-Split-Reason` say which and why.
    index fragments), all at once. A reader reads its files (Cache API, then R2; at most six
    reads in flight) and returns its part's rows as one batch. Since 2026-11-19 it reads the
    series files by name and time and, of each sample file, only the row groups of its part's
-   `series_id` range with the footer (`partPlan`); once the series files are in, the engine
-   says what the part's series really need (`samplePlan` with the part) and anything not
-   covered is read in a second round. When the split key leaves out a label other than
+   `series_id` range with the footer (`partPlan`), and extracts; only if the extract reports a
+   series of its part outside that range (a "stray": its key leaves out a label it carries)
+   does it ask the engine what the part's series need (`samplePlan` with the part) and read
+   what was not covered, in a second round, before extracting again. When the split key leaves out a label other than
    `__type__`/`__unit__` (a relabelled or unpinned name, which most series carry, so the
    part's series are spread over every id), the sample files wait for the series files
    instead. A request without fragments (a coordinator of an earlier release) reads whole
@@ -482,8 +483,12 @@ All measured here, locally (Linux x86-64, 4 cores shared with other builds, Node
 workerd through `@cloudflare/vitest-plugin` 1.8), on 2026-11-18 and 19. Nothing in this
 section ran on Cloudflare (the Worker itself did, in two staged trials: `deploy/README.md`).
 
-**After series-level pruning and the series-only read (2026-11-19, ABI 3):** see
-"FINAL-RUN" below for the full suite. New: `test/pruning.test.ts` (4 tests over 25,000 series
+**After series-level pruning and the series-only read (2026-11-19, ABI 3; 05:21 to 05:23
+UTC, load average 10 to 12):** `npx vitest run --maxWorkers=2`: **86 tests, all passing** in
+11 files (111 s), against `engine/wasm-query/js/viz_query.wasm` rebuilt from this tree (SHA-256
+`0bea9229…`) and `engine/wasm/js/viz_engine.wasm` rebuilt from the new `engine/storage`;
+`npx tsc --noEmit`: clean (after `readTail` was made to fail closed on `page_limit`, a status
+the shard's in-progress paged tail added to its type). New: `test/pruning.test.ts` (4 tests over 25,000 series
 whose samples file has eight row groups, one shard, the seal size raised so the unit is one
 segment): a one-series query refused by the fragments' scan bound answers once resolved
 (`X-Viz-Pruning: series`, series estimate 1, fewer bytes, the same body and samples loaded as

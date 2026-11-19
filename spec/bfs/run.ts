@@ -310,10 +310,17 @@ prop('P_F14x', 'proposed at F14\'s bounds (two compaction steps at once, retenti
 prop('P_F15x', 'proposed at F15\'s bounds (2 flush Workers, shard loss + ledger loss), no client retry, ≤ 2 sweep runs', { ...PROPOSED, ...X, maxSL: 1, maxLL: 1 }, 'holds', ALLSAFE, 6_000_000)
 prop('P_teeth_newer_committed', 'F16 fix teeth: a newer incarnation kills old flush files once COMMITTED (not logged); F15\'s bounds', { ...PROPOSED, ...X, sweepNewerReg: false, sweepNewerLogged: false, maxSL: 1, maxLL: 1 }, 'violated', ['I11_LiveFilesReadable'], 6_000_000)
 propLeak('LEAK_P_sl', 'no leak, proposed: compaction, retention (2 removals), shard loss, no ledger loss (LEAK_D30_sl\'s bounds)', { ...PROPOSED, ...LS, maxLL: 0, maxSL: 1 }, 'holds')
-propLeak('LEAK_P_sl_comp', 'no leaked compaction output, proposed: compaction, retention (1 removal), ledger loss + shard loss (LEAK_D30_sl_comp\'s bounds)', { ...PROPOSED, ...LS, maxExp: 1, maxSL: 1, goal: 'cleanComp' }, 'holds')
-propLeak('LEAK_P_llsl', 'no leak of any object, proposed: compaction, retention (1 removal), ledger loss + shard loss', { ...PROPOSED, ...LS, maxExp: 1, maxSL: 1 }, 'holds')
-propLeak('LEAK_P_teeth_no_trigger', 'F16 fix teeth: the janitor does not ask the shard (the rule alone); LEAK_P_sl_comp\'s bounds', { ...PROPOSED, ...LS, regOnSweep: false, maxExp: 1, maxSL: 1, goal: 'cleanComp' }, 'violated')
-propLeak('LEAK_P_teeth_wm_rule', 'F16 fix teeth: the sweep keeps the rule as built (a newer incarnation counts once it has a logged UNIT); LEAK_P_sl_comp\'s bounds', { ...PROPOSED, ...LS, sweepNewerReg: false, maxExp: 1, maxSL: 1, goal: 'cleanComp' }, 'violated')
+// At LEAK_D30_sl_comp's bounds (one retention removal) the shallowest dead end is no longer F16
+// but the bound itself: a removal that a ledger rebuild undoes still counts against the budget,
+// so the output's inputs, admitted again, can never be removed and D30 rightly keeps the output.
+propLeak('LEAK_P_sl_comp', 'no leaked compaction output, proposed: compaction, retention (1 removal), ledger loss + shard loss (LEAK_D30_sl_comp\'s bounds). Expected to stop at the retention bound, not at F16: the one removal is undone by the rebuild and not refunded', { ...PROPOSED, ...LS, maxExp: 1, maxSL: 1, goal: 'cleanComp' }, 'violated')
+propLeak('LEAK_P_llsl', 'no leak of any object, proposed: compaction, retention (1 removal), ledger loss + shard loss. As LEAK_P_sl_comp: the retention bound', { ...PROPOSED, ...LS, maxExp: 1, maxSL: 1 }, 'violated')
+// the decisive runs: two removals, so one is left after the one rebuild can undo another
+propLeak('LEAK_P_sl_comp2', 'no leaked compaction output, proposed: compaction, retention (2 removals), ledger loss + shard loss', { ...PROPOSED, ...LS, maxExp: 2, maxSL: 1, goal: 'cleanComp' }, 'holds')
+propLeak('LEAK_P_llsl2', 'no leak of any object, proposed: compaction, retention (2 removals), ledger loss + shard loss', { ...PROPOSED, ...LS, maxExp: 2, maxSL: 1 }, 'holds')
+propLeak('LEAK_D30_sl_comp2', 'no leaked compaction output, D30 + log as built (amended protocol, as LEAK_D30_sl_comp): compaction, retention (2 removals), ledger loss + shard loss', { ...AD, ...LS, maxExp: 2, maxSL: 1, goal: 'cleanComp' }, 'violated')
+propLeak('LEAK_P_teeth_no_trigger', 'F16 fix teeth: the janitor does not ask the shard (the rule alone); LEAK_P_sl_comp2\'s bounds', { ...PROPOSED, ...LS, regOnSweep: false, maxExp: 2, maxSL: 1, goal: 'cleanComp' }, 'violated')
+propLeak('LEAK_P_teeth_wm_rule', 'F16 fix teeth: the sweep keeps the rule as built (a newer incarnation counts once it has a logged UNIT); LEAK_P_sl_comp2\'s bounds', { ...PROPOSED, ...LS, sweepNewerReg: false, maxExp: 2, maxSL: 1, goal: 'cleanComp' }, 'violated')
 
 // ------------------------------------------------------------------ main
 
