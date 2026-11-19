@@ -554,13 +554,14 @@ const reloads = []
 for (const L of reloadPass ? [{ w: 1500 }, { w: 400, coarse: true }] : []) {
   const ctx = await browser.newContext({ viewport: { width: L.w, height: 900 }, ...(L.coarse ? { hasTouch: true, isMobile: true } : {}) })
   await ctx.addInitScript(() => { const z = (window.__vzShift = []); try { new PerformanceObserver((l) => { for (const e of l.getEntries()) z.push([e.startTime, e.value, e.hadRecentInput]) }).observe({ type: 'layout-shift', buffered: true }) } catch {} })
-  const page = await ctx.newPage(), settle = async (p, ms) => { await page.evaluate(() => document.fonts.ready); await page.waitForTimeout(/fixture/.test(p) ? 600 : 0); await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))); await page.waitForTimeout(ms) }
+  let page = await ctx.newPage(); const settle = async (p, ms) => { await page.evaluate(() => document.fonts.ready); await page.waitForTimeout(/fixture/.test(p) ? 600 : 0); await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))); await page.waitForTimeout(ms) }
   const lay = `${L.w}${L.coarse ? ' coarse' : ''}`
   for (const p of pages.filter((x) => !/\/flows\//.test(x))) {
     let n = 0; try { await page.goto(urlOf(p), { waitUntil: 'load', timeout: 60000 }); n = await page.evaluate(() => [...document.querySelectorAll('.vz-chart')].filter((c) => c.getClientRects().length).length) } catch { continue }
     if (!n) continue
     for (const i of quick ? [...new Set([Math.floor(n / 2), n - 1])] : [...Array(n).keys()]) {
       try {
+        await page.close(); page = await ctx.newPage() // a page of its own for each chart: a second load of the same address in one page is taken as a reload, scroll restored
         await page.goto(urlOf(p), { waitUntil: 'load', timeout: 60000 }); await settle(p, 200)
         const jump = await page.evaluate((i) => { const c = [...document.querySelectorAll('.vz-chart')].filter((x) => x.getClientRects().length)[i], t0 = performance.now(); scrollTo(0, c.getBoundingClientRect().top + scrollY); window.__vzT = [t0, c.getBoundingClientRect().top]
           return (c.closest('.vz-panel')?.querySelector('.vz-panel-title')?.textContent ?? c.id ?? `chart ${i + 1}`).trim().replace(/\s+/g, ' ').slice(0, 48) }, i)

@@ -16,8 +16,12 @@
 //   Worker is promoted.
 // - Fail closed: if the Worker has the secret now (a version serving now, or a version uploaded
 //   after the one serving, as a rollback leaves behind) but the version this release would promote
-//   does not carry it, nothing is generated and nothing is promoted: a new value would invalidate
-//   every registered OAuth client.
+//   does not carry it (read again, within the budget below, until it shows), nothing is generated:
+//   a new value would invalidate every registered OAuth client. For an upload (phase 1) that is
+//   also before anything is promoted (exit 3). For a Worker that goes out with `wrangler deploy` in
+//   phase 2 (new, or applying a migration), the version checked is already serving and the Workers
+//   before it are promoted: the same refusals then fail the release in phase 2 (exit 1), and the
+//   messages say what serves (review of D69, m-5).
 // - Rollbacks (measured on Cloudflare, 2026-11-19, spike S9): a secret belongs to each version, so
 //   a rollback to a version without the key serves without it until the next deploy, and Cloudflare
 //   refuses (10220) a rollback to a version whose value differs. `release.mjs rollback` refuses both
@@ -70,22 +74,28 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
  * 250 ms, doubling, for at most this long in all. VIZ_FRESH_READ_MS sets it (the tests shorten it).
  */
 export const FRESH_READ_MS = 10_000
-const freshBudget = () => {
-  const n = Number(process.env.VIZ_FRESH_READ_MS)
+/** VIZ_FRESH_READ_MS in ms; unset or empty (an unset CI variable) is the default, never 0 (review of D69, m-7). */
+export const freshBudget = () => {
+  const raw = process.env.VIZ_FRESH_READ_MS
+  if (raw === undefined || raw.trim() === '') return FRESH_READ_MS
+  const n = Number(raw)
   return Number.isFinite(n) && n >= 0 ? n : FRESH_READ_MS
 }
 
-/** Reads `id` of `worker` until `ready(info)`, retrying within the budget; returns the last answer. */
+/**
+ * Reads `id` of `worker` until `ready(info)`, retrying within the budget; returns the last answer.
+ * The budget is wall-clock time from the first read (each read is itself bounded by lib/cf.mjs's
+ * timeout and retries), not the sum of the sleeps.
+ */
 export async function readFresh(api, worker, id, ready = (info) => Boolean(info)) {
   const budget = freshBudget()
-  let waited = 0
+  const deadline = Date.now() + budget
   let delay = 250
   for (;;) {
     const info = await api.versionInfo(worker, id)
-    if (ready(info) || waited >= budget) return info
-    const d = Math.min(delay, budget - waited)
-    await sleep(d)
-    waited += d
+    const left = deadline - Date.now()
+    if (ready(info) || left <= 0) return info
+    await sleep(Math.min(delay, left))
     delay *= 2
   }
 }
@@ -185,10 +195,16 @@ export function planSecrets(now, rotate, steps) {
  * another run (m-11: that run uploaded between the check and the put). `api`: { wrangler,
  * versionInfo, listVersions }.
  */
-export async function ensureSecrets({ worker, versionId, specs, now, rotate, release, run, tag, message, api, log = () => {} }) {
+export async function ensureSecrets({ worker, versionId, specs, now, rotate, release, run, tag, message, api, deployed = false, log = () => {} }) {
   let current = versionId
-  // Just created (uploaded, or deployed in phase 2): read until Cloudflare shows it (S9).
-  const info = await readFresh(api, worker, current)
+  // What a refusal leaves: an upload serves nothing; a version wrangler deploy made in phase 2 serves already (m-5).
+  const left = deployed
+    ? `${worker} serves version ${versionId}, which wrangler deploy made in phase 2, without its generated secrets (/oauth/register answers 503), and the Workers before it in this release are promoted: the release fails in phase 2 (exit 1), not before promotion. The next deploy uploads from the newest version`
+    : 'nothing is promoted'
+  // Secrets the newest version carries, which the upload inherits (S9), and that are not to be replaced: wait for them to show.
+  const inherited = specs.filter((spec) => !rotate.has(spec.name) && now.find((n) => n.worker === worker && n.name === spec.name)?.known).map((spec) => spec.name)
+  // Just created (uploaded, or deployed in phase 2): read until Cloudflare shows it, with what it inherited (S9; review of D69, m-7).
+  const info = await readFresh(api, worker, current, (x) => Boolean(x) && inherited.every((n) => secretNamesOf(x).includes(n)))
   if (!info) throw new Error(`${worker}: version ${current} was not found (after retrying for ${freshBudget()} ms), so its secrets cannot be checked`)
   const carried = secretNamesOf(info)
   const actions = []
@@ -200,9 +216,10 @@ export async function ensureSecrets({ worker, versionId, specs, now, rotate, rel
     else if (has) actions.push({ worker, name: spec.name, action: 'kept', versionId: current })
     else if (seen?.known) {
       throw new SecretRefused(
-        `${worker}: ${spec.name} is set (${seen.seenIn.join(', ')}), but version ${current}, which this release would promote, does not carry it. ` +
-          `A new value would invalidate every registered OAuth client, so none is generated and nothing is promoted. ` +
-          `Find out why the upload did not inherit it; to replace it on purpose, deploy again with ${ROTATE_ENV}=${spec.name}.`,
+        `${worker}: ${spec.name} is set (${seen.seenIn.join(', ')}), but version ${current}, which this release would promote, does not carry it (read for ${freshBudget()} ms). ` +
+          `A new value would invalidate every registered OAuth client, so none is generated; ${left}. ` +
+          `Neither a rollback nor deploying again lifts this: the refused version is now the newest, and the next upload inherits from it (deploy/README.md, Known risks). ` +
+          `Find out why the upload did not inherit it; to replace the key on purpose, deploy again with ${ROTATE_ENV}=${spec.name}.`,
       )
     } else toPut.push({ spec, action: 'created' })
   }
@@ -212,11 +229,11 @@ export async function ensureSecrets({ worker, versionId, specs, now, rotate, rel
     // version could carry code nobody reviewed for this release, or another run's version.
     const newest = (await api.listVersions(worker))[0]?.id ?? null
     if (newest !== current) {
-      throw new SecretRefused(`${worker}: the newest version is ${newest ?? '(none)'}, not ${current} which this release made; putting ${spec.name} would build on that one, so nothing is put and nothing is promoted. Is another deploy running?`)
+      throw new SecretRefused(`${worker}: the newest version is ${newest ?? '(none)'}, not ${current} which this release made; putting ${spec.name} would build on that one, so nothing is put, and ${left}. Is another deploy running?`)
     }
     const base = current === versionId ? info : await api.versionInfo(worker, current)
     if (plainVar(base, RUN_VAR) !== run) {
-      throw new SecretRefused(`${worker}: version ${current} carries ${RUN_VAR} ${plainVar(base, RUN_VAR) ?? '(none)'}, not this run's ${run}; nothing is put on it and nothing is promoted (was it uploaded without --var ${RUN_VAR}?)`)
+      throw new SecretRefused(`${worker}: version ${current} carries ${RUN_VAR} ${plainVar(base, RUN_VAR) ?? '(none)'}, not this run's ${run}; nothing is put on it, and ${left} (was it uploaded without --var ${RUN_VAR}?)`)
     }
     let value = generateSecretValue(spec.bytes)
     let out
@@ -240,7 +257,7 @@ export async function ensureSecrets({ worker, versionId, specs, now, rotate, rel
     if (plainVar(made, RUN_VAR) !== run) {
       throw new SecretRefused(
         `${worker}: ${spec.name} went on version ${m[1]}, built on an upload of another run (${RUN_VAR} ${plainVar(made, RUN_VAR) ?? '(none)'}, this run is ${run}): another deploy uploaded between the check and the put. ` +
-          `Nothing is promoted. That version serves nothing, and the other run never promotes it (it promotes its own upload, or refuses because its upload is no longer the newest). Run the deploy again once the other has finished.`,
+          `It is not promoted: ${left}. That version serves nothing, and the other run never promotes it (it promotes its own upload, or refuses because its upload is no longer the newest). Run the deploy again once the other has finished.`,
       )
     }
     log(`  ${worker}: secret ${spec.name} ${action} on new version ${m[1]} (from ${current})`)
@@ -287,7 +304,7 @@ export function secretRollbackProblems({ target, targetInfo, ran, specs, accept 
       problems.push(
         `${spec.worker}: this rollback restores version ${own.versionId}, whose ${spec.name} differs from the one put since on version ${put.versionId} (release ${put.release ?? 'unknown'}: "${put.message}"): it crosses a rotation. ` +
           `Cloudflare refuses that rollback (10220, "secrets have changed", measured S9) and wrangler versions deploy cannot force it; forced through the API, the old key would serve until the next release took the newest version's again. ` +
-          `Nothing was moved. Roll back with a record that leaves ${spec.worker} out (its serving version stays, a callee newer than its callers), or fix forward.`,
+          `Nothing was moved. Fix forward; or restore the other Workers only (release.mjs rollback --only, naming them): ${spec.worker} then keeps its serving version (a callee newer than its callers), and that rollback is judged like any other, with ${spec.worker} as it serves: refused if a format version it wrote or writes is one the restored Workers do not read (review of D69, M-1), or if it leaves a Worker below a rollback floor.`,
       )
     }
   }

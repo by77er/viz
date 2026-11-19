@@ -497,7 +497,8 @@ export async function deploy({ stage, ackText = '', rotateText = '' }) {
   const withSecrets = (step, versionId) => {
     const mine = specs.filter((s) => s.worker === step.name)
     if (mine.length === 0) return null
-    return ensureSecrets({ worker: step.name, versionId, specs: mine, now: secretsBefore, rotate, release, run, tag, message, api: SECRET_API, log })
+    // `deployed`: the version wrangler deploy made in phase 2 serves already, so a refusal there comes after promotion (m-5).
+    return ensureSecrets({ worker: step.name, versionId, specs: mine, now: secretsBefore, rotate, release, run, tag, message, api: SECRET_API, deployed: step.via === 'deploy', log })
   }
 
   // Phase 1: upload (or, where a version cannot be uploaded, bundle). Nothing serves yet.
@@ -555,7 +556,8 @@ export async function deploy({ stage, ackText = '', rotateText = '' }) {
       promoted.push(step.name)
     }
   } catch (e) {
-    log(`\nrelease: promotion failed at ${plan.steps[promoted.length]?.name}: ${e.message}`)
+    // A refusal here (SecretRefused, on a Worker that went out with wrangler deploy) is a failure in phase 2: exit 1 (review of D69, m-5).
+    log(`\nrelease: ${e instanceof SecretRefused ? 'REFUSED in phase 2, after promotion began (exit 1)' : 'promotion failed'} at ${plan.steps[promoted.length]?.name}: ${e.message}`)
     // A Worker promoted for which this release is forward-only (a schema its objects may have
     // migrated, a format version it may have written) cannot be put back under the previous release.
     const crossed = forwardOnly.filter((f) => promoted.includes(f.worker))

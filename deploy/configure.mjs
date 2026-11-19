@@ -22,7 +22,9 @@
 //
 // Formats (D69): the version of each format a Worker writes and the versions it reads, from the
 // sources workers.json names under `formats` (lib/formats.mjs), go into the manifest and each
-// version's `VIZ_FORMATS` var. Rollback floors (`rollback_floors`, lib/floors.mjs): a Worker whose
+// version's `VIZ_FORMATS` var. Every deployed Worker declares them, completely, also one that
+// reads and writes none (`"formats": {}`): one without a declaration is refused, since a rollback
+// would take it to read version 1 of every format (review of D69, M-1 (c)). Rollback floors (`rollback_floors`, lib/floors.mjs): a Worker whose
 // floor is declared on evidence is checked to have it and stamped with `VIZ_FLOORS`.
 //
 // Durable Object classes of another Worker (by script_name) are bound only where workers.json
@@ -138,7 +140,7 @@ export function stageVars(raw, stage) {
  * formats, `floors` the rollback floors its code is stamped at (lib/floors.mjs). Pure: no I/O, so
  * the tests can call it with any component config.
  */
-export function generateWorker({ worker, cfg, componentDir, plan, stage, release, ids, outDir, idsOptional = false, expires = null, schemas = [], formats = [], floors = [], extraVars = {} }) {
+export function generateWorker({ worker, cfg, componentDir, plan, stage, release, ids, outDir, idsOptional = false, expires = null, schemas = [], formats = [], formatsDeclared = worker.formats !== undefined || formats.length > 0, floors = [], extraVars = {} }) {
   const where = `${worker.component}/wrangler.jsonc`
   const warnings = []
   for (const k of Object.keys(cfg)) if (!KNOWN_KEYS.has(k)) throw new Error(`${where}: "${k}" is not something configure.mjs knows how to deploy; extend it rather than drop it`)
@@ -239,7 +241,8 @@ export function generateWorker({ worker, cfg, componentDir, plan, stage, release
   vars.VIZ_RELEASE = release
   vars.VIZ_WORKER = worker.name
   if (schemas.length > 0) vars[SCHEMAS_VAR] = schemasVar(schemas)
-  if (formats.length > 0) vars[FORMATS_VAR] = formatsVar(formats)
+  // Also when it declares none: `{"v":1,"complete":true,"formats":{}}` says it reads nothing (M-1 (c)).
+  if (formatsDeclared) vars[FORMATS_VAR] = formatsVar(formats)
   if (floors.length > 0) vars[FLOORS_VAR] = floorsVar(floors)
   if (stage) vars.VIZ_STAGE_PREFIX = `viz-${stage}-`
   for (const [k, v] of Object.entries(extraVars)) vars[k] = v
@@ -269,7 +272,8 @@ export function generateWorker({ worker, cfg, componentDir, plan, stage, release
       migrationTags: dobj.migrationTags,
       migrationTag: dobj.migrationTag,
       schemas,
-      formats: formats.map(({ format, writes, reads }) => ({ format, writes, reads })),
+      // null: the Worker declares nothing (a rollback takes it to read version 1 of every format).
+      formats: formatsDeclared ? formats.map(({ format, writes, reads }) => ({ format, writes, reads })) : null,
       floors,
       crossScript,
       entrypoints,
@@ -331,6 +335,11 @@ export function configure({ stage, release = releaseId(), idsOptional = false, q
   const formats = readFormats(formatSources(present))
   const rules = floorRules(plan, stage)
   checkFloorSchemas(rules, schemas)
+  for (const w of plan.workers) {
+    if (w.deploy !== false && w.formats === undefined) {
+      throw new Error(`deploy/workers.json ${w.name}: no "formats". Every deployed Worker says completely what it reads (and writes): sources under "reads", "reads_of" and "writes", formats read with no version in the code under "reads_v1", or "formats": {} with a "$comment" when it reads none. Without it a rollback takes it to read version 1 of every format (review of D69, M-1)`)
+    }
+  }
   const workers = []
   /** Main module of each Worker configured so far, for the entrypoint check of the ones after it. */
   const mains = new Map()

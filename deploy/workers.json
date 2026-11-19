@@ -1,5 +1,5 @@
 {
-  "$comment": "What deploy/configure.mjs generates and deploy/release.mjs deploys. `workers` is in dependency order: callees before callers (viz-ingest binds viz-publisher's Publisher class; viz-ruler calls viz-query, viz-ingest and viz-control; viz-mcp calls viz-query, viz-control and viz-ruler; viz-gateway calls all of them but viz-publisher). Promotion follows this order; rollback goes the other way. Every Durable Object class a Worker defines is declared under `schemas` (its SchemaSpec, `<path>.ts#<EXPORT>`, read into release records: contracts/COMPATIBILITY.md §6) or `unversioned` (why it keeps no storage). Every Durable Object class a Worker binds from ANOTHER Worker (by script_name) is listed under `binds_classes` as `<worker>:<class>`, with why: such a binding can call every method of every object of the class (any tenant), so configure.mjs refuses one that is not listed. A Worker that needs one question answered binds a named entrypoint of the other Worker instead (viz-mcp: viz-control's OAuthIntrospection, contracts/oauth.ts). Every format a Worker's components write (their `FORMATS` maps, contracts/COMPATIBILITY.md §3.1) is declared under `formats`, with the read lists they keep (`reads`: `{format: [versions]}` maps; `reads_of`: one format's versions): read into release records and each version's VIZ_FORMATS (D69). `rollback_floors`: a switch on a writer (INGEST_SIGNALS) that, once on, puts a floor under the Workers listed, each judged by its storage schema or by `evidence` (VIZ_FLOORS) (D64, D69).",
+  "$comment": "What deploy/configure.mjs generates and deploy/release.mjs deploys. `workers` is in dependency order: callees before callers (viz-ingest binds viz-publisher's Publisher class; viz-ruler calls viz-query, viz-ingest and viz-control; viz-mcp calls viz-query, viz-control and viz-ruler; viz-gateway calls all of them but viz-publisher). Promotion follows this order; rollback goes the other way. Every Durable Object class a Worker defines is declared under `schemas` (its SchemaSpec, `<path>.ts#<EXPORT>`, read into release records: contracts/COMPATIBILITY.md §6) or `unversioned` (why it keeps no storage). Every Durable Object class a Worker binds from ANOTHER Worker (by script_name) is listed under `binds_classes` as `<worker>:<class>`, with why: such a binding can call every method of every object of the class (any tenant), so configure.mjs refuses one that is not listed. A Worker that needs one question answered binds a named entrypoint of the other Worker instead (viz-mcp: viz-control's OAuthIntrospection, contracts/oauth.ts). Every deployed Worker declares under `formats`, completely, what its code writes (its components' `FORMATS` maps, contracts/COMPATIBILITY.md §3.1) and reads (`reads`: `{format: [versions]}` maps; `reads_of`: one format's versions, or the one version a reader's constant names; `reads_v1`: formats the code reads with no version of its own, taken to read version 1, with where), or `{}` when it reads none; a format it does not list, it does not read: read into release records and each version's VIZ_FORMATS (D69; review of D69, M-1). test/configure.test.mjs checks each Worker's bundled sources against it for control's KV records and RPC results. `rollback_floors`: a switch on a writer (INGEST_SIGNALS) that, once on, puts a floor under the Workers listed, each judged by its storage schema or by `evidence` (VIZ_FLOORS) (D64, D69).",
   "domain": "vis.bitcru.sh",
   "observability": {
     "enabled": true,
@@ -93,7 +93,15 @@
         "reads": [
           "flush/src/formats.ts#READS",
           "janitor/src/formats.ts#READS"
-        ]
+        ],
+        "reads_of": {
+          "kv.key": "edge/src/auth.ts#KEY_RECORD_VERSION"
+        },
+        "reads_v1": {
+          "credential.api-key": "edge/src/auth.ts: KEY_RE, every request's API key",
+          "kv.pool": "edge/src/route.ts (pool:<tenant>, the routing of every write) and flush/src/sweep.ts",
+          "kv.settings": "edge/src/route.ts (limits:<tenant>) and stack/src/index.ts (retention:<tenant>), besides the janitor's READS"
+        }
       }
     },
     {
@@ -121,6 +129,17 @@
       },
       "unversioned": {
         "Leaf": "keeps nothing between calls: no storage, no fields, no alarm (query/src/leaf.ts)"
+      },
+      "formats": {
+        "$comment": "writes no recorded format; reads what control writes to KV, through edge's auth and routing and its own limits. Not recorded: shard's tail pages (TAIL_READ_VERSION, shard/src/tail.ts), which no writer declares (deploy/README.md, Not implemented)",
+        "reads_of": {
+          "kv.key": "edge/src/auth.ts#KEY_RECORD_VERSION"
+        },
+        "reads_v1": {
+          "credential.api-key": "edge/src/auth.ts (authenticate, query/src/index.ts): every request's API key",
+          "kv.pool": "edge/src/route.ts: pool:<tenant>, which shards a query asks",
+          "kv.settings": "query/src/config.ts and edge/src/route.ts: limits:<tenant>"
+        }
       }
     },
     {
@@ -141,7 +160,13 @@
           "ruler/src/schema.ts#FORMATS"
         ],
         "reads_of": {
-          "store.anomaly-state": "ruler/src/schema.ts#ANOMALY_STATE_READS"
+          "store.anomaly-state": "ruler/src/schema.ts#ANOMALY_STATE_READS",
+          "kv.key": "edge/src/auth.ts#KEY_RECORD_VERSION",
+          "rpc.notification-target": "contracts/control.ts#CONTROL_SERVICE_VERSION",
+          "rpc.service-key": "contracts/control.ts#CONTROL_SERVICE_VERSION"
+        },
+        "reads_v1": {
+          "credential.api-key": "edge/src/auth.ts (authenticate, ruler/src/http.ts): every request's API key"
         }
       }
     },
@@ -149,7 +174,18 @@
       "name": "viz-mcp",
       "component": "mcp",
       "deploy": true,
-      "health": "/healthz"
+      "health": "/healthz",
+      "formats": {
+        "$comment": "writes no recorded format; reads an API key's record and control's OAuth introspection",
+        "reads_of": {
+          "kv.key": "edge/src/auth.ts#KEY_RECORD_VERSION",
+          "rpc.oauth": "contracts/oauth.ts#OAUTH_VERSION"
+        },
+        "reads_v1": {
+          "credential.api-key": "edge/src/auth.ts (authenticate, mcp/src/auth.ts): every request's API key",
+          "credential.oauth": "contracts/oauth.ts parseCredential (mcp/src/auth.ts): a Bearer token's kind and tenant"
+        }
+      }
     },
     {
       "name": "viz-gateway",
@@ -159,6 +195,9 @@
       "health": "/healthz",
       "binds_classes": {
         "viz-control:Tenant": "Tenant.provision for POST /api/v1/bootstrap only. Open: to become a named entrypoint of viz-control (control/README.md, Known risks)"
+      },
+      "formats": {
+        "$comment": "reads and writes no recorded format: it forwards each request unchanged (deploy/gateway/src/index.ts); Tenant.provision's answer is in no FORMATS map"
       }
     }
   ]

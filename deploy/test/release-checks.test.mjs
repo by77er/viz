@@ -50,7 +50,8 @@ const migrations = (n) => Array.from({ length: n }, (_, i) => ({ version: i + 1,
  * `publisher` the publisher's schema version; `query`/`ingest` whether they are stamped at the
  * floor of signal-data; `signals` viz-ingest's INGEST_SIGNALS; `anomaly` what the ruler writes and
  * reads of store.anomaly-state (null: no Worker declares formats, as before D69); `ingestFormats`
- * viz-ingest's (workers.json declares formats for viz-publisher and viz-ingest too).
+ * viz-ingest's (workers.json declares formats for every Worker: viz-query and the gateway read none
+ * here). Every declaring Worker carries a complete VIZ_FORMATS, also an empty one (review of D69, M-1).
  */
 function release(name, { publisher = 5, query = true, ingest = true, signals = null, anomaly = { w: 1, r: [1, 2] }, ingestFormats = { 'queue.flush': { w: 1, r: [1] } }, gateway = false } = {}) {
   const dir = join(tmp, name)
@@ -64,8 +65,8 @@ function release(name, { publisher = 5, query = true, ingest = true, signals = n
   const stamp = JSON.stringify({ v: 1, at: ['signal-data'] })
   const declared = anomaly !== null
   const formatsOf = (map) => ({
-    vars: declared ? { VIZ_FORMATS: JSON.stringify({ v: 1, formats: map }) } : {},
-    formats: declared ? Object.entries(map).map(([format, f]) => ({ format, writes: f.w, reads: f.r })) : [],
+    vars: declared ? { VIZ_FORMATS: JSON.stringify({ v: 1, complete: true, formats: map }) } : {},
+    formats: declared ? Object.entries(map).map(([format, f]) => ({ format, writes: f.w, reads: f.r })) : null,
   })
   const pubFormats = formatsOf({ 'r2.cursors': { w: 1, r: [1] } })
   add(PUB, 'viz-publisher', { VIZ_SCHEMAS: JSON.stringify({ v: 1, classes: { 'publisher.Publisher': { latest: publisher, compat: 1, by: null } } }), ...pubFormats.vars }, {
@@ -74,11 +75,11 @@ function release(name, { publisher = 5, query = true, ingest = true, signals = n
   })
   const ingFormats = formatsOf(ingestFormats)
   add(INGEST, 'viz-ingest', { ...(ingest ? { VIZ_FLOORS: stamp } : {}), ...(signals ? { INGEST_SIGNALS: signals } : {}), ...ingFormats.vars }, { floors: ingest ? ['signal-data'] : [], formats: ingFormats.formats })
-  add(QUERY, 'viz-query', query ? { VIZ_FLOORS: stamp } : {}, { floors: query ? ['signal-data'] : [] })
-  add(RULER, 'viz-ruler', anomaly ? { VIZ_FORMATS: JSON.stringify({ v: 1, formats: { 'store.anomaly-state': { w: anomaly.w, r: anomaly.r } } }) } : {}, {
-    formats: anomaly ? [{ format: 'store.anomaly-state', writes: anomaly.w, reads: anomaly.r }] : [],
-  })
-  if (gateway) add(GATEWAY, 'viz-gateway', {}, {})
+  const none = formatsOf({})
+  add(QUERY, 'viz-query', { ...(query ? { VIZ_FLOORS: stamp } : {}), ...none.vars }, { floors: query ? ['signal-data'] : [], formats: none.formats })
+  const rulerFormats = formatsOf(anomaly ? { 'store.anomaly-state': { w: anomaly.w, r: anomaly.r } } : {})
+  add(RULER, 'viz-ruler', rulerFormats.vars, { formats: rulerFormats.formats })
+  if (gateway) add(GATEWAY, 'viz-gateway', none.vars, { formats: none.formats })
   const manifest = { target: `stage-${STAGE}`, stage: STAGE, release: name, durableObjectsCodeUpdate: 'deferred 30s', order: workers.map((w) => w.name), releaseFrom: INGEST, workers }
   writeFileSync(join(stageDir, 'manifest.json'), JSON.stringify(manifest))
   return { name, dir }
