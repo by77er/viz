@@ -504,7 +504,7 @@ ledger's and the janitor's D61 mutants are listed in their READMEs.
 
 ### Registration before writes (D61)
 
-1. **`edge/`: answer `registering` with 503, never 429** (review M-2; must ship in release A,
+1. **Done (edge/README.md, "Registration before writes").** **`edge/`: answer `registering` with 503, never 429** (review M-2; must ship in release A,
    before anything sets `SHARD_REGISTRATION`). In `edge/src/route.ts`, where the per-shard
    results are folded (the loop over `results` that reads `scope === 'overload'`):
 

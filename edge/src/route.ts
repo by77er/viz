@@ -326,12 +326,14 @@ export async function appendAll(env: RouteEnv, tenant: string, c: Collected, sig
   }
   // Fail closed: only `ok` counts as stored; anything not handled above refuses the request.
   if (results.some((r) => r.status !== 'ok' && r.status !== 'backpressure')) return { status: 'unavailable', reason: 'shard refused the batch' }
-  // An overloaded shard is a 5xx (Remote Write senders MUST retry 5xx, MAY retry 429); a full buffer stays 429.
+  // An overloaded shard, or a stream whose registration is not yet logged (D61), is a 5xx:
+  // Remote Write senders MUST retry 5xx and MAY drop 429. A full buffer stays 429.
   let overloadMs = 0
   let retryAfterMs = 0
   for (const r of results) {
     if (r.status !== 'backpressure') continue
-    if ((r as { scope: string }).scope === 'overload') overloadMs = Math.max(overloadMs, r.retryAfterMs, 1)
+    const scope = (r as { scope: string }).scope
+    if (scope === 'overload' || scope === 'registering') overloadMs = Math.max(overloadMs, r.retryAfterMs, 1)
     else retryAfterMs = Math.max(retryAfterMs, r.retryAfterMs, 1)
   }
   if (overloadMs > 0) return { status: 'overloaded', retryAfterMs: Math.max(overloadMs, retryAfterMs) }

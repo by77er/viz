@@ -412,6 +412,14 @@ default; a pool map naming a pool with `_` is 503 and nothing is stored (D38); R
 over the active-series limit is 400 and the existing series are written, also at the limit
 (R-4).
 
+**Registration before writes (D61).** A shard's `registering` refusal (the stream's
+registration is not yet logged) is answered 503 with `Retry-After`, never 429, for Remote
+Write and OTLP, and is not taken for an overloaded shard: the tenant's next request still
+reaches the shard (`test/overload.test.ts`, "a stream being registered (D61)…"). Mutants,
+run on a scratch copy and both caught by that test: `registering` answered 429 ("expected 429
+to be 503"), and `registering` noted as overload ("expected 1 to be 2"). This is release A's
+edge half of D61 (`shard/README.md`, "Needed changes elsewhere" 1).
+
 **Mutation check of 2026-11-19** (`node scripts/mutants.mjs` on a copy of `contracts/`,
 `shard/` and `edge/` in a scratch directory; each mutant against the whole suite): **41 of
 43 killed.** The eight added here and the test that failed for each: R-4 answered 429 again

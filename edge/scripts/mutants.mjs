@@ -133,6 +133,8 @@ const mutants = [
   ['otel: log record without a timestamp stored at 0', 'src/logs.ts', '    if (x.ts === null) return this.reject(LogReject.noTime)', '    if (x.ts === null) x.ts = [0, 0]'],
   ['otel: spans appended to the metrics pool', 'src/route.ts', "  const pool = `${map.pool}/${signal}`", '  const pool = map.pool'],
   ['otel: routes served without INGEST_SIGNALS', 'src/index.ts', 'if (signal !== null && signalEnabled(env, signal)) {', 'if (signal !== null) {'],
+  ['D61: a stream being registered answered 429', 'src/route.ts', "if (scope === 'overload' || scope === 'registering') overloadMs", "if (scope === 'overload') overloadMs"],
+  ['D61: a stream being registered noted as an overloaded shard', 'src/route.ts', "if (last.status === 'backpressure' && (last as { scope: string }).scope === 'overload') noteOverload", "if (last.status === 'backpressure' && ['overload', 'registering'].includes((last as { scope: string }).scope)) noteOverload"],
 ]
 
 const only = check ? undefined : process.argv[2]

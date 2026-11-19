@@ -43,6 +43,35 @@ describe('an overloaded shard', () => {
     expect((await tailOfSlot(t.map, 0, t.tenant)).batches).toHaveLength(1)
   })
 
+  it('a stream being registered (D61) is 503 with Retry-After, never 429; nothing is stored; the retry once registered is stored once', async () => {
+    const t = await tenant()
+    const proto = Shard.prototype as unknown as { append: Shard['append'] }
+    const real = proto.append
+    let refuse = true
+    let calls = 0
+    proto.append = async function (this: Shard, req) {
+      calls++
+      return refuse ? { status: 'backpressure', scope: 'registering', retryAfterMs: 700 } : real.call(this, req)
+    }
+    try {
+      for (const res of [await postWrite(t.key, series(3)), await postOtlp(t.key, otlp(), 'application/x-protobuf')]) {
+        expect(res.status).toBe(503)
+        expect(res.headers.get('Retry-After')).toBe('1')
+      }
+      // One stream being registered is not an overloaded shard: the second request still reached
+      // the shard instead of being refused early (the early refusal stays keyed to `overload`).
+      expect(calls).toBe(2)
+      expect((await tailOfSlot(t.map, 0, t.tenant)).batches).toEqual([])
+      refuse = false
+      clearCaches()
+      expect((await postWrite(t.key, series(3))).status).toBe(204)
+      expect((await postWrite(t.key, series(3))).status).toBe(204) // a retry: stored once
+      expect((await tailOfSlot(t.map, 0, t.tenant)).batches).toHaveLength(1)
+    } finally {
+      proto.append = real
+    }
+  })
+
   it('once every shard of the tenant has refused as overloaded, the next request is refused before its body is read or decoded', async () => {
     const t = await tenant(2)
     for (const slot of [0, 1]) await shardStub(t.map, slot).configure({ maxInFlight: 0, overloadRetryMs: 5000 })
