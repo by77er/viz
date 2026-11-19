@@ -454,7 +454,7 @@ async function readTail(c: Context, shard: string, w: Watermark | undefined, kno
 }
 
 /** Every shard's tail as read, or a refusal that sends the query back to the ledger. */
-type Tails = { again: true } | { again: false; reads: TailRead[]; bytes: number; over: boolean; atLeast: number }
+type Tails = { again: true } | { again: false; reads: TailRead[]; bytes: number; over: boolean; atLeast: number; exact: boolean }
 
 /**
  * The tails of `shards`, in parallel, each read stopping at `cap` bytes and all of them
@@ -482,7 +482,8 @@ async function readTails(c: Context, shards: string[], watermarks: Watermark[], 
   c.cost.tailMode = reads.length === 0 ? '' : reads.every((r) => r.paged) ? 'filtered' : 'unfiltered'
   c.cost.tailBatches = reads.reduce((a, r) => a + r.batches.length, 0)
   c.cost.tailBytes = bytes
-  return { again: false, reads, bytes, over, atLeast: bytes + reads.reduce((a, r) => a + r.overBytes, 0) }
+  // The total is known when every read that stopped stopped at the tail's last batch.
+  return { again: false, reads, bytes, over, atLeast: bytes + reads.reduce((a, r) => a + r.overBytes, 0), exact: reads.every((r) => r.complete || r.overLast) }
 }
 
 /** Batches cut by `series_id` into `parts` (`cutById`): per part, its non-empty cuts in order. */
@@ -746,7 +747,7 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
       const parts = c.engine.splitTails(tailBatchesOf(reads), spec.without, L, ranges)
       tailFor = (j) => ({ tails: parts[j]! })
     } else {
-      if (!shardsCanCut(spec.without)) throw tooMuch(c, 'the unflushed tail', t.atLeast, !reads.every((r) => r.complete))
+      if (!shardsCanCut(spec.without)) throw tooMuch(c, 'the unflushed tail', t.atLeast, !t.exact)
       // Leaves sized for the whole tail as estimated from what was read (and its series),
       // with each part's share of it under half of a leaf's byte cap.
       const est = tailEstimate(reads)
@@ -911,7 +912,7 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
           if (r.again) continue
           return r.value
         }
-        throw tooMuch(c, 'the data files in range plus the unflushed tail', lakeBytes + tails.atLeast, !tails.reads.every((t) => t.complete))
+        throw tooMuch(c, 'the data files in range plus the unflushed tail', lakeBytes + tails.atLeast, !tails.exact)
       }
       const tailBatches = tailBatchesOf(tails.reads)
       c.cost.filesRead = wanted.length
@@ -987,7 +988,7 @@ export async function gatherSeries<T>(c: Context, ranges: FetchRange[], evaluate
         again = true
       }
       if (again || tails.again) continue
-      if (tails.over) throw tooMuch(c, 'the series files in range plus the unflushed tail', bytes + tails.atLeast, !tails.reads.every((t) => t.complete))
+      if (tails.over) throw tooMuch(c, 'the series files in range plus the unflushed tail', bytes + tails.atLeast, !tails.exact)
       c.cost.filesRead = plans.length
       c.cost.bytesRead = bytes
       checkDeadline(c)
@@ -1227,7 +1228,7 @@ export async function cardinality(c: Context, start: number, end: number, lookba
       const t = tailEstimate(tails.reads)
       L = Math.min(most, Math.max(L, 2, Math.ceil(t.bytes / (0.5 * c.limits.maxFetchBytes)), Math.ceil(Math.max(est, t.series) / per)))
     }
-    if (tails.over && L === 1) throw tooMuch(c, 'the unflushed tail', tails.atLeast, !tails.reads.every((r) => r.complete))
+    if (tails.over && L === 1) throw tooMuch(c, 'the unflushed tail', tails.atLeast, !tails.exact)
     let summaries: Uint8Array[]
     if (L === 1) {
       c.cost.execution = 'single'

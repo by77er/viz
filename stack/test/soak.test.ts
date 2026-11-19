@@ -1,14 +1,13 @@
-import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test'
+import { evictDurableObject, runDurableObjectAlarm } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { afterAll, describe, expect, it } from 'vitest'
-import { COMPACTION_INPUTS_META, compactStep, decodeCompactionInputs } from '../../compact/src/compact'
-import type { Watermark } from '../../contracts/ledger'
-import { breakLedgerLog, dataKeys, healLedgerLog } from '../../flush/test/helpers'
+import { compactStep } from '../../compact/src/compact'
+import { breakLedgerLog, healLedgerLog } from '../../flush/test/helpers'
 import { canonOf } from '../../flush/test/read'
 import { consumeFlushBatch, sweepPending } from '../../flush/src/index'
-import { expireTenant, purgeTenant, sweepOrphans } from '../../janitor/src/janitor'
-import type { Ledger } from '../../ledger/src/ledger'
+import { expireTenant } from '../../janitor/src/janitor'
 import { FLUSH_QUEUE_NAME, MAINT_QUEUE_NAME, consumeMaintBatch, engine, flushTenant, noteFlushed } from '../src/index'
+import { checkedOrphans, checkedPurge, quiesce as quiesceTenant, settle } from './settle'
 import { DAY_MS, type Sim, type SimTenant, checkTenant, createSim, deliver, ingest, ledger, rng, shard, take } from './sim'
 
 /**
@@ -28,12 +27,16 @@ const DELETE_GRACE = 1500
 const ORPHAN_GRACE = 1000
 const STEP = 1500
 const MAX_FLUSH_RETRIES = 8
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+const GRACES = { deleteGraceMs: DELETE_GRACE, orphanGraceMs: ORPHAN_GRACE, stepMs: STEP }
 
 let sim: Sim
 afterAll(() => sim?.restore())
 
-const FLUSH_FILE = /\/L0-(.+)-(\d+)-(\d+)-(\d+)-[0-9a-f]{8}\.parquet$/
+/** `evictDurableObject`, except that an object that is not running is left alone (the runtime refuses to evict it). */
+const evict = (stub: Parameters<typeof evictDurableObject>[0]): Promise<void> =>
+  evictDurableObject(stub).catch((e: Error) => {
+    if (!/not currently running/.test(e.message)) throw e
+  })
 
 describe('soak', () => {
   it(`${STEPS} random operations keep every invariant (seed ${SEED})`, { timeout: 3_600_000 }, async () => {
@@ -48,78 +51,10 @@ describe('soak', () => {
     const count: Record<string, number> = {}
     const did = (k: string, n = 1) => { count[k] = (count[k] ?? 0) + n }
 
-    /** Everything of one tenant flushed and recorded, with nothing injected. */
-    const quiesce = async (t: SimTenant): Promise<void> => {
-      await healLedgerLog(ledger(t))
-      await ledger(t).drain()
-      for (const s of sim.shards) {
-        await shard(s).seal(t.name)
-        for (let i = 0; ; i++) {
-          const x = await flushTenant(sim.env, engine, t.name, s)
-          expect(x.status, `quiesce ${t.name} ${s}: ${x.reason} ${x.detail}`).toBe('ok')
-          if (!x.awaitingLog && x.remaining === 0) break
-          expect(i).toBeLessThan(5)
-          await ledger(t).drain()
-        }
-        if (await shard(s).describe(t.name)) await noteFlushed(sim.env, { tenant: t.name })
-      }
-    }
-
-    /** Delete what the ledger calls deletable, and check each deletion against the rule independently. */
-    const purge = async (t: SimTenant, where: string): Promise<void> => {
-      const tombstones = new Map((await ledger(t).removedSince(0, 10_000)).map((x) => [x.key, x]))
-      const firstUnlogged = await runInDurableObject(ledger(t), (_i: Ledger, state) => (state.storage.sql.exec(`SELECT MIN(version) AS v FROM outbox`).one().v as number | null) ?? Infinity)
-      const p = await purgeTenant(sim.env, t.name, { graceMs: DELETE_GRACE })
-      // The ledger judged the age at some moment during the call: by the time it has
-      // returned, every deleted key must be at least the grace old.
-      const done = Date.now()
-      for (const key of p.deleted) {
-        const x = tombstones.get(key)
-        expect(x, `${where}: ${key} deleted without a tombstone`).toBeDefined()
-        expect(done - x!.at, `${where}: ${key} deleted inside the grace`).toBeGreaterThanOrEqual(DELETE_GRACE)
-        expect(x!.version, `${where}: ${key} deleted before its removal was logged`).toBeLessThan(firstUnlogged)
-      }
-      did('objects purged', p.deleted.length)
-    }
-
-    /** Sweep orphans, and check each deletion: unreferenced, old enough, and never admissible. */
-    const orphans = async (t: SimTenant, where: string): Promise<void> => {
-      const listed = new Map<string, number>()
-      const inputsOf = new Map<string, string | undefined>()
-      for (const table of ['metric_samples', 'metric_series']) {
-        for (const o of (await env.BUCKET.list({ prefix: `${env.CELL}/data/${table}/tenant=${t.name}/`, include: ['customMetadata'] })).objects) {
-          listed.set(o.key, o.uploaded.getTime())
-          inputsOf.set(o.key, o.customMetadata?.[COMPACTION_INPUTS_META])
-        }
-      }
-      const logged: Watermark[] = await ledger(t).loggedWatermarks()
-      const o = await sweepOrphans(sim.env, t.name, { graceMs: ORPHAN_GRACE, maxCompactStepMs: STEP })
-      const before = Date.now() // ages are judged during the call; see `purge`
-      if (o.deleted.length > 0) {
-        const after = await ledger(t).orphanCheck(o.deleted)
-        expect([after.live, after.tombstoned], `${where}: the orphan sweep deleted a referenced object`).toEqual([[], []])
-      }
-      for (const key of o.deleted) {
-        const age = before - listed.get(key)!
-        const m = FLUSH_FILE.exec(key)
-        if (m) {
-          expect(age, `${where}: ${key} deleted young`).toBeGreaterThanOrEqual(ORPHAN_GRACE)
-          const w = logged.find((x) => x.shard.replaceAll('/', '_') === m[1])
-          const dead = w !== undefined && (w.incarnation > Number(m[2]) || (w.incarnation === Number(m[2]) && w.seq >= Number(m[4])))
-          expect(dead, `${where}: ${key} deleted while its unit could still be admitted (logged ${JSON.stringify(w)})`).toBe(true)
-        } else {
-          // A compaction output may go only once an input of it is gone for good: its object
-          // was already deleted before this sweep listed, and the ledger does not list it.
-          expect(age, `${where}: compaction output ${key} deleted young`).toBeGreaterThanOrEqual(2 * STEP)
-          const d = await decodeCompactionInputs(key, inputsOf.get(key))
-          expect('inputs' in d, `${where}: compaction output ${key} deleted although its inputs cannot be read`).toBe(true)
-          const gone = 'inputs' in d ? d.inputs.filter((k) => !listed.has(k)) : []
-          const live = new Set((await ledger(t).orphanCheck(gone)).live)
-          expect(gone.some((k) => !live.has(k)), `${where}: compaction output ${key} deleted while all its inputs remain`).toBe(true)
-        }
-      }
-      did('orphans deleted', o.deleted.length)
-    }
+    // Flushing a tenant, and every deletion checked against its rule: test/settle.ts.
+    const quiesce = (t: SimTenant): Promise<void> => quiesceTenant(sim, t)
+    const purge = async (t: SimTenant, where: string): Promise<void> => void (await checkedPurge(sim, t, where, GRACES, did))
+    const orphans = async (t: SimTenant, where: string): Promise<void> => void (await checkedOrphans(sim, t, where, GRACES, did))
 
     const failing = (p: number) => ({
       afterPut: () => { if (r.chance(p)) throw new Error('injected: crash after PUT') },
@@ -209,10 +144,11 @@ describe('soak', () => {
         await orphans(t, where)
       } else if (op < 94) {
         // Eviction: the object restarts from storage (and a broken ledger log is whole again).
+        // An object that has not run yet (early in some seeds) has nothing to evict.
         if (r.chance(0.5)) {
-          await evictDurableObject(shard(r.pick(sim.shards)))
+          await evict(shard(r.pick(sim.shards)))
           touched = sim.tenants
-        } else await evictDurableObject(ledger(t))
+        } else await evict(ledger(t))
         did('evictions')
       } else if (op < 96) {
         // The ledger cannot write its log for a while: units are admitted but not logged.
@@ -251,28 +187,9 @@ describe('soak', () => {
     // A maintenance run with a clock days ahead may have expired all of a tenant's data, so
     // each tenant first sends one more request of today's samples: the end state has rows.
     for (const t of sim.tenants) expect(await ingest(sim, t, r, 5, 3, 0)).toBe(204)
-    for (const t of sim.tenants) {
-      await quiesce(t)
-      t.model.expire((await expireTenant(sim.env, t.name)).beforeDay!)
-      for (let i = 0; i < 200; i++) {
-        const x = await compactStep(sim.env, engine, t.name, { now: Date.now() + 3 * DAY_MS, policy: { maxInputPairs: 4, maxStepMs: STEP } })
-        if (x.status === 'idle') break
-        expect(x.status).toBe('merged')
-      }
-      await checkTenant(sim, t, DELETE_GRACE, 'end, before deletion')
-    }
-    await sleep(Math.max(DELETE_GRACE, 2 * STEP, ORPHAN_GRACE) + 200)
-    for (const t of sim.tenants) {
-      await purge(t, 'end')
-      await orphans(t, 'end')
-      const state = await checkTenant(sim, t, DELETE_GRACE, 'end')
-      // The ledger's live set is exactly what is in R2, every file is level 2, and nothing waits.
-      expect(state.objects).toEqual(state.live.map((f) => f.key).sort())
-      expect(state.objects).toEqual(await dataKeys(t.name))
-      expect(state.tombstones).toEqual([])
-      expect(state.live.every((f) => f.level === 2)).toBe(true)
-      for (const s of sim.shards) expect(await shard(s).pendingSegments(t.name)).toEqual([])
-    }
+    // Then flush, expire, compact and delete everything, once the graces have passed and the
+    // ledgers have logged their removals, and require that nothing is left (test/settle.ts).
+    await settle(sim, GRACES, did)
     console.error(`SOAK ${JSON.stringify({ steps: STEPS, seed: SEED, rows: sim.tenants.map((t) => t.model.size), dead_letters: sim.dead.length, ...count })}`)
     expect(sim.tenants.every((t) => t.model.size > 0)).toBe(true)
   })

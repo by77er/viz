@@ -81,6 +81,8 @@ export interface TailRead {
   complete: boolean
   /** Bytes of the batch that did not fit (`page_limit`), when that is why it stopped. */
   overBytes: number
+  /** Whether that batch was the last of the tail (`through`): then `bytes + overBytes` is the whole of it. */
+  overLast: boolean
   calls: number
   scannedBatches: number
   scannedBytes: number
@@ -120,7 +122,7 @@ export async function readPages(
   through?: number | null,
   alter?: (answer: unknown) => unknown,
 ): Promise<PageOutcome> {
-  const out: TailRead = { status: 'ok', shard, incarnation, above, through: null, batches: [], bytes: 0, paged: true, complete: true, overBytes: 0, calls: 0, scannedBatches: 0, scannedBytes: 0 }
+  const out: TailRead = { status: 'ok', shard, incarnation, above, through: null, batches: [], bytes: 0, paged: true, complete: true, overBytes: 0, overLast: false, calls: 0, scannedBatches: 0, scannedBytes: 0 }
   const previous = tailHooks.previousRelease?.(shard, where) ?? false
   const unavailable = (reason: string): PageOutcome => ({ status: 'unavailable', shard, reason, calls: out.calls })
   let cursor: string | undefined
@@ -169,6 +171,7 @@ export async function readPages(
       // The rows this read keeps of one batch do not fit what the budget has left.
       out.complete = false
       out.overBytes = typeof r.bytes === 'number' && r.bytes > 0 ? r.bytes : 1
+      out.overLast = out.through !== null && r.seq === out.through
       return out
     }
     if (r.status === 'stale_watermark') return { status: 'stale', shard, calls: out.calls }
