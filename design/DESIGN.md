@@ -4,7 +4,8 @@ Status: draft 3.1, 2026-11-18. Draft 2 was reviewed by two independent reviewers
 findings) and rewritten as draft 3; draft 3 was re-reviewed (12 findings) and amended here.
 `REVIEW.md` lists what changed and what is still open.
 
-Status (2026-11-19): the backend described here is built and merged to `main`; its first
+Status (2026-11-19): the backend described here is built and merged to `main`, with the
+clean-room TraceQL and LogQL engines (not yet wired into storage or the query Worker); its first
 production deploy is pending. Spikes S0–S5 and the S3/S4 re-runs were measured on Cloudflare,
 and staged copies of the deployment were trialled and destroyed (`VERIFICATION.md`,
 `deploy/README.md`). Figures not marked as measured are models, printed as ranges, and
