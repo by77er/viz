@@ -115,9 +115,9 @@ export async function identifyOAuth(presented: { token: string; kind: string; te
   if (!env.TENANT) throw new AuthError(503, 'oauth-unavailable', 'OAuth tokens cannot be checked on this deployment (no TENANT binding).', 'Use an API key, or ask the operator to bind control\'s Tenant object.')
   const stub = env.TENANT.get(env.TENANT.idFromName(presented.tenant)) as unknown as IntrospectRpc
   const r = await stub.introspectAccessToken(presented.tenant, presented.token, resource)
+  if (r?.status === 'schema_too_new') throw new AuthError(503, 'unavailable', 'A deployment is in progress; the token could not be checked.', `Retry in ${Math.ceil(r.retryAfterMs / 1000)} s.`)
   // contracts/COMPATIBILITY.md §3.2: a result version this code does not know is refused, not guessed.
   if (!r || r.v !== OAUTH_VERSION) throw new AuthError(503, 'unavailable', 'The control plane answered in a form this release does not read.', 'Retry in a moment.')
-  if (r.status === 'schema_too_new') throw new AuthError(503, 'unavailable', 'A deployment is in progress; the token could not be checked.', `Retry in ${Math.ceil(r.retryAfterMs / 1000)} s.`)
   if (r.status === 'not_provisioned') throw invalidToken(INACTIVE.unknown!)
   if (r.status === 'inactive') throw invalidToken(INACTIVE[r.reason] ?? INACTIVE.unknown!)
   if (r.status !== 'active') throw new AuthError(503, 'unavailable', 'The control plane gave an answer this release does not know.', 'Retry in a moment.')

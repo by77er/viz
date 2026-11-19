@@ -2,7 +2,8 @@
 
 Status: **built** (`ledger/src/ledger.ts`, 2026-11-18; revised 2026-11-19 after the review
 `design/reviews/segment-log-and-compaction.md`: checkpoint policy, the size limit, refusal of
-mixed layouts, the forward-only boundary). It replaces the first layout, one R2 object per
+mixed layouts, the forward-only boundary; and again on 2026-11-19 for S-2's full fix:
+checkpoints in parts, a rebuild that streams into SQLite, the size limit raised, D41). It replaces the first layout, one R2 object per
 change, which made every mutation wait for its own R2 write and limited a ledger to about one
 flush unit per second. Measured before and after on Cloudflare in
 `spikes/s4-ledger-scale/README.md` ("Re-run after the segment log"); decision D36. Two
@@ -83,32 +84,60 @@ ledger/tenant={tenant}/{ledgerIncarnation}/seg-{firstVersion:012}-{lastVersion:0
 
 ## Checkpoints
 
-- After at least 256 segments of an incarnation, **and** once the segments written since
-  the last checkpoint (or the base) are at least as large as it, the drain also writes
-  `ckpt-{version:012}.jsonl`: a header of kind `viz.ledger.checkpoint` and one line, a
-  `base`-kind change holding the whole state at `version`, which is the `lastVersion` of the
-  segment just written. The state is read in the same synchronous step that fixes that
-  segment's bounds, so it is exactly the state at that version. Tying checkpoints to the
-  log's volume, not to the write rate, keeps their R2 bytes at most those of the log
-  (review S-2: every 256 segments would have written tens of GB a day for a busy tenant).
-- Once a checkpoint is written, the older checkpoints of the incarnation are deleted.
-- A checkpoint is only an accelerator for a rebuild. Nothing else reads it, and a log with
-  no checkpoint, or with a bad one, rebuilds from the base.
+- **When.** After at least 256 segments of an incarnation, **and** once the segments written
+  since the last checkpoint (or the base) are at least as large as it, the drain takes a
+  checkpoint of the state at `version`, the `lastVersion` of the segment it is writing, which
+  must end at the committed version. Tying checkpoints to the log's volume, not to the write
+  rate, keeps their R2 bytes at most those of the log (review S-2). One checkpoint at a time.
+- **Format 1** (a state no larger than one part, `LEDGER_CHECKPOINT_PART_MAX_BYTES`, 1 MiB,
+  estimated): `ckpt-{version:012}.jsonl`, a header of kind `viz.ledger.checkpoint` with `v` 1
+  and one line, a `base`-kind change holding the whole state. Built in the synchronous step
+  that fixes the segment's bounds and written after that segment, as before.
+- **Format 2** (any larger state; D41). Nothing builds the state at once:
+  - The drain only **begins** the checkpoint in that synchronous step: it records the version,
+    the streams at that version and a new 8-hex-digit `attempt` in SQLite (table `ckpt`).
+  - Later drain steps write **parts**, `ckpt-{version:012}-{attempt}/{part:06}.jsonl`, one
+    PUT each, at most 8 per alarm and always after any pending segment: a header
+    (`LedgerCheckpointPartHeader`, kind `viz.ledger.checkpoint.part`, `v` 2) and up to 1 MiB
+    of record lines, each `{"file": LiveFile with its unit}` or `{"tombstone": Tombstone}`;
+    a single larger record goes alone. Files come first, in SQLite's key order (UTF-8 bytes),
+    then tombstones of removals at or below `version`, in key order. Each part is built in one
+    synchronous step from SQLite; its cursor is recorded only after its PUT returned.
+  - **The state at `version`, not now.** A mutation committed while a checkpoint is reading
+    files records, in its own transaction, the pre-image of every file it removes or adds
+    ahead of the checkpoint's cursor (table `ckpt_pre`: the row as it was, or "not live then");
+    a part reads live rows and pre-images merged by key. Every mutation also advances
+    `ckpt.tracked`; a checkpoint whose `tracked` is behind the committed version (a release
+    that does not know this ran on the storage) is **abandoned**, never written.
+  - Once every part is written and the log has reached `version`, the drain writes the
+    **manifest**, `ckpt-{version:012}.jsonl` with `If-None-Match: *`: a header (`v` 2) and one
+    `LedgerCheckpointManifest` line naming the attempt, the number of parts, the files and
+    tombstones they hold, and the streams. **A checkpoint without a manifest does not exist.**
+    The manifest's bytes are a function of SQLite, so a retry after a lost answer writes the
+    same bytes.
+  - A failed part or manifest write never fails or delays the log: it is retried from where it
+    stood after a backoff (1 s doubling to 60 s). An eviction resumes it from SQLite.
+- A checkpoint is only an accelerator for a rebuild. Nothing else reads it, and a log with no
+  checkpoint, or with a bad one, rebuilds from an older checkpoint or the base.
 
 ## Size
 
-The base and every checkpoint are the whole state as one JSON line, built in one synchronous
-step, and a rebuild holds the state as objects. So the state is bounded: `addUnit` answers
-`full` (nothing changed, retryable) once the state, estimated as each live file's key and
-index fragment plus 448 bytes (which matches what a checkpoint writes), would exceed 16 MiB
-(`STATE_MAX_BYTES`; about 15,800 files of S4's shape). `replace` and `expire` are never
-refused, so compaction and retention make room. Measured in workerd (2026-11-19,
-`ledger/bench/checkpoint.bench.test.ts`, a shared machine at load 14–16): a checkpoint is
-8.3 MB at 8,000 files, 33 MB at 32,000 and 105 MB at 100,000, its synchronous part
-0.17–0.26 s, 0.7–1.0 s and 2.5–3.3 s. The limit itself is modelled (about four copies of the
-state in memory at the peak, against a 128 MB isolate), not measured on Cloudflare. Lifting it needs the base and checkpoints
-written as many lines across several steps and a rebuild that streams into SQLite instead of
-building the state in memory: not built (`ledger/README.md`, "Not implemented").
+Nothing holds the whole state: checkpoints are written in parts (above), a new incarnation's
+base is written from SQLite in pieces (measured once, then streamed into one conditional PUT of
+that length), and a rebuild streams the base or a checkpoint into SQLite (below). What grows
+with the state is **time**: a rebuild or a new incarnation reads and writes the whole state
+while requests are refused, retryably. `addUnit` answers `full` (nothing changed, retryable)
+once the state, estimated as each live file's key and index fragment plus 448 bytes, would
+exceed 300 MiB (`STATE_MAX_BYTES`; about 300,000 files of S4's shape, the largest state
+measured). `replace` and `expire` are never refused, so compaction and retention make room.
+Measured in workerd (2026-11-19, `ledger/bench/checkpoint.bench.test.ts`, the release before as
+the counterfactual on the same data): at 100,000 files a checkpoint blocked the object for
+2 ms at a time instead of 0.93 s and added 14 MB of process memory instead of 410 MB; at
+300,000 files (this release only) a checkpoint took 9.3 s in 272 parts, a rebuild 20 s, and the
+process peaked at 536 MB (`ledger/README.md`). Not measured on Cloudflare. **The publisher
+still reads a new incarnation's base whole** (`publisher/src/log.ts`): until it reads it with
+`readLedgerLogStream`, a state above about 16 MiB can make a publisher re-base fail
+(`ledger/README.md`, "Needed changes elsewhere").
 
 ## Logged
 
@@ -125,8 +154,11 @@ first outbox row". It lags the committed watermark by up to one drain cycle.
 - **On a new incarnation** every outbox row is dropped in the transaction that commits the
   incarnation: a rebuilt ledger has none, and a ledger converted from the first layout has
   their effect in the new base, which is already in R2.
-- **Checkpoints** are deleted once a newer checkpoint of their incarnation is written (only
-  the ledger's rebuild reads them).
+- **Checkpoints** are deleted once a newer checkpoint of their incarnation is complete, its
+  manifest in R2 (only the ledger's rebuild reads them): first the older manifests, then every
+  part that is not the new checkpoint's (older checkpoints' parts, and abandoned attempts'), so
+  no listed manifest ever names a part that is gone. Never before: while a newer one is being
+  written, the older one is what a rebuild uses. A failure leaves the rest for the next one.
 - **Other R2 log objects** are never deleted by the ledger. A segment of an incarnation below
   its newest checkpoint is needed only by readers whose cursor is below that checkpoint, and
   an old incarnation only by readers that have not re-based on a newer one. Deleting those
@@ -146,9 +178,13 @@ incarnation (phase `stuck`), never replays one layout and skips the other (revie
 
 - **Rebuild** (the ledger, on storage with no incarnation): take the newest incarnation in
   R2. In the first layout, replay `base.json` and its changes as before. With segments,
-  start from the newest checkpoint (if any; else the first segment, whose first line must be
-  the base), list the segments that start after it, require each to begin at the previous
-  end + 1, decode each strictly, and replay. A gap, a corrupt object or an unsupported one
+  start from the newest checkpoint that can be read whole (format 2: the manifest, then every
+  part, checked against it; one that cannot is passed over, and what it loaded is emptied), else
+  the first segment, whose first line must be the base; list the segments that start after it,
+  require each to begin at the previous end + 1, decode each strictly, and replay. All of it
+  goes **into SQLite as it is read**, never into a state held in memory: a part at a time, a
+  base line element by element (`readLedgerLogStream`, `JsonObjectStream`), in transactions of
+  a few hundred rows; segments a few ahead, at most 8 MiB in flight. A gap, a corrupt object or an unsupported one
   refuses the rebuild: the object serves nothing rather than a guess. Then a new
   incarnation starts, with its base segment. Changes committed but not yet in a segment
   when storage was lost are lost, as before; the window is one drain cycle. With NO log in
@@ -172,8 +208,18 @@ incarnation (phase `stuck`), never replays one layout and skips the other (revie
 
 ## Versions
 
-- The segment and checkpoint header's `v` is the format version: 1 here
-  (`LEDGER_SEGMENT_VERSION`). Each change line is a `LedgerChange` whose own version is `v`
+- The segment header's `v` is the format version: 1 here (`LEDGER_SEGMENT_VERSION`). A
+  checkpoint's is 1 or 2 (`LEDGER_CHECKPOINT_VERSION`, above); this release writes both
+  (format 1 for a state of one part or less) and reads both. **Format 2 needed no
+  readers-first release:** a reader that knows only format 1 (the release before) sees its
+  manifest as `unsupported` and passes over it for an older checkpoint or the base, which is
+  always there, so it still rebuilds exactly (tested, `ledger/test/checkpoint.test.ts`); the
+  publisher never reads checkpoints, and part keys parse as nothing to an older
+  `parseLedgerLogKey`. The schema change that goes with it (migration 3: tables `ckpt` and
+  `ckpt_pre`) is additive (`readableFrom` 2), so the release before stays a rollback target;
+  a checkpoint it leaves untracked is abandoned. A state above 16 MiB cannot be rebuilt by that
+  release in one isolate, so after a rollback such a tenant is stuck, not lost, until rolled
+  forward. Each change line is a `LedgerChange` whose own version is `v`
   on the line, absent meaning 1 (`LEDGER_CHANGE_VERSION`). A reader refuses an unknown
   segment `v`, change `v`, header `kind` or change `kind` (`unsupported`), and ignores fields
   it does not know (contracts/COMPATIBILITY.md §3.2).

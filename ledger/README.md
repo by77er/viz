@@ -13,9 +13,10 @@ authority on what is visible. It implements `LedgerRpc`, `LedgerAdminRpc` and
 | `scripts/mutants.mjs` | Mutation check (runs only on a copy outside the git checkout) |
 | `test/ledger.test.ts` | 39 tests: units, replay, registration, plan, replace, expire, names, the log's contents |
 | `test/segments.test.ts` | 27 tests of the segment log: crashes, exact rebuild, checkpoints, the first layout, a rollback across this release, starting an incarnation, F10/F11, the size limit, readers |
+| `test/checkpoint.test.ts` | 13 tests of checkpoints in parts (format 2) and the streaming rebuild: the state at the checkpoint's version whatever commits meanwhile, part boundaries, key order, a crash, lost answer or storage loss at every await of the checkpoint path, superseded checkpoints, tampered checkpoints, streaming, an untracked checkpoint, the release before reading this one's log and back, the format-2 golden |
 | `test/compat.test.ts` | 8 tests of versioned storage and the log formats (`contracts/COMPATIBILITY.md` §8) |
 | `test/tombstone.test.ts`, `test/precedence.test.ts` | 8 and 5 tests |
-| `bench/` | In workerd: the admission counterfactual against the frozen as-built ledger (`bench/asbuilt/`, `dc2a1c3`), and what a checkpoint costs (`checkpoint.bench.test.ts`) |
+| `bench/` | In workerd: the admission counterfactual against the frozen as-built ledger (`bench/asbuilt/`, `dc2a1c3`); checkpoints and rebuilds against the frozen release before checkpoints in parts (`bench/before/`, `44649de`; `checkpoint.bench.test.ts`, results in `bench/results/checkpoint.log`); `rss.mjs` samples the processes' memory |
 
 Bindings: Durable Object `LEDGER`, R2 bucket `BUCKET`, variable `CELL` (default `cell-0`);
 optional `LEDGER_DRAIN_DELAY_MS` (default 200) and `LEDGER_CHECKPOINT_EVERY` (default 256).
@@ -65,18 +66,30 @@ optional `LEDGER_DRAIN_DELAY_MS` (default 200) and `LEDGER_CHECKPOINT_EVERY` (de
   leaves after the roll-forward. SQLite holds every committed change, so the ledger starts
   a new incarnation from SQLite, its base in R2 first (the fix the protocol model checked).
   For any other, an operator repairs R2 or calls `restartFromSqlite()`, which does the same.
-- **Checkpoints.** After at least 256 segments AND once the segments written since the
-  last checkpoint (or the base) are as large as it, when the segment just written ends at
-  the committed version, the drain also writes `ckpt-{version}.jsonl`: the whole state at
-  that version, read in the same synchronous step that fixed the segment's bounds. Then the
-  older checkpoints of the incarnation are deleted (review S-2).
-- **The state is bounded** (review S-2). `meta.state_bytes` estimates the state as a base
-  would hold it (each live file's key and index fragment plus 448 bytes, calibrated against
-  checkpoints written), kept with every
-  mutation and recomputed exactly at every start and checkpoint. `addUnit` answers `full`
-  (`{ status, stateBytes, limitBytes }`, nothing changed, retryable) once it would pass
-  16 MiB (`STATE_MAX_BYTES`, `LEDGER_STATE_MAX_BYTES`); `replace` and `expire` are never
-  refused, so compaction and retention make room.
+- **Checkpoints, in parts** (review S-2's full fix, D41; `contracts/LEDGER-LOG.md`,
+  "Checkpoints"). After at least 256 segments AND once the segments written since the last
+  checkpoint (or the base) are as large as it, when the segment being written ends at the
+  committed version, the drain takes a checkpoint of the state at that version. A state of
+  at most one part (1 MiB, estimated) is written as before, one object built in that step
+  (format 1). A larger one is only begun there (a row in `ckpt`: version, streams, attempt);
+  later drain steps write it as parts of at most 1 MiB, one PUT each, at most 8 per alarm, a
+  segment first whenever one is pending; then a manifest, `If-None-Match: *`, once the log has
+  reached the version (format 2). Every mutation committed meanwhile keeps, in its own
+  transaction, the pre-image of each file it adds or removes ahead of the checkpoint's cursor
+  (`ckpt_pre`), so every part is the state at the checkpoint's version; with no checkpoint
+  reading files, a mutation runs no statement for it. A checkpoint whose `tracked` version is
+  behind the ledger (a release without this code committed meanwhile) is abandoned. A failed
+  part or manifest is retried after a backoff (1 s doubling to 60 s), never failing or delaying
+  the log; an eviction resumes it. Once the manifest is in R2, older manifests are deleted,
+  then every other part.
+- **The state is bounded, by time** (review S-2). `meta.state_bytes` estimates the state as a
+  base would hold it (each live file's key and index fragment plus 448 bytes, calibrated
+  against checkpoints written), kept with every mutation and recomputed exactly at every start
+  and every one-object checkpoint. `addUnit` answers `full` (`{ status, stateBytes,
+  limitBytes }`, nothing changed, retryable) once it would pass 300 MiB (`STATE_MAX_BYTES`,
+  `LEDGER_STATE_MAX_BYTES`), about 300,000 S4-shaped files, the largest state measured.
+  Memory no longer sets it (nothing holds the state); a rebuild's duration does (below).
+  `replace` and `expire` are never refused, so compaction and retention make room.
 - **`loggedWatermarks`.** Per stream, the watermark as of the last change in a written
   segment. Shards may discard only up to it.
 - **Starting an incarnation** (a new tenant, storage loss, or storage still on the first
@@ -88,18 +101,26 @@ optional `LEDGER_DRAIN_DELAY_MS` (default 200) and `LEDGER_CHECKPOINT_EVERY` (de
   contiguous and strictly decoded; or the first layout, `base.json` and one object per
   change) or from SQLite (first layout). The new incarnation's **base segment is written to
   R2 before SQLite commits the incarnation** (spec F11): if it cannot be written, nothing
-  commits and nothing is served. With no log in R2 at all it starts empty only if the
-  tenant has no data objects either; otherwise its log is not where it looks and it refuses
+  commits and nothing is served. The state is loaded **into SQLite as it is read** (a
+  checkpoint part at a time; a base line element by element, `readLedgerLogStream`, in
+  transactions of 256 rows), and the base is written from SQLite in pieces: measured once,
+  then streamed into one conditional PUT of exactly that length. With no log in R2 at all it
+  starts empty only if the tenant has no data objects either; otherwise its log is not where it looks and it refuses
   (`stuck`), so no sweep runs against an empty live set (review S-5). A log that cannot be
   rebuilt from (a gap, a corrupt or unsupported object, segments and first-layout objects in
-  one incarnation) is `stuck` too, never partly replayed.
+  one incarnation) is `stuck` too, never partly replayed. A checkpoint that cannot be read
+  whole (a part missing, of another attempt, or not adding up to its manifest) is passed over
+  and what it loaded emptied.
 - **Storage that is not new and has no incarnation** (a schema version row and no
   `meta.incarnation`) is refused, never rebuilt over.
 - **Versioned storage** (`contracts/COMPATIBILITY.md` §2, D24): `ledger.Ledger` through
   `contracts/schema.ts`. Version 1 adopts the pre-versioning schema unchanged and adds
   `prec`/`prec_lo` to objects from before D22. Version 2 (the segment log; `state_bytes`)
   is **forward-only** (`readableFrom` 2): versioned code that knows only version 1 refuses
-  this storage instead of draining the first layout into it (review S-1). Storage of a newer release is refused on
+  this storage instead of draining the first layout into it (review S-1). Version 3 (tables
+  `ckpt` and `ckpt_pre`, a checkpoint in parts) is additive (`readableFrom` 2): the release
+  before it opens this storage, ignores them, and a checkpoint it leaves untracked is
+  abandoned. Storage of a newer release is refused on
   every entry point with `schema_too_new`, writing nothing, the alarm re-armed. Readers of
   the log refuse an unknown segment `v`, header `kind`, change `v` or change `kind`, in both
   layouts (`unsupportedLedgerChange`, `decodeLedgerSegment`).
