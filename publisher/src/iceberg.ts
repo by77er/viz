@@ -651,6 +651,19 @@ export function retained(snapshots: Snapshot[], now: number, r: Retention): Snap
 }
 
 /**
+ * When `retained` would keep only the newest `max(2, minSnapshots)` snapshots of this
+ * metadata: the newest of the others has then left the window, and so have all older ones
+ * (snapshot timestamps grow with sequence numbers). Null if there is nothing to drop. One
+ * expiry at this time drops everything that can go, in one commit.
+ */
+export function expiryDeadline(meta: TableMetadata, r: Retention): number | null {
+  const byAge = [...meta.snapshots].sort((a, b) => a['sequence-number'] - b['sequence-number'])
+  const keepFrom = byAge.length - Math.max(2, r.minSnapshots)
+  if (keepFrom <= 0) return null
+  return byAge[keepFrom - 1]!['timestamp-ms'] + r.snapshotWindowMs
+}
+
+/**
  * The next `metadata.json`: `prev` with `snapshot` appended and made current (if given),
  * expired snapshots dropped, and `prevFile` added to the metadata log.
  */

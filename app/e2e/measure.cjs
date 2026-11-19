@@ -1,6 +1,14 @@
 /* eslint-disable */
 // Measures the design system's speed budgets on a built app, against the mock.
-//   node e2e/measure.cjs [--root <app dir>] [--label after] [--runs 20] [--series 4,36,200] [--append]
+//   node e2e/measure.cjs [--root <app dir>] [--label after] [--runs 20] [--series 4,36,200] [--append] [--phone]
+// --phone: the system's phone layout (400 x 800, coarse pointer, touch, device scale 2, as
+// design-system/tools/speed.mjs sets it): presses are touches (CDP touchStart, held until the
+// pressed frame, then touchEnd), the crosshair is a horizontal touch drag, and every control
+// is scrolled into view before it is pressed. Files are then <label>-phone[-<series>].json.
+// Load (design-system README, "Load"): every run records the 1-minute load average at its
+// start and end, the file records the core count and a calibration task (the same loop as
+// tools/speed.mjs, timed in Node before the runs, median of three), and a run whose starting
+// load exceeded the core count is counted as "not judged" (summary.judgedRuns says how many were).
 // Reference setup, as far as it exists: Chromium, CPU throttled 4x (CDP
 // Emulation.setCPUThrottlingRate), network shaped to DevTools' "Fast 4G" (9 Mbit/s down,
 // 1.5 Mbit/s up, 165 ms round trip), 1440x900, a fresh browser context per run, the 75th
@@ -72,7 +80,12 @@ const Q_SYNTH = 'viz_synthetic_series'
 const QUERIES = { 4: Q_RATE, 36: lib.Q_MANY, 200: Q_SYNTH }
 /** --skip typing,crosshair: leave those steps out (for quicker comparisons of candidates). */
 const SKIP = new Set(arg('skip', '').split(',').filter(Boolean))
+const PHONE = process.argv.includes('--phone')
+const LAYOUT = PHONE ? { viewport: { width: 400, height: 800 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 } : { viewport: { width: 1440, height: 900 } }
 const os = require('node:os')
+const CORES = os.cpus().length
+// The calibration task of design-system/tools/speed.mjs: the same loop, timed the same way.
+const calibrate = () => { const t0 = performance.now(); let x = 0; for (let i = 0; i < 3e7; i++) x += Math.sqrt(i) % 7; return [performance.now() - t0, x] }
 const FAST_4G = { offline: false, latency: 165, downloadThroughput: (9e6 / 8) * 0.9, uploadThroughput: (1.5e6 / 8) * 0.9 }
 
 const p75 = (xs) => { const s = xs.filter((x) => x != null && Number.isFinite(x)).sort((a, b) => a - b); return s.length ? s[Math.min(s.length - 1, Math.ceil(0.75 * s.length) - 1)] : null }
@@ -130,6 +143,7 @@ function instrument() {
     while (k + 1 < after.length && after[k + 1].t - after[k].t <= 250) k++
     if (k === after.length - 1 && performance.now() - after[k].t < 250) return null
     const paintAt = after[k].end
+    m.paintAt = paintAt
     return {
       full: m.viaWorker ? null : paintAt - lastByte,
       // The earlier figure, from when the harness's copy of the body resolved (or the worker's message), when that came first.
@@ -171,16 +185,39 @@ function instrument() {
   }
 }
 
-async function click(page, selector, done) {
+async function click(page, selector, done, cdp) {
+  const target = page.locator(selector).first()
+  await target.scrollIntoViewIfNeeded()
+  await page.waitForTimeout(100)
   await page.evaluate((d) => window.__m.arm(d), done)
-  const box = await page.locator(selector).boundingBox()
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
-  await page.waitForTimeout(150) // let the hover transition finish: the press is measured alone
-  await page.mouse.down()
-  await Promise.all([page.waitForFunction(() => window.__m.rec.press !== null), page.waitForTimeout(60)])
-  await page.mouse.up()
+  const box = await target.boundingBox()
+  const x = box.x + box.width / 2
+  const y = box.y + box.height / 2
+  if (PHONE) {
+    // A touch: down, held until the pressed frame (and at least 60 ms), then up; the browser makes the tap a click.
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] })
+    await Promise.all([page.waitForFunction(() => window.__m.rec.press !== null), page.waitForTimeout(60)])
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+  } else {
+    await page.mouse.move(x, y)
+    await page.waitForTimeout(150) // let the hover transition finish: the press is measured alone
+    await page.mouse.down()
+    await Promise.all([page.waitForFunction(() => window.__m.rec.press !== null), page.waitForTimeout(60)])
+    await page.mouse.up()
+  }
   await page.waitForFunction(() => window.__m.rec.done !== null, null, { timeout: 30000 })
-  return page.evaluate(() => ({ ...window.__m.rec, respPaint: window.__m.respPaint, respFull: window.__m.respFull }))
+  const rec = await page.evaluate(() => ({ ...window.__m.rec, respPaint: window.__m.respPaint, respFull: window.__m.respFull, paintAt: window.__m.paintAt, viaWorker: window.__m.viaWorker }))
+  // A worker fetched the body: its own Resource Timing has the last byte, on its own clock.
+  if (done === 'result' && rec.viaWorker && rec.paintAt != null) {
+    const pageOrigin = await page.evaluate(() => performance.timeOrigin)
+    let lastByte = null
+    for (const w of page.workers()) {
+      const e = await w.evaluate(() => { const r = performance.getEntriesByType('resource').filter((x) => x.name.includes('query_range')); const l = r[r.length - 1]; return l ? { end: l.responseEnd, origin: performance.timeOrigin } : null }).catch(() => null)
+      if (e && e.end > 0) lastByte = e.end + e.origin - pageOrigin
+    }
+    if (lastByte !== null) rec.respFull = rec.paintAt - lastByte
+  }
+  return rec
 }
 
 function bytes(root) {
@@ -200,7 +237,7 @@ async function measureCase(browser, SERIES) {
   const runs = []
   {
     for (let i = 0; i < RUNS; i++) {
-      const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'light' })
+      const ctx = await browser.newContext({ ...LAYOUT, colorScheme: 'light' })
       const page = await ctx.newPage()
       await page.addInitScript(instrument)
       const cdp = await ctx.newCDPSession(page)
@@ -219,10 +256,13 @@ async function measureCase(browser, SERIES) {
       const hasTable = !!(await page.$('[data-testid=view-table]'))
 
       // ---- run a query
-      const run = await click(page, '[data-testid=run]', 'result')
+      const run = await click(page, '[data-testid=run]', 'result', cdp)
       await page.waitForTimeout(700)
       r.press = run.press
       r.busy = run.busy
+      // Release of Run query to the result painted: the whole wait, network included (not a budget figure;
+      // the one figure every candidate shares, whatever thread reads the body).
+      r.runToPaint = run.done
       r.response = run.respPaint
       r.responseFull = run.respFull
       const shifts = await page.evaluate((from) => window.__m.shifts.filter((s) => s.t >= from), run.shiftFrom)
@@ -231,13 +271,13 @@ async function measureCase(browser, SERIES) {
 
       // ---- local changes
       if (hasTable) {
-        r.chartToTable = (await click(page, '[data-testid=view-table]', '[data-testid=result-table] tbody tr')).done
-        r.tableToText = (await click(page, '[data-testid=view-text]', '[data-testid=text-view] pre')).done
+        r.chartToTable = (await click(page, '[data-testid=view-table]', '[data-testid=result-table] tbody tr', cdp)).done
+        r.tableToText = (await click(page, '[data-testid=view-text]', '[data-testid=text-view] pre', cdp)).done
       } else {
-        r.chartToText = (await click(page, '[data-testid=view-text]', '[data-testid=text-view] pre')).done
+        r.chartToText = (await click(page, '[data-testid=view-text]', '[data-testid=text-view] pre', cdp)).done
       }
-      r.textToChart = (await click(page, '[data-testid=view-chart]', '[data-testid=chart] canvas')).done
-      r.picker = (await click(page, '[data-testid=time-range]', '[role=dialog][aria-label="Time range"]')).done
+      r.textToChart = (await click(page, '[data-testid=view-chart]', '[data-testid=chart] canvas', cdp)).done
+      r.picker = (await click(page, '[data-testid=time-range]', '[role=dialog][aria-label="Time range"]', cdp)).done
       await page.keyboard.press('Escape')
       await page.waitForTimeout(300)
 
@@ -253,22 +293,30 @@ async function measureCase(browser, SERIES) {
         await ctx.close()
         continue
       }
-      // ---- crosshair: 30 moves across the plot, each waited for
+      // ---- crosshair: 30 moves across the plot, each waited for (a touch drag on the phone: horizontal, so the page does not scroll)
+      await page.locator('[data-testid=chart] .u-over').scrollIntoViewIfNeeded()
+      await page.waitForTimeout(150)
       const over = await page.locator('[data-testid=chart] .u-over').boundingBox()
-      await page.mouse.move(over.x + over.width * 0.1, over.y + over.height * 0.5)
+      const at = (k) => PHONE ? { x: over.x + over.width * (0.1 + 0.8 * (k / 30)), y: over.y + over.height * 0.5 } : { x: over.x + over.width * (0.1 + 0.8 * (k / 30)), y: over.y + over.height * (0.3 + 0.4 * ((k % 5) / 5)) }
+      if (PHONE) await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [at(0)] })
+      else await page.mouse.move(at(0).x, at(0).y)
       await page.waitForTimeout(200)
-      await page.evaluate(() => { window.__m.moves = []; window.__m.unwatch = window.__m.watch('mousemove', 'moves') })
+      await page.evaluate((type) => { window.__m.moves = []; window.__m.unwatch = window.__m.watch(type, 'moves') }, PHONE ? 'pointermove' : 'mousemove')
       for (let k = 1; k <= 30; k++) {
-        await page.mouse.move(over.x + over.width * (0.1 + 0.8 * (k / 30)), over.y + over.height * (0.3 + 0.4 * ((k % 5) / 5)))
+        if (PHONE) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [at(k)] })
+        else await page.mouse.move(at(k).x, at(k).y)
         await page.waitForFunction((n) => window.__m.moves.length >= n, k)
       }
       const moves = await page.evaluate(() => { window.__m.unwatch(); return window.__m.moves })
       r.crosshair = p75(moves)
       r.crosshairWorst = Math.max(...moves)
-      await page.mouse.move(2, 2)
+      if (PHONE) await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+      else await page.mouse.move(2, 2)
 
       // ---- typing: 60 keys into the emptied editor, each waited for
-      await page.click('.cm-content')
+      await page.locator('.cm-content').scrollIntoViewIfNeeded()
+      if (PHONE) await page.locator('.cm-content').tap()
+      else await page.click('.cm-content')
       await page.keyboard.press('Control+a')
       await page.keyboard.press('Delete')
       await page.waitForTimeout(300)
@@ -294,11 +342,13 @@ async function measureCase(browser, SERIES) {
 
   // --append adds these runs to the label's earlier ones, so that two builds can be measured
   // in alternating batches when the machine's load drifts.
-  const name = CASES.length > 1 ? `${LABEL}-${SERIES}` : LABEL
+  const base = PHONE ? `${LABEL}-phone` : LABEL
+  const name = CASES.length > 1 ? `${base}-${SERIES}` : base
   const file = path.join(lib.ROOT, 'e2e', 'measurements', `${name}.json`)
-  if (process.argv.includes('--append') && fs.existsSync(file)) runs.unshift(...JSON.parse(fs.readFileSync(file, 'utf8')).raw)
+  const prior = process.argv.includes('--append') && fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null
+  if (prior) runs.unshift(...prior.raw)
 
-  const keys = ['load1', 'loadEnd', 'press', 'busy', 'chartToTable', 'tableToText', 'chartToText', 'textToChart', 'picker', 'response', 'responseFull', 'inp', 'inputDelay', 'crosshair', 'crosshairWorst', 'typing', 'typingWorst', 'typingOver', 'inpAll', 'clsLoad', 'clsRun', 'clsRunAll']
+  const keys = ['load1', 'loadEnd', 'press', 'busy', 'runToPaint', 'chartToTable', 'tableToText', 'chartToText', 'textToChart', 'picker', 'response', 'responseFull', 'inp', 'inputDelay', 'crosshair', 'crosshairWorst', 'typing', 'typingWorst', 'typingOver', 'inpAll', 'clsLoad', 'clsRun', 'clsRunAll']
   const summary = {}
   for (const k of keys) {
     const xs = runs.map((r) => r[k])
@@ -307,7 +357,16 @@ async function measureCase(browser, SERIES) {
   }
   const allKeys = runs.flatMap((r) => r.keys || [])
   if (allKeys.length) summary.typingKeys = { p75: p75(allKeys), median: median(allKeys), max: Math.max(...allKeys), count: allKeys.length, over50: allKeys.filter((x) => x > 50).length }
-  const out = { label: LABEL, series: SERIES, query: QUERIES[SERIES], root: ROOT, when: new Date().toISOString(), runs: runs.length, setup: 'Chromium, CPU 4x, Fast 4G, 1440x900, fresh context per run', summary, bytes: bytes(ROOT), raw: runs }
+  // Load: a run is judged only when the load average at its start was at most the core count.
+  const judged = runs.filter((r) => r.load1 <= CORES)
+  summary.judgedRuns = { count: judged.length, of: runs.length, cores: CORES }
+  if (judged.length) for (const k of ['response', 'responseFull', 'runToPaint', 'chartToTable', 'tableToText', 'press', 'typing', 'crosshair']) {
+    const xs = judged.map((r) => r[k]).filter((x) => x != null)
+    if (xs.length) summary[`${k}Judged`] = { p75: p75(xs), median: median(xs), max: Math.max(...xs), min: Math.min(...xs), n: xs.length }
+  }
+  const calibrations = [...(prior?.calibrationsMs ?? []), CALIBRATION_MS]
+  const setup = `Chromium, CPU 4x, Fast 4G, ${PHONE ? '400x800, coarse pointer, touch, device scale 2' : '1440x900, fine pointer'}, fresh context per run`
+  const out = { label: LABEL, series: SERIES, query: QUERIES[SERIES], layout: PHONE ? 'phone' : 'desktop', root: ROOT, when: new Date().toISOString(), runs: runs.length, setup, cores: CORES, calibrationsMs: calibrations, summary, bytes: bytes(ROOT), raw: runs }
   const dir = path.join(lib.ROOT, 'e2e', 'measurements')
   fs.mkdirSync(dir, { recursive: true })
   fs.writeFileSync(file, JSON.stringify(out, null, 2) + '\n')
@@ -319,7 +378,10 @@ async function measureCase(browser, SERIES) {
   console.log('  bytes', JSON.stringify(out.bytes))
 }
 
+let CALIBRATION_MS = null
 async function main() {
+  CALIBRATION_MS = [calibrate()[0], calibrate()[0], calibrate()[0]].sort((a, b) => a - b)[1]
+  console.log(`calibration ${CALIBRATION_MS.toFixed(0)} ms, ${CORES} cores, load ${os.loadavg()[0].toFixed(1)}`)
   const stop = await lib.startServers(ROOT)
   try {
     const browser = await chromium.launch()

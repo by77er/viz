@@ -1,7 +1,7 @@
 import { evictDurableObject, runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { expect } from 'vitest'
-import type { FileEntry, FlushUnit, Table } from '../../contracts/ledger'
+import { encodeLedgerSegment, ledgerSegmentKey, parseLedgerLogKey, type FileEntry, type FlushUnit, type LedgerChange, type Table } from '../../contracts/ledger'
 import type { Ledger } from '../../ledger/src/ledger'
 import { readAvro } from '../src/avro'
 import type { ManifestEntryRecord, ManifestListRecord, TableMetadata } from '../src/iceberg'
@@ -28,14 +28,18 @@ export const fresh = () => {
 export const ledger = (tenant: string): LedgerStub => env.LEDGER.get(env.LEDGER.idFromName(tenant))
 export const publisher = (name: string): PublisherStub => env.PUBLISHER.get(env.PUBLISHER.idFromName(name))
 
-/** A synthetic data file under the contract's key layout, with a real 1-byte-per-`bytes` object in R2. */
-export const fileFor = (cell: string, tenant: string, table: Table, name: string, over: Partial<FileEntry> = {}): FileEntry => {
+/**
+ * A synthetic data file under the contract's key layout. The key is under the LEDGER's cell
+ * (`env.CELL`), whatever cell the test publishes into: the ledger admits only keys under its own
+ * cell (contracts/ledger.ts `FileEntry.key`). Tenant names are unique per test, so keys are too.
+ */
+export const fileFor = (_cell: string, tenant: string, table: Table, name: string, over: Partial<FileEntry> = {}): FileEntry => {
   const minTs = over.minTs ?? T0
   const day = over.day ?? dayOf(minTs)
   return {
     table,
     day,
-    key: `${cell}/data/${table}/tenant=${tenant}/day=${day}/${name}.parquet`,
+    key: `${env.CELL}/data/${table}/tenant=${tenant}/day=${day}/${name}.parquet`,
     bytes: 64,
     rows: 10,
     minTs,
@@ -65,31 +69,60 @@ export const pairUnit = (cell: string, tenant: string, seqLo: number, seqHi: num
   ],
 })
 
-export const addUnit = async (tenant: string, unit: FlushUnit) => {
+/**
+ * Admit a unit. With `drain`, its change (and a first unit's registration) is written to R2
+ * at once, as a segment of its own; otherwise it waits for the next drain (`mirror` drains),
+ * so the changes in between share a segment, as under load.
+ */
+export const addUnit = async (tenant: string, unit: FlushUnit, opts: { drain?: boolean } = {}) => {
   await putObjects(unit.files)
   expect(await ledger(tenant).addUnit(unit)).toMatchObject({ status: 'ok' })
+  if (opts.drain) await ledger(tenant).drain()
   return unit
 }
 
 /**
  * The Ledger object writes its log under `env.CELL`. Tests give each case its own cell, so
- * this copies a tenant's log, byte for byte, to the same keys under the test's cell.
- * `skip` leaves versions out (to make a hole); `upTo` stops at a version.
+ * this drains the ledger and copies the tenant's log, byte for byte, to the same keys under
+ * the test's cell: segments, checkpoints and any first-layout objects. `skip` leaves out the
+ * segments holding these versions (to make a hole); `upTo` leaves out segments that end above it.
  */
 export const mirror = async (tenant: string, cell: string, opts: { skip?: number[]; upTo?: number } = {}) => {
   await ledger(tenant).drain()
-  const from = `${env.CELL}/ledger/tenant=${tenant}/`
+  await copyLog(tenant, env.CELL, cell, opts)
+}
+
+export const copyLog = async (tenant: string, fromCell: string, toCell: string, opts: { skip?: number[]; upTo?: number } = {}) => {
+  const from = `${fromCell}/ledger/tenant=${tenant}/`
   let cursor: string | undefined
   do {
     const page = await env.BUCKET.list({ prefix: from, cursor })
     for (const o of page.objects) {
-      const v = /\/(\d{12})\.json$/.exec(o.key)
-      if (v && (opts.skip?.includes(Number(v[1])) || (opts.upTo !== undefined && Number(v[1]) > opts.upTo))) continue
+      const p = parseLedgerLogKey(o.key)
+      if (p?.type === 'segment') {
+        if (opts.skip?.some((v) => p.firstVersion <= v && v <= p.lastVersion)) continue
+        if (opts.upTo !== undefined && p.lastVersion > opts.upTo) continue
+      }
       const body = await env.BUCKET.get(o.key)
-      await env.BUCKET.put(`${cell}/ledger/tenant=${tenant}/${o.key.slice(from.length)}`, await body!.arrayBuffer())
+      await env.BUCKET.put(`${toCell}/ledger/tenant=${tenant}/${o.key.slice(from.length)}`, await body!.arrayBuffer())
     }
     cursor = page.truncated ? page.cursor : undefined
   } while (cursor)
+}
+
+/** The segments of a tenant's incarnation under a cell, in version order: `[first, last]` and the key. */
+export const segmentsOf = async (cell: string, tenant: string, incarnation: number) =>
+  (await listKeys(`${cell}/ledger/tenant=${tenant}/${incarnation}/seg-`))
+    .map((key) => ({ key, p: parseLedgerLogKey(key) }))
+    .filter((x): x is { key: string; p: { type: 'segment'; ledgerIncarnation: number; firstVersion: number; lastVersion: number } } => x.p?.type === 'segment')
+    .map(({ key, p }) => ({ key, first: p.firstVersion, last: p.lastVersion }))
+    .sort((a, b) => a.first - b.first)
+
+/** Write a segment as the ledger would (the contract's codec), with changes given as objects. */
+export const putSegment = async (cell: string, tenant: string, incarnation: number, changes: (Omit<Partial<LedgerChange>, 'version'> & { version: number } & Record<string, unknown>)[]) => {
+  const key = `${cell}/${ledgerSegmentKey(tenant, incarnation, changes[0]!.version, changes.at(-1)!.version)}`
+  await env.BUCKET.put(key, encodeLedgerSegment(tenant, incarnation, changes.map((c) => ({ version: c.version, json: JSON.stringify(c) }))))
+  return key
 }
 
 export const liveKeys = async (tenant: string, table: Table): Promise<string[]> =>

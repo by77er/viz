@@ -401,8 +401,13 @@ export function parseAnomalySpec(c: ParseContext, v: unknown, path: string, inte
     c.err(`${path}.params`, `${detector} with these parameters keeps about ${stateBytesPerSeries} bytes of state per series at a ${formatDuration(intervalMs)} interval; the limit is ${limits.maxAnomalyStateBytesPerSeries}`, detector === 'seasonal' ? 'Use a coarser interval (rollups) for long seasons, or fewer seasons.' : 'Use a shorter window.')
     return null
   }
+  const fits = Math.max(1, Math.floor(limits.maxAnomalyStateBytesPerRule / stateBytesPerSeries))
+  if (v.max_series === undefined && fits < maxSeries) {
+    // Not given: the default is what fits the per-rule limit, said once at save. Still a cap, never a drop.
+    maxSeries = fits
+    c.warn(`${path}.max_series`, `max_series defaults to ${fits} here, not ${DEFAULT_MAX_SERIES}: ${detector} with these parameters may keep about ${stateBytesPerSeries} bytes of state per series, and a rule may keep ${limits.maxAnomalyStateBytesPerRule}`, `Make sure the expression returns at most ${fits} series (an evaluation with more is refused), or set max_series.`)
+  }
   if (stateBytesPerSeries * maxSeries > limits.maxAnomalyStateBytesPerRule) {
-    const fits = Math.max(1, Math.floor(limits.maxAnomalyStateBytesPerRule / stateBytesPerSeries))
     c.err(`${path}.max_series`, `${maxSeries} series × about ${stateBytesPerSeries} bytes of state each would exceed the ${limits.maxAnomalyStateBytesPerRule}-byte limit per rule`, `Lower max_series to ${fits}, or aggregate the expression.`)
     return null
   }

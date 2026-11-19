@@ -209,7 +209,9 @@ export interface AnomalySpecInput {
   /**
    * Most series the expression may return. Above it the evaluation is refused (the rule is
    * `health: err`, status `series_cap_exceeded`), nothing is scored and no state or alert
-   * changes; series are never dropped to fit. Default 100; at most `RulerLimits.maxAnomalySeriesPerRule`.
+   * changes; series are never dropped to fit. Default 100, or fewer when that many series' state
+   * could exceed `RulerLimits.maxAnomalyStateBytesPerRule` (the save warns, and the rule stores the
+   * number); at most `RulerLimits.maxAnomalySeriesPerRule`.
    */
   max_series?: number
   /** Written by the ruler's own export: which `params` the author gave (the rest are written-out defaults). */

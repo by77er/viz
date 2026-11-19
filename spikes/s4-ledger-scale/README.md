@@ -74,3 +74,25 @@ an uncompacted or very large one does not, and a week of 5,000-file days would e
 
 Rebuild from the log; 300,000 live files (the fill stopped near 100,000); plan latency
 with compacted partitions; behaviour after the fix.
+
+## Re-run after the segment log (2026-11-19)
+
+`rerun/` measures the ledger as built now (`contracts/LEDGER-LOG.md`: commit to SQLite,
+answer, log to R2 as segments in the background) against the frozen as-built ledger of
+`dc2a1c3` (`ledger/bench/asbuilt/`, one R2 object per change on the acknowledgement path),
+deployed side by side in one script, driven by the same writer objects on the same day.
+
+**Deployed for the measurement only:** Worker `viz-spike-s4-rerun` (workers.dev, every
+route needs the `x-key` header, a secret generated at deploy time) with Durable Object
+classes `Ledger`, `LedgerAsBuilt`, `Writer`; R2 bucket `viz-spike-s4-rerun`. Nothing runs on
+a timer: the only alarms are the ledgers' drains, which stop when nothing is pending.
+
+**Worst-case cost, stated before deploying** (modelled from list prices as I know them,
+training knowledge, ignoring the plan's included allowances; rows written at $1 per
+million): at most about 60,000 two-file `addUnit` calls in all runs, about 20 SQLite rows
+written each (file rows, their index entries, stream, meta, outbox) = 1.2 M rows ≈ $1.20;
+the 2,000-file runs, at most 10 s each and at most 300 units per run, about 6,000 rows
+each, two runs = 3.6 M rows ≈ $3.60; Durable Object requests and duration for ten objects
+over at most 30 minutes ≈ $0.05; R2 Class A for segments, checkpoints and the as-built
+ledger's per-change objects, under 50,000 ≈ $0.25; storage of a few hundred MB for an
+hour, nil. **Under $6 in total.**

@@ -2,6 +2,7 @@ import type { Table } from '../../contracts/ledger'
 import { Publisher, type CommitStep, type PublisherConfig, type PublisherEnv } from '../src/publisher'
 
 export { Ledger } from '../../ledger/src/ledger'
+export { Ledger as LedgerAsBuilt } from '../../ledger/bench/asbuilt/ledger'
 
 /**
  * `Publisher` with the seams the tests need. None of this changes what a commit does.

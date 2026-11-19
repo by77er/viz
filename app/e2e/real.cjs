@@ -166,7 +166,7 @@ async function main() {
     await page.keyboard.insertText('up' + ' + up'.repeat(5000))
     await page.click('[data-testid=run]')
     e = await errorState(page)
-    check('real API, a query over 16 KiB: 422, a limit, and the advice says so', e.kind === 'limit' && /max_query_bytes/.test(e.message) && /asks for more than the API allows/.test(e.advice), e.advice)
+    check('real API, a query over 16 KiB: 422, a limit, and the advice says to shorten the query (not to narrow the range)', e.kind === 'limit' && /max_query_bytes/.test(e.message) && /The query text is longer than the API allows\. Shorten the query\./.test(e.advice) && !/time range/.test(e.advice), e.advice)
 
     // No key; a key without the read scope.
     for (const [label, key, kind, re, bannerRe] of [

@@ -143,6 +143,33 @@ export default {
       const same = after.files.length === before.files.length && JSON.stringify(after.watermarks) === JSON.stringify(before.watermarks)
       return Response.json({ tenant, ms, refusals, files: after.files.length, same, version: after.version, incarnation: after.ledgerIncarnation })
     }
+    if (u.pathname === '/agree') {
+      // The counterfactual's precondition: the same workload (one writer, `units` units, in
+      // order) on both ledgers gives the same state, and each reads the other's output: the
+      // ledger as built now, started with empty storage on the AS-BUILT tenant, rebuilds from
+      // the as-built ledger's first-layout log and must list exactly what that ledger lists.
+      const units = q('units', 40)
+      const run = Date.now().toString(36)
+      const ta = `s4-agree-a-${run}`
+      const tb = `s4-agree-b-${run}`
+      const a = await env.WRITER.get(env.WRITER.idFromName(`${ta}-w0`)).run('asbuilt', ta, 0, 600, 2, units)
+      const b = await env.WRITER.get(env.WRITER.idFromName(`${tb}-w0`)).run('segments', tb, 0, 600, 2, units)
+      const norm = (p: { files: { key: string }[] }, t: string) => p.files.map((f) => ({ ...f, key: f.key.replace(`tenant=${t}/`, 'tenant=T/') }))
+      const out: Record<string, unknown> = { units, asbuilt: a.status, segments: b.status }
+      for (const table of ['metric_samples', 'metric_series'] as const) {
+        const range = { table, minTs: 0, maxTs: Number.MAX_SAFE_INTEGER }
+        const pa = await ledgerOf(env, 'asbuilt', ta).plan(range)
+        const pb = await ledgerOf(env, 'segments', tb).plan(range)
+        const rebuilt = await env.LEDGER.get(env.LEDGER.idFromName(ta)).plan(range) // empty storage: rebuilds from ta's log
+        out[table] = {
+          files: pa.files.length,
+          same_workload_same_state: JSON.stringify(norm(pa, ta)) === JSON.stringify(norm(pb, tb)) && JSON.stringify(pa.watermarks) === JSON.stringify(pb.watermarks) && pa.version === pb.version,
+          rebuilt_from_asbuilt_log_equal: JSON.stringify(rebuilt.files) === JSON.stringify(pa.files) && JSON.stringify(rebuilt.watermarks) === JSON.stringify(pa.watermarks) && rebuilt.version === pa.version,
+          rebuilt_incarnation: rebuilt.ledgerIncarnation,
+        }
+      }
+      return Response.json(out)
+    }
     if (u.pathname === '/status') return Response.json(await env.LEDGER.get(env.LEDGER.idFromName(u.searchParams.get('tenant')!)).logStatus())
     return new Response('not found', { status: 404 })
   },

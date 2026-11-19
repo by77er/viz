@@ -1121,60 +1121,67 @@ export class Publisher extends DurableObject<PublisherEnv> {
 
   /**
    * Expire snapshots outside the retention window when no publish has done it (a commit
-   * expires them as a side effect), then sweep orphans. Meant for a cron.
+   * expires them as a side effect), then sweep orphans, now. The alarm does the same by itself
+   * when each is due (`alarm`); this is the operator's handle on it.
    */
   async maintain(): Promise<{ expired: Record<Table, number>; swept: Record<Table, { marked: number; deleted: number }>; ops: R2Ops }> {
     this.guard()
-    return this.serial(async () => {
+    const out = await this.serial(async () => {
       const cfg = this.config()
       const store = new CountingBucket(this.env.BUCKET)
       const expired = {} as Record<Table, number>
       const swept = {} as Record<Table, { marked: number; deleted: number }>
       for (const table of TABLE_NAMES) {
-        expired[table] = 0
-        for (let tries = 0; tries < 3; tries++) {
-          try {
-            expired[table] = await this.expire(store, cfg, table)
-            break
-          } catch (e) {
-            if (!(e instanceof Conflict)) throw e
-          }
-        }
+        expired[table] = await this.expireWithRetries(store, cfg, table)
         swept[table] = await this.sweepTable(store, cfg, table)
       }
+      this.afterSweep(cfg)
       return { expired, swept, ops: store.ops }
     })
+    await this.rearm()
+    return out
   }
 
-  /** A metadata-only commit that drops expired snapshots. Returns how many. */
+  /** A metadata-only commit that drops expired snapshots. Returns how many. Leaves the table's expiry deadline current. */
   private async expire(store: CountingBucket, cfg: PublisherConfig, table: Table): Promise<number> {
     const state = this.state(table)
-    if (state.version === 0) return 0
+    if (state.version === 0) {
+      this.clearDue(`expire:${table}`)
+      return 0
+    }
     const { prev } = await this.currentMetadata(store, cfg, table)
     if (!prev) return 0
     const now = this.now()
     const meta = nextMetadata(prev, this.uri(cfg, this.metaKey(table, state.version)), null, Math.max(now, prev['last-updated-ms'] + 1), this.retention(cfg))
     const dropped = prev.snapshots.length - meta.snapshots.length
-    if (dropped === 0) return 0
+    if (dropped === 0) {
+      // Not yet (or already done by a commit): the deadline from what R2 holds now.
+      this.noteMetadata(cfg, table, prev, false)
+      return 0
+    }
     await this.putMetadata(store, cfg, table, state.version + 1, meta)
     await store.put(this.hintKey(table), String(state.version + 1))
     this.ctx.storage.transactionSync(() => {
       this.sql.exec(`UPDATE tbl SET version = ? WHERE name = ?`, state.version + 1, table)
       this.dropExpired(table, new Set(meta.snapshots.map((s) => s['snapshot-id'])), oldestSeq(meta), now)
+      this.noteMetadata(cfg, table, meta, true)
     })
     return dropped
   }
 
-  /** Sweep unreferenced metadata objects of both tables. */
+  /** Sweep unreferenced metadata objects of both tables, now (the alarm does it when due). */
   async sweep(): Promise<Record<Table, { marked: number; deleted: number }>> {
     this.guard()
-    return this.serial(async () => {
+    const out = await this.serial(async () => {
       const cfg = this.config()
       const store = new CountingBucket(this.env.BUCKET)
       const out = {} as Record<Table, { marked: number; deleted: number }>
       for (const table of TABLE_NAMES) out[table] = await this.sweepTable(store, cfg, table)
+      this.afterSweep(cfg)
       return out
     })
+    await this.rearm()
+    return out
   }
 
   /**
