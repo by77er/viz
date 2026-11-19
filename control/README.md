@@ -936,9 +936,8 @@ Things outside this directory that this component needs or exposes. Only the gat
 9. **OAuth (D44)**: (**deploy/**, done, D53: the release creates `OAUTH_CLIENT_KEY` for
    viz-control when it is missing, with `wrangler versions secret put` from stdin before anything
    is promoted, and never rotates it on its own; rotation is by hand, `deploy/README.md`. Not yet
-   run on Cloudflare.) Still open: keeping `PUBLIC_URL` equal for viz-control and viz-mcp (the
-   issuer and the resource are built from it) is not enforced by `deploy/configure.mjs`.
-   `app/`: the consent page and the grants screen ("What the UI must later show"), through
+   run on Cloudflare.) `PUBLIC_URL` (the issuer and the resource are built from it) is set for viz-control and
+   viz-mcp from the deployment's domain by `deploy/configure.mjs`, done. Still open, `app/`: the consent page and the grants screen ("What the UI must later show"), through
    design review.
 
 ## Contract issues

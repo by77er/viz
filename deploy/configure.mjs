@@ -208,6 +208,14 @@ export function generateWorker({ worker, cfg, componentDir, plan, stage, release
     if (vars[k] !== v) warnings.push(`${k}: ${where} has ${vars[k]}; deployed with the deployment-wide ${v}`)
     vars[k] = v
   }
+  // PUBLIC_URL is the OAuth issuer (viz-control) and the resource's origin (viz-mcp): the two must
+  // be equal, so in production it comes from the deployment's one domain, never from a component.
+  // A stage has no custom domain; there the component's value stays (OAuth is not trialled there).
+  if (!stage && 'PUBLIC_URL' in vars) {
+    const pub = `https://${plan.domain}`
+    if (vars.PUBLIC_URL !== pub) warnings.push(`PUBLIC_URL: ${where} has ${vars.PUBLIC_URL}; deployed with https://<domain>, ${pub}`)
+    vars.PUBLIC_URL = pub
+  }
   for (const [k, v] of Object.entries(vars)) {
     if (typeof v !== 'string') continue
     let s = v

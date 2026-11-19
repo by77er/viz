@@ -82,6 +82,21 @@ test('deployment-wide vars override a disagreeing component, with a note', () =>
   }
 })
 
+test('PUBLIC_URL: control (OAuth issuer) and mcp (resource) get the same origin, from the domain', () => {
+  const pub = `https://${plan.domain}`
+  const declaring = plan.workers.filter((w) => w.deploy && 'PUBLIC_URL' in gen(w.name).config.vars)
+  assert.deepEqual(declaring.map((w) => w.name).sort(), ['viz-control', 'viz-mcp'])
+  for (const w of declaring) assert.equal(gen(w.name).config.vars.PUBLIC_URL, pub, w.name)
+  // A component that disagrees is overridden, with a note.
+  const cfg = readJsonc(join(REPO_ROOT, 'mcp/wrangler.jsonc'))
+  cfg.vars.PUBLIC_URL = 'https://elsewhere.example'
+  const g = gen('viz-mcp', undefined, cfg)
+  assert.equal(g.config.vars.PUBLIC_URL, pub)
+  assert.match(g.summary.warnings.join('\n'), /PUBLIC_URL: .*elsewhere\.example/)
+  // A stage has no custom domain: it keeps the component's value, never production's origin.
+  assert.equal(gen('viz-mcp', 'trial', cfg).config.vars.PUBLIC_URL, 'https://elsewhere.example')
+})
+
 test('refuses what it does not understand instead of guessing', () => {
   const base = readJsonc(join(REPO_ROOT, 'query/wrangler.jsonc'))
   assert.throws(() => gen('viz-query', undefined, { ...base, d1_databases: [{ binding: 'DB' }] }), /d1_databases/)
