@@ -82,9 +82,9 @@ proptest! {
 #[test]
 fn a_series_whose_key_is_not_its_id_is_foreign_to_the_part_its_id_is_in() {
     let mut rows: Vec<(Vec<(&str, &str)>, i64, f64)> = Vec::new();
-    let names: Vec<String> = (0..40).map(|i| format!("{i}")).collect();
+    let names: Vec<String> = (0..4000).map(|i| format!("{i}")).collect();
     for (i, n) in names.iter().enumerate() {
-        for k in 0..8 {
+        for k in 0..2 {
             let mut l = vec![("__name__", "c"), ("job", "j"), ("i", n.as_str())];
             if i % 2 == 0 {
                 l.push(("__type__", "counter"));
@@ -95,13 +95,45 @@ fn a_series_whose_key_is_not_its_id_is_foreign_to_the_part_its_id_is_in() {
     let refs: Vec<(&[(&str, &str)], i64, f64)> = rows.iter().map(|(l, t, v)| (l.as_slice(), *t, *v)).collect();
     let h = History::from_rows(&refs);
     let mut layout = Layout::all_lake(h.batches.len());
-    layout.row_group_rows = 4; // many row groups, so a part's id range is a few of them
+    layout.row_group_rows = 500; // eight row groups a file, so a part's id range is one or two of them
     let stored = store(&h.encoded(), &layout);
-    let (whole, ranged) = both(&stored, "sum by (job) (rate(c[5m]))", 4).expect("splits");
+    let (whole, ranged) = both(&stored, "sum by (job) (rate(c[5m]))", 8).expect("splits");
     let fw: u64 = whole.iter().map(|e| e.foreign).sum();
     let fr: u64 = ranged.iter().map(|e| e.foreign).sum();
     assert!(fw > 0, "some typed series' id is in a part its key is not");
     assert_eq!(fw, fr, "every foreign series is in its own id range, read either way");
     // Read by id range, some part lists fewer series than read by name and time.
-    assert!(whole.iter().zip(&ranged).any(|(w, r)| r.series < w.series));
+    let counts: Vec<(u64, u64, u64, u64)> = whole.iter().zip(&ranged).map(|(w, r)| (w.series, r.series, w.strays, r.foreign)).collect();
+    let s_idx: Vec<&str> = stored.series_index.iter().map(|s| s.as_str()).collect();
+    let ranges = plan("sum by (job) (rate(c[5m]))", T0, T0 + 600_000, 60_000).unwrap();
+    let pp: Vec<String> = (0..8).map(|p| format!("{:?}", part_plan(&s_idx, &ranges, p, 8, RANGE_GAP).iter().map(|x| match &x.read { FileRead::Whole => "whole".to_string(), FileRead::Skip => "skip".into(), FileRead::Ranges(r) => format!("{} ranges", r.len()) }).collect::<Vec<_>>())).collect();
+    assert!(whole.iter().zip(&ranged).any(|(w, r)| r.series < w.series), "{counts:?} {pp:?} files {}", stored.series_files.len());
+}
+
+/// The same shape with no label the key leaves out: the parts do read ranges of the series
+/// files, nothing is foreign, and every extract is the one from the files read by name and time.
+#[test]
+fn read_by_id_range_the_series_files_give_the_same_extracts() {
+    let names: Vec<String> = (0..4000).map(|i| format!("{i}")).collect();
+    let mut rows: Vec<(Vec<(&str, &str)>, i64, f64)> = Vec::new();
+    for (i, n) in names.iter().enumerate() {
+        for k in 0..2 {
+            rows.push((vec![("__name__", "c"), ("job", if i % 3 == 0 { "a" } else { "b" }), ("i", n.as_str())], T0 + k * 60_000, (k * (i as i64 + 1)) as f64));
+        }
+    }
+    let refs: Vec<(&[(&str, &str)], i64, f64)> = rows.iter().map(|(l, t, v)| (l.as_slice(), *t, *v)).collect();
+    let h = History::from_rows(&refs);
+    let mut layout = Layout::all_lake(h.batches.len());
+    layout.row_group_rows = 500;
+    let stored = store(&h.encoded(), &layout);
+    let q = "sum by (job) (rate(c[5m]))";
+    let s_idx: Vec<&str> = stored.series_index.iter().map(|s| s.as_str()).collect();
+    let ranges = plan(q, T0, T0 + 600_000, 60_000).unwrap();
+    assert!((0..8).any(|p| part_plan(&s_idx, &ranges, p, 8, RANGE_GAP).iter().any(|x| matches!(x.read, FileRead::Ranges(_)))), "the parts read ranges");
+    let (whole, ranged) = both(&stored, q, 8).expect("splits");
+    assert_eq!(ranged.iter().map(|e| e.foreign).sum::<u64>(), 0);
+    for (w, r) in whole.iter().zip(&ranged) {
+        assert_eq!((&w.batch, w.rows, w.series), (&r.batch, r.rows, r.series));
+    }
+    assert!(whole.iter().map(|e| e.series).sum::<u64>() == 4000);
 }

@@ -326,10 +326,15 @@ describe('a series whose split key is not its id', () => {
     const want = await one.text()
     expect(one.status, want).toBe(200)
     let refused = 0
+    let reread = 0
     for (const n of [2, 3, 5]) {
       hooks.forceLeaves = n
       const cut = await api(w.a.key, '/api/v1/query_range', q)
       expect(await cut.text(), `${n} leaves, cut here`).toBe(want)
+      // Readers asked to read their id range of the series files saw a series whose key is not
+      // its id: the split ran again with the series files read by name and time (ABI 5).
+      if (cut.headers.get('X-Viz-Series-Reads') === 'id-range,name-time') reread++
+      else expect(cut.headers.get('X-Viz-Series-Reads')).toBe('id-range')
       hooks.tailCap = 1
       const rest = await api(w.a.key, '/api/v1/query_range', q)
       const body = await rest.text()
@@ -342,6 +347,11 @@ describe('a series whose split key is not its id', () => {
       delete hooks.tailCap
     }
     expect(refused).toBeGreaterThan(0)
+    expect(reread).toBeGreaterThan(0)
+    // Without such a series, the readers keep to their id ranges.
+    hooks.forceLeaves = 3
+    const plain = await api(w.a.key, '/api/v1/query_range', { ...q, query: 'sum(rate(typed_total{__type__=""}[1m]))' })
+    expect([plain.status, plain.headers.get('X-Viz-Series-Reads')]).toEqual([200, 'id-range'])
   }, 300_000)
 })
 

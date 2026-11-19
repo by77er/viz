@@ -203,6 +203,14 @@ rule picks the root. The engine's `TraceSummary` (`start`, `end`, root service a
 per-service counts) is this merged row; merged `services` lists are exact only when no
 fragment was truncated.
 
+**Duplicates across units.** A span stored by two flush units (a retried request split
+differently, `contracts/BATCH.md` "Row key") is counted in both units' fragments, so merged
+`span_count`, `error_count` and per-service counts can be too high, and `min`/`max` and the
+root stay right. A reader that needs exact counts computes them from the de-duplicated spans;
+compaction re-aggregating fragments from de-duplicated spans would remove the over-count
+(proposed). Measured on the read-back corpus (`engine/storage/README.md`): 43 to 52 of 300
+traces over-counted, all of them traces with a retried span in another unit.
+
 ## Index fragments
 
 `FileEntry.index` for these tables (produced by `engine/storage`, read only by the engine),

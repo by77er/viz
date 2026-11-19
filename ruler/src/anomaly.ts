@@ -31,6 +31,8 @@ import {
   type RulerConfig,
   type ValidationError,
 } from '../contracts-proposal/rules.v2'
+import { ANOMALY_BLOCK, emptyStore, planV2, readV2, WINDOWED, type AnomalyWrite, type StoreMeta } from './anomalystore'
+import { ANOMALY_STATE_WRITE } from './schema'
 import type { Series } from './statemachine'
 import { byteLength, fingerprint, formatDuration, type Labels } from './util'
 
@@ -63,12 +65,18 @@ export function anomalyLimits(cfg: Pick<RulerConfig, 'limits'>): AnomalyLimits {
 /** Default `max_series`. */
 export const DEFAULT_MAX_SERIES = 100
 /**
- * Bytes of series state per `anomaly_state` row. A rule's state is written as
+ * Bytes of series state per `anomaly_state` row of version 1. A rule's state is written as
  * ceil(bytes / ANOMALY_ROW_BYTES) rows per evaluation (whole batches, never a row per series or
- * per sample: AGENTS.md); with the default per-rule limit that is at most 2 rows.
+ * per sample: AGENTS.md); with the default per-rule limit that is at most 2 rows. Version 2 (robust
+ * z and seasonal, `anomalystore.ts`) writes the head and the current block instead.
  */
 export const ANOMALY_ROW_BYTES = 512 * 1024
-/** The stored row format (`anomaly_state.body`), pinned by `test/golden/formats/store.anomaly-state.v1.json`. */
+/**
+ * The row format version 1 (`anomaly_state.body`, `{"v":1,"series":[…]}`), pinned by
+ * `test/golden/formats/store.anomaly-state.v1.json`: what this release writes for every detector
+ * but robust z and seasonal, and for those too while the gate `ANOMALY_STATE_WRITE` is 1. Version 2
+ * is `anomalystore.ts`; this release reads both.
+ */
 export const ANOMALY_STATE_VERSION = 1
 
 // ───────────────────────────── the guide: what each detector is for, and the evidence ─────────────────────────────
@@ -322,11 +330,35 @@ function libraryDefaults(d: AnomalyDetector): Record<string, AnomalyParamValue> 
   return out
 }
 
-/** Rough stored size of one series' state, for refusing at save what could not be stored. Runtime checks the exact size. */
-export function estimateStateBytes(d: AnomalyDetector, p: Record<string, AnomalyParamValue>, stepMs: number): number {
+/** Base64 characters of `n` Float64 values. */
+const b64Chars = (n: number) => 4 * Math.ceil((8 * n) / 3)
+/** Blocks of `ANOMALY_BLOCK` slots that `slots` consecutive slots can span. */
+const blocksSpanned = (slots: number) => Math.ceil(Math.max(0, slots - 1) / ANOMALY_BLOCK) + 1
+
+/**
+ * Rough stored size of one series' state, for refusing at save what could not be stored. Runtime
+ * checks the exact size. `version`: the `store.anomaly-state` version it will be written in (the
+ * gate, `ANOMALY_STATE_WRITE`); robust z and seasonal are much smaller in version 2. Version 1's
+ * size is also what the CPU and memory models of warm-ups and backtests are calibrated against
+ * (`cpuStateBytes`): the detector's work and heap follow its points, not how they are stored.
+ */
+export function estimateStateBytes(d: AnomalyDetector, p: Record<string, AnomalyParamValue>, stepMs: number, version: 1 | 2 = ANOMALY_STATE_WRITE): number {
   // Labels, the last point and its explanation: the envelope every series carries.
   const envelope = 1200
   const n = (k: string) => (typeof p[k] === 'number' ? (p[k] as number) : 0)
+  if (version === 2 && WINDOWED.has(d)) {
+    // A head entry (the envelope and the detector's scalars) and, per block the window spans, an
+    // entry of `ANOMALY_BLOCK` Float64 values in base64 with its key (`{"k":"<16>","x":"…"}`, and
+    // `"r"` for seasonal's residuals). Independent of the values.
+    if (d === 'robust_z') {
+      const pts = n('windowMs') > 0 ? Math.ceil(n('windowMs') / Math.max(stepMs, 1)) : n('windowPoints')
+      return envelope + 100 + blocksSpanned(pts) * (32 + b64Chars(ANOMALY_BLOCK))
+    }
+    const P = Math.round(n('periodMs') / Math.max(stepMs, 1))
+    const R = Math.max(1, Math.floor(n('seasons'))) * P + 1
+    const Rr = Math.round((n('residualWindowMs') > 0 ? n('residualWindowMs') : Math.max(n('periodMs'), 100 * stepMs)) / Math.max(stepMs, 1)) + 1
+    return envelope + 200 + blocksSpanned(Math.max(R, Rr)) * (39 + 2 * b64Chars(ANOMALY_BLOCK))
+  }
   switch (d) {
     case 'threshold':
       return envelope + 100
@@ -348,6 +380,16 @@ export function estimateStateBytes(d: AnomalyDetector, p: Record<string, Anomaly
       return envelope + 300 + 20 * (R + Rr)
     }
   }
+}
+
+/**
+ * The size the CPU and memory models of warm-ups and backtests price a rule's state at: its version 1
+ * estimate, against which they were calibrated (`history.ts` `CPU`, `MEMORY`). Not the stored size:
+ * robust z and seasonal scan their window at every point however it is stored, and a run holds the
+ * detector's own state in memory, never the stored rows.
+ */
+export function cpuStateBytes(rule: Pick<AnomalyRuleV2, 'anomaly'>, intervalMs: number): number {
+  return estimateStateBytes(rule.anomaly.detector, rule.anomaly.params, intervalMs, 1)
 }
 
 const CLASS_ORDER: CostClass[] = ['tail', 'recent', 'rollup']
@@ -623,6 +665,8 @@ export interface AnomalyRt {
    */
   unreadable: string | null
   rawRows: string[] | null
+  /** What is known of the stored rows (their format, and for version 2 their blocks' sizes): what a tick writes is planned from it. */
+  store: StoreMeta
 }
 
 export function emptyStatus(maxSeries: number): AnomalyRuleStatus {
@@ -630,7 +674,7 @@ export function emptyStatus(maxSeries: number): AnomalyRuleStatus {
 }
 
 export function newAnomalyRt(rule: AnomalyRuleV2): AnomalyRt {
-  return { series: new Map(), json: new Map(), status: emptyStatus(rule.anomaly.maxSeries), pruned: 0, unreadable: null, rawRows: null }
+  return { series: new Map(), json: new Map(), status: emptyStatus(rule.anomaly.maxSeries), pruned: 0, unreadable: null, rawRows: null, store: emptyStore() }
 }
 
 export type AnomalyEval =
@@ -638,7 +682,10 @@ export type AnomalyEval =
       ok: true
       /** The rule's series state after this tick (a new map; `prev` is untouched). */
       next: Map<string, SeriesState>
+      /** Version 1: each series' stored JSON (empty when the rule is written as version 2). */
       json: Map<string, string>
+      /** The rows to write if the tick commits (null for a run over history: `serialize` false). */
+      write: AnomalyWrite | null
       /** Flagged series, for the alert state machine, with the explanation as annotations. */
       flagged: (Series & { annotations: Record<string, string> })[]
       /** Every series the expression returned: what "no data" is decided on. */
@@ -669,13 +716,13 @@ export function detailOf(e: Explanation, score: number, detector: AnomalyDetecto
  * stored form and the size limits at every point; the caller serialises once at the end
  * (`serializeAnomaly`). The detector and everything it decides are the same.
  */
-export function evalAnomaly(rule: AnomalyRuleV2, prev: AnomalyRt, series: Series[], ts: number, intervalMs: number, limits: AnomalyLimits, ruleAnnotations: Record<string, string>, serialize = true): AnomalyEval {
+export function evalAnomaly(rule: AnomalyRuleV2, prev: AnomalyRt, series: Series[], ts: number, intervalMs: number, limits: AnomalyLimits, ruleAnnotations: Record<string, string>, serialize = true, writeVersion: 1 | 2 = ANOMALY_STATE_WRITE): AnomalyEval {
   const spec = rule.anomaly
   const base: AnomalyRuleStatus = { ...emptyStatus(spec.maxSeries), series: series.length, pruned: prev.pruned }
   const refuse = (status: 'series_cap_exceeded' | 'state_limit_exceeded' | 'state_unreadable', message: string): AnomalyEval => ({
     ok: false,
     error: message,
-    status: { ...prev.status, ...base, status, message, stateSeries: prev.series.size, stateBytes: sumBytes(prev.json) },
+    status: { ...prev.status, ...base, status, message, stateSeries: prev.series.size, stateBytes: storedBytes(prev) },
   })
   if (!(ANOMALY_DETECTORS as readonly string[]).includes(spec.detector)) {
     // A stored rule naming a detector this release does not know (a newer release saved it):
@@ -696,6 +743,10 @@ export function evalAnomaly(rule: AnomalyRuleV2, prev: AnomalyRt, series: Series
   const json = new Map(prev.json)
   const flagged: (Series & { annotations: Record<string, string> })[] = []
   const seen = new Set<string>()
+  // Version 2 for a windowed detector when the gate says so; version 1 JSON otherwise.
+  const v2 = writeVersion === 2 && WINDOWED.has(spec.detector)
+  /** Series whose detector state changed (a new point): what version 2 writes blocks for. */
+  const touched = new Set<string>()
   const counts = { scored: 0, warming: 0, missing: 0, anomalous: 0 }
   let warmingMessage: string | null = null
   let changed = false
@@ -730,7 +781,8 @@ export function evalAnomaly(rule: AnomalyRuleV2, prev: AnomalyRt, series: Series
         entry = { labels: s.metric, state: r.state, last: { ts, status: p.status === 'warming' ? 'warming' : 'ok', flag: p.status === 'ok' && p.anomalous, value: p.value, score: p.score, explanation: p.anomalous ? (p.explanation ?? null) : null }, seenAt: ts }
       }
       next.set(key, entry)
-      if (serialize) json.set(key, entryJson(key, entry))
+      if (entry.state !== before?.state) touched.add(key)
+      if (serialize && !v2) json.set(key, entryJson(key, entry))
       changed = true
     }
     if (entry.last?.flag) {
@@ -758,15 +810,20 @@ export function evalAnomaly(rule: AnomalyRuleV2, prev: AnomalyRt, series: Series
     changed = true
   }
   let total = 0
-  for (const [key, j] of serialize ? json : []) {
-    const bytes = byteLength(j)
-    if (bytes > limits.maxAnomalyStateBytesPerSeries) {
-      return refuse('state_limit_exceeded', `state_limit_exceeded: the detector state of one series (${key.slice(0, 120)}) is ${bytes} bytes; the limit is ${limits.maxAnomalyStateBytesPerSeries}. Nothing was scored and no state or alert changed.`)
+  let write: AnomalyWrite | null = null
+  if (serialize) {
+    // Rows in another format than this tick writes (or to renumber) are rewritten at this tick.
+    if (prev.store.version !== null && (prev.store.version !== (v2 ? 2 : 1) || prev.store.rewrite)) changed = true
+    write = (v2 ? planV2(spec.detector, intervalMs, windowMsOf(rule, intervalMs), prev.store, next, touched, false) : null) ?? planV1(fillJson(json, next), prev.store)
+    for (const [key, bytes] of write.perSeries) {
+      if (bytes > limits.maxAnomalyStateBytesPerSeries) {
+        return refuse('state_limit_exceeded', `state_limit_exceeded: the detector state of one series (${key.slice(0, 120)}) is ${bytes} bytes; the limit is ${limits.maxAnomalyStateBytesPerSeries}. Nothing was scored and no state or alert changed.`)
+      }
     }
-    total += bytes
-  }
-  if (total > limits.maxAnomalyStateBytesPerRule) {
-    return refuse('state_limit_exceeded', `state_limit_exceeded: the rule's detector state would be ${total} bytes for ${json.size} series; the limit is ${limits.maxAnomalyStateBytesPerRule}. Nothing was scored and no state or alert changed. Lower max_series or aggregate the expression.`)
+    total = write.bytes
+    if (total > limits.maxAnomalyStateBytesPerRule) {
+      return refuse('state_limit_exceeded', `state_limit_exceeded: the rule's detector state would be ${total} bytes for ${next.size} series; the limit is ${limits.maxAnomalyStateBytesPerRule}. Nothing was scored and no state or alert changed. Lower max_series or aggregate the expression.`)
+    }
   }
   const status: AnomalyRuleStatus = {
     ...base,
@@ -777,27 +834,77 @@ export function evalAnomaly(rule: AnomalyRuleV2, prev: AnomalyRt, series: Series
     stateBytes: total,
     pruned: prev.pruned + pruned,
   }
-  return { ok: true, next, json, flagged, present: series, status, changed, pruned }
+  return { ok: true, next, json: write && write.store.version === 2 ? new Map() : json, write, flagged, present: series, status, changed, pruned }
+}
+
+/**
+ * Every row of a rule's state, written whole (a warm-up, a shard move, an import): version 2 for a
+ * windowed detector while the gate is 2, else version 1. `json`: version 1 entries already
+ * serialised, reused.
+ */
+export function fullAnomalyWrite(rule: AnomalyRuleV2, intervalMs: number, series: Map<string, SeriesState>, writeVersion: 1 | 2 = ANOMALY_STATE_WRITE, json: Map<string, string> = new Map()): AnomalyWrite & { json: Map<string, string> } {
+  const v2 = writeVersion === 2 && WINDOWED.has(rule.anomaly.detector) ? planV2(rule.anomaly.detector, intervalMs, windowMsOf(rule, intervalMs), emptyStore(), series, new Set(), true) : null
+  if (v2) return { ...v2, json: new Map() }
+  const filled = fillJson(new Map([...json].filter(([k]) => series.has(k))), series)
+  return { ...planV1(filled, { ...emptyStore(), version: 2 }), json: filled }
 }
 
 /** After a run over history: every series' stored form, within the limits, or why not. */
-export function serializeAnomaly(series: Map<string, SeriesState>, limits: AnomalyLimits): { ok: true; json: Map<string, string>; bytes: number } | { ok: false; error: string } {
-  const json = new Map<string, string>()
-  let total = 0
-  for (const [key, s] of series) {
-    const j = entryJson(key, s)
-    const bytes = byteLength(j)
+export function serializeAnomaly(rule: AnomalyRuleV2, intervalMs: number, series: Map<string, SeriesState>, limits: AnomalyLimits, writeVersion: 1 | 2 = ANOMALY_STATE_WRITE): { ok: true; write: AnomalyWrite; json: Map<string, string>; bytes: number } | { ok: false; error: string } {
+  const write = fullAnomalyWrite(rule, intervalMs, series, writeVersion)
+  for (const [key, bytes] of write.perSeries) {
     if (bytes > limits.maxAnomalyStateBytesPerSeries) return { ok: false, error: `state_limit_exceeded: the detector state of one series (${key.slice(0, 120)}) would be ${bytes} bytes; the limit is ${limits.maxAnomalyStateBytesPerSeries}` }
-    total += bytes
-    json.set(key, j)
   }
-  if (total > limits.maxAnomalyStateBytesPerRule) return { ok: false, error: `state_limit_exceeded: the rule's detector state would be ${total} bytes for ${json.size} series; the limit is ${limits.maxAnomalyStateBytesPerRule}` }
-  return { ok: true, json, bytes: total }
+  if (write.bytes > limits.maxAnomalyStateBytesPerRule) return { ok: false, error: `state_limit_exceeded: the rule's detector state would be ${write.bytes} bytes for ${series.size} series; the limit is ${limits.maxAnomalyStateBytesPerRule}` }
+  return { ok: true, write, json: write.json, bytes: write.bytes }
 }
 
-function sumBytes(json: Map<string, string>): number {
+/** robust_z's window in ms as the detector computes it for this rule (version 2 drops points it has evicted); null for other detectors. */
+export function windowMsOf(rule: Pick<AnomalyRuleV2, 'anomaly'>, intervalMs: number): number | null {
+  if (rule.anomaly.detector !== 'robust_z') return null
+  const d = DETECTORS.robust_z.defaults as unknown as Record<string, number>
+  const p = rule.anomaly.params
+  const windowMs = typeof p.windowMs === 'number' ? p.windowMs : d.windowMs!
+  const windowPoints = typeof p.windowPoints === 'number' ? p.windowPoints : d.windowPoints!
+  return windowMs > 0 ? windowMs : windowPoints * intervalMs
+}
+
+/** Version 1 entries for every series that has none yet (rows read as version 2, or not serialised). */
+function fillJson(json: Map<string, string>, series: Map<string, SeriesState>): Map<string, string> {
+  for (const [key, s] of series) if (!json.has(key)) json.set(key, entryJson(key, s))
+  return json
+}
+
+/** Version 1 rows of `json`: every row rewritten (and every row of another format deleted first). */
+function planV1(json: Map<string, string>, prev: StoreMeta): AnomalyWrite {
+  const rows = stateRows(json)
+  const perSeries = new Map<string, number>()
+  let bytes = 0
+  for (const [k, j] of json) {
+    const n = byteLength(j)
+    perSeries.set(k, n)
+    bytes += n
+  }
+  return {
+    purge: prev.version === 2 || prev.rewrite,
+    upserts: rows.map((body, chunk) => ({ chunk, body })),
+    deletes: [],
+    deleteFrom: rows.length,
+    store: { ...emptyStore(), version: rows.length > 0 ? 1 : null },
+    bytes,
+    perSeries,
+  }
+}
+
+/** Stored bytes of a rule's state as last committed. */
+function storedBytes(rt: AnomalyRt): number {
+  if (rt.store.version === 2) {
+    let n = 0
+    for (const b of rt.store.rows.values()) n += b
+    return n
+  }
   let n = 0
-  for (const j of json.values()) n += byteLength(j)
+  for (const j of rt.json.values()) n += byteLength(j)
   return n
 }
 
@@ -847,4 +954,37 @@ export function readStateRows(bodies: string[]): { series: Map<string, SeriesSta
     }
   }
   return { series, json }
+}
+
+/**
+ * Rebuild a rule's state from its rows, `{"v":1}` or `{"v":2}` (`chunk` as stored). A row in a
+ * version this code does not read, rows of both versions together, or a version 2 row that is not
+ * what the format says, are refused (COMPATIBILITY.md §3.2): the caller marks the rule
+ * `state_unreadable` and keeps the rows as they are; it never starts the rule cold over them. Rows
+ * of the other format than the next tick writes, or under chunk numbers another release gave them,
+ * are rewritten whole at that tick (`store.rewrite`, or `store.version`).
+ */
+export function readAnomalyRows(rows: { chunk: number; body: string }[]): { series: Map<string, SeriesState>; json: Map<string, string>; store: StoreMeta } | { error: string } {
+  const parsed: { chunk: number; body: Record<string, unknown>; text: string }[] = []
+  const versions = new Set<unknown>()
+  for (const r of rows) {
+    let body: unknown
+    try {
+      body = JSON.parse(r.body)
+    } catch {
+      return { error: 'an anomaly_state row is not JSON' }
+    }
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) return { error: 'an anomaly_state row is not a JSON object' }
+    const v = (body as { v?: unknown }).v
+    if (v !== ANOMALY_STATE_VERSION && v !== 2) return { error: `anomaly_state row version ${JSON.stringify(v)} is not 1 or 2` }
+    versions.add(v)
+    parsed.push({ chunk: r.chunk, body: body as Record<string, unknown>, text: r.body })
+  }
+  if (versions.size > 1) return { error: 'anomaly_state holds rows of versions 1 and 2 for one rule' }
+  if (versions.has(2)) {
+    const read = readV2(parsed)
+    return 'error' in read ? read : { ...read, json: new Map() }
+  }
+  const read = readStateRows(rows.map((r) => r.body))
+  return 'error' in read ? read : { ...read, store: { ...emptyStore(), version: rows.length > 0 ? 1 : null } }
 }

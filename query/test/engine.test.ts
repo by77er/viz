@@ -53,7 +53,7 @@ describe('the module in workerd', () => {
     const t0 = performance.now()
     for (let i = 0; i < 500; i++) {
       const inst = new WebAssembly.Instance(wasm, {})
-      expect((inst.exports.viz_q_abi_version as () => number)()).toBe(4)
+      expect((inst.exports.viz_q_abi_version as () => number)()).toBe(5)
     }
     console.log(`MEASURE instantiate in workerd (local): ${((performance.now() - t0) / 500).toFixed(3)} ms each (mean of 500, with one call into the module)`)
     const engine = createQueryEngine(wasm)

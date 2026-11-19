@@ -102,10 +102,18 @@ export interface ExtractRequest {
   parts: number
   ranges: FetchRange[]
   cacheTtlS: number
+  /**
+   * New 2026-11-19 (ABI 5): read the series files by the part's `series_id` range too (when
+   * the key is the id of every series that carries no `__type__`/`__unit__`), and say how many
+   * foreign series were seen (`foreign`); the coordinator runs the split again with series
+   * files read by name and time if any part saw one. A reader of an earlier release ignores
+   * it and reads them by name and time (and says nothing: none is foreign then).
+   */
+  seriesByPart?: boolean
 }
 
 export type ExtractAnswer =
-  | { status: 'ok'; batch: Uint8Array; rows: number; series: number; bytesRead: number; cacheHits: number; r2Gets: number; engineMs: number }
+  | { status: 'ok'; batch: Uint8Array; rows: number; series: number; bytesRead: number; cacheHits: number; r2Gets: number; engineMs: number; foreign?: number }
   | { status: 'missing'; key: string }
   | { status: 'refused'; reason: string }
 
@@ -138,6 +146,8 @@ export interface EvaluateRequest {
   tailMaxBytes?: number
   /** The tenant whose tail is read (the coordinator's, from the API key). */
   tenant?: string
+  /** Pass `seriesByPart` to the readers (`ExtractRequest`). */
+  seriesByPart?: boolean
 }
 
 /** What a part read of the tail itself (present exactly when it was given `tailParts`). */
@@ -231,6 +241,8 @@ export interface EvaluateStats {
   /** Its readers' engine time: the sum, and the longest one call took. */
   readerEngineMs: number
   readerEngineMaxMs: number
+  /** Foreign series its readers saw (`ExtractRequest.seriesByPart`). */
+  foreign: number
 }
 
 export type EvaluateAnswer = { status: 'ok'; answer: Uint8Array; stats: EvaluateStats; tail?: TailStats } | { status: 'missing'; key: string } | { status: 'refused'; reason: string } | TailRefusal
@@ -388,8 +400,11 @@ export class Leaf extends DurableObject<LeafEnv> {
         // label other than `__type__` and `__unit__` (a relabelled or unpinned name, which
         // most series carry), the part's series are spread over every id, so the sample
         // files wait for the series files instead (two rounds, nothing read twice).
-        const sp = own(() => leafEngine.filePlan(req.series.map((f) => f.index!), req.ranges))
         const optimistic = req.without.every((l) => l === '__type__' || l === '__unit__')
+        // The series files by name and time, or (asked for, and only when the key is the id of
+        // every series without `__type__`/`__unit__`) by the part's id range as well.
+        const byPart = optimistic && req.seriesByPart === true
+        const sp = own(() => (byPart ? leafEngine.partPlan(req.series.map((f) => f.index!), req.ranges, req.part, req.parts) : leafEngine.filePlan(req.series.map((f) => f.index!), req.ranges)))
         const pp: FilePlan[] = optimistic ? own(() => leafEngine.partPlan(req.samples.map((f) => f.index!), req.ranges, req.part, req.parts)) : req.samples.map(() => ({ rows: 0, read: 'skip' }))
         const first: { f: FileRef; read: 'whole' | [number, number][] }[] = []
         const seriesAt: number[] = []
@@ -411,7 +426,7 @@ export class Leaf extends DurableObject<LeafEnv> {
         if (optimistic) {
           // The id range is enough unless one of the part's series lies outside it.
           const ex = own(() => leafEngine.extract(seriesBytes, sampleBytes, req.without, req.part, req.parts, req.ranges))
-          if (ex.strays === 0) return { status: 'ok', batch: ex.batch, rows: ex.rows, series: ex.series, bytesRead: stats.bytesRead, cacheHits: stats.cacheHits, r2Gets: stats.r2Gets, engineMs }
+          if (ex.strays === 0) return { status: 'ok', batch: ex.batch, rows: ex.rows, series: ex.series, bytesRead: stats.bytesRead, cacheHits: stats.cacheHits, r2Gets: stats.r2Gets, engineMs, foreign: ex.foreign }
         }
         // What the part's series need, now that their labels are known; a sample file whose
         // first read does not cover it is read again as planned (a second round). The part's
@@ -444,7 +459,7 @@ export class Leaf extends DurableObject<LeafEnv> {
         })
       }
       const ex = own(() => leafEngine.extract(seriesBytes, sampleBytes, req.without, req.part, req.parts, req.ranges))
-      return { status: 'ok', batch: ex.batch, rows: ex.rows, series: ex.series, bytesRead: stats.bytesRead, cacheHits: stats.cacheHits, r2Gets: stats.r2Gets, engineMs }
+      return { status: 'ok', batch: ex.batch, rows: ex.rows, series: ex.series, bytesRead: stats.bytesRead, cacheHits: stats.cacheHits, r2Gets: stats.r2Gets, engineMs, foreign: ex.foreign }
     } finally {
       maybeReset()
     }
@@ -462,7 +477,7 @@ export class Leaf extends DurableObject<LeafEnv> {
     if (leafHooks.beforeEvaluate) await leafHooks.beforeEvaluate(req.part, 0)
     if (leafHooks.resetBeforeEvaluate && openSessions === 0) leafEngine.reset()
     const stats: EvaluateStats = {
-      readerCalls: 0, readerRetries: 0, extractBytes: 0, extractRows: 0, bytesRead: 0, cacheHits: 0, r2Gets: 0, wasmMemoryBytes: 0, ms: 0, ownEngineMs: 0, readerEngineMs: 0, readerEngineMaxMs: 0,
+      readerCalls: 0, readerRetries: 0, extractBytes: 0, extractRows: 0, bytesRead: 0, cacheHits: 0, r2Gets: 0, wasmMemoryBytes: 0, ms: 0, ownEngineMs: 0, readerEngineMs: 0, readerEngineMaxMs: 0, foreign: 0,
     }
     const own = <T>(f: () => T): T => {
       const t = performance.now()
@@ -495,7 +510,7 @@ export class Leaf extends DurableObject<LeafEnv> {
       const stub = (n: number) => this.env.LEAF.get(this.env.LEAF.idFromName(`leaf/${this.env.CELL}/${n % req.pool}`))
       await Promise.all(
         req.groups.map(async (g, gi) => {
-          const job: ExtractRequest = { series: g.series, samples: g.samples, without: req.without, part: req.part, parts: req.parts, ranges: req.ranges, cacheTtlS: req.cacheTtlS }
+          const job: ExtractRequest = { series: g.series, samples: g.samples, without: req.without, part: req.part, parts: req.parts, ranges: req.ranges, cacheTtlS: req.cacheTtlS, ...(req.seriesByPart ? { seriesByPart: true } : {}) }
           const start = hash32(`${req.queryId}\u0000${req.part}\u0000${gi}`)
           let answer: ExtractAnswer
           const call = async (attempt: number): Promise<ExtractAnswer> => {
@@ -520,6 +535,7 @@ export class Leaf extends DurableObject<LeafEnv> {
             stats.r2Gets += answer.r2Gets
             stats.readerEngineMs += answer.engineMs ?? 0
             stats.readerEngineMaxMs = Math.max(stats.readerEngineMaxMs, answer.engineMs ?? 0)
+            stats.foreign += answer.foreign ?? 0
             // Gathered as it arrives, with its group's precedence: arrival order does not matter.
             const batch = answer.batch
             if (!aborted && missing === null && refused === null && batch.byteLength > 0) aborted = own(() => leafEngine.gatherAdd(handle, gi, batch).aborted)

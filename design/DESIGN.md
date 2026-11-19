@@ -9,8 +9,9 @@ clean-room TraceQL and LogQL engines (not yet wired into storage or the query Wo
 production deploy is pending. Spikes S0–S5 and the S3/S4 re-runs were measured on Cloudflare,
 and staged copies of the deployment were trialled and destroyed (`VERIFICATION.md`,
 `deploy/README.md`). Figures not marked as measured are models, printed as ranges, and
-`VERIFICATION.md` names the experiment that would confirm or kill each. Spans and logs storage
-and self-monitoring are proposed, not built.
+`VERIFICATION.md` names the experiment that would confirm or kill each. Spans and logs: their
+batches, ingest decoding (behind a flag) and Parquet writers are built (stage 1, 2026-11-19);
+flushing, recording and querying them is not (stage 2). Self-monitoring is proposed, not built.
 
 ## 1. What viz is, and how it is deployed
 
@@ -126,6 +127,11 @@ from one sender normally lands in one shard. This is a locality property, not a 
 Remote Write batches can mix targets, resource attributes drift, and map changes move keys.
 The read path therefore never evaluates "per shard"; it groups rows by key range across
 every shard's contribution (§6.2).
+
+Spans and log records route by the same sender key (for OTLP, the resource's service name,
+namespace and instance id; for Loki push, the stream's `job` and `instance`), to shards of
+their own: the pools `{pool}/traces` and `{pool}/logs`, so a shard stream holds one signal
+(`contracts/BATCH.md`, D57; built in `edge` behind `INGEST_SIGNALS`, not yet drained by flush).
 
 Draft 2 hashed by series id, which sent every request to every shard and made every query
 tail-read every shard. Shard count per tenant is bounded to tens; beyond that a tenant is
@@ -257,9 +263,9 @@ and time.
 | `metric_series` | series per day | `metric_name, series_id` | promoted label columns + full label map |
 | `metric_samples` | sample | `metric_name, series_id, ts` | `series_id` is a plain 64-bit hash of all labels (`contracts/BATCH.md`). Putting hashes of `namespace` and `job` in its top 24 bits was measured on 200,000 series: a `{namespace=…}` query reads 1.3–2.6× fewer bytes by row group (6–17× only with page-level pruning, which the engine does in memory but does not fetch, D41), a full-metric scan is no better, and 40 bits are left to tell series apart, which is not enough (D19). Locality is to come from the sort key instead: a promoted-label column before `series_id` |
 | `metric_rollup_5m`, `_1h` | series per window | same | count, sum, min, max, last, reset-aware increase |
-| `spans` | span | `service_name, span_name, start_time` | hour partitions; promoted attributes + residual maps |
-| `trace_index` | trace per day | `trace_id` | root, start, duration, counts, and the **hour partitions** that hold its spans (logical references survive compaction) |
-| `logs` | record | `service_name, stream_id, ts, line` | `stream_id` hashes the stream labels as `series_id` does; labels as canonical JSON per row (dictionary-encoded), structured metadata, OTLP severity and trace ids; an advisory per-file token filter written at compaction (`contracts/LOGS.md`, proposed) |
+| `spans` | span | `service_name` (nulls first), `span_name`, `start_unix_nano` | hour partitions; promoted attributes + typed residual maps; bloom filter on `trace_id` (`contracts/TRACES.md`, written by `engine/storage`) |
+| `trace_index` | trace per flush unit (a fragment), files per day | `trace_id` | root, start, end, counts, and the **hour partitions** that hold its spans (logical references survive compaction); fragments merge at read and compaction |
+| `logs` | record | `service_name, stream_id, ts, line, metadata` | `stream_id` hashes the stream labels as `series_id` does; labels as canonical JSON per row (dictionary-encoded), structured metadata, OTLP severity and trace ids; OTLP stream labels from a fixed list of resource attributes (D58); an advisory per-file token filter written at compaction (`contracts/LOGS.md`, format settled, not built) |
 
 Native histograms share the samples layout and are added after float samples work. Flat
 rows are chosen over chunk blobs for openness and simplicity, pending the read-slice spike.
@@ -417,7 +423,7 @@ is pinned near the bucket so that hits concentrate.
   operators shuffle candidate spans by trace-id hash to leaves that join per trace. Queries
   are bounded by scanned bytes and return partial results with a cursor.
 - **Tables and engine:** the `spans` and `trace_index` tables are specified in
-  `contracts/TRACES.md` (proposed; storage does not write them yet). The TraceQL engine is
+  `contracts/TRACES.md`; `engine/storage` writes them, nothing flushes or reads them yet. The TraceQL engine is
   `engine/traceql` (clean-room, D35, D40): parser, read plan for pruning, search and metrics
   evaluation over that table's logical view, Tempo HTTP API JSON. It is not yet wired into
   storage, ingest or the query Worker (its README, "Integration").

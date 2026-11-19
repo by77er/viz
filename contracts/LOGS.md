@@ -11,7 +11,7 @@ source shaped like this contract, and a test reads files written here through it
 marked *proposed* may change, here first, before code.
 
 Sources: `design/DESIGN.md` §5.1 and §6.4, `design/DECISIONS.md` D6 (flat rows), D10
-(per-signal tables) and D55 (streams per signal), `research/04-traces-logs-storage.md`
+(per-signal tables), D57 (streams per signal) and D58 (OTLP stream labels), `research/04-traces-logs-storage.md`
 §3.1, §4.2 and §6.4, Loki's documentation of its OTLP mapping
 (grafana.com/docs/loki/latest/send-data/otel, read 2026-11-19).
 
@@ -47,7 +47,7 @@ are dropped, as for metrics), at most 8,192 bytes, with no NUL byte.
   `k8s.statefulset.name`, `k8s.daemonset.name`, `k8s.cronjob.name`, `k8s.job.name`.
   This is Loki's documented default list without `k8s.pod.name` and
   `service.instance.id`, which Loki's documentation itself no longer recommends as labels
-  (cardinality); with them out, a stream has at most 16 OTLP labels. (D55.)
+  (cardinality); with them out, a stream has at most 16 OTLP labels. (D58.)
 - **Structured metadata** is every other resource attribute, every instrumentation-scope
   attribute, and every log-record attribute, with names made by the same mapping. When two
   attributes of one list map to one name their values are joined with `;` in arrival

@@ -1843,7 +1843,7 @@ re-base right after a ledger storage loss does here (a new incarnation has no ch
 its 256th segment); reading the newest checkpoint is added so that a publisher that re-bases
 late, or after losing its own storage, does not read every segment since the base, and because
 the base is one object of about 250 MB at the limit while parts are 1 MiB reads, a few at a
-time. Measured here at 300,000 files: a re-base took 8.0–8.3 s from parts, 9.6–13.4 s from the base
+time. Measured here at 300,000 files: a re-base took 8.0–8.5 s from parts, 9.6–13.4 s from the base
 and about 17 s from a format-1 checkpoint of the same state, all with identical output.
 (c) doubles a start's writes in the ledger, which owns that choice. (d) needs its input in key
 order: parts are, a base is not promised to be (the contract says nothing of `added`'s order),
@@ -1917,3 +1917,80 @@ its memory (8 bytes and a set entry per series of the part).
 reads its own range: `partPlan` already plans it); the metadata calls get an index of their own
 (label values per metric, written at flush); or Prometheus clients come to depend on `limit`
 shortening the work, not only the answer (then (e)).
+
+## D57. Spans and log records are `VZB1` signals 2 and 3, canonicalised by edge, appended to shards of their own (`{pool}/traces`, `{pool}/logs`)
+
+**Decision.** A span batch and a log-record batch have the metrics header (magic, signal 2 or
+3, `n_rows`, and the size of an entry table at offset 12), an entry table (resource and
+instrumentation scope for spans; stream labels and `stream_id` for logs), fixed-width columns,
+and variable-length columns as offsets plus data, every column 8-aligned
+(`contracts/BATCH.md`). `edge` canonicalises before encoding: attributes typed, sorted by UTF-8
+key with the last duplicate kept, arrays, key-value lists and bytes as canonical OTLP JSON,
+event and link attributes as canonical OTLP JSON lists; so the flush encoder copies bytes and
+both sides test against one strict format. The batches go to shards of their own: for a
+tenant with pool map `{pool, slots, spread, epoch}`, spans to pool `{pool}/traces` and log
+records to `{pool}/logs`, same slots, spread and epoch, routed by the sender key as metrics are,
+so one sender's three signals take the same slot number. As built, `edge` appends only when
+`INGEST_SIGNALS` names the signal; no flush drains those shards yet (stage 2).
+
+**Alternatives.** (a) One stream for every signal: a shard stream holds metrics, spans and logs,
+and flush splits a segment by signal. (b) A signal in the shard's stream key (a shard schema
+change, and a new field in the ledger's stream identity, object keys and the orphan sweep).
+(c) Another batch format: OTLP protobuf stored as received and decoded at flush, or Arrow IPC.
+(d) Row-oriented records instead of columns. (e) Canonicalise in the flush encoder instead of
+`edge`.
+
+**Why.** (a) puts log bytes in every metrics tail read (the shard reads each stored payload of
+the range it filters, D48; its filter throws on a batch that is not metrics, so every metrics
+query would fail once a log batch was stored), and lets log volume set when a stream seals, so
+metrics files would shrink to the logs' cadence. (b) gives the same separation, but changes
+the shard's storage and every component that names a stream; with derived pools the shard
+name already separates the streams, and everything is keyed by shard name. (c) OTLP bytes
+stored as received leave validation to flush, which runs after the acknowledgement, so a
+refusal could no longer reach the sender as `partial_success`; Arrow IPC adds a dependency to
+`edge` and the engine for a format the shard never reads. (d) Columns are what signal 1 is and
+what a shard-side tail filter (D48) would read for logs. (e) would make the Rust encoder parse
+OTLP values and produce ECMAScript number text; `edge` has both already.
+
+**Cost.** Up to three shard streams per tenant in each ledger's watermarks (only for tenants
+that send spans or logs), and a base pool name at most 113 characters. Query, flush and the
+sweeper must know the derived pools (`edge/README.md`, "Needed changes"). Measured here (Node,
+load 8 to 9, not workerd): `edge` decodes and batches OTLP traces in 16 to 22 µs a span, OTLP
+logs in 10 to 19 µs a record, Loki push in 3 to 5 µs an entry; `engine/storage` encodes a million
+spans in 4.9 s (95.5 MB of Parquet) and a million log lines in 1.9 s (58.6 MB)
+(`engine/storage/README.md`, "Spans and logs").
+
+**Would change if.** The shard gains a signal-aware stream key for another reason (then the
+pools fold back into one); a logs tail filter needs streams metered (log batches would then
+carry `seriesIds` = stream ids against a stream limit); or idle per-signal shard objects or the
+larger watermark lists are measured to cost more than the separation saves.
+
+## D58. OTLP logs take Loki's documented default stream labels without `k8s.pod.name` and `service.instance.id`; everything else is structured metadata
+
+**Decision.** For OTLP logs, the stream labels are the resource attributes `service.name`,
+`service.namespace`, `deployment.environment.name`, `cloud.region`, `cloud.availability_zone`,
+`k8s.cluster.name`, `k8s.namespace.name`, `k8s.container.name`, `container.name`,
+`k8s.replicaset.name`, `k8s.deployment.name`, `k8s.statefulset.name`, `k8s.daemonset.name`,
+`k8s.cronjob.name` and `k8s.job.name`, names mapped `[^A-Za-z0-9_]` to `_`, plus
+`service_name="unknown_service"` when there is no service name. Every other resource attribute,
+every scope attribute and every record attribute is structured metadata, key-value lists
+flattened with `_`, colliding names joined with `;`, the more specific level winning. A record
+with neither `time_unix_nano` nor `observed_time_unix_nano` is refused (`contracts/LOGS.md` §1).
+
+**Alternatives.** (a) Every resource attribute a stream label (the proposed `LOGS.md`). (b)
+Loki's full documented default list, with `k8s.pod.name` and `service.instance.id`. (c) Only
+`service.name`. (d) A per-tenant choice (not built; it is the obvious next step). For the
+timestamp: (e) the time of ingestion, as Loki does.
+
+**Why.** (a) makes a stream of every process (`process.pid`, `host.id`, command lines), refuses
+resources with more than 32 attributes, and streams are what the sort order, the index
+fragment's stream list (at most 256 a file) and the shard's stream count grow with. (b) Loki's
+documentation (read 2026-11-19) itself recommends new users move pod name and instance id to
+structured metadata for cardinality; without them a stream has at most 16 OTLP labels, inside
+Loki's default limit of 15 plus `service_name`. (c) loses the selectors operators use first
+(`{k8s_namespace_name=…}`, `{deployment_environment_name=…}`). (e) makes a retried request a
+new set of rows (a new timestamp each time), which the row key `(stream_id, ts, line,
+metadata)` cannot recognise.
+
+**Would change if.** The per-tenant setting is built (this list becomes its default); users
+mostly select by pod (then (b)); or Loki's documented default changes.

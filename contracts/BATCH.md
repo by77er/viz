@@ -299,7 +299,7 @@ is `{pool, slots, spread, epoch}`, spans go to the pool `{pool}/traces` and log 
 `{pool}/logs`, with the same `slots`, `spread` and `epoch`. Shard names stay
 `{pool}/{slot}` (so `shared/c1/traces/3`), and keys, streams, watermarks and units need no new
 field. The base pool name must therefore be at most 113 characters; `edge` refuses a tenant
-whose derived pool name breaks `POOL_NAME` (503). `design/DECISIONS.md` D55 gives the
+whose derived pool name breaks `POOL_NAME` (503). `design/DECISIONS.md` D57 gives the
 alternatives. As built, `edge` appends there only when `INGEST_SIGNALS` enables the signal.
 
 ## Routing (signals 2 and 3)
@@ -307,9 +307,10 @@ alternatives. As built, `edge` appends there only when `INGEST_SIGNALS` enables 
 As for metrics, by sender: the routing key is `job=<job>\u0000instance=<instance>`.
 
 - **OTLP traces and logs**: per resource, `job` is `service.name` with `service.namespace/`
-  in front when that is set, and `instance` is `service.instance.id` (values rendered as the
-  OTLP metrics path renders them), so one sender's metrics, spans and logs take the same
-  slot number in their pools.
+  in front when that is set, and `instance` is `service.instance.id`; string values as they
+  are, any other value as its plain JSON text. For the string values every sender uses, this
+  is the key the OTLP metrics path builds, so one sender's metrics, spans and logs take the
+  same slot number in their pools.
 - **Loki push**: per stream, from its `job` and `instance` labels (missing = empty), as for
   Remote Write.
 

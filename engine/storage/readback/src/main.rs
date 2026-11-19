@@ -97,6 +97,15 @@ fn main() {
     fs::copy(corpus.join("expected").join("logs.jsonl"), out.join("logs.jsonl")).unwrap();
 
     let mut rep = Report::default();
+    // Edge's batches decode strictly here and re-encode to the same bytes.
+    for b in &span_batches {
+        let d = viz_storage::otel::decode_spans(b);
+        rep.check(d.as_ref().is_ok_and(|d| viz_storage::otel::encode_spans(&d.entries, &d.rows).as_deref() == Ok(b.as_slice())), || format!("span batch does not round-trip: {:?}", d.err()));
+    }
+    for b in &log_batches {
+        let d = viz_storage::otel::decode_logs(b);
+        rep.check(d.as_ref().is_ok_and(|d| viz_storage::otel::encode_logs(&d.streams, &d.rows).as_deref() == Ok(b.as_slice())), || format!("log batch does not round-trip: {:?}", d.err()));
+    }
     let expected_spans = jsonl(&corpus.join("expected").join("spans.jsonl"));
     let expected_logs = jsonl(&corpus.join("expected").join("logs.jsonl"));
 

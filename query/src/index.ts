@@ -79,6 +79,7 @@ const COST_HEADERS: [string, keyof Cost][] = [
   ['X-Viz-Leaf-Reruns', 'leafReruns'],
   ['X-Viz-Pruning', 'pruning'],
   ['X-Viz-Tail-Mode', 'tailMode'],
+  ['X-Viz-Series-Reads', 'seriesReads'],
 ]
 
 const allowedOrigins = (env: Env): string[] => (env.CORS_ORIGINS ?? '').split(',').map((s) => s.trim()).filter((s) => s !== '' && s !== '*')

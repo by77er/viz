@@ -70,6 +70,8 @@ export interface TenantWorld {
    * from `range` itself (a bench with many series sets it, so as not to build every window twice).
    */
   count: ((promql: string, ts: number) => number) | null
+  /** The `store.anomaly-state` version gate (`ANOMALY_STATE_WRITE`) of this world's Ruler objects; unset = the release's. */
+  anomalyStateWrite: 1 | 2 | null
   rangeCalls: [string, number, number, number][]
   /** The engine's plan of a range read (warm-ups and backtests ask it first); unset = a read that costs nothing. Throwing = the engine is unreachable. */
   plan: ((promql: string, startMs: number, endMs: number, stepMs: number) => HistoryPlan) | null
@@ -170,6 +172,7 @@ export function tenantWorld(tenant: string): TenantWorld {
       validate: null,
       range: null,
       count: null,
+      anomalyStateWrite: null,
       rangeCalls: [],
       plan: null,
       planCalls: [],
@@ -191,6 +194,9 @@ export class Crash extends Error {
 }
 
 export class TestRuler extends Ruler {
+  protected override anomalyStateWrite(): 1 | 2 {
+    return tenantWorld(this.tenant).anomalyStateWrite ?? super.anomalyStateWrite()
+  }
   protected override now(): number {
     return world.now
   }

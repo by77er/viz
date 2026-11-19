@@ -19,7 +19,8 @@
  */
 import type { PromMatrix } from '../../contracts/engine'
 import type { AlertingRuleV2, AnomalyRuleV2, BacktestResult, HistoryBudget, HistoryPlan, HistoryPlanner, RangeEvaluator, SloRuleV2, WarmupStatus } from '../contracts-proposal/rules.v2'
-import { evalAnomaly, newAnomalyRt, serializeAnomaly, type AnomalyLimits, type AnomalyRt } from './anomaly'
+import { cpuStateBytes, evalAnomaly, newAnomalyRt, serializeAnomaly, type AnomalyLimits, type AnomalyRt } from './anomaly'
+import type { AnomalyWrite } from './anomalystore'
 import { INTERVALS_MAX_BYTES, IntervalTracker, resultOf } from './backtest'
 import type { CompiledAlertRule } from './rules'
 import { bucketsOf, coarseExprOf, evalSlo, newSeries, newSloRt, residue, sloGeometry, type SloRt } from './slo'
@@ -151,10 +152,15 @@ export const CPU = {
   base: 5_000,
 } as const
 
-/** µs of CPU per point an anomaly rule's evaluation costs; a detector this release does not price costs as the dearest would at its size. */
-export function anomalyCpu(rule: AnomalyRuleV2): number {
+/**
+ * µs of CPU per point an anomaly rule's evaluation costs; a detector this release does not price
+ * costs as the dearest would at its size. The size is the state's version 1 estimate
+ * (`cpuStateBytes`), which the prices were calibrated against, however the state is stored.
+ */
+export function anomalyCpu(rule: AnomalyRuleV2, intervalMs: number): number {
   const c = CPU.anomaly[rule.anomaly.detector]
-  const cost = (k: { fixed: number; perStateByte: number }) => k.fixed + k.perStateByte * rule.anomaly.stateBytesPerSeries
+  const bytes = cpuStateBytes(rule, intervalMs)
+  const cost = (k: { fixed: number; perStateByte: number }) => k.fixed + k.perStateByte * bytes
   return CPU.parse + (c ? cost(c) : Math.max(...Object.values(CPU.anomaly).map(cost)))
 }
 
@@ -583,8 +589,12 @@ export function anomalyWarmReads(rule: AnomalyRuleV2, intervalMs: number, endTs:
   return p === 0 ? [] : [{ promql: rule.expr, fromMs: endTs - (p - 1) * intervalMs, toMs: endTs, stepMs: intervalMs }]
 }
 
-/** In-memory bytes of one anomaly rule's state, modelled: the stored estimate, about 3 bytes of heap a stored byte (README, part 8). */
-export const anomalyStateBytes = (rule: AnomalyRuleV2) => rule.anomaly.maxSeries * rule.anomaly.stateBytesPerSeries * 3
+/**
+ * In-memory bytes of one anomaly rule's state, modelled: the version 1 estimate, about 3 bytes of heap
+ * a byte of it (README, part 8). A run holds the detector's own state, not the stored rows, so this
+ * does not shrink with version 2.
+ */
+export const anomalyStateBytes = (rule: AnomalyRuleV2, intervalMs: number) => rule.anomaly.maxSeries * cpuStateBytes(rule, intervalMs) * 3
 
 /** One anomaly rule's state, fed step by step through `evalAnomaly` (no per-step serialisation). */
 class AnomalyFeed {
@@ -600,14 +610,18 @@ class AnomalyFeed {
   }
 }
 
-/** A new anomaly rule's state from its history, read in windows: what it would hold had it run over `read`. The state's memory is the rule's own (the per-object budget), not the run's. */
-export async function warmAnomaly(rule: AnomalyRuleV2, read: Read, limits: AnomalyLimits, io: HistoryIo): Promise<HistoryRun<AnomalyRt>> {
+/**
+ * A new anomaly rule's state from its history, read in windows: what it would hold had it run over
+ * `read`, and its rows written whole in the version the gate says (`writeVersion`). The state's
+ * memory is the rule's own (the per-object budget), not the run's.
+ */
+export async function warmAnomaly(rule: AnomalyRuleV2, read: Read, limits: AnomalyLimits, io: HistoryIo, writeVersion?: 1 | 2): Promise<HistoryRun<AnomalyRt & { write: AnomalyWrite }>> {
   const feed = new AnomalyFeed(rule, read.stepMs, limits)
-  const run = await streamHistory(io.planner, io.range, [{ read, seriesBound: rule.anomaly.maxSeries, cpuPerPoint: anomalyCpu(rule), feed: (ts, series) => { const r = feed.step(ts, series); return r.ok ? null : r.error } }], io.budget, io.memoryBytes, MEMORY.base, io.cpu)
+  const run = await streamHistory(io.planner, io.range, [{ read, seriesBound: rule.anomaly.maxSeries, cpuPerPoint: anomalyCpu(rule, read.stepMs), feed: (ts, series) => { const r = feed.step(ts, series); return r.ok ? null : r.error } }], io.budget, io.memoryBytes, MEMORY.base, io.cpu)
   if (!run.ok) return run
-  const ser = serializeAnomaly(feed.rt.series, limits)
+  const ser = serializeAnomaly(rule, read.stepMs, feed.rt.series, limits, writeVersion)
   if (!ser.ok) return { ok: false, failed: ser.error }
-  return { ...run, value: { ...feed.rt, json: ser.json, status: { ...feed.rt.status, stateSeries: feed.rt.series.size, stateBytes: ser.bytes } } }
+  return { ...run, value: { ...feed.rt, json: ser.json, store: ser.write.store, write: ser.write, status: { ...feed.rt.status, stateSeries: feed.rt.series.size, stateBytes: ser.bytes } } }
 }
 
 // ───────────────────────────── SLO rules ─────────────────────────────
@@ -755,8 +769,8 @@ export async function backtestAnomaly(rule: AnomalyRuleV2, warmFromMs: number, l
     }
     return tracker.step(ts, ev.ok ? { series: ev.flagged, presence: c[0] ?? ev.present } : { error: ev.error })
   }
-  const fixed = backtestFixed(rule.anomaly.maxSeries) + anomalyStateBytes(rule)
-  const run = await streamHistory(io.planner, io.range, [{ read, seriesBound: rule.anomaly.maxSeries, cpuPerPoint: anomalyCpu(rule), companions: presenceCompanion(input, rule.anomaly.maxSeries), feed: step }], io.budget, io.memoryBytes, fixed, io.cpu)
+  const fixed = backtestFixed(rule.anomaly.maxSeries) + anomalyStateBytes(rule, I)
+  const run = await streamHistory(io.planner, io.range, [{ read, seriesBound: rule.anomaly.maxSeries, cpuPerPoint: anomalyCpu(rule, I), companions: presenceCompanion(input, rule.anomaly.maxSeries), feed: step }], io.budget, io.memoryBytes, fixed, io.cpu)
   if (!run.ok) return run
   const result = resultOf(tracker.result(), input.fromMs, input.toMs, I, { stepMs: I, liveIntervalMs: I, edgeErrorMs: I, note: resolutionNote('anomaly', I, input.fromMs - warmFromMs) })
   return { ...run, value: { result, warmPoints } }

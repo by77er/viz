@@ -25,6 +25,7 @@ ROOT = os.path.join(tempfile.mkdtemp(prefix="viz-storage-mutants-", dir=base), "
 shutil.copytree(SHARED, ROOT, ignore=shutil.ignore_patterns("target", "target-*"))
 print(f"scratch copy: {ROOT}", flush=True)
 PRUNING = ["--test", "pruning"]
+OTEL = ["--test", "otel"]
 MUTANTS = [
     ("earlier batch wins on duplicates in flush", "src/encode.rs",
      "for (b, map) in decoded.iter().zip(&local) {\n        for i in 0..b.n_rows() {",
@@ -119,6 +120,44 @@ MUTANTS = [
      "        pos = b;\n    }\n    Ok(())", "        pos = b.saturating_sub(1);\n    }\n    Ok(())", PRUNING),
     ("pruning: a sparse container's segment is held one byte longer than it is", "src/sparse.rs",
      "(end <= s.0 + s.1.len() as u64).then_some(s)", "(end <= s.0 + s.1.len() as u64 + 1).then_some(s)", PRUNING),
+    # spans and logs (2026-11-19): signals 2 and 3, the spans / trace_index / logs encoders
+    ("otel: spans sorted by span_name before service_name", "src/spans.rs",
+     "(a.hour, sa.map(str::as_bytes), a.span.name.as_bytes(), a.span.start, a.span.trace_id, a.span.span_id).cmp(&(\n            b.hour,\n            sb.map(str::as_bytes),\n            b.span.name.as_bytes(),",
+     "(a.hour, a.span.name.as_bytes(), sa.map(str::as_bytes), a.span.start, a.span.trace_id, a.span.span_id).cmp(&(\n            b.hour,\n            b.span.name.as_bytes(),\n            sb.map(str::as_bytes),", OTEL),
+    ("otel: logs sorted by stream_id before service_name", "src/logs.rs",
+     "(a.day, sa.service.as_bytes(), sa.stream.stream_id, a.row.ts, a.row.line.as_bytes())\n            .cmp(&(b.day, sb.service.as_bytes(), sb.stream.stream_id,",
+     "(a.day, sa.stream.stream_id, sa.service.as_bytes(), a.row.ts, a.row.line.as_bytes())\n            .cmp(&(b.day, sb.stream.stream_id, sb.service.as_bytes(),", OTEL),
+    ("otel: a residual bool attribute dropped", "src/spans.rs",
+     "Value::Bool(v) => out.b.push((a.key, *v)),", "Value::Bool(_) => {}", OTEL),
+    ("otel: a non-string service.name dropped instead of kept residual", "src/spans.rs",
+     "                if let Value::Str(v) = a.value {\n                    out.service = Some(v);\n                    continue;\n                }",
+     "                if let Value::Str(v) = a.value {\n                    out.service = Some(v);\n                }\n                continue;", OTEL),
+    ("otel: the earlier of duplicate spans wins", "src/spans.rs",
+     "last.insert(key(s), (bi, ri));", "last.entry(key(s)).or_insert((bi, ri));", OTEL),
+    ("otel: duplicate log rows kept", "src/logs.rs",
+     "if it.peek().is_some_and(|next| same(&r, next)) {", "if false && it.peek().is_some_and(|next| same(&r, next)) {", OTEL),
+    ("otel: spans partitioned by two-hour windows", "src/spans.rs",
+     "hour: s.start.div_euclid(NS_PER_HOUR) });", "hour: s.start.div_euclid(2 * NS_PER_HOUR) });", OTEL),
+    ("otel: trace_index takes the latest root, not the earliest", "src/spans.rs",
+     "(s.start, s.span_id) < (x.span.start, x.span.span_id)", "(s.start, s.span_id) > (x.span.start, x.span.span_id)", OTEL),
+    ("otel: trace_index error count counts every span", "src/spans.rs",
+     "let err = (s.status == 2) as i32;", "let err = (s.status != 0) as i32;", OTEL),
+    ("otel: span flags written even when zero", "src/spans.rs",
+     "opt_i32(g.iter().map(|r| (r.span.flags != 0).then_some(r.span.flags as i32))),", "opt_i32(g.iter().map(|r| Some(r.span.flags as i32))),", OTEL),
+    ("otel: span fragment min_dur over starts", "src/spans.rs",
+     "let dmin = g.iter().map(|r| r.span.end - r.span.start).min().unwrap();", "let dmin = g.iter().map(|r| r.span.start).min().unwrap();", OTEL),
+    ("otel: log fragment sid last = first", "src/logs.rs",
+     "            st(&g[0]).stream.stream_id,\n            st(&g[g.len() - 1]).stream.stream_id\n", "            st(&g[0]).stream.stream_id,\n            st(&g[0]).stream.stream_id\n", OTEL),
+    ("otel: log fragment stream's last row group not advanced", "src/logs.rs",
+     "                    s.4 = gi;\n", "", OTEL),
+    ("otel: line pages may exceed 1 MiB (chunks of 1 MiB)", "src/otelpq.rs",
+     "pub const LINE_CHUNK_BYTES: usize = 262_148;", "pub const LINE_CHUNK_BYTES: usize = 1 << 20;", OTEL),
+    ("otel: stream_id hashed differently from series_id (labels reversed)", "src/otel.rs",
+     "    crate::batch::series_id(labels)\n", "    let mut l: Vec<(&str, &str)> = labels.iter().map(|(n, v)| (n.as_ref(), v.as_ref())).collect();\n    l.reverse();\n    crate::batch::series_id(&l)\n", OTEL),
+    ("otel: decode accepts an all-zero trace_id", "src/otel.rs",
+     "if t == [0; 16] || s == [0; 8] {", "if s == [0; 8] {", OTEL),
+    ("otel: decode accepts unsorted attributes", "src/otel.rs",
+     "if prev.key.as_bytes() >= key.as_bytes() {", "if prev.key.as_bytes() == key.as_bytes() {", OTEL),
 ]
 
 def tests_fail(targets=None):

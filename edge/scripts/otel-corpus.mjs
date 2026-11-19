@@ -347,6 +347,9 @@ for (let t = 0; t < nTraces; t++) {
   make(undefined, 0, start, 0)
   if (chance(0.03)) spans.push({ r: 1, scope: 0, s: { traceId, spanId: bytes(8), parent: bytes(8), traceState: '', flags: 0, name: 'orphan', kind: 1, start, end: start + 10n, attrs: [], dropped: [0, 0, 0], events: [], links: [], status: 0, statusMessage: '' } })
 }
+// Maximal values: an attribute value of exactly 65,536 bytes, a span name of 8,192 bytes.
+spans[0].s.attrs.push(['max.value', { s: 'M'.repeat(65_536) }])
+spans[1].s.name = 'N'.repeat(8192)
 // Arrival order is not trace order.
 for (let i = spans.length - 1; i > 0; i--) {
   const j = int(i + 1)
@@ -451,6 +454,9 @@ for (let q = 0; q < Math.round(25 * SCALE); q++) {
   })
   otlpParts.push(rs)
 }
+// Maximal values: a line of exactly 256 KiB, a metadata value of 8,192 bytes.
+otlpParts[0][0].scopes[0].logs[0].body = { s: 'X'.repeat(262_144) }
+otlpParts[0][0].scopes[0].logs[0].attrs.push(['big', { s: 'v'.repeat(8192) }])
 const lokiParts = []
 for (let q = 0; q < Math.round(25 * SCALE); q++) {
   lokiParts.push(Array.from({ length: 1 + int(4) }, () => {

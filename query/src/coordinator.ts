@@ -110,12 +110,19 @@ export interface Cost {
    * rest of it, in its own key range, itself. Empty when no shard was read.
    */
   tailMode: string
+  /**
+   * How a split's readers read the series files: `id-range` (each part its `series_id` range,
+   * ABI 5), `name-time` (by name and time: the key leaves out a label series carry, or a test
+   * asked), `id-range,name-time` (a part saw a foreign series, so the split ran again by name
+   * and time). Empty when nothing was split.
+   */
+  seriesReads: string
 }
 
 export const newCost = (): Cost => ({
   ledgerVersion: 0, planAttempts: 0, filesListed: 0, filesSkipped: 0, filesRead: 0, scanSamples: 0, seriesEstimate: 0, bytesRead: 0, cacheHits: 0, r2Gets: 0, leafCalls: 0,
   leavesUsed: 0, leafRounds: 0, shardsAsked: 0, shardCalls: 0, tailBatches: 0, tailBytes: 0, seriesLoaded: 0, samplesLoaded: 0, engineMs: 0, wasmMemoryBytes: 0,
-  execution: '', splitReason: '', splitLeaves: 0, readerCalls: 0, rpcBytes: 0, leafPeakWasmBytes: 0, leafMaxSamples: 0, leafReruns: 0, pruning: '', tailMode: '',
+  execution: '', splitReason: '', splitLeaves: 0, readerCalls: 0, rpcBytes: 0, leafPeakWasmBytes: 0, leafMaxSamples: 0, leafReruns: 0, pruning: '', tailMode: '', seriesReads: '',
 })
 
 /** The plan-only answer's fields that come from what was recorded so far. */
@@ -153,6 +160,8 @@ export const hooks: {
   leafStats?: (part: number, stats: EvaluateStats, summary: LeafSummary) => void
   /** Bytes of tail the coordinator itself may read, in place of what the limits leave (so a test can make a small tail not fit). */
   tailCap?: number
+  /** Readers read the series files by name and time, as before ABI 5 (the measurement's same-run comparison). */
+  seriesByName?: boolean
 } = {}
 
 export interface Context {
@@ -764,7 +773,17 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
       tailFor = (j) => ({ tails: [], tailParts: reads.map((r, i) => ({ shard: r.shard, batches: cut[i]![j]!, rest: rests[i]! })) })
     }
     checkDeadline(c)
-    const r = await runSplit(c, spec, ranges, series, samples, L, tailFor)
+    // Readers read the series files by their part's id range too when the key is the id of
+    // every series without `__type__`/`__unit__`; if any part saw a series whose key is not its
+    // id (foreign), some part may have missed one of its own: run again by name and time.
+    const byPart = shardsCanCut(spec.without) && !hooks.seriesByName
+    c.cost.seriesReads = byPart ? 'id-range' : 'name-time'
+    let r = await runSplit(c, spec, ranges, series, samples, L, tailFor, byPart)
+    if (r.status === 'foreign') {
+      c.cost.seriesReads = 'id-range,name-time'
+      r = await runSplit(c, spec, ranges, series, samples, L, tailFor, false)
+    }
+    if (r.status === 'foreign') throw new ApiError('internal', 'split readers saw foreign series reading series files by name and time')
     if (r.status === 'missing') {
       refused(`file ${r.key}`, `data file ${r.key} is listed by the ledger but is not in R2`)
       return { again: true }
@@ -1180,7 +1199,8 @@ async function runSplit<T>(
   samples: FileEntry[],
   L: number,
   tailFor: (part: number) => PartTail,
-): Promise<{ status: 'ok'; out: { json: string; stats: QueryStats } } | { status: 'missing'; key: string } | { status: 'tail'; refusal: TailRefusal }> {
+  seriesByPart: boolean,
+): Promise<{ status: 'ok'; out: { json: string; stats: QueryStats } } | { status: 'missing'; key: string } | { status: 'tail'; refusal: TailRefusal } | { status: 'foreign'; count: number }> {
   const pool = leafPoolSize(c.env)
   c.cost.splitLeaves = L
   // The query's budget, and each leaf's share of it (never more than one isolate may hold).
@@ -1191,6 +1211,7 @@ async function runSplit<T>(
   const ttl = fileCacheTtl(c.env)
   const base = hash32(c.queryId)
   const used = new Set<number>()
+  let foreign = 0
   const leaf = (n: number) => c.env.LEAF.get(c.env.LEAF.idFromName(`leaf/${c.env.CELL}/${n % pool}`))
 
   const run = async (j: number, budget: { samples: number; series: number }): Promise<EvaluateAnswer> => {
@@ -1200,6 +1221,7 @@ async function runSplit<T>(
       budget: { samples: budget.samples, series: budget.series, stepPoints: c.limits.maxStepPoints }, limits: c.limits, cacheTtlS: ttl, pool, queryId: c.queryId,
       // The rest of a tail that did not fit here: the leaf reads it in its key range, under the byte cap.
       ...(pt.tailParts ? { tailParts: pt.tailParts, tailMaxBytes: c.limits.maxFetchBytes, tenant: c.tenant } : {}),
+      ...(seriesByPart ? { seriesByPart: true } : {}),
     }
     const sent = pt.tails.reduce((a, b) => a + b.byteLength, 0) + (pt.tailParts ?? []).reduce((a, p) => a + p.batches.reduce((x, b) => x + b.byteLength, 0), 0)
     const call = async (attempt: number): Promise<EvaluateAnswer> => {
@@ -1234,6 +1256,7 @@ async function runSplit<T>(
     }
     if (a.status === 'ok') {
       const st = a.stats
+      foreign += st.foreign ?? 0
       c.cost.readerCalls += st.readerCalls
       c.cost.cacheHits += st.cacheHits
       c.cost.r2Gets += st.r2Gets
@@ -1293,6 +1316,9 @@ async function runSplit<T>(
       if (a.status === 'ok') answers[stopped[k]!] = a.answer
     }
   }
+  // A part read its id range of the series files and some part saw a series of another part
+  // there: that part may have missed one of its own (its id is elsewhere). Not merged.
+  if (foreign > 0) return { status: 'foreign', count: foreign }
   checkDeadline(c)
   const limits: QueryLimits = { ...c.limits, maxSamples: qSamples, maxSeries: qSeries, maxStepPoints: L * c.limits.maxStepPoints }
   const t0 = performance.now()

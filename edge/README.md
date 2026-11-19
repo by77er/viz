@@ -2,7 +2,9 @@
 
 The ingest Worker: it authenticates a sender, decodes Prometheus Remote Write or OTLP
 metrics into `VZB1` batches (`contracts/BATCH.md`), routes them to shard slots and answers
-only once every shard has durably appended. For now it ships in one script with the shard
+only once every shard has durably appended. Stage 1 of traces and logs (2026-11-19): OTLP
+traces, OTLP logs and Loki push decode into `VZB1` signals 2 and 3, behind `INGEST_SIGNALS`
+("Traces and logs" below). For now it ships in one script with the shard
 (`src/index.ts` re-exports `Shard`, bound as `SHARD`), so the tests run against the real
 Durable Object.
 
@@ -17,6 +19,11 @@ Durable Object.
 | `src/pb.ts`, `src/snappy.ts` | Protobuf wire reader and snappy block decompressor; no dependencies |
 | `src/limits.ts` | Limits and the accept window, with defaults |
 | `src/recorded.ts` | `RecordedSamples`: the entrypoint the ruler writes recording-rule samples to over a service binding (contracts/ingest.ts) |
+| `src/otel.ts` | What OTLP traces and logs share: AnyValue and KeyValue decoding (protobuf, JSON), canonical OTLP JSON and plain JSON text, the typed attribute list encoding, a byte writer, partial-success bodies |
+| `src/spans.ts` | OTLP/HTTP traces (protobuf, JSON) → validated spans → `VZB1` signal 2 batches |
+| `src/logs.ts` | OTLP/HTTP logs (protobuf, JSON) and Loki push (protobuf, JSON) → validated log records → `VZB1` signal 3 batches; the OTLP-to-labels mapping |
+| `scripts/otel-corpus.mjs` | The cross-language corpus: random requests encoded with protobufjs, decoded by this code into batches, with the expected rows (`engine/storage/readback`) |
+| `bench/otel.mjs` | Decode CPU per request for traces, logs and Loki push |
 
 There are no runtime dependencies. `snappyjs` and `protobufjs` are dev dependencies, used
 only to cross-check the hand-written codecs.
@@ -27,6 +34,9 @@ only to cross-check the hand-written codecs.
 |---|---|
 | `POST /api/v1/write` | Remote Write 1.0: snappy block-compressed `prometheus.WriteRequest` |
 | `POST /v1/metrics` | OTLP/HTTP metrics, `application/x-protobuf` or `application/json`, optionally `Content-Encoding: gzip` |
+| `POST /v1/traces` | OTLP/HTTP traces, as `/v1/metrics`; only when `INGEST_SIGNALS` contains `traces` (else 404) |
+| `POST /v1/logs` | OTLP/HTTP logs, as `/v1/metrics`; only when `INGEST_SIGNALS` contains `logs` |
+| `POST /loki/api/v1/push` | Loki push: `application/x-protobuf` with a snappy block body, or `application/json` optionally gzipped; only when `INGEST_SIGNALS` contains `logs` |
 | `GET /healthz` | `200 ok` |
 
 And one RPC entrypoint, reachable only through a service binding (never over HTTP):
@@ -36,8 +46,9 @@ And one RPC entrypoint, reachable only through a service binding (never over HTT
 | `RecordedSamples` (contracts/ingest.ts) | `write(tenant, batches: SampleBatch[]): Promise<void>`: the ruler's recording-rule output |
 
 Bindings: `SHARD` (Durable Object namespace), `CONFIG` (KV), `DEFAULT_POOL` (JSON `PoolMap`
-for tenants without their own), and optionally `INGEST_LIMITS` (JSON overriding any field
-of `Limits`).
+for tenants without their own), optionally `INGEST_LIMITS` (JSON overriding any field
+of `Limits`), and optionally `INGEST_SIGNALS` (`traces`, `logs` or `traces,logs`; unset in
+every deployment until stage 2, see "Needed changes").
 
 KV layout:
 
@@ -136,6 +147,65 @@ shared pool.
 
 A 2xx is sent only after every append has returned `ok`.
 
+## Traces and logs (stage 1, behind `INGEST_SIGNALS`)
+
+What `/v1/traces`, `/v1/logs` and `/loki/api/v1/push` do when enabled. Contracts:
+`contracts/BATCH.md` (signals 2 and 3, routing, "Streams per signal"), `contracts/TRACES.md`,
+`contracts/LOGS.md` §1; decisions D57 (batches and per-signal shards) and D58 (OTLP stream
+labels). Not enabled anywhere: no flush drains these shards yet ("Needed changes").
+
+- **Tenant** only from the credential, as for metrics (`authenticate`). A resource attribute,
+  a stream label or structured metadata named `tenant`, Loki's `X-Scope-OrgID`, other headers
+  and the query string are never read.
+- **Decoding.** Hand-written protobuf readers (fields in any order; unknown fields skipped;
+  `key_strindex` and `string_value_strindex`, which are for profiles, ignored) and OTLP/JSON
+  readers (lowerCamelCase, hex ids case-insensitive, 64-bit integers as strings or numbers,
+  enums as integers and also as names). Strings are decoded leniently: invalid UTF-8 becomes
+  U+FFFD, as the OTLP specification recommends ("UTF-8 String Handling"). Doubles keep their
+  8 wire bytes. `gzip` for OTLP and Loki JSON; Loki protobuf is a snappy block body.
+- **Canonical form** (what flush copies): attributes typed and sorted by key in UTF-8 order,
+  the last of a repeated key kept; arrays, key-value lists, bytes and empty values as
+  canonical OTLP JSON; event and link attributes as canonical OTLP JSON lists; `resource_fp`
+  = FNV-1a 64 over the canonical resource list; `stream_id` = `series_id`'s function of the
+  stream labels.
+- **Spans.** One batch entry per (resource, scope). A span whose end is before its start is
+  stored with `end = start` and `viz.clamped_end = true`. Routed per resource by
+  `job=<namespace/name>\u0000instance=<service.instance.id>` to the tenant's slot in
+  `{pool}/traces`.
+- **OTLP logs.** Stream labels from the default resource attributes of D58 (`service_name =
+  "unknown_service"` when absent), metadata from everything else (flattened, named, joined),
+  timestamp `time_unix_nano` else `observed_time_unix_nano`, line = string body or plain
+  JSON. Routed per resource, as spans, to `{pool}/logs`.
+- **Loki push.** Labels parsed from `{name="value", …}` (Go escapes, `\xHH`, `\u`, octal,
+  trailing comma) or the JSON `stream` object; structured metadata from the protobuf field or
+  the JSON third element. Routed by the stream's `job` and `instance` labels.
+- **Batches** of at most `MAX_BATCH_BYTES` per slot in arrival order, fingerprinted with
+  SHA-256, appended with the same `appendAll` as metrics (whole-request retry, backpressure,
+  overload, `stale_epoch`, `too_large` re-split), without `seriesIds` (not metered).
+
+**Per-item refusals.** A span or record that breaks a rule is refused on its own; the rest is
+stored. OTLP answers 200 with `partial_success` (`rejected_spans` / `rejected_log_records`
+and an `error_message` naming each reason with its count, at most 2,048 characters), as the
+OTLP specification requires ("OTLP/HTTP Response", "Partial Success": "the server MUST
+respond with HTTP 200 OK … MUST set the respective rejected_spans … or rejected_log_records
+field with the number of … it rejected"; "The client MUST NOT retry the request when it
+receives a partial success response"; read from opentelemetry-proto `docs/specification.md`
+on 2026-11-19). Loki push answers 400 with the counts and how many entries were written (as
+Remote Write: valid entries are stored, the sender does not retry 4xx). A body that does not
+decode is 400 (OTLP: a `google.rpc.Status` in the request's encoding); too large is 413.
+
+| Item | Refused when |
+|---|---|
+| span | `trace_id` not 16 bytes or all zero; `span_id` not 8 bytes or all zero; `parent_span_id` not 0 or 8 bytes; kind not 0–5; status code not 0–2; start or end past 2^63−1 ns; start outside the accept window (24 h back, 5 min ahead); name, trace_state, status message, event name or link trace_state over 8,192 bytes; more than 128 attributes in a list, an empty key, a key over 1,024 bytes, a value over 65,536 bytes; more than 128 events or links; a link id of the wrong length or all zero; an event time past 2^63−1; the span over 256 KiB |
+| all spans of a resource and scope | a resource or scope attribute list breaking the attribute rules; scope name or version over 8,192 bytes; the entry over 256 KiB |
+| log record | no timestamp; timestamp past 2^63−1 or outside the accept window (24 h back, 5 min ahead); severity number over 24; `trace_id` not 0 or 16 bytes, `span_id` not 0 or 8; line over 256 KiB; severity text over 1,024 bytes; a metadata name breaking `[A-Za-z_][A-Za-z0-9_]*` or over 1,024 bytes, a value over 8,192 bytes or with NUL, a repeated name (Loki), more than 128 entries or 64 KiB; an attribute with an empty key |
+| all records of a stream (or OTLP resource and scope) | a label name breaking the rule or repeated, a value over 8,192 bytes or with NUL, more than 32 labels, no labels; Loki labels that do not parse |
+| the request (413) | more than `maxSpans` / `maxLogRecords` (200,000 each), or the body limits of metrics |
+
+New limits (`INGEST_LIMITS` may set them): `maxSpans`, `maxLogRecords`, `spanAcceptBackMs`,
+`spanAcceptAheadMs`, `logAcceptBackMs`, `logAcceptAheadMs`. The contract's ceilings (attribute
+and field sizes) are constants and cannot be raised.
+
 ## Recorded samples over a service binding (contracts/ingest.ts, D45)
 
 `RecordedSamples` is a named `WorkerEntrypoint` export of the ingest Worker (re-exported by
@@ -191,7 +261,13 @@ series: `design/DECISIONS.md` D21. `test/limit.test.ts` (6 tests); mutants in
 - OTLP histograms, exponential histograms, summaries and delta sums (reported in
   `partial_success`). Scope attributes, `target_info`, start timestamps and exemplars
   are ignored. zstd is refused with 415.
-- OTLP traces and logs, OTLP/gRPC.
+- OTLP/gRPC. OTLP traces and logs and Loki push are decoded and appended, but only behind
+  `INGEST_SIGNALS`, and nothing drains their shards (stage 2, "Needed changes").
+- For traces and logs: OTLP `schema_url`, the span `type` field (OTLP 1.12, development), event
+  and link dropped-attribute counts, link flags, log `event_name`, resource `entity_refs`;
+  Loki's service-name discovery (a Loki stream without `service_name` keeps none); Loki's
+  `parsed` field; metering active log streams; truncating over-long values instead of
+  refusing the item; a per-tenant choice of OTLP stream labels.
 - Per-tenant limits: `INGEST_LIMITS` applies to every tenant of the deployment.
 - Rate limiting at the edge. Quotas are the shard's job; the edge relays its backpressure
   and, while every shard of a tenant is inside an overload `Retry-After`, refuses that
@@ -475,3 +551,62 @@ In components others own; not made here.
    instead; `INGEST` goes once every ingest release that may run has the entrypoint (the
    ruler's README, "Needed changes"). The service key now writes only in that fallback; it needs
    `read` for queries until query has its own entrypoint.
+
+2. **Traces and logs, stage 2: what the shard, flush, ledger and query must change** before
+   `INGEST_SIGNALS` is set anywhere (2026-11-19). Today, with the flag on, span and log
+   batches are appended to the `{pool}/traces/{slot}` and `{pool}/logs/{slot}` shards and stay
+   there: their streams seal, flush cannot decode them, they are never recorded, and the
+   tenant's traces or logs get 429 once those buffers fill. Metrics are not affected (other
+   shard objects).
+   - **shard** (`shard/src/tail.ts`): `filterBatch` throws `UnreadableBatch` for a batch whose
+     signal byte (offset 4) is not 1. A filtered tail read of a traces or logs shard must
+     return such batches whole (or filter them by their own `ts` / `start` column), never
+     throw. Nothing else: `append` stores the bytes opaquely, checks `MAX_BATCH_BYTES`, and
+     without `seriesIds` meters nothing; seal, discard and `describe` do not look inside.
+   - **engine binding** (`engine/wasm`, `contracts/engine.ts`): expose
+     `viz_storage::encode_spans` and `encode_logs` (and `otel::decode_*` for tail reads) next
+     to `encodeSegment`; their output is `SignalFile { table, day, hour, bytes, rows, min_ts,
+     max_ts, index }` with times in nanoseconds.
+   - **flush** (`flush/src/flush.ts`, `keys.ts`, `sweep.ts`): read the segment's signal byte
+     (every batch of a stream has the same one; refuse a mixed segment) and call the matching
+     encoder; key `spans` files with the hour level of `contracts/TRACES.md` ("Object keys":
+     `…/day={YYYY-MM-DD}/hour={HH}/L…`) and `trace_index` and `logs` files by day; report all
+     files of the segment (spans files with their `trace_index` files, or logs files) as one
+     unit; the orphan sweep (`shardsFromPoolMaps`) must list `{pool}/traces/{slot}` and
+     `{pool}/logs/{slot}` as well.
+   - **ledger** (`contracts/ledger.ts`, `ledger/src`): `Table` gains `spans`, `trace_index` and
+     `logs`; `FileEntry.index` of these tables is the fragments of `TRACES.md` / `LOGS.md` §5
+     (a logs fragment is at most about 32 KiB with its `streams` list); retention and
+     deletion by day must cover them; a unit's `spans` and `trace_index` files enter and leave
+     together. Units keep their per-stream contiguity rule unchanged.
+   - **query** (`query/src/coordinator.ts` `shardsOf`): today every stream the ledger lists is
+     tail-read. Once `{pool}/traces` or `{pool}/logs` streams are registered, a metrics query
+     would send its metric filter to those shards, which throw (above) and fail the query.
+     Tail reads must be restricted to the query's signal (by the derived pool name). Then the
+     new readers: a `SpanSource` and a `LogSource` over files plus tail batches, resolving
+     duplicates (`(trace_id, span_id)` by file precedence; the logs row key), merging
+     `trace_index` fragments (whose counts over-count spans stored in two units:
+     `contracts/TRACES.md`), and pruning by the index fragments.
+     `engine/storage/readback` has a working `LogSource` with fragment pruning, and a
+     `SpanSource` input, to start from.
+   - **publisher**: Iceberg tables for `spans`, `trace_index` and `logs` (hour partitions from
+     `start_time`).
+
+## Contract issues (traces and logs, 2026-11-19)
+
+What could not be settled here, or was settled in a way someone else must confirm:
+
+1. **Per-signal pools are a naming convention**, not part of the pool map
+   (`shard/src/pool.ts`, a contract this change does not own): `edge`, flush's sweep and query
+   must all derive `{pool}/traces` and `{pool}/logs` the same way. A field in the pool map
+   would be explicit (D57, "Would change if").
+2. **`trace_index` counts over-count** a span stored by two units (`contracts/TRACES.md`,
+   "Duplicates across units"). Exact counts need the de-duplicated spans or a compaction that
+   re-aggregates fragments from them.
+3. **`contracts/ledger.ts` `Table`** does not name the new tables; the ledger must add them.
+4. **Loki push semantics** for a request with some invalid entries (400, the rest written)
+   follow Remote Write and Loki's documentation; Loki's own behaviour was not observed here.
+5. **The token filter** has a format (`contracts/LOGS.md` §6) but no builder, reader, or
+   ledger fields for its object.
+6. **Fields not carried** (listed in "Not implemented") would need new columns.
+

@@ -39,7 +39,8 @@ import type {
   Refused,
   WarmupStatus,
 } from '../contracts-proposal/rules.v2'
-import { ANOMALY_LIMIT_DEFAULTS, anomalyLimits, emptyStatus, evalAnomaly, historyOf, maxClass, newAnomalyRt, readStateRows, stateRows, type AnomalyEval, type AnomalyRt } from './anomaly'
+import { ANOMALY_LIMIT_DEFAULTS, anomalyLimits, emptyStatus, evalAnomaly, fullAnomalyWrite, historyOf, maxClass, newAnomalyRt, readAnomalyRows, type AnomalyEval, type AnomalyRt } from './anomaly'
+import type { AnomalyWrite } from './anomalystore'
 import { MAX_BACKTEST_STEPS, resolutionNote } from './backtest'
 import { anomalyWarmPoints, anomalyWarmReads, backtestAlert, backtestAnomaly, backtestSlo, CPU, HISTORY_LIMIT_DEFAULTS, historyBudgets, MAX_WARMUP_ATTEMPTS, readWarmup, sloWarmReads, warmAnomaly, warmSlo, warmupBody, warmupStatus, type HistoryIo, type Read } from './history'
 import { allRows, cloneSloRt, emptySloStatus, evalSlo, newSloRt, readSloRows, SLO_LIMIT_DEFAULTS, sliExpressions, sloHistory, tickRows, type SloEval, type SloRow, type SloRt } from './slo'
@@ -54,7 +55,7 @@ import { remoteWriteSink } from './remote'
 import { stageExpired } from './util'
 import { indexName } from './registry'
 import { ruleFileDocument } from './rulefile'
-import { RULER_SCHEMA } from './schema'
+import { ANOMALY_STATE_WRITE, RULER_SCHEMA } from './schema'
 import { compileAlertRule, DEADMAN_ALERT, DEADMAN_GROUP, deadmanGroup, parseRuleFile, type CompiledAlertRule } from './rules'
 import { evalAlertingRule, evalRecordingRule, isNoDataAlert, toSeries, type AlertEvalResult, type Series } from './statemachine'
 import { alignedTick, backoffMs, byteLength, formatDuration, hash64, mapLimit, parseDuration, resolveObjectName } from './util'
@@ -469,26 +470,30 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       m.set(row.fp, reviveAlert(row.body))
     }
     // Detector state: the only copy is these rows, so memory is exactly what was last committed.
-    const bodies = new Map<string, string[]>()
-    for (const row of this.exec<{ grp: string; rule_key: string; body: string }>(`SELECT grp, rule_key, body FROM anomaly_state WHERE tenant = ? ORDER BY grp, rule_key, chunk`, t)) {
+    const bodies = new Map<string, { chunk: number; body: string }[]>()
+    for (const row of this.exec<{ grp: string; rule_key: string; chunk: number; body: string }>(`SELECT grp, rule_key, chunk, body FROM anomaly_state WHERE tenant = ? ORDER BY grp, rule_key, chunk`, t)) {
       const k = `${row.grp}\n${row.rule_key}`
-      bodies.set(k, [...(bodies.get(k) ?? []), row.body])
+      let list = bodies.get(k)
+      if (!list) bodies.set(k, (list = []))
+      list.push({ chunk: row.chunk, body: row.body })
     }
     for (const [k, rows] of bodies) {
       const cut = k.lastIndexOf('\n')
       const rt = this.groups.get(k.slice(0, cut))?.anomaly.get(k.slice(cut + 1))
       if (!rt) continue
-      const read = readStateRows(rows)
+      // Version 1 or 2 (`store.anomaly-state`); the next tick rewrites them in the version the gate says.
+      const read = readAnomalyRows(rows)
       if ('error' in read) {
         // A newer release's row format: refuse the rule and keep the rows (COMPATIBILITY.md §3.2).
         rt.unreadable = read.error
-        rt.rawRows = rows
+        rt.rawRows = rows.map((r) => r.body)
         rt.status = { ...rt.status, status: 'state_unreadable', message: read.error }
         continue
       }
       rt.series = read.series
       rt.json = read.json
-      rt.status = { ...rt.status, stateSeries: read.series.size, stateBytes: rows.reduce((n, b) => n + byteLength(b), 0) }
+      rt.store = read.store
+      rt.status = { ...rt.status, stateSeries: read.series.size, stateBytes: rows.reduce((n, r) => n + byteLength(r.body), 0) }
     }
     // SLO rings: the same, from `slo_state`.
     const sloRows = new Map<string, SloRow[]>()
@@ -818,7 +823,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
             // The detector decides which series are the rule's result; the alert state machine
             // does the rest. A refused evaluation (series cap, state limit) changes nothing.
             const rt = g.anomaly.get(rule.key) as AnomalyRt
-            const ev = evalAnomaly(rule, rt, series, queryTime, g.spec.intervalMs, aLimits, rule.annotations)
+            const ev = evalAnomaly(rule, rt, series, queryTime, g.spec.intervalMs, aLimits, rule.annotations, true, this.anomalyStateWrite())
             if (!ev.ok) {
               rt.status = ev.status
               setHealth(rule, ev.error, res?.durationMs ?? null)
@@ -909,8 +914,9 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
           if (rule.monitor) this.appendTimeline(rule.monitor.id, transitions(before, result.alerts, result.dirty, ts))
         }
         // Detector state goes in the same transaction as the alerts it produced, so a replay
-        // finds both or neither. Whole batches of series per row, never a row per series.
-        for (const { rule, anomaly } of staged) if (anomaly?.changed) this.writeAnomalyState(g.spec.name, rule.key, anomaly.json)
+        // finds both or neither. Whole batches of series per row, never a row per series: version 1
+        // rewrites them all, version 2 the head and the block of this tick's points.
+        for (const { rule, anomaly } of staged) if (anomaly?.changed && anomaly.write) this.writeAnomalyState(g.spec.name, rule.key, anomaly.write)
         // SLO rings likewise: the head and the current block of each ring, as whole batches.
         for (const { rule, slo } of staged) if (slo?.ev.changed) this.writeSloTick(g, rule as SloRule, slo.rt)
         this.enqueueHandoff(updates, ts)
@@ -924,6 +930,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
         const rt = g.anomaly.get(rule.key) as AnomalyRt
         rt.series = anomaly.next
         rt.json = anomaly.json
+        if (anomaly.changed && anomaly.write) rt.store = anomaly.write.store
         rt.status = anomaly.status
         rt.pruned = anomaly.status.pruned
       }
@@ -936,16 +943,26 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
   }
 
   /**
-   * Inside a transaction: replace one anomaly rule's state rows. Rows written per evaluation =
+   * Inside a transaction: one anomaly rule's planned rows (`AnomalyWrite`). Version 1: every row,
    * ceil(state bytes / ANOMALY_ROW_BYTES), plus the rows of a shrinking state that are deleted.
+   * Version 2: the head and the blocks this tick's points fall in, plus a block that left every
+   * series' window (deleted, or rewritten without the series that left it). A conversion between
+   * the versions deletes every row first.
    */
-  private writeAnomalyState(group: string, key: string, json: Map<string, string>): void {
-    const rows = stateRows(json)
-    rows.forEach((body, chunk) => {
+  private writeAnomalyState(group: string, key: string, w: AnomalyWrite): void {
+    const t = this.tenant
+    if (w.purge) this.exec(`DELETE FROM anomaly_state WHERE tenant = ? AND grp = ? AND rule_key = ?`, t, group, key)
+    for (const r of w.upserts) {
       this.exec(`INSERT INTO anomaly_state (tenant, grp, rule_key, chunk, body) VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT (tenant, grp, rule_key, chunk) DO UPDATE SET body = excluded.body`, this.tenant, group, key, chunk, body)
-    })
-    this.exec(`DELETE FROM anomaly_state WHERE tenant = ? AND grp = ? AND rule_key = ? AND chunk >= ?`, this.tenant, group, key, rows.length)
+        ON CONFLICT (tenant, grp, rule_key, chunk) DO UPDATE SET body = excluded.body`, t, group, key, r.chunk, r.body)
+    }
+    for (const c of w.deletes) this.exec(`DELETE FROM anomaly_state WHERE tenant = ? AND grp = ? AND rule_key = ? AND chunk = ?`, t, group, key, c)
+    if (w.deleteFrom !== null) this.exec(`DELETE FROM anomaly_state WHERE tenant = ? AND grp = ? AND rule_key = ? AND chunk >= ?`, t, group, key, w.deleteFrom)
+  }
+
+  /** The version gate of `store.anomaly-state` (`ANOMALY_STATE_WRITE`); the test harness sets it per world. */
+  protected anomalyStateWrite(): 1 | 2 {
+    return ANOMALY_STATE_WRITE
   }
 
   /**
@@ -1055,7 +1072,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       const io: HistoryIo = { planner: this.historyPlanner(), range: this.warmupRange(), budget, memoryBytes: budgets.warmupMemory, cpu: { budgetMs: room, deferBelowMs: budgets.warmupCpuMs } }
       let run: Awaited<ReturnType<typeof warmAnomaly>> | Awaited<ReturnType<typeof warmSlo>>
       try {
-        run = rule.kind === 'anomaly' ? await warmAnomaly(rule, reads[0]!, aLimits, io) : await warmSlo(rule, I, (slo as NonNullable<typeof slo>).fine, (slo as NonNullable<typeof slo>).coarse, io)
+        run = rule.kind === 'anomaly' ? await warmAnomaly(rule, reads[0]!, aLimits, io, this.anomalyStateWrite()) : await warmSlo(rule, I, (slo as NonNullable<typeof slo>).fine, (slo as NonNullable<typeof slo>).coarse, io)
         // Give back what the model says the run did not use; an engine failure keeps the reservation.
         used = run.ok ? run.cpu.modelledMs : 'refused' in run ? (run.cpu?.spentMs ?? Math.ceil(CPU.base / 1000)) : room
       } catch (e) {
@@ -1082,8 +1099,8 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       }
       const done: WarmupStatus = { ...base, status: 'done', attempts: job.attempts + 1, plan: run.plan, points: run.points, finishedAt: this.now() }
       if (rule.kind === 'anomaly') {
-        const rt = run.value as AnomalyRt
-        finish(done, () => this.writeAnomalyState(g.spec.name, rule.key, rt.json))
+        const { write, ...rt } = run.value as AnomalyRt & { write: AnomalyWrite }
+        finish(done, () => this.writeAnomalyState(g.spec.name, rule.key, write))
         if (current()) g.anomaly.set(rule.key, { ...rt, status: { ...rt.status, status: 'unknown', message: null } })
       } else {
         const rt = run.value as SloRt
@@ -1727,8 +1744,10 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     if (g.anomaly.size > 0) {
       bundle.anomalyState = {}
       for (const [key, rt] of g.anomaly) {
+        const rule = g.spec.anomalyRules?.find((r) => r.key === key) as AnomalyRule | undefined
         if (rt.rawRows !== null) bundle.anomalyState[key] = rt.rawRows
-        else if (rt.json.size > 0) bundle.anomalyState[key] = stateRows(rt.json)
+        // Every row, whole, in the version the gate says: the head rows first, then the blocks in order.
+        else if (rule && rt.series.size > 0) bundle.anomalyState[key] = fullAnomalyWrite(rule, g.spec.intervalMs, rt.series, this.anomalyStateWrite(), rt.json).upserts.sort((a, b) => a.chunk - b.chunk).map((r) => r.body)
       }
     }
     if (g.slo.size > 0) {
@@ -1783,7 +1802,8 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       for (const [key, rows] of Object.entries(bundle.anomalyState ?? {})) {
         const rt = g.anomaly.get(key)
         if (!rt || !keys.has(key)) continue
-        const read = readStateRows(rows)
+        // Rows carry no chunk numbers in a bundle: version 2 rows say what they are.
+        const read = readAnomalyRows(rows.map((body, chunk) => ({ chunk, body })))
         if ('error' in read) {
           // A format this code cannot read: stored as it came, and the rule is refused until a release that reads it runs.
           rows.forEach((body, chunk) => this.exec(`INSERT INTO anomaly_state (tenant, grp, rule_key, chunk, body) VALUES (?, ?, ?, ?, ?)`, t, spec.name, key, chunk, body))
@@ -1792,9 +1812,12 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
           rt.status = { ...rt.status, status: 'state_unreadable', message: read.error }
           continue
         }
+        const rule = (spec.anomalyRules ?? []).find((r) => r.key === key) as AnomalyRule
+        const write = fullAnomalyWrite(rule, spec.intervalMs, read.series, this.anomalyStateWrite(), read.json)
         rt.series = read.series
-        rt.json = read.json
-        this.writeAnomalyState(spec.name, key, read.json)
+        rt.json = write.json
+        rt.store = write.store
+        this.writeAnomalyState(spec.name, key, write)
       }
       this.exec(`DELETE FROM slo_state WHERE tenant = ? AND grp = ?`, t, spec.name)
       for (const [key, rows] of Object.entries(bundle.sloState ?? {})) {

@@ -74,6 +74,41 @@ Design choices worth knowing:
   WASM build produced byte-for-byte the same total size, and a merge of several flushes
   is byte-identical to one flush of the same batches).
 
+## Spans and logs (stage 1, 2026-11-19)
+
+New modules; the metrics code and its outputs are untouched (the golden files of
+`tests/golden/v1-2026-11-18` are still byte-identical). Contracts: `contracts/BATCH.md`
+(signals 2 and 3), `contracts/TRACES.md`, `contracts/LOGS.md`; decisions D57, D58.
+
+| API | What it does |
+|---|---|
+| `otel::decode_spans`, `otel::decode_logs`, `otel::encode_spans`, `otel::encode_logs`, `otel::stream_id` | `VZB1` signals 2 and 3 (`src/otel.rs`). Decode borrows, validates every rule of the contract (header, 8-byte alignment and zero padding, offsets, UTF-8, attribute lists sorted and unique with known types, ids, kinds, statuses, times, the label-name rule, every size limit) and never panics; for every input that decodes, encode gives the same bytes. `stream_id` is `batch::series_id`. |
+| `encode_spans(batches)` | Flush of span batches (`src/spans.rs`): one `spans` file per hour of start time (`SignalFile.hour`), then one `trace_index` file per day of the fragments' first start. Later row wins on `(trace_id, span_id)`. Sorted by `service_name` (nulls first), `span_name`, `start`, `trace_id`, `span_id`; promoted columns and typed residual maps; events and links as lists of structs; bloom filter on `trace_id`; page index on the sorted and pruned columns; the index fragment of `TRACES.md`. |
+| `encode_logs(batches)` | Flush of log batches (`src/logs.rs`): one `logs` file per day; sorted by `service_name`, `stream_id`, `ts`, `line`, `metadata`; rows equal on the row key are one (the later supplies the other columns); `line` pages at most 1 MiB; bloom filter on `trace_id`; the fragment of `LOGS.md` §5 with its bounded `streams` list. |
+| `*_with(…, &SignalWriteOptions)` | Smaller row groups and pages for tests. Row groups are cut at 100,000 rows or 16 MiB as the contracts count bytes. |
+| `read_spans`, `read_trace_index`, `read_logs`, `read_logs_row_groups` | Whole-file (or chosen row groups) readers through the `parquet` crate's record API (`src/otelread.rs`), rebuilding the logical view: promoted columns and residual maps merged into one sorted typed list. For tests and tools; not the query path. |
+| `merge_fragments` | `trace_index` fragments of one trace merged as `TRACES.md` says. |
+
+**What reads the files** (AGENTS.md, "Independent readers"):
+
+- `readback/` (a separate crate, never shipped): `readback CORPUS OUT [units]` takes the
+  corpus `edge/scripts/otel-corpus.mjs` writes (random requests encoded by protobufjs,
+  decoded by edge's own decoders into batches, and the expected rows computed by the
+  generator from its model), flushes the batches in 4 units, reads every file back, and
+  requires: every span and log row equal to the expected one (duplicates across units
+  resolved, the later unit winning); each unit's `trace_index` equal to what its spans say;
+  every edge batch re-encoding to the same bytes; and **viz-traceql and viz-logql** giving
+  byte-identical answers over the files and over their in-memory sources built from the
+  expected rows: 24 TraceQL searches and 6 metrics queries through `SpanSource` (files, and
+  files with the engine's pruning), 12 LogQL log queries and 6 metric queries through a
+  `LogSource` over the files (`FileLogs`: reads the row groups the index fragment admits,
+  pruning on and off).
+- `tools/otel_independent_check.py`: **PyArrow 26.0.1 and DuckDB 2.0.0** read every file and
+  every column; schema, row-group caps, sort order, partitions, promoted and residual
+  columns, nulls, every fragment field against the file, every logical row against the
+  expected one (doubles by their bits in PyArrow), each unit's `trace_index` recomputed from
+  its spans, and DuckDB's value of every cell equal to PyArrow's.
+
 ## What is not implemented
 
 - `queryRange`, `queryInstant`, `selectors` from `contracts/engine.ts` (PromQL): not this
@@ -90,6 +125,13 @@ Design choices worth knowing:
 - Promoted label columns, rollup tables, native histograms.
 - Zero-copy file input: each Parquet file is copied once into a `bytes::Bytes` because
   the `parquet` reader needs an owned buffer.
+- **Spans and logs, stage 2**: a query-path reader (column readers with pruning by
+  statistics, page index and bloom filters, tail batches merged in), compaction and merge of
+  `spans`, `trace_index` and `logs` files (including re-aggregating `trace_index` from
+  de-duplicated spans), the nested-set columns, per-tenant promotion, the token filter's
+  builder and reader (format in `contracts/LOGS.md` §6), a WASM binding for `encode_spans` /
+  `encode_logs`, and zstd. The readers here (`read_*`) use the record API and hold a whole
+  file's rows.
 
 ## How it was verified
 
@@ -298,6 +340,66 @@ full-metric scan touches the same row groups. The table and the decision (the co
 unchanged: below the 3× bar as the engine reads, and 40 remaining bits collide) are in
 `design/DECISIONS.md` D19. Nothing in the crate uses it.
 
+## Spans and logs: verification and measurements
+
+```
+CARGO_PROFILE_DEV_DEBUG=0 cargo test -j 2 --test otel -- --test-threads 2           # 19 tests
+node ../../edge/scripts/otel-corpus.mjs CORPUS SEED 2                               # edge decodes protobufjs-encoded requests
+(cd readback && cargo run --release -- CORPUS OUT 4)                                # Rust read-back and the two engines
+python3 -I tools/otel_independent_check.py OUT                                      # PyArrow and DuckDB (a venv with both)
+cargo run --release --example otel_bench -- 1 20000 3                               # encode throughput and size
+python3 tools/mutants.py otel                                                       # on a scratch copy
+```
+
+**Tests** (`tests/otel.rs`, 19, all passing on 2026-11-19; with them the whole suite is 68
+of 68 and the WASM build succeeds). Properties (proptest, generators in `tests/otelgen`:
+every attribute type, keys and values with Unicode (astral, U+E000, U+FFFF), control
+characters, empty strings, NaN payloads, ±Inf, −0, the promoted keys with right and wrong
+types, ids from small pools so duplicates and many-span traces are common, starts across an
+hour and a day boundary): batches round-trip and re-encode to the same bytes (200 cases
+each); damaged batches never panic; **decode → flush → read back equals the input** for spans
+(150 cases, row groups of 1 to 5 rows, pages of 3) and logs (150), in the contract's order and
+partitions, the later duplicate winning, every fragment field equal to the file's metadata;
+the same rows split differently give the same bytes; per-batch `trace_index` fragments merge
+into the fragment of the whole. Fixed tests: each decoder rule refused with its message, every
+proper prefix refused, maximal values accepted and read back (8,192-byte names, a 1,024-byte
+key with a 65,536-byte value, 128 events and links, a 256 KiB line, 128 metadata entries of 64
+KiB, 32 labels with an 8,192-byte value), promotion exactly as `TRACES.md` says, the file layout
+(compression, offset index, page index, bloom filters, dictionaries, statistics, sorting
+columns), `line` pages at most 1 MiB with lines up to 256 KiB, both row-group caps, hour and day
+boundaries (including 1970-01-01 and 2262-04-11), the bounded `streams` list, and `stream_id`
+against values computed in Python.
+
+**Cross-language read-back** (2026-11-19, seeds 1 to 5, scale 2: 9,420 spans in 300 traces a
+seed and 28,414 log rows, from 86 OTLP traces requests and 515 OTLP logs and Loki push
+requests, protobuf and JSON, including retries, clamped ends, orphan spans, a 65,536-byte
+attribute, an 8,192-byte span name, a 256 KiB line): `readback` **0 failures** in 37,558 to
+41,207 checks a seed; TraceQL **60 of 60** answers identical a seed (30 queries, all
+non-empty; files, and files with pruning); LogQL **36 of 36** identical a seed (18 queries, 17
+or 18 non-empty; files with fragment pruning off and on). PyArrow and DuckDB **0 failures** in
+253,606 to 274,915 checks a seed. One finding, written into `contracts/TRACES.md`: merged
+`trace_index` fragments over-count 43 to 52 of 300 traces a seed, exactly those with a span
+retried into another unit. The run also found a bug in `edge` (a double inside an array or
+key-value list read from the wrong bytes when the body was a Node `Buffer`), fixed there.
+
+**Measured here** (`examples/otel_bench.rs`, release build, Linux x86-64, 4 shared cores at
+load average 8 to 9, one thread, not WASM, not Cloudflare). The generator is described in the
+example's header: 20 services × 5 instances, 200 span names, ~12 spans a trace, 6 to 8
+attributes a span (a high-cardinality user id, 30% with a 40–200-byte SQL statement), 10% with
+an event, 2% with a link; log lines of 80–260 bytes of logfmt with a random request id, 50
+streams, 2–4 metadata entries, 30% with trace ids. Flushes of 20,000 rows, batches of at most 1
+MiB; only `encode_spans` / `encode_logs` timed.
+
+| Per million | Input batches | Parquet out | Encode time (min of 3; all three) |
+|---|---|---|---|
+| spans (with their `trace_index`) | 352.3 MB | 95.5 MB | 4.85 s (4.85, 4.96, 6.89) |
+| log lines | 311.7 MB | 58.6 MB | 1.86 s (1.86, 2.02, 2.47) |
+
+So about 5 µs a span and 2 µs a log line natively, and Parquet at 27% (spans) and 19% (logs)
+of the batch bytes. The WASM speed of these encoders was not measured (no binding exports
+them yet). A single cold 20,000-span segment took 10.9 s per million spans; the table is the
+steady state over 50 segments.
+
 ## Known risks
 
 - **Partial reads trust the planner.** A row group whose `series_id` chunk is not in a sparse
@@ -320,6 +422,15 @@ unchanged: below the 3× bar as the engine reads, and 40 remaining bits collide)
 - **Timings are not from Cloudflare** and the 128 MB isolate limit was not exercised.
 - **Statistics for `value`** exclude NaNs (the `parquet` crate's behaviour); nothing in
   this crate prunes on `value`.
+- **Spans and logs flush holds a whole segment** decoded (borrowed rows plus per-row
+  attribute splits) and the output. A 20,000-span segment is about 7 MB of batches; memory in
+  WASM was not measured.
+- **The WASM rlib grew** from 2.52 MB to 5.65 MB with the span and log code; a module linking
+  `encode_spans` and `encode_logs` was not built or measured.
+- **`resource_fp` and `stream_id` are trusted**, as `series_id` is: a forged batch could group
+  rows under a wrong resource or stream. Only `edge` writes batches.
+- **The record-API readers** hold every row of a file as `parquet::record::Row`s; fine for
+  tests and tools, not for the query path.
 
 ## Contract issues
 
