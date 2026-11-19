@@ -526,7 +526,8 @@ format `store.warmup` v1) in the save's transaction. At its group's first tick, 
    plan carries the engine's own refusal, the warm-up is **refused whole**: nothing is fetched, the
    rule starts cold, and its status says why with the plan's numbers and the budget. A plan without
    the numbers is refused too (the cost could not be checked).
-3. **The fetch and the feed**: the reads are fetched whole and fed, in time order, through the
+3. **The fetch and the feed**: the reads are fetched in memory-sized windows (part 13; refused
+   before any plan when even one window cannot fit `maxWarmupMemoryBytes`, 16 MiB) and fed, in time order, through the
    rule's own evaluation (`evalAnomaly` / `evalSlo`, the functions a tick calls), so the state is
    what it would hold had the rule run all along; a result over `max_series` or a state over the
    limits refuses the warm-up the same way.

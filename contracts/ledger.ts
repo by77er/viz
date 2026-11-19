@@ -113,11 +113,11 @@ export type AddUnitResult =
   /** The unit itself is unacceptable (a key already belongs to another unit, an empty unit). Nothing changed. */
   | { status: 'invalid'; reason: string }
   /**
-   * The ledger already holds as much state as it can write as one base or checkpoint and
-   * rebuild within one isolate (`stateBytes` of `limitBytes`, estimated; LEDGER-LOG.md "Size").
-   * Nothing changed. Retryable: compaction and retention shrink the state; if it persists the
-   * tenant needs splitting. Added 2026-11-19 (review S-2); a caller that does not know it
-   * fails closed and retries (COMPATIBILITY.md §3.2).
+   * The ledger already holds as much state as it may (`stateBytes` of `limitBytes`, estimated;
+   * LEDGER-LOG.md "Size"): since checkpoints are written in parts, a bound on the time a rebuild
+   * takes, not on memory. Nothing changed. Retryable: compaction and retention shrink the state;
+   * if it persists the tenant needs splitting. Added 2026-11-19 (review S-2); a caller that does
+   * not know it fails closed and retries (COMPATIBILITY.md §3.2).
    */
   | { status: 'full'; stateBytes: number; limitBytes: number }
 
