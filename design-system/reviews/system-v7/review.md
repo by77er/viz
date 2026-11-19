@@ -98,7 +98,7 @@ Not checked:
 |---|---|---|---|
 | **B1** folded list: key squeezed, long names drawn over the figures | **Fixed** | 0 of 40 keys overrun their cell at 320, 360, 400, 480, 600 and 900 px; v6: 40 of 40 at 320–480 px. Below 640 px, two kept columns open the second line under the key, which keeps its own line (`01`); with one kept column the key keeps its line beside it (dialog list at 320 px). Long monitor names stay whole (`02`). Hit areas at 400 px coarse: none under 44 px, no overlap, in all twelve compositions. | **Yes.** My control mutant (the folded key's minimum removed) is caught by the audit's `cut` check at 320 and 400 px coarse and 720 px at 200%. The response's Z mutants claim the same for key-width and overlap; not re-run here. |
 | **B2** Chart README and rubric gave two verdicts | **Fixed** | See "B2: the lead's rule" below. | **Yes.** `chart-rules.test.mjs`, 17 tests, each blocker example one test, 400 random sequences; my independent property check agrees. |
-| **M1** `check.mjs`: lint gaps; presence rules a later rule defeats | **Fixed** for every v6 mutant that was valid | Y1–Y9, Y14, Y19 and Y20 are caught by `check.mjs` without render. Y16 is caught by its rendered reserved-height check (RESULT16). Y10–Y13, Y17 and Y18 are caught by `tools/audit.mjs`: focus guard, hit-area guard, escape, swatch guard, kept-state guard, press guard. **Y15** is not caught and does not need to be: my selector `.vz-plot[data-emph] .vz-series-g .vz-line` (0,4,0) is weaker than the emphasis rule (0,5,0) and broke nothing. I withdraw it; the response was right. | Mostly. New gaps: **M3**. |
+| **M1** `check.mjs`: lint gaps; presence rules a later rule defeats | **Fixed** for every v6 mutant that was valid | Y1–Y9, Y14, Y19 and Y20 are caught by `check.mjs` without render. Y16 is caught by its rendered reserved-height check (re-run here: "reserves 0 px and draws 490.5 px"). Y10–Y13, Y17 and Y18 are caught by `tools/audit.mjs`: focus guard, hit-area guard, escape, swatch guard, kept-state guard, press guard. **Y15** is not caught and does not need to be: my selector `.vz-plot[data-emph] .vz-series-g .vz-line` (0,4,0) is weaker than the emphasis rule (0,5,0) and broke nothing. I withdraw it; the response was right. | Mostly. New gaps: **M3**. |
 | m1 to m6 | Fixed or decided | m1: the tie rule is in the text. m2: accepted and written in States; a scroll that starts on a button paints the fill for 6 to 15 ms before the browser cancels it. m3: reported for the flows. m4: Timings below. m5: the context is one line now. m6: the fixture rebuilt; `stale` check. | m6: yes (`stale`). |
 
 ## B2: the lead's rule, point by point
@@ -266,16 +266,16 @@ The flow screens are unchanged since v6 and still v5 markup. Their `data-fold` t
 its samples were taken at a load of 4 or less on these 4 cores.
 - `speed/phone.json` and `desktop.json`, both sides: samples taken at a load of 6.6 to 9.5; no timing
   row is marked judged.
-- My own short run (SPEEDLINE).
+- My own short run: `speed-phone.json`, 2 runs, at a load of 6.8 to 7.7, with a calibration of 307 ms; every timing row is "not judged" there too.
 
 The calibration ratio (309 to 325 ms against about 100 ms idle) is context only, as the rubric now says.
 What can be judged:
-- **layout shift:** every row 0.0000 on the phone, within budget (the author's; mine below);
+- **layout shift:** every row 0.0000 on the phone, within budget (the author's, and mine);
 - **mechanisms, which do not depend on load:** a finger's press paints, and the theme change's cost is
   style recalculation of every element (the author's trace; not re-traced here).
 
 "Change theme" has been above 100 ms at the median at both layouts in every session that measured it:
-v6 102 to 154 ms, v7 110 and 135 ms. It is still the row to measure first on a quiet machine. Until it is
+v6 102 to 154 ms, v7 110 and 135 ms, and 145 ms in my run (158 ms at p75). It is still the row to measure first on a quiet machine. Until it is
 judged, the Speed row (a blocker row) is open, neither passed nor failed, as in every review since v4.
 
 ## Measured here
@@ -286,11 +286,28 @@ judged, the Speed row (a blocker row) is open, neither passed nor failed, as in 
 - **Overflow:** 672 loads, 0 px. `data-fold` tables scrolling inside their wraps: flow screens only.
 - **Mutants:**
   - `check.mjs` without render: 44 of my earlier 52 caught;
-  - `check.mjs` with render: Y16 (RESULT16);
+  - `check.mjs` with render: Y16 (caught);
   - `tools/audit.mjs`: Y10–Y13, Y17 and Y18 caught;
   - Y15 withdrawn;
   - new: 12 of 13 survive (M3).
-- **Speed:** SPEEDTABLE
+- **Speed:** `speed-phone.json`, 2 runs, CPU 4x, Fast 4G, load 6.8 to 7.7 on 4 cores, not judged. Medians:
+
+  | Row | Median |
+  |---|---|
+  | Press (finger) | 31 ms |
+  | Typing | 22 ms |
+  | Touch crosshair | 50 ms |
+  | Legend toggle, 36 / 200 series | 69 / 63 ms |
+  | One panel to table, 36 / 200 series | 79 / 69 ms |
+  | One panel to chart | 77 ms |
+  | Open a menu | 65 ms |
+  | Change theme | **145 ms** |
+  | Run a query | 51 ms |
+  | Move to an unloaded view | 60 ms |
+  | Response to paint, 36 / 200 series | 21 / 26 ms |
+  | Worst interaction | 144 ms |
+
+  Layout shift: 0.0000 in all six rows, judged and within budget.
 
 ## The author's claims, checked
 
