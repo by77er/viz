@@ -738,7 +738,7 @@ data names the tenant.
 ## Verification
 
 ```
-npm test                # 364 tests in 22 files, in workerd, at most 2 workers (npx vitest run --maxWorkers=2): all pass (the `*.bench.ts` files run only under `bench:*`)
+npm test                # 368 tests in 22 files, in workerd, at most 2 workers (npx vitest run --maxWorkers=2): all pass (the `*.bench.ts` files run only under `bench:*`)
 npx tsc --noEmit        # clean
 npm run independent     # capture, then Prometheus' own code (Go, tools/promcheck): 2 Go tests pass (not re-run in the anomaly change)
 npm run mutants         # 122 mutants (50 earlier + 9 for versioning + 22 for anomaly rules + 12 for the production wiring + 22 for SLO rules, warm-ups and backtests + 7 for streaming), on a scratch copy; vitest runs with at most 2 workers
@@ -773,7 +773,7 @@ in the module cache here, plus one fetched from the Go proxy for `go mod tidy`).
 | `golden.test.ts` | 5 | golden formats, including the stored anomaly rule and key, its state rows and the `anomaly_detail` annotation; the stored SLO rule, its key and per-tick expression, its rows, the warm-up status and the `slo_detail` annotation |
 | `wiring.test.ts` | 14 | warm-ups and backtests ask `/api/v1/plan` (start, end, step) for every read before any `/api/v1/query_range`, and an over-budget backtest fetches nothing; part 9, against fake query and ingest services behind real service bindings (edge's real `authenticate`, tenant from the key) and control's real `Tenant`: every tick's queries carry the shard's one service key and the tick time; two tenants in one isolate each read only their own data with their own key; a key a person disabled: `unauthorized` within the propagation grace with nothing asked of control, then "disabled" with no new key, then after enabling a new key and the rule `ok` again (two `key.service` audit entries); one engine call in flight with four groups due at once (12 queries); `/api/v1/plan` refuses a parse error with its message and a 503 does not block the save; recording rules through Remote Write decoded with edge's snappy decoder (labels, `+Inf`, tick time); backtests through `query_range`; `/healthz`; notifications to control's destination: the plain JSON body's content and signature, no URL, secret or key in it; the Alertmanager form through a route naming `viz:default`, `viz:default` refused as a tenant receiver, and a URL change in control followed after the refresh; 500, a dropped connection, then 200: three attempts, one key, identical bytes, and no secret in any API answer, outbox, health or console output; a stored delivery error with the URL cut out; two tenants' alerts each at their own destination, each signed with its own secret |
 | `slo.test.ts` | 20 | part 10: detection within one bucket of the SRE Workbook's formula for 100% to 0.1% error ratios (never where it says never), the library's table (1, 9, 44 and 217 minutes; 865 and 2,161), agreement with the library's own `burnRate.detect` at every point of 7,320 buckets (sentence included), the strict threshold with exactly representable numbers, coverage; the sentence and every number of `slo_detail` against an independent computation; in the object: one query per tick in the batch, page at the first bad minute and ticket at the fifth routed by severity, the page resolving 30 minutes after the outage; three rows a steady tick; evictions and replayed ticks, and a crash in the commit, giving exactly the state of a pure reference run; refusals (series cap, unpaired parts, a newer release's rows) changing nothing; a shard move; another tenant's rows neither loaded nor touched; validation with paths, fixes and warnings |
-| `history.test.ts` | 10 | parts 11 and 12: an anomaly warm-up reads exactly the look-back and leaves the library's state; over budget (and through the monitors API), an engine refusal, engine failures retried then given up, a crash in the warm-up's commit; an SLO warm-up's two reads planned before either is fetched; backtests equal to live alerts with their annotations (anomaly and SLO); every kind refused whole past the budget; the monitors API routes, 422 `over_budget`, and tenant isolation of `POST /monitors/{id}/backtest` |
+| `history.test.ts` | 14 | parts 11, 12 and 13: windowed backtests across hundreds of boundaries equal to one window and to live evaluation (anomaly and SLO); the memory refusal before any plan or fetch (an SLO's rings over a small budget; 1,000 series of SLO state at the default budget, over HTTP); a warm-up refused by its memory budget; a window holding more points than sized for; an anomaly warm-up reads exactly the look-back and leaves the library's state; over budget (and through the monitors API), an engine refusal, engine failures retried then given up, a crash in the warm-up's commit; an SLO warm-up's two reads planned before either is fetched; backtests equal to live alerts with their annotations (anomaly and SLO); every kind refused whole past the budget; the monitors API routes, 422 `over_budget`, and tenant isolation of `POST /monitors/{id}/backtest` |
 | `anomaly.test.ts` | 22 | part 8: alert content against the library run on its own; NaN and pruning; the series cap, state limits per series, rule and object, rows per tick; state across evictions, a replayed tick, a crash in the commit, a newer release's rows and detector names, another tenant's rows; edits, intervals, rule files, `/api/v1/rules`; the monitors API: defaults, errors and warnings, the detectors guide, authorisation, tenant isolation, documented schemas |
 
 The first seven files held the 123 tests that existed before this task; all still pass.
@@ -1109,9 +1109,13 @@ T. One alarm tick of a group holding one rule, warm (after its warm-up and 3 unm
 | rule | series | ms CPU per tick | warm-up (first tick), ms CPU | SQL rows per tick | peak RSS, MB |
 |---|---|---|---|---|---|
 | counterfactual: alerting rule, empty result | 1 | 1.98–2.28 | – | 0 | 149–150 |
-| SLO | 1 | 2.44–2.51 | 67–82 | 3 | 178–180 |
-| SLO | 10 | 3.60–3.71 | 209–232 | 3 (up to 6 with transitions) | 232–234 |
-| SLO | 100 | 10.0–11.2 (single ticks up to 147) | 883–1,000 | 3 (up to 7) | 372–389 |
+| SLO | 1 | 2.28–2.51 | 67–82; streamed: 70 | 3 | 178–180 |
+| SLO | 10 | 3.60–3.71 | 209–232; streamed: 170 | 3 (up to 6 with transitions) | 213–234 |
+| SLO | 100 | 9.8–11.2 (single ticks up to 147) | 883–1,000; streamed: 1,002 | 3 (up to 7) | 360–389 |
+
+(The warm-up figures before ";" were taken with each read fetched whole; "streamed" is one further
+run after part 13, under a 128 MB heap, its reads in 54 windows sized for the rule's `max_series`
+100, the fake engine's CPU measured alone and taken off; load average 9.1–10.3.)
 
 B. Backtests: see "Streaming" below (the measurements of this table's first version, with each
 read fetched whole, held 0.4–0.6 GB; they are kept there as the counterfactual).
@@ -1211,7 +1215,7 @@ evaluator calls as requests and about $6.5 more if they are (previous version of
 **SLO rules, per rule, modelled** from the measurements above (rows at $1 per million): a
 1-minute SLO rule writes 3 rows a tick, 129,600 a month, about $0.13, whatever its series; it adds
 0.3–9 ms CPU a tick (1–100 series); its warm-up is one read of the longest window and the
-compliance window (two range queries, 70 ms–1 s CPU here). To settle: the same rules on
+compliance window, read in memory-sized windows (70 ms–1 s CPU here). To settle: the same rules on
 Cloudflare, rows and duration from the analytics API.
 
 **Anomaly rules, per rule, modelled** from the measurements above (rows at $1 per million):
