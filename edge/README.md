@@ -16,6 +16,7 @@ Durable Object.
 | `src/route.ts` | Pool maps, routing, concurrent appends, epoch refetch |
 | `src/pb.ts`, `src/snappy.ts` | Protobuf wire reader and snappy block decompressor; no dependencies |
 | `src/limits.ts` | Limits and the accept window, with defaults |
+| `src/recorded.ts` | `RecordedSamples`: the entrypoint the ruler writes recording-rule samples to over a service binding (contracts/ingest.ts) |
 
 There are no runtime dependencies. `snappyjs` and `protobufjs` are dev dependencies, used
 only to cross-check the hand-written codecs.
@@ -27,6 +28,12 @@ only to cross-check the hand-written codecs.
 | `POST /api/v1/write` | Remote Write 1.0: snappy block-compressed `prometheus.WriteRequest` |
 | `POST /v1/metrics` | OTLP/HTTP metrics, `application/x-protobuf` or `application/json`, optionally `Content-Encoding: gzip` |
 | `GET /healthz` | `200 ok` |
+
+And one RPC entrypoint, reachable only through a service binding (never over HTTP):
+
+| Entrypoint | Method |
+|---|---|
+| `RecordedSamples` (contracts/ingest.ts) | `write(tenant, batches: SampleBatch[]): Promise<void>`: the ruler's recording-rule output |
 
 Bindings: `SHARD` (Durable Object namespace), `CONFIG` (KV), `DEFAULT_POOL` (JSON `PoolMap`
 for tenants without their own), and optionally `INGEST_LIMITS` (JSON overriding any field
@@ -129,6 +136,31 @@ shared pool.
 
 A 2xx is sent only after every append has returned `ok`.
 
+## Recorded samples over a service binding (contracts/ingest.ts, D45)
+
+`RecordedSamples` is a named `WorkerEntrypoint` export of the ingest Worker (re-exported by
+`stack/src/index.ts`, so viz-ingest has it). The ruler reaches it through a service binding
+whose config names the entrypoint and carries `props: { caller: "viz-ruler" }`; no API key is
+involved.
+
+- **Who may call.** Only a binding of this account that names the entrypoint: the internet
+  reaches only the default export's `fetch`, and the gateway binds only the default entrypoint.
+  `ctx.props.caller` must be in `RECORDED_SAMPLES_CALLERS` (`viz-ruler`); any other binding, or
+  one without props, is refused `unauthorized`.
+- **Whose samples.** The tenant is the explicit first argument, never anything in a body;
+  it must match `TENANT_ID`, and every batch id must start with `<tenant>/` (a `SampleBatch` id
+  is `<tenant>/<shard>/<group>/<rule key>@<time>`), so a caller that mixed tenants up is refused
+  and nothing is written.
+- **The same path as Remote Write after decoding**: the same `Collector` (labels canonical and
+  validated, the accept window, the series and sample limits), routing, appends, early refusal,
+  active-series limit. Values are Prometheus' text form (`+Inf`, `Inf`, `-Inf`, `NaN`, a decimal;
+  not hex, not empty, no whitespace).
+- **Fails closed.** The promise resolves only when every sample is durably appended (a 204);
+  otherwise it rejects with a message starting with the refusal word (`invalid`,
+  `series_limit`, `too_large`, `backpressure`, `overloaded`, `unavailable`, `unauthorized`).
+  Unlike Remote Write, a call with any invalid sample writes nothing at all. Re-sending is safe:
+  identical batches are recognised by their fingerprint.
+
 ## Active-series limit
 
 Every batch `edge` appends carries `seriesIds`, the `series_id` of each series table entry
@@ -179,6 +211,22 @@ npm run fixtures    # regenerate test/fixtures.json with protobufjs + snappyjs
 ```
 
 Last run, 2026-11-19: **62 passed, 0 failed**; `tsc --noEmit` clean.
+
+**With the recorded-samples entrypoint (2026-11-19): 71 passed, 0 failed** (9 files);
+`tsc --noEmit` clean. `test/recorded.test.ts` (9 tests) calls the entrypoint the way the ruler
+will, through service bindings that `wrangler.jsonc` points at this script itself (as
+`viz-ruler`, as `viz-mcp`, and without props): seven samples in two batches with `1.5`, `+Inf`,
+`-Inf`, `NaN`, `-0`, `1e3` and `Inf`, labels unsorted and one empty, read back from the shards
+bit for bit with canonical labels and the contract's series ids, and the same call again stores
+nothing new; the `viz-mcp` binding and the bare one are refused and write nothing; five bad
+tenant ids, a non-string tenant, another tenant's batch, a batch id that only starts with the
+tenant's name and one without an id are refused and write nothing to either tenant; nine kinds
+of bad sample (not a value, hex, empty, no `__name__`, too old, too new, a fractional time, a NUL,
+a non-string label value) each refuse the whole call with nothing written; a full shard buffer is
+`backpressure`, never a success, and the same call succeeds once there is room; a tenant at its
+active-series limit gets `series_limit` naming one new series, with the existing series written;
+every refusal word is one the contract lists; the value parser accepts exactly Prometheus' text
+form. On Cloudflare: `deploy/README.md`, Trial 3.
 
 What the tests establish:
 
@@ -302,6 +350,21 @@ the last check of `appendAll` ("only `ok` counts as stored; anything not handled
 refuses the request") still answers 503, so behaviour does not change. The property has no
 single point of failure; a mutant removing every layer at once was not run.
 
+**Mutants of the entrypoint (2026-11-19)**, `node scripts/mutants.mjs recorded` on a copy of
+the tree in a scratch directory (each against the whole suite, after the copy's unmutated
+suite passed 71 of 71): **7 of 7 killed**. `node scripts/mutants.mjs --check`: all 50 patterns
+apply (the earlier 43 were not re-run here).
+
+| Mutant | Killed by |
+|---|---|
+| any service binding may write (caller not checked) | refuses a binding that does not name the ruler; every refusal word is one the contract lists |
+| the tenant argument is not validated | takes the tenant only from its argument, validated; every refusal word … |
+| batches of another tenant are accepted | takes the tenant only from its argument, validated (another tenant's batch) |
+| invalid samples are dropped and the rest written | a call with any sample the HTTP API would reject writes nothing at all |
+| a full buffer resolves (acknowledged, not written) | a full shard buffer is a retryable refusal, never a success |
+| new series over the limit resolve | new series over the tenant's active-series limit are refused (series_limit) |
+| values parsed with `Number()` (hex, empty accepted) | writes nothing at all (hex, empty); parses exactly Prometheus' text form |
+
 ### Decode throughput
 
 `npm run bench`, Node 22 on a shared and noisy development machine; medians of 15 runs,
@@ -319,6 +382,11 @@ Most of it is the series id: FNV-1a is one multiply per byte in a serial chain, 
 3.6 ms per MiB of label bytes here.
 
 ## Known risks
+
+- **A refused recorded-sample write is an `exception` in viz-ingest's metrics** (Trial 3 on
+  Cloudflare, `deploy/README.md`): the caller received each refusal in 2–4 ms and nothing was
+  written, but the callee's invocation ended "canceled … hung". Not understood; not seen in
+  workerd here. Successful writes end `ok`.
 
 - **A retry is idempotent only if it produces the same batch bytes.** The same body, map
   and limits always do. A sample that leaves the accept window between the first attempt
@@ -391,3 +459,32 @@ The original list:
    same to the sender. *Resolved for overload* (2026-11-19): the shard refuses early with
    scope `overload` and a real, jittered `Retry-After`, which edge passes through with 503;
    exceptions (an unreachable or reset object) are still 503 with `Retry-After: 1`.
+
+## Needed changes
+
+In components others own; not made here.
+
+1. **ruler: write recorded samples through the entrypoint, with no stored key** (the ruler's
+   README, "Needed changes" 2). The ruler already prefers a `SINK` binding
+   (`ruler/src/ruler.ts`, `sink()`: `binding.write(this.tenant, batches)`, with the Ruler
+   object's own tenant, derived from its name). The whole change is one binding in
+   `ruler/wrangler.jsonc`, under `"services"`:
+
+   ```jsonc
+   // Recording rules: viz-ingest's RecordedSamples entrypoint (contracts/ingest.ts). The binding
+   // is the credential; the tenant is the Ruler object's own.
+   { "binding": "SINK", "service": "viz-ingest", "entrypoint": "RecordedSamples", "props": { "caller": "viz-ruler" } }
+   ```
+
+   and the same in `ruler/wrangler.test.jsonc` pointing at the test script's stand-in (or at a
+   script exporting edge's `RecordedSamples`, as `edge/wrangler.jsonc` does for its tests), plus
+   `SINK` in the ruler's `RulerEnv` health check if it should count. `deploy/configure.mjs`
+   already maps `service: viz-ingest` per stage and keeps `entrypoint` and `props`; viz-ingest
+   deploys before viz-ruler. Then:
+   - a rejection is already "not written" to the ruler (it retries three times, then marks the
+     rule `sink: <message>`), which is what this entrypoint promises; the message starts with
+     the refusal word, so `invalid`, `series_limit` and `unauthorized` could be reported without
+     the retries;
+   - the service key needs only `read` (queries) until query has its own entrypoint (the
+     ruler's "Needed changes" 1); after both, no stored key at all, and `INGEST` can go once no
+     release that may run still uses it (callee first: keep `INGEST` for one release).

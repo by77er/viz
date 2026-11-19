@@ -5,6 +5,14 @@
   // For now the shard ships in the same script as the edge Worker.
   "durable_objects": { "bindings": [{ "name": "SHARD", "class_name": "Shard" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Shard"] }],
+  // Tests of the recorded-samples entrypoint (contracts/ingest.ts) call it the way the ruler
+  // will: through a service binding naming the entrypoint, with the caller in `props`. Three
+  // bindings to this script itself: the ruler's, another viz Worker's, and one without props.
+  "services": [
+    { "binding": "RULER_SINK", "service": "viz-edge", "entrypoint": "RecordedSamples", "props": { "caller": "viz-ruler" } },
+    { "binding": "MCP_SINK", "service": "viz-edge", "entrypoint": "RecordedSamples", "props": { "caller": "viz-mcp" } },
+    { "binding": "BARE_SINK", "service": "viz-edge", "entrypoint": "RecordedSamples" }
+  ],
   // API keys (`key:<keyId>`) and per-tenant pool maps (`pool:<tenant>`).
   "kv_namespaces": [{ "binding": "CONFIG", "id": "00000000000000000000000000000000" }],
   "vars": {

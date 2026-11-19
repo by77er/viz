@@ -437,7 +437,10 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
   expressions to viz-query's Prometheus HTTP API one at a time (one engine call in flight per
   `Ruler` object: a service-bound callee shares its caller's six connections), recording rules
   write through Remote Write, and both authenticate with a service key the tenant's control
-  plane issues (`service:viz-ruler/<shard>`, visible and revocable there).
+  plane issues (`service:viz-ruler/<shard>`, visible and revocable there). viz-ingest now
+  also exports `RecordedSamples` (`contracts/ingest.ts`, D45): an RPC entrypoint the ruler can
+  bind as `SINK`, authenticated by the binding itself (no key), with the tenant an explicit,
+  validated argument; the ruler's binding is not added yet (`edge/README.md`, "Needed changes").
 - **Anomaly detection** is statistics first. An *anomaly rule* is a rule kind
   (`contracts/rules.ts`, version 2): each tick the ruler feeds every series of one PromQL
   expression to that series' detector, through the same batch call as other rules, and the

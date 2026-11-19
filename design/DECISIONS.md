@@ -1234,6 +1234,45 @@ not measured on Cloudflare.
 count query); viz-query exports an RPC entrypoint that streams results (then one query per
 read again); or the Durable Object memory limit changes.
 
+## D45. The ruler writes recorded samples through a named entrypoint of viz-ingest; the service binding is the credential
+
+**Decision.** viz-ingest exports `RecordedSamples`, a `WorkerEntrypoint` with one method,
+`write(tenant, batches)` (`contracts/ingest.ts`, `edge/src/recorded.ts`). Only a Worker whose
+deployed config has a service binding naming that entrypoint can call it; the binding carries
+`props: { caller: "viz-ruler" }`, which only that config sets, and any other caller is refused
+(`unauthorized`). The tenant is the explicit first argument, which only a binding holder can
+supply; it is validated (`TENANT_ID`) and every batch id must start with `<tenant>/`. The
+samples go through Remote Write's own validation, routing and appends; the promise resolves
+only when everything is durably appended, and rejects with a message that starts with a
+refusal word otherwise; a call with any invalid sample writes nothing. The ruler's existing
+`SINK` binding path uses it unchanged; its one-line binding is in `edge/README.md`, "Needed
+changes".
+
+**Alternatives.** (a) Remote Write over HTTP with a service key control issues (D39, today): a
+stored key per Ruler object, issued, rotated, propagated through KV (a fresh key may not have
+reached every location) and checked on every request. (b) A shared secret or HMAC in the RPC
+arguments: a secret to store and rotate again. (c) The entrypoint without a `props` check: any
+viz Worker given a binding to it could write any tenant's samples. (d) A status union as the
+result, the house style for RPC: the deployed ruler treats a resolved `write` as written, so a
+resolved refusal would fail open. (e) The tenant in `props`: bindings are static per Worker, and
+the ruler serves every tenant.
+
+**Why.** A service binding cannot be forged from outside the account, and a named entrypoint is
+not reachable over HTTP at all, so the binding is a credential nobody has to store, rotate or
+leak; `props` names the caller so a binding added for another purpose does not grant this. The
+explicit, validated tenant is the same rule as `contracts/control.ts` (the caller derives it
+from its own binding context). Rejecting on every failure matches `Sink.write` in
+`contracts/rules.ts`, which the ruler already implements.
+
+**Cost.** One more export on viz-ingest and one more caller list to keep. The accept window
+applies as for Remote Write: samples of a tick more than an hour old are `invalid`. Measured on
+Cloudflare in Trial 3 (`deploy/README.md`) through a probe Worker standing in for the ruler.
+
+**Would change if.** The platform attests the calling script itself (then `props` is not
+needed); another Worker needs to write derived series (it is added to
+`RECORDED_SAMPLES_CALLERS`); or query gets the same kind of entrypoint (then the ruler needs no
+stored key at all, the ruler's README "Needed changes" 1).
+
 ## D47. A ledger checkpoint larger than one part is written in parts across drains from the state at its version, kept by pre-images; a rebuild streams into SQLite
 
 This replaces the size limit of D36 as the answer to review S-2 (D36's alternative (h)).
