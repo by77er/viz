@@ -9,7 +9,7 @@ import { join, relative } from 'node:path'
 import { after, beforeEach, test } from 'node:test'
 import { GENERATED_DIR, REPO_ROOT } from '../lib/common.mjs'
 import { GENERATED_SECRETS, generateSecretValue, secretNamesOf } from '../lib/secrets.mjs'
-import { deploy, planOnly } from '../release.mjs'
+import { deploy, planOnly, rollback } from '../release.mjs'
 import { callsLike, captured, cmd, installFakeAccount, promotions, serving } from './fake-account.mjs'
 
 const STAGE = 'oauthkeytest'
@@ -25,7 +25,9 @@ const account = installFakeAccount(tmp)
 const { writeState, readState } = account
 const controlCfg = join(tmp, 'control.jsonc')
 const gatewayCfg = join(tmp, 'gateway.jsonc')
-writeFileSync(controlCfg, JSON.stringify({ name: CONTROL, vars: { VIZ_RELEASE: RELEASE }, migrations: [{ tag: 'v1' }] }))
+/** What configure.mjs puts on every viz-control version, so that a rollback can judge it (D46, D69). */
+const DECLARED = { VIZ_SCHEMAS: JSON.stringify({ v: 1, classes: { 'control.Tenant': { latest: 1, compat: 1, by: null } } }), VIZ_FORMATS: JSON.stringify({ v: 1, formats: {} }) }
+writeFileSync(controlCfg, JSON.stringify({ name: CONTROL, vars: { VIZ_RELEASE: RELEASE, ...DECLARED }, migrations: [{ tag: 'v1' }] }))
 writeFileSync(gatewayCfg, JSON.stringify({ name: GATEWAY, vars: { VIZ_RELEASE: RELEASE } }))
 
 const manifest = {
@@ -43,12 +45,12 @@ const manifest = {
 
 /** An account where both Workers serve release rel-1; control with the key or without. */
 function existing({ key }) {
-  const v = (id, secrets) => ({ id, number: 1, tag: 'rel-1', vars: { VIZ_RELEASE: 'rel-1' }, secrets })
+  const v = (id, secrets, declared = {}) => ({ id, number: 1, tag: 'rel-1', vars: { VIZ_RELEASE: 'rel-1', ...declared }, secrets })
   return {
     calls: [],
     counter: 100,
     workers: {
-      [CONTROL]: { migrationTag: 'v1', versions: [v('00000000-0000-4000-8000-00000000000a', key ? { [KEY]: OLD } : {})], deployment: [{ version_id: '00000000-0000-4000-8000-00000000000a', percentage: 100 }] },
+      [CONTROL]: { migrationTag: 'v1', versions: [v('00000000-0000-4000-8000-00000000000a', key ? { [KEY]: OLD } : {}, DECLARED)], deployment: [{ version_id: '00000000-0000-4000-8000-00000000000a', percentage: 100 }] },
       [GATEWAY]: { migrationTag: null, versions: [v('00000000-0000-4000-8000-00000000000b', {})], deployment: [{ version_id: '00000000-0000-4000-8000-00000000000b', percentage: 100 }] },
     },
   }
@@ -330,4 +332,94 @@ test('m-11: an upload that does not carry this run\'s VIZ_DEPLOY_RUN gets no put
   const s = readState()
   assert.equal(callsLike(s, 'versions secret').length, 0, 'no put')
   assert.deepEqual(promotions(s).map(cmd), [])
+})
+
+// ---- measured on Cloudflare, 2026-11-19, spike S9 (spikes/s9-oauth-key-rollback/README.md) ----
+
+test('S9: a version read right after it is created may not be there yet (a 404, or without the secret just put): the deploy reads it again, and goes on', async () => {
+  for (const lag of [{ readLag: 2 }, { secretLag: 2 }]) {
+    writeState({ ...existing({ key: false }), ...lag })
+    const { result, error, log } = await captured(() => deploy({ stage: STAGE }))
+    assert.equal(error, undefined, `${JSON.stringify(lag)}: ${error?.stack}\n${log}`)
+    assert.equal(result.exit, 0, log)
+    assert.equal(result.record.secrets[0].action, 'created')
+    assert.equal(serving(readState(), CONTROL).id, result.record.secrets[0].versionId)
+  }
+})
+
+test('S9: a version that does not show within the budget stops the release with nothing promoted', async () => {
+  const saved = process.env.VIZ_FRESH_READ_MS
+  process.env.VIZ_FRESH_READ_MS = '300'
+  try {
+    writeState({ ...existing({ key: false }), readLag: 50 })
+    const { error, log } = await captured(() => deploy({ stage: STAGE }))
+    assert.match(String(error?.message), /was not found \(after retrying for 300 ms\), so its secrets cannot be checked/, log)
+    assert.deepEqual(promotions(readState()).map(cmd), [])
+  } finally {
+    if (saved === undefined) delete process.env.VIZ_FRESH_READ_MS
+    else process.env.VIZ_FRESH_READ_MS = saved
+  }
+})
+
+test('S9, created: a rollback across the release that created the key is refused up front (exit 3), nothing moved; accepted, it serves without the key, and the next deploy brings it back', async () => {
+  writeState(existing({ key: false }))
+  const r = await captured(() => deploy({ stage: STAGE }))
+  assert.equal(r.result.exit, 0, r.log)
+  const created = serving(readState(), CONTROL)
+  const refused = await captured(() => rollback({ stage: STAGE, record: r.result.previous, reason: 'test' }))
+  assert.equal(refused.error, undefined, `${refused.error?.stack}\n${refused.log}`)
+  assert.equal(refused.result.exit, 3, refused.log)
+  assert.match(refused.log, /restores version 00000000-0000-4000-8000-00000000000a, which does not carry OAUTH_CLIENT_KEY, .*crosses the release that created the key/)
+  assert.match(refused.log, /--accept-secret-loss OAUTH_CLIENT_KEY/)
+  assert.deepEqual(callsLike(readState(), 'versions deploy').filter((c) => c.argv.includes('--name')), [], 'no Worker moved')
+  assert.equal(serving(readState(), CONTROL).id, created.id)
+  // Accepted: Cloudflare allows it (S9), and the restored version has no key.
+  const accepted = await captured(() => rollback({ stage: STAGE, record: r.result.previous, reason: 'test', acceptSecretLoss: KEY }))
+  assert.equal(accepted.result?.exit, 0, accepted.log)
+  assert.deepEqual(serving(readState(), CONTROL).secrets, {})
+  // The next release inherits the newest version's key (S9): kept, the same value, no put.
+  writeFileSync(join(stageDir, 'manifest.json'), JSON.stringify({ ...manifest, release: 'rel-3' }))
+  const next = await captured(() => deploy({ stage: STAGE }))
+  assert.equal(next.result.exit, 0, next.log)
+  assert.equal(next.result.record.secrets[0].action, 'kept')
+  assert.equal(serving(readState(), CONTROL).secrets[KEY], created.secrets[KEY])
+})
+
+test('S9, rotated: a rollback across a rotation is refused up front (exit 3), also when asked to accept the loss; a record that leaves viz-control out goes ahead', async () => {
+  writeState(existing({ key: true }))
+  const r = await captured(() => deploy({ stage: STAGE, rotateText: KEY }))
+  assert.equal(r.result.exit, 0, r.log)
+  const rotated = serving(readState(), CONTROL)
+  for (const acceptSecretLoss of ['', KEY]) {
+    const refused = await captured(() => rollback({ stage: STAGE, record: r.result.previous, reason: 'test', acceptSecretLoss }))
+    assert.equal(refused.result?.exit, 3, `${refused.error?.stack ?? ''}\n${refused.log}`)
+    assert.match(refused.log, /differs from the one put since on version .* "viz rel-2; OAUTH_CLIENT_KEY rotated"\): it crosses a rotation\. Cloudflare refuses that rollback \(10220/)
+  }
+  const s = readState()
+  assert.deepEqual(callsLike(s, 'versions deploy').filter((c) => c.argv.includes('--name')), [], 'no Worker moved, the gateway neither')
+  assert.equal(serving(s, CONTROL).id, rotated.id)
+  const without = await captured(() => rollback({ stage: STAGE, record: { ...r.result.previous, workers: r.result.previous.workers.filter((w) => w.name !== CONTROL) }, reason: 'test' }))
+  assert.equal(without.result?.exit, 0, without.log)
+  assert.equal(serving(readState(), GATEWAY).id, '00000000-0000-4000-8000-00000000000b')
+  assert.equal(serving(readState(), CONTROL).secrets[KEY], rotated.secrets[KEY])
+})
+
+test('S9: a failed promotion after viz-control got a rotated key leaves viz-control on it (Cloudflare would refuse its restore, 10220)', async () => {
+  writeState({ ...existing({ key: true }), failOn: `triggers deploy --config ${gatewayCfg}` })
+  const { error, log } = await captured(() => deploy({ stage: STAGE, rotateText: KEY }))
+  assert.ok(error, 'the deploy fails')
+  assert.match(error.message, /exited 1/)
+  assert.match(log, new RegExp(`${CONTROL}: left on this release's version: its generated secret was rotated by it`))
+  const s = readState()
+  assert.notEqual(serving(s, CONTROL).secrets[KEY], OLD, 'viz-control keeps the rotated key')
+  assert.deepEqual(callsLike(s, 'versions deploy').filter((c) => c.argv.includes('--name')), [], 'nothing restored')
+})
+
+test('a serving version that cannot be read stops the release: whether the key is set is unknown, so none is made', async () => {
+  const s = { ...existing({ key: true }), inherit: 'none' }
+  s.workers[CONTROL].versions[0].lag = 2 // read by liveState, then by the secret check: both 404
+  writeState(s)
+  const { error, log } = await captured(() => deploy({ stage: STAGE }))
+  assert.match(String(error?.message), /serving version 00000000-0000-4000-8000-00000000000a could not be read, so whether OAUTH_CLIENT_KEY is set is unknown/, log)
+  assert.equal(callsLike(readState(), 'versions').length, 0, 'nothing uploaded or put')
 })

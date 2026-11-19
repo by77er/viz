@@ -3,7 +3,7 @@
 //
 //   node deploy/release.mjs deploy   [--stage S] [--ack "viz-ingest@v2 …"] [--rotate-secret NAME]
 //                                    upload every Worker, then promote in order
-//   node deploy/release.mjs rollback --record <release.json> [--stage S] [--reason …]
+//   node deploy/release.mjs rollback --record <release.json> [--stage S] [--reason …] [--accept-secret-loss NAME]
 //   node deploy/release.mjs plan     [--stage S] [--ack …] [--rotate-secret NAME]   what deploy would do; exit 3 if refused
 //   node deploy/release.mjs status   [--stage S]                              what serves now
 //   node deploy/release.mjs current-release [--stage S]                      the release viz-ingest serves (its version tag)
@@ -49,18 +49,18 @@ import { randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { currentDeployment, listScripts, listSecrets, listVersions, versionInfo } from './lib/cf.mjs'
+import { currentDeployment, listScripts, listVersions, versionInfo } from './lib/cf.mjs'
 import { DEPLOY_DIR, GENERATED_DIR, REPO_ROOT, checkStage, log, parseArgs, readJsonc, stagedName, targetName } from './lib/common.mjs'
 import { floorDeployProblems, floorRollbackProblems, floorRules, floorsOfVersion } from './lib/floors.mjs'
 import { formatsMap, formatsOfVersion, readsOf } from './lib/formats.mjs'
 import { schemasOfVersion } from './lib/schemas.mjs'
-import { ROTATE_ENV, RUN_VAR, SecretRefused, ensureSecrets, parseRotate, planSecrets, rotateProblems, secretsNow, secretsOfManifest } from './lib/secrets.mjs'
+import { GENERATED_SECRETS, ROTATE_ENV, RUN_VAR, SecretRefused, ensureSecrets, parseRotate, planSecrets, rotateProblems, secretFacts, secretRollbackProblems, secretsNow, secretsOfManifest } from './lib/secrets.mjs'
 import { versionIdFrom, wrangler } from './lib/wrangler.mjs'
 
 export const EXIT_REFUSED = 3
 
 /** What lib/secrets.mjs needs from wrangler and the Cloudflare API. */
-const SECRET_API = { wrangler, versionInfo, listVersions, listSecrets }
+const SECRET_API = { wrangler, versionInfo, listVersions }
 /** What lib/floors.mjs reads from the Cloudflare API. */
 const FLOOR_API = { versionInfo, listVersions }
 
@@ -326,7 +326,7 @@ async function versionsSince(target, api, names) {
       if (v.id === w.versionId) continue
       if (ownNumber !== null && v.number !== undefined && v.number <= ownNumber) continue
       const info = await api.versionInfo(w.name, v.id)
-      out.push({ worker: w.name, versionId: v.id, number: v.number, release: annotation(info, 'workers/tag'), schemas: schemasOfVersion(info), formats: formatsOfVersion(info) })
+      out.push({ worker: w.name, versionId: v.id, number: v.number, release: annotation(info, 'workers/tag'), schemas: schemasOfVersion(info), formats: formatsOfVersion(info), ...secretFacts(info) })
     }
   }
   return out
@@ -491,8 +491,16 @@ export async function deploy({ stage, ackText = '', rotateText = '' }) {
       log(`  This release is forward-only for what was promoted (${crossed.map((f) => f.why).join('; ')}), so nothing is rolled back: the previous release could not read it.`)
       log('  Fix forward: push a commit that repairs the release; see deploy/README.md, "When a deploy fails".')
     } else if (promoted.length) {
-      log(`  rolling back what was promoted (${promoted.join(', ')}) to the previous release`)
-      await restore(manifest, previous.workers.filter((w) => promoted.includes(w.name)), `promotion of ${release} failed`)
+      // A Worker whose generated secret this release created or rotated stays: restoring it would
+      // serve without the key, or be refused by Cloudflare (10220) midway (measured, S9). It is a
+      // callee of what is put back, newer than its callers: the skew COMPATIBILITY.md allows.
+      const keyed = new Set(secretActions.filter((a) => a.action !== 'kept').map((a) => a.worker))
+      for (const name of promoted.filter((n) => keyed.has(n))) log(`  ${name}: left on this release's version: its generated secret was ${secretActions.find((a) => a.worker === name).action} by it`)
+      const back = promoted.filter((n) => !keyed.has(n))
+      if (back.length) {
+        log(`  rolling back what was promoted (${back.join(', ')}) to the previous release`)
+        await restore(manifest, previous.workers.filter((w) => back.includes(w.name)), `promotion of ${release} failed`)
+      }
     }
     throw e
   }
@@ -525,7 +533,7 @@ export async function deploy({ stage, ackText = '', rotateText = '' }) {
 
 const CLOUDFLARE = { liveState, versionInfo, listVersions, restore: (...a) => restore(...a) }
 
-export async function rollback({ stage, recordFile, record, reason = 'requested', api = CLOUDFLARE }) {
+export async function rollback({ stage, recordFile, record, reason = 'requested', acceptSecretLoss = '', api = CLOUDFLARE }) {
   const plan = loadWorkersPlan()
   const manifest = { durableObjectsCodeUpdate: plan.durable_objects_code_update }
   const target = record ?? JSON.parse(readFileSync(recordFile, 'utf8'))
@@ -535,15 +543,20 @@ export async function rollback({ stage, recordFile, record, reason = 'requested'
   // Every Worker a floor rule names too: one the record does not name keeps what serves now.
   const now = await api.liveState([...new Set([...names, ...rules.flatMap((r) => r.floors.map((f) => f.worker))])])
   const problems = []
+  const targetInfo = {}
   for (const w of target.workers) {
     if (!w.versionId) problems.push(`${w.name}: the record has no single version to restore`)
     else if ((now[w.name]?.migrationTag ?? null) !== (w.migrationTag ?? null)) {
       problems.push(`${w.name}: the release being restored ran under Durable Object migration ${w.migrationTag ?? '(none)'}, and ${now[w.name]?.migrationTag ?? '(none)'} is in force now. Cloudflare does not roll back across a class lifecycle change and migrations are forward-only: fix forward instead.`)
-    } else if (!(await api.versionInfo(w.name, w.versionId))) problems.push(`${w.name}: version ${w.versionId} no longer exists (Cloudflare keeps the 100 most recent)`)
+    } else if (!(targetInfo[w.name] = await api.versionInfo(w.name, w.versionId))) problems.push(`${w.name}: version ${w.versionId} no longer exists (Cloudflare keeps the 100 most recent)`)
   }
   if (problems.length === 0) {
     const fw = formatWorkers(target, plan)
-    const ran = await versionsSince(target, api, new Set([...schemaWorkers(target), ...fw]))
+    // Generated secrets (D53; measured on Cloudflare, S9): the Workers that carry one.
+    const specs = GENERATED_SECRETS.map((sp) => ({ ...sp, worker: stagedName(sp.worker, stage), canonical: sp.worker })).filter((sp) => names.includes(sp.worker))
+    const ran = await versionsSince(target, api, new Set([...schemaWorkers(target), ...fw, ...specs.map((sp) => sp.worker)]))
+    // A key the restored version lacks, or a rotation since it: refused before anything is moved.
+    problems.push(...secretRollbackProblems({ target, targetInfo, ran: ran.filter((v) => specs.some((sp) => sp.worker === v.worker)), specs, accept: parseRotate(acceptSecretLoss) }))
     // Schema versions (contracts/COMPATIBILITY.md §6): no class's storage may be newer than the target can open.
     problems.push(...schemaRollbackProblems(target, ran.filter((v) => schemaWorkers(target).has(v.worker))))
     // Format versions (§6, D69): the target reads every format version written since it.
@@ -619,7 +632,7 @@ function summary(record, previous) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    const args = parseArgs(process.argv.slice(2), { options: ['stage', 'ack', 'record', 'reason', 'rotate-secret'] })
+    const args = parseArgs(process.argv.slice(2), { options: ['stage', 'ack', 'record', 'reason', 'rotate-secret', 'accept-secret-loss'] })
     checkStage(args.stage)
     const cmd = args._[0]
     const ackText = [args.ack ?? '', process.env.VIZ_ACK_MIGRATIONS ?? ''].join(' ')
@@ -631,7 +644,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       process.exit(r.exit)
     } else if (cmd === 'rollback') {
       if (!args.record) throw new Error('rollback needs --record <release.json>')
-      process.exit((await rollback({ stage: args.stage, recordFile: args.record, reason: args.reason })).exit)
+      process.exit((await rollback({ stage: args.stage, recordFile: args.record, reason: args.reason, acceptSecretLoss: args['accept-secret-loss'] ?? '' })).exit)
     } else if (cmd === 'status') {
       const manifest = loadManifest(args.stage)
       console.log(JSON.stringify(await liveState(manifest.order), null, 2))

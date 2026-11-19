@@ -3,6 +3,7 @@
 //   node bench/memory.mjs                    every case, Node and workerd
 //   node bench/memory.mjs --node traces      only Node, only cases whose name contains "traces"
 //   node bench/memory.mjs --workerd --json   workerd only, one JSON line per case
+//   node bench/memory.mjs --dump DIR         write each case's body to DIR, measure nothing
 //
 // Each case runs in a fresh process (Node) or a fresh workerd (one isolate), with V8's
 // `--expose-gc --trace-gc`: a forced GC before the request gives the baseline, a forced GC after
@@ -391,19 +392,25 @@ const args = process.argv.slice(2)
 const wantNode = !args.includes('--workerd') || args.includes('--node')
 const wantWorkerd = !args.includes('--node') || args.includes('--workerd')
 const asJson = args.includes('--json')
+const dumpAt = args.indexOf('--dump')
+const dump = dumpAt >= 0 ? args.splice(dumpAt, 2)[1] : null
 const filters = args.filter((a) => !a.startsWith('--'))
 const mib = Number(process.env.MEM_MIB ?? 4)
 
 const dir = mkdtempSync(join(tmpdir(), 'viz-edge-mem-'))
 const bundlePath = await bundle(dir)
 const cases = [...hostile(mib), ...(await realistic())].filter(([name]) => filters.length === 0 || filters.some((f) => name.includes(f)))
-if (!asJson) {
+if (!asJson && !dump) {
   console.log(`| Case | Body | Outcome | Node peak / live / retained (MiB) | Node ArrayBuffers retained | workerd peak / live / retained (MiB) | Node ms |`)
   console.log('|---|---|---|---|---|---|---|')
 }
 let port = 18900
 for (const [name, path, json, snappy, make] of cases) {
   const body = make()
+  if (dump) {
+    writeFileSync(join(dump, `${name.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '')}.bin`), body)
+    continue
+  }
   const bodyFile = join(dir, 'body.bin')
   writeFileSync(bodyFile, body)
   const spec = { path, json, snappy, now: NOW }

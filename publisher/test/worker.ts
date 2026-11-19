@@ -1,6 +1,6 @@
 import type { LedgerTable } from '../../contracts/ledger'
 import { holding, type Store, type StoreObject } from '../src/log'
-import { Publisher, type CommitStep, type PublisherConfig, type PublisherEnv } from '../src/publisher'
+import { Publisher, type CommitStep, type PublishResult, type PublisherConfig, type PublisherEnv } from '../src/publisher'
 import { Publisher as PublisherD64 } from './d64/publisher'
 import { Publisher as PublisherN1 } from './n1/publisher'
 
@@ -79,8 +79,10 @@ class Probe implements Store {
  * - `failAt` makes the next commit throw right after a step, as a crash there would.
  * - `pauseAt` holds a commit after a step until `resume` is called.
  * - `advanceClock` moves the publisher's clock (persisted, so it survives eviction).
+ * - `publishes` returns what every publish since the last call reported, the alarm's included.
  */
 export class TestPublisher extends Publisher {
+  private results: PublishResult[] = []
   private fail: { step: CommitStep; table?: LedgerTable } | null = null
   private pause: { step: CommitStep; table?: LedgerTable } | null = null
   private waiting: (() => void) | null = null
@@ -185,9 +187,27 @@ export class TestPublisher extends Publisher {
     return out
   }
 
+  override async publish(tenants?: string[]): Promise<PublishResult> {
+    const r = await super.publish(tenants)
+    this.results.push(r)
+    return r
+  }
+
+  /** The results of the publishes since the last call (this instance only: an eviction forgets them). */
+  async publishes(): Promise<PublishResult[]> {
+    const out = this.results
+    this.results = []
+    return out
+  }
+
   /** Reset the object now, as the runtime does when it evicts or loses it: whatever it was doing stops where it is. */
   async abortNow(): Promise<void> {
     this.ctx.abort('injected: the object is reset')
+  }
+
+  /** When each tenant waiting for a re-base last had one started (table `rebase`), in the publisher's clock. */
+  async rebaseQueue(): Promise<Record<string, number>> {
+    return Object.fromEntries(this.ctx.storage.sql.exec(`SELECT tenant, started FROM rebase ORDER BY tenant`).toArray().map((r) => [r.tenant as string, r.started as number]))
   }
 
   /** Rows of a scratch table (`stage`, `live_next`). */

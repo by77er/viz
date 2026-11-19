@@ -256,3 +256,22 @@ export const expectVerified = async (p: PublisherStub) => {
     expect(v, `verify(${table})`).toMatchObject({ ok: true, missingFromIceberg: [], extraInIceberg: [], mismatched: [], missingObjects: [], sizeMismatch: [], problems: [] })
   }
 }
+
+type Published = Awaited<ReturnType<PublisherStub['publish']>>
+
+/**
+ * Publish until no tenant is left for a later publish by a per-publish cap (`deferred`): after a
+ * lost storage each publish first rebuilds one table from R2 (review M-6). Returns every result.
+ */
+export const publishSettled = async (p: PublisherStub, tenants?: string[], limit = 12): Promise<Published[]> => {
+  const out: Published[] = []
+  for (;;) {
+    const r = await p.publish(tenants)
+    out.push(r)
+    if (!r.tenants.some((t) => t.status === 'deferred')) return out
+    expect(out.length, `still deferred after ${out.length} publishes: ${JSON.stringify(r.tenants)}`).toBeLessThan(limit)
+  }
+}
+
+/** R2 operations of several publishes, added up. */
+export const opsOf = (rs: Published[]) => rs.reduce((a, r) => ({ list: a.list + r.ops.list, get: a.get + r.ops.get, head: a.head + r.ops.head, put: a.put + r.ops.put, delete: a.delete + r.ops.delete }), { list: 0, get: 0, head: 0, put: 0, delete: 0 })

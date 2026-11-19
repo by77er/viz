@@ -8,7 +8,7 @@ it is given, so it runs unchanged in WASM, natively and in a deterministic simul
 Builds for the host and for `wasm32-unknown-unknown`.
 
 ```
-CARGO_TARGET_DIR=$PWD/target cargo test -j 2 -- --test-threads 2           # 68 tests (19 in tests/otel.rs)
+CARGO_TARGET_DIR=$PWD/target cargo test -j 2 -- --test-threads 2           # 78 tests (19 in tests/otel.rs, 10 in tests/sigmerge.rs)
 CARGO_TARGET_DIR=$PWD/target cargo build --release --target wasm32-unknown-unknown
 node tools/hyparquet_check.mjs      # independent reader (after cargo test --test export)
 cargo run --release --example independent -- DIR && python3 tools/independent_check.py DIR   # PyArrow and DuckDB
@@ -459,13 +459,14 @@ the fragment, whose `foot` then starts where the filter ends.
 ### How it was verified
 
 ```
-CARGO_TARGET_DIR=$PWD/target cargo test -j 2 -- --test-threads 2      # 79 tests, 11 in tests/sigmerge.rs
+CARGO_TARGET_DIR=$PWD/target cargo test -j 2 -- --test-threads 2      # 78 tests, 10 in tests/sigmerge.rs
 cargo run --release --example merge_independent -- DIR 40 && python3 -I tools/merge_independent_check.py DIR
 cargo run --release --example otel_bench -- merge 8 25000 3 [DIR]      # throughput, size, peak heap
 python3 tools/mutants.py sigmerge tokens otel                           # on a scratch copy
 ```
 
-**`tests/sigmerge.rs`** (11 tests; properties 120 cases each, on the span and log generators of
+**`tests/sigmerge.rs`** (10 tests, all passing with the rest of the suite, **78 of 78**, on
+2026-11-19 at load average 11 to 15; properties 120 cases each, on the span and log generators of
 `tests/otelgen`, which produce duplicates within and across batches, every attribute type, NaN,
 Unicode, and starts across an hour and a day): units of 1 to 2 batches, 1 to 4 units, each flushed
 as flush does, then every partition merged in unit order with row groups of 1 to 5 rows and pages
@@ -480,7 +481,8 @@ of 3:
   from each unit's spans and merged by an implementation of the contract's rule written in the
   test; `min_tid`/`max_tid` per row group; two-step merges equal.
 - `logs_merge_per_day_into_the_deduplicated_union_with_its_token_filter`: without the filter the
-  bytes and fragment equal one flush of the reference rows; with it, the same rows and row
+  bytes and fragment equal one flush of the reference rows (rows are also re-sent by another
+  unit with their other columns changed, so which input wins shows); with it, the same rows and row
   groups, `tok` after the last row group, `foot` starting where it ends, the footer's
   `viz.token_filter` equal to `tok`; the filter lists exactly the tokens of each row group's
   lines and metadata values, computed by a tokenizer written over characters in the test; for
@@ -506,7 +508,35 @@ the later input's root on a tie, at most 64 services), compares every column exa
 their bits), checks one partition per file, row-group caps, every fragment field against the
 footer, and for `logs` parses the `VZT1` filter from the bytes at `viz.token_filter` and requires
 exactly the tokens of each row group (its own tokenizer). Run 2026-11-19 on the final code:
-RESULTS_INDEPENDENT.
+**0 failures** in 245,592 checks (40 cases, seed 20261119: 120 spans, 67 trace_index and 89 logs
+outputs, every logs output with its filter) and 345,571 checks (60 cases, seed 7: 180, 88, 143).
+
+### Mutants (`python3 tools/mutants.py sigmerge tokens otel`, on a scratch copy)
+
+Run 2026-11-19 (the copy deleted after, the shared tree untouched): **30 of 30 killed** in the
+end, the 17 `otel` mutants of the flush encoders included (one pattern updated: the logs writer's
+stream tuple moved a field). One survived the first run, "the earlier input wins a duplicate log
+row": the log generator gives each batch its own random streams, so two units almost never held
+one row key. The logs property now re-sends rows of one unit in another with their other columns
+changed; the mutant is killed by it.
+
+| Mutant | Killed by |
+|---|---|
+| a span merged across hours (the merge accepts two hours' rows) | `merges_refuse_what_they_cannot_merge`, `spans_merge_per_hour_…`, `default_layout_…` |
+| a lost row in a logs merge: rows differing only in metadata taken for one | `logs_merge_per_day_…`, `default_layout_…` |
+| a lost row in a logs merge: the last row never written | `logs_merge_per_day_…`, `default_layout_…`, `a_merge_past_the_token_bound_…` |
+| the earlier input wins a duplicate span | `spans_merge_per_hour_…`, `default_layout_…` |
+| the earlier input wins a duplicate log row | `logs_merge_per_day_…` (after the generator fix above) |
+| trace_index fragments of one trace not merged (the last kept) | `trace_index_merges_fragments_per_day`, `trace_index_keeps_64_services_by_the_rule`, `a_root_span_stored_by_two_units_…` |
+| trace_index keeps more than 64 services | `trace_index_keeps_64_services_by_the_rule` |
+| a token filter that misses 4-byte tokens | `tokens_follow_the_rule`, `the_filter_bytes_are_the_contract_s`, `logs_merge_per_day_…`, `a_merge_past_the_token_bound_…` |
+| a token filter that misses the metadata values' tokens | `logs_merge_per_day_…` |
+| a token filter that misses a row group's last row | `logs_merge_per_day_…`, `a_merge_past_the_token_bound_…` |
+| a literal implying its edge runs (prunes a group holding a longer run) | `tokens_follow_the_rule`, `the_filter_bytes_are_the_contract_s`, `logs_merge_per_day_…` |
+| the filter's bitsets one row group off | `the_filter_bytes_are_the_contract_s`, `logs_merge_per_day_…` |
+| `foot` starting at the last row group although a filter follows it | `logs_merge_per_day_…` |
+
+"An output deleted by its own step" is a mutant of compact/ (compact/README.md): killed there.
 
 ### Memory and speed (measured here, not on Cloudflare)
 
@@ -538,6 +568,17 @@ the output written in chunks (a growing `Vec` doubled past the inputs' size); 2 
 Smaller groups than 2 MiB were not measured below; 4 MiB left spans at 75 MB in WASM.
 
 ## Known risks
+
+- **Compaction memory is near an isolate's at the step budget** for logs whose lines carry unique
+  ids (81 MB of WASM memory at 16 MB in, 22 MB out with the filter; with the JS side about
+  119 MB, modelled). The bound on distinct tokens (2^19) caps the builder at about 15 MB; a file
+  over it simply has no filter.
+- **The token filter grows a logs file by up to a quarter** when lines carry unique ids (25%
+  measured on the benchmark's lines), for a filter no query reads yet.
+- **A merged spans file can order a re-sent span differently** when the span id was re-sent with
+  a start in another hour (contracts/TRACES.md, "Compaction").
+- **Merged row groups are small** (2 MiB of data, about 2 to 4k spans or 6k log rows): more
+  fragment bytes in the ledger per file, finer pruning.
 
 - **Partial reads trust the planner.** A row group whose `series_id` chunk is not in a sparse
   file is skipped as "left out on purpose": if a caller left out one that holds a selected

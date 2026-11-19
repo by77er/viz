@@ -39,6 +39,8 @@ import {
   pairUnit,
   publisher,
   putObjects,
+  opsOf,
+  publishSettled,
   type LedgerStub,
   type PublisherStub,
 } from './helpers'
@@ -251,7 +253,7 @@ describe('a ledger that writes its checkpoints in parts', () => {
       await s.storage.deleteAll()
     })
     await evictDurableObject(p)
-    expect((await p.publish()).ops.put).toBe(0) // resync from R2; nothing new to commit
+    expect(opsOf(await publishSettled(p)).put).toBe(0) // resync from R2, a table per publish; nothing new to commit
     expect(await rows()).toEqual(before)
     expect(await p.scratch()).toEqual({ stage: 0, liveNext: 0 })
   })

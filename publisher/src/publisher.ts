@@ -891,8 +891,9 @@ export class Publisher extends DurableObject<PublisherEnv> {
     // A tenant with no cursor in a table where R2 has metadata and SQLite has none: the publisher's
     // storage was lost (or another writer committed first). Its cursors are in R2: rebuild the
     // table from there before re-basing anyone, one table per publish (a rebuild reads every
-    // manifest of its table), and leave every tenant for the next publish.
-    if (candidates.length > 0) {
+    // manifest of its table), and leave every tenant for the next publish. Only in a publish's
+    // first attempt: a retry after a conflict has rebuilt the table it conflicted on already.
+    if (candidates.length > 0 && !budget.closed) {
       for (const table of TABLE_NAMES) {
         if (this.state(table).version > 0 || (await this.hint(store, table)) === 0) continue
         await this.resync(store, cfg, table)

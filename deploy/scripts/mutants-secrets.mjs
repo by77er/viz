@@ -34,12 +34,20 @@ const MUTANTS = [
   ['lib/wrangler.mjs: the value is not written to stdin', 'lib/wrangler.mjs', '    if (input !== undefined) child.stdin.end(input)', '    if (input !== undefined) child.stdin.end()'],
   // review of D53 (design/reviews/d44-d52-d53-d60.md)
   ["m-10: a run with a secret on stdin keeps the deploy's own log settings (sanitising off, debug log on disk)", 'lib/wrangler.mjs', ", ...(input !== undefined ? SECRET_RUN_ENV : {}) },", ' },'],
-  ['m-9: a key on a version newer than the serving one (left by a rollback) is not seen, and a new one is made', 'lib/secrets.mjs', '    if (newestServing !== Infinity) {', '    if (false) {'],
+  ['m-9: a key on a version newer than the serving one (left by a rollback) is not seen, and a new one is made', 'lib/secrets.mjs', '    for (const v of await api.listVersions(spec.worker)) {', '    for (const v of []) {'],
   // review of D53, m-11: another run of the same release between the check and the put
   ["m-11: the keyed version's VIZ_DEPLOY_RUN is not checked after the put (another run's upload is keyed and promoted)", 'lib/secrets.mjs', '    if (plainVar(made, RUN_VAR) !== run) {', '    if (false) {'],
   ["m-11: the newest version's VIZ_DEPLOY_RUN is not checked before the put", 'lib/secrets.mjs', '    if (plainVar(base, RUN_VAR) !== run) {', '    if (false) {'],
   ['m-11: uploads do not carry VIZ_DEPLOY_RUN', 'release.mjs', "'--tag', tag, '--message', message, ...runVar], { label: step.name })", "'--tag', tag, '--message', message], { label: step.name })"],
   ["m-11: phase 2's wrangler deploy does not carry VIZ_DEPLOY_RUN", 'release.mjs', '...doMode(manifest), ...runVar], { label: step.name })', '...doMode(manifest)], { label: step.name })'],
+  // measured on Cloudflare, 2026-11-19, spike S9
+  ['S9: a version just created is read once, not again until it shows', 'lib/secrets.mjs', '    if (ready(info) || waited >= budget) return info', '    return info'],
+  ['S9: a rollback across the key\'s creation is not refused', 'lib/secrets.mjs', '      if (carrier && !accept.has(spec.name)) {', '      if (false) {'],
+  ['S9: --accept-secret-loss is ignored (the refused rollback cannot be done on purpose)', 'lib/secrets.mjs', '      if (carrier && !accept.has(spec.name)) {', '      if (carrier) {'],
+  ['S9: a rollback across a rotation is not refused (Cloudflare answers 10220 after the callers were moved)', 'lib/secrets.mjs', '    if (put) {', '    if (false) {'],
+  ['S9: the secret check of a rollback is never run', 'release.mjs', '    problems.push(...secretRollbackProblems({', '    void ({'],
+  ['S9: a failed promotion restores viz-control across its own rotation', 'release.mjs', '      const back = promoted.filter((n) => !keyed.has(n))', '      const back = promoted'],
+  ['a serving version that cannot be read is taken as not carrying the key', 'lib/secrets.mjs', '      if (!info) throw new Error(`${spec.worker}: serving version', '      if (!info) continue\n      if (!info) throw new Error(`${spec.worker}: serving version'],
   ['m-11: every run has the same VIZ_DEPLOY_RUN', 'release.mjs', "`gh${process.env.GITHUB_RUN_ID}.${process.env.GITHUB_RUN_ATTEMPT ?? 1}-` : ''}${randomUUID()}`", "`gh${process.env.GITHUB_RUN_ID}.${process.env.GITHUB_RUN_ATTEMPT ?? 1}-` : ''}00000000-0000-4000-8000-000000000000`"],
 ]
 

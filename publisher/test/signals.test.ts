@@ -52,6 +52,8 @@ import {
   readAvroKey,
   readMetadata,
   snapshotEntries,
+  opsOf,
+  publishSettled,
   type LedgerStub,
   type PublisherStub,
 } from './helpers'
@@ -418,8 +420,13 @@ describe('the span and log tables, published', () => {
     const before = await icebergObjects(cell, ALL)
     await runInDurableObject(p, async (_i, state) => { await state.storage.deleteAll() })
     await evictDurableObject(p)
-    const r = await p.publish([t])
-    expect(r.ops.put).toBe(0)
+    // A table rebuilt from R2 per publish (review M-6: before, the first publish re-based the tenant
+    // once per table, rebuilding each at its commit), then the tenant from the cursors found there:
+    // no re-base at all, nothing written.
+    const rs = await publishSettled(p, [t])
+    expect(rs.map((r) => r.tenants[0]!.status)).toEqual([...ALL.map(() => 'deferred'), 'ok'])
+    expect(rs.every((r) => r.tenants[0]!.rebase === undefined)).toBe(true)
+    expect(opsOf(rs).put).toBe(0)
     expect(await icebergObjects(cell, ALL)).toEqual(before)
     for (const s of SIGNALS) expect(await p.status(s)).toMatchObject({ version: 1, files: s === 'logs' ? 1 : 2 })
     await verified(p)

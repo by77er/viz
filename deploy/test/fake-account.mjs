@@ -35,17 +35,33 @@ export function installFakeAccount(tmp) {
     const w = state.workers[decodeURIComponent(name)]
     if (!w) return notFound()
     const version = (vid) => w.versions.find((v) => v.id === vid)
-    const shown = (v) => ({
+    const shown = (v, hide = null) => ({
       id: v.id,
       number: v.number,
-      annotations: { 'workers/tag': v.tag },
+      annotations: { 'workers/tag': v.tag, ...(v.message ? { 'workers/message': v.message } : {}) },
       // Secrets are listed by name and type only, as Cloudflare does.
-      resources: { bindings: [...Object.entries(v.vars).map(([n, text]) => ({ type: 'plain_text', name: n, text })), ...Object.keys(v.secrets).map((n) => ({ type: 'secret_text', name: n }))] },
+      resources: { bindings: [...Object.entries(v.vars).map(([n, text]) => ({ type: 'plain_text', name: n, text })), ...Object.keys(v.secrets).filter((n) => n !== hide).map((n) => ({ type: 'secret_text', name: n }))] },
     })
     if (sub === 'deployments') return ok({ deployments: [{ id: 'd1', created_on: '2026-11-19T00:00:00Z', versions: w.deployment }] })
-    if (sub === 'versions' && id) return version(id) ? ok(shown(version(id))) : notFound()
+    if (sub === 'versions' && id) {
+      const v = version(id)
+      if (!v) return notFound()
+      // A version just created is sometimes not seen yet (measured on Cloudflare, S9): a 404, or without the secret just put.
+      if (v.lag > 0) {
+        v.lag--
+        writeState(state)
+        return notFound()
+      }
+      if (v.secretLag > 0) {
+        v.secretLag--
+        writeState(state)
+        return ok(shown(v, v.lagSecret))
+      }
+      return ok(shown(v))
+    }
     if (sub === 'versions') return ok({ items: [...w.versions].reverse().map((v) => ({ id: v.id, number: v.number })) })
-    if (sub === 'secrets') return ok(Object.keys(version(w.deployment[0]?.version_id)?.secrets ?? {}).map((n) => ({ name: n, type: 'secret_text' })))
+    // The script's secret list names the NEWEST version's secrets, not the serving one's (measured on Cloudflare, S9).
+    if (sub === 'secrets') return ok(Object.keys(w.versions.at(-1)?.secrets ?? {}).map((n) => ({ name: n, type: 'secret_text' })))
     return notFound()
   }
 

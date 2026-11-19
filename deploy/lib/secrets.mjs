@@ -14,10 +14,14 @@
 //   `wrangler deploy` in phase 2 (new, or applying a Durable Object migration) gets the same on
 //   the version it just deployed, then `versions deploy` of the keyed one, before the next
 //   Worker is promoted.
-// - Fail closed: if the Worker has the secret now (its secret list, a version serving now, or a
-//   version uploaded after the one serving, as a rollback leaves behind) but the version this
-//   release would promote does not carry it, nothing is generated and nothing is promoted: a new
-//   value would invalidate every registered OAuth client.
+// - Fail closed: if the Worker has the secret now (a version serving now, or a version uploaded
+//   after the one serving, as a rollback leaves behind) but the version this release would promote
+//   does not carry it, nothing is generated and nothing is promoted: a new value would invalidate
+//   every registered OAuth client.
+// - Rollbacks (measured on Cloudflare, 2026-11-19, spike S9): a secret belongs to each version, so
+//   a rollback to a version without the key serves without it until the next deploy, and Cloudflare
+//   refuses (10220) a rollback to a version whose value differs. `release.mjs rollback` refuses both
+//   up front, before any Worker is moved (`secretRollbackProblems`).
 import { randomBytes } from 'node:crypto'
 
 export const GENERATED_SECRETS = [
@@ -56,6 +60,36 @@ export function secretNamesOf(version) {
 
 const plainVar = (version, name) => (version?.resources?.bindings ?? version?.bindings ?? []).find((b) => b?.type === 'plain_text' && b.name === name)?.text ?? null
 
+const annotation = (v, key) => v?.annotations?.[key] ?? v?.metadata?.annotations?.[key] ?? null
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * How long a read of a version just created is retried while Cloudflare does not show it yet
+ * (measured on Cloudflare, S9: 2 of 16 such reads failed, a 404 and a version without the secret
+ * just put, both on a Worker about a minute old; later reads saw it after 193-368 ms). Backoff from
+ * 250 ms, doubling, for at most this long in all. VIZ_FRESH_READ_MS sets it (the tests shorten it).
+ */
+export const FRESH_READ_MS = 10_000
+const freshBudget = () => {
+  const n = Number(process.env.VIZ_FRESH_READ_MS)
+  return Number.isFinite(n) && n >= 0 ? n : FRESH_READ_MS
+}
+
+/** Reads `id` of `worker` until `ready(info)`, retrying within the budget; returns the last answer. */
+export async function readFresh(api, worker, id, ready = (info) => Boolean(info)) {
+  const budget = freshBudget()
+  let waited = 0
+  let delay = 250
+  for (;;) {
+    const info = await api.versionInfo(worker, id)
+    if (ready(info) || waited >= budget) return info
+    const d = Math.min(delay, budget - waited)
+    await sleep(d)
+    waited += d
+    delay *= 2
+  }
+}
+
 /** Replaces every occurrence of `value` in `text`. */
 export const scrub = (text, value) => (value ? String(text ?? '').split(value).join('[redacted]') : String(text ?? ''))
 
@@ -80,16 +114,19 @@ export function rotateProblems(rotate, specs) {
 }
 
 /**
- * What the account holds now, by name only: for each generated secret, whether the Worker's
- * secret list, a version serving now, or a version newer than every serving one carries it. Read
- * before phase 1. `api`: { listSecrets, versionInfo, listVersions } (lib/cf.mjs).
+ * What the account holds now, by name only: for each generated secret, whether a version serving
+ * now or a version newer than every serving one carries it. Read before phase 1. `api`: {
+ * versionInfo, listVersions } (lib/cf.mjs).
  *
  * The newer versions are what a rollback leaves behind: after a rollback across the release that
- * created the key, the serving version and the secret list may not have it while the release
- * that made it is still among the versions (review of D53, m-9). An upload that then does not
- * inherit it is refused instead of silently given a new key. Normally no version is newer than
- * the serving one (one API call to list); after a rollback, one call per newer version, at most
- * the 100 Cloudflare keeps.
+ * created the key, the serving version may not have it while the release that made it is still
+ * among the versions (review of D53, m-9). An upload that then does not inherit it is refused
+ * instead of silently given a new key. Normally no version is newer than the serving one (one API
+ * call to list); after a rollback, one call per newer version, at most the 100 Cloudflare keeps.
+ * The Worker's secret list is not read: measured on Cloudflare (S9), it names the newest version's
+ * secrets, which the scan of newer versions already covers, and it says nothing of what serves.
+ * A serving version that cannot be read stops the release (unknown, never taken as "not set"); one
+ * whose number is unknown makes every other version count as newer.
  */
 export async function secretsNow(specs, live, api) {
   const out = []
@@ -100,18 +137,17 @@ export async function secretsNow(specs, live, api) {
       continue
     }
     const seenIn = []
-    if ((await api.listSecrets(spec.worker)).some((s) => s?.name === spec.name)) seenIn.push("the Worker's secret list")
+    const servingIds = new Set((now.versions ?? []).map((v) => v.version_id))
     let newestServing = -Infinity
     for (const v of now.versions ?? []) {
       const info = await api.versionInfo(spec.worker, v.version_id)
+      if (!info) throw new Error(`${spec.worker}: serving version ${v.version_id} could not be read, so whether ${spec.name} is set is unknown; nothing was changed`)
       if (secretNamesOf(info).includes(spec.name)) seenIn.push(`serving version ${v.version_id}`)
-      newestServing = Math.max(newestServing, Number.isFinite(info?.number) ? info.number : Infinity)
+      if (Number.isFinite(info.number)) newestServing = Math.max(newestServing, info.number)
     }
-    if (newestServing !== Infinity) {
-      for (const v of await api.listVersions(spec.worker)) {
-        if (!(Number.isFinite(v.number) && v.number > newestServing)) continue
-        if (secretNamesOf(await api.versionInfo(spec.worker, v.id)).includes(spec.name)) seenIn.push(`version ${v.id} (number ${v.number}), newer than the one serving: a rollback left it`)
-      }
+    for (const v of await api.listVersions(spec.worker)) {
+      if (servingIds.has(v.id) || (Number.isFinite(v.number) && v.number <= newestServing)) continue
+      if (secretNamesOf(await api.versionInfo(spec.worker, v.id)).includes(spec.name)) seenIn.push(`version ${v.id} (number ${v.number}), newer than the one serving: a rollback left it`)
     }
     out.push({ ...spec, exists: true, known: seenIn.length > 0, seenIn })
   }
@@ -151,8 +187,9 @@ export function planSecrets(now, rotate, steps) {
  */
 export async function ensureSecrets({ worker, versionId, specs, now, rotate, release, run, tag, message, api, log = () => {} }) {
   let current = versionId
-  const info = await api.versionInfo(worker, current)
-  if (!info) throw new Error(`${worker}: version ${current} was not found, so its secrets cannot be checked`)
+  // Just created (uploaded, or deployed in phase 2): read until Cloudflare shows it (S9).
+  const info = await readFresh(api, worker, current)
+  if (!info) throw new Error(`${worker}: version ${current} was not found (after retrying for ${freshBudget()} ms), so its secrets cannot be checked`)
   const carried = secretNamesOf(info)
   const actions = []
   const toPut = []
@@ -194,8 +231,8 @@ export async function ensureSecrets({ worker, versionId, specs, now, rotate, rel
     }
     const m = /Created version ([0-9a-f-]{36})/i.exec(out)
     if (!m) throw new Error(`${worker}: no version id in wrangler's answer to putting ${spec.name}; nothing was promoted`)
-    const made = await api.versionInfo(worker, m[1])
-    if (!secretNamesOf(made).includes(spec.name)) throw new Error(`${worker}: version ${m[1]} does not list ${spec.name} after it was put; nothing was promoted`)
+    const made = await readFresh(api, worker, m[1], (x) => secretNamesOf(x).includes(spec.name))
+    if (!secretNamesOf(made).includes(spec.name)) throw new Error(`${worker}: version ${m[1]} does not list ${spec.name} after it was put (read for ${freshBudget()} ms); nothing was promoted`)
     if (plainVar(made, 'VIZ_RELEASE') !== release) throw new Error(`${worker}: version ${m[1]} carries VIZ_RELEASE ${plainVar(made, 'VIZ_RELEASE')}, not ${release}; it is not this release's, so nothing is promoted`)
     // The put patched whatever version was newest when Cloudflare applied it; its vars are that
     // version's. Another run of the same release that uploaded after the check above has the same
@@ -212,3 +249,50 @@ export async function ensureSecrets({ worker, versionId, specs, now, rotate, rel
   }
   return { versionId: current, actions }
 }
+
+/**
+ * Generated secrets a rollback to `target` would take away or change (measured on Cloudflare,
+ * 2026-11-19, spike S9). Pure. `targetInfo` maps each Worker of the record to its version as the API
+ * returns it; `ran` is every version newer than the target's of those Workers (`{ worker, versionId,
+ * release, secrets, message }`); `accept` the names the operator accepts losing.
+ *
+ * - The target's version does not carry a secret a newer version carries (a rollback across the
+ *   release that created it): Cloudflare allows it, and the restored version serves WITHOUT the key
+ *   until the next deploy (which takes the newest version's again). Refused unless accepted.
+ * - The target's version carries it, but a newer version was made by putting it (`created` or
+ *   `rotated`, the message ensureSecrets writes): the values differ, Cloudflare refuses the
+ *   rollback (10220), and `wrangler versions deploy` has no way to force it. Refused always, so
+ *   that the callers are not rolled back ahead of a viz-control step that fails.
+ */
+export function secretRollbackProblems({ target, targetInfo, ran, specs, accept = new Set() }) {
+  const problems = []
+  for (const spec of specs) {
+    const own = target.workers.find((w) => w.name === spec.worker)
+    if (!own) continue // the record leaves this Worker as it is
+    const has = secretNamesOf(targetInfo[spec.worker]).includes(spec.name)
+    const since = ran.filter((v) => v.worker === spec.worker)
+    if (!has) {
+      const carrier = since.find((v) => v.secrets.includes(spec.name))
+      if (carrier && !accept.has(spec.name)) {
+        problems.push(
+          `${spec.worker}: this rollback restores version ${own.versionId}, which does not carry ${spec.name}, and version ${carrier.versionId} (release ${carrier.release ?? 'unknown'}) carries it: it crosses the release that created the key. ` +
+            `Measured on Cloudflare (S9): the rollback is allowed and the restored version serves without the key until the next deploy: /oauth/register answers 503, the metadata drops registration_endpoint, every registered client is refused at /oauth/authorize (400 "not registered"), and (read from control's code, not measured) its codes and tokens are refused too. ` +
+            `To roll back anyway, accept that with --accept-secret-loss ${spec.name}; the next deploy brings the key back. Or leave ${spec.worker} out of the record.`,
+        )
+      }
+      continue
+    }
+    const put = since.find((v) => new RegExp(`; ${spec.name} (created|rotated)$`).test(v.message ?? ''))
+    if (put) {
+      problems.push(
+        `${spec.worker}: this rollback restores version ${own.versionId}, whose ${spec.name} differs from the one put since on version ${put.versionId} (release ${put.release ?? 'unknown'}: "${put.message}"): it crosses a rotation. ` +
+          `Cloudflare refuses that rollback (10220, "secrets have changed", measured S9) and wrangler versions deploy cannot force it; forced through the API, the old key would serve until the next release took the newest version's again. ` +
+          `Nothing was moved. Roll back with a record that leaves ${spec.worker} out (its serving version stays, a callee newer than its callers), or fix forward.`,
+      )
+    }
+  }
+  return problems
+}
+
+/** What a version tells the rollback check about generated secrets: their names and its message. */
+export const secretFacts = (info) => ({ secrets: secretNamesOf(info), message: annotation(info, 'workers/message') })

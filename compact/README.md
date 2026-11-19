@@ -208,11 +208,11 @@ settles it is a merge run in a deployed Worker (`design/VERIFICATION.md` §4).
 
 ```
 (cd ../engine/wasm && ./build.sh)
-npm ci && npx vitest run --maxWorkers=2    # 34 tests in workerd, 4 files
+npm ci && npx vitest run --maxWorkers=2    # 35 tests in workerd, 4 files
 npx tsc --noEmit                           # clean
 ```
 
-**Spans and logs (2026-11-19).** `npx vitest run --maxWorkers=2`: **34 of 34** (10 new in
+**Spans and logs (2026-11-19).** `npx vitest run --maxWorkers=2`: **35 of 35** (10 new in
 `test/signals.test.ts`, 1 new and 1 extended in `test/golden.test.ts`); `tsc --noEmit` clean; the
 janitor's suite (31 of 31, it imports `decodeCompactionInputs`) and flush's (59 of 59, they share
 the engine module) pass unchanged. Files are read back with **hyparquet**, which shares no code

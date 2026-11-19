@@ -36,6 +36,8 @@ import {
   putSegment,
   readMetadata,
   snapshotEntries,
+  opsOf,
+  publishSettled,
   type PublisherStub,
 } from './helpers'
 
@@ -309,8 +311,12 @@ describe('idempotence', () => {
     await runInDurableObject(p, async (_i, state) => { await state.storage.deleteAll() })
     await evictDurableObject(p)
     expect((await p.verify('metric_samples')).ok).toBe(false) // empty state, table at v2: reported
-    const r = await p.publish()
-    expect(r.ops.put).toBe(0)
+    // One table rebuilt from R2 per publish (the two metric tables have metadata), then a publish
+    // from the cursors found there (it re-bases the tenant for the span and log tables, which have
+    // no metadata, so their cursors were in the lost storage only). Nothing is written.
+    const rs = await publishSettled(p)
+    expect(rs.map((r) => r.tenants[0]!.status)).toEqual(['deferred', 'deferred', 'ok'])
+    expect(opsOf(rs).put).toBe(0)
     for (const table of TABLES) expect(await metadataVersions(cell, table)).toEqual([1, 2])
     expect(await p.status('metric_samples')).toMatchObject({ version: 2, files: 2 })
     await expectPublished(cell, [a])

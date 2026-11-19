@@ -206,7 +206,7 @@ The SIMD build was not compared with a non-SIMD build here.
   isolate also holds the inputs as fetched and the copied-out output on the JS side: about
   62 + 16 + 16 MB for spans and 81 + 16 + 22 MB for logs at the budget (modelled), against
   70 + 16 + 16 for metrics.
-- **Size**: 3,205,423 bytes raw, 927,825 bytes `gzip -9`, against 2,897,948 and 861,430 for ABI 3:
+- **Size**: 3,205,423 bytes raw, 927,821 bytes `gzip -9`, against 2,897,948 and 861,430 for ABI 3:
   the merges and the token filter add 307 KB raw, 66 KB gzip.
 
 ## Known risks
