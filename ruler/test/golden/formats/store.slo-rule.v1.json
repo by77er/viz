@@ -1,0 +1,17 @@
+{
+ "format": "store.slo-rule",
+ "version": 1,
+ "stored": "{\"name\":\"slos/1m\",\"intervalMs\":60000,\"queryOffsetMs\":0,\"limit\":0,\"rules\":[],\"sloRules\":[{\"kind\":\"slo\",\"name\":\"CheckoutAvailability\",\"expr\":\"label_replace(sum(increase(requests_total{job=\\\"checkout\\\"}[1m])), \\\"viz_slo_part\\\", \\\"total\\\", \\\"\\\", \\\"\\\") or label_replace(sum(increase(errors_total{job=\\\"checkout\\\"}[1m])), \\\"viz_slo_part\\\", \\\"bad\\\", \\\"\\\", \\\"\\\")\",\"slo\":{\"objective\":0.99,\"windowMs\":86400000,\"sli\":{\"kind\":\"bad_total\",\"good\":null,\"bad\":\"sum(increase(errors_total{job=\\\"checkout\\\"}[$window]))\",\"total\":\"sum(increase(requests_total{job=\\\"checkout\\\"}[$window]))\",\"errorRatio\":null},\"alerts\":[{\"severity\":\"page\",\"longMs\":600000,\"shortMs\":120000,\"burnRate\":10}],\"minEvents\":0,\"minCoverage\":0,\"maxSeries\":10,\"given\":[\"alerts\",\"min_coverage\",\"objective\",\"sli\",\"window\"],\"history\":{\"tick\":\"tail\",\"coldStart\":\"recent\",\"lookbackMs\":3600000,\"bucketMs\":60000,\"budgetLookbackMs\":86400000,\"budgetBucketMs\":120000,\"reason\":\"Reads one 1m bucket per tick (tail); the alert windows are kept as 60 buckets of 1m and the 1d compliance window as 720 buckets of 2m; warming a new rule reads 1h at 1m and 1d at 2m (recent).\"},\"stateBytesPerSeries\":24900},\"forMs\":0,\"keepFiringForMs\":0,\"labels\":{\"team\":\"pay\"},\"annotations\":{\"summary\":\"checkout is burning its error budget\"},\"key\":\"872cfda92b6e0660\",\"cost\":{\"class\":\"tail\",\"windowMs\":60000,\"reason\":\"reads back 60000 ms, within the 600000 ms shards hold; Reads one 1m bucket per tick (tail); the alert windows are kept as 60 buckets of 1m and the 1d compliance window as 720 buckets of 2m; warming a new rule reads 1h at 1m and 1d at 2m (recent).\"}}]}",
+ "key": "872cfda92b6e0660",
+ "bareId": "r_1c217ae14f2c640a",
+ "history": {
+  "tick": "tail",
+  "coldStart": "recent",
+  "lookbackMs": 3600000,
+  "bucketMs": 60000,
+  "budgetLookbackMs": 86400000,
+  "budgetBucketMs": 120000,
+  "reason": "Reads one 1m bucket per tick (tail); the alert windows are kept as 60 buckets of 1m and the 1d compliance window as 720 buckets of 2m; warming a new rule reads 1h at 1m and 1d at 2m (recent)."
+ },
+ "extended": "groups:\n  - name: slos/1m\n    interval: 1m\n    rules:\n      - alert: CheckoutAvailability\n        labels:\n          team: pay\n        annotations:\n          summary: checkout is burning its error budget\n        slo:\n          objective: 0.99\n          window: 1d\n          sli:\n            bad: sum(increase(errors_total{job=\"checkout\"}[$window]))\n            total: sum(increase(requests_total{job=\"checkout\"}[$window]))\n          alerts:\n            - severity: page\n              long_window: 10m\n              short_window: 2m\n              burn_rate: 10\n          min_events: 0\n          min_coverage: 0\n          max_series: 10\n          given:\n            - alerts\n            - min_coverage\n            - objective\n            - sli\n            - window\n"
+}

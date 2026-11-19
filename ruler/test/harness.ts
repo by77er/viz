@@ -12,7 +12,7 @@ import { authenticate } from '../../edge/src/auth'
 import { HttpError } from '../../edge/src/errors'
 import { snappyDecompress } from '../../edge/src/snappy'
 import { batchFromSingle, permissiveValidator } from '../src/evaluator'
-import type { AlertUpdate, BatchEvaluator, EvalRequest, EvalResult, Evaluator, IngestResult, RangeEvaluator, SampleBatch, Sink, Validator } from '../contracts-proposal/rules.v2'
+import type { AlertUpdate, BatchEvaluator, EvalRequest, EvalResult, Evaluator, HistoryPlan, HistoryPlanner, IngestResult, RangeEvaluator, SampleBatch, Sink, Validator } from '../contracts-proposal/rules.v2'
 import { createApi, type ApiEnv } from '../src/http'
 import { Notifier } from '../src/notifier'
 import { DEFAULT_PLACEMENT, type PlacementLimits } from '../src/placement'
@@ -63,6 +63,9 @@ export interface TenantWorld {
   /** The range evaluator backtests use. */
   range: ((promql: string, startMs: number, endMs: number, stepMs: number) => PromMatrix | Promise<PromMatrix>) | null
   rangeCalls: [string, number, number, number][]
+  /** The engine's plan of a range read (warm-ups and backtests ask it first); unset = a read that costs nothing. Throwing = the engine is unreachable. */
+  plan: ((promql: string, startMs: number, endMs: number, stepMs: number) => HistoryPlan) | null
+  planCalls: [string, number, number, number][]
   /**
    * True: the ruler uses its PRODUCTION wiring: viz-query's HTTP API (`FakeQuery`, which checks
    * the API key with edge's real `authenticate` and takes the tenant from it), Remote Write to
@@ -124,12 +127,17 @@ export function tenantWorld(tenant: string): TenantWorld {
       validate: null,
       range: null,
       rangeCalls: [],
+      plan: null,
+      planCalls: [],
       http: false,
     }
     world.tenants.set(tenant, w)
   }
   return w
 }
+
+/** What an unscripted plan answers: a read that costs nothing. */
+export const FREE_PLAN: HistoryPlan = { scanSamples: 0, bytesToRead: 0, seriesEstimate: 0, refusal: null }
 
 export class Crash extends Error {
   constructor(point: string) {
@@ -182,6 +190,22 @@ export class TestRuler extends Ruler {
         w.rangeCalls.push([promql, startMs, endMs, stepMs])
         if (!w.range) throw new Error('no range evaluator scripted')
         return w.range(promql, startMs, endMs, stepMs)
+      },
+    }
+  }
+  /** A tenant that scripts no range has no history: warm-ups find nothing (backtests still fail, as before). */
+  protected override warmupRange(): RangeEvaluator {
+    const w = tenantWorld(this.tenant)
+    if (w.http || w.range) return super.warmupRange()
+    return { range: async () => ({ resultType: 'matrix', result: [] }) }
+  }
+  protected override historyPlanner(): HistoryPlanner {
+    const w = tenantWorld(this.tenant)
+    if (w.http) return super.historyPlanner()
+    return {
+      plan: async (promql, startMs, endMs, stepMs) => {
+        w.planCalls.push([promql, startMs, endMs, stepMs])
+        return w.plan ? w.plan(promql, startMs, endMs, stepMs) : FREE_PLAN
       },
     }
   }
@@ -292,7 +316,16 @@ export class FakeQuery extends WorkerEntrypoint<{ CONFIG: KVNamespace }> {
       const w = tenantWorld(tenant)
       const query = params.query ?? ''
       if (query.includes('syntax(')) return promEnvelope(400, { status: 'error', errorType: 'bad_data', error: '1:7: parse error: unexpected "("' })
-      if (url.pathname === '/api/v1/plan') return promEnvelope(200, { status: 'success', data: { execution: 'single', refusal: null } })
+      if (url.pathname === '/api/v1/plan') {
+        // A range plan (warm-ups and backtests) answers the cost fields of viz-query's QueryPlan.
+        if (params.start !== undefined) {
+          const [start, end, step] = [params.start, params.end, params.step].map((x) => Math.round(Number(x) * 1000)) as [number, number, number]
+          w.planCalls.push([query, start, end, step])
+          const p = w.plan ? w.plan(query, start, end, step) : FREE_PLAN
+          return promEnvelope(200, { status: 'success', data: { execution: 'single', splitReason: '', leaves: 0, ledgerVersion: 1, filesListed: 0, filesSkipped: 0, filesToRead: 0, bytesToRead: p.bytesToRead, scanSamples: p.scanSamples, seriesEstimate: p.seriesEstimate, refusal: p.refusal } })
+        }
+        return promEnvelope(200, { status: 'success', data: { execution: 'single', refusal: null } })
+      }
       if (url.pathname === '/api/v1/query') {
         const timeMs = Math.round(Number(params.time) * 1000)
         w.evalCalls.push([query, timeMs])

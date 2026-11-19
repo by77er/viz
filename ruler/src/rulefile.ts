@@ -7,7 +7,7 @@
  * an integer. Everything else (unknown fields included) goes through unchanged so that
  * validation reports it with its path.
  */
-import type { AnomalyRuleV2, RuleGroup, RuleV2, ValidationError } from '../contracts-proposal/rules.v2'
+import type { AnomalyRuleV2, RuleGroup, RuleV2, SloRuleV2, ValidationError } from '../contracts-proposal/rules.v2'
 import { formatDuration } from './util'
 import { core, parseYaml, toYaml, YamlError, type YamlNode } from './yaml'
 
@@ -121,9 +121,47 @@ export function ruleFileDocument(groups: RuleGroup[], opts: ExportOptions): { fi
       rule.anomaly = block
       ;(group.rules as unknown[]).push(rule)
     }
+    // SLO rules come last (contract version 4), as they are stored and evaluated. Left out of a
+    // file for Prometheus, whole: it has no such rule, and its alerts are not one expression.
+    for (const r of (g.sloRules ?? []) as SloRuleV2[]) {
+      if (!opts.extensions) {
+        dropped.push(`${g.name}/${r.name}: SLO rule (${r.slo.objective} over ${formatDuration(r.slo.windowMs)})`)
+        continue
+      }
+      ;(group.rules as unknown[]).push(sloEntry(r))
+    }
     return group
   })
   return { file: { groups: out }, dropped }
+}
+
+/** An SLO rule as a rule-file entry: every field written out (defaults included), `given` saying which the author chose. */
+export function sloEntry(r: SloRuleV2): Record<string, unknown> {
+  const rule: Record<string, unknown> = { alert: r.name }
+  if (r.forMs > 0) rule.for = formatDuration(r.forMs)
+  if (r.keepFiringForMs > 0) rule.keep_firing_for = formatDuration(r.keepFiringForMs)
+  if (Object.keys(r.labels).length > 0) rule.labels = r.labels
+  if (Object.keys(r.annotations).length > 0) rule.annotations = r.annotations
+  if (r.noData) {
+    rule.no_data = r.noData.mode
+    if (r.noData.mode === 'alerting') rule.no_data_for = formatDuration(r.noData.forMs)
+    if (r.noData.expr !== null) rule.no_data_expr = r.noData.expr
+  }
+  if (r.monitor) rule.monitor = r.monitor
+  const s = r.slo
+  const sli: Record<string, string> =
+    s.sli.kind === 'error_ratio' ? { error_ratio: s.sli.errorRatio as string } : s.sli.kind === 'good_total' ? { good: s.sli.good as string, total: s.sli.total as string } : { bad: s.sli.bad as string, total: s.sli.total as string }
+  rule.slo = {
+    objective: s.objective,
+    window: formatDuration(s.windowMs),
+    sli,
+    alerts: s.alerts.map((a) => ({ severity: a.severity, long_window: formatDuration(a.longMs), short_window: formatDuration(a.shortMs), burn_rate: a.burnRate })),
+    min_events: s.minEvents,
+    min_coverage: s.minCoverage,
+    max_series: s.maxSeries,
+    given: s.given,
+  }
+  return rule
 }
 
 export function exportRuleFile(groups: RuleGroup[], opts: ExportOptions): { yaml: string; dropped: string[] } {

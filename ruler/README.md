@@ -6,7 +6,9 @@ viz (design §7, decision D7). Three Durable Object classes and one Worker:
 - **`Ruler`**, one per tenant rule shard, named `<tenant>/<n>`. Holds rule groups, evaluates
   each group with one batch call to the engine per tick, owns alert state, hands alert
   transitions to the notifier, keeps each monitor's transition history. Evaluates anomaly
-  rules (part 8) with the detectors of `anomaly/` and keeps their state per (rule, series).
+  rules (part 8) with the detectors of `anomaly/` and keeps their state per (rule, series), and
+  SLO burn-rate rules (part 10) from per-series bucket rings; warms new rules of both kinds from
+  history (part 11) and backtests every kind (part 12).
 - **`Notifier`**, one per tenant, named `<tenant>`. Routing tree, grouping timers,
   inhibition, silences, acknowledgements, a transactional outbox to webhook and Slack
   receivers with HMAC-signed requests, and each monitor's notification history.
@@ -33,7 +35,9 @@ fakes, so they are **ruler overhead only**; part 9's trial is the first run on C
 | `src/engine.ts` | Production engine: viz-query's HTTP API (`/query`, `/query_range`, `/plan`) behind one gate per object (one call in flight) |
 | `src/credential.ts` | The shard's service key from control (`contracts/control.ts` `serviceKey`): stored, refreshed, never shown |
 | `src/remote.ts` | Production sink: Remote Write 1.0 to viz-ingest (protobuf + snappy encoder) |
-| `src/backtest.ts` | Backtest over a range matrix through `evalAlertingRule`; intervals, summary, resolution note |
+| `src/backtest.ts` | `trackIntervals`: any rule's per-step result through `evalAlertingRule`, as intervals with the annotations each alert entered with; summary, resolution note |
+| `src/slo.ts` | SLO rules (part 10): the `slo` block, defaults, the per-tick expression, the bucket rings with block-cached window sums, one evaluation (pure), the sentence, the stored rows |
+| `src/history.ts` | Parts 11–14: warm-ups and backtests of every kind read in planned, memory-sized windows (`streamHistory`), the memory and CPU models, the budgets (pure apart from the engine calls) |
 | `src/notifier.ts` | `Notifier`: grouping, flush decisions, acknowledge, silences with undo, outbox, signing, delivery, notification log |
 | `src/amconfig.ts` | Notifier config validation, routing, matchers, inhibition, silence matching, secret redaction (pure) |
 | `src/http.ts` | The HTTP API: routes, auth through edge's verifier, Prometheus-compatible reads, monitors, groups, rule files, backtest, placement and shard moves |
@@ -48,7 +52,9 @@ fakes, so they are **ruler overhead only**; part 9's trial is the first run on C
 | `openapi.json` | OpenAPI 3.1 description of every route (checked against `ROUTES` by `test/http.test.ts`) |
 | `tools/promcheck/` | Go: Prometheus' own code reading what the ruler writes (see parts 2 and 5) |
 | `test/harness.ts` | The test worker: the classes with clock, evaluators, sink, receiver and crash points overridden; `FakeQuery` and `FakeIngest` entrypoints (edge's real `authenticate`, tenant from the key) and control's real `Tenant` for the production wiring |
-| `test/anomaly.bench.ts`, `vitest.measure.config.ts` | Anomaly rule measurements in workerd (`npm run bench:anomaly`); the config adds `HOST`, which reads workerd's CPU time and the load average in Node |
+| `test/anomaly.bench.ts`, `vitest.measure.config.ts` | Anomaly rule measurements in workerd (`npm run bench:anomaly`); the config adds `HOST`, which reads workerd's CPU time, its resident memory and the load average in Node |
+| `test/slo.bench.ts` | SLO tick, warm-up and 7-day backtest measurements in workerd (`npm run bench:history`) |
+| `test/cpu.bench.ts`, `test/memory.bench.ts` | Calibration of the CPU model (µs per point by rule kind, and per point parsed) and of the memory model (bytes per point held) |
 | `scripts/mutants.mjs` | Mutation checks, applied to a scratch copy |
 
 `wrangler.jsonc` is the production shape, from which `deploy/configure.mjs` generates the
@@ -191,7 +197,9 @@ shorter than the step can be missed and firings closer than a step are joined; `
 shorter than the step counts as one step, otherwise it is rounded up to a whole number of
 steps; a step finer than the live interval can show firings live evaluation would not
 have seen; history is read as stored now, not as it was. At most 11,000 steps (Prometheus'
-range limit); a too-long range is refused with the smallest step that would work.
+range limit); a too-long range is refused with the smallest step that would work. Since contract
+version 4 every backtest is planned first and refused whole past a budget, and anomaly and SLO
+rules are backtested too (part 12).
 
 ### 5. Rule files
 
@@ -425,6 +433,256 @@ the format in control turned the next one into Alertmanager's body. **Rule evalu
 evaluated (`ok`, one series scored); the recorded series came back through Remote Write and
 the query path; one service key was issued for the whole run (no rotation).
 
+### 10. SLO burn-rate rules (contract version 4)
+
+An **SLO rule** is an objective, a compliance window and an SLI; the ruler raises the Google SRE
+Workbook's multi-window, multi-burn-rate alerts (chapter 5, approach 6). The contract is
+`contracts/rules.ts`, "SLO burn-rate rules (contract version 4)", changed first and on its own
+(contract issue 16): additive, so every rule file, stored group and config valid under version 3
+means the same. Code: `src/slo.ts`, `src/rules.ts` (the `slo` block of an entry), `src/ruler.ts`
+(tick, commit, load, moves), `src/monitors.ts` and `src/http.ts` (the API).
+
+```yaml
+- alert: CheckoutAvailability
+  slo:
+    objective: 0.999                 # required
+    sli:                             # { bad, total }, { good, total } or { error_ratio }
+      bad: sum(increase(http_requests_total{job="checkout",code=~"5.."}[$window]))
+      total: sum(increase(http_requests_total{job="checkout"}[$window]))
+    # window: 30d, alerts: the workbook's four, min_events: 0, min_coverage: 0.9, max_series: 10
+```
+
+Through the monitors API: `POST /api/v1/monitors` with `slo: { objective, sli: { bad, total } |
+{ good, total } | { errorRatio }, window?, alerts?: [{ severity, longWindow, shortWindow, burnRate }],
+minEvents?, minCoverage?, maxSeries? }` and no `query` or `condition`; default group `slos/<interval>`
+(kept apart from threshold monitors for the rollback reason of part 8). Problems come back in the
+monitor's own field names (`slo.sli.errorRatio`, `slo.alerts[0].longWindow`).
+
+- **The SLI is written with `$window`**, which the ruler replaces with the bucket width: the group
+  interval each tick, a coarse width when it reads the compliance window. An expression without
+  it is refused (a `[5m]` range evaluated every minute would count events five times). `rate()`
+  works as well as `increase()`; only `min_events` sees the unit. With `{ bad, total }` a missing
+  bad series means no errors; with `{ good, total }` a missing good series means all bad, and a
+  good series without a total one is refused (`invalid_result`: the two aggregate by different
+  labels); `{ error_ratio }` weighs every bucket equally (time, not events).
+- **Defaults are written out at save** (`given` lists what the author chose): the workbook's four
+  alerts as `anomaly/` defines them (`SRE_WORKBOOK_RULES`: page 1 h / 5 m at 14.4× and 6 h / 30 m at
+  6×, ticket 1 d / 2 h at 3× and 3 d / 6 h at 1×; the task named three, the library's table and the
+  workbook's alert expressions have the fourth, D42), window 30 d, `min_coverage` 0.9,
+  `max_series` 10 (at most `RulerLimits.maxSloSeriesPerRule`, 100). Any change of objective,
+  window, SLI, alerts, `min_events` or `min_coverage` is a new rule key, with fresh state and a
+  warm-up. Refused at save with a path and a fix: an objective outside (0, 1) (99.9 is answered
+  "write 99.9% as 0.999"), an SLI form other than the three, a short window not shorter than its
+  long one or shorter than the interval, a long window longer than the compliance window, a
+  `severity` label (it is the burn-rate alert's), `expr`. Warned: windows that are not whole
+  numbers of buckets, and an alert that can never fire (`burn_rate × (1 − objective) ≥ 1`, the
+  workbook's "90% SLO" case).
+- **One query per rule per tick**, in the group's one batch call: `label_replace(<total>,
+  "viz_slo_part", "total", "", "") or label_replace(<bad or good>, "viz_slo_part", "bad", "", "")`
+  with `$window` = the interval (the derived expression is `SloRule.expr`, shown in `/api/v1/rules`
+  as the rule's `query`). Each series' bucket goes into a **fine ring** (the longest alert window
+  in interval buckets: 4,320 at 1 minute) and a **coarse ring** (the compliance window in about
+  720 buckets: one hour for 30 days). Window sums are taken backwards from the current bucket in a
+  fixed order, whole blocks of 60 buckets from a cache, so equal buckets give equal sums however
+  they arrived; `evaluateWindows` from `anomaly/` judges each alert (both windows strictly above,
+  `min_events`), a window with less than `min_coverage` of its buckets does not count (the rule
+  is `warming` and says which window), and every series with state is judged every tick, a
+  missing bucket as missing.
+- **Alerts**: one per series and severity (`severity="page"`, `severity="ticket"`), firing while any
+  alert of that severity holds; its value is the burn rate; its `slo` annotation the sentence,
+  its `slo_detail` annotation the numbers (`SloDetail`, format `annotation.slo-detail` v1), and
+  the sentence is the `description` when the author wrote none. The sentence is the library's
+  (`explainRule`) followed by the budget left over the compliance window, how much history that
+  covers, and how long it lasts at the long window's rate:
+  `error budget burning at 16.7× over 1 hour and 200× over 5 minutes (page threshold 14.4×); 2.31%
+  of the 30 days budget for a 99.9% objective was spent in the last 1 hour; 97.7% of the budget is
+  left over the last 30 days, spent in 1.76 days at this rate` (from `slo.test.ts`). With less
+  history: `… over the 4 minutes on record (the window is 1 day)`; overspent: `the budget is spent
+  … (-2470% left)`. `for`, `keep_firing_for`, no-data policies (the SLI returning no series), alert
+  state, the hand-off and the notifier are the alerting rule's, unchanged.
+- **State** (`Ruler` migration 3, table `slo_state`): per rule a head row (slot counters, the earliest
+  bucket on record, each series' labels and last outcome, so a replayed tick reproduces its alerts)
+  and blocks of 60 fine / 24 coarse buckets for all of its series, format `store.slo-state` v1. A
+  tick writes the head and the current block of each ring (**three rows**, measured; a fourth when a
+  block leaves a ring and is deleted), in the transaction that commits the tick's alerts; memory is
+  a working copy adopted after the commit, rebuilt from these rows in the constructor. Rows a newer
+  release wrote are refused (`state_unreadable`), kept, and carried by a shard move; a move carries
+  the rings and the warm-up status (`GroupBundle.sloState`, `.warmup`). Bounds, each an explicit
+  refusal that changes nothing: `series_cap_exceeded`, `invalid_result`; the per-object state budget
+  (part 8) counts SLO rules too (about 150 KB estimated per series at 1 minute).
+
+### 11. Warming new anomaly and SLO rules from history (contract version 4)
+
+A new anomaly or SLO rule (a new rule key) gets a warm-up job (table `warmup`, one row per rule,
+format `store.warmup` v1) in the save's transaction. At its group's first tick, before the batch:
+
+1. **The reads**: an anomaly rule's detector look-back at the interval (`max(minPoints,
+   lookbackMs / interval)` points ending one interval before the tick: 20 for EWMA with half-life 10,
+   the window for the robust z-score, `seasons` periods for the seasonal baseline); an SLO rule's fine ring (from the start of the coarse bucket its
+   window begins in) and the rest of the compliance window as coarse buckets, each with `$window` at
+   its own width. A detector without history (the threshold) is `not_needed`.
+2. **The cost, first**: every read, cut into pieces of at most 11,000 steps, is planned with
+   viz-query's `/api/v1/plan` (`start`, `end`, `step`; one ledger read, nothing fetched). Over
+   `RulerLimits.maxWarmupScanSamples` (3,000,000) or `maxWarmupBytes` (16 MiB) summed, or when any
+   plan carries the engine's own refusal, the warm-up is **refused whole**: nothing is fetched, the
+   rule starts cold, and its status says why with the plan's numbers and the budget. A plan without
+   the numbers is refused too (the cost could not be checked).
+3. **The fetch and the feed**: the reads are fetched in memory-sized windows (part 13; refused
+   before any plan when even one window cannot fit `maxWarmupMemoryBytes`, 16 MiB) and fed, in time order, through the
+   rule's own evaluation (`evalAnomaly` / `evalSlo`, the functions a tick calls), so the state is
+   what it would hold had the rule run all along; a result over `max_series` or a state over the
+   limits refuses the warm-up the same way.
+4. **The commit**: the state rows (whole batches: one `anomaly_state` row for three EWMA series; a
+   head, ~73 fine and ~30 coarse blocks for an SLO) and the status in **one transaction**; then the
+   rule is evaluated at this tick as usual.
+
+An engine failure leaves the job `pending` (attempt counted) and the rule **waits this tick out**,
+saying so (`warming: the engine failed the read (…); tried again at the next tick`); after three
+attempts it is `failed` and the rule starts cold. A crash inside the commit writes nothing and the
+retried alarm warms again to the same state; a finished warm-up is never read again (not after an
+eviction, not after a move). The status is `RuleStatus.anomaly.warmup` / `.slo.warmup`
+(`WarmupStatus`: status, reads, plan, budget, points, attempts, message), in `/api/v1/rules`'s
+object form and in the monitor views; a pending warm-up shows the rule as `warming`. Both budgets
+are `RulerLimits` (`configure` changes them). Rules saved before this release, and rules carried
+over a save with their state, are not warmed.
+
+### 12. Backtests of threshold, anomaly and SLO rules
+
+`Ruler.backtest` and `POST /api/v1/monitors/backtest` take an alerting entry, an anomaly entry or
+an SLO entry (or a monitor document of any kind); **`POST /api/v1/monitors/{id}/backtest`** (new,
+`monitors:read`) takes a saved monitor as stored, at its group's interval. Every read is planned
+first, as in part 11, against `RulerLimits.maxBacktestScanSamples` (20,000,000) and
+`maxBacktestBytes` (128 MiB), and read in windows sized to `maxBacktestMemoryBytes` (32 MiB,
+part 13): past any of them the answer is `over_budget` (HTTP 422 `over_budget` with `plan`,
+`budget` and the memory model's `memory`) and nothing is fetched; an engine failure is `failed` (502).
+
+- **Alerting rules** as before (part 4), now planned first.
+- **Anomaly and SLO rules** run at their interval (a step other than the interval is refused: a
+  detector's step is the interval). One read covers the warm-up part and the range (`[from −
+  look-back, to]`; an SLO adds its coarse read); the warm-up part is fed exactly as a warm-up at
+  `fromMs` would feed it (no alerts), then every step from `fromMs` goes through `evalAnomaly` /
+  `evalSlo` and `evalAlertingRule`, in time order: no second implementation.
+- **The result** is part 4's, plus `kind`, `warmup` (the reads before `fromMs` and the points fed),
+  `cost` (the plan's sums and the budget), and on each interval the `annotations` its alert carried
+  when it entered the state: for an anomaly or SLO alert, the explanation it would have been sent
+  with.
+- **Live equivalence** (tested): for a rule that ran live from its creation, a backtest from the
+  creation tick over the same data gives the same intervals (start, end, state) with the same
+  annotations, for an EWMA rule with `for` and a templated summary, and for an SLO rule that paged
+  and ticketed. A backtest that starts at another time can differ in the budget figure's last
+  digits (its older coarse buckets come from a coarse read rather than sums of fine ones).
+
+### 13. Streaming history: bounded memory for warm-ups and backtests
+
+Warm-ups (part 11) and backtests (part 12) read history **in time windows, one at a time, in
+order**: each window is fetched, fed step by step through the rule's evaluation, and dropped;
+only the rule's state crosses a window boundary (detector state, the SLO's bucket rings, the alert
+state machine's alerts, the intervals found so far). Where the windows fall changes nothing in the
+result: the evaluation is the same function, called on the same steps in the same order (tested
+across hundreds of boundaries, and against live evaluation).
+
+**The memory model** (`src/history.ts`, `MEMORY`; bytes):
+
+```
+peak = fixed + window steps × series per step × 768
+fixed (backtest) = 2 MiB (the call) + alerts × 3 KiB + 4 MiB (intervals, a cap) + the rule's state
+  anomaly state  = max_series × the stored estimate per series × 3 (heap per stored byte, part 8)
+  SLO state      = max_series × (16 × (fine + coarse ring buckets) + 4 KiB)   (80 KB a series at 1 minute)
+fixed (warm-up)  = 2 MiB (the state built is the rule's own, held live afterwards and bounded by the
+                   per-object state budget)
+series per step  = the bound the rule's own evaluation enforces: max_series (twice for an SLO's two
+                   parts; the no-data expression adds its own), or an alerting rule's alert limit
+```
+
+Windows are as long as `(budget − fixed) / (series per step × 768)` steps allows, at most 11,000.
+The budgets are `RulerLimits` fields proposed in `rules.v2.ts` (`maxWarmupMemoryBytes` 16 MiB,
+`maxBacktestMemoryBytes` 32 MiB; contract issue 18). **Refused before any plan or fetch** when the
+fixed bytes and one step do not fit, or when the windows would take more than 1,000 range queries:
+`over_budget` with the model's `memory: { peakBytes, budgetBytes }` (a warm-up: `refused`, the rule
+starts cold). A window holding more points than it was sized for (the engine returned more series
+than the rule allows) stops the run (`failed`, with that reason) instead of being evaluated. The
+intervals of a backtest stop at 4 MiB (modelled: labels and annotations at two bytes a character).
+The answer's `cost.memory` gives the modelled peak, the budget, the steps per window of each read
+and the queries the windows took. Plans are still asked per 11,000-step piece of each whole read,
+before the first window.
+
+768 bytes a point is above every measurement of resident memory per point held (a window's JSON
+parsed and indexed by step: 440–710 bytes, `test/memory.bench.ts`, below), not the live objects'
+size, so the model is conservative about live memory by construction; what the checks below show is
+that runs sized by it complete under a V8 heap limit like a Durable Object's.
+
+### 14. CPU: refused on a model, never cut off by the platform
+
+**The platform's limits** (Cloudflare documentation, read 2026-11-19).
+[Durable Objects limits](https://developers.cloudflare.com/durable-objects/platform/limits/): "CPU per
+request | 30 seconds (default) / configurable to 5 minutes of active CPU time" (SQLite-backed); "By
+default, the maximum CPU time per Durable Objects invocation (HTTP request, WebSocket message, or
+Alarm) is set to 30 seconds", raised for a class "by setting `limits.cpu_ms`" (the page's example:
+`"cpu_ms": 300000`, "5 minutes"); "Each incoming HTTP request or WebSocket *message* resets the
+remaining available CPU time to 30 seconds"; over it "there is a heightened chance that the
+individual Durable Object is evicted and reset". **Alarms have no CPU limit of their own**: they are
+one of the invocations the 30 s covers; separately, "Alarm handler invocations have a maximum wall
+time of 15 minutes." [Workers limits](https://developers.cloudflare.com/workers/platform/limits/):
+CPU time "does **not**" include "Waiting on network requests"; when it is exceeded "Cloudflare
+returns Error 1102 … `Worker exceeded resource limits`", outcome `exceededCpu`. So a 7-day EWMA
+backtest over 1,000 series (47–50 s of CPU here, part 13) would have been cut off part-way at the
+default limit, and a long warm-up would take its alarm's ticks down with it.
+
+**Choice: refuse, not resume** (D51). A run whose modelled CPU is over its budget is refused, whole,
+with the model's numbers; nothing runs across invocations. Making runs resumable (a cursor and the
+rule's state persisted after each bounded slice, continued from the next alarm, progress through the
+API) was judged out of proportion: every slice would write the run's whole state as rows (an SLO
+rule's rings are 80 KB a series, MBs for 100 series: billed rows each slice), it needs a job
+lifecycle (progress, cancellation, results kept and expired, cleanup) and a second alarm deadline
+in an object whose one alarm is the tick schedule, and slices would compete with the live ticks on
+one single-threaded object. A refusal names the remedy (shorter range, coarser step, narrower
+expression, or a deliberate budget raise up to `limits.cpu_ms`), and the default budgets already
+cover the cases measured at 100 series. Would change if: people need week-long backtests over
+thousands of series at full resolution; then a resumable job (or a run in a Workflow, outside the
+Ruler object) is the next step.
+
+**The CPU model** (`src/history.ts`, `CPU`; microseconds):
+
+```
+run      = 5,000 (base) + Σ windows (500 + points × price)
+price    = parse 1.5 + the rule's evaluation:
+  alerting rule 2.1 (and every no-data presence point 2.1)
+  anomaly       ewma 8.5, threshold 6.5, cusum 9.6,
+                robust_z 3 + 0.0063 × state bytes per series, seasonal 18 + 0.0027 × state bytes per series
+  SLO           1.5 a point added to buckets (warm-up part, coarse read), 6.2 a point evaluated
+```
+
+Each per-point price is 1.5 times the largest measurement (`test/cpu.bench.ts`, below); `base` and
+the 500 per window are allowances, not measured. robust_z and seasonal scan their window at every
+point, so their price grows with the state they keep (the same per-series estimate that bounds
+their state, part 8; two sizes of each were measured).
+
+**The check.** Plans and memory first, as before. Then, **before each window is fed** (after it is
+fetched), the run projects its whole cost: what it has spent, this window, and every remaining step
+of every read at the most series any window has shown so far (series present in a window, counted
+as present at every step). Over the budget it stops: before the first window is evaluated
+("refused … after reading one window": the one that counts the series), or, when later windows show
+more series, before the first window that shows them ("after N of M windows … nothing is kept").
+With the same series throughout, the projection after the first window equals the run's final
+account (tested). An answer carries `cost.cpu: { modelledMs, budgetMs }`; an `over_budget` refusal
+carries `cpu` (HTTP 422, beside `plan`, `budget` and `memory`).
+
+**Budgets** (`RulerLimits` fields proposed in `rules.v2.ts`, contract issue 18):
+
+- `maxBacktestCpuMs` **20,000**: a backtest is one RPC call, its own invocation with 30 s. At the
+  model's 1.5× margin a run at the budget is expected to use about 13 s here.
+- `maxWarmupCpuMs` **5,000 per alarm**, shared by every warm-up the alarm runs (they share the
+  alarm's 30 s with its ticks). Each warm-up **reserves** what is left (at most the whole) before it
+  reads, so groups evaluated concurrently cannot both spend it, and gives back what it did not use.
+  A warm-up priced over the whole budget is refused and its rule starts cold at once (the status
+  says why). One that fits the whole but not what is left **waits for the next alarm**: status
+  `pending`, no attempt counted, the rule skips its evaluation as for an engine failure, and the job
+  survives eviction (it is a row). It is then warmed whole in that alarm, to the state of a rule
+  created a tick later (tested against the library's own computation, through an eviction).
+
+What this does not bound: the live ticks' own CPU (measured per tick in parts 8 and 10), and the
+model's accuracy on Cloudflare's CPUs (calibrated here; see Risks).
+
 ### Versioned storage and formats (`contracts/COMPATIBILITY.md`)
 
 - **Storage.** `Ruler`, `Notifier` and `RulerIndex` open SQLite in the constructor, inside
@@ -448,6 +706,14 @@ the query path; one service key was issued for the whole run (no rotation).
   keys, alert fingerprints, `hash64`), the notification idempotency key, the registry
   partition and group placement, the webhook body with its `X-Viz-Signature`, and the rule-file
   export. A change to any of them is caught by a golden test (mutants 57–59).
+- **SLO rules and warm-ups** add, additively: `Ruler` migration 3 (tables `slo_state` and `warmup`,
+  `readableFrom` 1: `compat` stays 1, so releases knowing migrations 1 or 1–2 can open it and stay
+  rollback targets; golden `test/golden/schema/ruler.v3.json`; storage at version 1 or 2 with data
+  upgrades without a row changing, `compat.test.ts`), the optional `sloRules` field of a stored
+  group (absent when none), and four formats: `store.slo-rule`, `store.slo-state`, `store.warmup`
+  and `annotation.slo-detail`, each v1 with a golden file. During a rollback to a release without
+  them, SLO rules are not evaluated and their rows wait; an anomaly rule a rolled-back release
+  evaluated is warmed when this release returns only if its job was still pending.
 - **Anomaly rules** add, additively: `Ruler` migration 2 (the table `anomaly_state`,
   `readableFrom` 1: `compat` stays 1, so the previous release can open the storage and stays a
   rollback target; golden `test/golden/schema/ruler.v2.json`; storage at version 1 with data
@@ -511,32 +777,52 @@ data names the tenant.
 - **A background reconciler for interrupted shard moves**: the next write finishes them.
   Shard count never shrinks; there is no merge of under-used shards.
 - **`ALERTS` / `ALERTS_FOR_STATE`** are defined (`syntheticSeries`) but not written;
-  **staleness markers**; **LogQL / TraceQL rules**, SLO rules.
-- **Anomaly rules (part 8):** warming from history (a new rule, or one whose state was reset,
-  warms live for the detector's `minPoints` evaluations; the ruler's `RangeEvaluator` could read
-  the look-back at a cold start, not done); burn-rate SLO rules (to compile to recording rules)
-  and the cross-series detector; STL refits and PELT as scheduled jobs; backtesting an anomaly
-  monitor (`POST /monitors/backtest` takes threshold monitors only); a placement that knows the
-  per-object state budget (a save over it is refused, not moved to another shard); state written
-  less often than every tick (each tick costs at least one row per rule, measured below).
+  **staleness markers**; **LogQL / TraceQL rules** (and so LogQL / TraceQL SLIs).
+- **Anomaly rules (part 8):** the cross-series detector; STL refits and PELT as scheduled jobs; a
+  placement that knows the per-object state budget (a save over it is refused, not moved to
+  another shard); state written less often than every tick (each tick costs at least one row per
+  rule, measured below).
+- **SLO rules (part 10):** OpenSLO or Sloth file import; a Prometheus export of an SLO rule (with
+  `?extensions=false` it is left out whole and listed; Sloth-style recording and alerting rules
+  could be generated from it); a latency SLO written as a histogram threshold (the author writes
+  the bucket counts as good and total); the burn rates or the remaining budget as series (nothing
+  is recorded; the budget is in the alert, `slo_detail` and the rule's status only); a label naming
+  the window that burned (it is in the annotations); the budget figure's far edge moves one coarse
+  bucket (an hour for 30 days) at a time; rings for intervals finer than 100,000 buckets in the
+  longest window (refused at save).
+- **Warm-ups (part 11):** a warm-up that was refused or failed is not tried again later (the rule
+  warms live); the cost is asked at the first tick, not at save (the save answers the class of the
+  read, not its planned cost); the plan does not count the shards' tail; a warm-up runs inside its
+  group's tick, so that tick's batch waits for it (one engine call at a time per object), and big
+  warm-ups are not spread over several ticks: one over `maxWarmupCpuMs` starts cold (part 14).
+- **Backtests (part 12):** anomaly and SLO rules at a step other than their interval; recording
+  rules; **resumable or asynchronous runs**: a backtest or warm-up over its CPU budget is refused,
+  not continued across invocations from a persisted cursor (part 14, D51), and the request holds the
+  object for its duration; a CPU model measured on Cloudflare (calibrated here, part 14);
+  windows sized by the series a read really returns (they are sized by the rule's bound, part 13);
+  a plan per window (plans price each whole read).
 - **Notifier:** mute / active time intervals, notification templates, receivers other than
   webhook and Slack, `/api/v2/alerts` ingestion, editing a silence, updating a Slack message.
 - **Metrics about itself** (`viz_rule_evaluations_total`…): `health()` only.
 - **`DESIGN.md` / `DECISIONS.md`**: the earlier tasks' items under "Contract issues" (13) are
-  still not made. Anomaly rules are in DESIGN §7 and D33; the published design page
-  (`design/artifact/viz-design.html`) was not regenerated for them.
+  still not made. Anomaly rules are in DESIGN §7 and D33; SLO rules, warm-ups and backtests in
+  DESIGN §7, D42, D43 and D51; the published design page (`design/artifact/viz-design.html`) was not
+  regenerated for either (outside this component).
 - **Production deployment.** The pipeline deploys viz-ruler (`deploy/workers.json`); it has run
   on Cloudflare only as a staged trial, since destroyed (`deploy/README.md`, "Trial 2").
 
 ## Verification
 
 ```
-npm test                # 331 tests in 20 files, in workerd, at most 2 workers (npx vitest run --maxWorkers=2): all pass (`test/anomaly.bench.ts` runs only under `bench:anomaly`)
+npm test                # 374 tests in 22 files, in workerd, at most 2 workers (npx vitest run --maxWorkers=2): all pass (the `*.bench.ts` files run only under `bench:*`)
 npx tsc --noEmit        # clean
 npm run independent     # capture, then Prometheus' own code (Go, tools/promcheck): 2 Go tests pass (not re-run in the anomaly change)
-npm run mutants         # 93 mutants (50 earlier + 9 for versioning + 22 for anomaly rules + 12 for the production wiring), on a scratch copy; vitest runs with at most 2 workers
+npm run mutants         # 130 mutants (50 earlier + 9 for versioning + 22 for anomaly rules + 12 for the production wiring + 22 for SLO rules, warm-ups and backtests + 7 for streaming + 8 for CPU), on a scratch copy; vitest runs with at most 2 workers
 npm run bench           # the measurements below
 npm run bench:anomaly   # anomaly rules in workerd (one worker): the "Anomaly rules" measurements below
+npm run bench:history   # SLO ticks, warm-ups and 7-day backtests in workerd (one worker; run each `B.` case alone with -t, and MINIFLARE_WORKERD_V8_FLAGS=--max-old-space-size=128 for the heap limit): the "SLO rules, warm-ups and backtests" and "Streaming" measurements below
+npx vitest run --config vitest.measure.config.ts --maxWorkers=1 test/memory.bench.ts -t "<case>"   # the per-point memory calibration, one case per process
+npx vitest run --config vitest.measure.config.ts --maxWorkers=1 test/cpu.bench.ts -t "K. <case>:"   # the per-point CPU calibration, one case per process
 ```
 
 `npm run independent` needs Go 1.24 and the modules in `tools/promcheck/go.sum` (they were
@@ -560,9 +846,11 @@ in the module cache here, plus one fetched from the Go proxy for `go mod tidy`).
 | `yaml.test.ts` | 37 | part 5 |
 | `robust.test.ts` | 15 | registry, sweeper, placement, shard splits and moves |
 | `independent.test.ts` | 2 | captures for `tools/promcheck` |
-| `compat.test.ts` | 16 | versioned storage: schema goldens per class and version; the pre-versioning dump adopted; refusal and its effects; newer readable storage; version 1 storage with data upgraded to 2; the previous release still a rollback target |
-| `golden.test.ts` | 4 | golden formats, including the stored anomaly rule and key, its state rows and the `anomaly_detail` annotation |
-| `wiring.test.ts` | 13 | part 9, against fake query and ingest services behind real service bindings (edge's real `authenticate`, tenant from the key) and control's real `Tenant`: every tick's queries carry the shard's one service key and the tick time; two tenants in one isolate each read only their own data with their own key; a key a person disabled: `unauthorized` within the propagation grace with nothing asked of control, then "disabled" with no new key, then after enabling a new key and the rule `ok` again (two `key.service` audit entries); one engine call in flight with four groups due at once (12 queries); `/api/v1/plan` refuses a parse error with its message and a 503 does not block the save; recording rules through Remote Write decoded with edge's snappy decoder (labels, `+Inf`, tick time); backtests through `query_range`; `/healthz`; notifications to control's destination: the plain JSON body's content and signature, no URL, secret or key in it; the Alertmanager form through a route naming `viz:default`, `viz:default` refused as a tenant receiver, and a URL change in control followed after the refresh; 500, a dropped connection, then 200: three attempts, one key, identical bytes, and no secret in any API answer, outbox, health or console output; a stored delivery error with the URL cut out; two tenants' alerts each at their own destination, each signed with its own secret |
+| `compat.test.ts` | 17 | versioned storage: version 2 storage with anomaly state upgraded to 3 without a row changing, then SLO state surviving eviction; releases knowing 1 or 1–2 still rollback targets; schema goldens per class and version; the pre-versioning dump adopted; refusal and its effects; newer readable storage; version 1 storage with data upgraded to 2; the previous release still a rollback target |
+| `golden.test.ts` | 5 | golden formats, including the stored anomaly rule and key, its state rows and the `anomaly_detail` annotation; the stored SLO rule, its key and per-tick expression, its rows, the warm-up status and the `slo_detail` annotation |
+| `wiring.test.ts` | 14 | warm-ups and backtests ask `/api/v1/plan` (start, end, step) for every read before any `/api/v1/query_range`, and an over-budget backtest fetches nothing; part 9, against fake query and ingest services behind real service bindings (edge's real `authenticate`, tenant from the key) and control's real `Tenant`: every tick's queries carry the shard's one service key and the tick time; two tenants in one isolate each read only their own data with their own key; a key a person disabled: `unauthorized` within the propagation grace with nothing asked of control, then "disabled" with no new key, then after enabling a new key and the rule `ok` again (two `key.service` audit entries); one engine call in flight with four groups due at once (12 queries); `/api/v1/plan` refuses a parse error with its message and a 503 does not block the save; recording rules through Remote Write decoded with edge's snappy decoder (labels, `+Inf`, tick time); backtests through `query_range`; `/healthz`; notifications to control's destination: the plain JSON body's content and signature, no URL, secret or key in it; the Alertmanager form through a route naming `viz:default`, `viz:default` refused as a tenant receiver, and a URL change in control followed after the refresh; 500, a dropped connection, then 200: three attempts, one key, identical bytes, and no secret in any API answer, outbox, health or console output; a stored delivery error with the URL cut out; two tenants' alerts each at their own destination, each signed with its own secret |
+| `slo.test.ts` | 20 | part 10: detection within one bucket of the SRE Workbook's formula for 100% to 0.1% error ratios (never where it says never), the library's table (1, 9, 44 and 217 minutes; 865 and 2,161), agreement with the library's own `burnRate.detect` at every point of 7,320 buckets (sentence included), the strict threshold with exactly representable numbers, coverage; the sentence and every number of `slo_detail` against an independent computation; in the object: one query per tick in the batch, page at the first bad minute and ticket at the fifth routed by severity, the page resolving 30 minutes after the outage; three rows a steady tick; evictions and replayed ticks, and a crash in the commit, giving exactly the state of a pure reference run; refusals (series cap, unpaired parts, a newer release's rows) changing nothing; a shard move; another tenant's rows neither loaded nor touched; validation with paths, fixes and warnings |
+| `history.test.ts` | 20 | parts 11–14: a backtest priced over its CPU budget refused after reading one window, with the projection the allowed run then costs exactly (RPC and HTTP 422 `cpu`); a run stopped before the first window whose series take it over; a warm-up refused by its CPU budget (also below the model's base) starting cold at once; an SLO backtest's evaluated part priced apart from its warm-up part; two warm-ups in one alarm: the second waits for the next alarm (no attempt, through an eviction), then equals the library's state; two groups in one late alarm do not both spend the budget;  windowed backtests across hundreds of boundaries equal to one window and to live evaluation (anomaly and SLO); the memory refusal before any plan or fetch (an SLO's rings over a small budget; 1,000 series of SLO state at the default budget, over HTTP); a warm-up refused by its memory budget; a window holding more points than sized for; an anomaly warm-up reads exactly the look-back and leaves the library's state; over budget (and through the monitors API), an engine refusal, engine failures retried then given up, a crash in the warm-up's commit; an SLO warm-up's two reads planned before either is fetched; backtests equal to live alerts with their annotations (anomaly and SLO); every kind refused whole past the budget; the monitors API routes, 422 `over_budget`, and tenant isolation of `POST /monitors/{id}/backtest` |
 | `anomaly.test.ts` | 22 | part 8: alert content against the library run on its own; NaN and pruning; the series cap, state limits per series, rule and object, rows per tick; state across evictions, a replayed tick, a crash in the commit, a newer release's rows and detector names, another tenant's rows; edits, intervals, rule files, `/api/v1/rules`; the monitors API: defaults, errors and warnings, the detectors guide, authorisation, tenant isolation, documented schemas |
 
 The first seven files held the 123 tests that existed before this task; all still pass.
@@ -721,6 +1009,66 @@ the new "dryRun on every write" test.
 | 91 | wiring, six connections: a gate per evaluator instead of one per object | wiring: same |
 | 92 | wiring, credential: a refused key replaced at once (a rotation and an audit entry per 401 while KV propagates) | wiring: "a refused key is kept while KV may still be propagating …" (**survived the first run**: the in-memory minimum interval between requests to control hid the missing propagation grace; the test now evicts the object, after which only the key's stored age protects; then killed) |
 | 93 | wiring, control destination: a tenant config may define `viz:default` itself | wiring: "the Alertmanager form through a tenant route that names viz:default …" |
+| 94 | SLO thresholds: a burn rate equal to the threshold counts as burning (`>=`, applied to the scratch copy of `anomaly/`'s `evaluateWindows`, which the rule calls) | slo: "the threshold is strict: a burn rate exactly at it does not fire …" |
+| 95 | SLO thresholds: the short window ignored (both windows read the long one) | slo: "error ratio 0.01 … within one bucket of the formula's time" (+5 more, incl. the library agreement) |
+| 96 | SLO thresholds: `min_coverage` ignored | slo: "a window counts only once min_coverage of its buckets have data …" (+2 more) |
+| 97 | SLO thresholds: the default alerts lose the 6 h / 30 m page | slo: "the table the library reproduces …" (+3 more) |
+| 98 | SLO windows: the current bucket left out of every window | slo: "error ratio 1 …" (+ every other ratio) |
+| 99 | SLO windows: a block's cached sums not invalidated when a bucket in it is set | slo: "error ratio 0.02 …" (+ more) |
+| 100 | SLO state: the rings not rebuilt from SQLite in the constructor | slo: "state is rows … with evictions and replays the stored state is exactly a run without them" (+2 more) |
+| 101 | SLO state: a replayed tick advances the rings again (replay guard off by one) | slo: same |
+| 102 | tenant isolation: SLO state loaded without the tenant in the `WHERE` clause | slo: "every statement on SLO state names the tenant …" (**survived the first run**: the foreign head held one series, as many as the tenant's own, and the loader reads one head; the test now adds a foreign block for the tenant's own series key and compares the stored state with a pure reference run; then killed) |
+| 103 | tenant isolation: deleting a group deletes SLO state without naming the tenant | slo: same |
+| 104 | warm-up budget: the planned cost never compared with the budget | history: "over the budget nothing is fetched …" (+2 more, backtests) |
+| 105 | warm-up budget: the budget checked only after the fetch (an over-budget read made, then refused) | history: same (+2 more) |
+| 106 | warm-up budget: a read the engine's plan refuses made anyway | history: "a read the engine's own limits would refuse is refused too …" |
+| 107 | warm-up budget: warm-ups held to the larger backtest budget | history: "over the budget nothing is fetched …" (+1 more) |
+| 108 | warm-up: the state written outside the warm-up's transaction | history: "a crash in the warm-up's transaction writes nothing …" |
+| 109 | warm-up: a finished warm-up not recorded (read again after an eviction) | history: "an anomaly rule: the first tick plans then reads exactly …" (+1 more) |
+| 110 | backtest/live: an anomaly backtest starts cold | history: "an anomaly rule: over data it fired on live, a backtest from its creation gives the same alerts …" |
+| 111 | backtest/live: an SLO backtest without the coarse history | history: "an SLO rule: over data it paged and ticketed on live …" |
+| 112 | backtest/live: an SLO backtest feeds each step the previous step's buckets | history: same |
+| 113 | backtest/live: an interval's annotations taken at its end, not when the alert entered the state | history: same |
+| 114 | tenant isolation: `POST /monitors/{id}/backtest` looks the monitor up for a tenant named in the query string | history: "… only the caller's own monitors and data" |
+| 115 | compatibility: a save warms a kept rule over state rows a newer release wrote (both guards removed) | slo: "refusals change nothing … a newer release's rows are refused, kept …" |
+| 116 | window boundary: each window starts a step late (a step between windows never read) | backtest: "a recorded sequence of 90 ticks … identical intervals" (the windows' partition, every seed) (+ history) |
+| 117 | window boundary: windows overlap by a step (the boundary step read and fed twice) | backtest: same |
+| 118 | window boundary: the last step of every window not fed to the rule | backtest: same |
+| 119 | memory refusal: the rule's state left out of the window sizing | history: "across many window boundaries …" (+2 more: the refusals) |
+| 120 | memory refusal: windows sized without the series count | history: "across many window boundaries …" |
+| 121 | memory refusal: an SLO backtest's model leaves out its bucket rings | history: "refused before any plan or fetch when the modelled peak cannot fit …" |
+| 122 | memory refusal: a window holding more points than it was sized for evaluated anyway | history: "a window holding more points than the model sized it for …" |
+| 123 | CPU refusal: the projection never checked | history: "a backtest is refused after reading only its first window …" (+3 more) |
+| 124 | CPU refusal: the projection counts only what has been read (the rest of the run left out) | history: same (+2 more: the growth stop, the per-alarm deferral) |
+| 125 | CPU refusal: the series count taken from the first window only | history: "a run whose series grow is stopped before the first window that shows them …" |
+| 126 | CPU model: an SLO backtest's evaluated points priced as warm-up points | history: "an SLO backtest prices its evaluated part … above its warm-up part" |
+| 127 | per-alarm warm-up CPU: a warm-up's reservation not taken from what the alarm has left | history: "the warm-ups of one alarm share maxWarmupCpuMs …" (+1 more) |
+| 128 | per-alarm warm-up CPU: spent subtracted after the run, not reserved before it | history: "groups evaluated in the same alarm reserve the budget before reading …" (only this one: sequential warm-ups cannot tell) |
+| 129 | per-alarm warm-up CPU: one that fits a warm-up's budget but not the alarm's rest refused, not deferred | history: "the warm-ups of one alarm share maxWarmupCpuMs …" |
+| 130 | per-alarm warm-up CPU: a budget below the model's base defers every warm-up forever | history: "a warm-up priced over maxWarmupCpuMs is refused … even with a budget below the model's base" |
+
+**CPU mutants 123–130** (the refusal on the model's projection and the per-alarm warm-up budget;
+`VIZ_SCRATCH=… node scripts/mutants.mjs 123 … 130`, on a scratch copy): 8 of 8 killed on the first
+run; shared tree unchanged. **Nine earlier patterns had gone stale unnoticed**: 11 and 74 since the
+SLO change (part 10 added `|| s.slo?.ev.changed === true` and the shared `sameStep`), 24, 105, 107,
+108, 110, 111 and 112 since streaming (part 13 moved the step into `IntervalTracker` and the reads
+into `streamHistory`). The runs reported for those changes named only their new mutants, so these
+nine were not running. Found by checking every pattern against the source; all nine rewritten to
+the same property on the current code and re-run: 9 of 9 killed. Then 94–122 were re-run on the
+final code: all killed (two runs were cut off when another session's cleanup deleted the shared
+scratch directory; re-run in a directory of this component's own). All 130 patterns match the
+source exactly once. Mutants 1–93 other than 11, 24 and 74 were not re-run in this change.
+
+**Streaming mutants 116–122** (window boundaries and the memory refusal; `VIZ_SCRATCH=… node
+scripts/mutants.mjs 116 … 122`, on a scratch copy): 7 of 7 killed on the first run; shared tree
+unchanged.
+
+**SLO, warm-up and backtest mutants 94–115** (`VIZ_SCRATCH=… node scripts/mutants.mjs 94 … 115`, on a
+scratch copy): 94–114 on the first run, 20 killed and 102 survived (see its row); after the test
+was strengthened, 102 killed. 115 was added with the fix it guards (a save could warm a rule over
+a newer release's rows; found by reading the code, not by a test) and killed. Mutant 94 edits the
+copy of `anomaly/` in the scratch directory, never `anomaly/` itself. Mutants 1–93 were not
+re-run in this change; the whole suite passes (counts below).
 
 **Production wiring mutants 82–93** (`VIZ_SCRATCH=… node scripts/mutants.mjs 11 53 82 … 93`, a
 scratch copy that now also holds `control/src` and `dashboard/src`, which the tests bind):
@@ -841,7 +1189,156 @@ were re-learning at the end), so it also writes alert, hand-off and history rows
 Nothing here is measured on Cloudflare; what would settle it is the same rule deployed with
 the engine binding, its duration and rows read from Cloudflare's analytics (spike S0).
 
-### Cost model
+#### SLO rules, warm-ups and backtests (`npm run bench:history`)
+
+**Measured here (workerd, local)**: workerd 1.20261117.1 under the vitest pool, one worker, 4 cores
+shared with other sessions' work: **load average 6.9–8.2** (1-minute) during the three runs below.
+CPU is the workerd process's thread time (`HOST`, as above), so it includes the RPC into the object
+and the fake engine building each tick's result in the same isolate; the warm-ups' and backtests'
+history was built before the measured call. Peak memory is the workerd process's VmHWM, which also
+holds the test's own copies of the matrices. Ranges are min–max over 3 runs (each tick figure the
+median of 30 ticks). SLO rule: 99.9% over 30 days, the workbook's four alerts, 1-minute interval
+(a 4,320-bucket and a 720-bucket ring per series); SLI `sum by (svc)`, 1,000 events a minute per
+series, a trickle of errors and bursts that page.
+
+T. One alarm tick of a group holding one rule, warm (after its warm-up and 3 unmeasured ticks):
+
+| rule | series | ms CPU per tick | warm-up (first tick), ms CPU | SQL rows per tick | peak RSS, MB |
+|---|---|---|---|---|---|
+| counterfactual: alerting rule, empty result | 1 | 1.98–2.28 | – | 0 | 149–150 |
+| SLO | 1 | 2.28–2.51 | 67–82; streamed: 70 | 3 | 178–180 |
+| SLO | 10 | 3.60–3.71 | 209–232; streamed: 170 | 3 (up to 6 with transitions) | 213–234 |
+| SLO | 100 | 9.8–11.2 (single ticks up to 147) | 883–1,000; streamed: 1,002 | 3 (up to 7) | 360–389 |
+
+(The warm-up figures before ";" were taken with each read fetched whole; "streamed" is one further
+run after part 13, under a 128 MB heap, its reads in 54 windows sized for the rule's `max_series`
+100, the fake engine's CPU measured alone and taken off; load average 9.1–10.3.)
+
+B. Backtests: see "Streaming" below (the measurements of this table's first version, with each
+read fetched whole, held 0.4–0.6 GB; they are kept there as the counterfactual).
+
+**Reading T.** A burn-rate tick costs about 0.3 ms CPU more than the empty counterfactual at one
+series, 1.5 ms at 10 and 8–9 ms at 100 (about 0.09 ms a series: window sums over cached blocks,
+`evaluateWindows`, the working copy of the rings), and writes **3 rows whatever the number of
+series**. A warm-up is a one-off of 70–80 ms at one series and about 1 s at 100. Nothing here is
+measured on Cloudflare; what would settle the production cost is the same rules deployed, CPU and
+rows read from Cloudflare's analytics.
+
+#### Streaming (`npm run bench:history`, `test/memory.bench.ts`)
+
+**Measured here (workerd, local)**, one worker, each case in its own workerd process (a later case
+would reuse heap an earlier one freed), the process's peak resident memory (VmHWM) reset before the
+case through `HOST?reset`; **load average 5.3–11.3** (1-minute) across the runs. CPU is the workerd
+threads' time with the fake engine's own CPU (building each window's matrix in the same isolate,
+measured alone afterwards over the same windows) taken off and shown beside it. V8's old space was
+limited with `MINIFLARE_WORKERD_V8_FLAGS=--max-old-space-size=<MB>`: 128 MB is a Durable Object's
+memory, 64 MB half of it. Rules as in T (SLO) and part 12; a week at 1 minute (10,080 steps), ending
+2099-12-31; EWMA half-life 10 with a spike per series about weekly; threshold `latency_ms > 0` for
+2 m (every series fires and holds).
+
+C. Calibration, bytes of resident memory per point held (a window's engine JSON, parsed, indexed by
+step), one case per process, two runs each:
+
+| series × steps | points | peak increase, MB | bytes per point |
+|---|---|---|---|
+| 100 × 2,000 | 200,000 | 94.7–108.5 | 496–569 |
+| 1,000 × 500 | 500,000 | 208.9–211.1 | 438–443 |
+| 10 × 20,000 | 200,000 | 121.9–125.7 | 639–659 |
+| 1,000 × 70 | 70,000 | 45.8–47.6 | 686–712 |
+
+The model takes 768, above all of them.
+
+S. A 7-day backtest at 1 minute, streamed (the default 32 MiB budget):
+
+| rule | series | ms CPU (fake engine) at 128 MB heap | at 64 MB heap | windows | points read | model peak / budget, MiB | peak RSS increase, MB (128 / 64 heap) | intervals |
+|---|---|---|---|---|---|---|---|---|
+| threshold | 100 | 920–1,011 (+52–75) | 1,007 (+50) | 31 steps × 326 queries | 1,008,000 | 31.6 / 32 | 60.8 / 59.3 | 200 |
+| threshold | 1,000 | 11,050–12,400 (+670–704) | 14,624 (+950) | 31 steps × 326 queries | 10,080,000 | 31.6 / 32 | 100.9–103.6 / 76.6 | 2,000 |
+| EWMA | 100 | 4,579 (+75) | 4,472 (+82) | 345 steps × 30 queries | 1,010,000 | 32.0 / 32 | 112.3 / 88.1 | 100 |
+| EWMA | 1,000 | 49,646 (+780) | 55,451 (+810) | 26 steps × 389 queries | 10,100,000 | 32.0 / 32 | 121.6 / 107.3 | 1,005 |
+| SLO | 100 | 8,614–8,720 (+239–252) | 9,239 (+227) | 118 + 118 steps × 129 queries | 3,009,600 | 32.0 / 32 | 109.6–113.3 / 82.6 | 316 |
+| SLO | 1,000 | **refused** before any plan or fetch: state 92.7 MiB, model peak 94.1 MiB > 32 MiB | same | – | – | 94.1 / 32 | 0.4 | – |
+
+(The 1,000-series EWMA rule needs `maxAnomalyStateBytesPerRule` raised to be saved at all, and the
+1,000-series SLO rule `maxSloSeriesPerRule`; both were, so that the backtest is what is measured.
+With spikes twice a week, the 1,000-series EWMA backtest stopped at the 4 MiB the intervals may
+hold: 2,445 alerts with their explanations, an explicit `failed`.)
+
+X. The counterfactual, each read fetched whole (one window, as before this change: a 4 GiB budget),
+the same cases at a 128 MB heap:
+
+| rule | series | outcome | ms CPU | peak RSS increase, MB |
+|---|---|---|---|---|
+| threshold | 100 | completed | 1,291 | 134.3 |
+| threshold | 1,000 | **V8 fatal error: reached heap limit, JavaScript heap out of memory**; the runtime crashed and was restarted | – | – |
+| EWMA | 100 | completed, 4× the CPU of the streamed run (garbage collection near the limit) | 19,289 | 164.2 |
+| SLO | 100 | **V8 fatal error: ineffective mark-compacts near heap limit, out of memory**; the runtime crashed | – | – |
+
+**Reading it.** Streamed, every case completed under a 128 MB V8 heap and under a 64 MB one, and the
+1,000-series SLO backtest, whose bucket rings alone the model puts at 92.7 MiB, was refused before
+anything was read. Fetched whole, the 1,000-series threshold and the 100-series SLO backtests killed
+the runtime at the same 128 MB limit: on Cloudflare the object would have been reset, not refused.
+Resident memory is not what the model counts (V8 keeps garbage and reserves heap while it can): the
+peak RSS increase, 60–122 MB at 128 MB, falls to 59–107 MB at 64 MB with the same budget, and the
+runs still complete; the check is that a run sized by the model survives a heap limit, and that the
+counterfactual does not. CPU was not bounded by this change: 12 s for a week of 1,000 threshold
+series and 50 s for 1,000 EWMA series, over a Durable Object's default 30 s; part 14 now refuses
+both up front (below). The alerting rule's windows are sized for 1,000 series however few there are
+(31 steps, 326 queries for a week).
+
+#### CPU (`test/cpu.bench.ts`, `npm run bench:history`)
+
+**Measured here (workerd, local)**, one worker, one case per process; CPU is the workerd threads'
+time (`HOST`, schedstat) with the fake engine's own CPU (building the windows' matrices in the same
+isolate, measured alone afterwards over the same windows) taken off. The fake engine hands over
+built objects, so these runs **do not include parsing the engine's JSON**; that is measured on its
+own (parse + index). **Load average 6.3–13.2** (1-minute) on 4 cores across the runs, which share
+the machine with other builds: thread CPU time is less disturbed by load than wall time, not immune
+(cache, frequency).
+
+K. Calibration: a 2-day streamed backtest at the interval over 100 series (its warm-up part
+included), two runs each; µs of CPU per point read:
+
+| case | points | ms CPU | µs per point | model price without parsing | model / largest |
+|---|---|---|---|---|---|
+| threshold rule `latency_ms > 0` for 2 m, 1 m | 288,000 | 388–404 | 1.35–1.40 | 2.1 | 1.50 |
+| anomaly ewma, half-life 10, 1 m | 290,000 | 1,427–1,620 | 4.92–5.59 | 8.5 | 1.52 |
+| anomaly threshold, 1 m | 288,000 | 1,218–1,219 | 4.23 | 6.5 | 1.54 |
+| anomaly cusum, h 10, 1 m (unpatterned noise) | 294,000 | 1,782–1,873 | 6.06–6.37 | 9.6 | 1.51 |
+| anomaly robust_z, 288-point window (11,768 state bytes), 1 m | 316,800 | 15,396–15,504 | 48.60–48.94 | 77.1 | 1.58 |
+| anomaly robust_z, 72-point window (3,992 state bytes), 1 m | 295,200 | 4,608–4,882 | 15.61–16.54 | 28.1 | 1.70 |
+| anomaly seasonal, daily (30,340 state bytes), 5 m | 201,600 | 12,812–13,169 | 63.55–65.32 | 99.9 | 1.53 |
+| anomaly seasonal, 6-hourly (9,300 state bytes), 5 m | 96,400 | 2,645–2,707 | 27.44–28.08 | 43.1 | 1.53 |
+| SLO, 1 m (3 days of warm-up part, 30 days coarse, 2 days evaluated) | 1,569,600 | 3,188–3,199 | 2.03–2.04 | 3.24 (mixed) | 1.59 |
+| parse + index: 100 series × 2,000 steps of engine JSON | 200,000 | 170–192 | 0.85–0.96 | 1.5 | 1.56 |
+
+The SLO prices come from three measurements: a point added to buckets costs 0.88–0.99 µs (the
+100-series warm-up of T: 883–1,002 ms for 1,008,000 points), a point evaluated 3.8–4.1 µs (the
+2-day run above and the 7-day run below, less their warm-up part); 1.5 and 6.2 are 1.5 times the
+larger ends. A first model with one SLO price (3.1, from the 2-day run alone) was 1.03 times the
+7-day measurement: the evaluated part costs more than the warm-up part, and the 2-day run had more
+warm-up in it. That is why the SLO is priced in two parts.
+
+Against whole runs: the 7-day backtests of part 13 (S) run again, with the model's account printed
+beside the measurement (the budget raised so that they run). Load 8.9–10.4:
+
+| rule | series | ms CPU measured (no parsing) | modelled without parsing | modelled / measured | modelled with parsing | at the default 20 s |
+|---|---|---|---|---|---|---|
+| threshold | 100 | 1,004 | 2,285 | 2.28 | 3,797 | runs |
+| EWMA | 100 | 4,547 | 8,605 | 1.89 | 10,120 | runs |
+| SLO | 100 | 8,663–9,096 | 14,060 | 1.55–1.62 | 18,574 | runs |
+| threshold | 1,000 | 12,689 | 21,336 | 1.68 | 36,456 | refused |
+| EWMA | 1,000 | 46,943 | 86,050 | 1.83 | 101,200 | refused (measured: would be cut off at 30 s) |
+
+Every measurement is below the model, by 1.55–2.28 times; the price of parsing (1.5 µs a point) is
+not in these measurements and is added in the last two columns. Warm-ups at the default 5 s: an SLO
+rule over 100 series is modelled at about 3 s (measured 0.9–1.0 s, plus parsing) and warms; a daily
+seasonal rule at 5 minutes over 100 series is modelled at about 14 s and starts cold unless the
+budget is raised (measured per point above: about 9 s here). **To settle on Cloudflare**: the same
+backtests through a deployed ruler against viz-query, each invocation's `cpuTime` from the Workers
+analytics API beside the answer's `cost.cpu`; if Cloudflare's CPUs are slower than this machine by
+more than the margin, the prices go up.
+
 ### Cost model
 
 **Modelled**, not measured on Cloudflare; unchanged in method from the previous version.
@@ -863,6 +1360,12 @@ research/10 §1.
 Platform-wide, not per 1,000 rules: the sweeper's 16 index requests per run, 46,080 a month,
 about $0.007. The single-call form, for comparison, was $0.07–$1.0 before counting
 evaluator calls as requests and about $6.5 more if they are (previous version of this file).
+
+**SLO rules, per rule, modelled** from the measurements above (rows at $1 per million): a
+1-minute SLO rule writes 3 rows a tick, 129,600 a month, about $0.13, whatever its series; it adds
+0.3–9 ms CPU a tick (1–100 series); its warm-up is one read of the longest window and the
+compliance window, read in memory-sized windows (70 ms–1 s CPU here). To settle: the same rules on
+Cloudflare, rows and duration from the analytics API.
 
 **Anomaly rules, per rule, modelled** from the measurements above (rows at $1 per million):
 a 1-minute EWMA rule of 100 series writes one row a tick, 43,200 a month, about $0.04, and adds
@@ -937,6 +1440,24 @@ Outside `ruler/`; not made here.
    until edge gets the same kind of entrypoint for recorded samples (`SINK.write(tenant, batches)`).
 2. **edge: an RPC entrypoint for recorded samples** (`SINK.write(tenant, batches)`), the same
    way, so the ruler needs no stored key at all.
+3. **mcp/: a `backtest_monitor` tool** (not made: mcp/ is not this component's). `MonitorsClient`
+   (`mcp/src/clients.ts`) gains `backtest(id, { fromMs, toMs, step? })` →
+   `POST /api/v1/monitors/{id}/backtest` and `backtestDraft(monitor, { fromMs, toMs, step })` →
+   `POST /api/v1/monitors/backtest`; the tool (`mcp/src/tools/misc.ts`, scope `monitors:read`,
+   beside `list_monitors` / `get_monitor`) takes `id` (or a draft monitor), `from`, `to` and an
+   optional `step`, and answers each interval as one line (state, start, end, the `anomaly` or `slo`
+   sentence), the summary, and `cost` against `budget`. A 422 `over_budget` becomes a tool error
+   `over-budget` quoting the plan's samples and bytes and the budget, with the fix "shorten the
+   range"; nothing is fetched. A warm-up's status needs no tool: `get_monitor` already returns the
+   monitor view, which carries `anomaly.status.warmup` / `slo.status.warmup` once its subset type
+   (`MonitorView` in `clients.ts`) lists them.
+4. **query/: the plan of a range read could estimate the shards' tail** (`/api/v1/plan` reads the
+   ledger only, so warm-up and backtest budgets miss up to the hot window's samples per series),
+   and could take several queries at once (an SLO's two reads are two plan requests now). If it
+   also reported the series a read would return, the CPU check could refuse before the first
+   window is read instead of after it (part 14).
+5. **deploy/: `limits.cpu_ms` for viz-ruler** only if an operator raises `maxBacktestCpuMs` or
+   `maxWarmupCpuMs` past what 30 s covers (part 14). At the defaults nothing is needed.
 
 ## Contract issues
 
@@ -993,6 +1514,30 @@ declaration ADDED, CHANGED or EXTENDED, so the diff to apply is that file.
     `MonitorState` `warming`, `GroupBundle.anomalyState`) are in `rules.v2.ts`.
 15. **`RuleCost` has one class**; an anomaly rule's is the larger of its expression's and its
     detector's tick class, and the cold-start class is only in `AnomalyHistory` (shown at save).
+16. **SLO rules and warm-ups are contract version 4 of `contracts/rules.ts`**, changed before any
+    component code (AGENTS.md, contracts first): `RuleGroupInput.rules` may hold an `SloRuleInput`;
+    `RuleGroup.sloRules`; `SloRule` / `SloSpec` / `SloSli` / `SloBurnAlert` / `SloHistory` /
+    `SloDetail` / `SloRuleStatus`; `SLO_PART_LABEL`, `SLO_ANNOTATION`, `SLO_DETAIL_ANNOTATION`;
+    `WarmupStatus` on `AnomalyRuleStatus` and `SloRuleStatus`; the enum value `'slo'` in
+    `RuleStatus.kind` and `SavedRule.kind` (callers fail closed on a kind they do not know);
+    `SavedRule.slo`; five optional `RulerLimits` (`maxSloSeriesPerRule`, `maxWarmup*`,
+    `maxBacktest*`). `contracts-proposal/rules.ts` is the copy (identical apart from import paths,
+    checked with `diff`). Whoever commits should put the `contracts/rules.ts` hunk in its own commit,
+    first. The ruler's own additions are in `rules.v2.ts`, marked "with contract version 4":
+    `HistoryPlan` / `HistoryPlanner`, `SloRuleInputV2` / `SloRuleV2`, `RuleSnapshot.slo`,
+    `GroupBundle.sloState` / `.warmup`, `BacktestInterval.annotations`, `BacktestResult.kind` /
+    `.warmup` / `.cost`, the `over_budget` answer, `MonitorInput.slo`, `MonitorSloView`.
+17. **`EVALUATOR.plan(tenant, promql, start, end, step)`** is what the ruler would call on an RPC
+    engine binding (`RulerEnv`); viz-query's HTTP `/api/v1/plan` stands in for it.
+18. **The memory and CPU budgets of parts 13 and 14 are proposed, not in `contracts/rules.ts`**:
+    `RulerLimitsV2` (`rules.v2.ts`) adds `maxWarmupMemoryBytes`, `maxBacktestMemoryBytes`,
+    `maxWarmupCpuMs` and `maxBacktestCpuMs`, which `configure` accepts; they belong in `RulerLimits`
+    as a contract version 5 (additive), not made here because these changes were confined to
+    `ruler/`. A memory or CPU refusal of a warm-up, and a warm-up waiting for the next alarm, are
+    reported in its status's `message` (with the model's numbers), not in fields, so the stored
+    format `store.warmup` v1 is unchanged (a waiting warm-up is `pending` with `attempts` unchanged);
+    a backtest's answer carries `cost.memory`, `cost.cpu`, `over_budget.memory` and
+    `over_budget.cpu` (`rules.v2.ts`, `openapi.json`).
 13. **Design text to update** (not done: outside `ruler/`): DESIGN §7 should say
     "one batch per group per tick, split only before a rule reading a series recorded
     earlier in the same tick", name the `RulerIndex` registry as the sweeper's source,
@@ -1022,6 +1567,40 @@ declaration ADDED, CHANGED or EXTENDED, so the diff to apply is that file.
   Their state rows wait untouched. A threshold monitor edited during the rollback into a group
   holding anomaly rules would drop them on save; default groups keep the two kinds apart, an
   explicit `group` does not.
+- **SLO state is written every tick**: three rows per SLO rule (head and two blocks), 129,600 a
+  month for a 1-minute rule, about $0.13 at $1 per million rows (modelled from the measured row
+  count). One row would do (the current blocks inside the head, completed blocks written once):
+  not done.
+- **The SLI must read one bucket.** `$window` is required, but nothing checks that the expression
+  around it is a counter's increase or rate; a gauge in the SLI gives buckets that mean nothing.
+  The interval must be at least about twice the scrape interval, or `increase(x[$window])`
+  extrapolates from too few samples (Prometheus' usual caveat).
+- **Coverage gates alerting.** With `min_coverage` 0.9, an SLI that returns no series for quiet
+  periods (no requests at all) leaves its windows uncovered, and the rule does not alert until 90%
+  of a window has data again; a rule that could not be warmed (over budget) cannot ticket for
+  most of three days.
+- **A warm-up holds its group's tick** (and, through the one-call gate, every engine call of the
+  object) while it reads; a rule whose history is large but within the budget delays the first
+  evaluation of the group's other rules by the read's duration (not measured on Cloudflare).
+- **Backtests run in the request.** Memory and CPU are bounded by models (parts 13 and 14), both
+  calibrated on local workerd (resident memory; thread CPU time under a load average around 9 on 4
+  cores), not on Cloudflare's accounting. If Cloudflare's CPUs are more than about 1.5 times slower
+  per point than this machine, a run the model allows could still reach the 30 s limit; the
+  settling experiment is in "CPU" below. The CPU check comes after the first window is read, so an
+  over-budget run still costs one window's read and parse (and, for a run stopped later, what it
+  evaluated before stopping, which is discarded).
+- **CPU refusals refuse useful work.** A 7-day backtest over 1,000 series at 1 minute, and the
+  warm-up of a daily seasonal rule over 100 series at 5 minutes, are refused at the default budgets
+  (part 14); an operator can raise `maxBacktestCpuMs` / `maxWarmupCpuMs`, and must then raise the
+  class's `limits.cpu_ms` too (deploy configuration, outside `ruler/`). A warm-up that waits for
+  the next alarm can wait again if every alarm's budget goes to other new rules first: bounded by the
+  number of new rules (each alarm warms at least one that fits), not by time.
+- **The model's allowances are not measured**: 5 ms a run and 0.5 ms a window (engine request set-up
+  and bookkeeping). A run of 1,000 windows is 0.5 s of allowance.
+- **An alerting rule's backtest is sized for its alert limit** (1,000 series a step), however few
+  series it returns: a week at 1 minute is 326 range queries, sequential through the one-call gate
+  (D39). A coarser step, or a lower `maxAlertsPerRule`, means fewer. The windows' queries may read
+  boundary files twice, so a run can cost somewhat more than its plans said.
 - **Anomaly state is written every tick**: at least one row per anomaly rule per tick (43,200 a
   month for a 1-minute rule, about $0.04 at $1 per million rows, modelled), more for large
   states (6 rows a tick for 100 daily seasonal series). A rule whose state changes every tick

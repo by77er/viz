@@ -19,7 +19,7 @@
  * decides whether to ask control for a new one.
  */
 import type { PromMatrix, PromScalar, PromVector } from '../../contracts/engine'
-import type { EvalRequest, EvalResult, Validator } from '../contracts-proposal/rules.v2'
+import type { EvalRequest, EvalResult, HistoryPlan, Validator } from '../contracts-proposal/rules.v2'
 import { errorText } from './evaluator'
 
 export const ENGINE_CALLS_IN_FLIGHT = 1
@@ -119,6 +119,7 @@ async function call(q: Fetcher, cred: CredentialSource, path: string, params: Re
 export interface HttpEngine {
   evaluate(requests: EvalRequest[], opts?: { signal?: AbortSignal }): Promise<EvalResult[]>
   range(promql: string, startMs: number, endMs: number, stepMs: number): Promise<PromMatrix>
+  plan(promql: string, startMs: number, endMs: number, stepMs: number): Promise<HistoryPlan>
   check: Validator['check']
 }
 
@@ -153,6 +154,31 @@ export function httpEngine(q: Fetcher, cred: CredentialSource, gate: Gate): Http
       const d = data as PromMatrix
       if (d?.resultType !== 'matrix') throw new EngineError(`the range query returned a ${String((d as { resultType?: string })?.resultType)}, not a matrix`)
       return d
+    },
+
+    /**
+     * What a range read would cost, from `/api/v1/plan` with `start`, `end` and `step` (one ledger
+     * read; nothing fetched). A request the engine refuses outright (`bad_data`, `unsupported`:
+     * too many steps, a parse error) comes back as the plan's refusal; an outage throws. A field
+     * the answer lacks is NaN, which the caller refuses rather than guesses.
+     */
+    async plan(promql, startMs, endMs, stepMs) {
+      try {
+        const { data } = await gate.run(() => call(q, cred, '/api/v1/plan', { query: promql, start: promTime(startMs), end: promTime(endMs), step: promTime(stepMs) }))
+        const d = (data ?? {}) as Record<string, unknown>
+        const n = (k: string) => (typeof d[k] === 'number' ? (d[k] as number) : NaN)
+        const r = d.refusal as { errorType?: unknown; error?: unknown } | null | undefined
+        return {
+          scanSamples: n('scanSamples'),
+          bytesToRead: n('bytesToRead'),
+          seriesEstimate: n('seriesEstimate'),
+          refusal: r ? { errorType: String(r.errorType ?? 'execution'), error: String(r.error ?? '') } : null,
+        }
+      } catch (e) {
+        const type = (e as { errorType?: string }).errorType
+        if (e instanceof EngineError && (type === 'bad_data' || type === 'unsupported')) return { scanSamples: NaN, bytesToRead: NaN, seriesEstimate: NaN, refusal: { errorType: type, error: e.message.replace(/^[a-z_]+: /, '') } }
+        throw e
+      }
     },
 
     /**

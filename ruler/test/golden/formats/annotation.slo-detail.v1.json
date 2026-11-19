@@ -1,0 +1,15 @@
+{
+ "format": "annotation.slo-detail",
+ "version": 1,
+ "labels": {
+  "severity": "page",
+  "team": "pay",
+  "alertname": "CheckoutAvailability"
+ },
+ "annotations": {
+  "summary": "checkout is burning its error budget",
+  "slo": "error budget burning at 25.7\u00d7 over 10 minutes and 50.5\u00d7 over 2 minutes (page threshold 10\u00d7); 17.9% of the 1 day budget for a 99% objective was spent in the last 10 minutes; the budget is spent over the 4 minutes on record (the window is 1 day) (-2470% left)",
+  "slo_detail": "{\"v\":1,\"severity\":\"page\",\"longWindowMs\":600000,\"shortWindowMs\":120000,\"longBurnRate\":25.74999999999998,\"shortBurnRate\":50.49999999999996,\"threshold\":10,\"objective\":0.99,\"windowMs\":86400000,\"spentInLongWindow\":0.17881944444444428,\"budgetRemaining\":-24.74999999999998,\"budgetCoveredMs\":240000,\"exhaustionMs\":null,\"longEvents\":400,\"at\":4102445028701}",
+  "description": "error budget burning at 25.7\u00d7 over 10 minutes and 50.5\u00d7 over 2 minutes (page threshold 10\u00d7); 17.9% of the 1 day budget for a 99% objective was spent in the last 10 minutes; the budget is spent over the 4 minutes on record (the window is 1 day) (-2470% left)"
+ }
+}

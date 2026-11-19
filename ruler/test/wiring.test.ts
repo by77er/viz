@@ -219,6 +219,41 @@ describe('rule evaluation through the query API, with a service key from control
     expect(services.calls.some((c) => c.path === '/api/v1/query_range' && c.tenant === s.tenant)).toBe(true)
   })
 
+  it('warm-ups and backtests ask /api/v1/plan (start, end, step) for every read before any /api/v1/query_range; over budget nothing is fetched', async () => {
+    const s = await provisioned('plan')
+    const sli = { bad: 'sum(increase(errors_total[$window]))', total: 'sum(increase(requests_total[$window]))' }
+    s.w.evaluate = () => vec([{ viz_slo_part: 'total' }, 100], [{ viz_slo_part: 'bad' }, 0])
+    s.w.range = (_q, start, end, step) => {
+      const values: [number, string][] = []
+      for (let t = start; t <= end; t += step) values.push([t / 1000, '100'])
+      return { resultType: 'matrix', result: [{ metric: { viz_slo_part: 'total' }, values }] }
+    }
+    const created = await call(s.monitors.auth, 'POST', '/api/v1/monitors', { name: 'Checkout availability', slo: { objective: 0.999, sli } })
+    expect(created.status, created.text).toBe(201)
+    const from = services.calls.length
+    await tick(s)
+    const mine = services.calls.slice(from).filter((c) => c.tenant === s.tenant)
+    const paths = mine.map((c) => c.path)
+    // Both reads priced first; then fetched window by window; then the tick's one query.
+    expect(paths.slice(0, 2)).toEqual(['/api/v1/plan', '/api/v1/plan'])
+    expect(paths.at(-1)).toBe('/api/v1/query')
+    expect(paths.slice(2, -1).every((p) => p === '/api/v1/query_range')).toBe(true)
+    expect(mine.slice(0, 2).map((c) => c.params.step)).toEqual(['3600', '60'])
+    // The windows of each read cover exactly the range its plan priced.
+    for (const plan of mine.slice(0, 2)) {
+      const ws = mine.slice(2, -1).filter((c) => c.params.step === plan.params.step)
+      expect([ws[0]!.params.start, ws.at(-1)!.params.end]).toEqual([plan.params.start, plan.params.end])
+    }
+    const m = (await call(s.monitors.auth, 'GET', `/api/v1/monitors/${created.json.id}`)).json.monitor
+    expect(m.slo.status.warmup).toMatchObject({ status: 'done', plan: { scanSamples: 0, bytesToRead: 0, queries: 2 } })
+    // The engine's plan says a backtest would read too much: refused before any range query.
+    s.w.plan = () => ({ scanSamples: 50_000_000, bytesToRead: 1 << 20, seriesEstimate: 2, refusal: null })
+    const before = services.calls.filter((c) => c.path === '/api/v1/query_range').length
+    const bt = await call(s.monitors.auth, 'POST', `/api/v1/monitors/${created.json.id}/backtest`, { fromMs: T0 - 60 * MIN, toMs: T0 })
+    expect([bt.status, bt.json.error.code, bt.json.plan.scanSamples, bt.json.budget.scanSamples]).toEqual([422, 'over_budget', 100_000_000, 20_000_000])
+    expect(services.calls.filter((c) => c.path === '/api/v1/query_range').length).toBe(before)
+  })
+
   it('/healthz: 200 with the production bindings, 503 naming a missing one, no credential needed', async () => {
     const res = await worker.fetch(new Request('https://ruler.internal/healthz') as never, env as never)
     expect([res.status, await res.text()]).toEqual([200, 'ok\n'])

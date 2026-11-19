@@ -87,8 +87,8 @@ export const MUTANTS = [
   },
   {
     name: 'memory ahead of storage (adopt the new alert state before the transaction commits)',
-    // Pattern brought up to date (the anomaly change added `|| s.anomaly?.changed === true`).
-    edits: one('src/ruler.ts', '    if (staged.some((s) => s.result.dirty.size > 0 || s.anomaly?.changed === true)) {\n      const t = this.tenant\n', '    for (const { rule, result } of staged) g.alerts.set(rule.key, result.alerts)\n    if (staged.some((s) => s.result.dirty.size > 0 || s.anomaly?.changed === true)) {\n      const t = this.tenant\n'),
+    // Pattern brought up to date (the anomaly change added `|| s.anomaly?.changed === true`, the SLO change `|| s.slo?.ev.changed === true`).
+    edits: one('src/ruler.ts', '    if (staged.some((s) => s.result.dirty.size > 0 || s.anomaly?.changed === true || s.slo?.ev.changed === true)) {\n      const t = this.tenant\n', '    for (const { rule, result } of staged) g.alerts.set(rule.key, result.alerts)\n    if (staged.some((s) => s.result.dirty.size > 0 || s.anomaly?.changed === true || s.slo?.ev.changed === true)) {\n      const t = this.tenant\n'),
     tests: ['test/exactly-once.test.ts'],
   },
   {
@@ -160,7 +160,8 @@ export const MUTANTS = [
     name: 'backtest uses a different state machine (a second implementation: pending, firing after `for`, gone = resolved)',
     edits: [
       { file: 'src/backtest.ts', find: "import { formatDuration, parseSampleValue } from './util'", replace: "import { fingerprint, formatDuration, parseSampleValue } from './util'" },
-      { file: 'src/backtest.ts', find: '    const r = evalAlertingRule(rule, compiled, alerts, seriesAt(main, ts), ts, input.opts, presence ? seriesAt(presence, ts) : null)', replace: '    const r = secondStateMachine(rule, alerts, seriesAt(main, ts), ts)' },
+      // Pattern brought up to date (the step moved into `IntervalTracker` when backtests began to stream).
+      { file: 'src/backtest.ts', find: '    const r = evalAlertingRule(this.rule, this.compiled, this.alerts, input.series, ts, this.opts, input.presence)', replace: '    const r = secondStateMachine(this.rule, this.alerts, input.series, ts)' },
       {
         file: 'src/backtest.ts',
         find: '/** The summary is a function of the intervals and nothing else. */',
@@ -456,7 +457,8 @@ export const MUTANTS = [
   },
   {
     name: 'anomaly: state carried over an interval change (the detector\'s step changed)',
-    edits: one('src/ruler.ts', 'if (kept.has(key) && old.spec.intervalMs === spec.intervalMs)', 'if (kept.has(key))'),
+    // Pattern brought up to date (the interval comparison became `sameStep`, shared with the SLO rings).
+    edits: one('src/ruler.ts', '            if (kept.has(key) && sameStep) g.anomaly.set(key, rt)', '            if (kept.has(key)) g.anomaly.set(key, rt)'),
     tests: ['test/anomaly.test.ts'],
   },
   {
@@ -561,6 +563,210 @@ export const MUTANTS = [
     name: 'wiring, control destination: a tenant config may define viz:default itself (shadowing the control plane\'s destination)',
     edits: one('src/amconfig.ts', '      if (r.name === CONTROL_RECEIVER) return c.err(', '      if (r.name === CONTROL_RECEIVER && false) return c.err('),
     tests: ['test/wiring.test.ts'],
+  },
+
+  // ───────────── SLO burn-rate rules, warm-up, backtests (contract version 4) ─────────────
+  {
+    name: 'SLO thresholds: a burn rate equal to the threshold counts as burning (`>=` in the scratch copy of anomaly/\'s evaluateWindows, which the rule calls)',
+    edits: one('../anomaly/src/detectors/burnrate.ts', 'longBurn > rule.burnRate && shortBurn > rule.burnRate', 'longBurn >= rule.burnRate && shortBurn >= rule.burnRate'),
+    tests: ['test/slo.test.ts'],
+  },
+  {
+    name: 'SLO thresholds: the short window is ignored (both windows of an alert read the long one)',
+    edits: one('src/slo.ts', '      const w = Math.max(1, Math.round(ms / intervalMs))', '      const w = Math.max(1, Math.round(a.longMs / intervalMs))'),
+    tests: ['test/slo.test.ts'],
+  },
+  {
+    name: 'SLO thresholds: min_coverage ignored (a window counts whatever share of its buckets has data)',
+    edits: one('src/slo.ts', '      if (coverage >= spec.minCoverage) agg.set(ms', '      if (true) agg.set(ms'),
+    tests: ['test/slo.test.ts'],
+  },
+  {
+    name: 'SLO thresholds: the default alerts lose the 6 h / 30 m page (three of the workbook\'s four)',
+    edits: one('src/slo.ts', 'SRE_WORKBOOK_RULES.map((r) => ({ severity: r.severity', 'SRE_WORKBOOK_RULES.filter((r) => r.longMs !== 6 * 3_600_000).map((r) => ({ severity: r.severity'),
+    tests: ['test/slo.test.ts'],
+  },
+  {
+    name: 'SLO windows: the current bucket is left out of every window (sums start one bucket back)',
+    edits: one('src/slo.ts', '    let q = s\n', '    let q = s - 1\n'),
+    tests: ['test/slo.test.ts'],
+  },
+  {
+    name: 'SLO windows: a block\'s cached sums are not invalidated when one of its buckets is set',
+    edits: one('src/slo.ts', '    this.bad[i] = b\n    this.tot[i] = t\n    this.cOk[Math.floor(i / this.block)] = 0\n', '    this.bad[i] = b\n    this.tot[i] = t\n'),
+    tests: ['test/slo.test.ts'],
+  },
+  {
+    name: 'SLO state: the rings are not rebuilt from SQLite when the object is constructed',
+    edits: one('src/ruler.ts', '      this.adoptSloRows(g, rule, rows)\n', '      void rows\n'),
+    tests: ['test/slo.test.ts'],
+  },
+  {
+    name: 'SLO state: a replayed tick advances the rings again (replay guard off by one)',
+    edits: one('src/slo.ts', '  if (rt.lastTs !== null && ts <= rt.lastTs) {', '  if (rt.lastTs !== null && ts < rt.lastTs) {'),
+    tests: ['test/slo.test.ts'],
+  },
+  {
+    name: 'tenant isolation: SLO state is loaded without the tenant in the WHERE clause',
+    edits: one('src/ruler.ts', 'FROM slo_state WHERE tenant = ? ORDER BY grp, rule_key, part, block', 'FROM slo_state WHERE (tenant = ? OR 1 = 1) ORDER BY grp, rule_key, part, block'),
+    tests: ['test/slo.test.ts'],
+  },
+  {
+    name: 'tenant isolation: deleting a group deletes its SLO state without naming the tenant',
+    edits: one('src/ruler.ts',
+      '      this.exec(`DELETE FROM slo_state WHERE tenant = ? AND grp = ?`, this.tenant, name)\n      this.exec(`DELETE FROM warmup WHERE tenant = ? AND grp = ?`, this.tenant, name)\n      for (const [key, alerts] of g.alerts)',
+      '      this.exec(`DELETE FROM slo_state WHERE (tenant = ? OR 1 = 1) AND grp = ?`, this.tenant, name)\n      this.exec(`DELETE FROM warmup WHERE tenant = ? AND grp = ?`, this.tenant, name)\n      for (const [key, alerts] of g.alerts)'),
+    tests: ['test/slo.test.ts'],
+  },
+  {
+    name: 'warm-up budget: the planned cost is never compared with the budget (fetched whatever the plan says)',
+    edits: one('src/history.ts', '  if (sum.scanSamples > budget.scanSamples || sum.bytesToRead > budget.bytesToRead) {', '  if (false) {'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'warm-up budget: the budget is checked only after the fetch (an over-budget read is made, then refused)',
+    edits: [
+      { file: 'src/history.ts', find: '  if (sum.scanSamples > budget.scanSamples || sum.bytesToRead > budget.bytesToRead) {', replace: '  if (false) {' },
+      // Pattern brought up to date (history is read in windows by `streamHistory`).
+      { file: 'src/history.ts', find: '  return { ok: true, plan: sum, sizing, points, cpu:', replace: "  if (sum.scanSamples > budget.scanSamples || sum.bytesToRead > budget.bytesToRead) return { ok: false, refused: 'over budget (after the fetch)', plan: sum, sizing }\n  return { ok: true, plan: sum, sizing, points, cpu:" },
+    ],
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'warm-up budget: a read the engine\'s plan refuses is made anyway',
+    edits: one('src/history.ts', '    if (plan.refusal) return', '    if (plan.refusal && false) return'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'warm-up budget: warm-ups are held to the (larger) backtest budget',
+    edits: one('src/ruler.ts', '    const budget = budgets.warmup\n', '    const budget = budgets.backtest\n'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'warm-up: the state is written outside the warm-up\'s transaction (a crash leaves it half-written)',
+    edits: one('src/ruler.ts', '        finish(done, () => this.writeAnomalyState(g.spec.name, rule.key, rt.json))', '        this.writeAnomalyState(g.spec.name, rule.key, rt.json)\n        finish(done)'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'warm-up: a finished warm-up is not recorded (it is read again after an eviction)',
+    edits: one('src/ruler.ts', '          write?.()\n          this.putWarmup(g.spec.name, rule.key, w)', "          write?.()\n          if (w.status !== 'done') this.putWarmup(g.spec.name, rule.key, w)"),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'backtest/live: an anomaly backtest starts cold (no warm-up before fromMs)',
+    edits: one('src/ruler.ts', 'run = await backtestAnomaly(parsedRule, warmFromMs, ', 'run = await backtestAnomaly(parsedRule, fromMs, '),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'backtest/live: an SLO backtest leaves out the coarse history (the budget from the fine read only)',
+    edits: one('src/ruler.ts', 'run = await backtestSlo(parsedRule, { ...w.fine, toMs }, w.coarse, input, io)', 'run = await backtestSlo(parsedRule, { ...w.fine, toMs }, null, input, io)'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'backtest/live: an SLO backtest feeds each step the previous step\'s buckets',
+    edits: [
+      { file: 'src/history.ts', find: "  let warmPoints = 0\n  const onFine: Stream['feed'] = (ts, series, c) => {\n", replace: "  let warmPoints = 0\n  let prevFine = []\n  const onFine: Stream['feed'] = (ts, series, c) => {\n    const cur = series\n    series = prevFine\n    prevFine = cur\n" },
+    ],
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'backtest/live: an interval\'s annotations are taken at its end, not when the alert entered the state',
+    edits: one('src/backtest.ts', '      if (cur && cur.state === state) continue', '      if (cur && cur.state === state) {\n        cur.annotations = a!.annotations\n        continue\n      }'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'tenant isolation: the backtest-by-id route looks the monitor up for a tenant named in the query string',
+    edits: one('src/http.ts', 'async function backtestMonitor(c: Call): Promise<Response> {\n  const f = await findMonitor(c)', "async function backtestMonitor(c: Call): Promise<Response> {\n  const named = c.url.searchParams.get('tenant')\n  const f = await findMonitor(named ? (Object.assign(Object.create(Object.getPrototypeOf(c)), c, { tenant: named }) as Call) : c)"),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'compatibility: a save warms a kept rule over state rows a newer release wrote (both guards removed: at the job and at the warm-up)',
+    edits: [
+      { file: 'src/ruler.ts', find: 'return rt !== undefined && (rt.lastTs !== null || rt.rawRows !== null)', replace: 'return rt !== undefined && rt.lastTs !== null' },
+      { file: 'src/ruler.ts', find: '      if (unreadable) {\n', replace: '      if (unreadable && false) {\n' },
+    ],
+    tests: ['test/slo.test.ts'],
+  },
+
+  // ───────────── streaming history in memory-sized windows ─────────────
+  {
+    name: 'window boundary: each window starts a step late (a step between windows is never read)',
+    edits: one('src/history.ts', '  for (let from = r.fromMs; from <= r.toMs; from += steps * r.stepMs) {', '  for (let from = r.fromMs; from <= r.toMs; from += (steps + 1) * r.stepMs) {'),
+    tests: ['test/history.test.ts', 'test/backtest.test.ts'],
+  },
+  {
+    name: 'window boundary: windows overlap by a step (the step at each boundary is read twice)',
+    edits: one('src/history.ts', '    out.push({ ...r, fromMs: from, toMs: Math.min(r.toMs, from + (steps - 1) * r.stepMs) })', '    out.push({ ...r, fromMs: from, toMs: Math.min(r.toMs, from + steps * r.stepMs) })'),
+    tests: ['test/history.test.ts', 'test/backtest.test.ts'],
+  },
+  {
+    name: 'window boundary: the last step of every window is not fed to the rule',
+    edits: one('src/history.ts', '      for (let ts = w.fromMs; ts <= w.toMs; ts += w.stepMs) {', '      for (let ts = w.fromMs; ts < w.toMs; ts += w.stepMs) {'),
+    tests: ['test/history.test.ts', 'test/backtest.test.ts'],
+  },
+  {
+    name: 'memory refusal: the rule\'s state is left out of the window sizing (windows sized as if the state cost nothing)',
+    edits: one('src/history.ts', 'Math.floor((budgetBytes - fixedBytes) / perStep)', 'Math.floor(budgetBytes / perStep)'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'memory refusal: windows sized without the series count (one point a step)',
+    edits: one('src/history.ts', '    const perStep = (s.seriesBound + (s.companions ?? []).reduce((n, c) => n + c.seriesBound, 0)) * MEMORY.perPoint', '    const perStep = (1 + (s.companions ?? []).length) * MEMORY.perPoint'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'memory refusal: an SLO backtest\'s model leaves out its bucket rings',
+    edits: one('src/history.ts', '  const fixed = backtestFixed(2 * rule.slo.maxSeries) + sloStateBytes(rule, I)', '  const fixed = backtestFixed(2 * rule.slo.maxSeries)'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'memory refusal: a window holding more points than it was sized for is evaluated anyway',
+    edits: one('src/history.ts', '      if (held > allowed) return', '      if (held > allowed && false) return'),
+    tests: ['test/history.test.ts'],
+  },
+  // ───────────── CPU: refused on the model's projection, never cut off ─────────────
+  {
+    name: 'CPU refusal: the projection is never checked (a run goes on whatever it would cost)',
+    edits: one('src/history.ts', '      if (projected > budgetUs) {', '      if (false) {'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'CPU refusal: the projection counts only what has been read (the rest of the run left out)',
+    edits: one('src/history.ts', '      const projected = spentUs + thisUs + restUs', '      const projected = spentUs + thisUs'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'CPU refusal: the series count is taken from the first window only (later growth not seen)',
+    edits: one('src/history.ts', '      series = Math.max(series, ', '      series = fed > 0 ? series : Math.max(series, '),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'CPU model: an SLO backtest\'s evaluated points priced as warm-up points',
+    edits: one('src/history.ts', 'const evaluated = evaluatedFromMs === undefined ? {}', 'const evaluated = true ? {}'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'per-alarm warm-up CPU: a warm-up\'s reservation is not taken from what the alarm has left',
+    edits: one('src/ruler.ts', '      this.warmupCpuLeftMs -= room\n', ''),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'per-alarm warm-up CPU: spent is subtracted after the run, not reserved before it (concurrent groups both read)',
+    edits: [
+      { file: 'src/ruler.ts', find: '      this.warmupCpuLeftMs -= room\n', replace: '' },
+      { file: 'src/ruler.ts', find: '        this.warmupCpuLeftMs += room - Math.min(room, used)', replace: '        this.warmupCpuLeftMs -= Math.min(room, used)' },
+    ],
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'per-alarm warm-up CPU: a warm-up that fits a warm-up\'s budget but not the alarm\'s rest is refused, not deferred',
+    edits: one('src/ruler.ts', "      if (!run.ok && 'refused' in run && run.defer) {", '      if (false) {'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'per-alarm warm-up CPU: a budget below the model\'s base defers every warm-up forever',
+    edits: one('src/ruler.ts', '      if (room < budgets.warmupCpuMs && room < CPU.base / 1000) {', '      if (room < CPU.base / 1000) {'),
+    tests: ['test/history.test.ts'],
   },
 ]
 

@@ -28,11 +28,14 @@ import {
   type MonitorView,
   type NoDataMode,
   type RuleSnapshot,
+  type SloRuleInputV2,
+  type SloRuleV2,
   type Timeline,
   type TimelineEntry,
   type ValidationError,
 } from '../contracts-proposal/rules.v2'
 import { DETECTOR_GUIDE } from './anomaly'
+import { sloText } from './slo'
 import { bareRuleId } from './ruler'
 import { DEADMAN_GROUP, ruleKey } from './rules'
 import { isNoDataAlert } from './statemachine'
@@ -40,8 +43,12 @@ import { formatDuration, hash64, labelsKey, parseDuration } from './util'
 
 const OPS: ConditionOp[] = ['>', '>=', '<', '<=', '==', '!=']
 const MODES: NoDataMode[] = ['ok', 'alerting', 'keep']
-const FIELDS = ['name', 'expr', 'query', 'condition', 'anomaly', 'for', 'keepFiringFor', 'interval', 'group', 'description', 'message', 'runbookUrl', 'owner', 'notify', 'noData', 'noDataFor', 'startInvestigation', 'labels', 'annotations', 'dryRun']
+/** A monitor is an alerting rule, an anomaly rule or an SLO rule. */
+export type MonitorRule = AlertingRuleV2 | AnomalyRuleV2 | SloRuleV2
+
+const FIELDS = ['name', 'expr', 'query', 'condition', 'anomaly', 'slo', 'for', 'keepFiringFor', 'interval', 'group', 'description', 'message', 'runbookUrl', 'owner', 'notify', 'noData', 'noDataFor', 'startInvestigation', 'labels', 'annotations', 'dryRun']
 const ANOMALY_FIELDS = ['detector', 'params', 'unit', 'severity', 'maxSeries']
+const SLO_FIELDS = ['objective', 'window', 'sli', 'alerts', 'minEvents', 'minCoverage', 'maxSeries']
 /**
  * Defaults of an anomaly monitor beyond the detector's (`anomaly.ts`): alarms are onsets (the
  * held-out evaluation scored the first flagged point of each run), so no `for`; the alert is held
@@ -56,7 +63,9 @@ export const DEFAULT_MONITOR_INTERVAL = '1m'
 /** Monitors with the same interval share a group (one batch per tick) until it holds this many. */
 export const MONITOR_GROUP_CAP = 500
 
-export function defaultGroup(interval: string, n: number, prefix: 'monitors' | 'anomalies' = 'monitors'): string {
+export type GroupPrefix = 'monitors' | 'anomalies' | 'slos'
+
+export function defaultGroup(interval: string, n: number, prefix: GroupPrefix = 'monitors'): string {
   const ms = parseDuration(interval)
   const base = `${prefix}/${ms === null ? interval : formatDuration(ms)}`
   return n <= 1 ? base : `${base}/${n}`
@@ -68,12 +77,14 @@ export function derivedMonitorId(group: string, name: string, labels: Record<str
 }
 
 export interface MonitorPlan {
-  rule: AlertingRuleInputV2 | AnomalyRuleInputV2
+  rule: AlertingRuleInputV2 | AnomalyRuleInputV2 | SloRuleInputV2
   /** Null: the caller picks the default group for `interval`. */
   group: string | null
   interval: string
   /** An anomaly monitor: default groups are `anomalies/<interval>`, apart from threshold monitors. */
   anomaly: boolean
+  /** An SLO monitor: default groups are `slos/<interval>`, for the same reason. */
+  slo: boolean
 }
 
 /**
@@ -103,7 +114,32 @@ export function planMonitor(input: unknown, meta: MonitorMeta, receivers: string
   const query = str('query', 16_000)
   let condition: MonitorMeta['condition'] = null
   let anomaly: AnomalySpecInput | null = null
-  if (m.anomaly !== undefined) {
+  let slo: Record<string, unknown> | null = null
+  if (m.slo !== undefined) {
+    // An SLO monitor: the SLI is the expression, the burn-rate alerts decide (contract version 4).
+    const v = m.slo
+    if (!isObject(v)) err('slo', 'slo must be an object', 'Send { "objective": 0.999, "sli": { "bad": "...", "total": "..." } }.')
+    else {
+      for (const k of Object.keys(v)) if (!SLO_FIELDS.includes(k)) err(`slo.${k}`, `unknown field "${k}"`, `slo has: ${SLO_FIELDS.join(', ')}.`)
+      slo = {}
+      if (v.objective !== undefined) slo.objective = v.objective
+      if (v.window !== undefined) slo.window = v.window
+      if (isObject(v.sli)) {
+        const sli: Record<string, unknown> = {}
+        for (const [k, x] of Object.entries(v.sli)) sli[k === 'errorRatio' ? 'error_ratio' : k] = x
+        slo.sli = sli
+      } else if (v.sli !== undefined) slo.sli = v.sli
+      if (Array.isArray(v.alerts)) {
+        slo.alerts = v.alerts.map((a: unknown) => (isObject(a) ? Object.fromEntries(Object.entries(a).map(([k, x]) => [k === 'longWindow' ? 'long_window' : k === 'shortWindow' ? 'short_window' : k === 'burnRate' ? 'burn_rate' : k, x])) : a))
+      } else if (v.alerts !== undefined) slo.alerts = v.alerts
+      if (v.minEvents !== undefined) slo.min_events = v.minEvents
+      if (v.minCoverage !== undefined) slo.min_coverage = v.minCoverage
+      if (v.maxSeries !== undefined) slo.max_series = v.maxSeries
+    }
+    if (m.anomaly !== undefined) err('anomaly', 'a monitor is an anomaly monitor or an SLO monitor, not both', 'Remove one of anomaly and slo.')
+    if (exprText !== undefined || query !== undefined) err(query !== undefined ? 'query' : 'expr', 'an SLO monitor has no query: slo.sli is its expression', 'Remove it; give the bad (or good) and total events in slo.sli.')
+    if (m.condition !== undefined) err('condition', 'an SLO monitor has no condition: the burn-rate alerts decide', 'Remove "condition".')
+  } else if (m.anomaly !== undefined) {
     // An anomaly monitor: `query` is what to watch; the detector decides when it alerts.
     const a = m.anomaly
     if (!isObject(a)) err('anomaly', 'anomaly must be an object', 'Send {} for the default detector (ewma), or { "detector": "...", "params": {...} }.')
@@ -166,6 +202,7 @@ export function planMonitor(input: unknown, meta: MonitorMeta, receivers: string
   const message = str('message', 4096)
   const forText = str('for', 32) ?? (anomaly ? ANOMALY_MONITOR_DEFAULTS.for : undefined)
   const keep = str('keepFiringFor', 32) ?? (anomaly ? ANOMALY_MONITOR_DEFAULTS.keepFiringFor : undefined)
+  if (slo !== null && 'severity' in labels) err('labels.severity', 'an SLO monitor sets severity itself: page or ticket, from the burn-rate alert that fires', 'Remove the label; route on severity.')
   const noDataFor = str('noDataFor', 32)
   if (errors.length > 0 || name === undefined) return { ok: false, errors }
 
@@ -173,10 +210,9 @@ export function planMonitor(input: unknown, meta: MonitorMeta, receivers: string
   if (message !== undefined && message !== '') annotations.summary = message
   if (description !== undefined && description !== '') annotations.description = description
   if (runbookUrl !== undefined && runbookUrl !== '') annotations.runbook_url = runbookUrl
-  const rule: AlertingRuleInputV2 | AnomalyRuleInputV2 = {
-    alert: name,
-    expr: condition ? `(${condition.query}) ${condition.op} ${condition.threshold}` : anomaly ? (query as string) : (exprText as string),
-  }
+  const rule = (slo !== null
+    ? { alert: name, slo }
+    : { alert: name, expr: condition ? `(${condition.query}) ${condition.op} ${condition.threshold}` : anomaly ? (query as string) : (exprText as string) }) as AlertingRuleInputV2 | AnomalyRuleInputV2 | SloRuleInputV2
   if (anomaly) (rule as AnomalyRuleInputV2).anomaly = anomaly
   if (forText !== undefined) rule.for = forText
   if (keep !== undefined) rule.keep_firing_for = keep
@@ -190,12 +226,20 @@ export function planMonitor(input: unknown, meta: MonitorMeta, receivers: string
     if (condition) rule.no_data_expr = condition.query
   }
   rule.monitor = { ...meta, owner, startInvestigation: m.startInvestigation === true, condition }
-  return { ok: true, plan: { rule, group, interval, anomaly: anomaly !== null } }
+  return { ok: true, plan: { rule, group, interval, anomaly: anomaly !== null, slo: slo !== null } }
 }
 
 const RULE_PATHS: [RegExp, (m: RegExpExecArray, viaCondition: boolean) => string][] = [
   [/^expr$/, (_m, c) => (c ? 'query' : 'expr')],
   [/^anomaly\.max_series$/, () => 'anomaly.maxSeries'],
+  [/^slo\.max_series$/, () => 'slo.maxSeries'],
+  [/^slo\.min_events$/, () => 'slo.minEvents'],
+  [/^slo\.min_coverage$/, () => 'slo.minCoverage'],
+  [/^slo\.sli\.error_ratio$/, () => 'slo.sli.errorRatio'],
+  [/^slo\.alerts\[(\d+)\]\.long_window$/, (m) => `slo.alerts[${m[1]}].longWindow`],
+  [/^slo\.alerts\[(\d+)\]\.short_window$/, (m) => `slo.alerts[${m[1]}].shortWindow`],
+  [/^slo\.alerts\[(\d+)\]\.burn_rate$/, (m) => `slo.alerts[${m[1]}].burnRate`],
+  [/^slo(\..*)?$/, (m) => m[0]],
   [/^anomaly(\..*)?$/, (m) => m[0]],
   [/^no_data_expr$/, () => 'query'],
   [/^alert$/, () => 'name'],
@@ -227,7 +271,7 @@ export function monitorPaths(errors: ValidationError[], ruleIndex: number, viaCo
 
 // ───────────────────────────── views ─────────────────────────────
 
-export function monitorIdOf(group: string, rule: AlertingRuleV2 | AnomalyRuleV2): string {
+export function monitorIdOf(group: string, rule: MonitorRule): string {
   return rule.monitor?.id ?? bareRuleId(group, rule.key)
 }
 
@@ -252,15 +296,16 @@ export function anomalyText(rule: AnomalyRuleV2): string {
   }
 }
 
-export function thresholdText(rule: AlertingRuleV2 | AnomalyRuleV2): string | null {
+export function thresholdText(rule: MonitorRule): string | null {
   if (rule.kind === 'anomaly') return anomalyText(rule) + (rule.forMs > 0 ? ` for ${formatDuration(rule.forMs)}` : '')
+  if (rule.kind === 'slo') return sloText(rule) + (rule.forMs > 0 ? ` for ${formatDuration(rule.forMs)}` : '')
   const c = rule.monitor?.condition
   if (!c) return null
   return `${c.op} ${c.threshold}${c.unit ? ` ${c.unit}` : ''}${rule.forMs > 0 ? ` for ${formatDuration(rule.forMs)}` : ''}`
 }
 
 /** The static part of a rule's alert labels: where its alerts are routed when their templates add nothing. */
-export function routingLabels(rule: AlertingRuleV2 | AnomalyRuleV2, externalLabels: Record<string, string> = {}): Record<string, string> {
+export function routingLabels(rule: MonitorRule, externalLabels: Record<string, string> = {}): Record<string, string> {
   const out: Record<string, string> = { ...externalLabels }
   for (const [k, v] of Object.entries(rule.labels)) if (!v.includes('{{') && v !== '') out[k] = v
   out.alertname = rule.name
@@ -274,12 +319,12 @@ function monitorState(snap: RuleSnapshot, alerts: MonitorAlertView[]): MonitorSt
   if (alerts.length > 0) return 'pending'
   if (snap.health === 'unknown') return 'unknown'
   // An anomaly monitor whose detector has scored nothing yet is not "ok": it is not watching yet.
-  if (snap.anomaly?.status === 'warming') return 'warming'
+  if (snap.anomaly?.status === 'warming' || snap.slo?.status === 'warming') return 'warming'
   return 'ok'
 }
 
 export function monitorView(group: GroupSnapshot, shard: string, snap: RuleSnapshot, notify: DescribeResult | undefined): MonitorView {
-  const rule = snap.rule as AlertingRuleV2 | AnomalyRuleV2
+  const rule = snap.rule as MonitorRule
   const states = new Map<string, AlertNotifyState>((notify?.alerts ?? []).map((a) => [a.fingerprint, a]))
   const alerts: MonitorAlertView[] = snap.alerts
     .filter((a) => a.state !== 'inactive')
@@ -361,7 +406,29 @@ export function monitorView(group: GroupSnapshot, shard: string, snap: RuleSnaps
             guide: DETECTOR_GUIDE[rule.anomaly.detector] as DetectorGuide,
           }
         : null,
+    slo:
+      rule.kind === 'slo'
+        ? {
+            objective: rule.slo.objective,
+            windowMs: rule.slo.windowMs,
+            sli: rule.slo.sli,
+            alerts: rule.slo.alerts,
+            minEvents: rule.slo.minEvents,
+            minCoverage: rule.slo.minCoverage,
+            maxSeries: rule.slo.maxSeries,
+            history: rule.slo.history,
+            status: snap.slo ?? null,
+          }
+        : null,
   }
+}
+
+/** A rule-file `sli` block in the stored form, for comparing an imported SLO entry with a stored rule. */
+function sliOf(v: unknown): unknown {
+  if (!isObject(v)) return null
+  const str = (k: string) => (typeof v[k] === 'string' ? (v[k] as string) : null)
+  const kind = v.error_ratio !== undefined ? 'error_ratio' : v.good !== undefined ? 'good_total' : 'bad_total'
+  return { kind, good: kind === 'good_total' ? str('good') : null, bad: kind === 'bad_total' ? str('bad') : null, total: kind === 'error_ratio' ? null : str('total'), errorRatio: kind === 'error_ratio' ? str('error_ratio') : null }
 }
 
 const ORDER: Record<string, number> = { ruler: 0, notifier: 1 }
@@ -389,13 +456,14 @@ export function mergeTimelines(parts: Timeline[]): Timeline {
  * through the API have a history. A rule that already exists keeps who created it; it is
  * marked as edited only if something that changes its behaviour or text changed.
  */
-export function adoptMonitors(file: unknown, existing: Map<string, AlertingRuleV2 | AnomalyRuleV2>, by: string, now: number): void {
+export function adoptMonitors(file: unknown, existing: Map<string, MonitorRule>, by: string, now: number): void {
   const groups = isObject(file) && Array.isArray(file.groups) ? file.groups : []
   for (const g of groups) {
     if (!isObject(g) || typeof g.name !== 'string' || !Array.isArray(g.rules) || g.name === DEADMAN_GROUP) continue
     const groupLabels = isObject(g.labels) ? (g.labels as Record<string, string>) : {}
     for (const r of g.rules) {
-      if (!isObject(r) || typeof r.alert !== 'string' || typeof r.expr !== 'string') continue
+      // An SLO entry has no expr (its SLI is the expression).
+      if (!isObject(r) || typeof r.alert !== 'string' || (typeof r.expr !== 'string' && !isObject(r.slo))) continue
       const labels = { ...groupLabels, ...(isObject(r.labels) ? (r.labels as Record<string, string>) : {}) }
       if (Object.values(labels).some((v) => typeof v !== 'string')) continue
       const given = isObject(r.monitor) ? (r.monitor as Partial<MonitorMeta>) : null
@@ -410,7 +478,12 @@ export function adoptMonitors(file: unknown, existing: Map<string, AlertingRuleV
       const sameAnomaly = (o: AnomalyRuleV2) =>
         a !== null && o.expr === r.expr && o.name === r.alert && o.anomaly.detector === (a.detector ?? o.anomaly.detector) &&
         Object.entries(isObject(a.params) ? a.params : {}).every(([k, v]) => o.anomaly.params[k] === v)
-      const same = old !== undefined && sameForAndText && (old.kind === 'anomaly' ? sameAnomaly(old) : a === null && old.key === ruleKey('alert', r.alert, r.expr, labels))
+      // An SLO entry is the same rule when its SLI and objective are (a rule file written by the
+      // ruler's export carries every other field too; a changed alert window is an edit).
+      const so = isObject(r.slo) ? r.slo : null
+      const sameSlo = (o: SloRuleV2) =>
+        so !== null && o.name === r.alert && o.slo.objective === so.objective && JSON.stringify(o.slo.sli) === JSON.stringify(sliOf(so.sli)) && (so.alerts === undefined || JSON.stringify(o.slo.alerts.map((x) => [x.severity, x.burnRate])) === JSON.stringify((Array.isArray(so.alerts) ? so.alerts : []).map((x: Record<string, unknown>) => [x.severity, x.burn_rate])))
+      const same = old !== undefined && sameForAndText && (old.kind === 'anomaly' ? sameAnomaly(old) : old.kind === 'slo' ? sameSlo(old) : a === null && so === null && old.key === ruleKey('alert', r.alert, r.expr as string, labels))
       r.monitor = {
         id,
         owner: given?.owner ?? old?.monitor?.owner ?? '',

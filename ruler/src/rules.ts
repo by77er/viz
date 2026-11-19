@@ -7,6 +7,8 @@ import {
   ANOMALY_ANNOTATION,
   ANOMALY_DETAIL_ANNOTATION,
   NO_DATA_LABEL,
+  SLO_ANNOTATION,
+  SLO_DETAIL_ANNOTATION,
   type AlertingRuleV2 as AlertingRule,
   type AnomalyRuleV2,
   type MonitorMeta,
@@ -15,9 +17,11 @@ import {
   type Rule,
   type RuleGroup,
   type RulerConfig,
+  type SloRuleV2,
   type ValidationError,
 } from '../contracts-proposal/rules.v2'
 import { anomalyKeyText, maxClass, parseAnomalySpec } from './anomaly'
+import { parseSloSpec, sloKeyText } from './slo'
 import { classify, PromqlTextError } from './classify'
 import { parseTemplate, type Template } from './template'
 import { byteLength, formatDuration, hash64, LABEL_NAME_RE, labelsKey, METRIC_NAME_RE, parseDuration } from './util'
@@ -26,7 +30,7 @@ export const DEADMAN_GROUP = 'viz:deadman'
 export const DEADMAN_ALERT = 'DeadMansSwitch'
 
 const GROUP_FIELDS = new Set(['name', 'interval', 'query_offset', 'limit', 'labels', 'rules'])
-const ALERT_FIELDS = new Set(['alert', 'expr', 'for', 'keep_firing_for', 'labels', 'annotations', 'no_data', 'no_data_for', 'no_data_expr', 'monitor', 'anomaly'])
+const ALERT_FIELDS = new Set(['alert', 'expr', 'for', 'keep_firing_for', 'labels', 'annotations', 'no_data', 'no_data_for', 'no_data_expr', 'monitor', 'anomaly', 'slo'])
 const NO_DATA_MODES: NoDataMode[] = ['ok', 'alerting', 'keep']
 export const MONITOR_ID_RE = /^mon_[0-9a-f]{16}$/
 const RECORD_FIELDS = new Set(['record', 'expr', 'labels'])
@@ -39,6 +43,8 @@ export interface ParsedGroups {
   warnings: ValidationError[]
   /** Where each anomaly rule was in the document (`groups[i].rules[j]`), for errors found after parsing. */
   anomalyPaths?: Map<AnomalyRuleV2, string>
+  /** The same for SLO rules. */
+  sloPaths?: Map<SloRuleV2, string>
 }
 
 class Ctx {
@@ -189,7 +195,7 @@ function monitorMeta(c: Ctx, v: unknown, path: string): MonitorMeta | null {
 }
 
 /** Key of a rule inside its group: what must stay the same for alert state to carry over a save. */
-export function ruleKey(kind: 'alert' | 'record' | 'anomaly', name: string, exprText: string, labels: Record<string, string>): string {
+export function ruleKey(kind: 'alert' | 'record' | 'anomaly' | 'slo', name: string, exprText: string, labels: Record<string, string>): string {
   return hash64(`${kind}\u0000${name}\u0000${exprText}\u0000${labelsKey(labels)}`)
 }
 
@@ -202,6 +208,7 @@ export function parseRuleFile(doc: unknown, cfg: RulerConfig): ParsedGroups {
   const c = new Ctx()
   const groups: RuleGroup[] = []
   const anomalyPaths = new Map<AnomalyRuleV2, string>()
+  const sloPaths = new Map<SloRuleV2, string>()
   if (!isObject(doc) || !Array.isArray(doc.groups)) {
     c.err('groups', 'a rule file is an object with a "groups" list', 'Wrap the groups as { "groups": [ { "name": ..., "rules": [...] } ] }.')
     return { groups, errors: c.errors, warnings: c.warnings }
@@ -248,6 +255,7 @@ export function parseRuleFile(doc: unknown, cfg: RulerConfig): ParsedGroups {
     }
     const rules: Rule[] = []
     const anomalyRules: AnomalyRuleV2[] = []
+    const sloRules: SloRuleV2[] = []
     const keys = new Set<string>()
     g.rules.forEach((r: unknown, ri: number) => {
       const rp = `${gp}.rules[${ri}]`
@@ -267,7 +275,10 @@ export function parseRuleFile(doc: unknown, cfg: RulerConfig): ParsedGroups {
           c.err(`${rp}.${k}`, `unknown field "${k}" for ${isAlert ? 'an alerting' : 'a recording'} rule`, isAlert ? `An alerting rule has: ${[...ALERT_FIELDS].join(', ')}.` : `A recording rule has: ${[...RECORD_FIELDS].join(', ')}; "for" and "annotations" belong to alerting rules.`)
         }
       }
-      const cost = expr(c, r.expr, `${rp}.expr`, cfg)
+      // An SLO entry has no expr: its SLI is the expression (contract version 4).
+      const isSlo = isAlert && r.slo !== undefined
+      if (isSlo && r.expr !== undefined) c.err(`${rp}.expr`, 'an SLO rule has no expr: the SLI in slo.sli is its expression', 'Remove expr; give the good (or bad) and total events in slo.sli.')
+      const cost = isSlo ? null : expr(c, r.expr, `${rp}.expr`, cfg)
       const labels = { ...groupLabels, ...stringMap(c, r.labels, `${rp}.labels`, 'labels') }
       for (const [k, v] of Object.entries(labels)) {
         if (k === '__name__') c.err(`${rp}.labels.${k}`, 'a rule cannot set __name__', 'Remove the label; the name comes from "alert" or "record".')
@@ -299,6 +310,42 @@ export function parseRuleFile(doc: unknown, cfg: RulerConfig): ParsedGroups {
         }
         const noData = noDataPolicy(c, r, rp, cfg)
         const monitor = monitorMeta(c, r.monitor, `${rp}.monitor`)
+        if (isSlo) {
+          // An SLO burn-rate rule (contract version 4): the burn-rate alerts are the condition.
+          if (r.anomaly !== undefined) c.err(`${rp}.anomaly`, 'a rule is an anomaly rule or an SLO rule, not both', 'Remove one of anomaly and slo.')
+          for (const k of [SLO_ANNOTATION, SLO_DETAIL_ANNOTATION]) {
+            if (k in annotations) c.err(`${rp}.annotations.${k}`, `the ${k} annotation is written by the SLO rule`, 'Remove it; use description or summary for your own text.')
+          }
+          if (monitor?.condition) c.err(`${rp}.monitor.condition`, 'an SLO rule has no threshold condition', 'Remove the condition; the burn-rate alerts decide.')
+          const parsed = parseSloSpec(c, r.slo, `${rp}.slo`, intervalMs, labels, cfg)
+          if (!parsed) return
+          const rule: SloRuleV2 = {
+            kind: 'slo',
+            name,
+            expr: parsed.expr,
+            slo: parsed.spec,
+            forMs,
+            keepFiringForMs,
+            labels,
+            annotations,
+            key: ruleKey('slo', name, sloKeyText(parsed.spec), labels),
+            cost: { class: parsed.tickCost.class, windowMs: parsed.tickCost.windowMs, reason: `${parsed.tickCost.reason}; ${parsed.spec.history.reason}` },
+          }
+          if (noData) rule.noData = noData
+          if (monitor) {
+            if (monitorIds.has(monitor.id)) c.err(`${rp}.monitor.id`, `monitor id ${monitor.id} is used twice in this file`, 'Give each monitor its own id.')
+            monitorIds.add(monitor.id)
+            rule.monitor = monitor
+          }
+          if (keys.has(rule.key)) {
+            c.err(rp, `SLO rule "${name}" is repeated with the same SLI, objective, alerts and labels`, 'Remove the duplicate.')
+            return
+          }
+          keys.add(rule.key)
+          sloRules.push(rule)
+          sloPaths.set(rule, rp)
+          return
+        }
         if (r.anomaly !== undefined) {
           // An anomaly rule (contract version 2): the detector's flag is the condition.
           for (const k of [ANOMALY_ANNOTATION, ANOMALY_DETAIL_ANNOTATION]) {
@@ -368,9 +415,10 @@ export function parseRuleFile(doc: unknown, cfg: RulerConfig): ParsedGroups {
     const group: RuleGroup = { name, intervalMs, queryOffsetMs, limit, rules }
     // Only when there are any, so a group without anomaly rules is stored exactly as before.
     if (anomalyRules.length > 0) group.anomalyRules = anomalyRules
+    if (sloRules.length > 0) group.sloRules = sloRules
     groups.push(group)
   })
-  return { groups, errors: c.errors, warnings: c.warnings, anomalyPaths }
+  return { groups, errors: c.errors, warnings: c.warnings, anomalyPaths, sloPaths }
 }
 
 /** The built-in always-firing rule (dead-man's switch). */
