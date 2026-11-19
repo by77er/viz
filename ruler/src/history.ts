@@ -46,11 +46,12 @@ export const HISTORY_LIMIT_DEFAULTS = {
   maxBacktestMemoryBytes: 32 * 1024 * 1024,
   /**
    * Modelled CPU one backtest, and the warm-ups of one alarm together, may use (`CPU`). A Durable
-   * Object request or alarm may use 30 s of CPU by default and 5 minutes at most (`limits.cpu_ms`;
-   * README, "CPU"): a backtest a third of the default, the warm-ups a sixth, leaving the alarm's
-   * live ticks and the model's own error room.
+   * Object request or alarm may use 30 s of CPU by default, 5 minutes at most (`limits.cpu_ms`;
+   * README, "CPU"). The model prices every point at 1.5 times the most it was measured to cost, so
+   * a backtest (a request of its own) at its 20 s budget is expected to use at most about 13 s; the
+   * warm-ups share an alarm with the live ticks, and get 5 s of it.
    */
-  maxBacktestCpuMs: 10_000,
+  maxBacktestCpuMs: 20_000,
   maxWarmupCpuMs: 5_000,
 } as const
 

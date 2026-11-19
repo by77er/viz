@@ -547,6 +547,26 @@ describe('introspection, for the resource', () => {
     expect(await introspect(t.tenant, s.access)).toMatchObject({ status: 'active' })
   })
 
+  it('a grant is never broader than its approver\'s key, also later: disabled, the grant is suspended; deleted, it ends', async () => {
+    const t = await newTenant('approver-key')
+    const dana = await makeKey(t.admin, ['admin', ...OAUTH_SCOPES], { name: 'dana' })
+    const c = await connect(dana.key)
+    await post(t.admin, `/keys/${dana.id}/disable`)
+    expect(await introspect(t.tenant, c.access)).toEqual({ v: 1, status: 'inactive', reason: 'suspended' })
+    expect((await grantOf(t.admin, c.grant.id)).status).toBe('suspended')
+    await post(t.admin, `/keys/${dana.id}/enable`)
+    expect(await introspect(t.tenant, c.access)).toMatchObject({ status: 'active' })
+    const keyId = (await grantKeyId(t.tenant, c.grant.id))!
+    expect((await call(t.admin, 'DELETE', `/keys/${dana.id}`, { confirmName: 'dana' })).status).toBe(200)
+    expect(await introspect(t.tenant, c.access)).toEqual({ v: 1, status: 'inactive', reason: 'revoked' })
+    expect((await refresh(c.clientId, c.refresh)).body.error).toBe('invalid_grant')
+    // the alarm is due at once, and ends the grant with its key
+    expect(await runInDurableObject(stubOf(t.tenant), (_i, s) => s.storage.getAlarm())).toBeLessThanOrEqual(Date.now())
+    expect(await runDurableObjectAlarm(stubOf(t.tenant))).toBe(true)
+    expect(await grantOf(t.admin, c.grant.id)).toMatchObject({ status: 'revoked', revokeReason: 'approver-gone', key: null })
+    expect(await kvGet(`key:${keyId}`)).toBeNull()
+  })
+
   it('a grant\'s key cannot be rotated, deleted or impersonated through the keys API', async () => {
     const t = await newTenant('grantkey')
     const dana = await personKey(t.admin)

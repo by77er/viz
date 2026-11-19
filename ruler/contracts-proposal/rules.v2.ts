@@ -233,7 +233,7 @@ export type AnyRuleV2 = RuleV2 | AnomalyRuleV2 | SloRuleV2
  * history is read and evaluated in time windows sized to it; defaults 16 MiB and 32 MiB. The
  * modelled CPU one backtest may use, and the warm-ups of one alarm together (ms): over it a
  * backtest is refused, a warm-up refused (over the whole) or left for the next alarm (over what the
- * alarm has left); defaults 10,000 and 5,000, under a Durable Object invocation's 30 s default
+ * alarm has left); defaults 20,000 and 5,000, under a Durable Object invocation's 30 s default
  * CPU limit. Proposed for `contracts/rules.ts` (README, contract issue 18).
  */
 export interface RulerLimitsV2 extends RulerLimits {

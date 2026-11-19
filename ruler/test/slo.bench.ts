@@ -22,6 +22,7 @@ import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
 import type { PromMatrix } from '../../contracts/engine'
 import type { SloRuleV2 } from '../contracts-proposal/rules.v2'
+import { CPU } from '../src/history'
 import { DEFAULT_RULER_CONFIG } from '../src/ruler'
 import { parseRuleFile } from '../src/rules'
 import { world } from './harness'
@@ -153,6 +154,8 @@ describe('SLO rules, warm-ups and backtests in workerd: CPU per tick and per bac
     for (const series of [100, 1000]) {
       it(`${prefix} ${kind} ${series}: a 7-day backtest at 1 minute, ${oneWindow ? 'one window per read' : 'streamed in windows'}`, async () => {
         const { tenant, stub, w } = await setup({ heartbeatMs: 24 * HOUR })
+        // Measured whole, whatever the CPU model says: its figure is printed beside the measurement.
+        ok(await stub.configure(tenant, { limits: { maxBacktestCpuMs: 600_000 } } as never))
         if (oneWindow) ok(await stub.configure(tenant, { limits: { maxBacktestMemoryBytes: 4 * 1024 ** 3 } } as never))
         // A 1,000-series EWMA rule needs more state per rule than the default 1 MiB to be saved at all.
         if (kind === 'ewma' && series > 100) ok(await stub.configure(tenant, { limits: { maxAnomalyStateBytesPerRule: 8 << 20 } } as never))
@@ -174,7 +177,7 @@ describe('SLO rules, warm-ups and backtests in workerd: CPU per tick and per bac
           res = await stub.backtest(tenant, rule, from, to, MIN)
         })
         const after = await host()
-        const r = res as unknown as { status: string; intervals?: unknown[]; error?: string; message?: string; memory?: { peakBytes: number; budgetBytes: number }; cost?: { memory: { peakBytes: number; budgetBytes: number; windowSteps: number[]; queries: number } } }
+        const r = res as unknown as { status: string; intervals?: unknown[]; error?: string; message?: string; memory?: { peakBytes: number; budgetBytes: number }; cost?: { memory: { peakBytes: number; budgetBytes: number; windowSteps: number[]; queries: number }; cpu: { modelledMs: number } } }
         const peakMb = (after.peakKb - before.rssKb) / 1024
         if (r.status !== 'ok') {
           expect(r.status, JSON.stringify(r).slice(0, 300)).toBe('over_budget')
@@ -190,7 +193,7 @@ describe('SLO rules, warm-ups and backtests in workerd: CPU per tick and per bac
         }))
         const points = calls.reduce((n, [, a, b, st]) => n + (Math.floor((b - a) / st) + 1) * (kind === 'slo' ? 2 * series : series), 0)
         const mem = r.cost!.memory
-        note(`| ${prefix} ${kind} | ${series} | ${(m.cpuMs - gen.cpuMs).toFixed(0)} (+${gen.cpuMs.toFixed(0)} fake engine) | ${(m.wallMs / 1000).toFixed(1)} | ${mem.windowSteps.join(' + ')} steps × ${mem.queries} queries | ${points.toLocaleString('en-US')} | ${(mem.peakBytes / 1048576).toFixed(1)} / ${(mem.budgetBytes / 1048576).toFixed(0)} | ${peakMb.toFixed(1)} | ${r.intervals!.length} | ${load(m.load)} |`)
+        note(`| ${prefix} ${kind} | ${series} | ${(m.cpuMs - gen.cpuMs).toFixed(0)} (+${gen.cpuMs.toFixed(0)} fake engine) | ${(m.wallMs / 1000).toFixed(1)} | ${mem.windowSteps.join(' + ')} steps × ${mem.queries} queries | ${points.toLocaleString('en-US')} | ${(mem.peakBytes / 1048576).toFixed(1)} / ${(mem.budgetBytes / 1048576).toFixed(0)} | ${peakMb.toFixed(1)} | ${r.intervals!.length} | ${load(m.load)} | modelled ${r.cost!.cpu.modelledMs} ms, ${(r.cost!.cpu.modelledMs - (points * CPU.parse) / 1000).toFixed(0)} without parsing |`)
       })
     }
   }

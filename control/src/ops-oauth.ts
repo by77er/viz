@@ -533,5 +533,8 @@ export function oauthDeadlines(t: Tenant, now: number): number[] {
   if (idle !== null) out.push(idle + OAUTH_LIFETIMES.clientIdleDays * DAY_MS)
   const closed = min('SELECT MIN(revoked_at) AS m FROM oauth_grants WHERE tenant = ? AND revoked_at IS NOT NULL', t.tenant)
   if (closed !== null) out.push(closed + KEEP_CLOSED_MS)
+  // A grant whose approver's key is gone ends at the next alarm, which is now (at most 50 live grants to look at).
+  const live = t.all<GrantRow>(`SELECT ${GRANT_COLS} FROM oauth_grants WHERE tenant = ? AND revoked_at IS NULL AND expires_at > ?`, t.tenant, now)
+  if (live.some((g) => approver(t, g, now) === 'gone')) out.push(now)
   return out.filter((x): x is number => x !== null)
 }
