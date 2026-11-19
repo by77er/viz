@@ -782,7 +782,7 @@ async function readSegmentLog(store: Store, cell: string, tenant: string, incarn
       const passedOver = ck.passedOver
       const b = await readBaseSegment(store, tenant, incarnation, baseSegment, sink, passedOver)
       if (b.status !== 'ok') return result(b.status, { detail: b.reason, start: after, ...(b.status === 'unsupported' ? { gapAt: baseSegment.first } : {}) })
-      return readAfter(store, tenant, incarnation, refs, complete, after, maxChanges, b.info, b.changes, null)
+      return readAfter(store, tenant, incarnation, refs, complete, after, maxChanges, b.info, b.changes, baseSegment)
     }
   }
   after = (cursor as Cursor).version
@@ -817,21 +817,8 @@ async function readAfter(
   maxChanges: number,
   base: BaseInfo | null,
   pre: LogChange[],
-  _unused: null,
+  baseSegment: SegmentRef | null,
 ): Promise<TenantLog> {
-  const fromBase = base?.source === 'base'
-    const startAfter = `${cell}/${ledgerSegmentsStartingAfter(tenant, incarnation, after)}`
-    ;({ segs: refs, complete } = await listSegments(store, cell, tenant, incarnation, startAfter, (s) => covered(s, after) > maxChanges))
-    if (refs.length === 0) return null
-    if (refs[0]!.first > after + 1) {
-      // The cursor is inside a segment, or there is a hole: find the segment holding after + 1.
-      const all = await listSegments(store, cell, tenant, incarnation, undefined, (s) => s.length > 0 && s[s.length - 1]!.first > after + 1)
-      const holding = all.segs.find((s) => s.first <= after + 1 && after + 1 <= s.last)
-      if (!holding) return result('gap', { gapAt: after + 1, detail: `version ${after + 1} of incarnation ${incarnation} is in no segment; the next one starts at ${refs[0]!.first}` })
-      refs = [holding, ...refs]
-    }
-  }
-
   // Whole segments, contiguous, up to the cap (at least one segment).
   let status: LogStatus = 'ok'
   let gapAt: number | undefined
@@ -864,12 +851,20 @@ async function readAfter(
   }
   if (status === 'ok' && !complete) status = 'more'
 
-  let base: LogChange | null = null
   const start = after
   const changes: LogChange[] = []
-  const reads = take.length
-  for (let i = 0; i < reads; i += READ_FANOUT) {
-    const batch = take.slice(i, i + READ_FANOUT)
+  // A base segment was streamed already: its changes after the base line are `pre`.
+  let reads = take
+  if (baseSegment !== null) {
+    if (take[0] !== baseSegment) {
+      // Overlapping with the segment after it: nothing of the incarnation is trusted, not even its base.
+      return { tenant, status, detail, incarnation, layout: 'segments', base: null, start, changes }
+    }
+    changes.push(...pre.filter((c) => c.version > start))
+    reads = take.slice(1)
+  }
+  for (let i = 0; i < reads.length; i += READ_FANOUT) {
+    const batch = reads.slice(i, i + READ_FANOUT)
     const got = await Promise.all(batch.map((s) => readSegment(store, tenant, incarnation, s)))
     for (const [j, r] of got.entries()) {
       const seg = batch[j]!
@@ -878,12 +873,6 @@ async function readAfter(
         return { tenant, status: r.status, detail: r.reason, incarnation, layout: 'segments', base, start, changes, ...(r.status === 'unsupported' ? { gapAt: seg.first } : {}) }
       }
       for (const c of r.changes) {
-        if (from === null && base === null) {
-          // An incarnation's first line is its base, and only there.
-          if (c.kind !== 'base' || c.version !== seg.first) return result('no_base', { start, detail: `the first segment of incarnation ${incarnation} does not begin with its base` })
-          base = c
-          continue
-        }
         if (c.kind === 'base') return { tenant, status: 'corrupt', detail: `version ${c.version} of incarnation ${incarnation} is a base inside the log`, incarnation, layout: 'segments', base, start, changes }
         if (c.version > start) changes.push(c)
       }
