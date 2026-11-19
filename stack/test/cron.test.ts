@@ -1,9 +1,9 @@
 import { createExecutionContext, createMessageBatch, getQueueResult } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { sweepPending } from '../../flush/src/index'
 import { PENDING_MARKER_PREFIX } from '../../shard/src/shard'
-import { MAINT_QUEUE_NAME, type MaintMessage, type StackEnv, consumeMaintBatch, engine, handleScheduled, maintMarkerKey, maintainTenant } from '../src/index'
+import { MAINT_QUEUE_NAME, type MaintMessage, type StackEnv, consumeMaintBatch, engine, flushTenant, handleScheduled, maintMarkerKey, maintainTenant } from '../src/index'
 import { type Sim, createSim, ingest, rng, shard } from './sim'
 
 const HOUR = 3_600_000
@@ -35,7 +35,7 @@ function recordingQueue<T>() {
 }
 
 describe('review R-7: one failing shard does not stop the hourly cron', () => {
-  beforeAll(async () => {
+  beforeEach(async () => {
     await clearKv(PENDING_MARKER_PREFIX)
     await clearKv('maint:')
   })
@@ -141,6 +141,9 @@ function perKeyRateLimited(kv: KVNamespace, barrierKey: string, windowMs = 1000)
   return { writes, kv: proxy }
 }
 
+/** No merge ever becomes due, so a run's marker depends only on the data and the last sweep. */
+const STABLE = { deleteGraceMs: 3_600_000, orphanEveryMs: 0, orphanGraceMs: 0, compaction: { minL0Files: 1000, maxL0AgeMs: 1e12, closeAfterMs: 1e12 } }
+
 describe('review R-11(c): the maintenance marker tolerates KV\'s per-key write rate', () => {
   let sim: Sim
   beforeAll(async () => {
@@ -151,11 +154,14 @@ describe('review R-11(c): the maintenance marker tolerates KV\'s per-key write r
   it('two runs of one tenant that finish together both succeed, and the marker is written', async () => {
     const [t] = sim.tenants
     expect(await ingest(sim, t!, rng(3), 4, 2, 0)).toBe(204)
-    for (const s of sim.shards) await shard(s).seal(t!.name)
+    for (const s of sim.shards) {
+      await shard(s).seal(t!.name)
+      expect(await flushTenant(sim.env, engine, t!.name, s)).toMatchObject({ status: 'ok' })
+    }
     await clearKv(maintMarkerKey(t!.name))
     const limited = perKeyRateLimited(env.CONFIG, maintMarkerKey(t!.name))
     const e = { ...sim.env, CONFIG: limited.kv } as StackEnv
-    const opts = { deleteGraceMs: 3_600_000, orphanEveryMs: 0, orphanGraceMs: 0 }
+    const opts = STABLE
     const [a, b] = await Promise.all([maintainTenant(e, engine, t!.name, opts), maintainTenant(e, engine, t!.name, opts)])
     expect(a.tenant).toBe(t!.name)
     expect(b.tenant).toBe(t!.name)
@@ -168,7 +174,7 @@ describe('review R-11(c): the maintenance marker tolerates KV\'s per-key write r
 
   it('a run whose marker is unchanged does not write it again', async () => {
     const [t] = sim.tenants
-    const opts = { deleteGraceMs: 3_600_000, orphanEveryMs: 0, orphanGraceMs: 0 }
+    const opts = STABLE
     await maintainTenant(sim.env, engine, t!.name, opts)
     const limited = perKeyRateLimited(env.CONFIG, 'none')
     await maintainTenant({ ...sim.env, CONFIG: limited.kv } as StackEnv, engine, t!.name, opts)

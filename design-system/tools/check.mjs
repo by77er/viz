@@ -193,7 +193,7 @@ console.log(`contrast and structure: ${checked - failed}/${checked} checks pass`
 
 // ---- 4. source lint ----
 const files = []
-const walk = (p) => { const s = statSync(p); if (s.isDirectory()) { for (const f of readdirSync(p)) if (!['node_modules', 'dist', '.wrangler'].includes(f)) walk(join(p, f)) } else if (['.css', '.tsx', '.ts', '.jsx', '.js', '.mjs', '.html'].includes(extname(p))) files.push(p) }
+const walk = (p) => { const s = statSync(p); if (s.isDirectory()) { for (const f of readdirSync(p)) if (!['node_modules', 'dist', '.wrangler', 'bundle.css'].includes(f)) walk(join(p, f)) } else if (['.css', '.tsx', '.ts', '.jsx', '.js', '.mjs', '.html'].includes(extname(p))) files.push(p) }
 targets.forEach(walk)
 const colour = /#[0-9a-fA-F]{3,8}\b|\b(?:rgb|rgba|hsl|hsla|oklch|oklab|lab|lch|hwb|color)\(/g
 const cssRules = [

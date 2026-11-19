@@ -12,7 +12,8 @@ import type { Ledger } from '../../ledger/src/ledger'
  *   2. chooseJob                                the policy below picks the inputs
  *   3. GET the inputs                           in parallel, at most six at a time
  *   4. engine.mergeFiles, twice                 samples inputs → one samples file, series → one series file
- *   5. PUT both outputs, in parallel            content-hashed keys, If-None-Match: *
+ *   5. PUT both outputs, in parallel            content-hashed keys, If-None-Match: *, each
+ *                                               carrying the list of its inputs (R2 metadata)
  *   6. ledger.replace                           ONE call: remove every input of both tables, add both outputs
  *
  * Nothing is remembered between steps: every step plans from the ledger, so steps can run
@@ -22,15 +23,16 @@ import type { Ledger } from '../../ledger/src/ledger'
  *     transaction. A samples file is therefore never listed without the series file it was
  *     merged with, and a file that retention or another merge removed cannot come back.
  *   - Output keys hold a hash of the input keys and of the bytes: the same inputs give the
- *     same keys and the same bytes, so a repeat finds its objects and its `replace` is
- *     answered as a replay.
- *   - `conflict` (an input is gone): the outputs are deleted and the caller plans again.
- *     This step can never make them live, because their key names an input that will not
- *     return. Only if the ledger knows them (an identical step won, and they are live or,
- *     removed since, tombstoned) are they left alone: then they are not this step's.
- *   - A step that has run longer than `maxStepMs` does not call `replace`. The orphan
- *     sweep (janitor/) deletes unreferenced compaction outputs only when they are much
- *     older than that, so it can never delete an output a step is about to make live.
+ *     same keys and the same bytes, so a repeat finds its objects (`exists`, it ADOPTS them)
+ *     and its `replace` is answered as a replay.
+ *   - No step ever deletes an output, not even on `conflict`: an adopted or shared object may
+ *     be about to become live through another step (spec/README.md F14). Unreferenced outputs
+ *     are the orphan sweep's (janitor/), which deletes one only when an input of it is gone
+ *     for good (not live, and its object deleted, which happens only after a logged removal).
+ *     `replace` needs every input live, so such an output can never be listed again. No clock
+ *     is involved: an output adopted by a retry, however old, is safe (review R-2).
+ *   - A step that has run longer than `maxStepMs` does not call `replace` (bounded work per
+ *     step; the sweep keeps an age floor of twice that, which is no longer what makes it safe).
  *
  * Policy (`chooseJob`), files being (samples, series) pairs:
  *
@@ -261,11 +263,14 @@ export type StepResult =
   /**
    * The live set changed since the plan: an input was no longer live (`missing`), or another
    * merge made a file the outputs would jump over in precedence (`blocking`). The outputs
-   * were deleted unless the ledger knows them. Plan again.
+   * are left for the orphan sweep (never deleted by the step: spec/README.md F14). Plan again.
    */
-  | { status: 'conflict'; job: JobSummary; missing: string[]; blocking: string[]; discarded: string[] }
-  /** The ledger refused the swap as malformed, the merge lost rows, or the step ran too long. Nothing changed. */
-  | { status: 'error'; job: JobSummary; reason: 'invalid' | 'row_count' | 'too_slow'; detail: string }
+  | { status: 'conflict'; job: JobSummary; missing: string[]; blocking: string[] }
+  /**
+   * The ledger refused the swap as malformed, the merge lost rows, the step ran too long, or
+   * the input names do not fit in the outputs' metadata (`too_many_inputs`). Nothing changed.
+   */
+  | { status: 'error'; job: JobSummary; reason: 'invalid' | 'row_count' | 'too_slow' | 'too_many_inputs'; detail: string }
 
 export interface JobSummary {
   day: string
@@ -330,6 +335,54 @@ export function compactedKey(p: { cell: string; table: Table; tenant: string; da
 
 const sha256 = (bytes: Uint8Array): Promise<ArrayBuffer> => crypto.subtle.digest('SHA-256', bytes as Uint8Array<ArrayBuffer>)
 
+/** `inputs16` of a merge: the first 16 hex characters of the SHA-256 of its input keys, as listed in `JobSummary.inputs`. */
+export const inputsHash16 = async (inputs: readonly string[]): Promise<string> => hex(await sha256(new TextEncoder().encode(inputs.join('\n')))).slice(0, 16)
+
+/**
+ * What a compaction output was made from, kept with the object as R2 custom metadata under
+ * `COMPACTION_INPUTS_META` (format `r2.compaction-inputs` v1, `FORMATS` in src/formats.ts):
+ *
+ *   {"v":1,"inputs":["<cell>/data/metric_samples/tenant=…/day=…/L0-….parquet", …]}
+ *
+ * The keys in the order their hash is the key's `inputs16` (samples keys sorted, then series
+ * keys sorted). The orphan sweep (janitor/) reads it to delete an unreferenced output only
+ * once one of its inputs is gone for good: `replace` needs every input live, so such an
+ * output can never be listed, whoever wrote it and however old it is (review R-2).
+ */
+export const COMPACTION_INPUTS_META = 'viz-inputs'
+export const COMPACTION_INPUTS_VERSION = 1
+/** R2 allows 8,192 bytes of object metadata (developers.cloudflare.com/r2/platform/limits/); this leaves room. */
+export const COMPACTION_INPUTS_MAX_BYTES = 6144
+
+export const encodeCompactionInputs = (inputs: readonly string[]): string => JSON.stringify({ v: COMPACTION_INPUTS_VERSION, inputs })
+
+/**
+ * The inputs of the compaction output `key`, or why they cannot be known. Refuses (returns a
+ * reason) for an unknown version, for keys outside the output's own tenant and day, and for a
+ * list whose hash is not the key's `inputs16`: a reader that cannot tell must keep the object.
+ */
+export async function decodeCompactionInputs(key: string, meta: string | undefined): Promise<{ inputs: string[] } | { unreadable: string }> {
+  const m = /^(.+)\/data\/metric_(?:samples|series)\/tenant=([A-Za-z0-9_-]{1,64})\/day=(\d{4}-\d{2}-\d{2})\/L[1-9]\d*-(?:h\d\d|d)-([0-9a-f]{16})-[0-9a-f]{8}\.parquet$/.exec(key)
+  if (!m) return { unreadable: 'not a compaction output key' }
+  const [, cell, tenant, day, inputs16] = m
+  if (meta === undefined) return { unreadable: 'no inputs recorded' }
+  let rec: { v?: unknown; inputs?: unknown }
+  try {
+    rec = JSON.parse(meta) as typeof rec
+  } catch {
+    return { unreadable: 'inputs record is not JSON' }
+  }
+  if (typeof rec !== 'object' || rec === null) return { unreadable: 'inputs record is not an object' }
+  if (rec.v !== COMPACTION_INPUTS_VERSION) return { unreadable: `inputs record version ${JSON.stringify(rec.v)}; this code reads ${COMPACTION_INPUTS_VERSION}` }
+  const inputs = rec.inputs
+  const prefix = (t: string) => `${cell}/data/${t}/tenant=${tenant}/day=${day}/`
+  if (!Array.isArray(inputs) || inputs.length === 0 || !inputs.every((k) => typeof k === 'string' && (k.startsWith(prefix('metric_samples')) || k.startsWith(prefix('metric_series'))))) {
+    return { unreadable: 'inputs are not keys of this tenant and day' }
+  }
+  if ((await inputsHash16(inputs as string[])) !== inputs16) return { unreadable: 'inputs do not hash to the key' }
+  return { inputs: inputs as string[] }
+}
+
 export async function compactStep(env: CompactEnv, engine: Engine, tenant: string, opts: StepOptions = {}): Promise<StepResult> {
   if (!TENANT_ID.test(tenant)) throw new Error('compact: tenant id must match [A-Za-z0-9_-]{1,64}')
   const started = Date.now()
@@ -361,6 +414,12 @@ export async function compactStep(env: CompactEnv, engine: Engine, tenant: strin
     inputBytes: job.inputs.reduce((a, p) => a + p.bytes, 0),
     inputRows: inSamples.reduce((a, f) => a + f.rows, 0),
   }
+  // The outputs must carry their inputs (R2 metadata); a merge too wide for that is refused
+  // before any work, never written without them (the sweep could then never judge it).
+  const record = encodeCompactionInputs(summary.inputs)
+  if (new TextEncoder().encode(record).byteLength > COMPACTION_INPUTS_MAX_BYTES) {
+    return { status: 'error', job: summary, reason: 'too_many_inputs', detail: `the names of ${summary.inputs.length} inputs do not fit in ${COMPACTION_INPUTS_MAX_BYTES} bytes of object metadata; lower maxInputPairs` }
+  }
 
   // One table at a time, so only one table's inputs are in memory with the engine's copy.
   const merged: EncodedFile[] = []
@@ -376,7 +435,7 @@ export async function compactStep(env: CompactEnv, engine: Engine, tenant: strin
     merged.push(out)
   }
 
-  const inputs16 = hex(await sha256(new TextEncoder().encode(summary.inputs.join('\n')))).slice(0, 16)
+  const inputs16 = await inputsHash16(summary.inputs)
   const outputs: FileEntry[] = []
   const digests: ArrayBuffer[] = []
   for (const f of merged) {
@@ -385,8 +444,9 @@ export async function compactStep(env: CompactEnv, engine: Engine, tenant: strin
     outputs.push({ table: f.table, day: f.day, key, bytes: f.bytes.byteLength, rows: f.rows, minTs: f.minTs, maxTs: f.maxTs, level: job.level, index: f.index })
     digests.push(digest)
   }
-  // Both PUTs at once: a PUT costs about the same however large it is.
-  const put = await Promise.all(merged.map((f, i) => putFile(env.BUCKET, outputs[i]!.key, f.bytes, digests[i]!)))
+  // Both PUTs at once: a PUT costs about the same however large it is. Each object carries
+  // the list of its inputs, which is what lets the orphan sweep judge it (see above).
+  const put = await Promise.all(merged.map((f, i) => putFile(env.BUCKET, outputs[i]!.key, f.bytes, digests[i]!, { [COMPACTION_INPUTS_META]: record })))
   await opts.hooks?.afterPut?.(outputs)
 
   if (Date.now() - started > policy.maxStepMs) {
@@ -396,17 +456,15 @@ export async function compactStep(env: CompactEnv, engine: Engine, tenant: strin
   const r = await ledger.replace({ remove: summary.inputs, add: outputs })
   if (r.status === 'ok') return { status: 'merged', job: summary, version: r.version, outputs, put }
   if (r.status === 'invalid') return { status: 'error', job: summary, reason: 'invalid', detail: r.reason }
-  // Conflict: an input is gone for good, so these outputs can never be listed by THIS step.
-  // Delete them, unless the ledger (asked once more, in one read) knows them. Keys are a
-  // function of the inputs, so an identical step may have made the same objects live; if a
-  // later merge or retention has since removed them they are tombstoned, a reader holding
-  // an older plan may still be reading them, and only the janitor may delete them, after
-  // the grace. Either way they are not this step's to delete.
-  const keys = outputs.map((f) => f.key)
-  const check = await ledger.orphanCheck(keys)
-  const discarded = check.live.length === 0 && check.tombstoned.length === 0 ? keys : []
-  if (discarded.length > 0) await env.BUCKET.delete(discarded)
-  return { status: 'conflict', job: summary, missing: r.missing, blocking: r.blocking ?? [], discarded }
+  // Conflict: nothing was swapped. The outputs are LEFT where they are, for the orphan sweep.
+  // "An input is gone, so no step can list them" is true only once that removal is logged:
+  // a ledger rebuilt from its log can bring the input back, and an identical step (same
+  // inputs, so the same keys) can then commit these very objects (spec/README.md F14). The
+  // sweep deletes them once one of their inputs is gone for good (janitor/, review R-2).
+  if (r.status === 'conflict') return { status: 'conflict', job: summary, missing: r.missing, blocking: r.blocking ?? [] }
+  // An answer this code does not know (a newer ledger, `schema_too_new`): fail closed, so the
+  // maintenance run is retried; never take it for a conflict or a success.
+  throw new Error(`compact: the ledger answered replace with ${JSON.stringify((r as { status?: unknown }).status)}; nothing was swapped, retry`)
 }
 
 export interface CompactRun {

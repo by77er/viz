@@ -41,12 +41,12 @@ nyc_taxi), not on NAB in aggregate.
 | `src/cost.ts` | history → `tail` / `recent` / `rollup`, same thresholds as `ruler/src/classify.ts` |
 | `src/prom.ts` | engine results (`PromMatrix`, `PromVector` from `contracts/engine.ts`) → detector input |
 | `src/stats.ts`, `src/base.ts` | median, MAD, quantiles, weighted median, step inference; shared helpers |
-| `test/` | 195 tests (vitest, fast-check); `test/fixtures/` from statsmodels, ruptures and NAB's `sweeper.py` |
+| `test/` | 275 tests (vitest, fast-check); `test/fixtures/` from statsmodels, ruptures and NAB's `sweeper.py`; `test/regressions.test.ts` keeps every counterexample the property tests found |
 | `bench/nab.ts` | NAB corpus loader and a line-by-line port of NAB's scorer |
 | `bench/fetch-nab.sh`, `bench/nab-manifest.json` | fetch NAB into `bench/data/` (git-ignored); SHA-256 of every data and label file used |
 | `bench/verify-scorer.ts`, `bench/nab-run.ts`, `bench/adapters.ts` | scorer check; the benchmark; how each detector runs on NAB and the tuning grids |
 | `bench/burn-table.ts`, `bench/cpu.ts` | SRE Workbook table; CPU, state size, history per detector |
-| `scripts/mutants.mjs` | 25 mutation checks |
+| `scripts/mutants.mjs` | 25 mutation checks, applied to a throw-away copy in a scratch directory; `--verify-clean` checks the tree read-only |
 | `scripts/make-fixtures.py`, `scripts/nab-sweeper-fixture.py` | fixture generators (independent implementations) |
 
 Dependencies (dev only): `vitest` (tests), `fast-check` (property tests), `typescript`
@@ -65,8 +65,8 @@ detector.history(params, stepMs) → { lookbackMs, resolutionMs, minPoints, incr
 ```
 
 - One `Point` per input point: `{ ts, value, expected, lower, upper, score, anomalous, status, explanation? }`.
-  `status` is `ok`, `missing` (NaN, ±Inf, |x| > 1e150, out-of-order or non-finite timestamp:
-  not scored, state untouched) or `warming` (valid, but not enough history to score).
+  `status` is `ok`, `missing` (NaN, ±Inf, |x| > 1e150; a timestamp that is out of order,
+  non-finite or outside ±8.64e15 ms, the Date range: not scored, state untouched) or `warming` (valid, but not enough history to score).
   `score` is always finite and ≥ 0, in the detector's own unit.
 - `state` is a plain JSON object with a version field, no NaN, Infinity or −0, so it survives a
   JSON round trip unchanged (property-tested). `summary.stateBytes` is its UTF-8 JSON size.
@@ -199,7 +199,10 @@ Sloth and Pyrra do) and call `evaluateWindows` with those seven numbers each tic
 
 ## How it was verified
 
-`npm test` (195 tests, 7 files, about 6 s) and `npx tsc --noEmit` pass.
+`npm test` (275 tests, 8 files, about 8 s) and `npx tsc --noEmit` pass. Property tests draw
+fresh seeds each run; `FC_SEED=<n> npx vitest run test/properties.test.ts` replays one. The
+final code passed with seeds −1295174040 (the one CI printed), −568671396, 1, 42, 20261119, −7
+and 123456789, and in 12 further random-seed runs.
 
 | What | How | Result |
 |---|---|---|
@@ -208,7 +211,8 @@ Sloth and Pyrra do) and call `evaluateWindows` with those seven numbers each tic
 | Time-shift invariance | every detector, ±10¹² ms shifts on jittered timestamps | pass |
 | Scale invariance | values × 2⁻¹⁰, 2, 2¹⁰ (exact in floating point): scores and flags identical, expected scaled (EWMA, robust z, seasonal, STL, CUSUM, PELT, cross-series, burn rate with both counts scaled, threshold with thresholds scaled) | pass |
 | NaN ≡ absent | every detector | pass |
-| Never throws | any doubles, ±Inf, NaN, −0, MAX_VALUE, unordered timestamps, garbage state; scores finite, state survives JSON | pass; found −0, overflow and an infinite inferred step, all fixed |
+| Never throws | any doubles, ±Inf, NaN, −0, MAX_VALUE, unordered timestamps, garbage state; scores finite, state survives JSON | pass; found −0 in state, variance overflow, an infinite slot and an infinite inferred step (twice: locally, and in CI with seed −1295174040), all fixed at the root: values beyond ±1e150 and timestamps beyond the Date range are missing points, so no difference can overflow |
+| Regressions | the 7 counterexamples × 11 detector configurations: every number in state finite and not −0, exact JSON round trip, and the restored state gives the same next results as the original | pass (80 tests) |
 | STL vs statsmodels 0.15.0 | 6 fixtures (robust and not, ns 7/11/13, degree 0 and 1, with and without jumps) | max difference < 1e-9 (about 2e-13) |
 | PELT vs ruptures 1.1.10 `Pelt(l2)` | 4 fixtures | identical changepoints |
 | PELT vs brute-force optimal partitioning | 1,000 random series, penalties, minimum segments | same optimum; **found a bug**: classic PELT pruning loses the optimum with a minimum segment length (a pruned candidate must stay usable for `minSegment − 1` more steps); fixed |
@@ -283,6 +287,15 @@ rule fires equals the table's 2 % / 5 % / 10 % whatever the error ratio (window 
 | 25 | NAB scorer: every detection in a window counts | `sweeper.py` fixtures |
 
 25 / 25 killed in the final run (two survived the first run and are listed above with what changed).
+Procedure: the script copies `src`, `test`, `bench` and `scripts` to a fresh scratch directory
+(node_modules and the NAB data linked read-only), applies one mutant there, runs the named
+tests with vitest's JSON reporter, and deletes the copy; the shared tree is only read.
+`node scripts/mutants.mjs --verify-clean` checks the tree (every original present once, no
+mutant text). **Disclosure:** the runs behind the table above applied mutants in place and
+restored them (a full run ending 23:34:16 UTC, a two-mutant re-run, and the final full run
+23:56:34–23:57:38 UTC on 2026-11-18); a snapshot of the tree taken then could contain one. The
+script was changed to copies afterwards, per AGENTS.md, and `--verify-clean` reports the tree
+clean.
 
 ## Benchmark: Numenta Anomaly Benchmark
 
@@ -517,8 +530,9 @@ A performance finding on the way: in this V8, `x ** 3` in STL's LOESS weights co
   stay `warming`; robust z over a day reads a day of history on every cold start (`rollup`).
 - **Incremental ≡ batch holds only with an explicit `stepMs`** (an inferred step depends on the
   first batch).
-- **Floating-point limits**: values beyond ±1e150 are missing; scale invariance holds for values
-  whose squares do not underflow (|x| > 1e-100 in the property tests).
+- **Floating-point limits**: values beyond ±1e150 and timestamps beyond ±8.64e15 ms are
+  missing; scale invariance holds for values whose squares do not underflow (|x| > 1e-100 in
+  the property tests).
 - **NAB fetched from `master`**: if upstream changes, `nab-run.ts` refuses to run against the
   manifest rather than silently producing different numbers.
 - **The benchmark adapters are part of the result**: STL refit per period on 4 periods and PELT

@@ -1,20 +1,28 @@
-<!-- @dsCard group="Inputs" height=260 -->
-<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0}body{padding:24px}.row{display:flex;flex-wrap:wrap;align-items:center;gap:12px}.col{display:flex;flex-direction:column;gap:16px}</style></head><body class="vz">
-<div class="row" style="align-items:flex-start;gap:24px">
-  <label class="vz-field" style="width:240px"><span class="vz-label">Name</span>
+<!-- @dsCard group="Inputs" height=440 -->
+<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0}body{padding:var(--space-6)}</style></head><body class="vz">
+<div class="vz-sections">
+<div class="vz-dashboard"><div class="vz-grid">
+  <label class="vz-field" data-span="3"><span class="vz-label">Name</span>
     <input class="vz-input" id="f1" value="Checkout latency">
     <span class="vz-help">Shown in the dashboard list.</span></label>
-  <label class="vz-field" style="width:240px"><span class="vz-label">Evaluate every</span>
+  <label class="vz-field" data-span="3"><span class="vz-label">Evaluate every</span>
     <input class="vz-input" id="f2" data-mono value="15x" aria-invalid="true" aria-describedby="f2e">
-    <span class="vz-help" data-error id="f2e"><span class="vz-mark" data-state="critical"></span>Use a duration such as 30 s, 1 min or 5 min.</span></label>
-  <label class="vz-field" style="width:200px"><span class="vz-label">Severity</span>
-    <select class="vz-select" id="f4"><option>Page</option><option>Ticket</option><option>Log only</option></select></label>
-  <label class="vz-field" style="width:200px"><span class="vz-label">Tenant</span>
-    <input class="vz-input" id="f3" placeholder="Search tenants" disabled></label>
-</div>
-<div class="row" style="margin-top:20px;gap:24px">
+    <span class="vz-help" data-error id="f2e"><span class="vz-mark" data-state="critical"></span>Use a duration such as <span class="vz-qty">30 s</span>, <span class="vz-qty">1 min</span> or <span class="vz-qty">5 min</span>.</span></label>
+  <label class="vz-field" data-span="3"><span class="vz-label">Severity</span>
+    <select class="vz-select" id="f4"><option>Page</option><option>Ticket</option><option>Log only</option><option>Email</option><option>Chat</option><option>Nothing</option><option>Weekly report</option></select></label>
+  <label class="vz-field" data-span="3"><span class="vz-label">Tenant</span>
+    <input class="vz-input" id="f3" value="acme-prod" disabled><span class="vz-help">Set by your sign-in.</span></label>
+  <label class="vz-field" data-span="6"><span class="vz-label">Message</span>
+    <textarea class="vz-input" id="f5" rows="3">checkout p99 is above 500 ms. Check payments-db first; the runbook is "Checkout latency".</textarea>
+    <span class="vz-help">Sent with the page. <span class="vz-qty">96</span> of <span class="vz-qty">500</span> characters.</span></label>
+  <fieldset class="vz-field" data-span="6"><legend class="vz-label">Range</legend>
+    <div class="vz-range"><label class="vz-field"><span class="vz-label">From</span><input class="vz-input" data-mono value="18 Nov 09:16" aria-describedby="r-help"></label><label class="vz-field"><span class="vz-label">To</span><input class="vz-input" data-mono value="now" aria-describedby="r-help"></label></div>
+    <span class="vz-help" id="r-help">A time as "18 Nov 09:16", or "now", or "now - 6 h". 24-hour clock, UTC.</span></fieldset>
+</div></div>
+<div class="vz-controls">
   <label class="vz-check"><input type="checkbox" id="c1" checked>Notify when resolved</label>
   <label class="vz-check"><input type="checkbox" id="c2">Include in the weekly report</label>
   <label class="vz-check"><input type="checkbox" id="c3" disabled>Managed by policy</label>
+</div>
 </div>
 </body></html>

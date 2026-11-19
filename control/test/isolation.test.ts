@@ -67,6 +67,10 @@ beforeAll(async () => {
   const open = await post(aKeys[1]!.key, '/dashboards/alpha_checkout/proposals', { message: `${MARKER} proposal`, baseRevision: d2.body.revision, changes: [{ name: 'c1', reason: `${MARKER} reason`, ops: [{ op: 'replace', path: '/metadata/title', value: `${MARKER} proposed` }] }] })
   const declined = await post(aKeys[1]!.key, '/dashboards/alpha_checkout/proposals', { message: `${MARKER} second`, baseRevision: d2.body.revision, ops: [{ op: 'replace', path: '/metadata/title', value: `${MARKER} other` }] })
   await post(a.admin, `/proposals/${declined.body.proposal.id}/decline`, { reason: `${MARKER} declined` })
+  const newSpec = example('k8s_node_overview', 'alpha_new')
+  newSpec.metadata.title = `${MARKER} new`
+  const creation = await post(aKeys[1]!.key, '/proposals', { spec: newSpec, message: `${MARKER} creation` })
+  expect(creation.status, creation.text).toBe(202)
   await call(a.admin, 'PUT', '/settings/retention', { value: { metric_samples_days: 90 } })
   await call(a.admin, 'PUT', '/settings/limits', { value: { active_series: 123_456 } })
   await call(a.admin, 'PUT', '/settings/pool', { value: { pool: `tenant/${a.tenant}`, slots: 4, spread: 2 } })
@@ -85,7 +89,7 @@ beforeAll(async () => {
     ids: {
       key: [a.adminId, ...aKeys.map((k) => k.id)],
       dashboard: ['alpha_checkout', 'alpha_nodes', 'alpha_gone'],
-      proposal: [open.body.proposal.id, declined.body.proposal.id],
+      proposal: [open.body.proposal.id, declined.body.proposal.id, creation.body.proposal.id],
       entry: audit.slice(0, 6).map((e) => e.id),
     },
     aKeyIds: [...aKeys.map((k) => k.keyId), /^viz_([^_]+)_/.exec(a.admin)![1]!],
@@ -110,6 +114,8 @@ function bodyFor(route: Route, w: World, hostile: boolean): Record<string, unkno
     case 'dashboards.setOwner': return { owner: 'beta' }
     case 'revisions.revert': return { baseRevision: w.aRevision }
     case 'proposals.create': return { message: 'm', baseRevision: w.aRevision, ops: title }
+    // A's dashboard ids in B's own creation: they name nothing of A's, so they must work (and not collide).
+    case 'proposals.createDashboard': return { spec: example('service_red', hostile ? 'alpha_new' : `fz_${Math.random().toString(36).slice(2, 10)}`), message: 'm' }
     case 'proposals.edit': return { ops: title }
     case 'proposals.apply': return hostile ? { changes: ['c1'] } : {}
     case 'proposals.decline': return { reason: 'beta says no' }
@@ -275,7 +281,7 @@ describe('tenant isolation', () => {
     const snap: any = before
     expect(snap.dashboards.items.map((d: any) => d.name)).toEqual([`${MARKER} proposed`.replace('proposed', 'checkout'), `${MARKER} nodes`])
     expect(snap.keys.items).toHaveLength(3)
-    expect(snap.proposals.items).toHaveLength(2)
+    expect(snap.proposals.items).toHaveLength(3)
     expect(snap.audit.length).toBeGreaterThan(10)
     expect(Object.values(snap.kv).filter((v) => v !== null)).toHaveLength(6)
     void env

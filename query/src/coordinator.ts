@@ -702,7 +702,7 @@ async function runSplit<T>(
   c.cost.leavesUsed = Math.max(c.cost.leavesUsed, used.size)
   const missing = first.find((a) => a.status === 'missing')
   if (missing && missing.status === 'missing') return { status: 'missing', key: missing.key }
-  const answers = first.flatMap((a, j) => (a.status === 'ok' ? (c.cost.leafCalls > L && j === 1 ? [a.answer, a.answer] : [a.answer]) : [new Uint8Array()]))
+  const answers = first.map((a) => (a.status === 'ok' ? a.answer : new Uint8Array()))
 
   // Leaves that stopped at their share: what they held is a lower bound of what they
   // would load, so the query's total is at least the sum of everyone's counts.

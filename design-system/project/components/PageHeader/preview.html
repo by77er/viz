@@ -1,15 +1,15 @@
-<!-- @dsCard group="Navigation" height=300 -->
-<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0}body{padding:24px}.row{display:flex;flex-wrap:wrap;align-items:center;gap:12px}.col{display:flex;flex-direction:column;gap:16px}</style></head><body class="vz">
-<div class="col" style="gap:32px">
+<!-- @dsCard group="Navigation" height=320 -->
+<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0}body{padding:var(--space-6)}</style></head><body class="vz">
+<div class="vz-sections">
   <header class="vz-page-head">
     <div><h1 class="vz-page-title">Monitors</h1><p class="vz-page-sub">2 firing, 1 pending, 31 healthy. Evaluated <span class="vz-qty">20 s</span> ago.</p></div>
     <div class="vz-controls"><div class="vz-segmented" role="group" aria-label="Show"><button aria-pressed="true">Needs attention</button><button aria-pressed="false">All</button><button aria-pressed="false">Silenced</button></div><button class="vz-button" data-tone="blue">New monitor</button></div>
   </header>
   <header class="vz-page-head">
     <div><h1 class="vz-page-title">checkout p99 latency</h1>
-      <p class="vz-page-state"><span class="vz-mark" data-state="critical"></span>Firing since 13:07 (2 h 9 min)</p>
-      <p class="vz-page-sub">Above <span class="vz-qty">500 ms</span> since 13:02. Not acknowledged. Paged Dana (payments on-call) at 13:07; repeats at 17:07.</p></div>
-    <div class="vz-controls"><button class="vz-button" data-tone="green">Acknowledge</button><button class="vz-button">Silence…</button></div>
+      <p class="vz-page-state"><span class="vz-mark" data-state="ack"></span>Acknowledged by Dana at <time class="vz-qty">15:16</time>, firing since <time class="vz-qty">13:07</time> (<span class="vz-qty">2 h 9 min</span>)</p>
+      <p class="vz-page-sub">Above <span class="vz-qty">500 ms</span> since 13:02. Paged Dana (payments on-call) at 13:07; pages stopped when she acknowledged.</p></div>
+    <div class="vz-controls"><span class="vz-done"><span class="vz-status" data-state="ack">Acknowledged by Dana</span><button class="vz-button" data-size="sm">Undo</button></span><button class="vz-button">Silence…</button></div>
   </header>
 </div>
 </body></html>

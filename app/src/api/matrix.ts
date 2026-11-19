@@ -15,10 +15,11 @@
  * the answer is the same either way, only slower. Outside `data.result` (the envelope,
  * `warnings`, `infos`, an error) the text is small and is parsed by `JSON.parse` at the end.
  *
- * Numbers: a time or value with at most 15 significant digits and a power of ten up to 22 is
- * computed from its digits (the "fast path" of Clinger, exact because both operands are exact
- * doubles and IEEE division and multiplication round correctly); anything longer is read by
- * `Number()` from its text. So every number equals what `JSON.parse` and `Number` give.
+ * Numbers: a time or value whose digits, as an integer, stay below 2^53, with at most 22 of
+ * them after the point, is computed from its digits (the "fast path" of Clinger: exact,
+ * because both operands are exact doubles and IEEE division rounds correctly); anything
+ * else is read by `Number()` from its text. So every number equals what `JSON.parse` and
+ * `Number` give. A time must be a JSON number, as `JSON.parse` requires.
  * "NaN", "+Inf" and "-Inf" are read as such.
  */
 import type { Metric } from './types'
@@ -71,44 +72,77 @@ const UPPER_E = 69
 
 const isSpace = (c: number) => c === 32 || c === 10 || c === 13 || c === 9
 
-/** A number read from `s[from, to)`, as `Number()` would read it: exactly, by the fast path when it applies. */
+/** 2^53: integers below it, and so the digits of a mantissa below it, are exact doubles. */
+const EXACT = 9007199254740992
+
+/**
+ * A number read from `s[from, to)`, exactly as `Number()` reads it. A plain decimal whose
+ * digits, read as an integer, stay below 2^53 and whose fraction has at most 22 digits is
+ * computed from its digits (exact: both operands of the one division are exact doubles, and
+ * IEEE division rounds correctly); anything else is handed to `Number()`.
+ */
 export function readNumber(s: string, from: number, to: number): number {
   let i = from
-  let neg = false
   let c = s.charCodeAt(i)
-  if (c === MINUS || c === PLUS) {
-    neg = c === MINUS
+  let neg = false
+  if (c === MINUS) {
+    neg = true
     i++
-  }
-  let mantissa = 0
-  let digits = 0
+  } else if (c === PLUS) i++
+  let m = 0
   let scale = 0
-  let seenDigit = false
+  let any = false
   for (; i < to; i++) {
-    c = s.charCodeAt(i)
-    if (c >= ZERO && c <= NINE) {
-      seenDigit = true
-      if (digits > 0 || c !== ZERO) digits++
-      mantissa = mantissa * 10 + (c - ZERO)
-    } else break
+    const d = s.charCodeAt(i) - ZERO
+    if (d < 0 || d > 9) break
+    m = m * 10 + d
+    any = true
   }
-  if (i < to && c === DOT) {
+  if (i < to && s.charCodeAt(i) === DOT) {
     for (i++; i < to; i++) {
-      c = s.charCodeAt(i)
-      if (c >= ZERO && c <= NINE) {
-        seenDigit = true
-        if (digits > 0 || c !== ZERO) digits++
-        mantissa = mantissa * 10 + (c - ZERO)
-        scale--
-      } else break
+      const d = s.charCodeAt(i) - ZERO
+      if (d < 0 || d > 9) break
+      m = m * 10 + d
+      scale--
+      any = true
     }
   }
-  if (i < to || !seenDigit || digits > 15 || -scale > 22) {
-    // An exponent, more than 15 significant digits, or not a plain decimal: Number() reads it.
-    return Number(s.slice(from, to))
-  }
-  const v = scale === 0 ? mantissa : mantissa / POW10[-scale]!
+  if (i !== to || !any || m >= EXACT || scale < -22) return Number(s.slice(from, to))
+  const v = scale === 0 ? m : m / POW10[-scale]!
   return neg ? -v : v
+}
+
+/**
+ * A sample time: a JSON number (what JSON.parse accepts, no more), read exactly; NaN when
+ * the text is not a JSON number. The common form, digits with an optional fraction, is read
+ * in the same pass that checks it.
+ */
+export function readTime(s: string, from: number, to: number): number {
+  let i = from
+  let c = s.charCodeAt(i)
+  if (c === MINUS) c = s.charCodeAt(++i)
+  // JSON allows no leading zero before another digit, and needs a digit first.
+  if (c === ZERO && i + 1 < to) {
+    const d = s.charCodeAt(i + 1) - ZERO
+    if (d >= 0 && d <= 9) return NaN
+  }
+  if (!(c >= ZERO && c <= NINE)) return NaN
+  let simple = true
+  for (; i < to; i++) {
+    const d = s.charCodeAt(i) - ZERO
+    if (d < 0 || d > 9) break
+  }
+  if (i < to && s.charCodeAt(i) === DOT) {
+    const f = ++i
+    for (; i < to; i++) {
+      const d = s.charCodeAt(i) - ZERO
+      if (d < 0 || d > 9) break
+    }
+    if (i === f) return NaN
+  }
+  if (i !== to) simple = false
+  if (!simple) return isJsonNumber(s, from, to) ? Number(s.slice(from, to)) : NaN
+  return readNumber(s, from, to)
 }
 
 /** Whether `s[from, to)` is a JSON number (`-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?`): what JSON.parse accepts as a time. */
@@ -382,8 +416,8 @@ export class MatrixParser {
             while (j < n && isSpace(s.charCodeAt(j))) j++
             if (j >= n) return start
             if (s.charCodeAt(j) !== RBRACKET) throw new Error('expected the end of a sample')
-            if (!isJsonNumber(s, t0, t1)) throw new Error('a time that is not a JSON number')
-            const t = readNumber(s, t0, t1)
+            const t = readTime(s, t0, t1)
+            if (t !== t) throw new Error('a time that is not a JSON number')
             samples.push(t, readValue(s, v0, v1))
             i = j + 1
           }

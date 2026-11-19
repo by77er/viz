@@ -176,6 +176,9 @@ describe('audit log', () => {
     const pr2 = (await post(t.admin, '/dashboards/red/proposals', { message: 'm', baseRevision: base, ops: title('four') })).body
     expected.unshift('proposal.create')
     await once('proposals.decline', 'proposal.decline', 'POST', `/proposals/${pr2.proposal.id}/decline`, { reason: 'no' })
+    const cp = await once('proposals.createDashboard', 'proposal.create', 'POST', '/proposals', { spec: example('k8s_node_overview', 'nodes'), message: 'a new one' })
+    await once('proposals.edit', 'proposal.edit', 'PUT', `/proposals/${cp.proposal.id}`, { spec: { ...example('k8s_node_overview', 'nodes'), metadata: { ...example('k8s_node_overview', 'nodes').metadata, title: 'Nodes' } } })
+    await once('proposals.apply', 'proposal.apply', 'POST', `/proposals/${cp.proposal.id}/apply`, {})
     await once('settings.put', 'settings.general', 'PUT', '/settings/general', { value: { proposalTtlDays: 10 } })
 
     // every mutating route of the API was exercised above
@@ -187,6 +190,8 @@ describe('audit log', () => {
     await call(t.admin, 'PATCH', '/dashboards/red', { ops: title('x'), baseRevision: 'f'.repeat(32) }) // 409
     await post(t.admin, '/dashboards', { spec: { nope: true } }) // 422
     await post(t.admin, '/keys', { name: 'bad', scopes: ['root'] }) // 422
+    await post(t.admin, '/proposals', { spec: example('k8s_node_overview', 'nodes'), message: 'again' }) // 409: the id is taken now
+    await post(t.admin, `/proposals/${cp.proposal.id}/apply`, {}) // 409: applied already
     await call(t.admin, 'PUT', '/settings/general', { value: { proposalTtlDays: 10 } }) // unchanged
     await call(t.admin, 'PATCH', '/dashboards/red', { ops: [{ op: 'test', path: '/metadata/id', value: 'red' }], baseRevision: base }) // unchanged
     await post(null, '/keys', { name: 'anon', scopes: ['admin'] }) // 401

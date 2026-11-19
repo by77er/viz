@@ -142,13 +142,16 @@ function sameBytes(a: ArrayBuffer, b: ArrayBuffer): boolean {
 /**
  * Write one file under its content-addressed key with `If-None-Match: *`. If an object is
  * already there, it counts as written only when its size and SHA-256 equal this file's.
+ * `customMetadata` is written with a new object; an existing one keeps what it has (for a
+ * compaction output the key fixes the inputs, so it is the same record).
  */
-export async function putFile(bucket: R2Bucket, key: string, bytes: Uint8Array, sha256: ArrayBuffer): Promise<'created' | 'exists'> {
+export async function putFile(bucket: R2Bucket, key: string, bytes: Uint8Array, sha256: ArrayBuffer, customMetadata?: Record<string, string>): Promise<'created' | 'exists'> {
   // `sha256` makes R2 verify the upload and keep the digest with the object.
   const created = await bucket.put(key, bytes, {
     onlyIf: { etagDoesNotMatch: '*' },
     sha256,
     httpMetadata: { contentType: PARQUET },
+    ...(customMetadata ? { customMetadata } : {}),
   })
   if (created !== null) return 'created'
   const existing = await bucket.head(key)
