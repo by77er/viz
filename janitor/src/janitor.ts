@@ -1,6 +1,7 @@
 import { TENANT_ID, type Table, type Watermark } from '../../contracts/ledger'
 import { COMPACTION_INPUTS_META, DEFAULT_POLICY, decodeCompactionInputs } from '../../compact/src/compact'
 import type { Ledger } from '../../ledger/src/ledger'
+import type { Publisher } from '../../publisher/src/publisher'
 
 /**
  * Retention and physical deletion for one tenant. Three stateless jobs; the state they
@@ -10,7 +11,10 @@ import type { Ledger } from '../../ledger/src/ledger'
  *                  from the ledger only; no object is touched.
  *   purgeTenant    deletes the objects of keys the ledger removed (by expire or by
  *                  compaction), but only those the ledger itself calls deletable: removal
- *                  logged, grace passed, not live (contracts/ledger.ts, tombstones).
+ *                  logged, grace passed, not live (contracts/ledger.ts, tombstones); and,
+ *                  when the deployment publishes Iceberg tables, only those the cell's
+ *                  publisher also releases (`safeToDelete`): removal published, no retained
+ *                  snapshot references the file, its grace passed.
  *   sweepOrphans   deletes objects under the tenant's data prefix that the ledger has
  *                  never listed and never will (a flush or compaction that failed after
  *                  its PUT): a flush file once its stream's LOGGED watermark covers it, a
@@ -24,6 +28,38 @@ export interface JanitorEnv {
   BUCKET: R2Bucket
   CONFIG: KVNamespace
   CELL?: string
+  /**
+   * The cell's publisher (publisher/), in a deployment that publishes Iceberg tables. Then an
+   * object is deleted only once the publisher also releases it (`purgeTenant`). Absent: the
+   * ledger's rules alone, as before the publisher existed.
+   */
+  PUBLISHER?: PublisherGateNamespace
+}
+
+/** What the janitor asks of the cell's publisher: its deletion hand-off (publisher/src/publisher.ts). */
+export type PublisherGate = Pick<Publisher, 'safeToDelete' | 'acknowledgeDeleted'>
+
+/** The publisher's namespace, as far as the janitor uses it: the cell's object is `idFromName(cell)`. */
+export interface PublisherGateNamespace {
+  idFromName(name: string): DurableObjectId
+  get(id: DurableObjectId): PublisherGate
+}
+
+/**
+ * How long a purge waits for the publisher's answer. `safeToDelete` is one SQLite read; this is
+ * for a publisher that is overloaded, refusing during a deploy, or gone. No answer means nothing
+ * is deleted this run (D15: the publisher is never upstream of anything but deletion).
+ */
+export const PUBLISHER_GATE_TIMEOUT_MS = 2_000
+
+/** `p`, or a rejection after `ms`. The timer never outlives the call. */
+async function within<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([p, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} did not answer within ${ms} ms`)), ms) })])
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 export interface RetentionPolicy {
@@ -123,28 +159,89 @@ export async function expireTenant(env: JanitorEnv, tenant: string, now = Date.n
 
 export interface PurgeResult {
   deleted: string[]
-  /** Tombstones not deletable yet: inside the grace, or their removal is not logged. */
+  /**
+   * Tombstones not deleted yet: inside the grace, their removal not logged, or (with a
+   * publisher) not released by it.
+   */
   waiting: number
+  /**
+   * With a publisher: of `waiting`, the tombstones the ledger would delete but the publisher has
+   * not released (the removal is not published yet, a retained snapshot still references the
+   * file, or the publisher's grace has not passed). Absent without a publisher.
+   */
+  unpublished?: number
+  /** With a publisher that could not be asked (it refused, failed or did not answer): why. Nothing was deleted. */
+  publisher?: string
 }
 
-export async function purgeTenant(env: JanitorEnv, tenant: string, opts: { graceMs?: number; maxKeys?: number } = {}): Promise<PurgeResult> {
+/**
+ * Delete the objects of removed keys that may never be read again. The ledger decides first:
+ * the removal is logged, older than the grace by its clock, and the key is not live. With a
+ * publisher bound, a key is deleted only if the publisher ALSO releases it (DESIGN §5.2, §5.3):
+ * its removal is published and no retained Iceberg snapshot references it, so an external
+ * reader holding any snapshot still finds every file that snapshot names. A publisher that
+ * cannot answer releases nothing: the run deletes nothing and says why (fail closed).
+ */
+export async function purgeTenant(env: JanitorEnv, tenant: string, opts: { graceMs?: number; maxKeys?: number; publisherTimeoutMs?: number } = {}): Promise<PurgeResult> {
   const ledger = ledgerOf(env, tenant)
   const graceMs = opts.graceMs ?? DEFAULT_DELETE_GRACE_MS
   const maxKeys = opts.maxKeys ?? 10_000
+  const timeoutMs = opts.publisherTimeoutMs ?? PUBLISHER_GATE_TIMEOUT_MS
   const deleted: string[] = []
   let waiting = 0
-  while (deleted.length < maxKeys) {
-    // The ledger decides: logged, older than the grace by its clock, not live.
-    const batch = await ledger.deletable({ minAgeMs: graceMs, limit: Math.min(1000, maxKeys - deleted.length) })
-    waiting = batch.waiting
-    const keys = batch.tombstones.map((t) => t.key)
-    if (keys.length === 0) break
-    await env.BUCKET.delete(keys) // one request for the whole list
-    // Forgotten only after the delete returned: a crash in between deletes again, harmlessly.
-    await ledger.forget(keys)
-    deleted.push(...keys)
+
+  // With a publisher: what it releases for this tenant, asked once per run.
+  let gate: PublisherGate | null = null
+  let released: Set<string> | null = null
+  if (env.PUBLISHER) {
+    const cell = cellOf(env)
+    try {
+      gate = env.PUBLISHER.get(env.PUBLISHER.idFromName(cell))
+      released = new Set(await within(gate.safeToDelete(tenant), timeoutMs, `the publisher of ${cell}`))
+    } catch (e) {
+      const why = (e instanceof Error ? e.message : String(e)).slice(0, 300)
+      console.error(`janitor: could not ask the publisher what ${tenant} may delete (${why}); nothing is deleted this run`)
+      const batch = await ledger.deletable({ minAgeMs: graceMs, limit: 1 })
+      return { deleted: [], waiting: batch.waiting + batch.tombstones.length, publisher: why }
+    }
   }
-  return { deleted, waiting }
+
+  let held = 0 // deletable by the ledger, not released by the publisher: they stay at the head of its answer
+  const offered = new Set<string>()
+  while (deleted.length < maxKeys) {
+    // The ledger decides: logged, older than the grace by its clock, not live. Lowest version
+    // first, so the keys the publisher holds back come back first and are skipped again.
+    const batch = await ledger.deletable({ minAgeMs: graceMs, limit: Math.min(10_000, held + Math.min(1000, maxKeys - deleted.length)) })
+    const keys = batch.tombstones.map((t) => t.key)
+    for (const k of keys) offered.add(k)
+    const doomed = released ? keys.filter((k) => released!.has(k)) : keys
+    held = keys.length - doomed.length
+    waiting = batch.waiting + held
+    if (doomed.length === 0) break
+    await env.BUCKET.delete(doomed) // one request for the whole list
+    // Forgotten only after the delete returned: a crash in between deletes again, harmlessly.
+    await ledger.forget(doomed)
+    deleted.push(...doomed)
+  }
+  if (!gate || !released) return { deleted, waiting }
+
+  // The publisher forgets what was deleted. Also what it released and the ledger no longer has
+  // at all (neither live nor tombstoned): deleted by an earlier run whose acknowledgement was
+  // lost, so nothing is left to delete. Acknowledging deletes nothing; best effort.
+  const ack = [...deleted]
+  const unknown = [...released].filter((k) => !offered.has(k))
+  for (let i = 0; i < unknown.length; i += 1000) {
+    const chunk = unknown.slice(i, i + 1000)
+    const known = await ledger.orphanCheck(chunk)
+    const kept = new Set([...known.live, ...known.tombstoned])
+    ack.push(...chunk.filter((k) => !kept.has(k)))
+  }
+  if (ack.length > 0) {
+    await within(gate.acknowledgeDeleted(tenant, ack), timeoutMs, `the publisher of ${cellOf(env)}`).catch((e) =>
+      console.error(`janitor: the publisher was not told about ${ack.length} deleted keys of ${tenant} (${e instanceof Error ? e.message : String(e)}); the next run tells it`),
+    )
+  }
+  return { deleted, waiting, unpublished: held }
 }
 
 /** `L0-{shard}-{incarnation}-{seqLo}-{seqHi}-{hash8}.parquet`: a flush file (contracts/TABLES.md). */

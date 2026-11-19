@@ -179,7 +179,9 @@ describe('the query half of contracts/engine.ts', () => {
     // plan and the metadata calls take limits too.
     expect(fails(() => engine.plan('up', T, T, 1, lim({ maxQueryBytes: 1 })))).toMatchObject({ limit: { name: 'max_query_bytes' } })
     expect(fails(() => engine.labelNames(tail, [], 0, T + 60_000, lim({ maxSeries: 1 })))).toMatchObject({ limit: { name: 'max_series' } })
-    expect(fails(() => engine.series(tail, ['{job="api"}'], 0, T + 60_000, lim({ maxSamples: 5 })))).toMatchObject({ limit: { name: 'max_samples', reached: 6 } })
+    // The label calls read series, not samples (since 2026-11-19): a sample limit does not bind them, the series limit does.
+    expect(engine.series(tail, ['{job="api"}'], 0, T + 60_000, lim({ maxSamples: 1 }))).toHaveLength(2)
+    expect(fails(() => engine.series(tail, ['{job="api"}'], 0, T + 60_000, lim({ maxSeries: 1 })))).toMatchObject({ limit: { name: 'max_series', reached: 2 } })
     // No limit is remembered by the instance.
     expect(range(DEFAULT_LIMITS).result).toHaveLength(2)
   })

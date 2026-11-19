@@ -11,6 +11,22 @@ import { defineConfig } from 'vitest/config'
 // vitest process started (`/proc/<pid>/task/<tid>/schedstat`, first field), and the load average.
 // Run with one worker, so that one workerd serves the measuring file and nothing else.
 
+/** Resident memory of the workerd processes this vitest started, in kB (`/proc/<pid>/status` VmRSS and VmHWM, its peak). */
+function workerdRss(pids: number[]): { rssKb: number; peakKb: number } {
+  let rssKb = 0
+  let peakKb = 0
+  for (const pid of pids) {
+    try {
+      const st = readFileSync(`/proc/${pid}/status`, 'utf8')
+      rssKb += Number(/VmRSS:\s+(\d+)/.exec(st)?.[1] ?? 0)
+      peakKb += Number(/VmHWM:\s+(\d+)/.exec(st)?.[1] ?? 0)
+    } catch {
+      // the process went away
+    }
+  }
+  return { rssKb, peakKb }
+}
+
 function workerdCpu(): { ns: number; pids: number[] } {
   const pids: number[] = []
   for (const d of readdirSync('/proc')) {
@@ -41,7 +57,10 @@ export default defineConfig({
       wrangler: { configPath: './wrangler.test.jsonc' },
       miniflare: {
         serviceBindings: {
-          HOST: async () => Response.json({ ...workerdCpu(), loadavg: loadavg() }),
+          HOST: async () => {
+            const cpu = workerdCpu()
+            return Response.json({ ...cpu, ...workerdRss(cpu.pids), loadavg: loadavg() })
+          },
           CAPTURE: async () => new Response('not captured in measurements', { status: 400 }),
         },
       },

@@ -562,6 +562,126 @@ export const MUTANTS = [
     edits: one('src/amconfig.ts', '      if (r.name === CONTROL_RECEIVER) return c.err(', '      if (r.name === CONTROL_RECEIVER && false) return c.err('),
     tests: ['test/wiring.test.ts'],
   },
+
+  // ───────────── SLO burn-rate rules, warm-up, backtests (contract version 4) ─────────────
+  {
+    name: 'SLO thresholds: a burn rate equal to the threshold counts as burning (`>=` in the scratch copy of anomaly/\'s evaluateWindows, which the rule calls)',
+    edits: one('../anomaly/src/detectors/burnrate.ts', 'longBurn > rule.burnRate && shortBurn > rule.burnRate', 'longBurn >= rule.burnRate && shortBurn >= rule.burnRate'),
+    tests: ['test/slo.test.ts'],
+  },
+  {
+    name: 'SLO thresholds: the short window is ignored (both windows of an alert read the long one)',
+    edits: one('src/slo.ts', '      const w = Math.max(1, Math.round(ms / intervalMs))', '      const w = Math.max(1, Math.round(a.longMs / intervalMs))'),
+    tests: ['test/slo.test.ts'],
+  },
+  {
+    name: 'SLO thresholds: min_coverage ignored (a window counts whatever share of its buckets has data)',
+    edits: one('src/slo.ts', '      if (coverage >= spec.minCoverage) agg.set(ms', '      if (true) agg.set(ms'),
+    tests: ['test/slo.test.ts'],
+  },
+  {
+    name: 'SLO thresholds: the default alerts lose the 6 h / 30 m page (three of the workbook\'s four)',
+    edits: one('src/slo.ts', 'SRE_WORKBOOK_RULES.map((r) => ({ severity: r.severity', 'SRE_WORKBOOK_RULES.filter((r) => r.longMs !== 6 * 3_600_000).map((r) => ({ severity: r.severity'),
+    tests: ['test/slo.test.ts'],
+  },
+  {
+    name: 'SLO windows: the current bucket is left out of every window (sums start one bucket back)',
+    edits: one('src/slo.ts', '    let q = s\n', '    let q = s - 1\n'),
+    tests: ['test/slo.test.ts'],
+  },
+  {
+    name: 'SLO windows: a block\'s cached sums are not invalidated when one of its buckets is set',
+    edits: one('src/slo.ts', '    this.bad[i] = b\n    this.tot[i] = t\n    this.cOk[Math.floor(i / this.block)] = 0\n', '    this.bad[i] = b\n    this.tot[i] = t\n'),
+    tests: ['test/slo.test.ts'],
+  },
+  {
+    name: 'SLO state: the rings are not rebuilt from SQLite when the object is constructed',
+    edits: one('src/ruler.ts', '      this.adoptSloRows(g, rule, rows)\n', '      void rows\n'),
+    tests: ['test/slo.test.ts'],
+  },
+  {
+    name: 'SLO state: a replayed tick advances the rings again (replay guard off by one)',
+    edits: one('src/slo.ts', '  if (rt.lastTs !== null && ts <= rt.lastTs) {', '  if (rt.lastTs !== null && ts < rt.lastTs) {'),
+    tests: ['test/slo.test.ts'],
+  },
+  {
+    name: 'tenant isolation: SLO state is loaded without the tenant in the WHERE clause',
+    edits: one('src/ruler.ts', 'FROM slo_state WHERE tenant = ? ORDER BY grp, rule_key, part, block', 'FROM slo_state WHERE (tenant = ? OR 1 = 1) ORDER BY grp, rule_key, part, block'),
+    tests: ['test/slo.test.ts'],
+  },
+  {
+    name: 'tenant isolation: deleting a group deletes its SLO state without naming the tenant',
+    edits: one('src/ruler.ts',
+      '      this.exec(`DELETE FROM slo_state WHERE tenant = ? AND grp = ?`, this.tenant, name)\n      this.exec(`DELETE FROM warmup WHERE tenant = ? AND grp = ?`, this.tenant, name)\n      for (const [key, alerts] of g.alerts)',
+      '      this.exec(`DELETE FROM slo_state WHERE (tenant = ? OR 1 = 1) AND grp = ?`, this.tenant, name)\n      this.exec(`DELETE FROM warmup WHERE tenant = ? AND grp = ?`, this.tenant, name)\n      for (const [key, alerts] of g.alerts)'),
+    tests: ['test/slo.test.ts'],
+  },
+  {
+    name: 'warm-up budget: the planned cost is never compared with the budget (fetched whatever the plan says)',
+    edits: one('src/history.ts', '  if (sum.scanSamples > budget.scanSamples || sum.bytesToRead > budget.bytesToRead) {', '  if (false) {'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'warm-up budget: the budget is checked only after the fetch (an over-budget read is made, then refused)',
+    edits: [
+      { file: 'src/history.ts', find: '  if (sum.scanSamples > budget.scanSamples || sum.bytesToRead > budget.bytesToRead) {', replace: '  if (false) {' },
+      { file: 'src/history.ts', find: '  return { ok: true, matrices, plan: sum }', replace: "  if (sum.scanSamples > budget.scanSamples || sum.bytesToRead > budget.bytesToRead) return { ok: false, refused: 'over budget (after the fetch)', plan: sum }\n  return { ok: true, matrices, plan: sum }" },
+    ],
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'warm-up budget: a read the engine\'s plan refuses is made anyway',
+    edits: one('src/history.ts', '    if (plan.refusal) return', '    if (plan.refusal && false) return'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'warm-up budget: warm-ups are held to the (larger) backtest budget',
+    edits: one('src/ruler.ts', '    const budget = historyBudgets(this.cfg.limits).warmup\n', '    const budget = historyBudgets(this.cfg.limits).backtest\n'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'warm-up: the state is written outside the warm-up\'s transaction (a crash leaves it half-written)',
+    edits: one('src/ruler.ts', '        finish(done(w.points), () => this.writeAnomalyState(g.spec.name, rule.key, w.rt.json))', '        this.writeAnomalyState(g.spec.name, rule.key, w.rt.json)\n        finish(done(w.points))'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'warm-up: a finished warm-up is not recorded (it is read again after an eviction)',
+    edits: one('src/ruler.ts', '          write?.()\n          this.putWarmup(g.spec.name, rule.key, w)', "          write?.()\n          if (w.status !== 'done') this.putWarmup(g.spec.name, rule.key, w)"),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'backtest/live: an anomaly backtest starts cold (no warm-up before fromMs)',
+    edits: one('src/history.ts', 'feedAnomaly(rule, newAnomalyRt(rule), steps, warmFromMs, input.fromMs - I, I, limits)', 'feedAnomaly(rule, newAnomalyRt(rule), steps, input.fromMs, input.fromMs - I, I, limits)'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'backtest/live: an SLO backtest leaves out the coarse history (the budget from the fine read only)',
+    edits: one('src/history.ts', '  const seeded = seedSlo(rule, I, fine, coarse, coarseMatrix)\n  if (\'error\' in seeded) return { ok: false, error: seeded.error }\n  const rt = seeded.rt', "  const seeded = seedSlo(rule, I, fine, null, null)\n  if ('error' in seeded) return { ok: false, error: seeded.error }\n  const rt = seeded.rt"),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'backtest/live: an SLO backtest feeds each step the previous step\'s buckets',
+    edits: one('src/history.ts', 'const ev = evalSlo(rule, rt, steps.get(ts) ?? [], ts, I, true)', 'const ev = evalSlo(rule, rt, steps.get(ts - I) ?? [], ts, I, true)'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'backtest/live: an interval\'s annotations are taken at its end, not when the alert entered the state',
+    edits: one('src/backtest.ts', '      if (cur && cur.state === state) continue', '      if (cur && cur.state === state) {\n        cur.annotations = a!.annotations\n        continue\n      }'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'tenant isolation: the backtest-by-id route looks the monitor up for a tenant named in the query string',
+    edits: one('src/http.ts', 'async function backtestMonitor(c: Call): Promise<Response> {\n  const f = await findMonitor(c)', "async function backtestMonitor(c: Call): Promise<Response> {\n  const named = c.url.searchParams.get('tenant')\n  const f = await findMonitor(named ? (Object.assign(Object.create(Object.getPrototypeOf(c)), c, { tenant: named }) as Call) : c)"),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'compatibility: a save warms a kept rule over state rows a newer release wrote (both guards removed: at the job and at the warm-up)',
+    edits: [
+      { file: 'src/ruler.ts', find: 'return rt !== undefined && (rt.lastTs !== null || rt.rawRows !== null)', replace: 'return rt !== undefined && rt.lastTs !== null' },
+      { file: 'src/ruler.ts', find: '      if (unreadable) {\n', replace: '      if (unreadable && false) {\n' },
+    ],
+    tests: ['test/slo.test.ts'],
+  },
 ]
 
 const hasGo = spawnSync('go', ['version'], { encoding: 'utf8' }).status === 0

@@ -152,6 +152,8 @@ export interface Context {
   cost: Cost
   /** Unix ms after which the query gives up with `timeout`. */
   deadline: number
+  /** What the timeout message says the deadline was: its length and whose limit it is. */
+  deadlineWhy?: string
   /** Spreads this query's reads over the leaf pool differently from any other query's. */
   queryId: string
 }
@@ -455,8 +457,11 @@ async function shardsOf(c: Context, watermarks: Watermark[]): Promise<string[]> 
 
 // ───────────────────────────────── gather ─────────────────────────────────
 
+/** The timeout message: it names the limit, so a person can tell a limit from a stall. */
+export const timedOut = (why?: string): string => (why ? `query timed out after ${why}` : 'query timed out')
+
 export function checkDeadline(c: Context): void {
-  if (Date.now() > c.deadline) throw new ApiError('timeout', 'query timed out')
+  if (Date.now() > c.deadline) throw new ApiError('timeout', timedOut(c.deadlineWhy))
 }
 
 /**

@@ -1,4 +1,4 @@
-//! Experiment behind the series-level pruning layout (contracts/TABLES.md, DECISIONS D40):
+//! Experiment behind the series-level pruning layout (contracts/TABLES.md, DECISIONS D41):
 //! how large should row groups and data pages be, and is a column index worth writing?
 //!
 //!   CARGO_TARGET_DIR=... cargo run --release --example layout -- [series...]

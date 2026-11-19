@@ -107,12 +107,12 @@ describe('versioned storage: the schema of every released version is pinned', ()
 })
 
 describe('versioned storage: opening storage made by other code', () => {
-  it('adopts dc2a1c3 storage as version 1, migrates it to 2, without changing its live set, serves it, and moves its log to segments in a new incarnation', async () => {
+  it('adopts dc2a1c3 storage as version 1, migrates it to the latest, without changing its live set, serves it, and moves its log to segments in a new incarnation', async () => {
     const { tenant, l } = open()
     const rows = oldRows(true)
     await install(l, DDL_DC2A1C3, rows)
     const p = await everything(l) // the first call opens the old storage
-    expect(await schemaRow(l)).toEqual({ component: 'ledger.Ledger', version: 2, compat: 2 })
+    expect(await schemaRow(l)).toEqual({ component: 'ledger.Ledger', version: LATEST, compat: 2 })
     const after = await dumpAll(l)
     expect(after.file).toEqual(rows.file)
     expect(after.tombstone).toEqual(rows.tombstone)
@@ -124,7 +124,7 @@ describe('versioned storage: opening storage made by other code', () => {
     // Still the same after eviction, and not migrated twice.
     await evictDurableObject(l)
     expect(await everything(l)).toEqual(p)
-    expect(await schemaRow(l)).toEqual({ component: 'ledger.Ledger', version: 2, compat: 2 })
+    expect(await schemaRow(l)).toEqual({ component: 'ledger.Ledger', version: LATEST, compat: 2 })
   })
 
   it('adopts an object from before file precedence: migration 1 adds prec and prec_lo (0), and plan serves it', async () => {
@@ -133,7 +133,7 @@ describe('versioned storage: opening storage made by other code', () => {
     await install(l, DDL_PRE_D22, rows)
     const p = await everything(l)
     expect(p.files.map((f) => [f.key, f.precedenceLow, f.precedence])).toEqual([[rows.file[0]!.key, 0, 0]])
-    expect(await schemaRow(l)).toEqual({ component: 'ledger.Ledger', version: 2, compat: 2 })
+    expect(await schemaRow(l)).toEqual({ component: 'ledger.Ledger', version: LATEST, compat: 2 })
     const cols = await runInDurableObject(l, (_i: Ledger, s) => s.storage.sql.exec(`PRAGMA table_info(file)`).toArray().map((r) => r.name))
     expect(cols).toContain('prec')
     expect(cols).toContain('prec_lo')
@@ -198,9 +198,9 @@ describe('versioned storage: opening storage made by other code', () => {
     const { l } = open()
     await l.addUnit(pair(1, 2))
     const V1_ONLY: SchemaSpec = { ...LEDGER_SCHEMA, migrations: LEDGER_SCHEMA.migrations.slice(0, 1) }
-    expect(schemaRelease(LEDGER_SCHEMA)).toEqual({ component: 'ledger.Ledger', latest: 2, compat: 2 })
+    expect(schemaRelease(LEDGER_SCHEMA)).toEqual({ component: 'ledger.Ledger', latest: LATEST, compat: 2 })
     const opened = await runInDurableObject(l, (_i: Ledger, s) => openSchema(s.storage, V1_ONLY))
-    expect(opened).toMatchObject({ status: 'schema_too_new', found: 2, compat: 2, known: 1 })
+    expect(opened).toMatchObject({ status: 'schema_too_new', found: LATEST, compat: 2, known: 1 })
   })
 })
 

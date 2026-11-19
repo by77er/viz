@@ -201,7 +201,8 @@ describe('the sentence: which windows burned, how fast, how much budget is left'
     for (let i = 0; i < 120; i++) evalSlo(rule, rt, parts(100, i < 119 ? 0 : 100), at(i), MIN)
     const ev = evalSlo(rule, rt, parts(100, 100), at(120), MIN)
     const text = ev.ok ? ev.flagged.find((f) => f.metric.severity === 'page')!.annotations.slo! : ''
-    expect(text).toMatch(/; the budget is spent over the 3 hours on record \(the window is 30 days\) \(-[\d.]+% left\)$/)
+    // 121 one-minute buckets with data: what the budget figure covers, however the hours fall.
+    expect(text).toMatch(/; the budget is spent over the 121 minutes on record \(the window is 30 days\) \(-[\d.]+% left\)$/)
   })
 })
 
@@ -425,6 +426,14 @@ describe('in the Ruler object', () => {
     expect(s.alerts).toEqual(stored)
     expect(r.w.ingestCalls.length).toBe(handed)
     expect((await r.rows()).map((x) => x.body)).toEqual([newer])
+    // A save of the group (the rule kept, with no warm-up job, as a rule an earlier release saved
+    // has none) must not warm the rule over the newer release's rows.
+    await runInDurableObject(r.stub, (_i, st) => void st.storage.sql.exec('DELETE FROM warmup WHERE tenant = ?', r.tenant))
+    await evictDurableObject(r.stub)
+    ok(await r.stub.saveGroups(r.tenant, { groups: [{ name: 'slos/1m', interval: '1m', rules: [sloEntry()] }] }))
+    await r.tick()
+    expect((await r.rows()).map((x) => x.body)).toEqual([newer])
+    expect((await r.rule()).slo!.status).toBe('state_unreadable')
     const bundle = ok(await r.stub.exportGroup(r.tenant, 'slos/1m')).bundle
     expect(bundle.sloState).toEqual({ [key]: [{ part: 'head', block: 0, body: newer }] })
     const target = rulerStub(r.tenant, '1')
@@ -456,14 +465,25 @@ describe('in the Ruler object', () => {
     const key = r.saved.groups[0]!.rules[0]!.key
     const mine = await r.rows()
     const head = mine.find((x) => x.part === 'head')!
-    const foreign = { tenant: 'someone-else', grp: 'slos/1m', rule_key: key, part: 'head', block: 0, body: (head.body as string).replace(/"series":\[.*\]\}$/, '"series":[{"k":"ffffffffffffffff","l":{"pod":"zz"},"last":null,"seen":1}]}') }
-    await runInDurableObject(r.stub, (_i, s) => void s.storage.sql.exec('INSERT INTO slo_state (tenant, grp, rule_key, part, block, body) VALUES (?, ?, ?, ?, ?, ?)', foreign.tenant, foreign.grp, foreign.rule_key, foreign.part, foreign.block, foreign.body))
+    // The other tenant's head: the same group, rule key, part and block, holding two series of its own.
+    const two = '"series":[{"k":"eeeeeeeeeeeeeeee","l":{"pod":"yy"},"last":null,"seen":1},{"k":"ffffffffffffffff","l":{"pod":"zz"},"last":null,"seen":1}]}'
+    const foreign = { tenant: 'someone-else', grp: 'slos/1m', rule_key: key, part: 'head', block: 0, body: (head.body as string).replace(/"series":\[.*\]\}$/, two) }
+    // And a block of the other tenant at this tenant's current block, for this tenant's own series key: loaded, it would overwrite buckets.
+    const fine = mine.filter((x) => x.part === 'fine').at(-1)!
+    const k = (JSON.parse(head.body as string) as { series: { k: string }[] }).series[0]!.k
+    const block = { tenant: 'someone-else', grp: 'slos/1m', rule_key: key, part: 'fine', block: fine.block as number, body: JSON.stringify({ v: 1, series: [{ k, b: Array(60).fill(999), t: Array(60).fill(1000) }] }) }
+    await runInDurableObject(r.stub, (_i, s) => {
+      for (const f of [foreign, block]) s.storage.sql.exec('INSERT INTO slo_state (tenant, grp, rule_key, part, block, body) VALUES (?, ?, ?, ?, ?, ?)', f.tenant, f.grp, f.rule_key, f.part, f.block, f.body)
+    })
     await evictDurableObject(r.stub)
     expect((await r.rule()).slo!.stateSeries, 'loaded: this tenant\'s one series only').toBe(1)
     await r.tick()
-    expect((await r.rows()).find((x) => x.tenant === 'someone-else')).toEqual(foreign)
+    // What it stored after the tick is exactly what the same buckets give without the foreign row.
+    const { stored, reference } = await r.reference()
+    expect(stored).toEqual(reference)
+    expect((await r.rows()).filter((x) => x.tenant === 'someone-else')).toEqual([block, foreign])
     ok(await r.stub.deleteGroup(r.tenant, 'slos/1m'))
-    expect(await r.rows()).toEqual([foreign])
+    expect(await r.rows()).toEqual([block, foreign])
     expect(await runInDurableObject(r.stub, (_i, s) => s.storage.sql.exec('SELECT COUNT(*) AS n FROM warmup WHERE tenant = ?', r.tenant).one().n)).toBe(0)
   })
 })

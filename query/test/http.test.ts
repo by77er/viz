@@ -164,7 +164,7 @@ describe('query and query_range', () => {
     try {
       const res = await api(w.a.key, '/api/v1/query', { query: 'up', time: sec(END), timeout: '50ms' })
       expect(res.status).toBe(503)
-      expect(await res.json()).toEqual({ status: 'error', errorType: 'timeout', error: 'query timed out' })
+      expect(await res.json()).toEqual({ status: 'error', errorType: 'timeout', error: 'query timed out after 0.05 s (the timeout parameter)' })
       // Long enough: answers. (A huge value is capped by the tenant's limit, not an error.)
       for (const timeout of ['5', '5s', '1h']) {
         const ok = await api(w.a.key, '/api/v1/query', { query: 'up', time: sec(END), timeout })
@@ -282,7 +282,7 @@ describe('other endpoints, methods and CORS', () => {
     const q = { query: 'up', time: sec(END) }
     const allowed = await api(w.a.key, '/api/v1/query', q, { headers: { Origin: 'https://app.viz.test' } })
     expect(allowed.headers.get('Access-Control-Allow-Origin')).toBe('https://app.viz.test')
-    expect(allowed.headers.get('Vary')).toBe('Origin')
+    expect(allowed.headers.get('Vary')).toBe('Origin, Accept-Encoding')
     expect(allowed.headers.get('Access-Control-Expose-Headers')).toContain('X-Viz-Bytes-Read')
     expect(allowed.headers.get('Access-Control-Allow-Credentials')).toBeNull()
     for (const origin of ['https://evil.example', 'https://app.viz.test.evil.example', 'http://app.viz.test', 'null', '*']) {

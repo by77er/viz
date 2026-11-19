@@ -20,7 +20,7 @@ import { HttpError } from '../../edge/src/errors'
 import { EngineLoadError, type Grid, QueryError, type SplitPlan, createQueryEngine } from '../../engine/wasm-query/js/index'
 import wasm from '../../engine/wasm-query/js/viz_query.wasm'
 import { ConfigError, type Env, tenantLimits } from './config'
-import { ApiError, type Context, type Cost, MAX_TS, MIN_TS, type QueryPlan, type SplitSpec, addStats, cardinality, gather, gatherSeries, newCost } from './coordinator'
+import { ApiError, type Context, type Cost, MAX_TS, MIN_TS, type QueryPlan, type SplitSpec, addStats, cardinality, gather, gatherSeries, newCost, timedOut } from './coordinator'
 import { cardinalityParams, parseTime, rangeParams, readParams, required, timeoutParam, windowParams } from './params'
 
 export { Leaf } from './leaf'
@@ -89,7 +89,8 @@ const allowedOrigins = (env: Env): string[] => (env.CORS_ORIGINS ?? '').split(',
  */
 function cors(req: Request, env: Env): Record<string, string> {
   const origin = req.headers.get('Origin')
-  const h: Record<string, string> = { Vary: 'Origin' }
+  // Accept-Encoding too: the runtime compresses answers for clients that ask (app/README.md).
+  const h: Record<string, string> = { Vary: 'Origin, Accept-Encoding' }
   if (origin && allowedOrigins(env).includes(origin)) {
     h['Access-Control-Allow-Origin'] = origin
     h['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
@@ -283,10 +284,10 @@ function route(path: string): { handler: Handler; methods: string[]; label: stri
   return { handler: labelValues, methods: ['GET'], label }
 }
 
-function timeout(ms: number): { promise: Promise<never>; cancel: () => void } {
+function timeout(ms: number, why: string): { promise: Promise<never>; cancel: () => void } {
   let id: ReturnType<typeof setTimeout> | undefined
   const promise = new Promise<never>((_, reject) => {
-    id = setTimeout(() => reject(new ApiError('timeout', 'query timed out')), ms)
+    id = setTimeout(() => reject(new ApiError('timeout', timedOut(why))), ms)
   })
   return { promise, cancel: () => clearTimeout(id) }
 }
@@ -304,8 +305,9 @@ async function api(req: Request, env: Env, path: string, corsHeaders: Record<str
     const limits = await tenantLimits(env, tenant)
     const params = await readParams(req)
     const ms = timeoutParam(params, limits.timeoutMs)
-    const c: Context = { env, engine, tenant, limits, cost, deadline: Date.now() + ms, queryId: crypto.randomUUID() }
-    const t = timeout(ms)
+    const why = `${ms / 1000} s (${ms < limits.timeoutMs ? 'the timeout parameter' : 'the tenant’s limit, timeoutMs'})`
+    const c: Context = { env, engine, tenant, limits, cost, deadline: Date.now() + ms, deadlineWhy: why, queryId: crypto.randomUUID() }
+    const t = timeout(ms, why)
     let data: string
     try {
       data = await Promise.race([r.handler(c, params, r.label), t.promise])

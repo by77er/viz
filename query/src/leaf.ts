@@ -245,9 +245,13 @@ export class Leaf extends DurableObject<LeafEnv> {
       } else {
         // One round: the series files by name and time, and of each sample file the row
         // groups of this part's series_id range (exact for every series whose split key is
-        // its id: all but those that carry a label of `without`).
+        // its id: all but those that carry a label of `without`). When `without` holds a
+        // label other than `__type__` and `__unit__` (a relabelled or unpinned name, which
+        // most series carry), the part's series are spread over every id, so the sample
+        // files wait for the series files instead (two rounds, nothing read twice).
         const sp = own(() => leafEngine.filePlan(req.series.map((f) => f.index!), req.ranges))
-        const pp = own(() => leafEngine.partPlan(req.samples.map((f) => f.index!), req.ranges, req.part, req.parts))
+        const optimistic = req.without.every((l) => l === '__type__' || l === '__unit__')
+        const pp: FilePlan[] = optimistic ? own(() => leafEngine.partPlan(req.samples.map((f) => f.index!), req.ranges, req.part, req.parts)) : req.samples.map(() => ({ rows: 0, read: 'skip' }))
         const first: { f: FileRef; read: 'whole' | [number, number][] }[] = []
         const seriesAt: number[] = []
         const samplesAt: number[] = []

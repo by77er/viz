@@ -11,8 +11,9 @@
 //                 clip it and it widens the page (v5's hidden "Actions" head);
 //   cell          a table head or cell outside its own table's box;
 //   fold-scroll   a folding table (data-fold) that scrolls sideways: a fold table folds instead (data-fold="wide" when its columns need it);
-//   cut           a word cut by the edge of a box that clips it, or out of view, outside a strip that scrolls on purpose (a wide table in
-//                 its scroll form, the navigation, tabs) and outside text cut on purpose with an ellipsis (vz-cut, a legend name);
+//   cut           a word cut by the edge of a box that clips it, or out of view, or outside its own table cell (lying over the next one),
+//                 outside a strip that scrolls on purpose (a wide table in its scroll form, the navigation, tabs) and outside text cut on
+//                 purpose with an ellipsis (vz-cut, a legend name);
 //   tiny          text below micro (11 px);
 //   sentence-link with a coarse pointer, a link inside running text drawn as a 44 px control (it breaks its line), or a link standing alone
 //                 whose hit area is under 44 px. A link is inside a sentence when its block holds other words; standing alone otherwise.
@@ -69,16 +70,19 @@ function audit({ coarse, words }) {
     while ((n = walker.nextNode()) && reported < 6) {
       const el = n.parentElement; if (!el || !n.textContent.trim() || hiddenText(el) || !shown(el)) continue
       // the box that clips this text, and whether the text is cut on purpose or reachable by scrolling
-      let purposely = false, clipBoxes = []
+      let purposely = false, clipBoxes = [], cellOf = null
       for (let x = el; x && x !== document.documentElement; x = x.parentElement) { const s = cs(x)
         if (s.textOverflow === 'ellipsis' || x.matches('.vz-cut > :first-child, .vz-readout')) { purposely = true; break } // cut with an ellipsis, or a readout fitted by measuring
-        if (clips(x) && x !== document.body) { if (scrolls(x) && !foldTable(el) && x.scrollWidth > x.clientWidth + 1) { purposely = true; break } clipBoxes.push(x) } }
+        if (clips(x) && x !== document.body) { if (scrolls(x) && !foldTable(el) && x.scrollWidth > x.clientWidth + 1) { purposely = true; break } clipBoxes.push(x) }
+        else if (/^(TD|TH)$/.test(x.tagName) && !cellOf) cellOf = x } // a cell does not clip, but a word outside it lies over its neighbour
+      if (purposely) continue
+      if (cellOf) clipBoxes.push(cellOf)
       if (purposely) continue
       let L = 0, R = vw; for (const x of clipBoxes) { const r = x.getBoundingClientRect(), bl = parseFloat(cs(x).borderLeftWidth) || 0; L = Math.max(L, r.left + bl); R = Math.min(R, r.left + bl + x.clientWidth) }
       const text = n.textContent; const re = /\S+/g; let m
       while ((m = re.exec(text))) { range.setStart(n, m.index); range.setEnd(n, m.index + m[0].length)
         for (const r of range.getClientRects()) { if (!r.width) continue
-          if (r.right > R + 0.75 || r.left < L - 0.75) { out.push(['cut', `"${m[0]}" in ${name(el)} is ${r.left >= R || r.right <= L ? 'out of view' : 'cut'} (${Math.round(r.left)} to ${Math.round(r.right)}, visible ${Math.round(L)} to ${Math.round(R)})`]); reported++; break } }
+          if (r.right > R + 0.75 || r.left < L - 0.75) { const inCell = cellOf && (r.right > cellOf.getBoundingClientRect().right + 0.75 || r.left < cellOf.getBoundingClientRect().left - 0.75); out.push(['cut', `"${m[0]}" in ${name(el)} is ${inCell ? 'outside its cell, over its neighbour' : r.left >= R || r.right <= L ? 'out of view' : 'cut'} (${Math.round(r.left)} to ${Math.round(r.right)}, visible ${Math.round(L)} to ${Math.round(R)})`]); reported++; break } }
         if (reported >= 6) break }
     }
   }
@@ -137,7 +141,7 @@ for (const c of configs) {
     errors = []
     try { await page.goto(urlOf(p), { waitUntil: 'load', timeout: 60000 }); await page.waitForTimeout(/fixture/.test(p) ? 600 : 0); await page.evaluate(() => document.fonts.ready); await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))); await page.waitForTimeout(120) } catch (e) { results.push({ page: p, config: label(c), kind: 'load', msg: e.message.split('\n')[0] }); continue }
     const found = await page.evaluate(audit, { coarse: !!c.coarse, words: true })
-    if (c.w === 1500 && !c.zoom && !c.coarse && /compositions/.test(p)) found.push(...(await page.evaluate(words)))
+    if (c.w === 1500 && !c.zoom && !c.coarse && /compositions|fixture/.test(p)) found.push(...(await page.evaluate(words)))
     for (const e of errors) found.push(['script', e])
     for (const [kind, msg] of found) results.push({ page: p, config: label(c), kind, msg })
   }

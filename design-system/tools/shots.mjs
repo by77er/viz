@@ -1,6 +1,6 @@
 // Images for design review.
 //   node tools/shots.mjs capture <url|file> <outDir> [name]        -> <name>-{light,dark}-{1440,400}.png
-//   node tools/shots.mjs compare <beforeDir> <afterDir> <outDir>   -> one labelled side-by-side PNG per image name
+//   node tools/shots.mjs compare <beforeDir> <afterDir> <outDir> [beforeLabel] [afterLabel]   -> one labelled side-by-side PNG per image name
 //   node tools/shots.mjs scenario <scenario.json> <outDir>         -> one PNG per state and theme, plus measurements
 // Capture "before" from the base branch and "after" from the change, with the same data and state.
 //
@@ -25,13 +25,18 @@ import { readdirSync, mkdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { createRequire } from 'node:module'
 const { chromium } = createRequire(import.meta.url)('playwright')
-const [cmd, a, b, c] = process.argv.slice(2)
+const [cmd, a, b, c, labelA = 'Before', labelB = 'After'] = process.argv.slice(2)
 const href = (u) => (u.includes('://') ? u : 'file://' + resolve(u))
 
 // Runs in the page. The hit area of a control is what a finger can actually reach: found by asking the page which element is at each
 // point, so an area clipped by a scrolling strip or covered by a neighbour's area is measured as it behaves, not as it is declared.
 function measurePage(coarse) {
-  const out = { overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth, smallestText: 99, tabularSans: [], small: [], areas: [], scrolled: [], inSentence: [], covered: [], overlaps: [] }
+  const out = { overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth, smallestText: 99, tabularSans: [], small: [], areas: [], scrolled: [], inSentence: [], covered: [], overlaps: [], underSheet: [] }
+  // a link is inside a sentence when other words share its inline flow: its nearest ancestor that is not inline is a block container (not a flex
+  // or grid row of items) holding words outside the link and outside other controls (v5 review, m12: v5 counted only links inside a p)
+  const flowOf = (x) => { let b = x.parentElement; while (b && /^(inline|contents)$/.test(getComputedStyle(b).display)) b = b.parentElement; return b }
+  const inSentence = (a) => { const block = flowOf(a); if (!block || /flex|grid/.test(getComputedStyle(block).display)) return false; const w = document.createTreeWalker(block, NodeFilter.SHOW_TEXT); let t
+    while ((t = w.nextNode())) if (t.textContent.trim() && !a.contains(t) && !t.parentElement.closest('a, button, input, select, textarea, .vz-sr') && flowOf(t) === block) return true; return false }
   for (const el of document.querySelectorAll('body *')) { if (el.closest('svg') && el.tagName !== 'text') continue; const own = [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim()); if (!own) continue; const r = el.getBoundingClientRect(); if (!r.width || !r.height || r.width <= 1) continue; const cs = getComputedStyle(el), fs = parseFloat(cs.fontSize); if (fs < out.smallestText) out.smallestText = fs
     if (/tabular-nums/.test(cs.fontVariantNumeric) && /Schibsted/.test(cs.fontFamily.split(',')[0])) out.tabularSans.push(el.textContent.trim().slice(0, 30)) } // the sans widens punctuation when tabular (system-v2 N1)
   if (!coarse) return out
@@ -40,11 +45,12 @@ function measurePage(coarse) {
   const name = (el) => (el.getAttribute('aria-label') || el.textContent || el.value || el.tagName).trim().replace(/\s+/g, ' ').slice(0, 40)
   for (const el of document.querySelectorAll(sel)) {
     if (el.disabled || el.closest('[aria-busy="true"], [inert]') || getComputedStyle(el).visibility !== 'visible') continue // inert: not a control while it is (a chart's legend under an error)
-    const modal = document.querySelector('dialog:modal, .vz-scrim'); if (modal && !modal.contains(el)) continue // behind a dialog the page is inert
+    const modal = document.querySelector('dialog:modal') ?? [...document.querySelectorAll('.vz-scrim')].find((x) => x.getClientRects().length && getComputedStyle(x).visibility === 'visible'); if (modal && !modal.contains(el)) continue // behind a dialog the page is inert; a hidden scrim is not a dialog (flows G24)
+    const sheet = [...document.querySelectorAll('.vz-menu[data-open]')].find((x) => getComputedStyle(x).position === 'fixed'); if (sheet && !sheet.contains(el)) { const r0 = el.getBoundingClientRect(), s0 = sheet.getBoundingClientRect(); if (r0.bottom > s0.top && r0.top < s0.bottom) { out.underSheet.push(name(el)); continue } } // under an open sheet menu: closed by a press outside (flows G27)
     if (el.matches('input[type="checkbox"]') && el.closest('label')) continue // measured as its label
     const r = el.getBoundingClientRect(); if (r.width <= 1 || r.height <= 1 || r.bottom < 0 || r.top > innerHeight) continue // a visually hidden control (skip link at rest)
     // a link inside a sentence is text and exempt from 44px; it is measured and listed, because the main path must never be one
-    if (el.matches('a') && el.closest('p')) { out.inSentence.push({ name: name(el), w: +r.width.toFixed(1), h: +r.height.toFixed(1) }); continue }
+    if (el.matches('a') && inSentence(el)) { out.inSentence.push({ name: name(el), w: +r.width.toFixed(1), h: +r.height.toFixed(1) }); continue }
     // an item partly scrolled out of a scrolling strip (nav, tabs, a wide table) is reachable by scrolling; it is listed, not measured
     let strip = el.parentElement; while (strip && strip !== document.body && !/(auto|scroll)/.test(getComputedStyle(strip).overflowX)) strip = strip.parentElement
     if (strip && strip !== document.body) { const s = strip.getBoundingClientRect(); if (r.left < s.left - 0.5 || r.right > s.right + 0.5) { out.scrolled.push(name(el).slice(0, 30)); continue } }
@@ -96,7 +102,7 @@ async function runState(browser, sc, state, theme, outDir) {
   const tag = `${sc.name ?? 'view'}-${state.name}-${theme}`
   if (state.measure) {
     const m = await page.evaluate(measurePage, !!state.coarse)
-    console.log(`${tag}: sideways overflow ${m.overflow}px; smallest text ${m.smallestText}px; tabular sans ${m.tabularSans.length}` + (state.coarse ? `; ${m.areas.length} hit areas, ${m.small.length} under 44px, ${m.covered.length} covered, ${m.overlaps.length} drawn boxes reached by a neighbour, ${m.inSentence.length} links inside sentences` + (m.scrolled.length ? `; ${m.scrolled.length} partly scrolled out of a strip (${m.scrolled.join(', ')})` : '') : ''))
+    console.log(`${tag}: sideways overflow ${m.overflow}px; smallest text ${m.smallestText}px; tabular sans ${m.tabularSans.length}` + (state.coarse ? `; ${m.areas.length} hit areas, ${m.small.length} under 44px, ${m.covered.length} covered, ${m.overlaps.length} drawn boxes reached by a neighbour, ${m.inSentence.length} links inside sentences` + (m.scrolled.length ? `; ${m.scrolled.length} partly scrolled out of a strip (${m.scrolled.join(', ')})` : '') + (m.underSheet.length ? `; ${m.underSheet.length} under an open sheet menu (${m.underSheet.join(', ')})` : '') : ''))
     for (const t of m.tabularSans) console.log(`  TABULAR SANS  ${t}`)
     for (const s of m.small) console.log(`  SMALL ${s.w}x${s.h}  <${s.tag}> ${s.name}`)
     for (const c of m.covered) console.log(`  COVERED  ${c.name}  (its centre belongs to ${c.by})`)
@@ -137,8 +143,8 @@ if (cmd === 'capture') {
     const wa = before ? width(before) : width(join(b, f)), wb = width(join(b, f))
     const page = await browser.newPage({ viewport: { width: wa + wb + 72, height: 600 }, deviceScaleFactor: 1 })
     await page.setContent(`<body style="margin:0;padding:24px;background:#fff;font:14px Georgia,serif;color:#111"><div style="display:flex;gap:24px;align-items:flex-start">
-      <div><div style="margin-bottom:8px">Before (v4) · ${f}</div>${before ? `<img src="${uri(before)}" style="display:block;outline:1px solid #e4e4e4">` : `<div style="width:${wa}px;padding:48px 0;outline:1px solid #e4e4e4">New view: nothing to compare.</div>`}</div>
-      <div><div style="margin-bottom:8px">After (v5) · ${f}</div><img src="${uri(join(b, f))}" style="display:block;outline:1px solid #e4e4e4"></div></div></body>`) // token-lint-ignore: review frame, not product
+      <div><div style="margin-bottom:8px">${labelA} · ${f}</div>${before ? `<img src="${uri(before)}" style="display:block;outline:1px solid #e4e4e4">` : `<div style="width:${wa}px;padding:48px 0;outline:1px solid #e4e4e4">New view: nothing to compare.</div>`}</div>
+      <div><div style="margin-bottom:8px">${labelB} · ${f}</div><img src="${uri(join(b, f))}" style="display:block;outline:1px solid #e4e4e4"></div></div></body>`) // token-lint-ignore: review frame, not product
     await page.screenshot({ path: join(c, f), fullPage: true })
     await page.close()
   }

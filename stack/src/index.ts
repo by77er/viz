@@ -9,7 +9,12 @@
  *                    scheduled  hourly: re-enqueue streams whose segments are still pending,
  *                               and tenants whose maintenance is due
  *   Flush            the flush entrypoint (`flushTenant(tenant, shardName)` over RPC)
+ *   RecordedSamples  the ruler's recording-rule samples over a service binding (contracts/ingest.ts)
  *   Shard, Ledger    the Durable Object classes
+ *
+ * Bound, not defined here: `PUBLISHER`, the cell's publisher (viz-publisher), which each
+ * maintenance run nudges and which deletion waits for. Nothing on the ingest or flush path
+ * calls it (D15).
  *
  * Nothing here adds behaviour of its own beyond `maintain.ts` (the order of the
  * maintenance jobs and their marker): it puts the components behind one set of bindings.
@@ -21,6 +26,8 @@ import { type DueResult, type MaintEnv, type MaintMessage, type MaintOptions, co
 
 export { Shard } from '../../shard/src/shard'
 export { Ledger } from '../../ledger/src/ledger'
+// The ruler's recorded samples, over a service binding naming this entrypoint (contracts/ingest.ts).
+export { RecordedSamples } from '../../edge/src/recorded'
 export { Flush, engine, flushTenant } from '../../flush/src/index'
 export type { FlushOptions, FlushResult } from '../../flush/src/index'
 export * from './maintain'

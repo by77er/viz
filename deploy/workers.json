@@ -1,5 +1,5 @@
 {
-  "$comment": "What deploy/configure.mjs generates and deploy/release.mjs deploys. `workers` is in dependency order: callees before callers (viz-ruler calls viz-query, viz-ingest and viz-control; viz-mcp calls viz-query, viz-control and viz-ruler; viz-gateway calls all of them). Promotion follows this order; rollback goes the other way.",
+  "$comment": "What deploy/configure.mjs generates and deploy/release.mjs deploys. `workers` is in dependency order: callees before callers (viz-ingest binds viz-publisher's Publisher class; viz-ruler calls viz-query, viz-ingest and viz-control; viz-mcp calls viz-query, viz-control and viz-ruler; viz-gateway calls all of them but viz-publisher). Promotion follows this order; rollback goes the other way. Every Durable Object class a Worker defines is declared under `schemas` (its SchemaSpec, `<path>.ts#<EXPORT>`, read into release records: contracts/COMPATIBILITY.md §6) or `unversioned` (why it keeps no storage).",
   "domain": "vis.bitcru.sh",
   "observability": {
     "enabled": true,
@@ -28,28 +28,52 @@
   },
   "workers": [
     {
+      "name": "viz-publisher",
+      "component": "publisher",
+      "deploy": true,
+      "health": "/healthz",
+      "schemas": {
+        "Publisher": "publisher/src/schema.ts#PUBLISHER_SCHEMA"
+      }
+    },
+    {
       "name": "viz-ingest",
       "component": "stack",
       "deploy": true,
-      "health": "/healthz"
+      "health": "/healthz",
+      "schemas": {
+        "Shard": "shard/src/shard.ts#SHARD_SCHEMA",
+        "Ledger": "ledger/src/ledger.ts#LEDGER_SCHEMA"
+      }
     },
     {
       "name": "viz-control",
       "component": "control",
       "deploy": true,
-      "health": "/healthz"
+      "health": "/healthz",
+      "schemas": {
+        "Tenant": "control/src/schema.ts#TENANT_SCHEMA"
+      }
     },
     {
       "name": "viz-query",
       "component": "query",
       "deploy": true,
-      "health": "/healthz"
+      "health": "/healthz",
+      "unversioned": {
+        "Leaf": "keeps nothing between calls: no storage, no fields, no alarm (query/src/leaf.ts)"
+      }
     },
     {
       "name": "viz-ruler",
       "component": "ruler",
       "deploy": true,
-      "health": "/healthz"
+      "health": "/healthz",
+      "schemas": {
+        "Ruler": "ruler/src/schema.ts#RULER_SCHEMA",
+        "Notifier": "ruler/src/schema.ts#NOTIFIER_SCHEMA",
+        "RulerIndex": "ruler/src/schema.ts#INDEX_SCHEMA"
+      }
     },
     {
       "name": "viz-mcp",
@@ -63,12 +87,6 @@
       "deploy": true,
       "public": true,
       "health": "/healthz"
-    },
-    {
-      "name": "viz-publisher",
-      "component": "publisher",
-      "deploy": false,
-      "reason": "Not wired in yet: the publisher reads the ledger's segments and is nudged by the maintenance run, but stack/ does not bind PUBLISHER, so nothing would reach it. When ingest binds it, it deploys before viz-ingest (callees first)."
     }
   ]
 }

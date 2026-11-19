@@ -459,6 +459,8 @@ export interface SloRt {
   lastSlot: number | null
   lastCoarse: number | null
   lastTs: number | null
+  /** Start of the earliest bucket on record (a coarse read's first bucket, or the first tick's): bounds what the budget figure covers. */
+  firstTs: number | null
   series: Map<string, SloSeriesState>
   status: SloRuleStatus
   pruned: number
@@ -474,7 +476,7 @@ export function emptySloStatus(maxSeries: number): SloRuleStatus {
 }
 
 export function newSloRt(rule: SloRuleV2): SloRt {
-  return { origin: null, lastSlot: null, lastCoarse: null, lastTs: null, series: new Map(), status: emptySloStatus(rule.slo.maxSeries), pruned: 0, unreadable: null, rawRows: null, stateBytes: 0 }
+  return { origin: null, lastSlot: null, lastCoarse: null, lastTs: null, firstTs: null, series: new Map(), status: emptySloStatus(rule.slo.maxSeries), pruned: 0, unreadable: null, rawRows: null, stateBytes: 0 }
 }
 
 /** A working copy for one tick: the committed state is untouched until the tick commits. */
@@ -570,16 +572,26 @@ export function budgetClause(remaining: number | null, coveredMs: number, window
   return { text: `${fmt(100 * remaining)}% of the budget is left ${over}${exhaustionMs !== null ? `, spent in ${roughDuration(exhaustionMs)} at this rate` : ''}`, exhaustionMs }
 }
 
-/** The budget left over the compliance window, from the coarse ring ending at slot k. */
-export function budgetOf(s: SloSeriesState, k: number, objective: number, g: ReturnType<typeof sloGeometry>, windowMs: number): { remaining: number | null; coveredMs: number } {
+/**
+ * The budget left over the compliance window, from the coarse ring ending at slot k (fine slot n),
+ * and how much time it covers: the coarse buckets with data, the current one only as far as it
+ * has run, and never more than has passed since the earliest bucket on record.
+ */
+export function budgetOf(s: SloSeriesState, n: number, k: number, ts: number, firstTs: number | null, objective: number, g: ReturnType<typeof sloGeometry>, windowMs: number, intervalMs: number): { remaining: number | null; coveredMs: number } {
   const [sum] = s.coarse.windowSums(k, [g.coarseBuckets])
   const w = sum!
-  const coveredMs = Math.min(windowMs, w.present * g.coarseMs)
+  const m = g.coarseMs / intervalMs
+  const current = s.coarse.get(k)[0]
+  const elapsed = (n - (k - 1) * m) * intervalMs
+  const byBuckets = w.present * g.coarseMs - (current === current ? g.coarseMs - elapsed : 0)
+  const covered = Math.max(0, Math.min(windowMs, byBuckets, firstTs === null ? byBuckets : ts - firstTs))
+  // The ring's far edge moves a coarse bucket at a time: within one bucket of the window is the whole window.
+  const coveredMs = covered >= windowMs - g.coarseMs ? windowMs : covered
   return { remaining: w.tot > 0 ? 1 - w.bad / w.tot / (1 - objective) : null, coveredMs }
 }
 
 /** Evaluate one series at slot n (and coarse slot k): which severities burn, with their sentences. */
-function judge(rule: SloRuleV2, s: SloSeriesState, n: number, k: number, ts: number, intervalMs: number, g: ReturnType<typeof sloGeometry>): { page: SloFlag | null; ticket: SloFlag | null; warming: string | null; budget: { remaining: number | null; coveredMs: number } } {
+function judge(rule: SloRuleV2, s: SloSeriesState, n: number, k: number, ts: number, firstTs: number | null, intervalMs: number, g: ReturnType<typeof sloGeometry>): { page: SloFlag | null; ticket: SloFlag | null; warming: string | null; budget: { remaining: number | null; coveredMs: number } } {
   const spec = rule.slo
   const sums = s.fine.windowSums(n, g.windows)
   const agg = new Map<number, WindowAggregate>()
@@ -604,7 +616,7 @@ function judge(rule: SloRuleV2, s: SloSeriesState, n: number, k: number, ts: num
     const cur = best[sev]
     if (!cur || r.score > cur.score) best[sev] = r
   }
-  const budget = budgetOf(s, k, spec.objective, g, spec.windowMs)
+  const budget = budgetOf(s, n, k, ts, firstTs, spec.objective, g, spec.windowMs, intervalMs)
   const flag = (r: RuleResult | null): SloFlag | null => {
     if (!r) return null
     const e = explainRule(r, spec.objective, spec.windowMs, ts)
@@ -694,6 +706,8 @@ export function evalSlo(rule: SloRuleV2, rt: SloRt, series: Series[], ts: number
   rt.lastSlot = n
   rt.lastCoarse = k
   rt.lastTs = ts
+  // The earliest bucket with data on record bounds what the budget figure can cover.
+  if (rt.firstTs === null && [...buckets.values()].some((b) => b.bad === b.bad)) rt.firstTs = ts - intervalMs
   rt.pruned += pruned
 
   const status: SloRuleStatus = { ...emptySloStatus(spec.maxSeries), series: buckets.size, stateSeries: rt.series.size, stateBytes: rt.stateBytes, pruned: rt.pruned, warmup: rt.status.warmup }
@@ -705,7 +719,7 @@ export function evalSlo(rule: SloRuleV2, rt: SloRt, series: Series[], ts: number
       s.last = null
       continue
     }
-    const j = judge(rule, s, n, k, ts, intervalMs, g)
+    const j = judge(rule, s, n, k, ts, rt.firstTs, intervalMs, g)
     // The outcome is replayed from here; a series with a missing bucket was judged too.
     s.last = { page: j.page, ticket: j.ticket, warming: j.warming }
     if (j.page) status.burning.page++
@@ -790,7 +804,7 @@ export function headBody(rt: SloRt, intervalMs: number, coarseMs: number): strin
     const s = rt.series.get(k) as SloSeriesState
     return { k, l: s.labels, last: s.last, seen: s.seenAt }
   })
-  return JSON.stringify({ v: SLO_STATE_VERSION, origin: rt.origin, stepMs: intervalMs, budgetStepMs: coarseMs, lastSlot: rt.lastSlot, lastCoarse: rt.lastCoarse, lastTs: rt.lastTs, pruned: rt.pruned, series })
+  return JSON.stringify({ v: SLO_STATE_VERSION, origin: rt.origin, stepMs: intervalMs, budgetStepMs: coarseMs, lastSlot: rt.lastSlot, lastCoarse: rt.lastCoarse, lastTs: rt.lastTs, first: rt.firstTs, pruned: rt.pruned, series })
 }
 
 /** What one tick writes: the head and the current block of each ring; and the first block still inside each ring (older ones are deleted). */
@@ -849,12 +863,13 @@ export function readSloRows(rule: SloRuleV2, intervalMs: number, rows: SloRow[])
   }
   const head = parsed.find((p) => p.row.part === 'head')
   if (!head) return rows.length === 0 ? { rt } : { error: 'slo_state has blocks but no head row' }
-  const h = head.body as { origin: number | null; stepMs: number; lastSlot: number | null; lastCoarse: number | null; lastTs: number | null; pruned?: number; series: { k: string; l: Labels; last: SloSeriesState['last']; seen: number }[] }
+  const h = head.body as { origin: number | null; stepMs: number; lastSlot: number | null; lastCoarse: number | null; lastTs: number | null; first?: number | null; pruned?: number; series: { k: string; l: Labels; last: SloSeriesState['last']; seen: number }[] }
   if (h.stepMs !== intervalMs) return { rt } // another interval: the state describes another rule (the caller deleted it at save)
   rt.origin = h.origin
   rt.lastSlot = h.lastSlot
   rt.lastCoarse = h.lastCoarse
   rt.lastTs = h.lastTs
+  rt.firstTs = h.first ?? null
   rt.pruned = h.pruned ?? 0
   for (const e of h.series) rt.series.set(e.k, { ...newSeries(e.l, g), last: e.last, seenAt: e.seen })
   for (const { row, body } of parsed) {

@@ -14,7 +14,7 @@ const col = (th) => `<div data-theme="${th}" class="vz side">${names.map((n) => 
 const extra = names.map((n) => body(n).style).join('').replace(/<\/?style>/g, '').replace(/html,body\{margin:0\}|body\{padding:[^}]*\}/g, '')
 writeFileSync(root + 'dist/reference.html', `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>viz reference</title><style>${css}
 body{margin:0}.sheet{display:grid;grid-template-columns:1fr 1fr}.side{padding:32px;display:flex;flex-direction:column;gap:32px;min-width:0}
-.side section{display:flex;flex-direction:column;gap:12px}.side h2{margin:0}.side section>div{min-width:0}.coverwrap{overflow:hidden}.coverwrap>.cover{zoom:.62}@media (max-width:900px){.coverwrap>.cover{zoom:.36}}
+.side section{display:flex;flex-direction:column;gap:12px}.side h2{margin:0}.side section>div{min-width:0}.coverwrap{overflow:hidden}
 @media (max-width:900px){.sheet{grid-template-columns:1fr}}
 ${extra}</style></head><body><div class="sheet">${col('light')}${col('dark')}</div><script>${press}</script>${scripts}</body></html>`)
 mkdirSync(root + 'dist/preview', { recursive: true })

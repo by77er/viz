@@ -106,7 +106,7 @@ fn the_fragment_carries_series_bounds_and_where_the_footer_is() {
 
 #[test]
 fn the_parquet_bytes_are_those_the_previous_writer_wrote() {
-    // The layout did not change (DECISIONS D40): the same batches give byte-identical
+    // The layout did not change (DECISIONS D41): the same batches give byte-identical
     // files, and the fragment differs only by the two added fields.
     let opts = WriteOptions { max_row_group_rows: 50, ..Default::default() };
     let mut samples = Vec::new();

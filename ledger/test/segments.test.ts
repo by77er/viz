@@ -624,9 +624,11 @@ describe('a rollback to the first-layout release and back (review S-1)', () => {
 describe('the base is in R2 before an incarnation commits (spec F11)', () => {
   it('if the base cannot be written, nothing commits and nothing is served; once it can, the incarnation starts with its base', async () => {
     const tenant = tenantName('nobase')
-    const proto = Ledger.prototype as unknown as { putLogObject(this: Ledger, key: string, body: string): Promise<void> }
-    const real = proto.putLogObject
+    // The base is written from SQLite in pieces (`writeBase`), every other log object by `putLogObject`.
+    const proto = Ledger.prototype as unknown as { putLogObject(this: Ledger, key: string, body: string): Promise<void>; writeBase(this: Ledger, inc: number, version: number): Promise<number> }
+    const real = { put: proto.putLogObject, base: proto.writeBase }
     proto.putLogObject = async () => { throw new Error('injected: R2 PUT failed') }
+    proto.writeBase = async () => { throw new Error('injected: R2 PUT failed') }
     let l: Stub
     try {
       ;({ l } = open(tenant))
@@ -639,7 +641,8 @@ describe('the base is in R2 before an incarnation commits (spec F11)', () => {
       expect(meta.filter((k) => k !== 'state_bytes')).toEqual(['starting'])
       expect(await listAll(logPrefix(tenant))).toEqual([])
     } finally {
-      proto.putLogObject = real
+      proto.putLogObject = real.put
+      proto.writeBase = real.base
     }
     await runDurableObjectAlarm(l!)
     expect((await l!.logStatus()).phase).toBe('ready')

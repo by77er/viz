@@ -2,8 +2,8 @@
 <!doctype html><html><head><meta charset="utf-8">
 <style>
 html,body{margin:0}
-.cover{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--space-8);align-items:end;width:calc(2 * var(--dialog));padding:var(--space-8);background:var(--ground)}
-.cover .cover-plot{height:var(--plot-sm);cursor:default}
+.cover{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,var(--overlay-min)),1fr));gap:var(--space-8);align-items:end;width:calc(2 * var(--dialog));max-width:100%;padding:var(--space-8);background:var(--ground)}
+.cover .cover-plot{height:var(--plot-sm);width:100%;cursor:default}
 </style></head><body class="vz">
 <!-- The cover is the product drawing itself: the name in display type, one sentence, and a chart drawn with the system's own chart classes
      from the reference data (three routes, the 500 ms objective, the firing interval since 13:07). No colour blocks: colour is for data. -->

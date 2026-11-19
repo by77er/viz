@@ -729,7 +729,7 @@ EWMA with the parameters chosen on held-out data (half-life 100 points, k 8) and
 give the level. The robust z-score (MAD), the seasonal baseline (MAD) and CUSUM can be named;
 the save then warns with their held-out score, and CUSUM may not page (default `info`). STL and
 PELT are not rule detectors: they are for scheduled jobs and explanations; burn rate is to
-compile to recording rules. The 99th-percentile ("quantile") spread can be chosen, is marked
+compile to recording rules (that clause is replaced by D41: an SLO is its own rule kind). The 99th-percentile ("quantile") spread can be chosen, is marked
 unvalidated in the warning and in the guide, and is never a default. The guide, with the kind
 of evidence behind each line (held out, post hoc, not scorable), is served at
 `GET /api/v1/monitors/detectors` from one copy in `ruler/src/anomaly.ts`.
@@ -1051,3 +1051,134 @@ specified and are not copied.
 **Would change if.** Tempo documents a different semantics, or fixes the plan-dependent cases
 differently; or clients turn out to depend on a Tempo artefact (then that one rule is copied
 and recorded here).
+
+## D41. An SLO is a rule kind evaluated from one query per tick and per-series bucket rings, not compiled to recording rules
+
+**Decision.** An SLO burn-rate rule (`contracts/rules.ts`, version 4) is an objective, a
+compliance window and an SLI written with `$window`. Each tick the ruler sends ONE expression per
+rule in the group's batch: the SLI's two parts over the last interval, told apart by
+`label_replace(…, "viz_slo_part", …) or …`. It keeps, per series, a ring of interval buckets as
+long as the longest alert window and a ring of about 720 coarse buckets over the compliance
+window, as rows (a head and blocks of 60 and 24 buckets; three rows a tick), warmed from history
+when the rule is new (D42). The alerts are the SRE Workbook's (anomaly/'s `SRE_WORKBOOK_RULES`,
+judged by its `evaluateWindows`), one alert per series and severity (`page`, `ticket`). A window
+counts once 90% of its buckets have data (`min_coverage`). This replaces D33's "burn rate is to
+compile to recording rules".
+
+**Alternatives.** (a) Compile to recording rules, as Sloth and Pyrra do: one recording rule per
+window (seven for the workbook's alerts) and alerting rules over them. (b) Query every window at
+every tick: 7 to 14 expressions, the longest reading three days. (c) The library's incremental
+detector (`burnRate.detect`) with its JSON state. (d) The three alerts of the workbook's Table 5-8
+rather than the four of its alert expressions. (e) One alert per series carrying the most urgent
+severity.
+
+**Why.** Through the HTTP wiring (D39) every expression is one request in sequence and (b) reads
+the 3-day window each minute, a rollup-class read per tick; (a) costs the same seven windowed
+reads per tick through the recording rules, plus Remote Write and a read of what was written, and
+the sentence would still lack the budget left. One bucket per tick is a tail-class read, and the
+windows are sums over state. (c) copies its whole ring into and out of JSON at every point
+(anomaly/README: 1.7 ms a tick through JSON at 1-minute buckets, 67 KB of state per series) and
+would rewrite it every tick; the ruler's rings write one block and the head. The four alerts are
+what the library already reproduces against every table of the chapter; the fourth (1 d / 2 h at
+3×) resets a slow burn sooner. Per-severity alerts are what the workbook's expressions and Sloth
+produce, so routing and inhibition (`severity=page` over `severity=ticket`) work unchanged; (e)
+would resolve one alert and fire another whenever the severity changed.
+
+**Cost.** State per series: 4,320 + 720 buckets at a 1-minute interval (about 100 KB stored, 85 KB
+in memory), counted against the per-object state budget; a 10-second interval needs 25,920
+buckets. The window sums are the ruler's own (fixed-order, block-cached), not the library's
+loop: the same buckets give the same sums however they arrived, and agree with the library at
+every point when the counts are whole numbers (tested), but they are a second implementation of
+the summing. The budget-left figure's far edge moves an hour at a time (one coarse bucket).
+`$window` must be the bucket: an author used to `rate(x[5m])` must write `[$window]`.
+
+**Would change if.** viz-query exports an RPC entrypoint that plans a batch with shared scans
+(then (b)'s reads cost little more than one); the ruler gains a cheaper store for rings than a
+row per block; or SLOs need windows longer than the 100,000-bucket ring (then coarser fine
+buckets, or (a)).
+
+## D42. New anomaly and SLO rules are warmed from history before their first evaluation, under a budget checked with the engine's plan; backtests run the same evaluation under a larger budget
+
+**Decision.** When an anomaly or SLO rule is created (a new rule key: a new detector, parameter,
+SLI or interval), a warm-up job is stored with it. At the rule's first tick the ruler builds the
+reads its history class needs (the detector's look-back, or an SLO's longest window and
+compliance window) at the rule's interval, asks viz-query's `/api/v1/plan` for every piece
+(nothing fetched), and refuses the whole warm-up when the sum is over `RulerLimits.maxWarmup*`
+(3,000,000 samples, 16 MiB) or the plan carries the engine's own refusal; otherwise it fetches the
+reads whole and feeds them, in time order, through the rule's own evaluation, then commits the
+state rows and the status in one transaction. An engine failure is retried at the next tick
+while the rule waits (at most three attempts), then the rule starts cold. A refused or failed
+warm-up starts the rule cold and says why in its status. Backtests of threshold, anomaly and SLO
+rules plan their reads the same way under `RulerLimits.maxBacktest*` (20,000,000 samples,
+128 MiB) and refuse with `over_budget` before fetching; an anomaly or SLO backtest starts with the
+state a warm-up at `fromMs` would leave and runs at the rule's interval.
+
+**Alternatives.** (a) Start cold and warm live (as before). (b) Evaluate live at once and merge
+history in later. (c) Fetch what fits the budget and warm partially. (d) No budget: the engine's
+own limits refuse what is too large. (e) One budget for warm-ups and backtests.
+
+**Why.** (a) leaves a seasonal rule silent for its k periods and an SLO's ticket windows
+meaningless for three days. (b) cannot work for sequential detectors (an EWMA cannot take earlier
+points after later ones). (c) gives a detector a state that is neither cold nor warm, and an SLO
+window that looks covered while it is not. (d) is per query: a warm-up of several reads, or a
+read split into 11,000-step pieces, could each pass and together cost many times one query; and
+the engine's limits are about its own memory, not about what the tenant is willing to pay for an
+automatic read. (e) warm-ups run by themselves at every save; a backtest is asked for and shown.
+The plan is one ledger read and touches no shard, leaf or R2 object (query/README).
+
+**Cost.** A plan request per piece before every warm-up and backtest; the plan does not count the
+shards' tail, so a read can cost a little more than planned. A new rule's first tick waits for
+its warm-up (one engine call at a time per object, D39). A rule whose history is over the budget
+warms live, as before. The budgets are choices sized to one query of viz-query, not measured on
+Cloudflare.
+
+**Would change if.** The plan reports the tail too (then the budget is exact); warm-ups prove
+cheap enough on Cloudflare to raise the budget; or a rule kind needs history it cannot read at
+its interval (then a coarser warm-up read with a declared approximation).
+
+## D41. Series-level pruning: the layout stays; the index fragment gains row-group series bounds and the footer's place; pages are skipped in memory, not fetched
+
+**Decision.** Files keep the layout they had (row groups of at most 100,000 rows, data pages
+of at most 20,000, the offset index the `parquet` crate writes, no column index): the Parquet
+bytes of a flush or a merge do not change. The index fragment (`FileEntry.index`) gains, per
+row group, the `series_id` of its first and last row (`"sid"`), and per file where the footer
+region starts and how long it is (`"foot"`), additively within version 1
+(`contracts/TABLES.md`, "The index fragment"). A reader that has resolved its matchers against
+the `metric_series` files, or owns a split part's `series_id` range, fetches the footer region
+and the row groups whose `(metric_name, series_id)` range can hold one of its series, joining
+ranges less than 64 KiB apart and reading the whole object when the ranges would cover half
+of it; inside a row group it decodes `series_id`, then skips the pages of `ts` and `value` that
+hold none of its rows, by the offset index, without reading them. The query Worker resolves
+first only when the fragments alone say a query does not fit one place and a matcher selects
+by more than the metric name (one more round of reads); split readers read their part's id
+range of each sample file; the label endpoints read series files only (item 3 of
+`query/CARDINALITY.md`, same entry).
+
+**Why (measured here, native, `engine/storage/examples/layout.rs`, one ten-minute unit of
+100,000 series, load average 10 to 15).** What a one-series read fetches is one row group and
+the footer whatever the row-group size: 235 KiB at 100,000 rows, 140 KiB at 50,000, 90 KiB at
+25,000, 79 KiB at 10,000, always two range reads, all under the 1 MB below which a range read
+costs about one round trip (AGENTS.md). Smaller row groups cost where it is scarce: the
+fragment grows from 1.7 KiB a file (10 row groups) to 3.3, 6.5 and 16.2 KiB, against the
+ledger's 16 MiB of state for all of a tenant's live files (`contracts/LEDGER-LOG.md`), and the
+footer from 6.9 to 55 KiB. Smaller pages cost bytes (+1.3 % at 8,192 rows, +4.5 % at 4,096,
++15 % at 1,024) and did not make one-series decode measurably faster (0.5 to 0.7 ms at every
+size: a row group is five pages of 20,000 rows, and four are skipped). A column index (per-page
+min and max) doubled the footer region (16.7 to 34.0 KiB at 4,096-row pages) and would let a
+reader skip decoding `series_id`, which is the cheap column. A selection spread over the id
+space (`namespace=…`, a twentieth of the series) needs every row group at every size measured:
+`series_id` is a hash of all labels (D19), and no layout of this kind changes that.
+
+**Alternatives.** (a) Row groups of 10,000 to 50,000 rows: fewer bytes per one-series read,
+same number of reads, a 2 to 10 times larger fragment in the ledger. (b) Pages of 1,000 to
+8,000 rows, with or without a column index: more bytes on every read, no measured gain.
+(c) Fetching pages (two round trips: footer and page index first, then pages): three ranges a
+row group instead of one, for bytes that are below 1 MB anyway. (d) Row groups cut at metric
+boundaries: unnecessary with first/last-row bounds, which are exact across metrics.
+(e) Locality in the id (D19), or a promoted label before `series_id` in the sort key: the only
+ways to make a `namespace=…` selection read less; a format change, not taken here.
+
+**Would change if.** A range read's cost on Cloudflare grows with its size below 1 MB (then
+smaller row groups, and a fragment that is not in the ledger's state); the ledger's state cap
+is lifted or fragments move out of it; or label locality is added to the sort key (then pages
+pay, and a column index with them).

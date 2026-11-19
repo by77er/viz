@@ -6,7 +6,9 @@ viz (design §7, decision D7). Three Durable Object classes and one Worker:
 - **`Ruler`**, one per tenant rule shard, named `<tenant>/<n>`. Holds rule groups, evaluates
   each group with one batch call to the engine per tick, owns alert state, hands alert
   transitions to the notifier, keeps each monitor's transition history. Evaluates anomaly
-  rules (part 8) with the detectors of `anomaly/` and keeps their state per (rule, series).
+  rules (part 8) with the detectors of `anomaly/` and keeps their state per (rule, series), and
+  SLO burn-rate rules (part 10) from per-series bucket rings; warms new rules of both kinds from
+  history (part 11) and backtests every kind (part 12).
 - **`Notifier`**, one per tenant, named `<tenant>`. Routing tree, grouping timers,
   inhibition, silences, acknowledgements, a transactional outbox to webhook and Slack
   receivers with HMAC-signed requests, and each monitor's notification history.
@@ -33,7 +35,9 @@ fakes, so they are **ruler overhead only**; part 9's trial is the first run on C
 | `src/engine.ts` | Production engine: viz-query's HTTP API (`/query`, `/query_range`, `/plan`) behind one gate per object (one call in flight) |
 | `src/credential.ts` | The shard's service key from control (`contracts/control.ts` `serviceKey`): stored, refreshed, never shown |
 | `src/remote.ts` | Production sink: Remote Write 1.0 to viz-ingest (protobuf + snappy encoder) |
-| `src/backtest.ts` | Backtest over a range matrix through `evalAlertingRule`; intervals, summary, resolution note |
+| `src/backtest.ts` | `trackIntervals`: any rule's per-step result through `evalAlertingRule`, as intervals with the annotations each alert entered with; summary, resolution note |
+| `src/slo.ts` | SLO rules (part 10): the `slo` block, defaults, the per-tick expression, the bucket rings with block-cached window sums, one evaluation (pure), the sentence, the stored rows |
+| `src/history.ts` | Parts 11 and 12: plan-checked range reads (`fetchHistory`), warm-ups of anomaly and SLO rules, backtests of anomaly and SLO rules, the budgets (pure apart from the engine calls) |
 | `src/notifier.ts` | `Notifier`: grouping, flush decisions, acknowledge, silences with undo, outbox, signing, delivery, notification log |
 | `src/amconfig.ts` | Notifier config validation, routing, matchers, inhibition, silence matching, secret redaction (pure) |
 | `src/http.ts` | The HTTP API: routes, auth through edge's verifier, Prometheus-compatible reads, monitors, groups, rule files, backtest, placement and shard moves |
@@ -48,7 +52,8 @@ fakes, so they are **ruler overhead only**; part 9's trial is the first run on C
 | `openapi.json` | OpenAPI 3.1 description of every route (checked against `ROUTES` by `test/http.test.ts`) |
 | `tools/promcheck/` | Go: Prometheus' own code reading what the ruler writes (see parts 2 and 5) |
 | `test/harness.ts` | The test worker: the classes with clock, evaluators, sink, receiver and crash points overridden; `FakeQuery` and `FakeIngest` entrypoints (edge's real `authenticate`, tenant from the key) and control's real `Tenant` for the production wiring |
-| `test/anomaly.bench.ts`, `vitest.measure.config.ts` | Anomaly rule measurements in workerd (`npm run bench:anomaly`); the config adds `HOST`, which reads workerd's CPU time and the load average in Node |
+| `test/anomaly.bench.ts`, `vitest.measure.config.ts` | Anomaly rule measurements in workerd (`npm run bench:anomaly`); the config adds `HOST`, which reads workerd's CPU time, its resident memory and the load average in Node |
+| `test/slo.bench.ts` | SLO tick, warm-up and 7-day backtest measurements in workerd (`npm run bench:history`) |
 | `scripts/mutants.mjs` | Mutation checks, applied to a scratch copy |
 
 `wrangler.jsonc` is the production shape, from which `deploy/configure.mjs` generates the
@@ -425,6 +430,143 @@ the format in control turned the next one into Alertmanager's body. **Rule evalu
 evaluated (`ok`, one series scored); the recorded series came back through Remote Write and
 the query path; one service key was issued for the whole run (no rotation).
 
+### 10. SLO burn-rate rules (contract version 4)
+
+An **SLO rule** is an objective, a compliance window and an SLI; the ruler raises the Google SRE
+Workbook's multi-window, multi-burn-rate alerts (chapter 5, approach 6). The contract is
+`contracts/rules.ts`, "SLO burn-rate rules (contract version 4)", changed first and on its own
+(contract issue 16): additive, so every rule file, stored group and config valid under version 3
+means the same. Code: `src/slo.ts`, `src/rules.ts` (the `slo` block of an entry), `src/ruler.ts`
+(tick, commit, load, moves), `src/monitors.ts` and `src/http.ts` (the API).
+
+```yaml
+- alert: CheckoutAvailability
+  slo:
+    objective: 0.999                 # required
+    sli:                             # { bad, total }, { good, total } or { error_ratio }
+      bad: sum(increase(http_requests_total{job="checkout",code=~"5.."}[$window]))
+      total: sum(increase(http_requests_total{job="checkout"}[$window]))
+    # window: 30d, alerts: the workbook's four, min_events: 0, min_coverage: 0.9, max_series: 10
+```
+
+Through the monitors API: `POST /api/v1/monitors` with `slo: { objective, sli: { bad, total } |
+{ good, total } | { errorRatio }, window?, alerts?: [{ severity, longWindow, shortWindow, burnRate }],
+minEvents?, minCoverage?, maxSeries? }` and no `query` or `condition`; default group `slos/<interval>`
+(kept apart from threshold monitors for the rollback reason of part 8). Problems come back in the
+monitor's own field names (`slo.sli.errorRatio`, `slo.alerts[0].longWindow`).
+
+- **The SLI is written with `$window`**, which the ruler replaces with the bucket width: the group
+  interval each tick, a coarse width when it reads the compliance window. An expression without
+  it is refused (a `[5m]` range evaluated every minute would count events five times). `rate()`
+  works as well as `increase()`; only `min_events` sees the unit. With `{ bad, total }` a missing
+  bad series means no errors; with `{ good, total }` a missing good series means all bad, and a
+  good series without a total one is refused (`invalid_result`: the two aggregate by different
+  labels); `{ error_ratio }` weighs every bucket equally (time, not events).
+- **Defaults are written out at save** (`given` lists what the author chose): the workbook's four
+  alerts as `anomaly/` defines them (`SRE_WORKBOOK_RULES`: page 1 h / 5 m at 14.4× and 6 h / 30 m at
+  6×, ticket 1 d / 2 h at 3× and 3 d / 6 h at 1×; the task named three, the library's table and the
+  workbook's alert expressions have the fourth, D41), window 30 d, `min_coverage` 0.9,
+  `max_series` 10 (at most `RulerLimits.maxSloSeriesPerRule`, 100). Any change of objective,
+  window, SLI, alerts, `min_events` or `min_coverage` is a new rule key, with fresh state and a
+  warm-up. Refused at save with a path and a fix: an objective outside (0, 1) (99.9 is answered
+  "write 99.9% as 0.999"), an SLI form other than the three, a short window not shorter than its
+  long one or shorter than the interval, a long window longer than the compliance window, a
+  `severity` label (it is the burn-rate alert's), `expr`. Warned: windows that are not whole
+  numbers of buckets, and an alert that can never fire (`burn_rate × (1 − objective) ≥ 1`, the
+  workbook's "90% SLO" case).
+- **One query per rule per tick**, in the group's one batch call: `label_replace(<total>,
+  "viz_slo_part", "total", "", "") or label_replace(<bad or good>, "viz_slo_part", "bad", "", "")`
+  with `$window` = the interval (the derived expression is `SloRule.expr`, shown in `/api/v1/rules`
+  as the rule's `query`). Each series' bucket goes into a **fine ring** (the longest alert window
+  in interval buckets: 4,320 at 1 minute) and a **coarse ring** (the compliance window in about
+  720 buckets: one hour for 30 days). Window sums are taken backwards from the current bucket in a
+  fixed order, whole blocks of 60 buckets from a cache, so equal buckets give equal sums however
+  they arrived; `evaluateWindows` from `anomaly/` judges each alert (both windows strictly above,
+  `min_events`), a window with less than `min_coverage` of its buckets does not count (the rule
+  is `warming` and says which window), and every series with state is judged every tick, a
+  missing bucket as missing.
+- **Alerts**: one per series and severity (`severity="page"`, `severity="ticket"`), firing while any
+  alert of that severity holds; its value is the burn rate; its `slo` annotation the sentence,
+  its `slo_detail` annotation the numbers (`SloDetail`, format `annotation.slo-detail` v1), and
+  the sentence is the `description` when the author wrote none. The sentence is the library's
+  (`explainRule`) followed by the budget left over the compliance window, how much history that
+  covers, and how long it lasts at the long window's rate:
+  `error budget burning at 16.7× over 1 hour and 200× over 5 minutes (page threshold 14.4×); 2.31%
+  of the 30 days budget for a 99.9% objective was spent in the last 1 hour; 97.7% of the budget is
+  left over the last 30 days, spent in 1.76 days at this rate` (from `slo.test.ts`). With less
+  history: `… over the 4 minutes on record (the window is 1 day)`; overspent: `the budget is spent
+  … (-2470% left)`. `for`, `keep_firing_for`, no-data policies (the SLI returning no series), alert
+  state, the hand-off and the notifier are the alerting rule's, unchanged.
+- **State** (`Ruler` migration 3, table `slo_state`): per rule a head row (slot counters, the earliest
+  bucket on record, each series' labels and last outcome, so a replayed tick reproduces its alerts)
+  and blocks of 60 fine / 24 coarse buckets for all of its series, format `store.slo-state` v1. A
+  tick writes the head and the current block of each ring (**three rows**, measured; a fourth when a
+  block leaves a ring and is deleted), in the transaction that commits the tick's alerts; memory is
+  a working copy adopted after the commit, rebuilt from these rows in the constructor. Rows a newer
+  release wrote are refused (`state_unreadable`), kept, and carried by a shard move; a move carries
+  the rings and the warm-up status (`GroupBundle.sloState`, `.warmup`). Bounds, each an explicit
+  refusal that changes nothing: `series_cap_exceeded`, `invalid_result`; the per-object state budget
+  (part 8) counts SLO rules too (about 150 KB estimated per series at 1 minute).
+
+### 11. Warming new anomaly and SLO rules from history (contract version 4)
+
+A new anomaly or SLO rule (a new rule key) gets a warm-up job (table `warmup`, one row per rule,
+format `store.warmup` v1) in the save's transaction. At its group's first tick, before the batch:
+
+1. **The reads**: an anomaly rule's detector look-back at the interval (`max(minPoints,
+   lookbackMs / interval)` points ending one interval before the tick: 20 for EWMA with half-life 10,
+   1,440 for robust z over a day); an SLO rule's fine ring (from the start of the coarse bucket its
+   window begins in) and the rest of the compliance window as coarse buckets, each with `$window` at
+   its own width. A detector without history (the threshold) is `not_needed`.
+2. **The cost, first**: every read, cut into pieces of at most 11,000 steps, is planned with
+   viz-query's `/api/v1/plan` (`start`, `end`, `step`; one ledger read, nothing fetched). Over
+   `RulerLimits.maxWarmupScanSamples` (3,000,000) or `maxWarmupBytes` (16 MiB) summed, or when any
+   plan carries the engine's own refusal, the warm-up is **refused whole**: nothing is fetched, the
+   rule starts cold, and its status says why with the plan's numbers and the budget. A plan without
+   the numbers is refused too (the cost could not be checked).
+3. **The fetch and the feed**: the reads are fetched whole and fed, in time order, through the
+   rule's own evaluation (`evalAnomaly` / `evalSlo`, the functions a tick calls), so the state is
+   what it would hold had the rule run all along; a result over `max_series` or a state over the
+   limits refuses the warm-up the same way.
+4. **The commit**: the state rows (whole batches: one `anomaly_state` row for three EWMA series; a
+   head, ~73 fine and ~30 coarse blocks for an SLO) and the status in **one transaction**; then the
+   rule is evaluated at this tick as usual.
+
+An engine failure leaves the job `pending` (attempt counted) and the rule **waits this tick out**,
+saying so (`warming: the engine failed the read (…); tried again at the next tick`); after three
+attempts it is `failed` and the rule starts cold. A crash inside the commit writes nothing and the
+retried alarm warms again to the same state; a finished warm-up is never read again (not after an
+eviction, not after a move). The status is `RuleStatus.anomaly.warmup` / `.slo.warmup`
+(`WarmupStatus`: status, reads, plan, budget, points, attempts, message), in `/api/v1/rules`'s
+object form and in the monitor views; a pending warm-up shows the rule as `warming`. Both budgets
+are `RulerLimits` (`configure` changes them). Rules saved before this release, and rules carried
+over a save with their state, are not warmed.
+
+### 12. Backtests of threshold, anomaly and SLO rules
+
+`Ruler.backtest` and `POST /api/v1/monitors/backtest` take an alerting entry, an anomaly entry or
+an SLO entry (or a monitor document of any kind); **`POST /api/v1/monitors/{id}/backtest`** (new,
+`monitors:read`) takes a saved monitor as stored, at its group's interval. Every read is planned
+first, as in part 11, against `RulerLimits.maxBacktestScanSamples` (20,000,000) and
+`maxBacktestBytes` (128 MiB): past them the answer is `over_budget` (HTTP 422 `over_budget` with
+`plan` and `budget`) and nothing is fetched; an engine failure is `failed` (502).
+
+- **Alerting rules** as before (part 4), now planned first.
+- **Anomaly and SLO rules** run at their interval (a step other than the interval is refused: a
+  detector's step is the interval). One read covers the warm-up part and the range (`[from −
+  look-back, to]`; an SLO adds its coarse read); the warm-up part is fed exactly as a warm-up at
+  `fromMs` would feed it (no alerts), then every step from `fromMs` goes through `evalAnomaly` /
+  `evalSlo` and `evalAlertingRule`, in time order: no second implementation.
+- **The result** is part 4's, plus `kind`, `warmup` (the reads before `fromMs` and the points fed),
+  `cost` (the plan's sums and the budget), and on each interval the `annotations` its alert carried
+  when it entered the state: for an anomaly or SLO alert, the explanation it would have been sent
+  with.
+- **Live equivalence** (tested): for a rule that ran live from its creation, a backtest from the
+  creation tick over the same data gives the same intervals (start, end, state) with the same
+  annotations, for an EWMA rule with `for` and a templated summary, and for an SLO rule that paged
+  and ticketed. A backtest that starts at another time can differ in the budget figure's last
+  digits (its older coarse buckets come from a coarse read rather than sums of fine ones).
+
 ### Versioned storage and formats (`contracts/COMPATIBILITY.md`)
 
 - **Storage.** `Ruler`, `Notifier` and `RulerIndex` open SQLite in the constructor, inside
@@ -448,6 +590,14 @@ the query path; one service key was issued for the whole run (no rotation).
   keys, alert fingerprints, `hash64`), the notification idempotency key, the registry
   partition and group placement, the webhook body with its `X-Viz-Signature`, and the rule-file
   export. A change to any of them is caught by a golden test (mutants 57–59).
+- **SLO rules and warm-ups** add, additively: `Ruler` migration 3 (tables `slo_state` and `warmup`,
+  `readableFrom` 1: `compat` stays 1, so releases knowing migrations 1 or 1–2 can open it and stay
+  rollback targets; golden `test/golden/schema/ruler.v3.json`; storage at version 1 or 2 with data
+  upgrades without a row changing, `compat.test.ts`), the optional `sloRules` field of a stored
+  group (absent when none), and four formats: `store.slo-rule`, `store.slo-state`, `store.warmup`
+  and `annotation.slo-detail`, each v1 with a golden file. During a rollback to a release without
+  them, SLO rules are not evaluated and their rows wait; an anomaly rule a rolled-back release
+  evaluated is warmed when this release returns only if its job was still pending.
 - **Anomaly rules** add, additively: `Ruler` migration 2 (the table `anomaly_state`,
   `readableFrom` 1: `compat` stays 1, so the previous release can open the storage and stays a
   rollback target; golden `test/golden/schema/ruler.v2.json`; storage at version 1 with data
@@ -511,14 +661,27 @@ data names the tenant.
 - **A background reconciler for interrupted shard moves**: the next write finishes them.
   Shard count never shrinks; there is no merge of under-used shards.
 - **`ALERTS` / `ALERTS_FOR_STATE`** are defined (`syntheticSeries`) but not written;
-  **staleness markers**; **LogQL / TraceQL rules**, SLO rules.
-- **Anomaly rules (part 8):** warming from history (a new rule, or one whose state was reset,
-  warms live for the detector's `minPoints` evaluations; the ruler's `RangeEvaluator` could read
-  the look-back at a cold start, not done); burn-rate SLO rules (to compile to recording rules)
-  and the cross-series detector; STL refits and PELT as scheduled jobs; backtesting an anomaly
-  monitor (`POST /monitors/backtest` takes threshold monitors only); a placement that knows the
-  per-object state budget (a save over it is refused, not moved to another shard); state written
-  less often than every tick (each tick costs at least one row per rule, measured below).
+  **staleness markers**; **LogQL / TraceQL rules** (and so LogQL / TraceQL SLIs).
+- **Anomaly rules (part 8):** the cross-series detector; STL refits and PELT as scheduled jobs; a
+  placement that knows the per-object state budget (a save over it is refused, not moved to
+  another shard); state written less often than every tick (each tick costs at least one row per
+  rule, measured below).
+- **SLO rules (part 10):** OpenSLO or Sloth file import; a Prometheus export of an SLO rule (with
+  `?extensions=false` it is left out whole and listed; Sloth-style recording and alerting rules
+  could be generated from it); a latency SLO written as a histogram threshold (the author writes
+  the bucket counts as good and total); the burn rates or the remaining budget as series (nothing
+  is recorded; the budget is in the alert, `slo_detail` and the rule's status only); a label naming
+  the window that burned (it is in the annotations); the budget figure's far edge moves one coarse
+  bucket (an hour for 30 days) at a time; rings for intervals finer than 100,000 buckets in the
+  longest window (refused at save).
+- **Warm-ups (part 11):** a warm-up that was refused or failed is not tried again later (the rule
+  warms live); the cost is asked at the first tick, not at save (the save answers the class of the
+  read, not its planned cost); the plan does not count the shards' tail; a warm-up runs inside its
+  group's tick, so that tick's batch waits for it (one engine call at a time per object), and big
+  warm-ups are not spread over several ticks.
+- **Backtests (part 12):** anomaly and SLO rules at a step other than their interval; recording
+  rules; a CPU budget (only the plan's samples and bytes are bounded: see the measured cost of a
+  7-day backtest below); asynchronous backtests (the request holds the object for its duration).
 - **Notifier:** mute / active time intervals, notification templates, receivers other than
   webhook and Slack, `/api/v2/alerts` ingestion, editing a silence, updating a Slack message.
 - **Metrics about itself** (`viz_rule_evaluations_total`…): `health()` only.
@@ -563,6 +726,8 @@ in the module cache here, plus one fetched from the Go proxy for `go mod tidy`).
 | `compat.test.ts` | 16 | versioned storage: schema goldens per class and version; the pre-versioning dump adopted; refusal and its effects; newer readable storage; version 1 storage with data upgraded to 2; the previous release still a rollback target |
 | `golden.test.ts` | 4 | golden formats, including the stored anomaly rule and key, its state rows and the `anomaly_detail` annotation |
 | `wiring.test.ts` | 13 | part 9, against fake query and ingest services behind real service bindings (edge's real `authenticate`, tenant from the key) and control's real `Tenant`: every tick's queries carry the shard's one service key and the tick time; two tenants in one isolate each read only their own data with their own key; a key a person disabled: `unauthorized` within the propagation grace with nothing asked of control, then "disabled" with no new key, then after enabling a new key and the rule `ok` again (two `key.service` audit entries); one engine call in flight with four groups due at once (12 queries); `/api/v1/plan` refuses a parse error with its message and a 503 does not block the save; recording rules through Remote Write decoded with edge's snappy decoder (labels, `+Inf`, tick time); backtests through `query_range`; `/healthz`; notifications to control's destination: the plain JSON body's content and signature, no URL, secret or key in it; the Alertmanager form through a route naming `viz:default`, `viz:default` refused as a tenant receiver, and a URL change in control followed after the refresh; 500, a dropped connection, then 200: three attempts, one key, identical bytes, and no secret in any API answer, outbox, health or console output; a stored delivery error with the URL cut out; two tenants' alerts each at their own destination, each signed with its own secret |
+| `slo.test.ts` | 20 | part 10: detection within one bucket of the SRE Workbook's formula for 100% to 0.1% error ratios (never where it says never), the library's table (1, 9, 44 and 217 minutes; 865 and 2,161), agreement with the library's own `burnRate.detect` at every point of 7,320 buckets (sentence included), the strict threshold with exactly representable numbers, coverage; the sentence and every number of `slo_detail` against an independent computation; in the object: one query per tick in the batch, page at the first bad minute and ticket at the fifth routed by severity, the page resolving 30 minutes after the outage; three rows a steady tick; evictions and replayed ticks, and a crash in the commit, giving exactly the state of a pure reference run; refusals (series cap, unpaired parts, a newer release's rows) changing nothing; a shard move; another tenant's rows neither loaded nor touched; validation with paths, fixes and warnings |
+| `history.test.ts` | 10 | parts 11 and 12: an anomaly warm-up reads exactly the look-back and leaves the library's state; over budget (and through the monitors API), an engine refusal, engine failures retried then given up, a crash in the warm-up's commit; an SLO warm-up's two reads planned before either is fetched; backtests equal to live alerts with their annotations (anomaly and SLO); every kind refused whole past the budget; the monitors API routes, 422 `over_budget`, and tenant isolation of `POST /monitors/{id}/backtest` |
 | `anomaly.test.ts` | 22 | part 8: alert content against the library run on its own; NaN and pruning; the series cap, state limits per series, rule and object, rows per tick; state across evictions, a replayed tick, a crash in the commit, a newer release's rows and detector names, another tenant's rows; edits, intervals, rule files, `/api/v1/rules`; the monitors API: defaults, errors and warnings, the detectors guide, authorisation, tenant isolation, documented schemas |
 
 The first seven files held the 123 tests that existed before this task; all still pass.
@@ -937,6 +1102,20 @@ Outside `ruler/`; not made here.
    until edge gets the same kind of entrypoint for recorded samples (`SINK.write(tenant, batches)`).
 2. **edge: an RPC entrypoint for recorded samples** (`SINK.write(tenant, batches)`), the same
    way, so the ruler needs no stored key at all.
+3. **mcp/: a `backtest_monitor` tool** (not made: mcp/ is not this component's). `MonitorsClient`
+   (`mcp/src/clients.ts`) gains `backtest(id, { fromMs, toMs, step? })` →
+   `POST /api/v1/monitors/{id}/backtest` and `backtestDraft(monitor, { fromMs, toMs, step })` →
+   `POST /api/v1/monitors/backtest`; the tool (`mcp/src/tools/misc.ts`, scope `monitors:read`,
+   beside `list_monitors` / `get_monitor`) takes `id` (or a draft monitor), `from`, `to` and an
+   optional `step`, and answers each interval as one line (state, start, end, the `anomaly` or `slo`
+   sentence), the summary, and `cost` against `budget`. A 422 `over_budget` becomes a tool error
+   `over-budget` quoting the plan's samples and bytes and the budget, with the fix "shorten the
+   range"; nothing is fetched. A warm-up's status needs no tool: `get_monitor` already returns the
+   monitor view, which carries `anomaly.status.warmup` / `slo.status.warmup` once its subset type
+   (`MonitorView` in `clients.ts`) lists them.
+4. **query/: the plan of a range read could estimate the shards' tail** (`/api/v1/plan` reads the
+   ledger only, so warm-up and backtest budgets miss up to the hot window's samples per series),
+   and could take several queries at once (an SLO's two reads are two plan requests now).
 
 ## Contract issues
 
@@ -993,6 +1172,21 @@ declaration ADDED, CHANGED or EXTENDED, so the diff to apply is that file.
     `MonitorState` `warming`, `GroupBundle.anomalyState`) are in `rules.v2.ts`.
 15. **`RuleCost` has one class**; an anomaly rule's is the larger of its expression's and its
     detector's tick class, and the cold-start class is only in `AnomalyHistory` (shown at save).
+16. **SLO rules and warm-ups are contract version 4 of `contracts/rules.ts`**, changed before any
+    component code (AGENTS.md, contracts first): `RuleGroupInput.rules` may hold an `SloRuleInput`;
+    `RuleGroup.sloRules`; `SloRule` / `SloSpec` / `SloSli` / `SloBurnAlert` / `SloHistory` /
+    `SloDetail` / `SloRuleStatus`; `SLO_PART_LABEL`, `SLO_ANNOTATION`, `SLO_DETAIL_ANNOTATION`;
+    `WarmupStatus` on `AnomalyRuleStatus` and `SloRuleStatus`; the enum value `'slo'` in
+    `RuleStatus.kind` and `SavedRule.kind` (callers fail closed on a kind they do not know);
+    `SavedRule.slo`; five optional `RulerLimits` (`maxSloSeriesPerRule`, `maxWarmup*`,
+    `maxBacktest*`). `contracts-proposal/rules.ts` is the copy (identical apart from import paths,
+    checked with `diff`). Whoever commits should put the `contracts/rules.ts` hunk in its own commit,
+    first. The ruler's own additions are in `rules.v2.ts`, marked "with contract version 4":
+    `HistoryPlan` / `HistoryPlanner`, `SloRuleInputV2` / `SloRuleV2`, `RuleSnapshot.slo`,
+    `GroupBundle.sloState` / `.warmup`, `BacktestInterval.annotations`, `BacktestResult.kind` /
+    `.warmup` / `.cost`, the `over_budget` answer, `MonitorInput.slo`, `MonitorSloView`.
+17. **`EVALUATOR.plan(tenant, promql, start, end, step)`** is what the ruler would call on an RPC
+    engine binding (`RulerEnv`); viz-query's HTTP `/api/v1/plan` stands in for it.
 13. **Design text to update** (not done: outside `ruler/`): DESIGN §7 should say
     "one batch per group per tick, split only before a rule reading a series recorded
     earlier in the same tick", name the `RulerIndex` registry as the sweeper's source,
@@ -1022,6 +1216,23 @@ declaration ADDED, CHANGED or EXTENDED, so the diff to apply is that file.
   Their state rows wait untouched. A threshold monitor edited during the rollback into a group
   holding anomaly rules would drop them on save; default groups keep the two kinds apart, an
   explicit `group` does not.
+- **SLO state is written every tick**: three rows per SLO rule (head and two blocks), 129,600 a
+  month for a 1-minute rule, about $0.13 at $1 per million rows (modelled from the measured row
+  count). One row would do (the current blocks inside the head, completed blocks written once):
+  not done.
+- **The SLI must read one bucket.** `$window` is required, but nothing checks that the expression
+  around it is a counter's increase or rate; a gauge in the SLI gives buckets that mean nothing.
+  The interval must be at least about twice the scrape interval, or `increase(x[$window])`
+  extrapolates from too few samples (Prometheus' usual caveat).
+- **Coverage gates alerting.** With `min_coverage` 0.9, an SLI that returns no series for quiet
+  periods (no requests at all) leaves its windows uncovered, and the rule does not alert until 90%
+  of a window has data again; a rule that could not be warmed (over budget) cannot ticket for
+  most of three days.
+- **A warm-up holds its group's tick** (and, through the one-call gate, every engine call of the
+  object) while it reads; a rule whose history is large but within the budget delays the first
+  evaluation of the group's other rules by the read's duration (not measured on Cloudflare).
+- **Backtests run in the request.** A 7-day SLO backtest over 100 series costs seconds of CPU in
+  the object (measured below); the budget bounds what is read, not the CPU.
 - **Anomaly state is written every tick**: at least one row per anomaly rule per tick (43,200 a
   month for a 1-minute rule, about $0.04 at $1 per million rows, modelled), more for large
   states (6 rows a tick for 100 daily seasonal series). A rule whose state changes every tick

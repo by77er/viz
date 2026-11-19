@@ -9,7 +9,7 @@ One trace's spans: where one request's time went, what ran side by side and what
 - **A span's own target**: the name is a button over its whole cell. It makes the row the one whose detail is shown (`aria-selected`: `rule` fill, `ink` edge on the key; Table) and shows the span's facts under the table as a `vz-kv`, with its standalone links ("Logs from this span"). The toggle sits above it and is its own target.
 - **Keyboard**: the tree is one tab stop. Up and Down move between visible spans, Home and End to the ends, Right opens a span or goes into it, Left closes it or goes to its parent, Enter or Space shows its detail. The focus ring is round the whole row.
 - **Touch**: rows are `control-touch` tall (they hold controls), the toggle is `control-touch` square, so the toggle and the name never share a hit area.
-- **Narrow**: `data-fold`. The span and "Took" stay as columns, the bar takes its own line under them, and "Own" and "Starts at" fold under it with their labels.
+- **Narrow**: `data-fold="wide"` (its five columns do not fit 640 px; with `data-fold` it scrolled at 200% zoom and in a split column at 1500 px). The span and "Took" stay as columns, the bar takes its own line under them, and "Own" and "Starts at" fold under it with their labels.
 - **States**: loading and stale as Panel; error: `vz-empty` with the critical mark in the table's place, saying which part is missing ("The list of slow traces is complete; only this trace's spans are missing"); a trace still being written says how many spans have arrived in the caption.
 - **Text form**: the panel's sentence (where the time went), then one line per span drawn in `ink` with its start, length and own time, then the failures.
 

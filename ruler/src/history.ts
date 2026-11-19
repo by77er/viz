@@ -257,7 +257,11 @@ export function seedSlo(rule: SloRuleV2, intervalMs: number, fine: Read, coarse:
       for (const [key, b] of pairs.buckets) {
         let s = rt.series.get(key)
         if (!s) rt.series.set(key, (s = freshSeries(rule, intervalMs, b.labels)))
-        if (b.bad === b.bad) s.coarse.add(k, b.bad, b.tot)
+        if (b.bad === b.bad) {
+          s.coarse.add(k, b.bad, b.tot)
+          // The earliest bucket with data on record starts one coarse width before its step.
+          rt.firstTs ??= ts - coarse.stepMs
+        }
         s.seenAt = ts
       }
     }

@@ -329,9 +329,9 @@ first; "stopped" = every state reachable in at most that many steps was checked)
   (`D30_teeth_read_first`, 25 steps, no rebuild needed: the sweep reads the ledger before an
   input is admitted, the input is then admitted, compacted, the removal logged and purged; the
   listing taken afterwards shows the input absent, and the stale read says the output is not
-  live: a live output is deleted). `janitor.ts` lists first, and its comment says why. The live test is not: with "absent from the listing" alone the
-  rule still holds (`D30_teeth_absent_only`), because an object is deleted only once its key
-  can never be live; `janitor.ts` keeps both, which costs nothing.
+  live: a live output is deleted). `janitor.ts` lists first, and its comment says why. The live test is not: with "absent from the listing" alone no
+  state reachable in 31 steps violates anything (`D30_teeth_absent_only`, 6 million states),
+  because an object is deleted only once its key can never be live; `janitor.ts` keeps both, which costs nothing.
 - **Leaks (I11's no-leak half):** see `LEAK_*` in 2c and the finding **F16**.
 
 **The segment log as built** (`LEDGER-LOG.md`, `ledger.ts` `startIncarnation`): the start is

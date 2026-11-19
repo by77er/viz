@@ -914,6 +914,19 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
   }
 
   /**
+   * Whether a rule has state a warm-up must not replace: series it has scored, or rows a newer
+   * release wrote that this one cannot read (kept as they are, never started cold over).
+   */
+  private hasState(g: GroupRt, r: AnomalyRule | SloRule): boolean {
+    if (r.kind === 'anomaly') {
+      const rt = g.anomaly.get(r.key)
+      return rt !== undefined && (rt.series.size > 0 || rt.rawRows !== null)
+    }
+    const rt = g.slo.get(r.key)
+    return rt !== undefined && (rt.lastTs !== null || rt.rawRows !== null)
+  }
+
+  /**
    * Inside a transaction: one SLO tick's rows. The head and the current block of each ring are
    * replaced; blocks that left the rings are deleted (3 rows written a tick, plus a delete when a
    * block leaves). `rt.stateBytes` is kept as the sum of the rule's row bytes.
@@ -956,6 +969,14 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     for (const rule of stateRules(g.spec)) {
       const job = g.warmup.get(rule.key)
       if (!job || job.status !== 'pending') continue
+      const base0: WarmupStatus = { ...job, attempts: job.attempts }
+      const unreadable = rule.kind === 'anomaly' ? g.anomaly.get(rule.key)?.unreadable : g.slo.get(rule.key)?.unreadable
+      if (unreadable) {
+        // State a newer release wrote is kept as it is, never replaced by a warm-up.
+        this.ctx.storage.transactionSync(() => this.putWarmup(g.spec.name, rule.key, { ...base0, status: 'refused', message: `the stored state is a newer release's (${unreadable}); it is kept and not warmed over`, finishedAt: this.now() }))
+        g.warmup.set(rule.key, { ...base0, status: 'refused', message: `the stored state is a newer release's (${unreadable}); it is kept and not warmed over`, finishedAt: this.now() })
+        continue
+      }
       let reads: Read[]
       let slo: ReturnType<typeof sloWarmReads> | null = null
       if (rule.kind === 'anomaly') reads = anomalyWarmReads(rule, I, endTs)
@@ -1343,7 +1364,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
         // A new anomaly or SLO rule (no state carried over) is warmed from history before its first
         // evaluation: a pending job, one row, run by the next tick (contract version 4).
         for (const r of stateRules(spec)) {
-          if (g.warmup.has(r.key) || (r.kind === 'anomaly' ? g.anomaly.get(r.key)?.series.size : g.slo.get(r.key)?.lastTs !== null && g.slo.get(r.key)?.lastTs !== undefined)) continue
+          if (g.warmup.has(r.key) || this.hasState(g, r)) continue
           const w = warmupStatus([], historyBudgets(this.cfg.limits).warmup)
           this.putWarmup(spec.name, r.key, w)
           g.warmup.set(r.key, w)
@@ -1728,8 +1749,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       this.exec(`DELETE FROM warmup WHERE tenant = ? AND grp = ?`, t, spec.name)
       for (const r of stateRules(spec as RuleGroup)) {
         const carried = bundle.warmup?.[r.key]
-        const hasState = r.kind === 'anomaly' ? (g.anomaly.get(r.key)?.series.size ?? 0) > 0 || g.anomaly.get(r.key)?.rawRows !== null : g.slo.get(r.key)?.lastTs !== null || g.slo.get(r.key)?.rawRows !== null
-        const w = carried ?? (hasState ? null : warmupStatus([], historyBudgets(this.cfg.limits).warmup))
+        const w = carried ?? (this.hasState(g, r) ? null : warmupStatus([], historyBudgets(this.cfg.limits).warmup))
         if (!w) continue
         this.putWarmup(spec.name, r.key, w)
         g.warmup.set(r.key, w)
