@@ -1,6 +1,6 @@
 {
- "about": "",
- "tempo": "",
+ "about": "Subject strings, regex patterns and the answers Grafana Tempo gave when run as a black box (tools/probes/regex_dialect.py --record: each pattern in four query forms, plain =~, !~, structural and pruned search, which all agreed). Read by tests/regex_dialect.rs. Answers only, no Tempo code (CLEANROOM.md).",
+ "tempo": "v3.1.1",
  "subjects": [
   "",
   "abc",
