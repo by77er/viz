@@ -497,7 +497,8 @@ None of these were made here; 4 was made since, in control/ and the gateway.
 4. **`control/`: no health route.** Done: control serves `GET /healthz` without a credential,
    as ingest and query do (200 `ok` when the Worker runs with its `TENANT` and `CONFIG`
    bindings, 503 naming a missing one; it asks no Durable Object or KV), and the gateway
-   probes it instead of `/api/v1/control/openapi.json`.
+   probes it instead of `/api/v1/control/openapi.json`; `workers.json` records it as
+   viz-control's health path (a test holds the two equal).
 5. **`query/wrangler.jsonc` names the write path `viz-edge` and `viz-flush`**, Workers that
    no longer exist as such; the deploy maps both (and `viz-stack`) to viz-ingest through
    `script_aliases`. Wanted: `viz-ingest` in the component config.
