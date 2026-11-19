@@ -516,6 +516,25 @@ Stack needed at depth 100, measured with `examples/stack_probe.rs` and
 
 ### 6. Mutation check
 
+**Series-level pruning and the series-only read (2026-11-19, mutants 42 to 51, on a scratch
+copy, with `--test pruning`; 04:29 to 04:52 UTC, load average 8 to 10): 10 of 10 killed**, the
+shared tree's files unchanged. A part's plan keeping the other parts' series
+(`a_part_reads_its_key_range`, `the_sample_plan_never_changes_a_result`); a series carrying a
+`without` label placed by its id, not its key (`the_sample_plan…`, through the relabelled
+queries added for it); a read without a name keeping a row group only if it may hold every
+wanted name (`one_series_of_a_large_file…`, `the_sample_plan…`; its pattern had gone stale
+after a change to `sample_plan` and was fixed before this run); `part_sids`' upper end running
+into the next part (`part_sids_are_the_parts_key_range`, `the_sample_plan…`); a part's id-range
+plan reading the next part's range (`the_sample_plan…`); the carrier's rows inside a read's
+range (`the_sample_plan…`); a file's row in the window one millisecond late
+(`the_label_calls_never_open_a_sample_file`); the tail not read
+(`label_calls_list_exactly_the_series_in_the_window_per_file`); `max_series` not firing in the
+series-only read (`the_label_calls_never_open…`). **One survived the first run**: a tail row
+exactly at the window's start left out (`t > min_ts`); the property's windows rarely start on a
+tail sample. `the_window_is_inclusive_at_both_ends_in_files_and_in_the_tail` was added, and kills
+it. The storage side (the predicate, the index writer, partial reads) is in
+`engine/storage/README.md` (18 of 18) and the Worker side in `query/README.md`.
+
 `python3 tools/mutants.py` applies one source change at a time, runs the suite (property
 tests at 8 cases, corpus left out, `-j 2`, two test threads), restores the file, and
 reports the failing tests. **Since 2026-11-19 it works on a scratch copy**: it copies

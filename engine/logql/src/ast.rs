@@ -127,6 +127,16 @@ pub enum NameOrMatcher {
     Matcher(Matcher),
 }
 
+impl LabelFilter {
+    /// Height of the filter tree (a predicate is 1); kept at most `MAX_DEPTH` by the parser.
+    pub fn height(&self) -> usize {
+        match self {
+            LabelFilter::And(a, b) | LabelFilter::Or(a, b) => 1 + a.height().max(b.height()),
+            _ => 1,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stage {
     LineFilter(LineFilter),
@@ -142,6 +152,16 @@ pub enum Stage {
     Decolorize,
     Drop(Vec<NameOrMatcher>),
     Keep(Vec<NameOrMatcher>),
+}
+
+impl Stage {
+    /// Height of the stage's tree (label filters nest; other stages are flat).
+    pub fn height(&self) -> usize {
+        match self {
+            Stage::LabelFilter(f) => f.height(),
+            _ => 1,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -385,6 +405,18 @@ pub enum MetricExpr {
 }
 
 impl MetricExpr {
+    /// Height of the tree (a leaf is 1). The parser keeps it at most `MAX_DEPTH`, which bounds
+    /// every recursion over a parsed query; computing it recurses only over children already
+    /// checked.
+    pub fn height(&self) -> usize {
+        match self {
+            MetricExpr::Range { range, .. } => 1 + range.log.stages.iter().map(Stage::height).max().unwrap_or(0),
+            MetricExpr::Literal(_) | MetricExpr::VectorLit(_) => 1,
+            MetricExpr::Vector { inner, .. } | MetricExpr::LabelReplace { inner, .. } => 1 + inner.height(),
+            MetricExpr::Binary { lhs, rhs, .. } => 1 + lhs.height().max(rhs.height()),
+        }
+    }
+
     /// True when the expression is a scalar (literals and arithmetic between them).
     pub fn is_scalar(&self) -> bool {
         match self {

@@ -729,8 +729,23 @@ the dry-run probe that `mayApply` replaced).
 | 24 | `validate_query` does not ask the query service for its plan (the estimate is the series count alone) | tools (2) |
 | 25 | `validate_query` drops the refusal the plan foresees | tools (1) |
 | 26 | `/healthz` says ok whatever is bound | tools (1) |
+| 27 | OAuth: token passthrough (downstream calls carry the client's access token, not the grant's key) | oauth (3) |
+| 28 | OAuth: audience not this resource (introspection asked about a fixed resource, whatever this server is configured as) | oauth (1) |
+| 29 | OAuth: the JSON agent API accepts access tokens (audience widened) | oauth (1) |
+| 30 | OAuth: no 403 `insufficient_scope` (step-up never signalled) | oauth (2) |
+| 31 | OAuth: the 401 challenge does not name the protected resource metadata | oauth (1) |
+| 32 | OAuth: the tenant object asked is the one a request header names, not the token's | oauth (1) |
+| 33 | OAuth: protected resource metadata names no authorization server | oauth (1) |
 
-24–26 (this change) were run on 2026-11-19 in a scratch copy (`node scripts/mutants.mjs 24 25 26`, the
+27–33 (OAuth, D44) were run on 2026-11-19 in a scratch copy outside git
+(`node scripts/mutants.mjs 1 26 27 28 29 30 31 32 33`), taken after its suite passed 191 of 191:
+**9 of 9 killed**, 1 and 26 included because this change moved the text they replace (their
+anchors were updated to the new code, same mutation). 2–25 were not re-run in this change; the
+OAuth branch does not touch what they mutate. The control plane's side of the OAuth threats
+(scopes, PKCE, code and refresh reuse, redirect URIs, expiry, revocation, audience, secrets) is
+mutated in control/README.md, mutants 66–93.
+
+24–26 (an earlier change) were run on 2026-11-19 in a scratch copy (`node scripts/mutants.mjs 24 25 26`, the
 script now runs vitest with at most 2 workers), taken after the suite passed 182 of 182: **3 of
 3 killed**. 1–23 were not re-run in this change.
 

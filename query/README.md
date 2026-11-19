@@ -629,6 +629,14 @@ run against the Worker**, and no response was compared with a running Prometheus
 
 ### Mutation check
 
+**Series-level pruning and the series-only read (2026-11-19, mutants 44 to 46, on a scratch
+tree, 04:51 to 05:10 UTC, load average 9 to 13): 3 of 3 killed**, the shared tree's files
+unchanged: a split reader that never reads again what its id-range read did not cover (by
+`pruning.test.ts`, the relabelled split; the mutant's first form did not type-check and was
+rewritten), a range read put back one byte off (the one-series test), and the label endpoints
+bounded by the query's `maxSeries` instead of `maxMetadataSeries` (the label-calls test). The
+engine's and storage's mutants for this change are in their READMEs (10 of 10, 18 of 18).
+
 `node tools/mutants.mjs` applies one change to the source, runs the whole suite,
 restores the source, and prints the failing tests. It first confirms that every mutant
 applies and runs the unmutated suite; a test that fails there (another component

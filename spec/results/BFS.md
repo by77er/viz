@@ -131,9 +131,15 @@ Breadth-first, exhaustive within the bounds of each row; every counterexample is
 
 | experiment | checked | result | distinct states | transitions | depth | time | P(collision) |
 |---|---|---|---|---|---|---|---|
+| `R1_safety` R1 (registration committed before writes): client retries, two flush Workers, 1 compaction, 1 retention removal, ledger loss + shard loss | all safety | **violated** I4_NoGapAtSeam in 15 steps | 855,875 | 3,096,844 | 15 | 47.4 s | 2e-8 |
 | `LIVE_R1_sl` R1 (registration committed before writes): shard loss (1 send per batch) | AG EF done | holds (exhaustive) | 315,394 | 1,211,232 | 36 | 17.3 s | 2.7e-9 |
+| `LIVE_R1_llsl` R1 (registration committed before writes): ledger loss + shard loss (1 send per batch) | AG EF done | holds (exhaustive) | 1,167,703 | 4,702,270 | 40 | 54.3 s | 3.7e-8 |
+| `R2_safety` R2 (registration logged before writes; shard registers on a read naming a lost incarnation): client retries, two flush Workers, 1 compaction, 1 retention removal, ledger loss + shard loss | all safety | stopped: memory bound: stopped at 4,000,002 states; every state reachable in at most 19 steps checked, no violation | 4,000,002 | 18,456,177 | 19 | 159.3 s | 4.3e-7 |
 | `LIVE_R2_sl` R2 (registration logged before writes; shard registers on a read naming a lost incarnation): shard loss (1 send per batch) | AG EF done | holds (exhaustive) | 156,911 | 610,119 | 38 | 7.2 s | 6.7e-10 |
+| `LIVE_R2_llsl` R2 (registration logged before writes; shard registers on a read naming a lost incarnation): ledger loss + shard loss (1 send per batch) | AG EF done | holds (exhaustive) | 667,064 | 2,691,796 | 42 | 24.2 s | 1.2e-8 |
+| `R3_safety` R3 (registration logged before writes; coordinator settles a lost incarnation): client retries, two flush Workers, 1 compaction, 1 retention removal, ledger loss + shard loss | all safety | stopped: memory bound: stopped at 4,000,001 states; every state reachable in at most 20 steps checked, no violation | 4,000,001 | 18,729,141 | 20 | 207.1 s | 4.3e-7 |
 | `LIVE_R3_sl` R3 (registration logged before writes; coordinator settles a lost incarnation): shard loss (1 send per batch) | AG EF done | holds (exhaustive) | 152,052 | 585,970 | 38 | 8.6 s | 6.3e-10 |
+| `LIVE_R3_llsl` R3 (registration logged before writes; coordinator settles a lost incarnation): ledger loss + shard loss (1 send per batch) | AG EF done | holds (exhaustive) | 645,027 | 2,591,053 | 42 | 35.7 s | 1.1e-8 |
 | `LIVE_R2_teeth_no_read_trigger` R2 teeth: nothing registers a fresh incarnation on a read (only a write does): shard loss | AG EF done | **violated** LIVE_QueryCanComplete in 6 steps | 143,799 | 555,373 | 38 | 6.8 s | 5.6e-10 |
 | `LIVE_R3_teeth_no_settle` R3 teeth: the coordinator does not settle a lost incarnation: shard loss | AG EF done | **violated** LIVE_QueryCanComplete in 6 steps | 143,799 | 555,373 | 38 | 6 s | 5.6e-10 |
 | `R_teeth_lost_read_as_empty` R2/R3 teeth: tailRead answers ok/empty to an incarnation it does not hold (no refusal, so no re-plan); shard loss | I4_NoGapAtSeam | **violated** I4_NoGapAtSeam in 15 steps | 95,270 | 345,431 | 15 | 5.5 s | 2.5e-10 |
@@ -1366,6 +1372,28 @@ Violates `W_NoLeakBehindLostFlush`.
 17. compact: read L0(s0 inc1 1..1) + L0(s0 inc1 2..2)
 18. LEDGER STORAGE LOSS -> rebuild from R2, start incarnation 2
 19. compact PUT L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))
+
+### R1_safety
+
+R1 (registration committed before writes): client retries, two flush Workers, 1 compaction, 1 retention removal, ledger loss + shard loss
+
+Violates `I4_NoGapAtSeam`.
+
+1. registerStream(s0, inc 1)
+2. append(b0 -> s0) seq 1
+3. seal(s0, ..1)
+4. flush: pendingSegments(s0) -> inc 1 1..1
+5. flush readSegment(s0 inc 1 1..1)
+6. flush PUT L0(s0 inc1 1..1)
+7. LEDGER STORAGE LOSS -> rebuild from R2, start incarnation 2
+8. ledger start: PUT base segment of incarnation 2
+9. ledger start: commit incarnation 2, serve
+10. query: plan (no files; wm s0:-)
+11. addUnit(s0 inc 1 1..1) admitted (registers the stream)
+12. ledger drain: PUT segment v1..v2
+13. SHARD STORAGE LOSS(s0)
+14. query: tailRead(s0, inc 0, above 0) = ok nothing
+15. query: read files, merge -> nothing
 
 ### LIVE_R2_teeth_no_read_trigger
 

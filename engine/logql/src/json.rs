@@ -4,9 +4,10 @@
 
 use std::borrow::Cow;
 
-/// Maximum nesting depth; deeper documents are reported as invalid instead of risking
-/// the stack.
-const MAX_DEPTH: usize = 256;
+/// Maximum nesting depth of a document read here (`fromJson`); deeper documents are
+/// reported as invalid instead of risking the stack (reading, converting, printing and
+/// dropping the value each recurse once per level; a WASM isolate has a 1 MiB stack).
+pub const MAX_DEPTH: usize = 128;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum JValue<'a> {

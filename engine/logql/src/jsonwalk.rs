@@ -13,7 +13,10 @@ pub const E_UNK: &str = "Unknown value type";
 pub const E_STR: &str = "Value is string, but can't find closing '\"' symbol";
 pub const E_UNPACK: &str = "expecting json object(6), but it is not";
 
-const MAX_DEPTH: usize = 128;
+/// Maximum nesting depth the `json` and `unpack` parsers walk; a deeper document is a
+/// JSONParserErr ("Malformed JSON error") instead of a stack overflow. Same bound as
+/// `json::MAX_DEPTH`.
+const MAX_DEPTH: usize = crate::json::MAX_DEPTH;
 
 struct W<'a> {
     s: &'a str,

@@ -24,7 +24,8 @@ const T = {
   ledger: `npx vitest run ${W} test/ledger.test.ts`,
   segments: `npx vitest run ${W} test/segments.test.ts`,
   tombstone: `npx vitest run ${W} test/tombstone.test.ts`,
-  checkpoint: `npx vitest run ${W} test/checkpoint.test.ts`,
+  // --bail=1: a killed mutant stops at its first failing test (the crash test alone is minutes under load).
+  checkpoint: `npx vitest run ${W} --bail=1 test/checkpoint.test.ts`,
   all: `npx vitest run ${W}`,
 }
 // [name, file, from, to, tests]
@@ -71,7 +72,7 @@ const mutants = [
   ['S-1: the rollback signature is not healed from SQLite', F, "    if (e instanceof LogDiscontinuity && foreign !== '' && !this.needsStart) {", '    if (false) {', T.segments],
   ['S-1: a log fault is not reported as stuck', F, "    this.stuck = `${e.message}${foreign}; operator: repair R2 or call restartFromSqlite()`\n", '', T.segments],
   ['S-1: the outbox may skip versions (the drain does not check it continues the log)', F, '      if (loggedThrough === null || rows[0]!.version !== loggedThrough + 1) {', '      if (loggedThrough === null) {', T.segments],
-  ['S-1: storage of this release is readable by code that knows only version 1', F, "    name: 'the change log in segments (contracts/LEDGER-LOG.md); the state-size estimate in meta',\n    readableFrom: 2,", "    name: 'the change log in segments (contracts/LEDGER-LOG.md); the state-size estimate in meta',\n    readableFrom: 1,", `npx vitest run ${W} test/compat.test.ts`],
+  ['S-1: storage of this release is readable by code that knows only version 1 (migrations 2 and 3 both readable from 1)', F, '    readableFrom: 2,\n    up: (sql) => {\n      sql.exec(`DELETE FROM meta WHERE k = \'state_bytes\'`)\n      sql.exec(`INSERT INTO meta (k, v) SELECT \'state_bytes\', ${ENTRY_BYTES_SQL} FROM file`)\n    },\n  }, {\n    // ADDITIVE (readableFrom 2): two new tables for a checkpoint written in parts across drains\n    // (contracts/LEDGER-LOG.md, "Checkpoints"). A release that knows only version 2 ignores them\n    // and changes files without recording pre-images; `ckpt.tracked` then stops following the\n    // version, and this code abandons that checkpoint instead of writing a wrong one.\n    version: 3,\n    name: \'a checkpoint in parts: its progress (ckpt) and the files changed since its version (ckpt_pre)\',\n    readableFrom: 2,', '    readableFrom: 1,\n    up: (sql) => {\n      sql.exec(`DELETE FROM meta WHERE k = \'state_bytes\'`)\n      sql.exec(`INSERT INTO meta (k, v) SELECT \'state_bytes\', ${ENTRY_BYTES_SQL} FROM file`)\n    },\n  }, {\n    // ADDITIVE (readableFrom 2): two new tables for a checkpoint written in parts across drains\n    // (contracts/LEDGER-LOG.md, "Checkpoints"). A release that knows only version 2 ignores them\n    // and changes files without recording pre-images; `ckpt.tracked` then stops following the\n    // version, and this code abandons that checkpoint instead of writing a wrong one.\n    version: 3,\n    name: \'a checkpoint in parts: its progress (ckpt) and the files changed since its version (ckpt_pre)\',\n    readableFrom: 1,', `npx vitest run ${W} test/compat.test.ts`],
   ['S-2: no limit on the state (addUnit never answers full)', F, '    if (stateBytes + adding > this.stateMaxBytes) {', '    if (false) {', T.segments],
   ['S-2: a checkpoint every N segments whatever the size of the log since the last', F, '      && (!this.checkpointByLogBytes || (this.meta(\'log_bytes_since_ckpt\') ?? 0) + body.length >= (this.meta(\'ckpt_bytes\') ?? 0))) {', ') {', T.segments],
   ['S-2: superseded checkpoints are kept', F, '    await this.deleteSuperseded(inc, c.version, null)\n', '', T.segments],
@@ -80,6 +81,7 @@ const mutants = [
   ['S-7: a drain of a replaced incarnation is applied to the new one', F, '    if (this.meta(\'incarnation\') !== seg.incarnation) return\n', '', T.segments],
   ['S-7: rebuildFromLog does not wait for a drain in flight', F, '    // A drain in flight finishes (or fails) before the storage is judged (review S-7).\n    await this.draining\n', '', T.segments],
   // ── review S-2's full fix: checkpoints in parts, a rebuild that streams (D47) ──
+  ['migration 3 is forward-only (the release before cannot open this storage)', F, '    name: \'a checkpoint in parts: its progress (ckpt) and the files changed since its version (ckpt_pre)\',\n    readableFrom: 2,', '    name: \'a checkpoint in parts: its progress (ckpt) and the files changed since its version (ckpt_pre)\',\n    readableFrom: 3,', `npx vitest run ${W} test/compat.test.ts`],
   // chunk boundaries
   ['parts: a record that does not fit still goes in (a part may pass its budget)', F, '    const fits = (line: string) => lines.length === 0 || size + line.length + 1 <= this.checkpointPartBytes', '    const fits = (_line: string) => true', T.checkpoint],
   ['parts: a key that was not live at the version is written (pre-image "absent" ignored)', F, '        const row = c < 0 ? (a.value as Row) : b.value.absent === 0 ? (b.value as Row) : null', '        const row = c < 0 ? (a.value as Row) : (b.value as Row)', T.checkpoint],

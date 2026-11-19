@@ -22,9 +22,14 @@ pub fn parse(src: &str) -> Result<Expr, Error> {
     Ok(e)
 }
 
-/// Maximum nesting depth of parentheses and sub-expressions; deeper queries are refused
-/// rather than risking the stack.
-const MAX_DEPTH: usize = 200;
+/// Maximum nesting depth of a query: parentheses, aggregations and function calls, plus
+/// the length of a chain of binary operators or of `and`/`or` label filters (each link adds
+/// a level to the syntax tree). The parser, the syntax tree's drop, the translation to
+/// PromQL and viz-promql's evaluator all recurse once per level, and a WASM isolate has a
+/// 1 MiB stack: a deeper query is refused with a parse error instead of overflowing it.
+/// 100 is the bound `engine/query` applies to PromQL (`Limits::max_depth`); `tests/limits.rs`
+/// evaluates queries at the limit natively and `wasm-check/check.mjs` in WASM.
+pub const MAX_DEPTH: usize = 100;
 
 enum Node {
     Log(LogExpr, usize),
@@ -100,10 +105,19 @@ impl<'a> Parser<'a> {
             _ => Err(self.err_here(format!("syntax error: unexpected {}, expecting STRING", self.peek().describe()))),
         }
     }
+    /// Refuse a syntax tree taller than `MAX_DEPTH`: a chain such as `1 + 1 + …` is
+    /// left-deep, so the tree can be taller than the parser's recursion.
+    fn check_height(&self, h: usize, pos: usize) -> Result<(), Error> {
+        if h > MAX_DEPTH {
+            return Err(self.err_at(pos, format!("query nested more than {MAX_DEPTH} levels deep (parentheses, aggregations, operator or label-filter chains)")));
+        }
+        Ok(())
+    }
+
     fn enter(&mut self) -> Result<(), Error> {
         self.depth += 1;
         if self.depth > MAX_DEPTH {
-            return Err(self.err_here(format!("query nested more than {MAX_DEPTH} levels deep")));
+            return Err(self.err_here(format!("query nested more than {MAX_DEPTH} levels deep (parentheses, aggregations, operator or label-filter chains)")));
         }
         Ok(())
     }
@@ -169,7 +183,9 @@ impl<'a> Parser<'a> {
             if op.is_set() && (l.is_scalar() || r.is_scalar()) {
                 return Err(self.err_at(op_pos, format!("syntax error: set operator \"{}\" not allowed in binary scalar expression", op.as_str())));
             }
-            lhs = Node::Metric(MetricExpr::Binary { op, lhs: Box::new(l), rhs: Box::new(r), bool_mod, matching }, lpos);
+            let e = MetricExpr::Binary { op, lhs: Box::new(l), rhs: Box::new(r), bool_mod, matching };
+            self.check_height(e.height(), op_pos)?;
+            lhs = Node::Metric(e, lpos);
         }
         self.depth -= 1;
         Ok(lhs)
@@ -250,7 +266,9 @@ impl<'a> Parser<'a> {
                         self.expect(Tok::RParen)?;
                         crate::goregex::compile_anchored(&regex)
                             .map_err(|e| self.err_at(regex_pos, format!("invalid regex in label_replace: {e}")))?;
-                        Ok(Node::Metric(MetricExpr::LabelReplace { inner: Box::new(inner), dst, replacement, src, regex }, pos))
+                        let e = MetricExpr::LabelReplace { inner: Box::new(inner), dst, replacement, src, regex };
+                        self.check_height(e.height(), pos)?;
+                        Ok(Node::Metric(e, pos))
                     }
                     "approx_topk" => Err(Error::Unsupported("approx_topk (probabilistic aggregation) is not implemented".into())),
                     "variants" => Err(Error::Unsupported("variants(...) of (...) (multi-variant queries) is not implemented".into())),
@@ -346,7 +364,9 @@ impl<'a> Parser<'a> {
         if inner.is_scalar() {
             return Err(self.err_at(pos, format!("syntax error: {} expects a vector, got a scalar", op.name())));
         }
-        Ok(MetricExpr::Vector { op, param, inner: Box::new(inner), grouping })
+        let e = MetricExpr::Vector { op, param, inner: Box::new(inner), grouping };
+        self.check_height(e.height(), pos)?;
+        Ok(e)
     }
 
     fn range_agg(&mut self, op: RangeOp) -> Result<MetricExpr, Error> {
@@ -753,8 +773,11 @@ impl<'a> Parser<'a> {
             } else {
                 break;
             };
+            let pos = self.pos();
             let right = self.label_filter_term()?;
             left = if and { LabelFilter::And(Box::new(left), Box::new(right)) } else { LabelFilter::Or(Box::new(left), Box::new(right)) };
+            // `a and b and …` is left-deep: each link adds a level.
+            self.check_height(left.height(), pos)?;
         }
         self.depth -= 1;
         Ok(left)

@@ -21,7 +21,12 @@ Replacing the MAD with a tail-aware spread (the 99th percentile of |x − median
 (seasonal), above NAB's windowedGaussian (39.6) but well below relativeEntropy (54.6), HTM
 (68.7) and ARTime (73.3). The seasonal baseline earns its place on the anomalies it is built
 for (phase-wrong values: 4 of 4 artificial daily anomalies caught versus 1 of 4 without, and
-nyc_taxi), not on NAB in aggregate.
+nyc_taxi), not on NAB in aggregate. **On a second benchmark the choice had never seen** (SMD,
+28 servers' metrics, every parameter frozen on NAB before the data were fetched) the quantile
+spread **generalised** by a rule fixed in advance: robust z 42.8 and seasonal 35.5, first and
+second as on NAB, above the static threshold (16.4) and EWMA (10.4), event F1 0.441 against
+0.328 and 0.206. EWMA did not: it fell below the static threshold. A proposed amendment to D33
+follows the SMD results; the validated window is over the ruler's state limit today.
 
 ## Files
 
@@ -622,6 +627,70 @@ Event metric (standard configuration, ±15 minutes), the NAB-window view, and th
 
 <!-- SMD-HYPOTHESES -->
 
+- **The quantile spread generalised.** By the rule written before scoring, both variants pass:
+  robust z with the quantile spread scored 42.8 on SMD against 44.8 held out on NAB (first on
+  both), above EWMA by 32.4 [20.7, 48.7] and the threshold by 26.3 [15.6, 35.0], event F1 0.441
+  against 0.206 and 0.328; it led EWMA on 25 of 28 machines and the threshold on 17. The seasonal
+  variant: 35.5 (NAB 41.4), second on both. It is the spread, not a larger k: the MAD with k up
+  to 40 scored −78.7. Without the don't-care rule ("strict") the order is the same (39.5, 31.6,
+  threshold 15.9, EWMA 6.3).
+- **EWMA did not.** 10.4 against NAB's 30.1, below the static threshold in all three profiles
+  (standard −6.0 [−30.9, 10.5], low FP −53.9 [−100.8, −21.9]) and in event F1 (0.206 against
+  0.328, interval excluding 0): 12 % of its alarms are near a labelled segment, about 30 false
+  alarm onsets per machine-day. NAB's EWMA > threshold (H3) was a NAB result. Its frozen
+  parameters were the largest of the grid (half-life 100, k 8), and 100 points is 100 minutes
+  here: the rule is more nervous at 1-minute steps than at 5.
+- **The static threshold held up best where false alarms cost most**: in the low-FP profile
+  only the two quantile variants scored above it, by intervals that include 0 (+7.5 [−8.8,
+  19.7], +5.5 [−11.7, 18.5]); per machine it raised 1.5 unmatched alarm onsets a day (0.5 with
+  the low-FP level, m = 1, at 76 % precision) against 11.5 for the quantile spread. It misses
+  more (event recall 26 % against 62 %).
+- **The MAD spread failed again, worse**: robust z −318.2, seasonal −382.8, below the trivial
+  random detector; CUSUM fell from 15.1 to −147.6 (about 125 false alarm onsets per
+  machine-day).
+- **The trivial random detector** scored −68.0: its frozen rate (0.003 a row) is per row, and an
+  SMD series has four times NAB's rows. <!-- RANDOM-BEATEN -->
+- **Seasonality did not pay in aggregate here either** (35.5 against 42.8 without it, as on
+  NAB), though 478 of 889 series had a daily or weekly period found in their history. Why was
+  not measured (SMD's labels do not say which anomalies are wrong only for their time of day).
+
+### Proposed amendment to D33 (for the ruler's owner; not applied)
+
+`design/DECISIONS.md` and `ruler/` are not changed here. What the evidence above supports:
+
+1. **Non-paging default: robust z with the quantile spread** (99th percentile of |x − median|,
+   k 2, window 4,000 points), severity `ticket`, replacing EWMA. This is D33's own condition
+   ("the quantile spread holds its score on data it has not seen ... then it becomes the
+   default for non-paging rules"), met under a rule fixed in advance.
+   **Blocker in the ruler, today**: `estimateStateBytes` puts robust z at 36 bytes a point, so
+   4,000 points is about 145 KB per series, over `maxAnomalyStateBytesPerSeries` (64 KiB); the
+   save would refuse it. And the ruler rewrites every series' whole state each tick (about
+   14.5 MB a tick at 100 series). Choices for the owner: (a) store the window incrementally
+   (append a point and drop the oldest per tick, blocks of rows) and raise the limit for this
+   detector; (b) a smaller window: 1,000 points (about 37 KB) scored 40.4 on NAB in sample
+   against 46.8, and <!-- POSTHOC-1000 --> on SMD — **post hoc**, chosen after the frozen
+   results, so it is not independently confirmed; (c) the window in time on 5-minute rollups
+   (4,000 points = 14 days, NAB's span), which SMD did not test.
+2. **EWMA stops being a default**; it stays available, warned with both numbers (NAB 30.1, SMD
+   10.4: below a static threshold on SMD in every profile).
+3. **Pages stay on the static threshold** with a level the author gives: it beat EWMA in the
+   low-FP profile on both benchmarks, the quantile spread's low-FP lead over it is not
+   significant on SMD, and it raised about an eighth of the quantile spread's false alarms per
+   machine. (Unchanged from D33.)
+4. **Naming `robust_z` or `seasonal` without a spread gets the quantile spread**; the MAD only on
+   request, with the warning quoting NAB (−105.9 / −76.4) and SMD (−318.2 / −382.8). The
+   seasonal baseline stays opt-in, for values wrong for their time of day (its one strength on
+   NAB; not separately measurable on SMD's labels). Its daily state at a 1-minute interval is
+   about 59 KB a series, near the same limit.
+5. **CUSUM** unchanged (`info`, may not page); its warning should quote SMD's −147.6 next to
+   NAB's 15.1. STL and PELT stay out of rules (<!-- STL-PELT -->).
+6. The guide's numbers in `ruler/src/anomaly.ts` are copied from this README (contract issue 1)
+   and change with this.
+7. D33's "would change if" then becomes: viz's own labelled incidents rank the detectors
+   differently; a third benchmark or viz's data contradicts SMD; or the state cost of a
+   4,000-point window cannot be brought within the ruler's limits (then the next best
+   evidenced choice is the smaller window, at a lower score).
+
 ## Costs (measured here, Node 22.23; CPU time, `bench/cpu.ts`)
 
 | detector | batch, µs CPU per 1,000 points | one tick through JSON state, µs | state, bytes | cold-start history | class per tick / cold start |
@@ -667,9 +736,11 @@ A performance finding on the way: in this V8, `x ** 3` in STL's LOESS weights co
   bundle runs in a bare `node:vm` context with `Date.now`/`Math.random` poisoned. The detectors
   do run in workerd inside the ruler (its tests and `npm run bench:anomaly`), but this package's
   property tests run in Node only.
-- **TSB-AD** or any second benchmark: the quantile-spread result is unconfirmed on data it did
-  not see. NAB's own Python runner was not run end to end (its `sweeper.py` was; its runner
-  needs the old detector stack); the TypeScript port reproduces all 45 published numbers.
+- **A third benchmark** (TSB-AD's non-NAB sets, Exathlon) or viz's own labelled incidents; the
+  SMD event tolerance (15 minutes) and window rule were not varied; the post hoc smaller
+  windows were scored once and are not confirmed elsewhere. NAB's own Python runner was not run
+  end to end (its `sweeper.py` was; its runner needs the old detector stack); the TypeScript
+  port reproduces all 45 published numbers.
 - **STL residuals with the quantile spread**; seasonal baseline with a trend term; an
   automatic per-series choice between MAD and quantile spread.
 - **Burn rate**: no OpenSLO input; no recording-rule generation (Sloth/Pyrra style), by
@@ -678,10 +749,19 @@ A performance finding on the way: in this V8, `x ** 3` in STL's LOESS weights co
 
 ## Risks
 
-- **Fixed-k bands do not transfer across series.** NAB's main lesson here: a k chosen on one
-  set of files floods on heavy-tailed or quantised series. Per-series calibration, a tail-aware
-  spread, `minDeviation`, and onset semantics with `for` are the mitigations; the default spread
-  is still the MAD the design names.
+- **Fixed-k bands do not transfer across series.** NAB's main lesson here, confirmed on SMD: a
+  k chosen on one set of files floods on heavy-tailed or quantised series (the MAD variants
+  scored −318 and −383 on SMD). Per-series calibration, a tail-aware spread, `minDeviation`, and
+  onset semantics with `for` are the mitigations; the library's default spread is still the MAD
+  the design names (changing it is part of the proposed amendment).
+- **Two benchmarks, not viz's data.** SMD is one company's servers (28 machines) and its labels
+  come with the dataset; the don't-care rule and the 15-minute tolerance are single choices.
+  Parameters are in points: the SMD result is for 1-minute steps, NAB's for mostly 5-minute.
+- **`sweepRows` has an optional second argument** (the probation), added for SMD. Passed to
+  `.map()` it receives the index: `nab-run.ts`, `verify-scorer.ts` and a test did exactly that
+  after the change, until that test failed (neither script was run in that state; the freeze
+  called it correctly). A test now
+  rejects `.map(sweepRows)` in `bench/` and `test/`; elsewhere it is still a trap.
 - **CUSUM false alarms**: 195 points between false alarms on iid noise with estimated
   parameters; autocorrelated metrics alarm far more often.
 - **State write cost.** The ruler persists state every tick, as whole batches per row (one row

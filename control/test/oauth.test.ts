@@ -638,6 +638,11 @@ describe('no credential at rest, in a log line or in an error body', () => {
     note(await form('/oauth/token', { grant_type: 'refresh_token', client_id: d.clientId, refresh_token: d.refresh, client_secret: d.access }))
     note(await form('/oauth/revoke', { token: d.access }))
     note(await oauthFetch(authorizeUrl(c.clientId, c.verifier, { redirect: `https://x.example/${c.access}` })))
+    // and grants whose code rows are still stored: one exchanged once (kept, spent, until it expires), one never exchanged
+    const once = await connect(dana)
+    keep(once.code, once.access, once.refresh, once.verifier)
+    await connectCode(dana)
+    expect((await sql(t.tenant, 'SELECT hash FROM oauth_codes WHERE tenant = ?', t.tenant)).length).toBe(2)
     // probe: a line logged inside the Tenant object reaches the spy, so the check below sees the object's logs too
     await runInDurableObject(stubOf(t.tenant), () => console.error('probe from the object'))
     expect(logged.some((l) => l.includes('probe from the object'))).toBe(true)

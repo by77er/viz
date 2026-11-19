@@ -46,7 +46,11 @@ fn data(n: usize) -> Vec<Trace> {
                         start_unix_nano: start,
                         end_unix_nano: start + next() % 1_000_000_000,
                         resource: vec![("service.name".into(), AttrValue::Str(services[(next() % 4) as usize].into()))],
-                        attrs: vec![("http.status_code".into(), AttrValue::Int([200, 404, 500][(next() % 3) as usize]))],
+                        attrs: vec![
+                            ("http.status_code".into(), AttrValue::Int([200, 404, 500][(next() % 3) as usize])),
+                            // For the nesting shapes of `check.mjs`, which test `.a = 1`.
+                            ("a".into(), AttrValue::Int(1)),
+                        ],
                         ..Default::default()
                     }
                 })

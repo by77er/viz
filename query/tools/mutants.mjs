@@ -373,7 +373,7 @@ const MUTANTS = [
     tests: ['test/pruning.test.ts'],
     file: 'src/leaf.ts',
     find: "  if (have === 'whole') return true\n",
-    replace: "  if (have !== null) return true\n",
+    replace: "  if (have === 'whole' || need.length >= 0) return true\n",
   },
   {
     name: 'A range read is put back one byte off (the sparse file names the wrong offset)',

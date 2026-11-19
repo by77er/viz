@@ -87,8 +87,8 @@ export const MUTANTS = [
   },
   {
     name: 'memory ahead of storage (adopt the new alert state before the transaction commits)',
-    // Pattern brought up to date (the anomaly change added `|| s.anomaly?.changed === true`).
-    edits: one('src/ruler.ts', '    if (staged.some((s) => s.result.dirty.size > 0 || s.anomaly?.changed === true)) {\n      const t = this.tenant\n', '    for (const { rule, result } of staged) g.alerts.set(rule.key, result.alerts)\n    if (staged.some((s) => s.result.dirty.size > 0 || s.anomaly?.changed === true)) {\n      const t = this.tenant\n'),
+    // Pattern brought up to date (the anomaly change added `|| s.anomaly?.changed === true`, the SLO change `|| s.slo?.ev.changed === true`).
+    edits: one('src/ruler.ts', '    if (staged.some((s) => s.result.dirty.size > 0 || s.anomaly?.changed === true || s.slo?.ev.changed === true)) {\n      const t = this.tenant\n', '    for (const { rule, result } of staged) g.alerts.set(rule.key, result.alerts)\n    if (staged.some((s) => s.result.dirty.size > 0 || s.anomaly?.changed === true || s.slo?.ev.changed === true)) {\n      const t = this.tenant\n'),
     tests: ['test/exactly-once.test.ts'],
   },
   {
@@ -160,7 +160,8 @@ export const MUTANTS = [
     name: 'backtest uses a different state machine (a second implementation: pending, firing after `for`, gone = resolved)',
     edits: [
       { file: 'src/backtest.ts', find: "import { formatDuration, parseSampleValue } from './util'", replace: "import { fingerprint, formatDuration, parseSampleValue } from './util'" },
-      { file: 'src/backtest.ts', find: '    const r = evalAlertingRule(rule, compiled, alerts, seriesAt(main, ts), ts, input.opts, presence ? seriesAt(presence, ts) : null)', replace: '    const r = secondStateMachine(rule, alerts, seriesAt(main, ts), ts)' },
+      // Pattern brought up to date (the step moved into `IntervalTracker` when backtests began to stream).
+      { file: 'src/backtest.ts', find: '    const r = evalAlertingRule(this.rule, this.compiled, this.alerts, input.series, ts, this.opts, input.presence)', replace: '    const r = secondStateMachine(this.rule, this.alerts, input.series, ts)' },
       {
         file: 'src/backtest.ts',
         find: '/** The summary is a function of the intervals and nothing else. */',
@@ -456,7 +457,8 @@ export const MUTANTS = [
   },
   {
     name: 'anomaly: state carried over an interval change (the detector\'s step changed)',
-    edits: one('src/ruler.ts', 'if (kept.has(key) && old.spec.intervalMs === spec.intervalMs)', 'if (kept.has(key))'),
+    // Pattern brought up to date (the interval comparison became `sameStep`, shared with the SLO rings).
+    edits: one('src/ruler.ts', '            if (kept.has(key) && sameStep) g.anomaly.set(key, rt)', '            if (kept.has(key)) g.anomaly.set(key, rt)'),
     tests: ['test/anomaly.test.ts'],
   },
   {
@@ -625,7 +627,8 @@ export const MUTANTS = [
     name: 'warm-up budget: the budget is checked only after the fetch (an over-budget read is made, then refused)',
     edits: [
       { file: 'src/history.ts', find: '  if (sum.scanSamples > budget.scanSamples || sum.bytesToRead > budget.bytesToRead) {', replace: '  if (false) {' },
-      { file: 'src/history.ts', find: '  return { ok: true, matrices, plan: sum }', replace: "  if (sum.scanSamples > budget.scanSamples || sum.bytesToRead > budget.bytesToRead) return { ok: false, refused: 'over budget (after the fetch)', plan: sum }\n  return { ok: true, matrices, plan: sum }" },
+      // Pattern brought up to date (history is read in windows by `streamHistory`).
+      { file: 'src/history.ts', find: '  return { ok: true, plan: sum, sizing, points, cpu:', replace: "  if (sum.scanSamples > budget.scanSamples || sum.bytesToRead > budget.bytesToRead) return { ok: false, refused: 'over budget (after the fetch)', plan: sum, sizing }\n  return { ok: true, plan: sum, sizing, points, cpu:" },
     ],
     tests: ['test/history.test.ts'],
   },
@@ -636,12 +639,12 @@ export const MUTANTS = [
   },
   {
     name: 'warm-up budget: warm-ups are held to the (larger) backtest budget',
-    edits: one('src/ruler.ts', '    const budget = historyBudgets(this.cfg.limits).warmup\n', '    const budget = historyBudgets(this.cfg.limits).backtest\n'),
+    edits: one('src/ruler.ts', '    const budget = budgets.warmup\n', '    const budget = budgets.backtest\n'),
     tests: ['test/history.test.ts'],
   },
   {
     name: 'warm-up: the state is written outside the warm-up\'s transaction (a crash leaves it half-written)',
-    edits: one('src/ruler.ts', '        finish(done(w.points), () => this.writeAnomalyState(g.spec.name, rule.key, w.rt.json))', '        this.writeAnomalyState(g.spec.name, rule.key, w.rt.json)\n        finish(done(w.points))'),
+    edits: one('src/ruler.ts', '        finish(done, () => this.writeAnomalyState(g.spec.name, rule.key, rt.json))', '        this.writeAnomalyState(g.spec.name, rule.key, rt.json)\n        finish(done)'),
     tests: ['test/history.test.ts'],
   },
   {
@@ -651,17 +654,19 @@ export const MUTANTS = [
   },
   {
     name: 'backtest/live: an anomaly backtest starts cold (no warm-up before fromMs)',
-    edits: one('src/history.ts', 'feedAnomaly(rule, newAnomalyRt(rule), steps, warmFromMs, input.fromMs - I, I, limits)', 'feedAnomaly(rule, newAnomalyRt(rule), steps, input.fromMs, input.fromMs - I, I, limits)'),
+    edits: one('src/ruler.ts', 'run = await backtestAnomaly(parsedRule, warmFromMs, ', 'run = await backtestAnomaly(parsedRule, fromMs, '),
     tests: ['test/history.test.ts'],
   },
   {
     name: 'backtest/live: an SLO backtest leaves out the coarse history (the budget from the fine read only)',
-    edits: one('src/history.ts', '  const seeded = seedSlo(rule, I, fine, coarse, coarseMatrix)\n  if (\'error\' in seeded) return { ok: false, error: seeded.error }\n  const rt = seeded.rt', "  const seeded = seedSlo(rule, I, fine, null, null)\n  if ('error' in seeded) return { ok: false, error: seeded.error }\n  const rt = seeded.rt"),
+    edits: one('src/ruler.ts', 'run = await backtestSlo(parsedRule, { ...w.fine, toMs }, w.coarse, input, io)', 'run = await backtestSlo(parsedRule, { ...w.fine, toMs }, null, input, io)'),
     tests: ['test/history.test.ts'],
   },
   {
     name: 'backtest/live: an SLO backtest feeds each step the previous step\'s buckets',
-    edits: one('src/history.ts', 'const ev = evalSlo(rule, rt, steps.get(ts) ?? [], ts, I, true)', 'const ev = evalSlo(rule, rt, steps.get(ts - I) ?? [], ts, I, true)'),
+    edits: [
+      { file: 'src/history.ts', find: "  let warmPoints = 0\n  const onFine: Stream['feed'] = (ts, series, c) => {\n", replace: "  let warmPoints = 0\n  let prevFine = []\n  const onFine: Stream['feed'] = (ts, series, c) => {\n    const cur = series\n    series = prevFine\n    prevFine = cur\n" },
+    ],
     tests: ['test/history.test.ts'],
   },
   {
@@ -717,6 +722,50 @@ export const MUTANTS = [
   {
     name: 'memory refusal: a window holding more points than it was sized for is evaluated anyway',
     edits: one('src/history.ts', '      if (held > allowed) return', '      if (held > allowed && false) return'),
+    tests: ['test/history.test.ts'],
+  },
+  // ───────────── CPU: refused on the model's projection, never cut off ─────────────
+  {
+    name: 'CPU refusal: the projection is never checked (a run goes on whatever it would cost)',
+    edits: one('src/history.ts', '      if (projected > budgetUs) {', '      if (false) {'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'CPU refusal: the projection counts only what has been read (the rest of the run left out)',
+    edits: one('src/history.ts', '      const projected = spentUs + thisUs + restUs', '      const projected = spentUs + thisUs'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'CPU refusal: the series count is taken from the first window only (later growth not seen)',
+    edits: one('src/history.ts', '      series = Math.max(series, ', '      series = fed > 0 ? series : Math.max(series, '),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'CPU model: an SLO backtest\'s evaluated points priced as warm-up points',
+    edits: one('src/history.ts', 'const evaluated = evaluatedFromMs === undefined ? {}', 'const evaluated = true ? {}'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'per-alarm warm-up CPU: a warm-up\'s reservation is not taken from what the alarm has left',
+    edits: one('src/ruler.ts', '      this.warmupCpuLeftMs -= room\n', ''),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'per-alarm warm-up CPU: spent is subtracted after the run, not reserved before it (concurrent groups both read)',
+    edits: [
+      { file: 'src/ruler.ts', find: '      this.warmupCpuLeftMs -= room\n', replace: '' },
+      { file: 'src/ruler.ts', find: '        this.warmupCpuLeftMs += room - Math.min(room, used)', replace: '        this.warmupCpuLeftMs -= Math.min(room, used)' },
+    ],
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'per-alarm warm-up CPU: a warm-up that fits a warm-up\'s budget but not the alarm\'s rest is refused, not deferred',
+    edits: one('src/ruler.ts', "      if (!run.ok && 'refused' in run && run.defer) {", '      if (false) {'),
+    tests: ['test/history.test.ts'],
+  },
+  {
+    name: 'per-alarm warm-up CPU: a budget below the model\'s base defers every warm-up forever',
+    edits: one('src/ruler.ts', '      if (room < budgets.warmupCpuMs && room < CPU.base / 1000) {', '      if (room < CPU.base / 1000) {'),
     tests: ['test/history.test.ts'],
   },
 ]

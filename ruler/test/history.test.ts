@@ -20,6 +20,7 @@ import { DETECTORS } from '../../anomaly/src/index.ts'
 import type { PromMatrix } from '../../contracts/engine'
 import type { Alert, BacktestInterval, BacktestResponse, HistoryPlan, RuleStatus } from '../contracts-proposal/rules.v2'
 import { readStateRows } from '../src/anomaly'
+import { CPU } from '../src/history'
 import { apiKey, call } from './api'
 import { Crash, T0, world } from './harness'
 import { expectWindows, MIN, ok, setup, vec } from './helpers'
@@ -532,16 +533,28 @@ describe('CPU: a run the model prices over its budget is refused whole, never cu
     expect(good(await r.stub.backtest(r.tenant, ewma(), T, T + 6 * HOUR, MIN)).cost!.cpu).toEqual({ modelledMs: steady, budgetMs: budget })
   })
 
-  it('a warm-up priced over maxWarmupCpuMs is refused after its first window; the rule starts cold at once and says why', async () => {
+  it('a warm-up priced over maxWarmupCpuMs is refused after its first window, even with a budget below the model\'s base (it does not wait for a bigger alarm forever); the rule starts cold at once and says why', async () => {
     const s = await rig([sloEntry()], undefined, { group: 'slos/1m' })
-    ok((await limits(s as never, { maxWarmupCpuMs: 10 })) as never)
+    ok((await limits(s as never, { maxWarmupCpuMs: 3 })) as never)
     await s.tick()
     expect(s.w.rangeCalls).toHaveLength(1)
     const st = await s.rule('CheckoutSLO')
-    expect(st.slo!.warmup).toMatchObject({ status: 'refused', attempts: 1, message: expect.stringMatching(/^over the CPU budget: the first window shows 2 series; the whole run would take about \d+ ms of CPU \(modelled\), the budget is 10 ms\. Nothing was evaluated; the rule started cold$/) })
+    expect(st.slo!.warmup).toMatchObject({ status: 'refused', attempts: 1, message: expect.stringMatching(/^over the CPU budget: the first window shows 2 series; the whole run would take about \d+ ms of CPU \(modelled\), the budget is 3 ms\. Nothing was evaluated; the rule started cold$/) })
     expect(st.slo!.warmup!.finishedAt).not.toBeNull()
     // Cold, not waiting: evaluated at this tick.
     expect(s.log.filter((x) => x.startsWith('query'))).toHaveLength(1)
+  })
+
+  it('an SLO backtest prices its evaluated part (burn windows, budget, alerts at every step) above its warm-up part (buckets only)', async () => {
+    const s = await rig([sloEntry()], undefined, { group: 'slos/1m' })
+    const T = T0 - DAY
+    const res = good(await s.stub.backtest(s.tenant, sloEntry(), T, T + 6 * HOUR, MIN))
+    const evaluated = 2 * (6 * 60 + 1)
+    // Two series at every step: the model's account is exact, each part at its own price, plus every window read.
+    const us = CPU.base + res.warmup!.points * (CPU.parse + CPU.sloWarm) + evaluated * (CPU.parse + CPU.sloEvaluated) + s.w.rangeCalls.length * CPU.perWindow
+    expect(Math.abs(res.cost!.cpu!.modelledMs - us / 1000)).toBeLessThanOrEqual(1)
+    // At the warm-up's price throughout it would be this much less: more than the rounding.
+    expect(evaluated * (CPU.sloEvaluated - CPU.sloWarm)).toBeGreaterThan(2000)
   })
 
   const long = (name: string) => ({ alert: name, expr: LAT, keep_firing_for: '0s', anomaly: { params: { halfLifePoints: 300, minPoints: 5 }, unit: 'ms' } })

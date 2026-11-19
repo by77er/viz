@@ -276,3 +276,85 @@ fn query_pool_is_live() {
     assert!(ok * 10 >= total * 8, "{ok} of {total} evaluate");
     assert!(nonempty * 10 >= total * 4, "{nonempty} of {total} return data");
 }
+
+/// Wrap a metric query in a random mix of nesting constructs.
+fn nest_query(kinds: &[u8]) -> String {
+    let mut q = r#"count_over_time({app="api"} |= "a" [1m])"#.to_string();
+    for k in kinds {
+        q = match k % 6 {
+            0 => format!("({q})"),
+            1 => format!("sum({q})"),
+            2 => format!("max by (app) ({q})"),
+            3 => format!(r#"label_replace({q}, "x", "y", "app", "(.*)")"#),
+            4 => format!("{q} + 1"),
+            _ => format!("topk(1, {q})"),
+        };
+    }
+    q
+}
+
+/// A template nested by a random mix of blocks and parentheses; returns it with its block
+/// depth (an `else if` counts as a level) and the parenthesis depth of its innermost action.
+fn nest_template(kinds: &[u8]) -> (String, usize, usize) {
+    let mut t = "{{ .level }}".to_string();
+    let (mut blocks, mut parens) = (0, 0);
+    for k in kinds {
+        t = match k % 5 {
+            0 => format!("{{{{if .level}}}}{t}{{{{end}}}}"),
+            1 => format!("{{{{with .msg}}}}{t}{{{{else}}}}-{{{{end}}}}"),
+            2 => format!("{{{{range $i, $x := .a}}}}{t}{{{{end}}}}"),
+            3 => format!("{{{{if .x}}}}a{{{{else if .y}}}}{t}{{{{end}}}}"),
+            _ => t.replacen("{{ ", "{{ (print ", 1).replacen(" }}", ") }}", 1),
+        };
+        match k % 5 {
+            3 => blocks += 2,
+            4 => parens += 1,
+            _ => blocks += 1,
+        }
+    }
+    (t, blocks, parens)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: std::env::var("PROPTEST_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(64), ..ProptestConfig::default() })]
+
+    /// Random deep nesting of queries, label filters, templates, JSON lines and regexes
+    /// returns an error or a result: never a panic or a stack overflow. Past the documented
+    /// limits it is an error.
+    #[test]
+    fn random_deep_nesting_never_panics(kinds in prop::collection::vec(any::<u8>(), 0..2500), seed in any::<u64>()) {
+        let (streams, _) = cases(seed);
+        let mut streams = streams;
+        let deep_json: String = kinds.iter().map(|k| if k % 2 == 0 { "[" } else { r#"{"a":"# }).collect();
+        if let Some(s) = streams.first_mut() {
+            s.rows.push(LogRow { ts_ns: gen::T0 + 60 * gen::S, line: deep_json, metadata: vec![] });
+        }
+        let src = MemSource::new(streams);
+        let (start, end, step) = (gen::T0, gen::T0 + 600 * gen::S, 60 * gen::S);
+        let n = kinds.len();
+        let q = nest_query(&kinds);
+        let r = query_range(&src, &q, start, end, step, &opts());
+        // Every wrapper but `+ 1` is a level of parser recursion; every wrapper but `(...)`
+        // is a level of the syntax tree. Past 100 of either the query is refused.
+        let recursion = kinds.iter().filter(|k| *k % 6 != 4).count();
+        let height = kinds.iter().filter(|k| *k % 6 != 0).count();
+        if recursion > 100 || height > 100 {
+            prop_assert!(r.is_err(), "{} levels of recursion and {} of height accepted", recursion, height);
+        }
+        let (t, blocks, parens) = nest_template(&kinds);
+        let r = query_range(&src, &format!("{{env=~\".+\"}} | json | line_format `{t}`"), start, end, step, &opts());
+        // The action itself is one pipeline level.
+        if blocks > 100 || parens + 1 > 100 {
+            prop_assert!(r.is_err(), "template of {} block and {} parenthesis levels accepted", blocks, parens);
+        }
+        let lf: String = kinds.iter().map(|k| if k % 3 == 0 { "(" } else { "" }).collect();
+        let close: String = lf.chars().map(|_| ')').collect();
+        let chain = kinds.iter().map(|k| format!("status > {k}")).collect::<Vec<_>>().join(if seed % 2 == 0 { " and " } else { " or " });
+        let _ = query_range(&src, &format!("{{env=~\".+\"}} | logfmt | {lf}{}{close}", if chain.is_empty() { "status > 0".to_string() } else { chain }), start, end, step, &opts());
+        for q in [r#"{env=~".+"} | json"#, r#"{env=~".+"} | unpack"#, r#"{env=~".+"} | json x="a.a""#, r#"{env=~".+"} | line_format "{{ fromJson __line__ }}""#] {
+            prop_assert!(query_range(&src, q, start, end, step, &opts()).is_ok());
+        }
+        let re: String = format!("{}a{}", "(".repeat(n), ")".repeat(n));
+        let _ = query_range(&src, &format!("{{env=~\".+\"}} |~ `{re}`"), start, end, step, &opts());
+    }
+}

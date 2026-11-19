@@ -267,10 +267,22 @@ fn number(text: &str) -> Result<Arg, String> {
 
 // ---------- parsing ----------
 
+/// Maximum nesting of a template: `if`/`with`/`range` blocks (each `else if` counts as one)
+/// and, separately, parentheses within one action. Parsing, checking and executing a
+/// template recurse once per level, and a WASM isolate has a 1 MiB stack, so a deeper
+/// template is refused with a parse error rather than overflowing it. 100 matches the
+/// query parser's limit; real templates nest a few levels.
+pub const MAX_DEPTH: usize = 100;
+
+fn too_deep() -> String {
+    format!("template nested more than {MAX_DEPTH} levels deep")
+}
+
 struct P<'a> {
     toks: Vec<(T, usize)>,
     i: usize,
     src: &'a str,
+    depth: usize,
 }
 
 impl P<'_> {
@@ -282,6 +294,16 @@ impl P<'_> {
     }
 
     fn pipeline(&mut self, allow_decl: bool, range_decl: bool) -> Result<Pipe, String> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            return Err(too_deep());
+        }
+        let r = self.pipeline_inner(allow_decl, range_decl);
+        self.depth -= 1;
+        r
+    }
+
+    fn pipeline_inner(&mut self, allow_decl: bool, range_decl: bool) -> Result<Pipe, String> {
         let mut decl = Vec::new();
         let mut assign = false;
         // `$x :=`, `$x =`, `$i, $x :=`
@@ -497,6 +519,7 @@ struct Builder<'a> {
     i: usize,
     src: &'a str,
     range_depth: usize,
+    depth: usize,
 }
 
 enum End {
@@ -535,7 +558,7 @@ impl Builder<'_> {
                             return Err(TemplateError::Unsupported(format!("template action {kw:?} is not supported")));
                         }
                         _ => {
-                            let mut p = P { toks, i: 0, src: self.src };
+                            let mut p = P { toks, i: 0, src: self.src, depth: 0 };
                             let pipe = p.pipeline(true, false).map_err(map_err)?;
                             if p.i != p.toks.len() {
                                 return Err(TemplateError::Parse("unexpected token in action".into()));
@@ -550,7 +573,17 @@ impl Builder<'_> {
     }
 
     fn control(&mut self, kw: &str, toks: Vec<(T, usize)>) -> Result<Node, TemplateError> {
-        let mut p = P { toks, i: 0, src: self.src };
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            return Err(TemplateError::Parse(too_deep()));
+        }
+        let r = self.control_inner(kw, toks);
+        self.depth -= 1;
+        r
+    }
+
+    fn control_inner(&mut self, kw: &str, toks: Vec<(T, usize)>) -> Result<Node, TemplateError> {
+        let mut p = P { toks, i: 0, src: self.src, depth: 0 };
         let pipe = p.pipeline(true, kw == "range").map_err(map_err)?;
         if p.i != p.toks.len() {
             return Err(TemplateError::Parse(format!("unexpected token in {kw}")));
@@ -604,7 +637,7 @@ impl Template {
     pub fn parse(src: &str) -> Result<Template, TemplateError> {
         let items = split(src).map_err(TemplateError::Parse)?;
         let constant = items.iter().all(|i| matches!(i, Item::Text(_)));
-        let mut b = Builder { items, i: 0, src, range_depth: 0 };
+        let mut b = Builder { items, i: 0, src, range_depth: 0, depth: 0 };
         let (nodes, end) = b.list()?;
         match end {
             End::Eof => {}

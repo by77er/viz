@@ -14,7 +14,7 @@ authority on what is visible. It implements `LedgerRpc`, `LedgerAdminRpc` and
 | `test/ledger.test.ts` | 39 tests: units, replay, registration, plan, replace, expire, names, the log's contents |
 | `test/segments.test.ts` | 27 tests of the segment log: crashes, exact rebuild, checkpoints, the first layout, a rollback across this release, starting an incarnation, F10/F11, the size limit, readers |
 | `test/checkpoint.test.ts` | 13 tests of checkpoints in parts (format 2) and the streaming rebuild: the state at the checkpoint's version whatever commits meanwhile, part boundaries, key order, a crash, lost answer or storage loss at every await of the checkpoint path, superseded checkpoints, tampered checkpoints, streaming, an untracked checkpoint, the release before reading this one's log and back, the format-2 golden |
-| `test/compat.test.ts` | 8 tests of versioned storage and the log formats (`contracts/COMPATIBILITY.md` §8) |
+| `test/compat.test.ts` | 9 tests of versioned storage and the log formats (`contracts/COMPATIBILITY.md` §8), including that the release before opens this storage |
 | `test/tombstone.test.ts`, `test/precedence.test.ts` | 8 and 5 tests |
 | `bench/` | In workerd: the admission counterfactual against the frozen as-built ledger (`bench/asbuilt/`, `dc2a1c3`); checkpoints and rebuilds against the frozen release before checkpoints in parts (`bench/before/`, `44649de`; `checkpoint.bench.test.ts`, results in `bench/results/checkpoint.log`); `rss.mjs` samples the processes' memory |
 
@@ -222,7 +222,7 @@ files is modelled at 20–60 s on Cloudflare (20 s here; R2 reads of 272 parts f
 
 ```
 npm install
-npx vitest run --maxWorkers=2     # 100 tests in workerd, 6 files
+npx vitest run --maxWorkers=2     # 101 tests in workerd, 6 files
 npx tsc --noEmit                  # clean
 node scripts/mutants.mjs          # on a copy outside the git checkout (see the script)
 npm run bench                     # the workerd counterfactuals (bench/)

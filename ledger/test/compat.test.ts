@@ -202,6 +202,17 @@ describe('versioned storage: opening storage made by other code', () => {
     const opened = await runInDurableObject(l, (_i: Ledger, s) => openSchema(s.storage, V1_ONLY))
     expect(opened).toMatchObject({ status: 'schema_too_new', found: LATEST, compat: 2, known: 1 })
   })
+
+  it('the release before checkpoints in parts (schema version 2) opens this storage as it is: migration 3 is additive (D47)', async () => {
+    const { l } = open()
+    await l.addUnit(pair(1, 2))
+    const V2_ONLY: SchemaSpec = { ...LEDGER_SCHEMA, migrations: LEDGER_SCHEMA.migrations.slice(0, 2) }
+    const opened = await runInDurableObject(l, (_i: Ledger, s) => openSchema(s.storage, V2_ONLY))
+    expect(opened).toMatchObject({ status: 'ok', version: 3, compat: 2, known: 2 })
+    // (What the release before does in its constructor; it then ignores `ckpt` and `ckpt_pre`.)
+    expect(await runInDurableObject(l, (_i: Ledger, s) => s.storage.sql.exec(`SELECT version, compat FROM viz_schema`).toArray()[0])).toEqual({ version: 3, compat: 2 })
+    expect(schemaRelease(V2_ONLY)).toEqual({ component: 'ledger.Ledger', latest: 2, compat: 2 })
+  })
 })
 
 describe('golden formats: the R2 log objects this release writes', () => {

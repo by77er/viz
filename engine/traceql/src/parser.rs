@@ -18,11 +18,11 @@ pub fn parse(src: &str) -> Result<RootExpr, Error> {
         return Err(Error::Validation { pos: 0, line: 1, col: 1, msg: format!("query longer than {MAX_QUERY_BYTES} bytes") });
     }
     let toks = lex(src)?;
-    let mut p = Parser { src, toks, i: 0, depth: 0 };
+    let mut p = Parser { src, toks, i: 0, depth: 0, regexes: 0 };
     if matches!(p.peek(), Tok::Eof) {
         return Err(p.err_here("empty query"));
     }
-    let node = p.pipeline()?;
+    let (node, _) = p.pipeline()?;
     let mut hints = Vec::new();
     if p.peek_ident("with") {
         p.next();
@@ -35,10 +35,35 @@ pub fn parse(src: &str) -> Result<RootExpr, Error> {
     Ok(RootExpr { query, hints })
 }
 
-/// Longest accepted query text. Deeper nesting than [`MAX_DEPTH`] is refused too, so that
-/// recursion cannot exhaust the stack (a stack overflow aborts a WASM isolate).
+/// Longest accepted query text.
 pub const MAX_QUERY_BYTES: usize = 128 * 1024;
+
+/// Deepest accepted nesting. Two things are bounded by it, so that no recursion over a query
+/// can exhaust the stack (a stack overflow aborts a WASM isolate; it is not an error):
+///
+/// - the parser's own recursion: open parentheses and braces, unary operators, the right
+///   operand of `^`, and each precedence level entered, counted on the way down;
+/// - the height of the syntax tree it builds, counted on the way up. A chain such as
+///   `a && b && c` or `{ } >> { } >> { }` is parsed by a loop but builds a tree one level
+///   deeper per operator, and every later pass (validation, conversion, planning,
+///   evaluation, and dropping the tree) recurses over that height.
+///
+/// So a query refused here never reaches a recursive pass, and one accepted needs at most
+/// `MAX_DEPTH` frames of each pass. `tests/limits.rs` runs queries at the limit on a 256 KiB
+/// stack (debug build) and `tools/wasm-probe/check.mjs` runs them in the WASM build.
 pub const MAX_DEPTH: usize = 200;
+
+/// Most regular expressions in one query, and the limits each is compiled with: nesting of
+/// groups and repetitions (the regex compiler recurses over it), compiled size and lazy-DFA
+/// cache. Together they bound the memory a query's regexes can take to a few tens of MiB of
+/// a 128 MB isolate, whatever the query text.
+pub const MAX_REGEXES: usize = 32;
+pub const REGEX_NEST_LIMIT: u32 = 64;
+pub const REGEX_SIZE_LIMIT: usize = 256 * 1024;
+pub const REGEX_DFA_SIZE_LIMIT: usize = 256 * 1024;
+
+/// A parsed piece and the height of its syntax tree.
+type Hp<T> = Result<(T, usize), Error>;
 
 #[derive(Clone, Debug)]
 enum Node {
@@ -134,7 +159,10 @@ struct Parser<'a> {
     src: &'a str,
     toks: Vec<Token>,
     i: usize,
+    /// Current recursion depth (see [`MAX_DEPTH`]).
     depth: usize,
+    /// Regexes compiled so far (see [`MAX_REGEXES`]).
+    regexes: usize,
 }
 
 fn describe(t: &Tok) -> String {
@@ -174,12 +202,22 @@ impl<'a> Parser<'a> {
     fn peek_ident(&self, s: &str) -> bool {
         matches!(self.peek(), Tok::Ident(x) if x == s)
     }
+    // Building errors, compiling regexes and parsing function calls are kept out of line
+    // (`#[inline(never)]`), so that the functions the parser recurses through keep small
+    // stack frames: a level of nesting costs a few hundred bytes of stack, not kilobytes.
+
+    #[cold]
+    #[inline(never)]
     fn err_at(&self, pos: usize, msg: impl Into<String>) -> Error {
         Error::parse(self.src, pos, msg)
     }
+    #[cold]
+    #[inline(never)]
     fn err_here(&self, msg: impl Into<String>) -> Error {
         self.err_at(self.pos(), msg)
     }
+    #[cold]
+    #[inline(never)]
     fn verr(&self, pos: usize, msg: impl Into<String>) -> Error {
         Error::validation(self.src, pos, msg)
     }
@@ -188,34 +226,62 @@ impl<'a> Parser<'a> {
             self.next();
             Ok(())
         } else {
-            Err(self.err_here(format!("expected {what}, found {}", describe(self.peek()))))
+            Err(self.expected(what))
         }
     }
+    #[cold]
+    #[inline(never)]
+    fn expected(&self, what: &str) -> Error {
+        self.err_here(format!("expected {what}, found {}", describe(self.peek())))
+    }
+    #[cold]
+    #[inline(never)]
+    fn too_deep(&self, pos: usize) -> Error {
+        self.verr(pos, format!("query nested deeper than {MAX_DEPTH} levels (parentheses, operators and chained terms all count)"))
+    }
+    /// One level of parser recursion down; [`Parser::leave`] goes back up.
     fn enter(&mut self) -> Result<(), Error> {
         self.depth += 1;
         if self.depth > MAX_DEPTH {
-            return Err(self.verr(self.pos(), format!("query nested deeper than {MAX_DEPTH} levels")));
+            return Err(self.too_deep(self.pos()));
         }
         Ok(())
+    }
+    fn leave(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
+    }
+    /// The height of a new node over children at most `h` high.
+    fn grow(&self, h: usize, pos: usize) -> Result<usize, Error> {
+        let h = h + 1;
+        if h > MAX_DEPTH {
+            return Err(self.too_deep(pos));
+        }
+        Ok(h)
     }
 
     // ---------------------------------------------------------------- top level
 
-    fn pipeline(&mut self) -> Result<Node, Error> {
+    fn pipeline(&mut self) -> Hp<Node> {
         self.enter()?;
         let start = self.pos();
-        let mut elems = vec![self.element()?];
+        let (first, mut h) = self.element()?;
+        let mut elems = vec![first];
         while matches!(self.peek(), Tok::Pipe) {
             self.next();
-            elems.push(self.element()?);
+            let (e, he) = self.element()?;
+            h = h.max(he);
+            elems.push(e);
         }
-        self.depth -= 1;
-        Ok(if elems.len() == 1 { elems.pop().unwrap_or(Node::Coalesce(start)) } else { Node::Pipe(elems, start) })
+        self.leave();
+        if elems.len() == 1 {
+            return Ok((elems.pop().unwrap_or(Node::Coalesce(start)), h));
+        }
+        Ok((Node::Pipe(elems, start), self.grow(h, start)?))
     }
 
-    fn element(&mut self) -> Result<Node, Error> {
+    fn element(&mut self) -> Hp<Node> {
         let start = self.pos();
-        let lhs = self.binary(0)?;
+        let (lhs, hl) = self.binary(0)?;
         let op = match self.peek() {
             Tok::Eq => Some(BinOp::Eq),
             Tok::Neq => Some(BinOp::Neq),
@@ -227,13 +293,14 @@ impl<'a> Parser<'a> {
         };
         if let Some(op) = op {
             self.next();
-            let rhs = self.binary(0)?;
+            let (rhs, hr) = self.binary(0)?;
             if matches!(self.peek(), Tok::Eq | Tok::Neq | Tok::Lt | Tok::Lte | Tok::Gt | Tok::Gte) {
                 return Err(self.err_here("comparisons cannot be chained"));
             }
-            return Ok(Node::Cmp(op, Box::new(lhs), Box::new(rhs), start));
+            let h = self.grow(hl.max(hr), start)?;
+            return Ok((Node::Cmp(op, Box::new(lhs), Box::new(rhs), start), h));
         }
-        Ok(lhs)
+        Ok((lhs, hl))
     }
 
     /// Spanset operators and arithmetic between pipelines, by precedence (Tempo's, as
@@ -241,9 +308,9 @@ impl<'a> Parser<'a> {
     /// (`{a} || {b} && {c}` is `({a} || {b}) && {c}`); the structural operators bind tighter
     /// (`{a} || {b} > {c}` is `{a} || ({b} > {c})`) and are left-associative among
     /// themselves; then `+ -` < `* / %` < `^`.
-    fn binary(&mut self, min: u8) -> Result<Node, Error> {
+    fn binary(&mut self, min: u8) -> Hp<Node> {
         self.enter()?;
-        let mut lhs = self.atom()?;
+        let (mut lhs, mut h) = self.atom()?;
         loop {
             let pos = self.pos();
             let (prec, op): (u8, Option<Result<SpansetOp, BinOp>>) = match self.peek() {
@@ -278,51 +345,55 @@ impl<'a> Parser<'a> {
             }
             self.next();
             let next_min = if prec == 6 { 5 } else { prec };
-            let rhs = self.binary(next_min)?;
+            let (rhs, hr) = self.binary(next_min)?;
+            h = self.grow(h.max(hr), pos)?;
             lhs = match op {
                 Ok(s) => Node::Spanset(s, Box::new(lhs), Box::new(rhs), pos),
                 Err(m) => Node::Math(m, Box::new(lhs), Box::new(rhs), pos),
             };
         }
-        self.depth -= 1;
-        Ok(lhs)
+        self.leave();
+        Ok((lhs, h))
     }
 
-    fn atom(&mut self) -> Result<Node, Error> {
+    fn atom(&mut self) -> Hp<Node> {
         let start = self.pos();
         match self.next() {
             Tok::LBrace => {
                 if matches!(self.peek(), Tok::RBrace) {
                     self.next();
-                    return Ok(Node::Filter(FieldExpr::Static(Static::Bool(true)), start));
+                    return Ok((Node::Filter(FieldExpr::Static(Static::Bool(true)), start), 2));
                 }
-                let e = self.field_or()?;
+                let (e, he) = self.field_or()?;
                 self.expect(Tok::RBrace, "'}'")?;
-                Ok(Node::Filter(e, start))
+                Ok((Node::Filter(e, start), self.grow(he, start)?))
             }
             Tok::LParen => {
-                let n = self.pipeline()?;
+                let (n, hn) = self.pipeline()?;
                 self.expect(Tok::RParen, "')'")?;
-                Ok(Node::Paren(Box::new(n), start))
+                Ok((Node::Paren(Box::new(n), start), self.grow(hn, start)?))
             }
-            Tok::Int(v) => Ok(Node::Num(Static::Int(self.int_value(v, false, start)?), start)),
-            Tok::Float(v) => Ok(Node::Num(Static::Float(v), start)),
-            Tok::Duration(v) => Ok(Node::Num(Static::Duration(v), start)),
+            Tok::Int(v) => Ok((Node::Num(Static::Int(self.int_value(v, false, start)?), start), 1)),
+            Tok::Float(v) => Ok((Node::Num(Static::Float(v), start), 1)),
+            Tok::Duration(v) => Ok((Node::Num(Static::Duration(v), start), 1)),
             Tok::Minus => {
                 if let Tok::Int(v) = self.peek().clone() {
                     self.next();
-                    return Ok(Node::Num(Static::Int(self.int_value(v, true, start)?), start));
+                    return Ok((Node::Num(Static::Int(self.int_value(v, true, start)?), start), 1));
                 }
                 if let Tok::Float(v) = self.peek().clone() {
                     self.next();
-                    return Ok(Node::Num(Static::Float(-v), start));
+                    return Ok((Node::Num(Static::Float(-v), start), 1));
                 }
                 if let Tok::Duration(v) = self.peek().clone() {
                     self.next();
-                    return Ok(Node::Num(Static::Duration(-v), start));
+                    return Ok((Node::Num(Static::Duration(-v), start), 1));
                 }
-                let n = self.atom()?;
-                Ok(Node::Neg(Box::new(n), start))
+                // `- - - x` recurses once per sign.
+                self.enter()?;
+                let (n, hn) = self.atom()?;
+                self.leave();
+                Ok((Node::Neg(Box::new(n), start), self.grow(hn, start)?))
             }
             Tok::Ident(name) => self.call(name, start),
             other => Err(self.err_at(start, format!("unexpected {}", describe(&other)))),
@@ -336,7 +407,8 @@ impl<'a> Parser<'a> {
         Ok(if neg { -(v as i64) } else { v as i64 })
     }
 
-    fn call(&mut self, name: String, start: usize) -> Result<Node, Error> {
+    #[inline(never)]
+    fn call(&mut self, name: String, start: usize) -> Hp<Node> {
         if !matches!(self.peek(), Tok::LParen) {
             return Err(self.err_at(start, format!("unexpected identifier {name:?}")));
         }
@@ -348,13 +420,13 @@ impl<'a> Parser<'a> {
                 if op != AggOp::Count {
                     return Err(self.err_at(start, format!("{name}() needs an argument")));
                 }
-                return Ok(Node::Agg(op, None, start));
+                return Ok((Node::Agg(op, None, start), 1));
             }
             if op == AggOp::Count {
                 return Err(self.err_at(start, "count() takes no argument"));
             }
             let arg_pos = self.pos();
-            let e = self.field_or()?;
+            let (e, he) = self.field_or()?;
             self.expect(Tok::RParen, "')'")?;
             // A string, status or kind argument is a syntax error in Tempo; a boolean one is
             // rejected by validation. Whether it reads the span is checked with the filter.
@@ -365,11 +437,11 @@ impl<'a> Parser<'a> {
             if !t.numeric() {
                 return Err(self.err_at(arg_pos, format!("{name}() needs a numeric argument")));
             }
-            return Ok(Node::Agg(op, Some(e), start));
+            return Ok((Node::Agg(op, Some(e), start), self.grow(he, start)?));
         }
         match name.as_str() {
             "by" => {
-                let list = self.field_list(start, "by")?;
+                let (list, h) = self.field_list(start, "by")?;
                 if list.len() > 1 {
                     return Err(self.err_at(start, "by() in a spanset pipeline takes one expression"));
                 }
@@ -379,36 +451,36 @@ impl<'a> Parser<'a> {
                         return Err(self.verr(start, "by() expressions must read the span"));
                     }
                 }
-                Ok(Node::By(list, start))
+                Ok((Node::By(list, start), self.grow(h, start)?))
             }
             "coalesce" => {
                 self.expect(Tok::RParen, "')'")?;
-                Ok(Node::Coalesce(start))
+                Ok((Node::Coalesce(start), 1))
             }
             "select" => {
-                let list = self.field_list(start, "select")?;
+                let (list, h) = self.field_list(start, "select")?;
                 for e in &list {
                     if !matches!(e, FieldExpr::Attr { .. } | FieldExpr::Intrinsic(..)) {
                         return Err(self.err_at(start, "select() takes attributes and intrinsics only"));
                     }
                 }
-                Ok(Node::Select(list, start))
+                Ok((Node::Select(list, start), self.grow(h, start)?))
             }
             "rate" | "count_over_time" => {
                 self.expect(Tok::RParen, "')'")?;
-                let by = self.metrics_by()?;
+                let (by, hb) = self.metrics_by()?;
                 let f = if name == "rate" { MetricsFn::Rate } else { MetricsFn::CountOverTime };
-                Ok(Node::Metrics(f, by, start))
+                Ok((Node::Metrics(f, by, start), self.grow(hb, start)?))
             }
             "min_over_time" | "max_over_time" | "avg_over_time" | "sum_over_time" | "histogram_over_time" => {
                 let arg_pos = self.pos();
-                let e = self.field_or()?;
+                let (e, he) = self.field_or()?;
                 self.expect(Tok::RParen, "')'")?;
                 let t = self.check(&e)?;
                 if !t.numeric() || !e.references_span() {
                     return Err(self.verr(arg_pos, format!("{name}() needs a numeric expression that reads the span")));
                 }
-                let by = self.metrics_by()?;
+                let (by, hb) = self.metrics_by()?;
                 let f = match name.as_str() {
                     "min_over_time" => MetricsFn::MinOverTime(e),
                     "max_over_time" => MetricsFn::MaxOverTime(e),
@@ -416,11 +488,11 @@ impl<'a> Parser<'a> {
                     "sum_over_time" => MetricsFn::SumOverTime(e),
                     _ => MetricsFn::HistogramOverTime(e),
                 };
-                Ok(Node::Metrics(f, by, start))
+                Ok((Node::Metrics(f, by, start), self.grow(he.max(hb), start)?))
             }
             "quantile_over_time" => {
                 let arg_pos = self.pos();
-                let e = self.field_or()?;
+                let (e, he) = self.field_or()?;
                 let t = self.check(&e)?;
                 if !t.numeric() || !e.references_span() {
                     return Err(self.verr(arg_pos, "quantile_over_time() needs a numeric expression that reads the span"));
@@ -440,8 +512,8 @@ impl<'a> Parser<'a> {
                 if qs.is_empty() {
                     return Err(self.err_at(start, "quantile_over_time() needs at least one quantile"));
                 }
-                let by = self.metrics_by()?;
-                Ok(Node::Metrics(MetricsFn::QuantileOverTime(e, qs), by, start))
+                let (by, hb) = self.metrics_by()?;
+                Ok((Node::Metrics(MetricsFn::QuantileOverTime(e, qs), by, start), self.grow(he.max(hb), start)?))
             }
             "topk" | "bottomk" => {
                 let kp = self.pos();
@@ -454,7 +526,7 @@ impl<'a> Parser<'a> {
                     return Err(self.verr(kp, format!("{name}() needs a count above zero")));
                 }
                 let k = u32::try_from(k).map_err(|_| self.err_at(kp, "count out of range"))?;
-                Ok(if name == "topk" { Node::TopK(k, start) } else { Node::BottomK(k, start) })
+                Ok((if name == "topk" { Node::TopK(k, start) } else { Node::BottomK(k, start) }, 1))
             }
             "compare" => {
                 // Parsed so that its misuse is reported like Tempo does; evaluating it is unsupported.
@@ -468,40 +540,44 @@ impl<'a> Parser<'a> {
                     }
                 }
                 let _ = self.metrics_by()?;
-                Ok(Node::Compare(start))
+                Ok((Node::Compare(start), 1))
             }
             _ => Err(self.err_at(start, format!("unknown function {name}()"))),
         }
     }
 
-    fn field_list(&mut self, start: usize, what: &str) -> Result<Vec<FieldExpr>, Error> {
+    /// Comma-separated field expressions up to `)`, and the height of the highest.
+    fn field_list(&mut self, start: usize, what: &str) -> Hp<Vec<FieldExpr>> {
         if matches!(self.peek(), Tok::RParen) {
             return Err(self.err_at(start, format!("{what}() needs at least one argument")));
         }
-        let mut out = vec![self.field_or()?];
+        let (first, mut h) = self.field_or()?;
+        let mut out = vec![first];
         while matches!(self.peek(), Tok::Comma) {
             self.next();
-            out.push(self.field_or()?);
+            let (e, he) = self.field_or()?;
+            h = h.max(he);
+            out.push(e);
         }
         self.expect(Tok::RParen, "')'")?;
-        Ok(out)
+        Ok((out, h))
     }
 
-    fn metrics_by(&mut self) -> Result<Vec<FieldExpr>, Error> {
+    fn metrics_by(&mut self) -> Hp<Vec<FieldExpr>> {
         if !self.peek_ident("by") || !matches!(self.peek2(), Tok::LParen) {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), 0));
         }
         let start = self.pos();
         self.next();
         self.next();
-        let list = self.field_list(start, "by")?;
+        let (list, h) = self.field_list(start, "by")?;
         for e in &list {
             self.check(e)?;
             if !e.references_span() {
                 return Err(self.verr(start, "by() expressions must read the span"));
             }
         }
-        Ok(list)
+        Ok((list, h))
     }
 
     fn hints(&mut self) -> Result<Vec<(String, Static)>, Error> {
@@ -544,25 +620,27 @@ impl<'a> Parser<'a> {
 
     /// `&&` and `||` share one precedence level and associate to the left, as Tempo
     /// evaluates them: `{ a || b && c }` is `{ (a || b) && c }` (README, "Differential run").
-    fn field_or(&mut self) -> Result<FieldExpr, Error> {
+    fn field_or(&mut self) -> Hp<FieldExpr> {
         self.enter()?;
-        let mut lhs = self.field_cmp()?;
+        let (mut lhs, mut h) = self.field_cmp()?;
         loop {
             let op = match self.peek() {
                 Tok::OrOr => BinOp::Or,
                 Tok::AndAnd => BinOp::And,
                 _ => break,
             };
+            let pos = self.pos();
             self.next();
-            let rhs = self.field_cmp()?;
+            let (rhs, hr) = self.field_cmp()?;
+            h = self.grow(h.max(hr), pos)?;
             lhs = FieldExpr::Binary(op, Box::new(lhs), Box::new(rhs));
         }
-        self.depth -= 1;
-        Ok(lhs)
+        self.leave();
+        Ok((lhs, h))
     }
 
-    fn field_cmp(&mut self) -> Result<FieldExpr, Error> {
-        let mut lhs = self.field_add()?;
+    fn field_cmp(&mut self) -> Hp<FieldExpr> {
+        let (mut lhs, mut h) = self.field_add()?;
         loop {
             let op = match self.peek() {
                 Tok::Eq => BinOp::Eq,
@@ -577,40 +655,57 @@ impl<'a> Parser<'a> {
             };
             let pos = self.pos();
             self.next();
-            let rhs = self.field_add()?;
+            let (rhs, hr) = self.field_add()?;
+            h = self.grow(h.max(hr), pos)?;
             lhs = if matches!(op, BinOp::Re | BinOp::NRe) {
                 let FieldExpr::Static(Static::Str(text)) = rhs else {
                     return Err(self.verr(pos, "the right side of a regex match must be a string"));
                 };
-                let re = regex::RegexBuilder::new(&format!("^(?s:{text})$"))
-                    .size_limit(1 << 20)
-                    .build()
-                    .map_err(|e| self.verr(pos, format!("invalid regex {text:?}: {e}")))?;
+                let re = self.regex(&text, pos)?;
                 FieldExpr::Regex { lhs: Box::new(lhs), re: Box::new(Re(re)), negated: op == BinOp::NRe, text }
             } else {
                 FieldExpr::Binary(op, Box::new(lhs), Box::new(rhs))
             };
         }
-        Ok(lhs)
+        Ok((lhs, h))
     }
 
-    fn field_add(&mut self) -> Result<FieldExpr, Error> {
-        let mut lhs = self.field_mul()?;
+    /// Compiles the pattern of `=~` / `!~`, fully anchored, within the limits of
+    /// [`MAX_REGEXES`].
+    #[inline(never)]
+    fn regex(&mut self, text: &str, pos: usize) -> Result<regex::Regex, Error> {
+        self.regexes += 1;
+        if self.regexes > MAX_REGEXES {
+            return Err(self.verr(pos, format!("more than {MAX_REGEXES} regular expressions in one query")));
+        }
+        // The anchoring group adds one level of nesting to the pattern.
+        regex::RegexBuilder::new(&format!("^(?s:{text})$"))
+            .nest_limit(REGEX_NEST_LIMIT + 1)
+            .size_limit(REGEX_SIZE_LIMIT)
+            .dfa_size_limit(REGEX_DFA_SIZE_LIMIT)
+            .build()
+            .map_err(|e| self.verr(pos, format!("invalid regex {text:?}: {e}")))
+    }
+
+    fn field_add(&mut self) -> Hp<FieldExpr> {
+        let (mut lhs, mut h) = self.field_mul()?;
         loop {
             let op = match self.peek() {
                 Tok::Plus => BinOp::Add,
                 Tok::Minus => BinOp::Sub,
                 _ => break,
             };
+            let pos = self.pos();
             self.next();
-            let rhs = self.field_mul()?;
+            let (rhs, hr) = self.field_mul()?;
+            h = self.grow(h.max(hr), pos)?;
             lhs = FieldExpr::Binary(op, Box::new(lhs), Box::new(rhs));
         }
-        Ok(lhs)
+        Ok((lhs, h))
     }
 
-    fn field_mul(&mut self) -> Result<FieldExpr, Error> {
-        let mut lhs = self.field_pow()?;
+    fn field_mul(&mut self) -> Hp<FieldExpr> {
+        let (mut lhs, mut h) = self.field_pow()?;
         loop {
             let op = match self.peek() {
                 Tok::Star => BinOp::Mul,
@@ -618,26 +713,31 @@ impl<'a> Parser<'a> {
                 Tok::Percent => BinOp::Mod,
                 _ => break,
             };
+            let pos = self.pos();
             self.next();
-            let rhs = self.field_pow()?;
+            let (rhs, hr) = self.field_pow()?;
+            h = self.grow(h.max(hr), pos)?;
             lhs = FieldExpr::Binary(op, Box::new(lhs), Box::new(rhs));
         }
-        Ok(lhs)
+        Ok((lhs, h))
     }
 
-    fn field_pow(&mut self) -> Result<FieldExpr, Error> {
-        let lhs = self.field_unary()?;
+    fn field_pow(&mut self) -> Hp<FieldExpr> {
+        let (lhs, hl) = self.field_unary()?;
         if matches!(self.peek(), Tok::Caret) {
+            let pos = self.pos();
             self.next();
             self.enter()?;
-            let rhs = self.field_pow()?;
-            self.depth -= 1;
-            return Ok(FieldExpr::Binary(BinOp::Pow, Box::new(lhs), Box::new(rhs)));
+            let (rhs, hr) = self.field_pow()?;
+            self.leave();
+            let h = self.grow(hl.max(hr), pos)?;
+            return Ok((FieldExpr::Binary(BinOp::Pow, Box::new(lhs), Box::new(rhs)), h));
         }
-        Ok(lhs)
+        Ok((lhs, hl))
     }
 
-    fn field_unary(&mut self) -> Result<FieldExpr, Error> {
+    fn field_unary(&mut self) -> Hp<FieldExpr> {
+        let start = self.pos();
         match self.peek() {
             Tok::Minus => {
                 self.next();
@@ -646,40 +746,50 @@ impl<'a> Parser<'a> {
                     Tok::Int(v) => {
                         let p = self.pos();
                         self.next();
-                        FieldExpr::Static(Static::Int(self.int_value(v, true, p)?))
+                        (FieldExpr::Static(Static::Int(self.int_value(v, true, p)?)), 1)
                     }
                     Tok::Float(v) => {
                         self.next();
-                        FieldExpr::Static(Static::Float(-v))
+                        (FieldExpr::Static(Static::Float(-v)), 1)
                     }
                     Tok::Duration(v) => {
                         self.next();
-                        FieldExpr::Static(Static::Duration(-v))
+                        (FieldExpr::Static(Static::Duration(-v)), 1)
                     }
-                    _ => FieldExpr::Unary(UnOp::Neg, Box::new(self.field_unary()?)),
+                    _ => {
+                        let (x, hx) = self.field_unary()?;
+                        (FieldExpr::Unary(UnOp::Neg, Box::new(x)), self.grow(hx, start)?)
+                    }
                 };
-                self.depth -= 1;
+                self.leave();
                 Ok(e)
             }
             Tok::Not => {
                 self.next();
                 self.enter()?;
-                let e = FieldExpr::Unary(UnOp::Not, Box::new(self.field_unary()?));
-                self.depth -= 1;
-                Ok(e)
+                let (x, hx) = self.field_unary()?;
+                self.leave();
+                Ok((FieldExpr::Unary(UnOp::Not, Box::new(x)), self.grow(hx, start)?))
             }
             _ => self.field_primary(),
         }
     }
 
-    fn field_primary(&mut self) -> Result<FieldExpr, Error> {
+    fn field_primary(&mut self) -> Hp<FieldExpr> {
+        if matches!(self.peek(), Tok::LParen) {
+            // Parentheses add no node; `field_or` counts the recursion.
+            self.next();
+            let (e, h) = self.field_or()?;
+            self.expect(Tok::RParen, "')'")?;
+            return Ok((e, h));
+        }
         let start = self.pos();
+        Ok((self.field_leaf(start)?, 1))
+    }
+
+    #[inline(never)]
+    fn field_leaf(&mut self, start: usize) -> Result<FieldExpr, Error> {
         match self.next() {
-            Tok::LParen => {
-                let e = self.field_or()?;
-                self.expect(Tok::RParen, "')'")?;
-                Ok(e)
-            }
             Tok::Int(v) => Ok(FieldExpr::Static(Static::Int(self.int_value(v, false, start)?))),
             Tok::Float(v) => Ok(FieldExpr::Static(Static::Float(v))),
             Tok::Duration(v) => Ok(FieldExpr::Static(Static::Duration(v))),

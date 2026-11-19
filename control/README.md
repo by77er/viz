@@ -257,6 +257,15 @@ holds, revocable, and good only at `/mcp`. mcp/README.md describes the resource 
 | `POST /oauth/token` | `authorization_code` (with `code_verifier`, `redirect_uri`, `client_id`, `resource`) and `refresh_token`. Form encoding only; a parameter sent twice, an `Authorization` header or a `client_secret` is refused. Answers `{ access_token, token_type: "Bearer", expires_in: 3600, refresh_token, scope }`, `Cache-Control: no-store` |
 | `POST /oauth/revoke` | RFC 7009 with `token` and `client_id`. An access token ends alone; a refresh token ends its grant. Unknown tokens and tokens of another client: 200, nothing changes |
 
+**The gateway** (`deploy/gateway/src/index.ts`) forwards exactly these five paths here and
+`/.well-known/oauth-protected-resource` and `…/mcp` to viz-mcp; near misses (`/oauth`, `/oauth/x`,
+`/oauth/token/`, `/.well-known/openid-configuration`, `…/oauth-authorization-server/x`,
+`…/oauth-protected-resource/x`, …) are 404 (`gateway.test.ts`, 7 routed paths and 11 near
+misses; the gateway suite passed 95 of 95). Its three OAuth mutants (paths not routed; matched as
+prefixes; the resource metadata sent to control) were run in a scratch copy on 2026-11-19
+(`node gateway/scripts/mutants.mjs "OAuth:"`): 3 of 3 killed. `deploy/README.md`'s route table
+does not list these paths yet (another engineer's file).
+
 **The consent step: `POST /api/v1/control/oauth/approve`** (route table, scope `admin`, audited,
 `dryRun`). There is no sign-in and no web UI yet, so the person approves through the API with
 their own key: `{ "request": "<handle from the page>", "scopes"?: [...] }`.
