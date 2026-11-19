@@ -80,8 +80,9 @@ release's drain is applied with its own SQL, statement for statement. Result:
 AssertionError: expected 'rebuilt at seq 1; a shard was told 2 …' not to match /^rebuilt at/
 ```
 
-The drain after the roll-forward fails with `the outbox starts at version 6, the log ends at 4`,
-and R2 holds both `seg-…jsonl` and `000000000005.json` under the same incarnation.
+The drain after the roll-forward fails with `the outbox starts at version 4, the log ends at 2`,
+and the incarnation's prefix holds `seg-000000000000-000000000000.jsonl`,
+`seg-000000000001-000000000002.jsonl` and `000000000003.json` side by side.
 
 **Why major, not blocker.** No ledger is in production, and a rollback across this release is
 declared unsupported. But the tool does not refuse it, the trial deployment ran the first layout,
@@ -216,7 +217,26 @@ other content. One sentence in LEDGER-LOG "Readers" before the publisher is buil
 Applied by me to a second scratch copy of `ledger/` (never the shared tree), each run against
 `segments`, `ledger` and `tombstone` tests:
 
-MUTANT_RESULTS
+| Mutant | Result |
+|---|---|
+| a retry ignores the recorded segment bounds (F10) | killed: "a retried drain writes exactly the segment it recorded" |
+| rebuild does not check that segments are contiguous | killed: "fails rather than rebuild from a log with a hole" |
+| a start reuses the newest incarnation number in R2 (F11) | killed: "never repeats a (ledger incarnation, version)" |
+| `logged` advances whatever the stream incarnation | killed: the crash property test |
+| a new incarnation keeps the old outbox rows | killed: "storage still running a first-layout incarnation …" |
+| an existing segment with other bytes counts as written | killed: "an object with other bytes … is a fault" |
+| `segmentWritten` keeps the rows | killed: the replay-rule tests |
+| **`deletable` counts the recorded but unwritten segment as logged** | **survived** |
+| **the drain accepts an outbox that does not continue the log** | **survived** (only S-1's test reaches it) |
+| **no `storage.sync()` between recording the bounds and the PUT** | **survived** (needs a crash between a local commit and its durability; workerd tests cannot make one) |
+| **a checkpoint is taken when the segment does not end at the committed version** | **survived** (no test fills a segment past 4 MiB) |
+
+The first survivor matters most: with it, a removal whose segment was recorded but whose PUT failed
+is deletable, purge deletes the object, and a rebuild lists the file again with no object (I11).
+`tombstone.test.ts` "never while the removal is committed but not logged" never lets a drain
+record a segment and fail. Wanted: a test that breaks R2 *after* the bounds are recorded and then
+asks `deletable`; one that makes the outbox skip a version; one segment over 4 MiB with
+`checkpointEvery = 1`. The sync is untestable here; it is right by reading (`976`).
 
 ---
 
@@ -284,9 +304,10 @@ MUTANT_RESULTS
 ## How the snapshot was run
 
 All on the extracted `58b6bbd`, at most two workers: ledger 75 passed; janitor 17; compact 24;
-flush 45; shard 52; query 78; stack 40 (its `e2e` needs `bench/node_modules`, linked).
-D30/F14/F15 mutants (`stack/scripts/mutants.mjs review` filtered to `R-2`, `F14`, `F15`):
-9 of 9 killed. Not run: anything on Cloudflare; the protocol model.
+flush 45; shard 52; query 78; stack 40 (its `e2e` needs `bench/node_modules`, linked). All green.
+D30/F14/F15 mutants (`stack/scripts/mutants.mjs review` filtered to `R-2`, `F14`, `F15`, run on the
+copy): 9 of 9 killed. Segment-log mutants (S-9): 7 of 11 killed. `tsc --noEmit` was not run. Not
+run: anything on Cloudflare; the protocol model; the ledger benchmark.
 
 ## How to reproduce
 

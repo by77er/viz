@@ -464,29 +464,52 @@ no longer: `query/` now sends `Retry-After: 1` with it, and the item was dropped
 
 ## Verification
 
-Run on 2026-11-18 after the review fixes, Node 22.23, on a machine shared with other jobs
-(ports 8910 and 8911).
+Run on 2026-11-19 on the final source of this change, Node 22.23, on a machine shared with
+other builders (load average 9 to 26 on 4 cores), the real stack under `wrangler dev --local`
+on port 8851.
 
 | Check | Result |
 |---|---|
-| `npm test` | 129 tests in 12 files pass (two workers) |
+| `npm test` | 160 tests in 14 files pass (two workers) |
 | `npx tsc --noEmit` | passes |
-| `npm run build` | passes (its prebuild regenerates `design-system/dist` and `bundle.css` from the system's sources) |
-| `node ../design-system/tools/check.mjs src` | contrast 240/240; 0 literal values in 50 files |
+| `npm run build` | passes (its prebuild regenerates `design-system/dist` and `bundle.css`; nothing in `design-system/` changed) |
+| `node ../design-system/tools/check.mjs src` | **fails**: contrast and structure 552/552, but 4 literal values, all in `src/app.css` (lines 6, 23, 90, 122: an ignore without a reason, `100vh`, `100vw`, `90%`). `app.css` is unchanged since 2026-11-18 20:03; the check's rules were tightened since (`design-system/tools/check.mjs`, 2026-11-19). This change may not edit `app.css`; the four are left for the system migration (Known issues) |
 | `node e2e/run.cjs` | 54 of 54 checks pass |
 | `node e2e/design.cjs` | 52 of 52 checks pass |
 | `node e2e/fixes.cjs` | 37 of 37 checks pass, including the 60 s stop |
-| axe-core 4.14 | 0 violations of any impact in 16 runs (5 in `run.cjs`, 8 in `design.cjs`, 3 in `fixes.cjs`) |
-| `MUTANTS=fixes node e2e/mutants.cjs` | 15 of 15 killed (unit tests and `e2e/fixes.cjs`; table below) |
-| `node e2e/mutants.cjs` (the restyle's set) | not re-run after the review fixes; the results below are the restyle's |
+| `node e2e/errors.cjs` | 15 of 15 checks pass |
+| `node e2e/contract.cjs` | 82 of 82 checks pass: 59 requests to both, compared, 22 of them value by value, and the limits-record refusal (one wording difference, reported, not failed: the mock's "aggregation "limitk" (not implemented …)" against the real "limitk / limit_ratio aggregations") |
+| `node e2e/real.cjs` | 28 of 28 checks pass on the real API (one page error is expected and checked for: the PromQL linter's stack overflow on a 5,000-term query) |
+| axe-core 4.14 | 0 serious or critical violations in 16 runs (5 in `run.cjs`, 8 in `design.cjs`, 3 in `fixes.cjs`) |
+| `MUTANTS=real node e2e/mutants.cjs` | MUTANTS_REAL_RESULT |
+| `MUTANTS=fixes node e2e/mutants.cjs`, `node e2e/mutants.cjs` | not re-run in this change; their results below are from the changes that wrote them |
 
-One existing check changed: `e2e/design.cjs` expected the segmented control's pressed fill to
+Changed checks in this change (none deleted): `e2e/errors.cjs` tests the 1, 2, 4 s retries
+with the `platform` failure (the real API's busy refusal now carries `Retry-After: 1`, which
+gained its own check), and checks that an answer that is not the API's is not called the
+API's; the 401 checks expect "No API key is set" without a key and gained an unknown-key
+case. `e2e/real.cjs` expects the step advice and "Use the automatic step" for too many points
+(and that the button runs the query with the automatic step), the query-text advice for a
+16 KiB query, the banner's three wordings, and gained a 100 ms step and a `max_samples`
+refusal. `e2e/fixes.cjs`'s focus walk reaches "Run the query again" through `limitk(1, up)`
+(PromQL the mock does not run) and "Use the automatic step" through too many points; both
+hand focus to Run query. `e2e/contract.cjs` gained eight requests on times and steps.
+
+Unit tests added in this change: the error kinds, advice and answer line for every answer of
+the real API and the platform's 503 (`errors.test.ts`); the window in whole milliseconds,
+with a property over random windows and steps (`lib.test.ts`); a sub-second step kept on the
+grid with its gap (`series.test.ts`); the mock's millisecond grid, its resolution count and
+its time and step parsing against the real stack's answers (`mock/promql.test.ts`).
+
+From the review fixes, one existing check changed: `e2e/design.cjs` expected the segmented control's pressed fill to
 be the `rule` token. While this work ran, the system added a `pressed` token and moved
 `:active` to it, so the check now expects `pressed` when the system defines one and `rule`
 before. No check was deleted.
 
 Unit tests cover what they did before (downsampling, step selection, URL round-trip, digest,
-API client, the mock's PromQL), and for the review fixes: what a result says about itself
+API client, the mock's PromQL), the typed-array parser (`matrix.test.ts`: properties against
+`JSON.parse` over bodies cut anywhere, the fast path for the bodies APIs send, the fallback),
+and for the review fixes: what a result says about itself
 (`describe.test.ts`), series names with three properties over random label sets
 (`naming.test.ts`), the colour assignment with two properties (`assign.test.ts`), value and
 unit apart and where a column's unit goes (`units.test.ts`), `alignMatrix` property-tested
@@ -749,9 +772,24 @@ not preloaded.
 
 ## Known issues
 
-- Speed: the budgets missed after the review fixes are listed under "Speed after the review
-  fixes" (36 series: response to paint; 200 series: response to paint, chart to table, table
-  to text; single slow keys while typing). The JSON body is parsed on the main thread.
+- Speed: SPEED_KNOWN_ISSUE
+- No timing in this README was judged: every run started with the load average above the
+  core count (9 to 26 on 4 cores). They need measuring again on a quiet machine.
+- `node ../design-system/tools/check.mjs src` fails on four values in `src/app.css` (an
+  ignore without a reason, `100vh`, `100vw`, `90%`), which the tightened check now counts;
+  this change may not edit `app.css`. For the system migration.
+- The range-query parser (`src/api/matrix.ts`, about 600 lines) is specialised: it reads
+  `data.result` itself and leaves everything else to `JSON.parse`. A body it misreads would
+  draw wrong numbers without an error. It is property-tested against `JSON.parse` and
+  `Number` on 1,000 random bodies cut anywhere and gives up its fast path on anything it does
+  not expect, but it is new code on the path every result takes.
+- The JSON form joins the body's text the first time it is shown for a result (3.4 MB for 200
+  series, about 12 ms unthrottled in Node), not when the result arrives.
+- "The real API" here is the working tree of `query/`, `edge/`, `control/` and the rest under
+  `wrangler dev`, which reloads on every edit: the contract test can fail because another
+  component is mid-edit, and its answers file records what the tree answered at that moment.
+- The worker reader (`src/api/matrixWorker.ts`) is kept, tested and not used: whether it helps
+  on a phone cannot be measured with DevTools throttling (it does not throttle workers).
 - Colour memory is per browser tab (`sessionStorage`) and holds the assignment of the last
   result shown. A reload reproduces it, but the same link opened in a fresh tab assigns slots
   afresh by order of appearance, so two tabs with different histories can colour the same
@@ -792,8 +830,8 @@ not preloaded.
 - The absolute time inputs are `datetime-local`, so their display format follows the browser
   locale; all other times are local, 24-hour, ISO order. The text digest uses UTC.
 - The token is in localStorage, readable by any script on the origin.
-- With an explicit step the query can exceed 11,000 points; the backend's error is shown
-  rather than the step being clamped.
+- With an explicit step the query can exceed 11,000 points; the API's refusal is shown, with
+  the advice and the button "Use the automatic step", rather than the step being clamped.
 - Relative ranges re-resolve "now" when the chart width crosses a 100 px bucket, which
   triggers a refetch on resize.
 - Not tested: 200% zoom as such (400 px is the narrowest layout tested), real touch

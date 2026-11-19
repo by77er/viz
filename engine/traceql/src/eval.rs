@@ -136,7 +136,8 @@ fn uses_scope(e: &FieldExpr, event: bool) -> bool {
 /// Is the span matched by the filter? Event- and link-scoped fields are evaluated per event
 /// (and link): the span matches if one event makes the whole expression true.
 pub fn span_matches(e: &FieldExpr, ctx: &mut TraceCtx, i: usize) -> bool {
-    let span = &ctx.trace.spans[i];
+    let trace = ctx.trace;
+    let span = &trace.spans[i];
     let ev = uses_scope(e, true);
     let lk = uses_scope(e, false);
     let events: Vec<Option<&Event>> =
@@ -155,8 +156,9 @@ pub fn span_matches(e: &FieldExpr, ctx: &mut TraceCtx, i: usize) -> bool {
 }
 
 /// The value of a field expression for a span (first event and link bound, if any).
-pub fn field_value<'a>(e: &'a FieldExpr, ctx: &mut TraceCtx<'a>, i: usize) -> Val<'a> {
-    let span = &ctx.trace.spans[i];
+pub fn field_value<'a, 't: 'a>(e: &'a FieldExpr, ctx: &mut TraceCtx<'t>, i: usize) -> Val<'a> {
+    let trace: &'t Trace = ctx.trace;
+    let span = &trace.spans[i];
     let b = Binding { event: span.events.first(), link: span.links.first() };
     eval(e, ctx, i, b)
 }
@@ -225,10 +227,11 @@ fn is_id(i: Intrinsic) -> bool {
     matches!(i, Intrinsic::SpanId | Intrinsic::ParentId | Intrinsic::TraceId | Intrinsic::LinkSpanId | Intrinsic::LinkTraceId)
 }
 
-fn eval<'a>(e: &'a FieldExpr, ctx: &mut TraceCtx<'a>, i: usize, b: Binding<'a>) -> Val<'a> {
+fn eval<'a, 't: 'a>(e: &'a FieldExpr, ctx: &mut TraceCtx<'t>, i: usize, b: Binding<'t>) -> Val<'a> {
+    let trace: &'t Trace = ctx.trace;
     match e {
         FieldExpr::Static(s) => Val::from_static(s),
-        FieldExpr::Attr { scope, name } => attr_val(&ctx.trace.spans[i], *scope, name, b),
+        FieldExpr::Attr { scope, name } => attr_val(&trace.spans[i], *scope, name, b),
         FieldExpr::Intrinsic(intr, _) => intrinsic(*intr, ctx, i, b),
         FieldExpr::Unary(UnOp::Neg, x) => match eval(x, ctx, i, b) {
             Val::Int(v) => v.checked_neg().map_or(Val::Nil, Val::Int),
@@ -263,12 +266,12 @@ fn eval<'a>(e: &'a FieldExpr, ctx: &mut TraceCtx<'a>, i: usize, b: Binding<'a>) 
                 match (&**l, &**r) {
                     (FieldExpr::Attr { scope, name }, FieldExpr::Static(s)) => {
                         let lit = Val::from_static(s);
-                        let v = attr_for_literal(&ctx.trace.spans[i], *scope, name, &lit, b);
+                        let v = attr_for_literal(&trace.spans[i], *scope, name, &lit, b);
                         return Val::Bool(typed_match(&v, *op, &lit));
                     }
                     (FieldExpr::Static(s), FieldExpr::Attr { scope, name }) => {
                         let lit = Val::from_static(s);
-                        let v = attr_for_literal(&ctx.trace.spans[i], *scope, name, &lit, b);
+                        let v = attr_for_literal(&trace.spans[i], *scope, name, &lit, b);
                         return Val::Bool(typed_match(&v, flip(*op), &lit));
                     }
                     (FieldExpr::Intrinsic(intr, _), FieldExpr::Static(Static::Str(s)))
@@ -300,8 +303,8 @@ fn flip(op: BinOp) -> BinOp {
     }
 }
 
-fn intrinsic<'a>(intr: Intrinsic, ctx: &mut TraceCtx<'a>, i: usize, b: Binding<'a>) -> Val<'a> {
-    let trace = ctx.trace;
+fn intrinsic<'a, 't: 'a>(intr: Intrinsic, ctx: &mut TraceCtx<'t>, i: usize, b: Binding<'t>) -> Val<'a> {
+    let trace: &'t Trace = ctx.trace;
     let span = &trace.spans[i];
     match intr {
         Intrinsic::Name => Val::Str(Cow::Borrowed(&span.name)),
@@ -449,15 +452,9 @@ pub fn group_value(e: &FieldExpr, ctx: &mut TraceCtx, i: usize) -> Val<'static> 
             Val::Bool(span_matches(e, ctx, i))
         }
         FieldExpr::Regex { .. } => Val::Bool(span_matches(e, ctx, i)),
-        _ => {
-            // SAFETY of lifetimes: the value is converted to an owned value immediately.
-            let tr: &Trace = ctx.trace;
-            let mut c2 = TraceCtx::new(tr);
-            let v = field_value(e, &mut c2, i);
-            v.into_owned()
-        }
+        _ => field_value(e, ctx, i).into_owned(),
     };
-    v.into_owned()
+    v
 }
 
 fn spanset_op(op: SpansetOp, ctx: &mut TraceCtx, ls: &[Spanset], rs: &[Spanset]) -> Option<Spanset> {
@@ -603,9 +600,7 @@ pub fn aggregate(op: AggOp, arg: Option<&FieldExpr>, ctx: &mut TraceCtx, spans: 
     let Some(arg) = arg else { return Val::Nil };
     let mut vals: Vec<Val<'static>> = Vec::new();
     for &i in spans {
-        let tr: &Trace = ctx.trace;
-        let mut c2 = TraceCtx::new(tr);
-        let v = field_value(arg, &mut c2, i).into_owned();
+        let v = field_value(arg, ctx, i).into_owned();
         if matches!(v, Val::Int(_) | Val::Float(_) | Val::Duration(_)) {
             vals.push(v);
         }
