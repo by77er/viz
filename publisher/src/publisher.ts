@@ -908,15 +908,19 @@ export class Publisher extends DurableObject<PublisherEnv> {
     candidates.sort((a, b) => (started.get(a) ?? -1) - (started.get(b) ?? -1) || (a < b ? -1 : a > b ? 1 : 0))
     const sink = this.stageSink(cfg, budget)
     const logs: TenantLog[] = []
+    const rebasing = new Set<string>()
     for (const tenant of candidates) {
-      if (!this.admit(cfg, budget, tenant)) break
+      // Not `break`: in an attempt started over, the tenants admitted before are re-read, and they
+      // now sort last (just started).
+      if (!this.admit(cfg, budget, tenant)) continue
+      rebasing.add(tenant)
       logs.push(await readTenantLog(store, this.cell, tenant, null, cfg.maxChangesPerTenant, sink))
     }
     // Then every other tenant read, from the lowest cursor its tables have: the tables with a cursor
     // are published (a tenant waiting for its re-base is not held back on them), the others wait.
     // A tenant with no cursor at all has nothing to read without its re-base. One found to need a
     // re-base only now (a new ledger incarnation) is admitted while the budget lasts.
-    const rest = read.filter((t) => !budget.admitted.has(t))
+    const rest = read.filter((t) => !rebasing.has(t))
     logs.push(
       ...(await inBatches(rest, FANOUT, async (tenant) => {
         let from: Cursor | null = null
