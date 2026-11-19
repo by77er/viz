@@ -18,7 +18,7 @@ import { describe, expect, it } from 'vitest'
 import { DETECTORS } from '../../anomaly/src/index.ts'
 import type { AnomalyRuleStatus, AnomalyRuleV2, DetectorGuide, MonitorView, RuleGroup } from '../contracts-proposal/rules.v2'
 import spec from '../openapi.json'
-import { ANOMALY_ROW_BYTES, anomalyLimits, DEFAULT_DETECTOR, evalAnomaly, newAnomalyRt, PREVIOUS_DEFAULTS, readStateRows, ROBUST_Z_DEFAULTS, SEASONAL_DEFAULTS, stateRows } from '../src/anomaly'
+import { ANOMALY_ROW_BYTES, anomalyLimits, DEFAULT_DETECTOR, evalAnomaly, newAnomalyRt, PREVIOUS_DEFAULTS, readAnomalyRows, readStateRows, ROBUST_Z_DEFAULTS, SEASONAL_DEFAULTS, stateRows } from '../src/anomaly'
 import { DEFAULT_RULER_CONFIG } from '../src/ruler'
 import { parseRuleFile } from '../src/rules'
 import { exportRuleFile, importRuleFile } from '../src/rulefile'
@@ -71,9 +71,9 @@ const ewmaRule = (extra: Record<string, unknown> = {}, anomaly: Record<string, u
   anomaly: { detector: 'ewma', params: { halfLifePoints: 10, minPoints: 5 }, unit: 'ms', ...anomaly },
 })
 
-/** The stored state of one series, decoded. */
+/** The stored state of one series, decoded (rows of one rule, `store.anomaly-state` version 1 or 2). */
 function seriesState(rows: Record<string, unknown>[], service: string) {
-  const read = readStateRows(rows.map((r) => r.body as string))
+  const read = readAnomalyRows(rows.map((r) => ({ chunk: r.chunk as number, body: r.body as string })))
   if ('error' in read) throw new Error(read.error)
   return [...read.series.values()].find((s) => s.labels.service === service)
 }
@@ -183,7 +183,8 @@ describe('bounds: series cap, state limits, rows per tick', () => {
     expect(bad).toMatchObject({ status: 'invalid', errors: [{ path: 'groups[0].rules[0].anomaly.max_series' }] })
     const seasonal = await stub.saveGroups(tenant, { groups: [{ name: 'g', interval: '10s', rules: [{ alert: 'S', expr: LAT, anomaly: { detector: 'seasonal', params: { periodMs: 7 * 24 * 60 * MIN, seasons: 4 } } }] }] })
     expect(seasonal).toMatchObject({ status: 'invalid', errors: [{ path: 'groups[0].rules[0].anomaly.params', message: expect.stringMatching(/bytes of state per series/) }] })
-    const perRule = await stub.saveGroups(tenant, { groups: [{ name: 'g', rules: [{ alert: 'Z', expr: LAT, anomaly: { detector: 'robust_z', max_series: 50, params: { windowPoints: 1000 } } }] }] })
+    // 100 × about 18.8 KB (the default window as ring blocks) is over 1 MiB.
+    const perRule = await stub.saveGroups(tenant, { groups: [{ name: 'g', rules: [{ alert: 'Z', expr: LAT, anomaly: { detector: 'robust_z', max_series: 100 } }] }] })
     expect(perRule).toMatchObject({ status: 'invalid', errors: [{ path: 'groups[0].rules[0].anomaly.max_series', message: expect.stringMatching(/would exceed the 1048576-byte limit per rule/) }] })
   })
 
@@ -300,7 +301,7 @@ describe('state is rebuilt from SQLite alone', () => {
     const r = await rig([ewmaRule()], { values: (s, i) => (s === 'b' && i >= 6 ? 900 : noise(i)) })
     for (let i = 0; i < 7; i++) await r.tick()
     const key = r.saved.groups[0]!.rules[0]!.key
-    const newer = [JSON.stringify({ v: 2, chunks: 'a format from the future' })]
+    const newer = [JSON.stringify({ v: 3, chunks: 'a format from the future' })]
     await runInDurableObject(r.stub, (_i, s) => {
       s.storage.sql.exec('DELETE FROM anomaly_state WHERE tenant = ?', r.tenant)
       s.storage.sql.exec('INSERT INTO anomaly_state (tenant, grp, rule_key, chunk, body) VALUES (?, ?, ?, 0, ?)', r.tenant, 'anomalies/1m', key, newer[0]!)
@@ -311,7 +312,7 @@ describe('state is rebuilt from SQLite alone', () => {
     await r.tick()
     const s = await r.status()
     expect([s.health, s.anomaly!.status]).toEqual(['err', 'state_unreadable'])
-    expect(s.lastError).toMatch(/^state_unreadable: anomaly_state row version 2 is not 1/)
+    expect(s.lastError).toMatch(/^state_unreadable: anomaly_state row version 3 is not 1 or 2/)
     expect(s.alerts).toEqual(alerts)
     expect(r.w.ingestCalls.length).toBe(handed)
     expect((await r.rows()).map((x) => x.body)).toEqual(newer)
@@ -425,14 +426,14 @@ describe('the monitors API', () => {
     const res = await call(key.auth, 'POST', '/api/v1/monitors', { name: 'checkout latency', query: LAT, anomaly: {} })
     expect(res.status).toBe(201)
     expect(res.json).toMatchObject({ group: 'anomalies/1m', cost: { class: 'tail' }, history: { tick: 'tail', coldStart: 'rollup', minPoints: 20, lookbackMs: 1500 * MIN } })
-    // About 55 KB of state a series: 18 series fit the 1 MiB a rule may keep, and the save says so.
-    expect(res.json.warnings).toEqual([{ path: 'anomaly.maxSeries', message: expect.stringMatching(/^max_series defaults to 18 here, not 100: robust_z/), fix: expect.any(String) }])
+    // About 18.8 KB of state a series (Float64 ring blocks; 55 KB as JSON, when it was 18): 55 series fit the 1 MiB a rule may keep, and the save says so.
+    expect(res.json.warnings).toEqual([{ path: 'anomaly.maxSeries', message: expect.stringMatching(/^max_series defaults to 55 here, not 100: robust_z with these parameters may keep about 18772 bytes/), fix: expect.any(String) }])
     const ruler = rulerStub(tenant)
     world.now = Math.max(world.now, ok(await ruler.health(tenant)).alarmAtMs!)
     expect(await runDurableObjectAlarm(ruler)).toBe(true)
     const m = (await call(key.auth, 'GET', `/api/v1/monitors/${res.json.id}`)).json.monitor as MonitorView
     expect(m).toMatchObject({ state: 'warming', query: LAT, condition: null, forMs: 0, keepFiringForMs: 10 * MIN, labels: { severity: 'ticket' } })
-    expect(m.anomaly).toMatchObject({ detector: 'robust_z', given: [], severity: 'ticket', maxSeries: 18, params: { windowPoints: 1500, k: 2, spread: 'quantile', spreadQuantile: 0.99, windowMs: 0, minPoints: 20 }, status: { status: 'warming', series: 2 } })
+    expect(m.anomaly).toMatchObject({ detector: 'robust_z', given: [], severity: 'ticket', maxSeries: 55, params: { windowPoints: 1500, k: 2, spread: 'quantile', spreadQuantile: 0.99, windowMs: 0, minPoints: 20 }, status: { status: 'warming', series: 2 } })
     expect(m.anomaly!.status!.message).toMatch(/^2 of 2 series warming: /)
     expect(m.anomaly!.guide.evidence).toMatchObject({ kind: 'held_out', defaultsValidated: true, nab: { standard: 42.6 } })
     expect(m.thresholdText).toBe('robust_z: 2 × the 0.99 quantile deviation from the trailing median')
@@ -550,7 +551,8 @@ describe('the monitors API', () => {
       monitor: (await call(a.key.auth, 'GET', `/api/v1/monitors/${id}`)).json.monitor.anomaly,
     })
     const before = await state()
-    expect(before.rows.length).toBe(1)
+    // The head row and the block of the two ticks' points (`store.anomaly-state` v2).
+    expect(before.rows.length).toBe(2)
     const sneaky: Record<string, string>[] = [{}, { 'X-Scope-OrgID': a.tenant }, { 'X-Tenant': a.tenant }]
     for (const h of sneaky) {
       for (const q of ['', `?tenant=${a.tenant}`, `?orgId=${a.tenant}`]) {
