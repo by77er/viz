@@ -7,12 +7,13 @@
  *
  * Times are from workerd's clock on this machine with a simulated R2: local, not Cloudflare.
  */
+import { env } from 'cloudflare:workers'
 import { describe, expect, inject, it } from 'vitest'
 import type { FileEntry } from '../../contracts/ledger'
 import type { PublishResult } from '../src/publisher'
 import { DAY_MS, INC, SHARD, T0, dayOf, fresh, icebergLive, ledger, liveKeys, manifestList, mirror, publisher } from './helpers'
 
-const sample = (cell: string, tenant: string, seq: number, i: number): FileEntry => {
+const sample = (_cell: string, tenant: string, seq: number, i: number): FileEntry => {
   const minTs = T0 + (i % 10) * DAY_MS + seq * 60_000
   const day = dayOf(minTs)
   // hash8 is the start of a SHA-256 in real keys: incompressible. A 32-bit mix stands in for it.
@@ -23,7 +24,8 @@ const sample = (cell: string, tenant: string, seq: number, i: number): FileEntry
   return {
     table: 'metric_samples',
     day,
-    key: `${cell}/data/metric_samples/tenant=${tenant}/day=${day}/L0-pool_0-${INC}-${seq}-${seq}-${hash}.parquet`,
+    // Under the ledger's cell, which is the only place it admits keys (contracts/ledger.ts `FileEntry.key`).
+    key: `${env.CELL}/data/metric_samples/tenant=${tenant}/day=${day}/L0-pool_0-${INC}-${seq}-${seq}-${hash}.parquet`,
     bytes: 1_048_576 + (h % 400_000),
     rows: 60_000 + (h % 40_000),
     minTs,

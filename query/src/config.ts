@@ -71,8 +71,19 @@ export interface TenantLimits extends QueryLimits {
   maxLeaves: number
   /** Cardinality report: distinct series counted (exact counting; above it the report is refused). */
   maxCardinalitySeries: number
-  /** Cardinality report: distinct label pairs plus (metric, label, value) triples. */
+  /**
+   * Cardinality report: distinct label pairs plus (metric, label, value) triples. Every one
+   * reaches the coordinator's merge, which held about 130 bytes of WASM memory each
+   * (measured here: 25.9 MiB for 200,000 over 8 leaves, README "Cardinality"); 400,000
+   * keeps the merge near 52 MiB of a 128 MB isolate. (It was 2,000,000: about 260 MiB.)
+   */
   maxCardinalityPairs: number
+  /**
+   * Cardinality report: counted over leaves (each a range of `series_id`s) when the series
+   * files hold more series than this (`seriesEstimate`), or are over `maxFetchBytes`. One
+   * place held 51.9 MiB of WASM memory for 100,000 series (measured here).
+   */
+  cardinalitySplitAboveSeries: number
 }
 
 /**
@@ -103,7 +114,8 @@ export const DEFAULT_LIMITS: TenantLimits = {
   maxQueryFiles: 20_000,
   maxLeaves: 32,
   maxCardinalitySeries: 1_000_000,
-  maxCardinalityPairs: 2_000_000,
+  maxCardinalityPairs: 400_000,
+  cardinalitySplitAboveSeries: 50_000,
 }
 
 /** A configuration that cannot be trusted: the query is refused (503), never run on a guess. */

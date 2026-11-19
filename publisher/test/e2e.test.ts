@@ -45,6 +45,8 @@ describe('end to end with real Parquet files and a real ledger', () => {
 
     const checkpoints: Checkpoint[] = []
     const checkpoint = async (name: string) => {
+      // The ledgers write their segments (the pool's drain delay is long, so this is explicit).
+      for (const t of fixture.tenants) await ledger(t).drain()
       const r = await p.publish(fixture.tenants)
       expect(r.tenants.map((t) => t.status)).toEqual(['ok', 'ok', 'ok'])
       await expectVerified(p)

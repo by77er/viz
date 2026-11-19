@@ -32,7 +32,7 @@ describe('limits', () => {
       maxSamples: 2_000_000, maxSeries: 20_000, maxOutputPoints: 500_000, maxStepPoints: 1_000_000, maxQueryBytes: 16_384, maxDepth: 100, maxSteps: 11_000,
       maxFetchBytes: 16 << 20, maxScanSamples: 3_000_000, maxFiles: 2_000, timeoutMs: 30_000,
       splitAboveSamples: 1_500_000, splitAboveSeries: 15_000, maxQuerySamples: 64_000_000, maxQuerySeries: 640_000, maxQueryScanSamples: 100_000_000, maxQueryFetchBytes: 512 << 20,
-      maxQueryFiles: 20_000, maxLeaves: 32, maxCardinalitySeries: 1_000_000, maxCardinalityPairs: 2_000_000,
+      maxQueryFiles: 20_000, maxLeaves: 32, maxCardinalitySeries: 1_000_000, maxCardinalityPairs: 400_000, cardinalitySplitAboveSeries: 50_000,
     })
   })
 

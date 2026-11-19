@@ -4,9 +4,12 @@ The viz frontend. First slice: an **Explore** view for metrics against a Prometh
 HTTP API (`/api/v1/query_range`, `/query`, `/labels`, `/label/<name>/values`, `/series`,
 `/metadata`, `/status/buildinfo`).
 
-> **The backend used for development and tests is a mock** (`mock/`): synthetic data and a
-> subset of PromQL. It is not the viz query backend. The UI shows a banner whenever it is
-> connected to it.
+> **The backend used for development and most tests is a mock** (`mock/`): synthetic data and
+> a subset of PromQL. It is not the viz query backend. The UI shows a banner whenever it is
+> connected to it. The app also runs against the **real viz API**, served locally by
+> `wrangler dev --local` (`real/`, "The real viz API, locally"): `e2e/real.cjs` runs the app
+> on it, and `e2e/contract.cjs` sends the same requests to it and to the mock and compares
+> the answers ("Mock and real API").
 
 ## Design system
 
@@ -52,9 +55,18 @@ npm test              # vitest unit tests
 npx tsc --noEmit      # typecheck
 npm run check:tokens  # no literal colours, lengths, durations or opacity in src/
 npm run e2e           # e2e/run.cjs, e2e/design.cjs, e2e/fixes.cjs (Playwright + axe); needs `npm run build` first
-npm run measure       # the speed budgets on the built app (see "Speed"); --series 4,36,200
+npm run measure       # the speed budgets on the built app (see "Speed"); --series 4,36,200, --phone
 node e2e/summarise.cjs                      # before/after tables from e2e/measurements
+node e2e/fingerprint.cjs --root <app> --label <name>   # what a build renders, to compare two builds
 MUTANTS=fixes node e2e/mutants.cjs          # the review fixes' mutants (unit + e2e/fixes.cjs)
+MUTANTS=real node e2e/mutants.cjs           # this change's mutants (unit + e2e/errors.cjs)
+node e2e/errors.cjs                         # error, busy and retry states against the mock's failures
+
+# the real viz API, locally (no Cloudflare account is used; see "The real viz API, locally")
+node real/stack.mjs start && node real/stack.mjs seed
+node e2e/contract.cjs                       # the same requests to the real API and to the mock, compared
+node e2e/real.cjs                           # the app on the real API (needs `npm run build`)
+node real/stack.mjs stop
 ```
 
 The end-to-end scripts use the globally installed Playwright (`require('playwright')`), start
@@ -107,7 +119,10 @@ the viz design system · uPlot 1.6.32 · CodeMirror 6 · vitest 5 · fast-check 
 
 | Path | What |
 |---|---|
-| `src/api/` | Typed Prometheus client: AbortSignal, error envelope, base URL, bearer token |
+| `src/api/` | Typed Prometheus client: AbortSignal, error envelope, base URL, bearer token, `Retry-After`, the `X-Viz-*` cost |
+| `src/api/matrix.ts` | The range-query body read into Float64Arrays as it arrives (`JSON.parse` is the fallback) |
+| `src/api/matrixWorker.ts` | The same in a dedicated worker; built and tested, not used by the app (see "Speed") |
+| `src/api/errors.ts` | What a failure means for the person: its kind, the advice, whether and when to ask again |
 | `src/charts/` | Internal chart interface (`types.ts`) and the uPlot implementation |
 | `src/editor/` | CodeMirror PromQL editor (lazy-loaded chunk) |
 | `src/explore/` | Explore view: time picker, legend, table, JSON, text view, waiting logic (`waiting.tsx`) |
@@ -118,13 +133,19 @@ the viz design system · uPlot 1.6.32 · CodeMirror 6 · vitest 5 · fast-check 
 | `src/lib/assign.ts` | Which series get one of the eight colours, which slot, and the one Other group |
 | `src/lib/focusKeeper.ts` | Moves focus to a stand-in when the focused control goes away |
 | `src/lib/pointer.ts`, `src/lib/renders.ts` | Coarse pointer and tap toggling; render counts read by the e2e checks |
-| `mock/` | Mock backend: synthetic data, PromQL subset, HTTP handler, Node server |
+| `mock/` | Mock backend: synthetic data, PromQL subset, HTTP handler, Node server; fails on request as the real API fails |
+| `real/` | The real viz API on one machine: `wrangler dev --local` of gateway, write path, query Worker and control plane; the seed |
 | `src/app.css` | Layout, and uPlot/CodeMirror/`<dialog>` adapted to the tokens. Tokens only |
 | `e2e/run.cjs` | End-to-end and accessibility checks of the behaviour |
 | `e2e/design.cjs` | Design-system checks: colour, waiting, keyboard, touch, narrow |
 | `e2e/fixes.cjs` | Checks of the fixes to the design review (B1, B3, M2 to M5, M7) |
-| `e2e/measure.cjs` | Speed budgets, before or after, for 4, 36 and 200 series (`e2e/measurements/*.json`) |
-| `e2e/summarise.cjs` | Prints the before/after speed table from the measurement files |
+| `e2e/errors.cjs` | What a person sees when the API refuses, is busy or stops a query (against the mock's failures) |
+| `e2e/contract.cjs` | The contract test: the same 70 requests to the real API and to the mock, compared |
+| `e2e/real.cjs` | The app on the real API: flows, the same reading of the same data as on the mock, every refusal |
+| `e2e/real-api-shots.cjs` | Before/after images of what this change alters on screen |
+| `e2e/measure.cjs` | Speed budgets, desktop or phone (`--phone`), for 4, 36 and 200 series (`e2e/measurements/*.json`) |
+| `e2e/fingerprint.cjs` | What a build renders for the three speed cases (canvas pixels, legend, table, text, JSON), to compare builds |
+| `e2e/summarise.cjs` | Prints speed tables from the measurement files, with the load of every column |
 | `e2e/mutants.cjs` | Breaks one property at a time and records which check catches it (two sets) |
 | `e2e/fix-shots.cjs` | Before/after images of the B1 and focus cases |
 | `e2e/capture.sh`, `e2e/states.cjs` | Design-review images |

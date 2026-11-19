@@ -31,6 +31,7 @@ import {
   publisher,
   putObjects,
   readAvroKey,
+  putSegment,
   readMetadata,
   snapshotEntries,
   type PublisherStub,
@@ -94,12 +95,13 @@ describe('version order and gaps', () => {
   it('stops at a hole in the versions, reports it, and continues once the hole is filled', async () => {
     const { cell, tenant } = fresh()
     const [a, b] = [tenant('a'), tenant('b')]
-    const u1 = await addUnit(a, pairUnit(cell, a, 1, 1))
-    const u2 = await addUnit(a, pairUnit(cell, a, 2, 2))
-    const u3 = await addUnit(a, pairUnit(cell, a, 3, 3))
+    // One segment per unit: [0,0] base, [1,2] registration and unit 1, [3,3] unit 2, [4,4] unit 3.
+    const u1 = await addUnit(a, pairUnit(cell, a, 1, 1), { drain: true })
+    const u2 = await addUnit(a, pairUnit(cell, a, 2, 2), { drain: true })
+    const u3 = await addUnit(a, pairUnit(cell, a, 3, 3), { drain: true })
     await addUnit(b, pairUnit(cell, b, 1, 1))
-    const top = (await ledgerVersion(a)).version // base=0, register+unit1=1.., so the units are the last versions
-    await mirror(a, cell, { skip: [top - 1] }) // unit 2 is missing; unit 3 is there
+    const top = (await ledgerVersion(a)).version
+    await mirror(a, cell, { skip: [top - 1] }) // unit 2's segment is missing; unit 3's is there
     await mirror(b, cell)
 
     const p = publisher(cell)
@@ -121,16 +123,18 @@ describe('version order and gaps', () => {
     expect(await p.pending()).toEqual([a])
     expect(await runInDurableObject(p, (_i, state) => state.storage.getAlarm())).not.toBeNull()
 
-    // Still a hole: the alarm changes nothing.
+    // Still a hole, now right after the cursor: the alarm changes nothing, and nothing after the hole is read.
     await runDurableObjectAlarm(p)
     expect((await icebergLive(cell, 'metric_samples')).length).toBe(2)
+    expect((await p.cursors('metric_samples'))[a]).toEqual({ ledgerIncarnation: 1, version: top - 2 })
 
     await mirror(a, cell)
     expect(await runDurableObjectAlarm(p)).toBe(true)
     await expectPublished(cell, [a, b])
     await expectVerified(p)
     expect(await p.pending()).toEqual([])
-    expect(await runInDurableObject(p, (_i, state) => state.storage.getAlarm())).toBeNull()
+    // Nothing is due for publication; the alarm stays only for the sweep after these commits.
+    expect(Object.keys((await p.schedule()).due)).toEqual(['sweep'])
   })
 
   it('refuses a log whose changes do not fit the published state', async () => {
@@ -140,13 +144,10 @@ describe('version order and gaps', () => {
     await mirror(a, cell)
     const p = publisher(cell)
     await p.publish()
-    // A forged change that removes a file which was never live.
+    // A forged segment whose change removes a file which was never live.
     const v = (await ledgerVersion(a)).version + 1
     const ghost = fileFor(cell, a, 'metric_samples', 'ghost').key
-    await env.BUCKET.put(
-      `${cell}/ledger/tenant=${a}/1/${String(v).padStart(12, '0')}.json`,
-      JSON.stringify({ ledgerIncarnation: 1, version: v, at: 0, kind: 'replace', added: [], removed: [ghost] }),
-    )
+    await putSegment(cell, a, 1, [{ ledgerIncarnation: 1, version: v, at: 0, kind: 'replace', added: [], removed: [ghost], removedFiles: [{ key: ghost, table: 'metric_samples' }] }])
     const r = await p.publish()
     expect(r.tenants[0]).toMatchObject({ status: 'inconsistent' })
     expect(r.tenants[0]!.detail).toContain(ghost)
@@ -225,13 +226,13 @@ describe('net changes', () => {
   it('finishes a backlog larger than one publish reads, from the alarm', async () => {
     const { cell, tenant } = fresh()
     const a = tenant('a')
-    for (let i = 1; i <= 12; i++) await addUnit(a, pairUnit(cell, a, i, i))
+    for (let i = 1; i <= 12; i++) await addUnit(a, pairUnit(cell, a, i, i), { drain: true })
     await mirror(a, cell)
     const p = publisher(cell)
     await p.configure({ maxChangesPerTenant: 5 })
     const r = await p.publish()
     expect(r.tenants[0]!.status).toBe('more')
-    // Five changes: the stream's registration and four units.
+    // Five changes in whole segments: the stream's registration and four units.
     expect((await icebergLive(cell, 'metric_samples')).length).toBe(4)
     await expectVerified(p)
     expect(await p.pending()).toEqual([a])
@@ -575,7 +576,7 @@ describe('snapshot expiry and the orphan sweep', () => {
     await travel()
     await expectVerified(p)
     // Sweeping never touches data files.
-    expect((await listKeys(`${cell}/data/`)).length).toBe(10)
+    expect((await listKeys(`${env.CELL}/data/`)).filter((k) => k.includes(`/tenant=${a}/`)).length).toBe(10)
   })
 
   it('does not delete the files of a commit that is in flight', async () => {
@@ -884,11 +885,16 @@ describe('driving', () => {
     expect(await p.pending()).toEqual([a])
     expect(await metadataVersions(cell, 'metric_samples')).toEqual([])
 
-    await evictDurableObject(p) // the pending set and the alarm are in storage
+    await evictDurableObject(p) // the pending set, the deadline and the alarm are in storage
     expect(await runDurableObjectAlarm(p)).toBe(true)
     await expectPublished(cell, [a])
     expect(await p.pending()).toEqual([])
-    expect(await alarm()).toBeNull()
+    // The commit left one deadline: the sweep, an orphan grace period later. Then nothing.
+    const s = await p.schedule()
+    expect(Object.keys(s.due)).toEqual(['sweep'])
+    await p.advanceClock(s.due.sweep! - s.now)
+    expect(await runDurableObjectAlarm(p)).toBe(true)
+    expect(await p.schedule()).toMatchObject({ due: {}, alarm: null })
     expect(await runDurableObjectAlarm(p)).toBe(false)
     // An idle publish does not create an alarm either.
     await p.publish()

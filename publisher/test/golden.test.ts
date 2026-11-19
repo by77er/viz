@@ -8,11 +8,10 @@
  */
 import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
-import { ledgerLogKey } from '../../contracts/ledger'
 import { emptyMetadata, MANIFEST_ENTRY_SCHEMA, MANIFEST_LIST_SCHEMA, TABLE_DEFS, TABLE_NAMES } from '../src/iceberg'
 import { FORMATS } from '../src/schema'
 import { expectGolden, goldenDir } from './golden'
-import { addUnit, fresh, keyOf, ledgerVersion, mirror, pairUnit, publisher, readMetadata } from './helpers'
+import { addUnit, fresh, keyOf, ledgerVersion, mirror, pairUnit, publisher, readMetadata, segmentsOf } from './helpers'
 
 type Format = keyof typeof FORMATS
 const file = (f: Format) => `formats/${f}.v${FORMATS[f]}.json`
@@ -70,11 +69,13 @@ describe('golden formats', () => {
     const meta = await readMetadata(cell, 'metric_samples')
     const snap = meta.snapshots.find((s) => s['snapshot-id'] === meta['current-snapshot-id'])!
     const raw = await (await env.BUCKET.get(keyOf(snap.summary['viz.ledger-cursors'] as string)))!.text()
-    const scrub = (s: string) => s.replaceAll(cell, '<cell>').replaceAll(t, '<tenant>').replace(/"snapshotId":\d+/, '"snapshotId":"<id>"').replace(/"ledgerIncarnation":\d+/g, '"ledgerIncarnation":"<inc>"')
+    const scrub = (s: string) => s.replaceAll(cell, '<cell>').replaceAll(env.CELL, '<cell>').replaceAll(t, '<tenant>').replace(/"snapshotId":\d+/, '"snapshotId":"<id>"').replace(/"ledgerIncarnation":\d+/g, '"ledgerIncarnation":"<inc>"')
     expectGolden(file('r2.cursors'), { format: 'r2.cursors', version: FORMATS['r2.cursors'], body: scrub(raw) })
 
+    // The change as the ledger logs it: one line of a segment (contracts/LEDGER-LOG.md).
     const { ledgerIncarnation, version } = await ledgerVersion(t)
-    const change = await (await env.BUCKET.get(`${cell}/${ledgerLogKey(t, ledgerIncarnation, version)}`))!.text()
+    const seg = (await segmentsOf(cell, t, ledgerIncarnation)).find((s) => s.first <= version && version <= s.last)!
+    const change = (await (await env.BUCKET.get(seg.key))!.text()).split('\n')[1 + version - seg.first]!
     const scrubbed = scrub(change).replace(/"at":\d+/g, '"at":"<ms>"')
     expectGolden(file('read.ledger-change'), { format: 'read.ledger-change', version: FORMATS['read.ledger-change'], addUnit: JSON.parse(scrubbed) })
   })

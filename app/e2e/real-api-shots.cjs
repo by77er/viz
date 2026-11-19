@@ -33,8 +33,14 @@ const STATES = [
   ...states('readless-key-403', [key('e2e-write'), { wait: 2500 }]),
   // The API's time limit: 503 timeout.
   ...states('timeout-503', [key('e2e-read'), { wait: 2500 }, fail('timeout', 1), { wait: 300 }, { click: '[data-testid=run]' }, { wait: 2000 }]),
-  // Busy: 503 with no Retry-After, four times; the image at 1.5 s, while the first retry waits.
+  // Busy: the real API's 503 with Retry-After: 1, four times; the image at 0.7 s, while the first retry waits.
   ...states('busy-503', [key('e2e-read'), { wait: 2500 }, fail('busy', 4), { wait: 300 }, { click: '[data-testid=run]' }, { wait: 700 }]),
+  // A 503 page that is not the API's (no envelope, no Retry-After), four times: the error state after 1 + 2 + 4 s.
+  ...states('platform-503', [key('e2e-read'), { wait: 2500 }, fail('platform', 4), { wait: 300 }, { click: '[data-testid=run]' }, { wait: 9000 }]),
+  // A key the API does not know: 401 (the banner and the error state say the key was not accepted).
+  ...states('unknown-key-401', [key('e2e-unknown'), { wait: 2500 }]),
+  // A step too small for the range: 400 "exceeded maximum resolution" (about the step, not the query).
+  ...states('step-too-small-400', [key('e2e-read'), { wait: 2500 }]).map((s) => ({ ...s, url: `/explore?q=${q(lib.Q_RATE)}&${W}&step=500ms` })),
   // A warning with the result (a Prometheus-compatible store answering in part).
   ...states('warning', [key('e2e-read'), { wait: 2500 }, { eval: `fetch('${MOCK}/__mock/warn?text=${q('partial response: 1 of 4 stores did not answer')}&count=1')` }, { wait: 300 }, { click: '[data-testid=run]' }, { wait: 2500 }]),
 ]

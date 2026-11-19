@@ -895,7 +895,13 @@ export async function cardinality(c: Context, start: number, end: number, lookba
     c.cost.bytesRead = bytes
     const pool = leafPoolSize(c.env)
     const rows = files.reduce((a, f) => a + f.rows, 0)
-    const L = hooks.forceLeaves ?? (bytes > c.limits.maxFetchBytes ? Math.min(Math.max(2, Math.ceil(rows / 250_000)), Math.max(1, Math.min(c.limits.maxLeaves, pool))) : 1)
+    // Series in the window, from the series files alone (tail series come on top).
+    const est = seriesEstimate(files, files.map(() => null))
+    c.cost.seriesEstimate = est
+    const per = c.limits.cardinalitySplitAboveSeries
+    const L =
+      hooks.forceLeaves ??
+      (bytes > c.limits.maxFetchBytes || est > per ? Math.min(Math.max(2, Math.ceil(rows / 250_000), Math.ceil(est / per)), Math.max(1, Math.min(c.limits.maxLeaves, pool))) : 1)
     let summaries: Uint8Array[]
     if (L === 1) {
       c.cost.execution = 'single'

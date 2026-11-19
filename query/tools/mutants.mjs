@@ -361,6 +361,13 @@ const MUTANTS = [
     find: '      const refusal = refusalBeforeFetch(c, splitting, scan, wanted.length, lakeBytesAll)\n',
     replace: '      const refusal = refusalBeforeFetch(c, splitting, scan, wanted.length, lakeBytesAll)\n      if (explain) await Promise.all((await shardsOf(c, snap.watermarks)).map((s) => readTail(c, s, snap.watermarks.find((w) => w.shard === s), known)))\n',
   },
+  {
+    name: 'The cardinality report ignores its series estimate (one place whatever the series, until the files pass maxFetchBytes)',
+    tests: ['test/cardinality.test.ts'],
+    file: 'src/coordinator.ts',
+    find: '(bytes > c.limits.maxFetchBytes || est > per ?',
+    replace: '(bytes > c.limits.maxFetchBytes ?',
+  },
 ]
 
 function run(cmd, args, opts = {}) {

@@ -7,6 +7,7 @@
     "typecheck": "tsc --noEmit",
     "mutants": "node scripts/mutants.mjs",
     "bench": "vitest run test/bench.test.ts --reporter=verbose",
+    "bench:anomaly": "vitest run --config vitest.measure.config.ts --maxWorkers=1 --reporter=verbose",
     "independent": "vitest run test/independent.test.ts && cd tools/promcheck && VIZ_CAPTURE=../../.capture go test -count=1 -v ./..."
   },
   "devDependencies": {

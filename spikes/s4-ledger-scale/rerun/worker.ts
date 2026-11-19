@@ -19,6 +19,8 @@ export { Ledger as LedgerAsBuilt } from '../../../ledger/bench/asbuilt/ledger'
 export class Ledger extends Current {
   async wipe(): Promise<void> {
     await this.ctx.storage.deleteAll()
+    // Durable before the reset: an abort discards writes that are not yet confirmed.
+    await this.ctx.storage.sync()
     this.ctx.abort('storage wiped by the S4 spike')
   }
 }
@@ -122,26 +124,35 @@ export default {
     }
     if (u.pathname === '/rebuild') {
       const tenant = u.searchParams.get('tenant')!
-      const ledger = env.LEDGER.get(env.LEDGER.idFromName(tenant))
-      const before = await ledger.plan({ table: 'metric_samples', minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })
-      await ledger.drain()
-      await ledger.wipe().catch(() => undefined) // the object resets itself
-      const t0 = Date.now()
-      let refusals = 0
-      let after
-      for (;;) {
-        try {
-          after = await ledger.plan({ table: 'metric_samples', minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })
-          break
-        } catch (e) {
-          if (!String(e).includes('ledger_unavailable')) throw e
-          refusals++
+      const stub = () => env.LEDGER.get(env.LEDGER.idFromName(tenant))
+      const all = { table: 'metric_samples' as const, minTs: 0, maxTs: Number.MAX_SAFE_INTEGER }
+      // A plan, waiting through `ledger_unavailable` (an incarnation starting) and through a
+      // stub broken by the reset; any other error is reported, not thrown.
+      const planWait = async (limitMs: number) => {
+        const t0 = Date.now()
+        let refusals = 0
+        let other: string | null = null
+        for (;;) {
+          try {
+            return { plan: await stub().plan(all), ms: Date.now() - t0, refusals, other }
+          } catch (e) {
+            const m = String(e)
+            if (m.includes('ledger_unavailable')) refusals++
+            else other ??= m.slice(0, 300)
+          }
+          if (Date.now() - t0 > limitMs) return { plan: null, ms: Date.now() - t0, refusals, other }
+          await new Promise((r) => setTimeout(r, 20))
         }
-        if (Date.now() - t0 > 120_000) return Response.json({ error: 'not rebuilt after 120 s', refusals }, { status: 500 })
       }
-      const ms = Date.now() - t0
-      const same = after.files.length === before.files.length && JSON.stringify(after.watermarks) === JSON.stringify(before.watermarks)
-      return Response.json({ tenant, ms, refusals, files: after.files.length, same, version: after.version, incarnation: after.ledgerIncarnation })
+      const before = await planWait(120_000)
+      if (!before.plan) return Response.json({ error: 'not serving before the wipe', ...before }, { status: 500 })
+      await stub().drain()
+      const status = await stub().logStatus()
+      await stub().wipe().catch(() => undefined) // the object resets itself
+      const after = await planWait(120_000)
+      if (!after.plan) return Response.json({ error: 'not rebuilt after 120 s', ...after }, { status: 500 })
+      const same = JSON.stringify(after.plan.files) === JSON.stringify(before.plan.files) && JSON.stringify(after.plan.watermarks) === JSON.stringify(before.plan.watermarks) && after.plan.version === before.plan.version
+      return Response.json({ tenant, ms: after.ms, refusals: after.refusals, other_error: after.other, files: after.plan.files.length, same, version: after.plan.version, incarnation: after.plan.ledgerIncarnation, segments_before: status.segmentsSinceCheckpoint, rebuilt: await stub().logStatus() })
     }
     if (u.pathname === '/agree') {
       // The counterfactual's precondition: the same workload (one writer, `units` units, in
