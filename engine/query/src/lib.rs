@@ -41,7 +41,7 @@ pub use error::{ErrorType, Limit, QueryError};
 pub use limits::{estimate_depth, Limits};
 pub use meta::{label_names, label_names_with, label_values, label_values_with, series, series_with, Labels};
 pub use plan::{plan, plan_with, FetchRange};
-pub use prune::{file_plan, files_needed, sample_plan, scan_rows, FilePlan, FileRead, PartFilter, ReadPlan, RANGE_GAP};
+pub use prune::{file_plan, files_needed, part_plan, part_sids, sample_plan, scan_rows, FilePlan, FileRead, PartFilter, ReadPlan, RANGE_GAP};
 pub use source::{to_storage_matcher, Stats, StorageSource};
 pub use split::{split_plan, SplitKey, SplitPlan};
 pub use viz_promql::{EvalOptions, MatchOp, Matcher, Matrix, SelectorInfo, SeriesSource, Value};

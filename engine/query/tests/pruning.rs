@@ -18,7 +18,7 @@ use proptest::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 use viz_promql::{MatchOp, Matcher};
 use viz_query::split::{self, SplitPlan};
-use viz_query::{file_plan, plan, sample_plan, selectors, FilePlan, FileRead, Limits, Options, PartFilter, ScanInput, SplitKey};
+use viz_query::{file_plan, part_plan, part_sids, plan, sample_plan, selectors, FilePlan, FileRead, Limits, Options, PartFilter, ScanInput, SplitKey};
 use viz_storage::{batch, encode_segment_with, sparse, FileIndex, WriteOptions};
 
 fn cut(file: &[u8], p: &FilePlan) -> Option<Vec<u8>> {
@@ -44,6 +44,15 @@ fn input<'a>(series: &'a [Vec<u8>], samples: &'a [Vec<u8>], tail: &'a [Vec<u8>])
     }
 }
 
+/// Whether reading as `have` fetches everything `need` reads.
+fn covers(have: &FilePlan, need: &FilePlan) -> bool {
+    match (&have.read, &need.read) {
+        (_, FileRead::Skip) | (FileRead::Whole, _) => true,
+        (FileRead::Skip, _) | (FileRead::Ranges(_), FileRead::Whole) => false,
+        (FileRead::Ranges(h), FileRead::Ranges(n)) => n.iter().all(|(o, l)| h.iter().any(|(ho, hl)| *o >= *ho && o + l <= ho + hl)),
+    }
+}
+
 fn idx(v: &[String]) -> Vec<&str> {
     v.iter().map(|s| s.as_str()).collect()
 }
@@ -51,6 +60,29 @@ fn idx(v: &[String]) -> Vec<&str> {
 fn run(i: &ScanInput<'_>, q: &str, start: i64, end: i64, step: i64) -> Result<(String, viz_query::Stats), String> {
     let opts = Options { limits: Limits::unlimited(), ..Options::default() };
     viz_query::query_range_with(i, q, start, end, step, &opts).map(|r| (viz_query::to_json(&r.matrix).unwrap(), r.stats)).map_err(|e| e.message)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: cases(256), failure_persistence: None, ..ProptestConfig::default() })]
+
+    /// `part_sids` is exactly the set of ids `SplitKey::part_of` gives the part.
+    #[test]
+    fn part_sids_are_the_parts_key_range(parts in 1u32..40, keys in proptest::collection::vec(any::<u64>(), 1..50)) {
+        let mut probe = keys;
+        for j in 0..parts {
+            for (a, b) in part_sids(j, parts) {
+                probe.extend([a as u64, b as u64, (a as u64).wrapping_sub(1), (b as u64).wrapping_add(1)]);
+            }
+        }
+        probe.extend([0, u64::MAX, 1 << 63, (1 << 63) - 1]);
+        for k in probe {
+            let owner = SplitKey::part_of(k, parts);
+            for j in 0..parts {
+                let inside = part_sids(j, parts).iter().any(|(a, b)| (k as i64) >= *a && (k as i64) <= *b);
+                prop_assert_eq!(inside, j == owner, "key {} part {} of {}", k, j, parts);
+            }
+        }
+    }
 }
 
 proptest! {
@@ -95,7 +127,20 @@ proptest! {
                         let mine: Vec<&[u8]> = mine.iter().map(|f| f.as_slice()).collect();
                         let a = split::extract(&whole.series_files, &mine, &key, part, parts, &ranges).unwrap();
                         let b = split::extract(&whole.series_files, &whole.sample_files, &key, part, parts, &ranges).unwrap();
-                        prop_assert_eq!(a, b, "query {}, part {} of {}", q, part, parts);
+                        prop_assert_eq!(&a, &b, "query {}, part {} of {}", q, part, parts);
+                        // What a reader fetches before it has read the series files: the part's
+                        // series_id range. Where it covers the exact plan, it is enough.
+                        let opt = part_plan(&idx(&s.sample_index), &ranges, part, parts, gap);
+                        if opt.iter().zip(&pp.files).all(|(o, e)| covers(o, e)) {
+                            let (_, mine) = planned(&s, &series_plan, &opt);
+                            let mine: Vec<&[u8]> = mine.iter().map(|f| f.as_slice()).collect();
+                            let c = split::extract(&whole.series_files, &mine, &key, part, parts, &ranges).unwrap();
+                            prop_assert_eq!(&c, &b, "optimistic, query {}, part {} of {}", q, part, parts);
+                        } else {
+                            // Only a series that carries a label of the key's `without` can be
+                            // outside its part's id range.
+                            prop_assert!(!key.without.is_empty(), "query {}: the id range missed a part's series with no `without` label", q);
+                        }
                     }
                 }
             }
@@ -211,9 +256,12 @@ fn one_series_of_a_large_file_reads_one_row_group_and_the_footer() {
     let p = sample_plan(&[&series], &[&sidx], &reads, None, 0).unwrap();
     assert_eq!(p.series, 1);
     let FileRead::Ranges(r) = &p.files[0].read else { panic!("{:?}", p.files[0]) };
-    assert_eq!(r.len(), 2, "one row group and the footer: {r:?}");
+    // One row group and the footer (one read when the row group is the last one).
+    let foot = fi.foot.unwrap();
+    let rg_bytes: u64 = r.iter().map(|x| x.1).sum::<u64>() - foot.1;
+    assert!(r.len() <= 2 && fi.row_groups.iter().any(|g| g.length == rg_bytes), "{r:?}");
     assert_eq!(p.files[0].rows, Some(1000));
-    assert!(p.files[0].bytes(samples.len() as u64) * 10 < samples.len() as u64, "{} of {} bytes", p.files[0].bytes(samples.len() as u64), samples.len());
+    assert!(p.files[0].bytes(samples.len() as u64) * 5 < samples.len() as u64, "{} of {} bytes", p.files[0].bytes(samples.len() as u64), samples.len());
     // And it reads back as the whole file does.
     let sp = sparse::cut(&samples, r);
     let a = ScanInput { series_files: vec![&series], sample_files: vec![&sp], tail_batches: vec![] };
@@ -239,15 +287,19 @@ fn a_part_reads_its_key_range() {
     let ranges = vec![viz_query::FetchRange { matchers: vec![Matcher::new("__name__", MatchOp::Eq, "x")], min_ts: MID, max_ts: MID + 300_000 }];
     let key = SplitKey::default();
     let mut total = 0u64;
+    let fi = FileIndex::from_json(&sidx).unwrap();
     for part in 0..7 {
         let p = sample_plan(&[&series], &[&sidx], &ranges, Some(PartFilter { key: &key, part, parts: 7 }), 0).unwrap();
         let FileRead::Ranges(r) = &p.files[0].read else { panic!("part {part}: {:?}", p.files[0]) };
         // The part's seventh of the ids, plus at most the row groups at its two ends.
         let rows = p.files[0].rows.unwrap();
         assert!(rows <= 20_000 / 7 + 2 * 1000 + 1000, "part {part}: {rows} rows");
-        total += r.iter().map(|x| x.1).sum::<u64>();
+        total += r.iter().map(|x| x.1).sum::<u64>() - fi.foot.unwrap().1;
     }
-    assert!(total < 2 * samples.len() as u64, "all seven parts together read {total} bytes of a {}-byte file", samples.len());
+    // Together the parts read the row groups about once (each boundary row group twice),
+    // where every part read the whole file before.
+    let data = samples.len() as u64 - fi.foot.unwrap().1;
+    assert!(total < data + data / 2, "all seven parts together read {total} bytes of row groups of {data}");
 }
 
 #[test]

@@ -482,6 +482,106 @@ baseline and not by a robust z-score over the same day.
 - **Burn rate and cross-series** cannot be scored on NAB (no SLO data, univariate); they are
   verified against the workbook and on synthetic groups.
 
+## Second benchmark: SMD, with every parameter frozen on NAB
+
+The question: do NAB's conclusions, above all the post hoc quantile spread, hold on data the
+choice has never seen? Every number in this section was **measured on this machine**.
+
+### Dataset and licence
+
+**SMD, the Server Machine Dataset** (Su et al., "Robust Anomaly Detection for Multivariate Time
+Series through Stochastic Recurrent Neural Network", KDD 2019): 28 machines of "a large Internet
+company", 38 metrics each, "5-week-long", split in equal halves (train / test), with labels for
+"whether a point is an anomaly and the dimensions [that] contribute to every anomaly" (verified:
+the repository README). The 1-minute step and the labelling by domain experts from incident
+reports are from the paper (training knowledge, not re-read here); the row counts fit the step
+(2 × 28,479 rows = 39.6 days for machine-1-1). Real server metrics, which is what viz's ruler
+watches. **Licence: MIT** — verified: the repository's `LICENSE`
+(`github.com/NetManAIOps/OmniAnomaly`, "Copyright (c) 2021 NetManAIOps-OmniAnomaly"), read on
+2026-11-19; its README gives no separate terms for the data, which sit in the same repository.
+MIT allows this use. The data are fetched at run time (`bash bench/fetch-smd.sh`, 112 files,
+464 MB) into `bench/data/smd/`, which is git-ignored; nothing from SMD is stored here, so
+`THIRD_PARTY.md` is unchanged. `bench/smd-manifest.json` keeps the SHA-256 of every file.
+
+Not chosen (training knowledge, not re-checked here): Yahoo S5 (Webscope terms, research use
+only), the AIOps 2018 KPI set (no licence known), TSB-AD (bundles NAB itself and Yahoo).
+
+### Order of work (no peeking)
+
+1. `bench/freeze.ts` (2026-11-19T02:27:28Z) tuned every detector on **all of NAB** — the same
+   grids as the held-out protocol, alarms as onsets, best NAB score per cost profile — and wrote
+   `bench/smd-frozen.json`: the chosen configurations, the SMD protocol below, its hypotheses and
+   decision rule, and the SHA-256 of `src/`, `bench/adapters.ts` and `bench/nab.ts`. It refuses
+   to overwrite the file.
+2. `bench/fetch-smd.sh` refuses to run before that file exists; SMD was first fetched at
+   02:28:39Z (`bench/data/smd/FETCHED_AT`). `bench/smd-run.ts` refuses to score if the pinned
+   code changed or if the data were fetched before the freeze, and records the hashes of the
+   frozen file and of the scorer in its results.
+3. Nothing was tuned on SMD. The scorer (`bench/smd.ts`) was written and its tests and mutants
+   passed before any detector ran on SMD, and it was not changed afterwards.
+
+Frozen configurations (standard / low FP / low FN where they differ; NAB score in sample, all
+58 files, so above the held-out numbers):
+
+| detector | configuration | NAB in sample (std / low FP / low FN) |
+|---|---|---|
+| threshold (probation range ± m·range) | m 0.5 / 1 / 0.5 | 29.1 / 17.7 / 36.0 |
+| ewma | half-life 100, k 8 / 8 / 6 | 30.1 / 3.9 / 40.8 |
+| robust_z (MAD) | window 1000, k 10 | −105.9 / −282.4 / −45.6 |
+| seasonal (MAD; robust z where no period) | 1 season, k 9, robust | −65.8 / −202.8 / −18.9 |
+| stl | k 9 | −352.2 / −795.4 / −203.5 |
+| cusum | k 1, h 20 | 15.1 / −51.2 / 38.8 |
+| pelt | minShift 8 | −123.5 / −321.3 / −55.9 |
+| robust_z, MAD with k up to 40 (post hoc) | window 1000 / 1000 / 50, k 40 | −2.4 / −40.7 / 13.2 |
+| seasonal, MAD with k up to 40 (post hoc) | 3 seasons, k 25 / 40 / 25 | 6.4 / −25.8 / 22.1 |
+| **robust_z, quantile spread** | window 4000, k 2 / 2 / 1.5 | 46.8 / 33.7 / 55.6 |
+| **seasonal, quantile spread** | 1 season, k 2 / 3 / 2, robust | 41.4 / 22.7 / 49.7 |
+| random (trivial: each row flagged with probability p, data never read; mean of 5 seeds) | p 0.003 / 0.0001 / 0.003 | 8.7 / −0.5 / 23.8 |
+
+`seasonal_daily` (a daily period forced where none is detected) was not run: it exists because
+NAB's 750-row probation can be too short to detect a period; SMD's history is 2–3 weeks.
+
+### Protocol (frozen with the configurations)
+
+- **Series**: one per (machine, metric): the training half followed by the test half; a series
+  constant over both halves is excluded. The **training half is history**: never scored, it is
+  the adapters' probationary period (the static threshold's range, seasonality detection) and
+  warms every detector, which runs causally over history and test. The whole test half is
+  scored. Rows are 1 minute apart; parameters stay in points as chosen on NAB (mostly 5-minute
+  data), so a 4,000-point window is 2.8 days here instead of 14: part of what is tested.
+- **Labels**: a series' segments are the `interpretation_label` ranges that list its metric.
+  The ranges' index convention was taken from agreement with `test_label` (0-based, end
+  exclusive: 52 of 708,420 rows disagree; the next best convention 373).
+- **Primary score: NAB's scorer**, unchanged (`bench/nab.ts`: scaled sigmoid, first detection
+  per window, FP weighting, three cost profiles, normalised by the null detector and the window
+  count), alarms as onsets, each profile with its own frozen configuration. **Windows** follow
+  NAB's labeler (`windowLength = 0.1 · length / #anomalies`, centred on the anomaly) applied to
+  segments: w = ⌊0.1 · nTest / k⌋ for a series with k segments, window = [start − ⌊w/2⌋,
+  end + ⌊w/2⌋], clipped, overlaps merged. **Don't care**: a machine segment that does not list
+  the metric, widened by 15 minutes, is not scored outside the series' own windows (the labels
+  say the machine was anomalous, not whether this metric showed it). The same table without
+  that rule ("strict") is in `bench/out/smd-results.md`.
+- **Event metric** (simple, fixed tolerance): a segment is detected if an onset of its series
+  lies in [start − 15 min, end + 15 min]; an onset is true if it lies in such a span, false
+  otherwise (onsets in don't-care spans excluded); precision, recall and F1 pooled over the
+  corpus. 15 minutes: about a `for: 5m` plus two evaluation intervals; not varied.
+- **Machine view** (secondary, what a page per machine would see): a machine is flagged while
+  any of its series is; onsets of that union against the `test_label` runs, same tolerance,
+  and false onsets per machine-day.
+- **Uncertainty**: paired bootstrap over the 28 machines (2,000 resamples, seed 20261119),
+  95 % percentile intervals for differences against EWMA and the threshold.
+- **Decision rule**, written before: the quantile spread *generalises* if, standard profile, its
+  score exceeds EWMA's and the threshold's, its event F1 exceeds EWMA's, and the interval of
+  its score minus EWMA's lies above 0; point estimates in favour with an interval including 0:
+  *not confirmed*; otherwise *does not generalise*.
+- **Exact speed-ups** (checked at run time): the robust z family runs from windowPoints + 8
+  points before the test half (its state is the trailing window), and configurations differing
+  only in k share one call (a point is anomalous iff ok and score > k). On the first series of
+  every machine both are compared with the plain adapter over the whole series; any difference
+  aborts the run.
+
+<!-- SMD-RESULTS -->
+
 ## Costs (measured here, Node 22.23; CPU time, `bench/cpu.ts`)
 
 | detector | batch, µs CPU per 1,000 points | one tick through JSON state, µs | state, bytes | cold-start history | class per tick / cold start |

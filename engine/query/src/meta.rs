@@ -29,6 +29,13 @@ pub type Labels = Vec<(String, String)>;
 /// Every distinct series (by label set) that matches at least one of `sets` and is in
 /// `[min_ts, max_ts]` as decided per file, in label order. `max_series` bounds how many.
 pub fn listed(input: &ScanInput<'_>, sets: &[&[Matcher]], min_ts: i64, max_ts: i64, limits: &Limits) -> Result<Vec<Labels>, QueryError> {
+    listed_as(input, sets, min_ts, max_ts, limits, &|l| l)
+}
+
+/// [`listed`], keeping of each listed series only what `keep` makes of its labels (the
+/// label calls keep names, or one value), so a large listing holds little. Results are
+/// sorted and de-duplicated after `keep`; `max_series` counts series before it.
+fn listed_as(input: &ScanInput<'_>, sets: &[&[Matcher]], min_ts: i64, max_ts: i64, limits: &Limits, keep: &dyn Fn(Labels) -> Labels) -> Result<Vec<Labels>, QueryError> {
     let compiled: Vec<Vec<CompiledMatcher>> =
         sets.iter().map(|s| s.iter().map(|m| m.compile()).collect::<Result<Vec<_>, _>>()).collect::<Result<_, _>>().map_err(QueryError::from_promql)?;
     // Names, when every set pins `__name__` with `=`: row groups of other names are not read.
@@ -66,7 +73,7 @@ pub fn listed(input: &ScanInput<'_>, sets: &[&[Matcher]], min_ts: i64, max_ts: i
                 None => {
                     let l = catalog::parse_labels(row.labels_json)?;
                     let s = matches(&l).then(|| {
-                        matched.push((l, false));
+                        matched.push((keep(l), false));
                         (matched.len() - 1) as u32
                     });
                     seen.insert(row.series_id, s);
@@ -97,7 +104,7 @@ pub fn listed(input: &ScanInput<'_>, sets: &[&[Matcher]], min_ts: i64, max_ts: i
                 None => {
                     let l: Labels = s.labels.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect();
                     let x = matches(&l).then(|| {
-                        matched.push((l, false));
+                        matched.push((keep(l), false));
                         (matched.len() - 1) as u32
                     });
                     seen.insert(s.series_id, x);
@@ -124,7 +131,8 @@ pub fn label_names(input: &ScanInput<'_>, matchers: &[Matcher], min_ts: i64, max
 /// [`label_names`] with explicit limits.
 pub fn label_names_with(input: &ScanInput<'_>, matchers: &[Matcher], min_ts: i64, max_ts: i64, limits: &Limits) -> Result<Vec<String>, QueryError> {
     let mut names = BTreeSet::new();
-    for l in listed(input, &[matchers], min_ts, max_ts, limits)? {
+    let keep = |l: Labels| l.into_iter().map(|(n, _)| (n, String::new())).collect();
+    for l in listed_as(input, &[matchers], min_ts, max_ts, limits, &keep)? {
         names.extend(l.into_iter().map(|(n, _)| n));
     }
     Ok(names.into_iter().collect())
@@ -146,8 +154,9 @@ pub fn label_values_with(
     limits: &Limits,
 ) -> Result<Vec<String>, QueryError> {
     let mut values = BTreeSet::new();
-    for l in listed(input, &[matchers], min_ts, max_ts, limits)? {
-        values.extend(l.into_iter().filter(|(n, _)| n == name).map(|(_, v)| v));
+    let keep = |l: Labels| l.into_iter().filter(|(n, _)| n == name).collect();
+    for l in listed_as(input, &[matchers], min_ts, max_ts, limits, &keep)? {
+        values.extend(l.into_iter().map(|(_, v)| v));
     }
     Ok(values.into_iter().collect())
 }

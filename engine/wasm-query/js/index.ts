@@ -21,7 +21,7 @@
  */
 import type { Matcher, PromMatrix, PromScalar, PromString, PromVector, ScanInput, SeriesData } from '../../../contracts/engine'
 
-export const ABI_VERSION = 2
+export const ABI_VERSION = 3
 
 /** Bounds on one query (`engine/query` `Limits`, plus the step cap of `viz-promql`). */
 export interface QueryLimits {
@@ -145,6 +145,61 @@ export function leafSummary(answer: Uint8Array): LeafSummary {
   return { status, gatheredSamples: n(0), gatheredSeries: n(1), loadedSamples: n(2), loadedSeries: n(3) }
 }
 
+/**
+ * How to read one file (`engine/query` `FilePlan`): skip it, read it whole, or range-read
+ * these `[offset, length]` byte ranges (its footer and the row groups needed; sorted,
+ * disjoint) and hand the engine `sparseFile(size, …)` of them.
+ */
+export type FileRead = 'skip' | 'whole' | [number, number][]
+
+export interface FilePlan {
+  /** Upper bound on the rows the reads decode from the file; null when its fragment does not parse. */
+  rows: number | null
+  read: FileRead
+}
+
+/** `samplePlan`'s answer. */
+export interface ReadPlan {
+  /** Series the reads select (summed over reads, per file in their window): exact for the lake. */
+  series: number
+  files: FilePlan[]
+}
+
+/** Ranges less than this many bytes apart are read as one (contracts/TABLES.md, "Reading part of a file"). */
+export const RANGE_GAP = 64 << 10
+
+/** Bytes a plan reads of a file of `size` bytes. */
+export function planBytes(p: FilePlan, size: number): number {
+  return p.read === 'skip' ? 0 : p.read === 'whole' ? size : p.read.reduce((a, r) => a + r[1], 0)
+}
+
+const SPARSE_MAGIC = [0x56, 0x5a, 0x53, 0x31] // "VZS1"
+
+/**
+ * A sparse file container (`engine/storage` `sparse`): the `segments` of a file of `size`
+ * bytes, each at its offset, as the engine takes a file it has only part of. Segments must
+ * be sorted and disjoint (as `FileRead` ranges are); the engine checks.
+ */
+export function sparseFile(size: number, segments: { offset: number; bytes: Uint8Array }[]): Uint8Array {
+  const data = segments.reduce((a, s) => a + s.bytes.byteLength, 0)
+  const out = new Uint8Array(16 + 16 * segments.length + data)
+  const dv = new DataView(out.buffer)
+  out.set(SPARSE_MAGIC, 0)
+  dv.setBigUint64(4, BigInt(size), true)
+  dv.setUint32(12, segments.length, true)
+  let at = 16
+  for (const s of segments) {
+    dv.setBigUint64(at, BigInt(s.offset), true)
+    dv.setBigUint64(at + 8, BigInt(s.bytes.byteLength), true)
+    at += 16
+  }
+  for (const s of segments) {
+    out.set(s.bytes, at)
+    at += s.bytes.byteLength
+  }
+  return out
+}
+
 export interface QueryEngine {
   /** What to fetch before evaluating: merged, clamped ranges. `startMs === endMs` plans an instant query. */
   plan(promql: string, startMs: number, endMs: number, stepMs: number, limits?: QueryLimits): FetchRange[]
@@ -177,6 +232,25 @@ export interface QueryEngine {
    * the fragment does not parse, so the bound is unknown and the file must be read.
    */
   scanRows(indexes: string[], ranges: FetchRange[]): (number | null)[]
+  /**
+   * For each index fragment: how to read the file for `ranges` by name and time alone
+   * (`engine/query` `file_plan`). For either table.
+   */
+  filePlan(indexes: string[], ranges: FetchRange[], gap?: number): FilePlan[]
+  /**
+   * Series-level pruning (`engine/query` `sample_plan`): resolve each read's matchers
+   * against `seriesFiles` (whole or sparse), keep `part`'s series if given, and say how to
+   * read each sample file (`indexes`: their fragments) so that only the footer and the row
+   * groups holding a selected series are fetched. `series`: what the reads select.
+   */
+  samplePlan(seriesFiles: Uint8Array[], indexes: string[], reads: FetchRange[], part?: { without: string[]; part: number; parts: number }, gap?: number): ReadPlan
+  /**
+   * One split part's reads from the fragments alone (`engine/query` `part_plan`): the row
+   * groups whose key range holds its `series_id` range. Enough for every series of the part
+   * that carries none of the key's `without` labels; `samplePlan` with the part says what
+   * the rest need.
+   */
+  partPlan(indexes: string[], ranges: FetchRange[], part: number, parts: number, gap?: number): FilePlan[]
   /** How a query is executed: split over leaves, or in one place and why. */
   splitPlan(promql: string, limits?: QueryLimits): SplitPlan
   /** Reader: the rows of `part` of `parts` in the sample files (precedence order) for `ranges`. */
@@ -232,6 +306,9 @@ type Op =
   | 'viz_q_merge'
   | 'viz_q_card_part'
   | 'viz_q_card_report'
+  | 'viz_q_file_plan'
+  | 'viz_q_sample_plan'
+  | 'viz_q_part_plan'
 type Module = Exports & Record<Op, (ptr: number, len: number) => number>
 
 const OPS: Record<Matcher['op'], number> = { '=': 0, '!=': 1, '=~': 2, '!~': 3 }
@@ -549,6 +626,15 @@ export function createQueryEngine(module: WebAssembly.Module): QueryEngine {
     series: (input, match, minTs, maxTs, limits = DEFAULT_LIMITS) => call('viz_q_series', metaReq(limits, minTs, maxTs).strs(match).scan(input), json<Record<string, string>[]>),
     filesNeeded: (indexes, ranges) => scanRows(indexes, ranges).map((rows) => rows !== 0),
     scanRows,
+    filePlan: (indexes, ranges, gap = RANGE_GAP) => call('viz_q_file_plan', new Request().u64(limit('gap', gap)).ranges(ranges).strs(indexes), json<FilePlan[]>),
+    samplePlan: (seriesFiles, indexes, reads, part, gap = RANGE_GAP) => {
+      const req = new Request().u64(limit('gap', gap))
+      if (part) req.u8(1).strs(part.without).count('part', part.part).count('parts', part.parts)
+      else req.u8(0)
+      return call('viz_q_sample_plan', req.ranges(reads).files(seriesFiles).strs(indexes), json<ReadPlan>)
+    },
+    partPlan: (indexes, ranges, part, parts, gap = RANGE_GAP) =>
+      call('viz_q_part_plan', new Request().u64(limit('gap', gap)).count('part', part).count('parts', parts).ranges(ranges).strs(indexes), json<FilePlan[]>),
     memoryBytes: () => (x ? x.memory.buffer.byteLength : 0),
     instances: () => created,
     reset: () => {

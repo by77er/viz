@@ -139,8 +139,11 @@ pub fn dataset(rng: &mut Rng) -> Value {
         let count = 10 + rng.below(60);
         let mut ts = T0 + rng.below(30) as i64 * S + rng.below(S as u64) as i64;
         let mut entries = Vec::new();
+        // A third of the data sets put rows on whole seconds, so that rows fall exactly on
+        // window edges (`(t - range, t]`) and query bounds.
+        let whole = rng.chance(33);
         for _ in 0..count {
-            ts += 1 + rng.below(20 * S as u64) as i64;
+            ts += if whole { (1 + rng.below(20)) as i64 * S } else { 1 + rng.below(20 * S as u64) as i64 };
             entries.push(json!({"ts": ts.to_string(), "line": line(rng)}));
         }
         streams.push(json!({"labels": labels, "entries": entries}));
@@ -374,7 +377,7 @@ pub fn queries(rng: &mut Rng) -> Vec<(String, String, bool)> {
 
 /// Query window `(start, end, step)`; instant queries use `end`.
 pub fn window(rng: &mut Rng, instant: bool) -> (i64, i64, i64) {
-    let start = T0 + rng.below(300) as i64 * S + rng.below(1000) as i64 * 1_000_000;
+    let start = T0 + rng.below(300) as i64 * S + if rng.chance(50) { 0 } else { rng.below(1000) as i64 * 1_000_000 };
     let end = start + (30 + rng.below(900)) as i64 * S;
     let step = *rng.pick(&[5 * S, 10 * S, 15 * S, 30 * S, 60 * S, 7_500_000_000]);
     if instant {

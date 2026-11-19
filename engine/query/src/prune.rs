@@ -218,6 +218,24 @@ pub fn sample_plan(series_files: &[&[u8]], indexes: &[&str], reads: &[FetchRange
         })
         .collect::<Result<_, QueryError>>()?;
     let part_needs_labels = part.is_some_and(|p| !p.key.without.is_empty());
+    // A series' split key is its series_id unless it carries a `without` label: as canonical
+    // JSON keys, `"name":` can only occur in the labels text as a key (a quote inside a
+    // value is escaped), so a text without any of them needs no parse to place the series.
+    let needles: Vec<Vec<u8>> = part
+        .map(|p| {
+            p.key
+                .without
+                .iter()
+                .map(|w| {
+                    let mut s = String::new();
+                    viz_storage::json::write_string(&mut s, w);
+                    s.push(':');
+                    s.into_bytes()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let carries = |json: &[u8]| needles.iter().any(|n| json.windows(n.len()).any(|w| w == &n[..]));
     let need_labels = part_needs_labels || rs.iter().any(|r| !r.name_only);
     let names: Option<BTreeSet<Vec<u8>>> = rs.iter().map(|r| r.name.clone()).collect();
     let want = |n: &[u8]| names.as_ref().is_none_or(|s| s.contains(n));
@@ -230,11 +248,12 @@ pub fn sample_plan(series_files: &[&[u8]], indexes: &[&str], reads: &[FetchRange
             let (mine, hits) = match decided.get(&row.series_id) {
                 Some(d) => d.clone(),
                 None => {
-                    let labels = if need_labels { Some(catalog::parse_labels(row.labels_json)?) } else { None };
+                    let parse = rs.iter().any(|r| !r.name_only) || (part_needs_labels && carries(row.labels_json));
+                    let labels = if parse { Some(catalog::parse_labels(row.labels_json)?) } else { None };
                     let labels_or = || labels.as_ref().ok_or_else(|| QueryError::internal("sample plan: labels were not read"));
                     let mine = match part {
                         None => true,
-                        Some(p) if p.key.without.is_empty() => SplitKey::part_of(row.series_id as u64, p.parts) == p.part,
+                        Some(p) if p.key.without.is_empty() || !carries(row.labels_json) => SplitKey::part_of(row.series_id as u64, p.parts) == p.part,
                         Some(p) => p.key.part(labels_or()?, p.parts) == p.part,
                     };
                     let mut hits: Vec<bool> = Vec::with_capacity(rs.len());
@@ -294,4 +313,48 @@ pub fn sample_plan(series_files: &[&[u8]], indexes: &[&str], reads: &[FetchRange
         })
         .collect();
     Ok(ReadPlan { files, series })
+}
+
+/// The `series_id`s whose split key is in part `part` of `parts` when the key is the
+/// `series_id` (`SplitKey::part_of`): sorted, disjoint, inclusive intervals in `i64`
+/// order (one, or two when the part spans the sign boundary of the `u64` key space).
+pub fn part_sids(part: u32, parts: u32) -> Vec<(i64, i64)> {
+    if parts == 0 || part >= parts {
+        return Vec::new();
+    }
+    // Smallest key k with (k * parts) >> 64 == j is ceil(j * 2^64 / parts).
+    let first = |j: u32| -> u128 { ((j as u128) << 64).div_ceil(parts as u128) };
+    let lo = first(part) as u64;
+    let hi = (first(part + 1) - 1) as u64;
+    if (lo as i64) <= (hi as i64) {
+        vec![(lo as i64, hi as i64)]
+    } else {
+        // lo < 2^63 <= hi: the part wraps from i64::MAX to i64::MIN.
+        vec![(i64::MIN, hi as i64), (lo as i64, i64::MAX)]
+    }
+}
+
+/// From the fragments alone, for one part of a split: the row groups of each file whose
+/// time overlaps a range and whose key range can hold a series of `ranges`' metric (where
+/// a range pins `__name__` with `=`) with a `series_id` in the part ([`part_sids`]). Exact
+/// for series whose split key is their `series_id`, which is every series that carries
+/// none of the key's `without` labels; a reader that finds a series of its part outside
+/// this (one that does carry them) must read more, which [`sample_plan`] with the part
+/// tells it. A range without a name keeps every row group it overlaps.
+pub fn part_plan(indexes: &[&str], ranges: &[FetchRange], part: u32, parts: u32, gap: u64) -> Vec<FilePlan> {
+    let sids = part_sids(part, parts);
+    let names: Vec<Option<&str>> = ranges
+        .iter()
+        .map(|r| r.matchers.iter().find(|m| m.name == NAME_LABEL && m.op == MatchOp::Eq).map(|m| m.value.as_str()))
+        .collect();
+    indexes
+        .iter()
+        .map(|text| {
+            let Ok(index) = FileIndex::from_json(text) else { return FilePlan { read: FileRead::Whole, rows: None } };
+            let (groups, rows) = groups_of(&index, &|g| {
+                ranges.iter().zip(&names).filter(|(r, n)| g.overlaps(r.min_ts, r.max_ts) && n.is_none_or(|n| g.may_hold(n.as_bytes(), &sids))).count() as u64
+            });
+            decide(&index, &groups, rows, gap)
+        })
+        .collect()
 }

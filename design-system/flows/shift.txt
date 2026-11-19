@@ -1,0 +1,35 @@
+# Layout shift on the flow screens' charts, v5 and v4, measured 19 Nov 2026 between 02:55 and 03:05 UTC
+
+## v5 (these screens)
+
+Layout shift, 400 x 800, coarse pointer and touch, CPU 4x, Fast 4G, chart data drawn 800 ms late, page opened scrolled to the chart.
+Pages: /home/user/viz/design-system/flows/dist. 3 runs per chart, alternating charts within each run. Measured here, on this machine (4 cores); the 1-minute load average at the start of each run is given (layout shift does not depend on speed, so it is judged at any load). Budget 0.05.
+
+| Chart | Layout shift p75 (median, worst) | Reserved / drawn height, px | Runs | Load, median (min to max) |
+|---|---|---|---|---|
+| 2-dashboard #lat | 0.0000 (0.0000, 0.0000) within | 490 / 487 | 3 | 12.3 (12.1 to 12.5) |
+| 2-dashboard #err | 0.0000 (0.0000, 0.0000) within | 490 / 487 | 3 | 12.3 (12.1 to 12.4) |
+| 4-monitor #chart | 0.0000 (0.0000, 0.0000) within | 490 / 487 | 3 | 12.2 (12.0 to 12.4) |
+| 5-new-monitor #backtest | 0.0000 (0.0000, 0.0000) within | 292 / 291 | 3 | 12.2 (12.0 to 12.6) |
+| 5-new-monitor #backtest (many) | 0.0000 (0.0000, 0.0000) within | 750 / 740 | 3 | 12.5 (12.2 to 12.6) |
+| 6-investigation #agent | 0.0000 (0.0000, 0.0000) within | 410 / 407 | 3 | 12.5 (12.2 to 13.1) |
+| 7-proposed-change #newpanel | 0.0000 (0.0000, 0.0000) within | 410 / 407 | 3 | 12.5 (12.3 to 13.1) |
+| 9-traces #dur | 0.0000 (0.0000, 0.0000) within | 418 / 416 | 3 | 12.5 (12.3 to 13.1) |
+| 10-logs #rate | 0.0000 (0.0000, 0.0000) within | 372 / 371 | 3 | 12.5 (12.1 to 13.6) |
+
+## v4 (the v4 screens on v4's CSS and chart, same harness, same session; a copy kept outside the tree)
+
+Layout shift, 400 x 800, coarse pointer and touch, CPU 4x, Fast 4G, chart data drawn 800 ms late, page opened scrolled to the chart.
+Pages: v4 flows (scratch copy). 3 runs per chart, alternating charts within each run. Measured here, on this machine (4 cores); the 1-minute load average at the start of each run is given (layout shift does not depend on speed, so it is judged at any load). Budget 0.05.
+
+| Chart | Layout shift p75 (median, worst) | Reserved / drawn height, px | Runs | Load, median (min to max) |
+|---|---|---|---|---|
+| 2-dashboard #lat | 0.6426 (0.4552, 0.6426) OVER | 0 / 496 | 3 | 13.1 (12.5 to 13.4) |
+| 2-dashboard #err | 0.0000 (0.0000, 0.0000) within | 0 / 496 | 3 | 12.9 (12.3 to 13.5) |
+| 4-monitor #chart | 0.0000 (0.0000, 0.0000) within | 0 / 496 | 3 | 12.9 (12.3 to 13.5) |
+| 5-new-monitor #backtest | 0.0505 (0.0505, 0.0505) OVER | 0 / 300 | 3 | 12.7 (12.0 to 13.5) |
+| 5-new-monitor #backtest (many) | 0.1214 (0.1214, 0.1214) OVER | 0 / 722 | 3 | 12.7 (12.0 to 13.2) |
+| 6-investigation #agent | 0.1465 (0.1465, 0.1465) OVER | 0 / 416 | 3 | 12.7 (11.9 to 13.2) |
+| 7-proposed-change #newpanel | 0.4561 (0.4561, 0.4561) OVER | 0 / 416 | 3 | 12.3 (11.9 to 13.3) |
+| 9-traces #dur | 0.0000 (0.0000, 0.0000) within | 0 / 425 | 3 | 12.3 (11.6 to 13.3) |
+| 10-logs #rate | 0.0000 (0.0000, 0.0000) within | 0 / 380 | 3 | 12.5 (11.6 to 13.1) |

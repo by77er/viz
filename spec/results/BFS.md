@@ -70,6 +70,7 @@ Breadth-first, exhaustive within the bounds of each row; every counterexample is
 | `D30_teeth_newer_unlogged` D30 teeth: a newer incarnation kills old flush files as soon as it is committed (no logged-watermark > 0 test); F15's bounds | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 15 steps | 198,438 | 691,325 | 15 | 12.9 s | 1.1e-9 |
 | `D30_teeth_conflict_delete` D30 teeth: the step deletes its outputs on conflict again (F14 back); sweeper on | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 21 steps | 122,006 | 462,856 | 21 | 6.2 s | 4e-10 |
 | `D30_teeth_purge_unlogged` D30 teeth: purge deletes a removed file before its removal is logged | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 14 steps | 1,127 | 3,383 | 14 | 0.1 s | 3.4e-14 |
+| `W_leak_behind_lost_flush` F16 witness: an unlisted compaction output kept because an input is an unlisted flush file of an incarnation its shard lost, which the sweep keeps (D30 + log as built, ledger loss + shard loss, compaction) | W_NoLeakBehindLostFlush | **violated** W_NoLeakBehindLostFlush in 19 steps | 819,601 | 3,332,054 | 19 | 71.4 s | 1.8e-8 |
 
 ## The ledger segment log as built
 
@@ -98,16 +99,17 @@ Breadth-first, exhaustive within the bounds of each row; every counterexample is
 
 | experiment | checked | result | distinct states | transitions | depth | time | P(collision) |
 |---|---|---|---|---|---|---|---|
-| `LIVE_amended` amended protocol, ledger loss + shard loss + compaction (1 send per batch) | AG EF done | stopped: memory bound: stopped at 3,000,001 states; every state reachable in at most 29 steps checked, no violation | 3,000,001 | 12,002,784 | 29 | 188.3 s | 2.4e-7 |
-| `LIVE_amended_ll` amended protocol, ledger loss, compaction, no shard loss (1 send per batch) | AG EF done | stopped: memory bound: stopped at 3,000,002 states; every state reachable in at most 36 steps checked, no violation | 3,000,002 | 15,730,125 | 36 | 371.4 s | 2.4e-7 |
+| `LIVE_amended` amended protocol, ledger loss + shard loss + compaction (1 send per batch) | AG EF done | stopped: memory bound: stopped at 3,000,001 states (depth 29); the graph is incomplete, so AG EF is NOT decided (unexpected) | 3,000,001 | 12,002,784 | 29 | 188.3 s | 2.4e-7 |
+| `LIVE_amended_ll` amended protocol, ledger loss, compaction, no shard loss (1 send per batch) | AG EF done | stopped: memory bound: stopped at 3,000,002 states (depth 36); the graph is incomplete, so AG EF is NOT decided (unexpected) | 3,000,002 | 15,730,125 | 36 | 371.4 s | 2.4e-7 |
 | `LIVE_amended_sl` amended protocol, shard loss, no ledger loss, no compaction (1 send per batch) | AG EF done | holds (exhaustive) | 162,812 | 640,662 | 38 | 24.5 s | 7.2e-10 |
 | `LIVE_design` DESIGN as written, ledger loss + shard loss (1 send per batch) | AG EF done | **violated** LIVE_QueryCanComplete in 5 steps | 1,124,318 | 4,573,766 | 36 | 98.6 s | 3.4e-8 |
 | `LIVE_impl_V1` code of 2026-11-18 (tailRead ok/empty for a lost stream), ledger loss + shard loss, no compaction (1 send per batch) | AG EF done | holds (exhaustive) | 233,906 | 924,430 | 40 | 24.3 s | 1.5e-9 |
 | `LIVE_impl` code at HEAD: tailRead refuses an incarnation it lost, but nothing re-registers the stream; shard loss (1 send per batch) | AG EF done | **violated** LIVE_QueryCanComplete in 8 steps | 43,849 | 160,307 | 34 | 6.7 s | 5.2e-11 |
 | `LIVE_impl_F6_fixed` code at HEAD + F6 fixed completely (register before writes, so a refusing shard re-registers); ledger loss + shard loss (1 send per batch) | AG EF done | holds (exhaustive) | 688,379 | 2,776,255 | 42 | 77.4 s | 1.3e-8 |
-| `LEAK_D30_maintenance` no leak, D30 + log as built: compaction (2 steps at once), retention of every file, ledger loss, no client retry; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leak | stopped: memory bound: stopped at 3,000,002 states; every state reachable in at most 31 steps checked, no violation | 3,000,002 | 16,323,879 | 31 | 319.6 s | 2.4e-7 |
-| `LEAK_D30_shardloss` no leak, D30 + log as built: shard loss, ledger loss, retention of every file, compaction, no client retry; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leak | stopped: memory bound: stopped at 3,000,002 states; every state reachable in at most 32 steps checked, no violation (unexpected) | 3,000,002 | 14,725,070 | 32 | 286.2 s | 2.4e-7 |
-| `LEAK_V1_shardloss` no leak, the rules before D30 (age-swept outputs, committed newer incarnation): same bounds as LEAK_D30_shardloss; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leak | stopped: memory bound: stopped at 3,000,001 states; every state reachable in at most 32 steps checked, no violation (unexpected) | 3,000,001 | 14,861,377 | 32 | 284.7 s | 2.4e-7 |
+| `LEAK_D30_maintenance` no leak, D30 + log as built: compaction (2 steps at once), retention of every file, ledger loss, no client retry; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leak | stopped: memory bound: stopped at 3,000,002 states (depth 31); the graph is incomplete, so AG EF is NOT decided (unexpected) | 3,000,002 | 16,323,879 | 31 | 319.6 s | 2.4e-7 |
+| `LEAK_D30_shardloss` no leak, D30 + log as built: shard loss, ledger loss, retention of every file, compaction, no client retry; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leak | stopped: memory bound: stopped at 3,000,002 states (depth 32); the graph is incomplete, so AG EF is NOT decided (unexpected) | 3,000,002 | 14,725,070 | 32 | 286.2 s | 2.4e-7 |
+| `LEAK_V1_shardloss` no leak, the rules before D30 (age-swept outputs, committed newer incarnation): same bounds as LEAK_D30_shardloss; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leak | stopped: memory bound: stopped at 3,000,001 states (depth 32); the graph is incomplete, so AG EF is NOT decided (unexpected) | 3,000,001 | 14,861,377 | 32 | 284.7 s | 2.4e-7 |
+| `LEAK_D30_ll` no leak, D30 + log as built: compaction, retention (2 removals), ledger loss, no shard loss; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leak | holds (exhaustive) | 1,640,059 | 10,097,949 | 56 | 172.4 s | 7.3e-8 |
 
 ## Counterexamples
 
@@ -1165,3 +1167,29 @@ Violates `LIVE_QueryCanComplete`. from the last state of the trace no continuati
 6. SHARD STORAGE LOSS(s0)
 7. flush PUT L0(s0 inc1 1..2)
 8. addUnit(s0 inc 1 1..2) admitted (registers the stream)
+
+### W_leak_behind_lost_flush
+
+F16 witness: an unlisted compaction output kept because an input is an unlisted flush file of an incarnation its shard lost, which the sweep keeps (D30 + log as built, ledger loss + shard loss, compaction)
+
+Violates `W_NoLeakBehindLostFlush`.
+
+1. registerStream(s0, inc 1)
+2. ledger drain: PUT segment v1..v1
+3. registration logged -> s0 accepts writes
+4. append(b0 -> s0) seq 1
+5. seal(s0, ..1)
+6. append(b1 -> s0) seq 2
+7. seal(s0, ..2)
+8. flush: pendingSegments(s0) -> inc 1 1..1
+9. flush: pendingSegments(s0) -> inc 1 2..2
+10. flush readSegment(s0 inc 1 1..1)
+11. flush PUT L0(s0 inc1 1..1)
+12. addUnit(s0 inc 1 1..1) admitted
+13. flush readSegment(s0 inc 1 2..2)
+14. SHARD STORAGE LOSS(s0)
+15. flush PUT L0(s0 inc1 2..2)
+16. addUnit(s0 inc 1 2..2) admitted
+17. compact: read L0(s0 inc1 1..1) + L0(s0 inc1 2..2)
+18. LEDGER STORAGE LOSS -> rebuild from R2, start incarnation 2
+19. compact PUT L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))

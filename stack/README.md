@@ -145,10 +145,14 @@ again. `test/cron.test.ts`, "review S-6": failed before the change (the marker k
 after refactors (they would have printed NOT APPLIED) and were updated on 2026-11-19: the
 pending marker never removed, the series window saved on every append, a rebuilt ledger
 forgetting precedence, `expire` and `replace` recording no tombstone, an unreadable limits
-record meaning no limit. **Those six were not re-run** (this script needs the whole tree
-copied to a scratch directory, and time ran out); their patterns now apply (`--check`-style
-reading by the storage-path engineer). Related but not identical mutants in `ledger/`,
-`shard/` and `edge/`'s own scripts were run on 2026-11-19.
+record meaning no limit. Run again on a copy of the tree in a scratch directory
+(2026-11-19): all six **killed**, four through this script (shard trigger and series tests,
+the ledger's precedence test, edge's limit test) and the two tombstone mutants against
+`ledger/test/tombstone.test.ts` ("replace and expire record what they removed…"), because in
+the copy the janitor suite could not import control's golden file (its baseline failed there,
+so it could not judge them). With them, the `trigger` part's six sweep mutants, including a
+new one for S-6 ("a leftover that waits on the ledger keeps the sweep due for ever", killed by
+`cron.test.ts` "review S-6"): 6 of 6 killed.
 
 ### Triggers (`test/auto.test.ts`, `test/triggers.test.ts`)
 
