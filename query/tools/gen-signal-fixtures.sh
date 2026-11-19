@@ -2,7 +2,9 @@
 # Fixtures for test/signals.test.ts: for each seed, a corpus of spans and logs decoded by edge's
 # own decoders (edge/scripts/otel-corpus.mjs), flushed by the stage-1 encoders, with the answers
 # of the engines' in-memory sources (engine/wasm-query/examples/signal_fixtures.rs).
-# Output: test/fixtures/signals/seed-N.json (git-ignored; tens of MB). Run before the tests.
+# Output: test/fixtures/signals/seed-N.json (git-ignored; tens of MB), and seed-N.requests.json:
+# the corpus's OTLP and Loki push requests as sent (`--requests`), which test/signals.e2e.test.ts
+# posts through edge and the real write path. Run before the tests.
 #
 #   tools/gen-signal-fixtures.sh [seeds…]     (default: 1 2 3)
 set -euo pipefail
@@ -17,6 +19,7 @@ mkdir -p "$here/test/fixtures/signals"
 export CARGO_TARGET_DIR="$root/engine/wasm-query/target"
 (cd "$root/engine/wasm-query" && cargo build -j "${CARGO_BUILD_JOBS:-2}" --release --example signal_fixtures)
 for s in "${seeds[@]}"; do
-  node "$root/edge/scripts/otel-corpus.mjs" "$work/corpus-$s" "$s" "$scale" >/dev/null
+  node "$root/edge/scripts/otel-corpus.mjs" "$work/corpus-$s" "$s" "$scale" --requests >/dev/null
   "$CARGO_TARGET_DIR/release/examples/signal_fixtures" "$work/corpus-$s" "$here/test/fixtures/signals/seed-$s.json" "$s"
+  node "$here/tools/pack-requests.mjs" "$work/corpus-$s" "$here/test/fixtures/signals/seed-$s.requests.json"
 done

@@ -25,6 +25,8 @@
     "QUERY_SIGNALS": "traces,logs",
     // The workload has fixed timestamps (so expected results can be computed once): let
     // edge accept them whatever the wall clock says.
-    "INGEST_LIMITS": "{\"acceptBackMs\":9000000000000000,\"acceptAheadMs\":9000000000000000,\"maxSamples\":5000000,\"maxBodyBytes\":67108864,\"maxDecompressedBytes\":268435456}"
+    "INGEST_LIMITS": "{\"acceptBackMs\":9000000000000000,\"acceptAheadMs\":9000000000000000,\"maxSamples\":5000000,\"maxBodyBytes\":67108864,\"maxDecompressedBytes\":268435456,\"spanAcceptBackMs\":9000000000000000,\"spanAcceptAheadMs\":9000000000000000,\"logAcceptBackMs\":9000000000000000,\"logAcceptAheadMs\":9000000000000000,\"maxSpans\":10000000,\"maxLogRecords\":10000000}",
+    // Spans and logs through edge (test/signals.e2e.test.ts).
+    "INGEST_SIGNALS": "traces,logs"
   }
 }
