@@ -114,7 +114,7 @@ MUTANTS = [
     ("pruning: select reads a row group that was not fetched", "src/select.rs",
      "                if !src.has_row_group(md) {\n                    continue;\n                }\n                if opts.prune_row_groups {", "                if opts.prune_row_groups {", PRUNING),
     ("pruning: select skips a row group that was fetched", "src/select.rs",
-     "                if !src.has_row_group(md) {\n                    continue;\n                }\n                if opts.prune_row_groups {", "                if src.has_row_group(md) && md.ordinal().unwrap_or(0) % 2 == 1 {\n                    continue;\n                }\n                if opts.prune_row_groups {", PRUNING),
+     "                if !src.has_row_group(md) {\n                    continue;\n                }\n                if opts.prune_row_groups {", "                if !src.has_row_group(md) || g % 2 == 1 {\n                    continue;\n                }\n                if opts.prune_row_groups {", PRUNING),
     ("pruning: the run reader skips one row too few", "src/pq.rs",
      "        pos = b;\n    }\n    Ok(())", "        pos = b.saturating_sub(1);\n    }\n    Ok(())", PRUNING),
     ("pruning: a sparse container's segment is held one byte longer than it is", "src/sparse.rs",
