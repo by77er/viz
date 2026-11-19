@@ -11,7 +11,7 @@
 }
 .vz *, .vz *::before, .vz *::after { box-sizing: border-box; }
 .vz :focus-visible { outline: var(--stroke) solid var(--focus); outline-offset: var(--stroke); }
-@media (prefers-reduced-motion: reduce) { .vz * { transition: none !important; animation: none !important; } }
+@media (prefers-reduced-motion: reduce) { .vz * { transition: none !important; } .vz *:not(.vz-table-wrap) { animation: none !important; } } /* the table wrap's edge follows the scroll, not the clock: it is not motion */
 /* Text that only a screen reader reads: a live region beside a visual readout, a skip link at rest. */
 .vz-sr, .vz-skip:not(:focus) { position: absolute; width: var(--hairline); height: var(--hairline); margin: 0; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 
@@ -137,7 +137,10 @@ textarea.vz-input { height: auto; min-height: calc(3 * var(--text-ui-lh) + 2 * v
 .vz-tabs button:focus-visible { outline-offset: calc(-1 * var(--stroke)); } /* inside the strip, which clips anything outside; the side padding keeps it off the letters */
 
 /* Table. Wrap it in vz-table-wrap: the table scrolls inside its own region and keeps its first column. */
-.vz-table-wrap { overflow-x: auto; max-width: 100%; container-type: inline-size; }
+.vz-table-wrap { overflow-x: auto; max-width: 100%; container-type: inline-size; animation: vz-scroll-edge linear both; animation-timeline: scroll(self inline); }
+/* A table that scrolls sideways shows a rule-control edge at its right while there is more to see, thinning to nothing at the end. It follows
+   the scroll position (a scroll timeline), so a table that fits has no edge at all. */
+@keyframes vz-scroll-edge { from { box-shadow: inset calc(-1 * var(--stroke)) 0 0 var(--rule-control); } to { box-shadow: inset 0 0 0 var(--rule-control); } }
 .vz-table { width: 100%; border-collapse: collapse; }
 .vz-table th { text-align: left; padding: var(--space-2); background: var(--sunken); border-bottom: var(--hairline) solid var(--rule); white-space: nowrap; }
 .vz-table td { padding: 0 var(--space-2); height: var(--row); border-bottom: var(--hairline) solid var(--rule); white-space: nowrap; background: var(--ground); }

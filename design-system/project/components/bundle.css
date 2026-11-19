@@ -77,7 +77,7 @@
 }
 .vz *, .vz *::before, .vz *::after { box-sizing: border-box; }
 .vz :focus-visible { outline: var(--stroke) solid var(--focus); outline-offset: var(--stroke); }
-@media (prefers-reduced-motion: reduce) { .vz * { transition: none !important; animation: none !important; } }
+@media (prefers-reduced-motion: reduce) { .vz * { transition: none !important; } .vz *:not(.vz-table-wrap) { animation: none !important; } } /* the table wrap's edge follows the scroll, not the clock: it is not motion */
 /* Text that only a screen reader reads: a live region beside a visual readout, a skip link at rest. */
 .vz-sr, .vz-skip:not(:focus) { position: absolute; width: var(--hairline); height: var(--hairline); margin: 0; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 
@@ -203,7 +203,10 @@ textarea.vz-input { height: auto; min-height: calc(3 * var(--text-ui-lh) + 2 * v
 .vz-tabs button:focus-visible { outline-offset: calc(-1 * var(--stroke)); } /* inside the strip, which clips anything outside; the side padding keeps it off the letters */
 
 /* Table. Wrap it in vz-table-wrap: the table scrolls inside its own region and keeps its first column. */
-.vz-table-wrap { overflow-x: auto; max-width: 100%; container-type: inline-size; }
+.vz-table-wrap { overflow-x: auto; max-width: 100%; container-type: inline-size; animation: vz-scroll-edge linear both; animation-timeline: scroll(self inline); }
+/* A table that scrolls sideways shows a rule-control edge at its right while there is more to see, thinning to nothing at the end. It follows
+   the scroll position (a scroll timeline), so a table that fits has no edge at all. */
+@keyframes vz-scroll-edge { from { box-shadow: inset calc(-1 * var(--stroke)) 0 0 var(--rule-control); } to { box-shadow: inset 0 0 0 var(--rule-control); } }
 .vz-table { width: 100%; border-collapse: collapse; }
 .vz-table th { text-align: left; padding: var(--space-2); background: var(--sunken); border-bottom: var(--hairline) solid var(--rule); white-space: nowrap; }
 .vz-table td { padding: 0 var(--space-2); height: var(--row); border-bottom: var(--hairline) solid var(--rule); white-space: nowrap; background: var(--ground); }
@@ -305,7 +308,7 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
    custom properties, so the reserved height and the drawn height come from one place, on every pointer. */
 .vz-chart {
   --chart-plot: var(--plot); --chart-foot: var(--control-sm);
-  --legend-head: calc(var(--text-label-lh) + 2 * var(--space-1) + var(--hairline)); --legend-row: calc(var(--control-sm) + var(--hairline));
+  --legend-head: calc(var(--text-label-lh) + 2 * var(--space-1) + var(--hairline)); --legend-row: calc(var(--control-sm) + 2 * var(--hairline)); /* a row is its target plus its rule; the collapsed rule takes half a hairline from the cell, so the target keeps its full height */
   display: flex; flex-direction: column; gap: var(--space-2); min-width: 0;
 }
 .vz-chart[data-size="sm"] { --chart-plot: var(--plot-sm); }
@@ -425,6 +428,7 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
 .vz-menu-anchor { position: relative; display: inline-block; }
 .vz-menu-anchor > .vz-menu { position: absolute; left: 0; top: calc(100% + var(--space-1)); z-index: 6; }
 .vz-menu-anchor > .vz-menu[data-flip] { top: auto; bottom: calc(100% + var(--space-1)); }
+.vz-menu-anchor > .vz-menu[data-align="end"] { left: auto; right: 0; } /* no room to the right: right edges aligned */
 .vz-menu-anchor > .vz-menu:not([data-open]) { display: none; }
 @media (pointer: coarse) and (max-width: 639px) {
   .vz-menu-anchor > .vz-menu { position: fixed; left: 0; right: 0; top: auto; bottom: 0; padding: var(--space-2) var(--space-2) var(--space-4); border-radius: var(--radius-3) var(--radius-3) 0 0; }
@@ -549,7 +553,7 @@ textarea.vz-query { display: block; width: 100%; resize: none; color: var(--ink)
 /* Touch: a 44px hit area on every control without changing how it is drawn, except where a hit area cannot reach past its own box. */
 @media (pointer: coarse) {
   .vz { --strip: var(--control-touch); }
-  .vz-chart { --chart-foot: var(--control-touch); --legend-head: calc(var(--control-touch) + var(--hairline)); --legend-row: calc(var(--control-touch) + var(--hairline)); }
+  .vz-chart { --chart-foot: var(--control-touch); --legend-head: calc(var(--control-touch) + 2 * var(--hairline)); --legend-row: calc(var(--control-touch) + 2 * var(--hairline)); }
   .vz-button::after, .vz-segmented button::after, .vz-tabs button::after, .vz-nav a::after, .vz-progress-action::after {
     content: ""; position: absolute; left: 50%; top: 50%; width: max(100%, var(--control-touch)); height: var(--control-touch); transform: translate(-50%, -50%);
   }

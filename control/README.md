@@ -355,17 +355,50 @@ What the tests establish:
   one on an untouched panel: clean, applied, both edits kept); rebase by editing; edit then
   apply; decline; expiry; an agent applying its own proposal, with and without the apply
   scope, after editing someone else's, and with `agentsMayApply` on.
+- **Proposals that create a dashboard** (`creation.test.ts`, 11 tests). An agent proposes
+  a new dashboard: 202, nothing created; listed without the spec, shown with it; the review
+  gives revision 1 and the summary; a dry-run apply equals the real one and writes nothing; a
+  person applies: the spec is the dashboard, revision 1 of kind `apply` names the proposal,
+  approver and proposer, one audit entry each for create and apply. *Authorisation*: an agent
+  key with the apply scope is refused (403 `agents-may-not-apply`) for its own proposal and
+  another agent's, an agent without it and a write-only person get 403 `missing-scope`, with
+  and without `dryRun`, and a snapshot of the tenant is unchanged; with `agentsMayApply` the
+  agent may, and `whoami` says so before and after. *Validation*: an enum error, a misspelt
+  key, a missing intent and three non-specs are refused with exactly the errors the
+  dashboard package's `validate` gives (pointer and suggestion included); a missing message,
+  an empty one, and unknown fields are 422; an id held by a live or a deleted dashboard is
+  409; edits are validated, keep the id and take only a spec; a change takes no spec; a
+  stored spec made invalid underneath is shown with its errors and refused on apply.
+  *Idempotency*: proposing the same spec again (also with another message, also as a dry
+  run) returns the same proposal with no audit entry, while another caller or another spec
+  makes a new one; two applies sent together give one 200 and one 409 `proposal-closed` with
+  `appliedNumber`, then a retry the same 409, and there is one dashboard, one revision, one
+  apply entry; once one of two proposals for an id is applied the other reviews as
+  `exists` and is refused with 409 and nothing changed. Also: edit, decline, expiry, a
+  creation row rewritten by a release without the column read as a change, and a purge that
+  keeps an open proposal to create a dashboard under the purged id.
+- **Scopes and whoami** (`scopes.test.ts`, 4 tests). The scopes the ruler checks (read from
+  `ruler/src/http.ts`: its `Scope` type and every route) and mcp's (`mcp/src/auth.ts`) are all
+  in `SCOPES`. A key with each monitors scope is created, published to KV with it, and
+  accepted by edge's `authenticate` for that scope (as the ruler calls it) and refused (403)
+  for the others; unknown scopes are 422. A key with all three monitors scopes gets `whoami`
+  and a 403 `missing-scope` on each of the other 29 routes. `mayApply` is right for six
+  kinds of key with `agentsMayApply` off and on, and each key's dry-run `PATCH` is applied
+  (200) exactly when `mayApply` is true and proposed (202) otherwise.
+- **Health** (`http.test.ts`). `GET /healthz` without a credential is 200 `ok`, `HEAD` 200,
+  `POST` 405; 503 naming `TENANT` or `CONFIG` when that binding is missing; only that path.
 - **Settings and audit** (`settings.test.ts`, 8 tests). KV shapes for retention, limits and
   pool; the published pool map is accepted by `shard/src/pool`'s routing; the refused pool
-  changes. Audit completeness: each of the 16 mutating routes is called once (the test
+  changes. Audit completeness: each of the 17 mutating routes is called once (the test
   fails if the route table gains one it does not call) and adds exactly one entry; its dry
   run, every read, and refused or unchanged writes add none. Every non-GET method on the
   audit routes is 405, and `UPDATE` and `DELETE` on the table fail inside the object.
 - **Tenant isolation** (`isolation.test.ts`, 6 tests). Tenant A holds one of everything,
   each carrying a marker string. Tenant B, with an admin key and an all-scopes agent key:
-  112 calls covering every id-bearing route with each of A's ids return 404; 82 list,
-  search, filter and stolen-cursor queries return only B's things; all 29 routes refuse
-  `tenant` in the query and the body; 232 unauthenticated or wrong-secret calls return
+  calls covering every id-bearing route with each of A's ids (A now also holds a proposal to
+  create a dashboard) return 404; 82 list, search, filter and stolen-cursor queries return
+  only B's things; all 30 routes refuse `tenant` in the query and the body; 240
+  unauthenticated or wrong-secret calls return
   401; and a fast-check fuzz of 400 random combinations of route, ids (A's, B's, guessed,
   hostile strings), queries, headers and bodies never returns a 2xx for an id of A's.
   After each part a snapshot of A (keys, dashboards, specs, revisions, proposals and their
@@ -388,14 +421,21 @@ What the tests establish:
   parameters and `dryRun` agree per operation; every `$ref` resolves; five response
   schemas' required fields are present in real responses. Full response validation against
   the schemas is not done.
-- **Versioned storage** (`compat.test.ts`, 9 tests). A fresh object records `control.Tenant`
-  version 1, and its schema equals `test/golden/schema/v1.json`; applying migrations 1..N to
-  empty storage gives the golden schema of N; version 1 equals the `sqlite_master` of the
+- **Versioned storage** (`compat.test.ts`, 11 tests). A fresh object records `control.Tenant`
+  version 2 with `compat` 1, and its schema equals `test/golden/schema/v2.json` (v1 plus the
+  nullable `proposals.spec`); applying migrations 1..N to empty storage gives the golden
+  schema of N, for N = 1 and 2; version 1 equals the `sqlite_master` of the
   pre-versioning code (`test/fixtures/storage-v0.json`, a dump with 3 keys, 2 dashboards and 3
   revisions, a proposal, 2 settings and 10 audit entries, made by that code). That dump,
-  installed into an object and opened by this code, is adopted as version 1 with every row
-  unchanged, serves its keys, dashboards, settings and audit log, takes a write, and is not
-  migrated again after eviction. Storage migrated by a simulated release N+1 with a breaking
+  installed into an object and opened by this code, is adopted as version 1 and migrated to
+  2 with every row unchanged except a NULL `spec` on its proposal (the schema is the old one
+  plus that column), serves its keys, dashboards, settings and audit log, takes a write, and
+  is not migrated again after eviction. Upgrade: the same data at version 1 is migrated to 2
+  by the real class, every row kept, its old proposal read as a change, a new dashboard
+  proposed and applied on it, and not migrated again after eviction. Rollback target: the
+  previous release's runner (migrations 1 only) opens storage this release wrote, with a
+  proposal to create a dashboard in it, at version 2 with nothing changed; every migration
+  is `readableFrom: 1`. Storage migrated by a simulated release N+1 with a breaking
   migration is refused: four HTTP routes answer 503 `schema-too-new` with `Retry-After: 30`,
   the three RPCs refuse, the alarm re-arms itself, and a dump of every table (version row
   included) is identical before and after. Storage of an N+1 with an additive migration
