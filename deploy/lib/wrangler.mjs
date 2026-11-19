@@ -9,16 +9,20 @@ import { DEPLOY_DIR } from './common.mjs'
 
 export const WRANGLER = join(DEPLOY_DIR, 'node_modules', '.bin', 'wrangler')
 
+/** The pinned wrangler, unless VIZ_WRANGLER_BIN names another (the tests' fake: test/secrets.test.mjs). */
+const wranglerBin = () => process.env.VIZ_WRANGLER_BIN || WRANGLER
+
 /**
  * Run wrangler. Its output is passed through to stderr (prefixed), so CI logs show it; it is
  * also returned. `input` is written to stdin and never logged.
  */
 export function wrangler(args, { input, quiet = false, label = 'wrangler' } = {}) {
-  if (!existsSync(WRANGLER)) throw new Error(`${WRANGLER} not found: run npm ci in deploy/`)
+  const bin = wranglerBin()
+  if (!existsSync(bin)) throw new Error(`${bin} not found: run npm ci in deploy/`)
   const dir = mkdtempSync(join(tmpdir(), 'viz-wrangler-'))
   const outFile = join(dir, 'output.jsonl')
   return new Promise((resolve, reject) => {
-    const child = spawn(WRANGLER, args, {
+    const child = spawn(bin, args, {
       cwd: DEPLOY_DIR,
       env: { ...process.env, WRANGLER_OUTPUT_FILE_PATH: outFile, WRANGLER_SEND_METRICS: 'false', CI: process.env.CI ?? 'true', FORCE_COLOR: '0' },
       stdio: ['pipe', 'pipe', 'pipe'],

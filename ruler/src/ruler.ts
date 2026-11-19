@@ -45,9 +45,11 @@ import { anomalyWarmPoints, anomalyWarmReads, backtestAlert, backtestAnomaly, ba
 import { allRows, cloneSloRt, emptySloStatus, evalSlo, newSloRt, readSloRows, SLO_LIMIT_DEFAULTS, sliExpressions, sloHistory, tickRows, type SloEval, type SloRow, type SloRt } from './slo'
 import { classify } from './classify'
 import type { ServiceKeyResult, TenantServiceRpc } from '../../contracts/control'
+import type { RecordedSamplesRpc } from '../../contracts/ingest'
 import { ServiceCredential, type StoredKey } from './credential'
 import { ENGINE_CALLS_IN_FLIGHT, Gate, httpEngine, type Fetcher, type HttpEngine } from './engine'
 import { batchFromSingle, errorText, permissiveValidator } from './evaluator'
+import { recordedSamplesSink, SinkError } from './recorded'
 import { remoteWriteSink } from './remote'
 import { stageExpired } from './util'
 import { indexName } from './registry'
@@ -92,16 +94,26 @@ export interface RulerEnv {
     plan?(tenant: string, promql: string, startMs: number, endMs: number, stepMs: number): Promise<HistoryPlan>
     check?(tenant: string, promql: string): ReturnType<Validator['check']>
   }
-  SINK?: { write(tenant: string, batches: SampleBatch[]): Promise<void> }
+  /**
+   * Recording rules' samples: viz-ingest's `RecordedSamples` entrypoint (contracts/ingest.ts,
+   * D45), bound with `props: { caller: "viz-ruler" }`. The binding is the credential; the tenant
+   * is this object's own, passed explicitly (`recorded.ts`).
+   */
+  SINK?: RecordedSamplesRpc
   /** The registry the cron sweeper walks (`registry.ts`). */
   RULER_INDEX?: DurableObjectNamespace
   /**
    * Production wiring while the query Worker has no RPC entrypoint (README, "Needed
-   * changes"): viz-query's Prometheus HTTP API (`engine.ts`), viz-ingest's Remote Write
-   * (`remote.ts`), both with the shard's service key from control's `Tenant` object
-   * (`credential.ts`, contracts/control.ts). `EVALUATOR` / `SINK`, when bound, win.
+   * changes"): viz-query's Prometheus HTTP API (`engine.ts`) with the shard's service key from
+   * control's `Tenant` object (`credential.ts`, contracts/control.ts). `EVALUATOR`, when bound,
+   * wins.
    */
   QUERY?: Fetcher
+  /**
+   * viz-ingest's Remote Write (`remote.ts`), with the same key: the sink of the release before
+   * `SINK`, and now only its fallback when the entrypoint does not answer by its contract (an
+   * ingest release without it may still serve: D52). Alone, without `SINK`, it is the sink.
+   */
   INGEST?: Fetcher
   TENANT?: DurableObjectNamespace
   /** A staged trial's deadline (ISO 8601, set by deploy/configure.mjs --expires): after it, nothing is evaluated or re-armed. */
@@ -149,7 +161,10 @@ const ABORT_GRACE_MS = 25
 /** Alert updates per hand-off row. Keeps a row far below the 2 MB value cap. */
 const HANDOFF_CHUNK = 200
 const HANDOFF_ROWS_PER_TICK = 32
+/** Calls of one flush of recorded samples: the first and two retries (retryable failures only). */
 const SINK_ATTEMPTS = 3
+/** The longest a retry waits for an overloaded ingest's hint; the group's time budget bounds it too. */
+const SINK_MAX_WAIT_MS = 5_000
 const MAX_TICK_RETRIES = 5
 
 interface RuleRt {
@@ -387,13 +402,22 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     return { register: (shard) => stub.register(this.tenant, shard), unregister: (shard) => stub.unregister(this.tenant, shard) }
   }
 
+  /** viz-ingest's `RecordedSamples` entrypoint, when bound. Its own method only so that the test harness can bind an ingest release without it. */
+  protected recordedSamples(): RecordedSamplesRpc | undefined {
+    return this.env.SINK
+  }
+
+  /**
+   * Recording rules' samples: the `RecordedSamples` entrypoint with this object's tenant, falling
+   * back to Remote Write only when the entrypoint does not answer by its contract
+   * (`recorded.ts`, D52); Remote Write alone where no `SINK` is bound (a config from before it).
+   */
   protected sink(): Sink {
-    const binding = this.env.SINK
-    if (!binding) {
-      if (this.env.INGEST) return remoteWriteSink(this.env.INGEST, this.credential())
-      throw new Error('no SINK binding')
-    }
-    return { write: (batches) => binding.write(this.tenant, batches) }
+    const remote = this.env.INGEST ? remoteWriteSink(this.env.INGEST, this.credential()) : null
+    const binding = this.recordedSamples()
+    if (binding) return recordedSamplesSink(binding, this.tenant, remote)
+    if (remote) return remote
+    throw new Error('no SINK binding')
   }
 
   protected notifier(): NotifierPort {
@@ -719,6 +743,10 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
           return
         } catch (e) {
           lastError = errorText(e)
+          // A refusal the same call would get again (contracts/ingest.ts) is reported at once.
+          if (e instanceof SinkError && !e.retryable) break
+          // Backpressure and overload say when to come back; the wait ends early at the deadline.
+          if (e instanceof SinkError && e.retryAfterMs > 0 && attempt < SINK_ATTEMPTS) await pause(Math.min(e.retryAfterMs, SINK_MAX_WAIT_MS), abort.signal)
         }
       }
       this.samplesDropped += batch.length
@@ -1884,6 +1912,20 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
 }
 
 /** A stored alert. JSON has no NaN (the value of a no-data alert), so it comes back as null. */
+/** Wait `ms` of real time, or until `signal` aborts (the group's deadline), whichever comes first. Never rejects. */
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve()
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', done)
+      resolve()
+    }
+    const timer = setTimeout(done, ms)
+    signal.addEventListener('abort', done, { once: true })
+  })
+}
+
 function reviveAlert(body: string): Alert {
   const a = JSON.parse(body) as Alert
   if (a.value === null) a.value = NaN

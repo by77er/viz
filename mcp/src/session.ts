@@ -23,6 +23,12 @@ export interface Limits {
   maxDescribed: number
   /** How long a tenant's metric names are reused in this isolate. */
   namesTtlMs: number
+  /**
+   * How long backtest_monitor waits for the ruler (its own bound, not `deadlineMs`: a backtest
+   * may use up to 20 s of modelled CPU in the ruler, plus its reads). Below the 60 s an MCP
+   * client commonly waits for a tool, so the agent gets this server's answer, not its own timeout.
+   */
+  backtestTimeoutMs: number
 }
 
 export const DEFAULT_LIMITS: Limits = {
@@ -34,6 +40,7 @@ export const DEFAULT_LIMITS: Limits = {
   maxPoints: 11_000,
   maxDescribed: 20,
   namesTtlMs: 30_000,
+  backtestTimeoutMs: 55_000,
 }
 
 export function limitsFrom(json: string | undefined): Limits {

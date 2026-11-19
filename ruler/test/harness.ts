@@ -8,6 +8,8 @@
  */
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import type { PromMatrix, PromScalar, PromVector } from '../../contracts/engine'
+import { RECORDED_SAMPLES_CALLERS, type RecordedSamplesRpc } from '../../contracts/ingest'
+import { TENANT_ID } from '../../contracts/ledger'
 import { authenticate } from '../../edge/src/auth'
 import { HttpError } from '../../edge/src/errors'
 import { snappyDecompress } from '../../edge/src/snappy'
@@ -68,10 +70,17 @@ export interface TenantWorld {
   planCalls: [string, number, number, number][]
   /**
    * True: the ruler uses its PRODUCTION wiring: viz-query's HTTP API (`FakeQuery`, which checks
-   * the API key with edge's real `authenticate` and takes the tenant from it), Remote Write to
-   * `FakeIngest`, and service keys from control's real `Tenant` object.
+   * the API key with edge's real `authenticate` and takes the tenant from it), recorded samples
+   * through the `RecordedSamples` entrypoint (`FakeRecordedSamples`) with Remote Write to
+   * `FakeIngest` as its fallback, and service keys from control's real `Tenant` object.
    */
   http: boolean
+  /**
+   * With `http`: which binding the ruler finds as its `SINK`. `SINK` = the entrypoint as
+   * production binds it; `OLD_SINK` = an ingest release without it; `OTHER_SINK` = the entrypoint
+   * through a binding naming another caller; null = no `SINK` (a config from before it).
+   */
+  sinkBinding: 'SINK' | 'OLD_SINK' | 'OTHER_SINK' | null
 }
 
 /** What the fake query and ingest services saw: the tenant is the one the presented key belongs to. */
@@ -87,6 +96,19 @@ export interface HttpCall {
   series?: { labels: Record<string, string>; samples: [number, number][] }[]
 }
 
+/** One call of the fake `RecordedSamples` entrypoint. */
+export interface RecordedCall {
+  /** `props.caller` of the binding the call came through. */
+  caller: unknown
+  /** The tenant argument, as received. */
+  tenant: unknown
+  batches: SampleBatch[]
+  /** Real time (ms) the call arrived. */
+  at: number
+  /** `ok`, or the message it was refused with. */
+  outcome: string
+}
+
 /** Requests the fake query and ingest services received, in order, across tenants. */
 export const services = {
   calls: [] as HttpCall[],
@@ -96,6 +118,21 @@ export const services = {
   delayMs: 0,
   /** Status the services answer instead of working (e.g. 503), once per entry. */
   fail: [] as number[],
+  /** Calls of the `RecordedSamples` entrypoint, in order, across tenants. */
+  recorded: [] as RecordedCall[],
+  /** Refusals the entrypoint answers with instead of writing, once per entry (after validation). */
+  refuse: [] as string[],
+  /** Milliseconds (real time) the entrypoint takes to write before it resolves. */
+  recordDelayMs: 0,
+  /** More samples than this in one call: `too_large`, nothing written. */
+  maxSamplesPerCall: Infinity,
+  /** What the entrypoint wrote: one value per (tenant, series, timestamp), as the write path keeps it. */
+  rows: new Map<string, string>(),
+}
+
+/** The key of one written sample in `services.rows`. */
+export function rowKey(tenant: string, labels: Record<string, string>, timeMs: number): string {
+  return `${tenant}|${JSON.stringify(Object.entries(labels).sort(([a], [b]) => (a < b ? -1 : 1)))}|${timeMs}`
 }
 
 export const world = {
@@ -130,6 +167,7 @@ export function tenantWorld(tenant: string): TenantWorld {
       plan: null,
       planCalls: [],
       http: false,
+      sinkBinding: 'SINK',
     }
     world.tenants.set(tenant, w)
   }
@@ -213,6 +251,11 @@ export class TestRuler extends Ruler {
     const w = tenantWorld(this.tenant)
     if (w.http) return super.validator()
     return w.validate ? { check: w.validate } : permissiveValidator
+  }
+  protected override recordedSamples(): RecordedSamplesRpc | undefined {
+    const w = tenantWorld(this.tenant)
+    const env = this.env as RulerEnv & { OLD_SINK?: RecordedSamplesRpc; OTHER_SINK?: RecordedSamplesRpc }
+    return w.sinkBinding === null ? undefined : w.sinkBinding === 'SINK' ? super.recordedSamples() : env[w.sinkBinding]
   }
   protected override sink(): Sink {
     const w = tenantWorld(this.tenant)
@@ -413,6 +456,49 @@ export class FakeIngest extends WorkerEntrypoint<{ CONFIG: KVNamespace }> {
     const w = tenantWorld(tenant)
     w.sinkWrites.push(call.series.map((s) => ({ id: `remote-write#${w.sinkWrites.length}`, samples: s.samples.map(([t, v]) => ({ labels: s.labels, timeMs: t, value: String(v) })) })))
     return new Response(null, { status: 204 })
+  }
+}
+
+/** Prometheus' text form of a sample value (contracts/ingest.ts): a decimal, `+Inf`, `Inf`, `-Inf`, `NaN`. */
+const PROM_VALUE = /^(?:[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|\+?Inf|-Inf|NaN)$/
+
+/**
+ * viz-ingest's `RecordedSamples` entrypoint (contracts/ingest.ts), as far as a caller can tell:
+ * the caller from the binding's `props` (`unauthorized` unless allowed), the tenant validated
+ * (`TENANT_ID`) and every batch id under it, values in Prometheus' text form, more samples than
+ * `services.maxSamplesPerCall` refused as `too_large`, and nothing written unless the whole call
+ * is accepted. Written samples are kept as the write path keeps them: one value per (tenant,
+ * series, timestamp) in `services.rows`. Refusals reject with the refusal word first, the only
+ * part of an error an RPC boundary carries reliably.
+ */
+export class FakeRecordedSamples extends WorkerEntrypoint<{ CONFIG: KVNamespace }> implements RecordedSamplesRpc {
+  async write(tenant: string, batches: SampleBatch[]): Promise<void> {
+    const caller = (this.ctx as { props?: { caller?: unknown } }).props?.caller
+    const call: RecordedCall = { caller, tenant, batches, at: Date.now(), outcome: 'ok' }
+    services.recorded.push(call)
+    const refuse = (message: string): never => {
+      call.outcome = message
+      throw new Error(message)
+    }
+    if (typeof caller !== 'string' || !RECORDED_SAMPLES_CALLERS.includes(caller)) refuse('unauthorized: this service binding does not name a caller allowed to write recorded samples')
+    if (typeof tenant !== 'string' || !TENANT_ID.test(tenant)) refuse('invalid: tenant id must match [A-Za-z0-9_-]{1,64}')
+    if (!Array.isArray(batches)) refuse('invalid: batches must be a list')
+    let samples = 0
+    for (const b of batches) {
+      if (typeof b?.id !== 'string' || !b.id.startsWith(`${tenant}/`)) refuse(`invalid: batch ${JSON.stringify(String(b?.id).slice(0, 80))} is not one of tenant ${tenant}'s; nothing was written`)
+      for (const x of b.samples) if (!PROM_VALUE.test(x.value)) refuse(`invalid: batch ${b.id}: value ${JSON.stringify(x.value)} is not a Prometheus sample value; nothing was written`)
+      samples += b.samples.length
+    }
+    if (samples > services.maxSamplesPerCall) refuse(`too_large: ${samples} samples in one call; at most ${services.maxSamplesPerCall}`)
+    const scripted = services.refuse.shift()
+    if (scripted !== undefined) refuse(scripted)
+    if (services.recordDelayMs > 0) await new Promise((r) => setTimeout(r, services.recordDelayMs))
+    const w = tenantWorld(tenant)
+    w.sinkWrites.push(batches)
+    for (const b of batches) {
+      w.sinkById.set(b.id, b)
+      for (const x of b.samples) services.rows.set(rowKey(tenant, x.labels, x.timeMs), x.value)
+    }
   }
 }
 

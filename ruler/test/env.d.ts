@@ -7,6 +7,12 @@ declare namespace Cloudflare {
     TENANT: DurableObjectNamespace<import('../../control/src/tenant').Tenant>
     QUERY: Fetcher
     INGEST: Fetcher
+    /** viz-ingest's RecordedSamples entrypoint, as production binds it (test/harness.ts `FakeRecordedSamples`). */
+    SINK: import('../../contracts/ingest').RecordedSamplesRpc
+    /** An ingest release without the entrypoint. */
+    OLD_SINK: import('../../contracts/ingest').RecordedSamplesRpc
+    /** The entrypoint through a binding naming a caller it does not allow. */
+    OTHER_SINK: import('../../contracts/ingest').RecordedSamplesRpc
     /** Node-side sink for files the independent readers check (vitest.config.ts). */
     CAPTURE: Fetcher
   }
