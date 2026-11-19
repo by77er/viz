@@ -505,6 +505,10 @@ describe('CPU: a run the model prices over its budget is refused whole, never cu
     const r = await rig([ewma()])
     const T = T0 - DAY
     const grow = T + 3 * HOUR
+    // The run with three series throughout: its cost, plus a little, is the budget.
+    ok((await limits(r as never, { maxBacktestMemoryBytes: 7_200_000 })) as never)
+    const steady = good(await r.stub.backtest(r.tenant, ewma(), T, T + 6 * HOUR, MIN)).cost!.cpu!.modelledMs
+    const budget = steady + 10
     const base = r.w.range!
     r.w.range = (q, s0, e, st) => {
       const m = base(q, s0, e, st) as PromMatrix
@@ -513,18 +517,19 @@ describe('CPU: a run the model prices over its budget is refused whole, never cu
       if (later.length === 0) return m
       return { resultType: 'matrix', result: [...m.result, ...Array.from({ length: 97 }, (_x, k) => ({ metric: { service: `x${k}` }, values: later }))] }
     }
-    ok((await limits(r as never, { maxBacktestMemoryBytes: 7_200_000, maxBacktestCpuMs: 60 })) as never)
+    ok((await limits(r as never, { maxBacktestCpuMs: budget })) as never)
+    const before = r.w.rangeCalls.length
     const res = await r.stub.backtest(r.tenant, ewma(), T, T + 6 * HOUR, MIN)
     if (res.status !== 'over_budget') throw new Error(JSON.stringify(res))
-    const [, fed, total] = /^over the CPU budget: after (\d+) of (\d+) windows the run shows 100 series; the whole run would take about \d+ ms of CPU \(modelled\), the budget is 60 ms\. Stopped before evaluating more; nothing is kept\./.exec(res.message) ?? []
-    expect(Number(fed)).toBe(r.w.rangeCalls.length - 1)
+    const [, fed, total] = new RegExp(`^over the CPU budget: after (\\d+) of (\\d+) windows the run shows 100 series; the whole run would take about \\d+ ms of CPU \\(modelled\\), the budget is ${budget} ms\\. Stopped before evaluating more; nothing is kept\\.`).exec(res.message) ?? []
+    expect(Number(fed)).toBe(r.w.rangeCalls.length - before - 1)
     expect(Number(total)).toBeGreaterThan(Number(fed) + 1)
     // The window that showed them is the first holding a step at or after `grow`.
     expect(r.w.rangeCalls.at(-2)![2]).toBeLessThan(grow)
     expect(r.w.rangeCalls.at(-1)![2]).toBeGreaterThanOrEqual(grow)
-    // The same range with the original three series fits.
+    // The same range with the original three series still fits.
     r.w.range = base
-    expect(good(await r.stub.backtest(r.tenant, ewma(), T, T + 6 * HOUR, MIN)).cost!.cpu!.modelledMs).toBeLessThanOrEqual(60)
+    expect(good(await r.stub.backtest(r.tenant, ewma(), T, T + 6 * HOUR, MIN)).cost!.cpu).toEqual({ modelledMs: steady, budgetMs: budget })
   })
 
   it('a warm-up priced over maxWarmupCpuMs is refused after its first window; the rule starts cold at once and says why', async () => {
