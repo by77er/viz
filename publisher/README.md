@@ -752,6 +752,10 @@ load 7–8; at 300,000 the capped runs, the range over two or three runs, load 5
 
 ## Risks
 
+- **A change without an index fragment** (a log from before D41, or a contract violation) is
+  staged with none in both `stageSink` and `planStaged` (the latter since PR #5's review), so it
+  cannot fail a whole publish; no test builds such a log yet, so the parity is by reading.
+
 - **Refusals stall publication, not ingest.** A refusing publisher (newer storage) or a table
   a newer publisher evolved leaves external readers on older snapshots until the newer release
   runs again (D15: the publisher is never upstream of ingest). The alarm retries every

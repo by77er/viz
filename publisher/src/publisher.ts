@@ -910,7 +910,9 @@ export class Publisher extends DurableObject<PublisherEnv> {
           else {
             sql.exec(
               `INSERT INTO stage (tenant, tbl, tomb, key, day, rows, bytes, min_ts, max_ts, idx) VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`,
-              tenant, table, f.key, f.day, f.rows, f.bytes, f.minTs, f.maxTs, f.index,
+              // As stageSink: a file without an index fragment is stored with none, never a constraint
+              // error that would fail the whole publish (review of #5).
+              tenant, table, f.key, f.day, f.rows, f.bytes, f.minTs, f.maxTs, typeof f.index === 'string' ? f.index : '',
             )
           }
         }
