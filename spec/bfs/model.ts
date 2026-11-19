@@ -1223,6 +1223,11 @@ export const PROPS: Record<string, Prop> = {
       })
     }),
   },
+  /** Non-vacuity witness for D30_chain: no live file is a compaction output built from a compaction output. */
+  W_NoChainedOutputLive: {
+    name: 'W_NoChainedOutputLive',
+    holds: (_c, s) => s.L.every((L) => L.fi.every((f) => !FILES[f]!.comp || FILES[f]!.ins.every((i) => !FILES[i]!.comp))),
+  },
   /** A rebuild from R2 never refuses (the ledger stays available). */
   AV_RebuildSucceeds: { name: 'AV_RebuildSucceeds', holds: (_c, s) => s.L.every((L) => !L.dn) },
   /** §4.3: "a rebuilt ledger starts a new ledger incarnation, so versions are never reused". */

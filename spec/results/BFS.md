@@ -71,6 +71,8 @@ Breadth-first, exhaustive within the bounds of each row; every counterexample is
 | `D30_2shards` amended + D30 + log as built: 2 shards, ledger loss + shard loss + compaction, no client retry, ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 6,000,001 states; every state reachable in at most 19 steps checked, no violation | 6,000,001 | 25,636,623 | 19 | 372.3 s | 9.8e-7 |
 | `D30_2tenants` amended + D30 + log as built: 2 tenants in one pooled shard sending identical bytes, ledger loss + shard loss + compaction, no client retry, ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 6,000,005 states; every state reachable in at most 19 steps checked, no violation | 6,000,005 | 28,618,381 | 19 | 402.7 s | 9.8e-7 |
 | `D30_variants` amended + D30 + log as built: two encoder outputs per segment, ledger loss + compaction + retention, no client retry, ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 6,000,003 states; every state reachable in at most 21 steps checked, no violation | 6,000,003 | 29,105,288 | 21 | 296.2 s | 9.8e-7 |
+| `D30_chain` amended + D30 + log as built: 3 batches, 2 compactions, so an output is an input of the next (the rule applied inductively), retention, ledger loss, no client retry, one flush Worker, no query, ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 6,000,005 states; every state reachable in at most 31 steps checked, no violation | 6,000,005 | 29,312,987 | 31 | 379.2 s | 9.8e-7 |
+| `W_chain_reachable` non-vacuity of D30_chain: a level-2 output (built from a compaction output) becomes live within its bounds | W_NoChainedOutputLive | **violated** W_NoChainedOutputLive in 27 steps | 651,781 | 2,782,318 | 27 | 47.9 s | 1.2e-8 |
 | `D30_teeth_not_live_only` D30 teeth: an input counts as gone when it is merely not live (its object may still exist) | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 27 steps | 406,920 | 1,822,925 | 27 | 24.7 s | 4.5e-9 |
 | `D30_teeth_absent_only` D30 with the live test dropped (absent from the listing alone): expected to hold, since an object is deleted only once its key can never be live | all safety | stopped: memory bound: stopped at 6,000,002 states; every state reachable in at most 31 steps checked, no violation | 6,000,002 | 33,756,569 | 31 | 277.7 s | 9.8e-7 |
 | `D30_teeth_read_first` D30 teeth: the sweep reads the ledger BEFORE it lists R2 | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 25 steps | 247,867 | 1,035,235 | 25 | 10.2 s | 1.7e-9 |
@@ -92,6 +94,7 @@ Breadth-first, exhaustive within the bounds of each row; every counterexample is
 | `LOG_S1_rollback` review S-1, as built: one rollback to the first-layout ledger and back, one ledger loss, retention, compaction, registration logged before writes; ≤ 2 sweep runs | all safety | **violated** I5_DiscardOnlyLogged in 14 steps | 30,553 | 105,857 | 14 | 3.6 s | 2.5e-11 |
 | `LOG_S1_rollback_I1` review S-1, as built, carried through to acknowledged-row loss; ≤ 2 sweep runs | I1_AckedIsDurable | **violated** I1_AckedIsDurable in 17 steps | 126,352 | 513,762 | 17 | 14 s | 4.3e-10 |
 | `LOG_S1_rollback_I11` review S-1, as built, carried through to a listed file with no object (a removal the first-layout drain logged, purged, then undone by the rebuild); ≤ 2 sweep runs | I11_LiveFilesReadable | **violated** I11_LiveFilesReadable in 19 steps | 458,026 | 1,979,349 | 19 | 42.9 s | 5.7e-9 |
+| `LOG_S1_heal_1batch` review S-1 with fix (b), one batch, one ledger loss, one flush Worker (small enough to be exhaustive); ≤ 2 sweep runs | all safety | holds (exhaustive) | 130,718 | 646,904 | 33 | 5.2 s | 4.6e-10 |
 | `LOG_S1_heal` review S-1 with fix (b): on roll-forward an outbox that does not continue the segment log starts a new incarnation from SQLite; same bounds; ≤ 2 sweep runs | all safety | stopped: memory bound: stopped at 6,000,001 states; every state reachable in at most 23 steps checked, no violation | 6,000,001 | 29,063,372 | 23 | 330.6 s | 9.8e-7 |
 
 ## Amended protocol (expect none; exhaustive)
@@ -121,8 +124,8 @@ Breadth-first, exhaustive within the bounds of each row; every counterexample is
 | `LEAK_D30_ll` no leak, D30 + log as built: compaction, retention (2 removals), ledger loss, no shard loss; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leak | holds (exhaustive) | 1,640,059 | 10,097,949 | 56 | 172.4 s | 7.3e-8 |
 | `LEAK_D30_sl` no leak, D30 + log as built: compaction, retention (2 removals), shard loss, no ledger loss; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leak | **violated** LIVE_NoLeak in 11 steps | 1,090,381 | 6,619,573 | 52 | 130.1 s | 3.2e-8 |
 | `LEAK_V1_sl` no leak, the rules before D30: same bounds as LEAK_D30_sl; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leak | **violated** LIVE_NoLeak in 11 steps | 1,226,068 | 7,552,989 | 53 | 135.9 s | 4.1e-8 |
-| `LEAK_D30_sl_comp` no leaked compaction output, D30 + log as built: compaction, retention (2 removals), ledger loss + shard loss; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leaked compaction output | stopped: memory bound: stopped at 3,000,001 states (depth 34); the graph is incomplete, so AG EF is NOT decided (unexpected) | 3,000,001 | 15,451,988 | 34 | 221.7 s | 2.4e-7 |
-| `LEAK_V1_sl_comp` no leaked compaction output, the rules before D30: same bounds as LEAK_D30_sl_comp; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leaked compaction output | stopped: memory bound: stopped at 3,000,002 states (depth 33); the graph is incomplete, so AG EF is NOT decided | 3,000,002 | 15,555,218 | 33 | 233.3 s | 2.4e-7 |
+| `LEAK_D30_sl_comp` no leaked compaction output, D30 + log as built: compaction, retention (1 removal), ledger loss + shard loss; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leaked compaction output | **violated** LIVE_NoLeakComp in 19 steps | 1,359,944 | 7,442,170 | 51 | 55 s | 5e-8 |
+| `LEAK_V1_sl_comp` no leaked compaction output, the rules before D30: same bounds as LEAK_D30_sl_comp; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leaked compaction output | holds (exhaustive) | 1,860,278 | 10,440,988 | 54 | 83.3 s | 9.4e-8 |
 
 ## Counterexamples
 
@@ -959,6 +962,40 @@ Violates `V_IncarnationNotReused`.
 6. addUnit(s0 inc 1 1..1) admitted (registers the stream)
 7. LEDGER STORAGE LOSS -> rebuild from R2 (nothing of this incarnation in R2: incarnation number reused)
 
+### W_chain_reachable
+
+non-vacuity of D30_chain: a level-2 output (built from a compaction output) becomes live within its bounds
+
+Violates `W_NoChainedOutputLive`.
+
+1. registerStream(s0, inc 1)
+2. ledger drain: PUT segment v1..v1
+3. registration logged -> s0 accepts writes
+4. append(b0 -> s0) seq 1
+5. seal(s0, ..1)
+6. append(b1 -> s0) seq 2
+7. seal(s0, ..2)
+8. append(b2 -> s0) seq 3
+9. seal(s0, ..3)
+10. flush: pendingSegments(s0) -> inc 1 1..1
+11. flush readSegment(s0 inc 1 1..1)
+12. flush PUT L0(s0 inc1 1..1)
+13. addUnit(s0 inc 1 1..1) admitted
+14. flush: pendingSegments(s0) -> inc 1 2..2
+15. flush readSegment(s0 inc 1 2..2)
+16. flush PUT L0(s0 inc1 2..2)
+17. addUnit(s0 inc 1 2..2) admitted
+18. flush: pendingSegments(s0) -> inc 1 3..3
+19. flush readSegment(s0 inc 1 3..3)
+20. flush PUT L0(s0 inc1 3..3)
+21. addUnit(s0 inc 1 3..3) admitted
+22. compact: read L0(s0 inc1 1..1) + L0(s0 inc1 2..2)
+23. compact PUT L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))
+24. replace(L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))) committed
+25. compact: read L0(s0 inc1 3..3) + L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))
+26. compact PUT L1(L0(s0 inc1 3..3)+L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2)))
+27. replace(L1(L0(s0 inc1 3..3)+L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2)))) committed
+
 ### D30_teeth_not_live_only
 
 D30 teeth: an input counts as gone when it is merely not live (its object may still exist)
@@ -1266,6 +1303,32 @@ Violates `LIVE_NoLeak`. from the last state of the trace no continuation deletes
 9. SHARD STORAGE LOSS(s0)
 10. flush PUT L0(s0 inc1 1..2)
 11. flush crash (s0 inc 1 1..2)
+
+### LEAK_D30_sl_comp
+
+no leaked compaction output, D30 + log as built: compaction, retention (1 removal), ledger loss + shard loss; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory)
+
+Violates `LIVE_NoLeakComp`. from the last state of the trace no continuation deletes every unlisted object; unlisted then: L0(s0 inc1 1..1) (sweep keeps it); L0(s0 inc1 2..2) (sweep keeps it); L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2)) (sweep keeps it).
+
+1. registerStream(s0, inc 1)
+2. ledger drain: PUT segment v1..v1
+3. registration logged -> s0 accepts writes
+4. append(b0 -> s0) seq 1
+5. seal(s0, ..1)
+6. append(b1 -> s0) seq 2
+7. seal(s0, ..2)
+8. flush: pendingSegments(s0) -> inc 1 1..1
+9. flush readSegment(s0 inc 1 1..1)
+10. flush PUT L0(s0 inc1 1..1)
+11. addUnit(s0 inc 1 1..1) admitted
+12. flush: pendingSegments(s0) -> inc 1 2..2
+13. flush readSegment(s0 inc 1 2..2)
+14. SHARD STORAGE LOSS(s0)
+15. flush PUT L0(s0 inc1 2..2)
+16. addUnit(s0 inc 1 2..2) admitted
+17. compact: read L0(s0 inc1 1..1) + L0(s0 inc1 2..2)
+18. LEDGER STORAGE LOSS -> rebuild from R2
+19. compact PUT L1(L0(s0 inc1 1..1)+L0(s0 inc1 2..2))
 
 ### W_leak_behind_lost_flush
 
