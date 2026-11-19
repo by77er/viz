@@ -87,7 +87,7 @@ const EWMA_HELD_OUT = { halfLifePoints: 100, k: 8 }
  * Robust z with the quantile spread at the largest window whose state fitted the per-series limit
  * (64 KiB) for any values when it was stored as JSON (version 1 of `store.anomaly-state`): 1,500
  * points, measured at 60.9 KB with the longest number encoding (39.7 bytes a point). Stored as
- * Float64 ring blocks (version 2, design D56) the same window keeps about 18.8 KB a series whatever
+ * Float64 ring blocks (version 2, design D60) the same window keeps about 18.8 KB a series whatever
  * the values, and up to about 5,600 points fit; the default was not changed with the storage (D33).
  * k 2 and the 99th percentile are the configuration frozen on NAB (anomaly/bench/smd-frozen.json);
  * only the window differs from it (design D33; ruler/README.md part 8).

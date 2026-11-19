@@ -44,9 +44,10 @@ fakes, so they are **ruler overhead only**; part 9's trial is the first run on C
 | `src/amconfig.ts` | Notifier config validation, routing, matchers, inhibition, silence matching, secret redaction (pure) |
 | `src/http.ts` | The HTTP API: routes, auth through edge's verifier, Prometheus-compatible reads, monitors, groups, rule files, backtest, placement and shard moves |
 | `src/monitors.ts` | Monitor document → alerting or anomaly rule, error paths in the monitor's own field names, views, history merge (pure) |
-| `src/anomaly.ts` | Anomaly rules (part 8): the `anomaly` block, defaults and the detector guide, one evaluation (pure), the stored form of detector state |
+| `src/anomaly.ts` | Anomaly rules (part 8): the `anomaly` block, defaults and the detector guide, one evaluation (pure), the stored form of detector state (version 1, and which version a tick writes) |
+| `src/anomalystore.ts` | Version 2 of the stored form (part 8, D60): robust z and seasonal windows as Float64 ring blocks on the interval grid; the rows a tick writes, and reading them back (pure) |
 | `src/registry.ts` | `RulerIndex` and `sweep()` |
-| `src/schema.ts` | The three classes' storage as versioned migrations, and `FORMATS`: the version of everything the ruler writes for other releases |
+| `src/schema.ts` | The three classes' storage as versioned migrations, and `FORMATS`: the version of everything the ruler writes for other releases; the version gate of `store.anomaly-state` (`ANOMALY_STATE_WRITE`) and the versions it reads |
 | `src/placement.ts` | Jump-hash assignment of groups to shards (pure) |
 | `src/signature.ts` | `X-Viz-Signature` HMAC-SHA256 signing and a reference verifier |
 | `src/yaml.ts`, `src/rulefile.ts` | Subset YAML parser and emitter; rule-file import/export |
@@ -56,7 +57,7 @@ fakes, so they are **ruler overhead only**; part 9's trial is the first run on C
 | `tools/anomaly-default/` | The evidence for the default anomaly window (part 8, D33): held-out NAB at a fixed window (`nab-window.ts`), SMD post hoc on a scratch copy of `anomaly/` (`smd-window.sh`, `smd-window.patch`), and their output (`out/`) |
 | `test/fixtures/anomaly/` | Anomaly rules as the release before the 2026-11-19 defaults stored them (the upgrade tests) |
 | `test/harness.ts` | The test worker: the classes with clock, evaluators, sink, receiver and crash points overridden; `FakeQuery` and `FakeIngest` entrypoints (edge's real `authenticate`, tenant from the key), `FakeRecordedSamples` (viz-ingest's entrypoint as a caller sees it: caller from `props`, tenant and batch ids validated, one value per series and time) and control's real `Tenant` for the production wiring |
-| `test/anomaly.bench.ts`, `vitest.measure.config.ts` | Anomaly rule measurements in workerd (`npm run bench:anomaly`); the config adds `HOST`, which reads workerd's CPU time, its resident memory and the load average in Node |
+| `test/anomaly.bench.ts`, `vitest.measure.config.ts` | Anomaly rule measurements in workerd (`npm run bench:anomaly`; case D, version 1 against version 2 of the stored state); the config adds `HOST`, which reads workerd's CPU time, its resident memory and the load average in Node |
 | `test/slo.bench.ts` | SLO tick, warm-up and 7-day backtest measurements in workerd (`npm run bench:history`) |
 | `test/cpu.bench.ts`, `test/memory.bench.ts` | Calibration of the CPU model (µs per point by rule kind, and per point parsed) and of the memory model (bytes per point held) |
 | `scripts/mutants.mjs` | Mutation checks, applied to a scratch copy |
@@ -1445,20 +1446,20 @@ the new "dryRun on every write" test.
 | 171 | `exceeded`: the HTTP answer leaves it out (null whatever the run said) | history: "POST /monitors/backtest takes an SLO or anomaly monitor …" (+3 more: memory, CPU, queries over HTTP) |
 | 172 | `exceeded`: a refused warm-up does not say which budget | history: "over the budget nothing is fetched …" (+3 more: the engine's refusal as null, memory, CPU) |
 | 173 | the queries refusal says nothing was fetched though the series counts were read | history: "windows that would take more than 1,000 range queries …" |
-| 174 | ring blocks: values stored at the wrong float width (Float32 precision) | KILLED_174 |
-| 175 | ring blocks: the block boundary off by one (a block's last slot taken for the next block's) | KILLED_175 |
-| 176 | ring blocks: every block written at every tick (not only the head and the current block) | KILLED_176 |
-| 177 | ring blocks: the reader keeps points the window evicted since their block was written | KILLED_177 |
-| 178 | ring blocks: a block rewritten only for a pruned series (one series gone quiet keeps every other series' old entries) | KILLED_178 |
-| 179 | version gate ignored: version 2 written whatever the gate says | KILLED_179 |
-| 180 | conversion: version 1 rows left beside version 2 ones | KILLED_180 |
-| 181 | rows renumbered by a release without version 2 not rewritten under their own chunks | KILLED_181 |
-| 182 | CPU model: robust z priced by its stored (ring block) size, not by the points it scans | KILLED_182 |
-| 183 | save-time estimate: the blocks a window spans counted one short | KILLED_183 |
+| 174 | ring blocks: values stored at the wrong float width (Float32 precision) | anomalystore: "Float64 values round-trip exactly through base64 …" (+ the state round trips) |
+| 175 | ring blocks: the block boundary off by one (a block's last slot taken for the next block's) | anomalystore: "robust_z, the default (1,500 points): the library's state … written whole and read back …" (+ the 2,200-tick evaluation) |
+| 176 | ring blocks: every block written at every tick (not only the head and the current block) | anomalystore: "robust_z, the default window (1,500 points), 2,200 ticks: … two rows a steady tick" (+1 more) |
+| 177 | ring blocks: the reader keeps points the window evicted since their block was written | anomalystore: "robust_z, the default window …, 2,200 ticks: gaps, missing values, evictions and replays …" (+1 more) |
+| 178 | ring blocks: a block rewritten only for a pruned series (one series gone quiet keeps every other series' old entries) | anomalystore: "one series gone quiet keeps no other series' old entries …" |
+| 179 | version gate ignored: version 2 written whatever the gate says | anomalystore: "through the Ruler object … 1,700 random ticks …" (+1 more: the gate at 1) |
+| 180 | conversion: version 1 rows left beside version 2 ones | anomalystore: "version 1 rows are read and rewritten as version 2 at the next tick …" |
+| 181 | rows renumbered by a release without version 2 not rewritten under their own chunks | anomalystore: "a shard move carries version 2 rows …; rows a release without version 2 renumbered … rewritten whole" |
+| 182 | CPU model: robust z priced by its stored (ring block) size, not by the points it scans | anomalystore: "the CPU and memory models price robust z by the points it scans …" |
+| 183 | save-time estimate: the blocks a window spans counted one short | anomaly: "an anomaly monitor is query + anomaly; its defaults follow the evidence …" (+1 more: saved again) |
 
 **Windowed state as ring blocks: mutants 174–183, and the anomaly mutants re-run** (`VIZ_SCRATCH=<scratch>
 node scripts/mutants.mjs 174 … 183 60 … 81 104 … 130 146 … 157`, on a scratch copy, deleted after):
-MUT3_RESULT. The three asked for are 174 (float width), 175 (block boundary) and 176 (every block
+**71 of 71 killed on the first run**, shared tree unchanged: the ten new ones, and every anomaly mutant (60–81, 146–157) and history mutant (104–130) re-run on the final code. The three asked for are 174 (float width), 175 (block boundary) and 176 (every block
 every tick). Four earlier patterns had gone stale with this change and were brought up to date to
 the same property (61, 62, 73: the state's write and read are planned in `anomaly.ts`; 108: the
 warm-up's write); all 183 patterns match the source exactly once.

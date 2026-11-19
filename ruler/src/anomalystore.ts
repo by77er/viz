@@ -1,5 +1,5 @@
 /**
- * The stored form of a windowed detector's state, version 2 of `store.anomaly-state` (design D56).
+ * The stored form of a windowed detector's state, version 2 of `store.anomaly-state` (design D60).
  *
  * robust_z keeps the points of a trailing window and seasonal two rings of values by slot. In
  * version 1 each series' whole state is JSON (about 37 bytes a point, 39.7 at the longest number

@@ -1,6 +1,6 @@
 /**
  * Windowed detector state stored as Float64 ring blocks (`store.anomaly-state` version 2, design
- * D56; `src/anomalystore.ts`). What is checked here:
+ * D60; `src/anomalystore.ts`). What is checked here:
  *
  * - the stored form is the state, bit for bit: the library's robust z and seasonal states over
  *   random sequences with gaps, missing values and timestamps off the interval grid, written and
