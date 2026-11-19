@@ -401,7 +401,7 @@ dialog.vz-dialog { max-width: calc(100% - 2 * var(--space-4)); max-height: calc(
 @container (max-width: 639px) { .vz-split { grid-template-columns: minmax(0, 1fr); gap: var(--space-8); } }
 
 /* Key-value list: facts about one thing. */
-.vz-kv { display: grid; grid-template-columns: fit-content(40%) minmax(0, 1fr); gap: var(--space-2) var(--space-4); margin: 0; }
+.vz-kv { display: grid; grid-template-columns: fit-content(var(--key-max)) minmax(0, 1fr); gap: var(--space-2) var(--space-4); margin: 0; }
 .vz-kv dt { color: var(--ink-secondary); }
 .vz-kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 

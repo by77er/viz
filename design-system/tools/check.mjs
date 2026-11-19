@@ -125,6 +125,9 @@ const lastCompound = (sel) => sel.split(/[\s>+~]+/).filter(Boolean).pop() ?? ''
   checked++; if (!base) fail(`.vz-swatch has lost its ground ring (${RING})`) }
 { let ok = false; for (const r of rules) for (const s of r.sel) if (s === '.vz-plot .vz-dot[data-series]') for (const [p, val] of r.decls) if (p === 'stroke') { checked++; if (val === 'var(--ground)') ok = true; else fail(`${s} stroke ${val} (line ${r.line}): the crosshair dot keeps its ground edge`) }
   checked++; if (!ok) fail('.vz-plot .vz-dot[data-series] has lost its ground edge') }
+// Slots 5 to 8 are told from 1 to 4 by their dash where hue and lightness repeat: each must carry a pattern, and lines must draw it.
+for (const i of [5, 6, 7, 8]) { checked++; if (!rules.some((r) => r.sel.includes(`[data-series="${i}"]`) && r.decls.some(([p]) => p === '--pattern'))) fail(`[data-series="${i}"] has no --pattern: slots 5 to 8 must be dashed, the second channel beside colour`) }
+{ checked++; if (!rules.some((r) => r.sel.includes('.vz-plot .vz-line[data-series]') && r.decls.some(([p, val]) => p === 'stroke-dasharray' && /var\(--pattern/.test(val)))) fail('.vz-plot .vz-line[data-series] does not draw --pattern: dashed slots would be drawn solid') }
 // A chart's surface is its panel's (ground, or raised in an overlay). No rule paints the plot or the chart itself: series are measured against ground and raised only.
 for (const r of rules) for (const s of r.sel) { const last = lastCompound(s); if (/^(svg)?\.vz-(plot|chart)(\[[^\]]*\]|:[\w-]+(\([^)]*\))?)*$/.test(last)) for (const [p] of r.decls) if (/^(background|background-color|fill)$/.test(p)) { checked++; fail(`${s} sets ${p} (line ${r.line}): a chart has no fill of its own; series are only checked on ground and raised`) } }
 // Breakpoints: media and container conditions cannot read tokens, so every width in a condition is a breakpoint token (or one less, as a maximum).
@@ -143,7 +146,9 @@ async function audit() {
   page.on('pageerror', (e) => fail(`audit page error: ${e.message}`))
   await page.setContent(html, { waitUntil: 'load' }); await page.waitForTimeout(200)
   // states the previews do not show at rest: a chosen legend row (so the others are off), and Other opened
-  await page.evaluate(() => { for (const c of document.querySelectorAll('.vz-chart')) { const tr = c.querySelector('tbody tr[data-key]'); if (c.vz && tr) c.vz.toggle(tr.dataset.key); c.querySelector('[data-more]')?.click() } })
+  await page.evaluate(() => { const charts = [...document.querySelectorAll('.vz-chart')]; for (const c of charts) { const tr = c.querySelector('tbody tr[data-key]'); if (c.vz && tr) c.vz.toggle(tr.dataset.key); c.querySelector('[data-more]')?.click() }
+    // and a row brought forward, so the lines that step back are measured too
+    for (const c of charts.filter((x) => x.querySelectorAll('tbody tr[data-key]').length > 3).slice(0, 2)) c.querySelectorAll('tbody tr[data-key] .vz-series')[1]?.dispatchEvent(new FocusEvent('focusin', { bubbles: true })) })
   const measure = (pass) => page.evaluate((pass) => {
     const out = [], parse = (c) => { const m = /rgba?\(([^)]+)\)/.exec(c || ''); if (!m) return null; const p = m[1].split(/[\s,/]+/).filter(Boolean).map(Number); return { r: p[0], g: p[1], b: p[2], a: p[3] ?? 1 } }
     const L = (c) => { const f = (x) => { x /= 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4 }; return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b) }

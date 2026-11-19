@@ -96,7 +96,7 @@ export function medianInPlace(a: Float64Array, n: number): number {
   // the largest of the lower half
   let lo = -Infinity
   for (let i = 0; i < h; i++) if (a[i]! > lo) lo = a[i]!
-  return (lo + hi) / 2
+  return lo + (hi - lo) / 2 // not (lo + hi) / 2, which overflows near ±MAX_VALUE
 }
 
 export interface Robust {

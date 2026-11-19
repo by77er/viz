@@ -71,11 +71,11 @@ export function resolveStep(paramStep: number, stateStep: number | undefined, se
   if (stateStep && stateStep > 0) return stateStep
   const n = length(series)
   const inferred = inferStep(series.ts.subarray(0, n))
-  if (inferred > 0) return inferred
+  if (inferred > 0 && Number.isFinite(inferred)) return inferred
   if (lastTs !== null && lastTs !== undefined) {
     for (let i = 0; i < n; i++) {
       const t = series.ts[i]!
-      if (Number.isFinite(t) && t > lastTs) return t - lastTs
+      if (Number.isFinite(t) && t > lastTs) return Number.isFinite(t - lastTs) ? t - lastTs : 0
     }
   }
   return 0

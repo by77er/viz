@@ -290,6 +290,8 @@ describe('release skew (contracts/COMPATIBILITY.md)', () => {
         const body = await res.json<{ errorType?: string; data?: unknown }>()
         expect([path, JSON.stringify(answer).slice(0, 30), res.status, body.errorType, body.data]).toEqual([path, JSON.stringify(answer).slice(0, 30), 503, 'unavailable', undefined])
         expect(res.headers.get('Retry-After')).toBe('1')
+        // Refused at once: not taken for a stream to re-read, nor sent back to the ledger.
+        expect(cost(res, 'Plan-Attempts')).toBe(1)
       }
     }
     delete hooks.alterTail

@@ -278,6 +278,20 @@ const MUTANTS = [
     find: 'const limits: QueryLimits = { ...c.limits, maxSamples: qSamples, maxSeries: qSeries, maxStepPoints: L * c.limits.maxStepPoints }',
     replace: 'const limits: QueryLimits = { ...c.limits, maxSamples: share(qSamples, L, 0), maxSeries: qSeries, maxStepPoints: L * c.limits.maxStepPoints }',
   },
+  {
+    name: 'A shard status this release does not know falls through to the stream-mismatch path (contracts/COMPATIBILITY.md)',
+    tests: ['test/fence.test.ts'],
+    file: 'src/coordinator.ts',
+    find: "    if (status !== 'incarnation_mismatch') throw new ApiError('unavailable', `shard ${shard} answered a status this release does not know (${status.slice(0, 40)}); retry`)\n",
+    replace: '',
+  },
+  {
+    name: 'An engine that does not load is answered as a retryable 503',
+    tests: ['test/http.test.ts'],
+    file: 'src/index.ts',
+    find: "      return failure('internal', 'the query engine could not be loaded', headers)",
+    replace: "      return failure('unavailable', 'the query engine could not be loaded', { ...headers, 'Retry-After': '1' })",
+  },
 ]
 
 function run(cmd, args, opts = {}) {
