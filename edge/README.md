@@ -16,6 +16,7 @@ Durable Object.
 | `src/route.ts` | Pool maps, routing, concurrent appends, epoch refetch |
 | `src/pb.ts`, `src/snappy.ts` | Protobuf wire reader and snappy block decompressor; no dependencies |
 | `src/limits.ts` | Limits and the accept window, with defaults |
+| `src/meter.ts` | Decode limits counted before anything is built: values per item, JSON structural characters (D71) |
 | `src/recorded.ts` | `RecordedSamples`: the entrypoint the ruler writes recording-rule samples to over a service binding (contracts/ingest.ts) |
 
 There are no runtime dependencies. `snappyjs` and `protobufjs` are dev dependencies, used
@@ -81,7 +82,10 @@ are counted in `partial_success`, with the reasons in `error_message`.
 | Limit | Default | Over the limit |
 |---|---|---|
 | `maxBodyBytes` (as received) | 8 MiB | 413 |
-| `maxDecompressedBytes` | 32 MiB | 413; checked before snappy allocates and while gzip inflates |
+| `maxDecompressedBytes` | 8 MiB (was 32 MiB; D71) | 413; checked before snappy allocates and while gzip inflates |
+| `maxDecodedBytes` | 16 MiB (D71) | 413, nothing appended: the series table (Remote Write and OTLP), counted as it is built |
+| `maxJsonTokens` | 1,048,576 (D71) | 413 before parsing: structural characters (`{ [ , :`) of a JSON body outside strings |
+| values per item (constant, `DECODE.maxValues`) | 65,536 key-value entries and array elements of an OTLP resource or data point, as received | that data point is rejected ("label set too large to fit one batch"); a resource over it rejects all its points. Counted before anything is built ("Memory per request") |
 | `maxSeries` per request | 100,000 | 413 |
 | `maxSamples` per request | 500,000 | 413 |
 | `maxLabelsPerSeries` | 128 (the contract's ceiling; cannot be raised) | that series is rejected |
@@ -185,6 +189,77 @@ Why the shard returns ids and `edge` filters, rather than `edge` splitting batch
 series: `design/DECISIONS.md` D21. `test/limit.test.ts` (6 tests); mutants in
 `stack/scripts/mutants.mjs limit`.
 
+## Memory per request (decode limits, D71; review M-3)
+
+What a metrics request holds is bounded whatever its body's shape (`contracts/BATCH.md`,
+"Decode limits"). Ported from the development branch (commit `2afd7c5`), which applies the same
+limits to OTLP traces and logs and Loki push; only the metrics part is here.
+
+- **Counted before built.** The OTLP metrics decoders (protobuf and JSON) count each key-value
+  entry and array element of a resource or a data point, at any depth, against it
+  (`src/meter.ts`) before building it. At 65,536 the item is refused ("label set too large to
+  fit one batch"; a resource refuses all its points), the decoder builds nothing more of it and
+  reads the rest only to check the wire (lengths, wire types, nesting, UTF-8), so a malformed
+  body is still 400. Items under the limit are checked exactly as before. `BUILT` counts what the
+  decoders build, for the tests. Remote Write was already bounded per series: its labels are
+  read into a fixed scratch and copied from the body as bytes.
+- **No offsets per child.** A protobuf level is read twice (first its scalar fields and how many
+  children it has, then the children), so nothing is kept per resource, metric or point between
+  the two passes.
+- **The series table** counts against `maxDecodedBytes` as it is built, and its buffer does not
+  double past it. A resource's labels are copied into every series of it, so before this a valid
+  157 KiB body (one 96 KiB resource, 2,000 points) built a 498 MiB table (below). `index.ts` lets
+  the body go once it is decoded, before the shards are written.
+- **A point's attribute names** are found in a `Map`, not with `indexOf`, which was quadratic in a
+  point's attributes.
+- **JSON** is refused (413) above `maxJsonTokens` structural characters before `JSON.parse`, which
+  builds every value at once; realistic OTLP JSON has one per 10 to 35 bytes (measured on the
+  development branch's realistic bodies), hostile JSON one per 1.5.
+
+**The model.** While it decodes, a request holds its body as received (at most `maxBodyBytes`,
+8 MiB) and decompressed (at most 8 MiB; gzip inflates through chunks of up to as much again), the
+series table so far (at most `maxDecodedBytes`, 16 MiB, in a buffer at most one series larger),
+and V8 heap: for protobuf, the item being decoded (at most 65,536 values; every protobuf body
+below peaks at 6.0 MiB or less in workerd), for JSON, the parse tree (28.2 MiB at the token limit,
+the worst shape found, measured on the development branch with a body of empty objects;
+`JSON.parse` builds that tree before any decoder sees it) and the body's text (up to 8 MiB more,
+modelled). While the shards are written it holds the series table and its batches (about as
+large again) and no body. All but the V8 heap are ArrayBuffers. With every limit reached at once
+that is about 50 MiB for protobuf and 80 MiB for JSON (modelled from the parts); two such requests
+do not fit one 128 MB isolate. Realistic requests of 8,200 points (measured here) peak at 3.2 MiB
+of V8 heap as protobuf and 8.8 MiB as JSON in workerd, and decode into 2.14 MiB.
+
+**Measured here** (2026-11-19, one run per case, on this branch's `src/` and, for "before", on
+`origin/main`'s at `9e56957`; the development branch's `bench/memory.mjs`, copied in for the run
+and not committed here, with its span and log imports left out). workerd 2026-11-17 local, V8
+heap only, from `--trace-gc`: "peak" is the largest heap a GC saw before collecting, garbage
+included. Node 22 alongside; Node does not compress pointers, so its heap is about twice
+workerd's, and only Node reports ArrayBuffers (bodies, the series table, batches) retained after
+the request. Hostile bodies are review M-3's shapes and those found while fixing them; realistic
+ones have 8,200 points in the shape of an instrumented HTTP service.
+
+| Body | Size | workerd peak, MiB: before → after | Node peak, MiB: before → after | Node ArrayBuffers retained, MiB: before → after | Outcome: before → after | Node decode time, ms: before → after |
+|---|---|---|---|---|---|---|
+| metrics: resource of empty KeyValues | 4.00 MiB | 119.7 → **6.0** | 181.2 → 7.8 | 0.0 → 0.0 | 0 stored → 0 stored | 774 → 44 |
+| metrics: resource attribute, array of empty values | 4.00 MiB | 43.1 → **1.3** | 71.4 → 1.5 | 4.0 → 4.0 | 0 stored → 0 stored | 197 → 25 |
+| metrics: a 96 KiB resource copied into 2,000 series | 157 KiB | 1.4 → **1.1** | 1.3 → 1.2 | **498.0 → 0.0** | 2,000 stored → 413 | 965 → 132 |
+| metrics: point of distinct attribute keys | 229 KiB | 2.8 → **3.2** | 4.4 → 5.1 | 0.0 → 0.3 | 0 stored, 1 refused → 0 stored, 1 refused | 262 → 41 |
+| metrics JSON: resource of empty attributes | 4.00 MiB | 135.4 → **0.0** | 222.0 → 0.1 | 0.0 → 0.0 | 0 stored → 413 | 718 → 14 |
+| realistic metrics, 8,200 points | 1.34 MiB | 3.2 → **3.2** | 4.1 → 4.1 | 5.3 → 5.3 | 8,200 stored → 8,200 stored | 104 → 138 |
+| realistic metrics JSON, 8,200 points | 3.06 MiB | 8.5 → **8.8** | 18.1 → 18.2 | 5.7 → 5.7 | 8,200 stored → 8,200 stored | 105 → 122 |
+
+The fan-out row is the one live on `main` with a valid body: its V8 heap is small, and the 498 MiB
+are the series table, an ArrayBuffer, grown from a 157 KiB body. Two outcomes change, both as the
+contract now says: the fan-out and the hostile JSON body are 413. Every other outcome is the same,
+and so are the batches of every realistic body ("Verification"). A second run of the "after" column
+(`--check`) gave 5.2 MiB for the first row and within 0.4 MiB for the rest; every case was under
+its heap budget (16 MiB for protobuf, 32 MiB in workerd and 64 MiB in Node for JSON). Node decode
+time is wall time of one synchronous run on a shared machine at load 7 to 8. The same measurements
+on the development branch, with the span and log rows, are in its `edge/README.md`.
+
+Not measured: anything on Cloudflare (the isolate's memory as Workers reports it, under concurrent
+requests); ArrayBuffers in workerd (no API).
+
 ## Not implemented
 
 - Remote Write 2.0 (415), native histograms, exemplars, metadata.
@@ -198,14 +273,20 @@ series: `design/DECISIONS.md` D21. `test/limit.test.ts` (6 tests); mutants in
   tenant's requests before decoding (an isolate-local hint, not a limit).
 - Key revocation faster than the 60 s cache, and any tooling to create keys.
 - Metrics about the edge itself (rejections by reason, bytes per tenant).
+- Decoding without building: an item's attributes are still JavaScript objects while it is
+  decoded (at most 65,536 values, 6.0 MiB at worst measured), not written from the wire to
+  their stored form; a JSON body is still parsed whole (bounded by `maxJsonTokens`). D71 has the
+  alternatives.
+- Truncating an item over the decode limits instead of refusing it, and naming every rule an item
+  over them breaks (a point is named for the values limit once its metric's checks pass).
 
 ## Verification
 
 ```
 npm install
-npx vitest run --maxWorkers=2   # 62 tests in 8 files, in workerd, against the real Shard
+npx vitest run --maxWorkers=2   # 84 tests in 10 files, in workerd, against the real Shard
 npm run typecheck               # clean
-node scripts/mutants.mjs        # 43 mutants, on a copy outside the git checkout (the script refuses to run in it)
+node scripts/mutants.mjs        # 63 mutants, on a copy outside the git checkout (the script refuses to run in it)
 npm run bench       # decode throughput, in Node
 npm run fixtures    # regenerate test/fixtures.json with protobufjs + snappyjs
 ```
@@ -365,6 +446,86 @@ apply (the earlier 43 were not re-run here).
 | new series over the limit resolve | new series over the tenant's active-series limit are refused (series_limit) |
 | values parsed with `Number()` (hex, empty accepted) | writes nothing at all (hex, empty); parses exactly Prometheus' text form |
 
+### Decode limits and memory (2026-11-19, review M-3, D71)
+
+```
+npx tsc --noEmit
+npx vitest run --maxWorkers=2       # test/decode-metrics.test.ts is new
+node scripts/mutants.mjs decode:    # on a copy outside the git checkout
+```
+
+The memory and differential harnesses are the development branch's (`bench/memory.mjs`,
+`bench/memory-run.mjs`, `bench/bodies.mjs`, `bench/differential.mjs`). They were copied into this
+tree for the runs below and are not committed here: they also build and decode spans and logs,
+which this tree does not have (for the runs, the copies skip those).
+
+**Last run** (2026-11-19): `npx vitest run --maxWorkers=2` **84 passed, 0 failed** (10 files: the
+71 before and 13 new); `npx tsc --noEmit` clean. New: `test/decode-metrics.test.ts`, with request
+bodies written byte by byte in `test/wire.ts`, sharing nothing with `src/`:
+
+- **Each hostile shape is refused, cheaply**: a resource of empty `KeyValue`s, a data point of
+  empty attributes followed by a valid point, a point attribute that is an array of empty values
+  (protobuf), and a point of empty attributes followed by a valid point (JSON), each at 4N and 8N
+  entries (2N and 4N for JSON). Each is refused with "label set too large to fit one batch", the
+  valid point after it is stored, and `BUILT` (every entry and element a decoder creates, counted
+  apart from the meters) stays at most N + 64 and the same for both sizes: building stopped at
+  the limit.
+- **At the limit**: a data point of exactly 65,536 values (16 labels, each an array of 4,095
+  integers) is stored with every value read back from its batch, and one more is refused; exactly
+  `maxDecodedBytes` of series is accepted and a byte less is 413; exactly `maxJsonTokens` is
+  accepted and one less is 413.
+- **The rest is still read**: past the limit, invalid UTF-8 in a key (an overlong form) and in
+  a value (a surrogate) and a value nested 18 deep are still 400; JSON still checks every value's
+  type.
+- **Through the Worker**: a point over the limit is answered 200 with `partial_success` (1
+  rejected, with its reason) and the valid point is stored; a resource copied into more series
+  bytes than `maxDecodedBytes` is 413 with nothing stored, and all 50 series are stored under a
+  larger limit; a JSON body over `maxJsonTokens` is 413 with nothing stored.
+- `validUtf8` agrees with a fatal `TextDecoder` on 20,000 random byte strings biased to the edges
+  of multi-byte forms (more than 5,000 of them invalid, as the test checks).
+
+**Unchanged answers.** `node bench/differential.mjs origin/main`, run on this tree: **605 of 605
+metrics requests identical** to `main`'s decoders at `9e56957` (batches byte for byte, series ids,
+counts, refusal reasons): `test/fixtures.json` (Remote Write, and OTLP protobuf and gzip, encoded
+by protobufjs, snappyjs and `node:zlib`; 606 rows), the two realistic metrics bodies (8,200 points,
+protobuf and JSON), and 300 random OTLP metrics requests in protobuf and in JSON (every AnyValue
+kind, nested, repeated and colliding keys, empty values, NaN, unicode, every temporality,
+histograms, staleness flags; 5,618 points refused for their reasons, the same before and after).
+Its six span, log and Loki bodies were skipped: `main` has no decoder for them.
+
+**Memory**: the table in "Memory per request" (`node bench/memory.mjs --json metrics`, and with
+`MEM_SRC` at `origin/main`'s `edge/src` for "before"); `node bench/memory.mjs --check metrics`
+passes: every metrics case under its heap budget.
+
+**Mutants** (`node scripts/mutants.mjs` on a copy of `contracts/`, `shard/` and `edge/` in a
+scratch directory, after the copy's suite passed 84 of 84; each mutant against the whole suite;
+afterwards the copy's sources were compared with this tree byte for byte: equal). `--check`: all
+63 patterns apply. **Last run: 61 of 63 killed**; the two survivors are the equivalent ones
+described above ("2xx on shard error", "a shard status edge does not know counts as stored"). The
+13 new ones, all killed (11 are the development branch's metrics mutants; the two marked * are
+the metrics counterparts of its span mutants):
+
+| Mutant (`decode:`) | Killed by (one of) |
+|---|---|
+| data point attributes built without the meter and counted afterwards | metrics: point of empty attributes, then a valid point: refused on its own, built no further than the limit however large it is |
+| array elements built past the limit (the check after the build) * | metrics: point attribute, an array of empty values: refused on its own, built no further than the limit … |
+| the meter is not incremented | metrics: resource of empty KeyValues: refused on its own, built no further than the limit … |
+| array elements not counted | metrics: point attribute, an array of empty values: …; stores a data point of exactly 65,536 values, and refuses one more |
+| off by one: an item of exactly the limit refused | stores a data point of exactly 65,536 values, and refuses one more |
+| off by one: an item one over the limit accepted | the same; refuses through the Worker with a partial success, and stores the rest |
+| a value past the limit not read (a malformed body accepted) * | still reads the rest of a point it has stopped building: a malformed body is 400 |
+| invalid UTF-8 in a key not built goes unchecked | the same |
+| overlong three-byte UTF-8 accepted | `validUtf8` agrees with a fatal TextDecoder on 20,000 random byte strings … |
+| UTF-8 surrogates accepted | still reads the rest of a point it has stopped building: a malformed body is 400 |
+| JSON tokens off by one (a body of exactly the limit refused) | JSON bodies: more than maxJsonTokens structural characters is 413 before parsing, as many is accepted; counts JSON structure outside strings only |
+| JSON structure inside strings counted | the same |
+| series labels past maxDecodedBytes accepted | metrics: a resource copied into more series bytes than maxDecodedBytes is refused whole (413), nothing stored; takes exactly maxDecodedBytes of series, and refuses a byte less |
+
+"Histograms silently dropped" was re-anchored (the decoder now counts points instead of keeping
+their offsets) with the same intent, and is killed as before. Not carried: the development
+branch's "JSON tokens counted after parsing", which no test can kill (the status is the same by
+construction) and which its `bench/memory.mjs --check` kills; it is a span mutant there.
+
 ### Decode throughput
 
 `npm run bench`, Node 22 on a shared and noisy development machine; medians of 15 runs,
@@ -406,13 +567,23 @@ Most of it is the series id: FNV-1a is one multiply per byte in a serial chain, 
 - **Remote Write 400 after a partial write.** When some samples are invalid the valid
   ones are stored and the sender is told 400, which Prometheus does not retry. Its logs
   show the reason, but a sender far behind real time loses everything older than an hour.
-- **CPU.** A request at the default limits (32 MiB decompressed) costs up to about a
-  second of CPU by the numbers above. Nothing has been measured in workerd or on
+- **CPU.** A request at the default limits (8 MiB decompressed) costs up to a few hundred
+  ms of CPU by the numbers above (modelled from Node). Nothing has been measured on
   Cloudflare, and nothing has been run under concurrent load.
-- **Memory.** A request holds the compressed body, the decompressed body, the series
-  table and the batches at once: about three times the decompressed size, around 100 MB
-  at the default limits in a 128 MB isolate. Two such requests in one isolate would not
-  fit; `maxDecompressedBytes` should come down to 8–16 MiB before real traffic.
+- **Memory.** Bounded per request ("Memory per request", D71): about 50 MiB (protobuf) or 80 MiB
+  (JSON) with every limit reached at once (modelled from measured parts), 3.2 to 8.8 MiB of V8
+  heap for realistic requests (measured here, local workerd). Two requests at every limit do not
+  fit one 128 MB isolate; nothing was measured on Cloudflare or under concurrent requests.
+- **413 drops a sender's batch.** OTLP senders do not retry 413 (training knowledge: the
+  Collector treats it as permanent and does not split the batch). A Collector whose batches
+  exceed 8 MiB decompressed, or decode into more than 16 MiB, loses them and logs why; set its
+  batch processor's `send_batch_max_size` (8,200 points are 1.3 MiB as protobuf and 3.1 MiB as
+  JSON here). Metrics whose resources carry many attributes come closest to the decoded limit,
+  because each series copies its resource: a Kubernetes resource of about 25 attributes makes
+  8,192 points about 11.5 MiB of series table (modelled), near the 16 MiB cap.
+- **Decode limits name the values limit first.** A point over 65,536 values is refused for it
+  even when it also breaks a label rule or the accept window; a repeated key (which OTLP
+  forbids) and entries that the mapping drops (empty values) count like any other.
 - **Caches are per isolate.** A disabled key keeps working for up to 60 s in each isolate
   that has it cached, and KV's own propagation delay comes on top.
 - **OTLP labels.** Resource attributes are copied onto every series rather than into

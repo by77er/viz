@@ -124,7 +124,7 @@ export class Collector {
 
   /** `bodyBytes`: size of the decoded request, a good first guess for the series table. */
   constructor(readonly limits: Limits, now: number, bodyBytes = 1 << 16) {
-    this.arena = new Uint8Array(Math.min(Math.max(bodyBytes, 1 << 12), 64 << 20))
+    this.arena = new Uint8Array(Math.min(Math.max(bodyBytes, 1 << 12), limits.maxDecodedBytes + (1 << 12), 64 << 20))
     // The accept window, clamped to the contract's range (years 1970 to 9999), so every
     // accepted timestamp is an exact i64 and its UTC day is always `YYYY-MM-DD`.
     this.minTs = Math.max(now - limits.acceptBackMs, CONTRACT.minTimestampMs)
@@ -133,6 +133,11 @@ export class Collector {
 
   get nSeries(): number {
     return this.entryOff.length
+  }
+
+  /** Bytes of the series table, against `limits.maxDecodedBytes`. */
+  get decoded(): number {
+    return this.arenaLen
   }
 
   entry(i: number): Uint8Array {
@@ -199,7 +204,9 @@ export class Collector {
     if (pad8(16 + bytes) + 8 + 16 > L.maxBatchBytes) return -Reject.SeriesTooLarge
 
     if (this.arenaLen + bytes > this.arena.length) {
-      const grown = new Uint8Array(Math.max(this.arena.length * 2, this.arenaLen + bytes))
+      // Doubling, but not past the decoded-size limit (checked below, once the series is known new).
+      const need = this.arenaLen + bytes
+      const grown = new Uint8Array(Math.max(Math.min(this.arena.length * 2, L.maxDecodedBytes), need))
       grown.set(this.arena.subarray(0, this.arenaLen))
       this.arena = grown
     }
@@ -308,6 +315,9 @@ export class Collector {
       if (same) return s
     }
     if (this.entryOff.length >= L.maxSeries) throw tooLarge(`more than ${L.maxSeries} series in one request`)
+    // A resource's labels are copied into every series of it: a small body can name far more
+    // label bytes than it holds (edge/README.md, "Memory per request").
+    if (start + bytes > L.maxDecodedBytes) throw tooLarge(`request decodes into more than ${L.maxDecodedBytes} bytes of series labels; send smaller requests`)
     const idx = this.entryOff.length
     this.entryOff.push(start)
     this.entryLen.push(bytes)

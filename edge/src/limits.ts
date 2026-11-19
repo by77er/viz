@@ -21,6 +21,14 @@ export interface Limits {
   maxBodyBytes: number
   /** Largest request body after decompression. Checked before / while inflating. */
   maxDecompressedBytes: number
+  /**
+   * Largest decoded request: the series table, counted as it is built. A resource's labels
+   * are copied into every series it has, so a small body can decode into far more than
+   * itself (edge/README.md, "Memory per request").
+   */
+  maxDecodedBytes: number
+  /** Structural characters (`{ [ , :`) of a JSON body, counted before it is parsed. */
+  maxJsonTokens: number
   /** Distinct series in one request. */
   maxSeries: number
   /** Samples (rows) in one request. */
@@ -42,7 +50,10 @@ export interface Limits {
 
 export const DEFAULT_LIMITS: Limits = {
   maxBodyBytes: 8 << 20,
-  maxDecompressedBytes: 32 << 20,
+  // D71: realistic batches are 0.4 to 7.1 MiB decompressed (edge/README.md, "Memory per request").
+  maxDecompressedBytes: 8 << 20,
+  maxDecodedBytes: 16 << 20,
+  maxJsonTokens: 1 << 20,
   maxSeries: 100_000,
   maxSamples: 500_000,
   maxLabelsPerSeries: CONTRACT.maxLabelsPerSeries,
