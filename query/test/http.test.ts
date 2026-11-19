@@ -1,7 +1,7 @@
 /**
  * The HTTP surface: Prometheus-compatible parameters, envelopes, status codes, CORS and
- * authentication, and the app's own API client (app/src/api, read-only) run against the
- * Worker.
+ * authentication, and a small Prometheus API client (test/client.ts, written from the API
+ * documentation; the tests need nothing outside query/) run against the Worker.
  */
 import { exports } from 'cloudflare:workers'
 import { beforeAll, describe, expect, it } from 'vitest'

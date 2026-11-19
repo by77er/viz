@@ -72,7 +72,8 @@ async function main() {
     const ctx = await lib.contextWithKey(browser, keys.read)
     const page = await ctx.newPage()
     const pageErrors = []
-    page.on('pageerror', (e) => pageErrors.push(e.message))
+    // With the script that threw (the chunk names say whose code it was).
+    page.on('pageerror', (e) => pageErrors.push(`${e.message} [${[...new Set((e.stack || '').match(/assets\/[\w-]+\.js/g) || [])].join(', ')}]`))
     const lookups = []
     page.on('request', (r) => { if (/\/api\/v1\/(labels|label\/|series)/.test(r.url())) lookups.push(r.url()) })
 
