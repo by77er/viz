@@ -2,6 +2,7 @@ import type { LedgerTable } from '../../contracts/ledger'
 import { holding, type Store, type StoreObject } from '../src/log'
 import { Publisher, type CommitStep, type PublishResult, type PublisherConfig, type PublisherEnv } from '../src/publisher'
 import { Publisher as PublisherD64 } from './d64/publisher'
+import { Publisher as PublisherM6 } from './m6/publisher'
 import { Publisher as PublisherN1 } from './n1/publisher'
 
 export { Ledger } from '../../ledger/src/ledger'
@@ -21,6 +22,7 @@ class Probe implements Store {
   constructor(
     private readonly bucket: R2Bucket,
     private readonly before: (key: string) => Promise<void>,
+    private readonly beforeOp: (op: string, key: string) => Promise<void> = async () => {},
   ) {}
   private enter(): () => void {
     this.inFlight++
@@ -37,6 +39,7 @@ class Probe implements Store {
     const exit = this.enter()
     this.gets.push(key)
     try {
+      await this.beforeOp('get', key)
       await this.before(key)
       const o = await this.bucket.get(key)
       if (!o) {
@@ -58,17 +61,46 @@ class Probe implements Store {
     }
   }
   head(key: string) {
-    return this.op(() => this.bucket.head(key))
+    return this.op(async () => {
+      await this.beforeOp('head', key)
+      return this.bucket.head(key)
+    })
   }
   list(options: R2ListOptions) {
-    return this.op(() => this.bucket.list(options))
+    return this.op(async () => {
+      await this.beforeOp('list', options.prefix ?? '')
+      return this.bucket.list(options)
+    })
   }
   put(key: string, value: string | Uint8Array, options?: R2PutOptions) {
-    return this.op(() => this.bucket.put(key, value, options) as Promise<R2Object | null>)
+    return this.op(async () => {
+      await this.beforeOp('put', key)
+      return this.bucket.put(key, value, options) as Promise<R2Object | null>
+    })
   }
   delete(keys: string | string[]) {
-    return this.op(() => this.bucket.delete(keys))
+    return this.op(async () => {
+      await this.beforeOp('delete', Array.isArray(keys) ? keys.join(',') : keys)
+      return this.bucket.delete(keys)
+    })
   }
+}
+
+/** A re-base kept across invocations, as `TestPublisher.steps` reports it. */
+export interface KeptStep {
+  incarnation: number
+  source: string
+  version: number
+  object: string
+  done: number
+  parts: number
+  files: number
+  tombstones: number
+  target: number | null
+  tables: string[]
+  written: Record<string, string[] | string>
+  ahead: number
+  moved: number
 }
 
 /**
@@ -111,8 +143,42 @@ export class TestPublisher extends Publisher {
   }
 
   protected override bucket(): Store {
-    this.probe ??= new Probe(this.env.BUCKET, (key) => this.beforeGet(key))
+    this.probe ??= new Probe(this.env.BUCKET, (key) => this.beforeGet(key), (op, key) => this.beforeOp(op, key))
     return this.probe
+  }
+
+  private opCut: { left: number; reached: () => void; seen: string[] } | null = null
+  private async beforeOp(op: string, key: string): Promise<void> {
+    const c = this.opCut
+    if (!c) return
+    c.seen.push(`${op} ${key}`)
+    if (--c.left > 0) return
+    this.opCut = null
+    c.reached()
+    await new Promise<void>(() => {}) // until the object is reset
+  }
+
+  /**
+   * The `n`-th R2 operation of any kind (1: the next) from now waits for ever: `reached` resolves there
+   * with the operations seen up to it, and the test resets the object (`abortNow`), as the platform
+   * does when an invocation runs out of CPU. If the invocation ends first, `reached` never resolves.
+   */
+  async cutAtOp(n: number): Promise<void> {
+    this.opCut = { left: n, reached: () => {}, seen: [] }
+  }
+  /** Resolves with the operations seen when the cut armed by `cutAtOp` is reached. */
+  async cutReached(): Promise<string[]> {
+    const c = this.opCut
+    if (!c) throw new Error('no cut armed')
+    return new Promise<string[]>((resolve) => {
+      c.reached = () => resolve(c.seen)
+    })
+  }
+  /** Whether a cut armed by `cutAtOp` is still waiting to be reached (disarms it). */
+  async disarmCut(): Promise<boolean> {
+    const armed = this.opCut !== null
+    this.opCut = null
+    return armed
   }
 
   /**
@@ -210,10 +276,36 @@ export class TestPublisher extends Publisher {
     return Object.fromEntries(this.ctx.storage.sql.exec(`SELECT tenant, started FROM rebase ORDER BY tenant`).toArray().map((r) => [r.tenant as string, r.started as number]))
   }
 
-  /** Rows of a scratch table (`stage`, `live_next`). */
+  /** The re-bases kept across invocations (`rebase_step`), by tenant, with how many manifests each has written ahead. */
+  async steps(): Promise<Record<string, KeptStep>> {
+    const sql = this.ctx.storage.sql
+    const out: Record<string, KeptStep> = {}
+    for (const r of sql.exec(`SELECT * FROM rebase_step ORDER BY tenant`).toArray()) {
+      out[r.tenant as string] = {
+        incarnation: r.incarnation as number, source: r.source as string, version: r.version as number, object: r.object as string, done: r.done as number, parts: r.parts as number,
+        files: r.files as number, tombstones: r.tombstones as number, target: r.target as number | null, tables: Object.keys(JSON.parse(r.tables as string) as object).sort(),
+        written: JSON.parse(r.written as string) as Record<string, string[] | string>, moved: r.moved as number,
+        ahead: sql.exec(`SELECT COUNT(*) AS n FROM rebase_manifest WHERE tenant = ?`, r.tenant).one().n as number,
+      }
+    }
+    return out
+  }
+
+  /** Tables being rebuilt from R2 in steps (`rebuild`), with their manifests done and in all. */
+  async rebuilds(): Promise<Record<string, { version: number; done: number; of: number }>> {
+    const sql = this.ctx.storage.sql
+    return Object.fromEntries(
+      sql.exec(`SELECT tbl, version FROM rebuild ORDER BY tbl`).toArray().map((r) => {
+        const m = sql.exec(`SELECT SUM(done) AS d, COUNT(*) AS n FROM rebuild_manifest WHERE tbl = ?`, r.tbl).one()
+        return [r.tbl as string, { version: r.version as number, done: (m.d as number | null) ?? 0, of: m.n as number }]
+      }),
+    )
+  }
+
+  /** Rows of the scratch tables: what re-bases staged (`rebase_stage`, and the releases before this one's `stage`), and `live_next`. */
   async scratch(): Promise<{ stage: number; liveNext: number }> {
     const n = (t: string) => this.ctx.storage.sql.exec(`SELECT COUNT(*) AS n FROM ${t}`).one().n as number
-    return { stage: n('stage'), liveNext: n('live_next') }
+    return { stage: n('rebase_stage') + n('stage'), liveNext: n('live_next') }
   }
 
   protected override async step(name: CommitStep, table: LedgerTable): Promise<void> {
@@ -379,6 +471,32 @@ export class TestPublisherD64 extends PublisherD64 {
   async determinism(seed: number, now: number): Promise<void> {
     this.seeded = seed >>> 0 || 1
     this.fixedNow = now
+  }
+
+  async advanceClock(ms: number): Promise<void> {
+    this.ctx.storage.sql.exec(`INSERT INTO test_clock (k, offset) VALUES (0, ?) ON CONFLICT (k) DO UPDATE SET offset = offset + excluded.offset`, ms)
+  }
+}
+
+/**
+ * The release before this one (`test/m6/`, frozen at 800b926: review M-6, re-bases capped per publish
+ * and each one whole, a table rebuilt from R2 whole), the rollback target of re-bases and rebuilds in
+ * steps (`test/steps.test.ts`). Only the seams a side-by-side test needs: two writers' names on one
+ * cell and a persisted clock offset. Nothing else.
+ */
+export class TestPublisherM6 extends PublisherM6 {
+  constructor(ctx: DurableObjectState, env: PublisherEnv) {
+    super(ctx, env)
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS test_clock (k INTEGER PRIMARY KEY, offset INTEGER NOT NULL)`)
+  }
+
+  protected override cellOf(name: string): string {
+    return name.split('~')[0] as string
+  }
+
+  protected override now(): number {
+    const r = this.ctx.storage.sql.exec(`SELECT offset FROM test_clock WHERE k = 0`).toArray()[0]
+    return Date.now() + ((r?.offset as number | undefined) ?? 0)
   }
 
   async advanceClock(ms: number): Promise<void> {

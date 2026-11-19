@@ -64,25 +64,28 @@
 //! | `viz_q_part_plan` | `u64 gap, u32 part, u32 parts, ranges, u32 n, str* (sample files' index fragments)` | JSON `[plan, …]`: one split part's row groups by its `series_id` range, from the fragments alone (`viz_query::part_plan`) |
 //! | `viz_q_meta_part` | `u8 kind (0 label names, 1 label values, 2 series), limits, i64 min_ts, i64 max_ts, u32 part, u32 parts, str label (values; empty otherwise), u32 n, str* (match[]), scan` | ABI 4: `u32 k`, then per `match[]` set for names and values (one for series) `u32 n, i64 series_id[n]`: the series listed in this part, then the JSON of `viz_q_label_names` / `_label_values` / `_series` over the series of part `part` of `parts` by `series_id` (`viz_query::MetaPart`) |
 //! | `viz_q_tq_plan` | `u8 kind (0 search, 1 metrics range, 2 metrics instant), i64 start_ns, i64 end_ns, i64 step_ns, str query` | ABI 6. JSON `{"complete":bool,"lo":"ns","hi":"ns"}` (search: the trace window; metrics: also `spanLocal`, and the request as Tempo's frontend aligns it, `start`, `end`, `step`): whether every span of a candidate trace must be read, and the span starts the query reads |
-//! | `viz_q_tq_file_plan` | `u64 gap, u8 table (0 spans, 1 trace_index), i64 lo_ns, i64 hi_ns, u8 has_id, [16 bytes trace id], u32 n, str* (index fragments)` | JSON `[plan, …]`: row groups by time overlap (and trace id range) |
-//! | `viz_q_tq_extent` | `i64 lo_ns, i64 hi_ns, u8 has_id, [id], i64 bound_lo, i64 bound_hi, u64 max_bytes, u32 n, str* (trace_index files), u32 m, str* (span tail batches)` | JSON `{"traces":n,"lo":"ns","hi":"ns","hours":[h,…]}`: the traces overlapping the window (or the one id), their hull and `spans` hours, counting only fragments that overlap the bound and tail spans that start in it; hull and hours cut to it (ABI 7) |
+//! | `viz_q_tq_file_plan` | `u64 gap, u8 table (0 spans, 1 trace_index), i64 lo_ns, i64 hi_ns, u8 has_id, [16 bytes trace id], u32 k, (i64 lo_ns, i64 hi_ns)*k, u32 n, str* (index fragments)` | JSON `[plan, …]`: row groups by time overlap (and trace id range); with `k` > 0 ranges (ABI 8), only row groups that also overlap one of them |
+//! | `viz_q_tq_extent` | `i64 lo_ns, i64 hi_ns, u8 has_id, [id], i64 bound_lo, i64 bound_hi, u64 max_bytes, u32 n, str* (trace_index files), u32 m, str* (span tail batches)` | JSON `{"traces":n,"lo":"ns","hi":"ns","hours":[h,…],"ranges":[["ns","ns"],…]}`: the traces overlapping the window (or the one id), their hull, `spans` hours and (ABI 8) the ranges their pieces cover (at most 256), counting only fragments that overlap the bound and tail spans that start in it; all cut to it (ABI 7). Holds the window's traces and the ids of the traces after it, not every trace of the bound (ABI 8) |
 //! | `viz_q_tq_search` | `u64 max_spans, u64 max_bytes, i64 bound_lo, i64 bound_hi, u32 limit, u32 spss, i64 start_ns, i64 end_ns, str query, u32 n, str* (spans files, precedence order), u32 m, str* (tail batches)` | `u64 spans decoded, u64 traces`, then Tempo's `/api/search` body |
 //! | `viz_q_tq_metrics` | `u64 max_spans, u64 max_bytes, i64 bound_lo, i64 bound_hi, u64 max_series, u64 max_points, u8 instant, i64 start_ns, i64 end_ns, i64 step_ns, str query, files, tails` | as search: Tempo's `/api/metrics/query_range` (or `/query`) body |
-//! | `viz_q_tq_trace` | `u8 version (1, 2), [16 bytes trace id], u64 max_spans, u64 max_bytes, i64 bound_lo, i64 bound_hi, files, tails` | `u8 found, u64 spans decoded`, then the trace as OTLP JSON (`{"batches":[…]}`, v2 `{"trace":{…}}`) when found |
+//! | `viz_q_tq_trace` | `u8 version (1, 2), [16 bytes trace id], u64 max_spans, u64 max_bytes, i64 bound_lo, i64 bound_hi, files, tails` | `u8 found, u64 spans decoded`, then the trace as OTLP JSON (`{"batches":[…]}`, v2 `{"trace":{…}}`) when found; `max_spans` counts the trace's spans only (ABI 8) |
 //! | `viz_q_tq_tags` | `u8 version, str scope, i64 lo_ns, i64 hi_ns, u32 limit, u64 max_spans, u64 max_bytes, files, tails` | Tempo's tag names body (v1 `tagNames`, v2 `scopes`) |
 //! | `viz_q_tq_tag_values` | `u8 version, str tag, str q, i64 lo_ns, i64 hi_ns, u32 limit, u64 max_spans, u64 max_bytes, files, tails` | Tempo's tag values body (v1 strings, v2 `{type, value}`) |
 //! | `viz_q_lq_plan` | `u8 kind (0 range, 1 instant), i64 start_ns, i64 end_ns, i64 step_ns, str query` | JSON `{"metric":bool,"selectors":[{"matchers":[…],"start":"ns","end":"ns"}]}` (`viz_logql::selectors`; half-open) |
 //! | `viz_q_lq_file_plan` | `u64 gap, u32 n, (i64 start_ns, i64 end_ns, u32 n_matchers, matcher*)*, u32 m, str* (index fragments)` | JSON `[plan, …]`: row groups by time and stream list |
 //! | `viz_q_lq_query` | `u64 max_rows, u64 max_bytes, u64 max_series, u64 max_steps, u32 limit, u8 direction (0 backward, 1 forward), u8 kind (0 range, 1 instant), i64 start_ns, i64 end_ns, i64 step_ns, str query, files, tails` | `u64 rows decoded`, then Loki's `data` object |
-//! | `viz_q_lq_labels` | `u8 kind (0 names, 1 values, 2 series), str name, i64 start_ns, i64 end_ns, u32 n, str* (stream selectors), u32 k, str* (fragments with stream lists), files (without), tails` | Loki's `data` array |
-//! | `viz_q_abi_version` | (no request) | returns 7 |
+//! | `viz_q_lq_labels` | `u8 kind (0 names, 1 values, 2 series), str name, i64 start_ns, i64 end_ns, u64 max_bytes, u32 n, str* (stream selectors), u32 k, str* (fragments with stream lists), files (without), tails` | Loki's `data` array; `max_bytes` (ABI 8) bounds what it reads, keeps and answers |
+//! | `viz_q_abi_version` | (no request) | returns 8 |
 //!
 //! Every span and log operation reads files that are whole or sparse (a row group whose
 //! first column chunk is not held is skipped) and `VZB1` batches of signal 2 (spans) or 3
 //! (log records); a batch of another signal is an `internal` error. `max_spans` and
 //! `max_rows` bound the rows held (ABI 7: a span outside the bound, or a log row no selector
-//! reads, is not counted); `max_bytes` bounds the bytes of what is held and of the answer, as
-//! the engine counts them (`sigfiles::Mem`; limit name `max_decoded_bytes`). Past any of them,
+//! reads, is not counted; ABI 8: nor a span of another trace than trace by ID's, nor one a tag
+//! call keeps only the row key of); `max_bytes` bounds the bytes of what is held, of what the
+//! evaluation derives from it (ABI 8: series, buckets, label sets, tag values, extents) and of
+//! the answer, each charged before it is made, as the engine counts them (`sigfiles::Mem`;
+//! limit name `max_decoded_bytes`). Past any of them,
 //! an `execution` error with the limit's name. `bound_lo`/`bound_hi` (traces, ABI 7): a span
 //! whose start lies outside them is not part of the call's data, dropped before de-duplication.
 //! Trace ids cross as 16 raw bytes; nanosecond times as `i64`, and as decimal strings in JSON.
@@ -106,7 +109,7 @@ use std::collections::{BTreeSet, HashMap};
 use viz_query::split::{self, Gathered, Grid, LeafBudget, LeafOutput};
 use viz_query::{EvalOptions, FetchRange, FileRead, Limits, MatchOp, Matcher, Options, PartFilter, QueryError, ScanInput, SplitKey, SplitPlan, Stats};
 
-pub const ABI_VERSION: u32 = 7;
+pub const ABI_VERSION: u32 = 8;
 const OK: u32 = 0;
 const MALFORMED: u32 = 5;
 

@@ -9,7 +9,7 @@
 //! every span of it that was read (`TraceSummary::from_spans`), never from `trace_index`
 //! counts (which over-count spans retried into another unit, `contracts/TRACES.md`): the
 //! index fragments only say which hours and which time hull to read.
-use crate::sigfiles::{self, Mem, Resources, SpanRec};
+use crate::sigfiles::{self, Mem, Resources, Seen, SpanRec, Take};
 use crate::{Fail, Req, Res};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
@@ -28,6 +28,8 @@ pub(crate) fn tq_err(e: viz_traceql::Error) -> Fail {
         viz_traceql::Error::Unsupported(m) => QueryError::unsupported(m),
         viz_traceql::Error::Eval(m) => QueryError::execution(m),
         viz_traceql::Error::Source(m) => QueryError::internal(m),
+        // Mapped to `max_decoded_bytes` where the budget is known (`do_tq_metrics`).
+        e @ viz_traceql::Error::Memory { .. } => QueryError::execution(e.to_string()),
     })
 }
 
@@ -154,7 +156,10 @@ pub(crate) fn engine_span(r: &SpanRec, resources: &mut EngineResources, mem: &mu
 ///   data. It is dropped as it is read, BEFORE de-duplication, so that what the call sees does
 ///   not depend on which files or row groups outside the bound were read (pruning on or off):
 ///   design/DECISIONS.md D62, a found trace's spans within the query's margin.
-/// * `max_spans`: spans held (inside the bound), the tail's included; `spans` counts them.
+/// * `only`: trace by ID's trace; a span of any other trace is not part of the data either
+///   (it is read, to find the trace's, and passed over before it is decoded).
+/// * `max_spans`: spans HELD, the tail's included; `spans` counts them (ABI 8: a span of another
+///   trace, or one a call keeps only the row key of, is not counted; review r2 R2-M4).
 /// * `mem`: the bytes of what is held ([`Mem`]); `resources`: one copy per distinct resource.
 /// * `decoded`: every span read, the dropped ones included (reported, not limited).
 pub(crate) struct Budget {
@@ -162,16 +167,19 @@ pub(crate) struct Budget {
     pub spans: u64,
     pub decoded: u64,
     pub bound: (i64, i64),
+    pub only: Option<[u8; 16]>,
     pub mem: Mem,
     pub res: Resources,
     pub engine_res: EngineResources,
+    /// What the refusal of `max_spans` advises.
+    pub help: &'static str,
 }
 
 const ALL_TIME: (i64, i64) = (i64::MIN, i64::MAX);
 
 impl Budget {
     pub fn new(max_spans: u64, max_bytes: u64, bound: (i64, i64)) -> Budget {
-        Budget { max_spans, spans: 0, decoded: 0, bound, mem: Mem::new(max_bytes), res: Resources::default(), engine_res: EngineResources::default() }
+        Budget { max_spans, spans: 0, decoded: 0, bound, only: None, mem: Mem::new(max_bytes), res: Resources::default(), engine_res: EngineResources::default(), help: "Narrow the time range." }
     }
     /// `u64 max_spans, u64 max_bytes, i64 bound_lo, i64 bound_hi` (ABI 7).
     fn read(r: &mut Req<'_>) -> Res<Budget> {
@@ -182,66 +190,143 @@ impl Budget {
         }
         Ok(Budget::new(max_spans, max_bytes, (lo, hi)))
     }
+    /// What a refusal advises, for `max_spans` and `max_decoded_bytes` alike.
+    fn advise(&mut self, help: &'static str) {
+        self.help = help;
+        self.mem.help = help;
+    }
 }
 
-fn take(max_spans: u64, spans: &mut u64) -> Res<()> {
+fn take(max_spans: u64, spans: &mut u64, help: &str) -> Res<()> {
     *spans += 1;
     if *spans > max_spans {
-        return Err(Fail::Limit("max_spans", max_spans, *spans, format!("query exceeded limit max_spans: more than {max_spans} spans decoded, the limit is {max_spans}. Narrow the time range.")));
+        return Err(Fail::Limit("max_spans", max_spans, *spans, format!("query exceeded limit max_spans: it would hold more than {max_spans} spans, the limit is {max_spans}. {help}")));
     }
     Ok(())
 }
 
-/// Every span of the files (in the order given) and then the tail batches that lies inside the
-/// bound, to `visit`, each counted against `max_spans` and charged to the memory budget.
-fn each_span(files: &[&[u8]], tails: &[&[u8]], budget: &mut Budget, mut visit: impl FnMut(SpanRec, &mut Mem, &mut EngineResources) -> Res<()>) -> Res<()> {
+/// Bytes charged per row key a call keeps without its span (a later copy that hides an earlier
+/// one), with its share of the map that holds it.
+const KEY_BYTES: u64 = 64;
+
+/// Every span of the files (in the order given) and then the tail batches that is part of the
+/// call's data (inside the bound, of the trace asked for), to `visit`: whole when `want` says
+/// so (then counted against `max_spans` and charged), else only its row key.
+fn each_span(files: &[&[u8]], tails: &[&[u8]], budget: &mut Budget, want: impl Fn(i64) -> bool, mut visit: impl FnMut(Seen, &mut Mem, &mut EngineResources) -> Res<()>) -> Res<()> {
     let (lo, hi) = budget.bound;
-    let keep = move |start: i64| start >= lo && start <= hi;
-    let Budget { max_spans, spans, decoded, mem, res, engine_res, .. } = budget;
-    let max_spans = *max_spans;
+    let only = budget.only;
+    let classify = move |t: &[u8; 16], start: i64| {
+        if start < lo || start > hi || only.is_some_and(|x| x != *t) {
+            Take::Skip
+        } else if want(start) {
+            Take::Full
+        } else {
+            Take::Key
+        }
+    };
+    let Budget { max_spans, spans, decoded, mem, res, engine_res, help, .. } = budget;
+    let (max_spans, help) = (*max_spans, *help);
+    let mut on = |x: Seen, mem: &mut Mem| -> Res<()> {
+        if let Seen::Span(r) = &x {
+            take(max_spans, spans, help)?;
+            mem.charge(sigfiles::span_bytes(r))?;
+        } else {
+            mem.charge(KEY_BYTES)?;
+        }
+        visit(x, mem, engine_res)
+    };
     for f in files {
-        *decoded += sigfiles::read_spans(f, res, mem, keep, |r, mem| {
-            take(max_spans, spans)?;
-            mem.charge(sigfiles::span_bytes(&r))?;
-            visit(r, mem, engine_res)
-        })?;
+        *decoded += sigfiles::read_spans(f, res, mem, &classify, &mut on)?;
     }
     for b in tails {
-        *decoded += sigfiles::batch_spans(b, res, mem, keep, |r, mem| {
-            take(max_spans, spans)?;
-            mem.charge(sigfiles::span_bytes(&r))?;
-            visit(r, mem, engine_res)
-        })?;
+        *decoded += sigfiles::batch_spans(b, res, mem, &classify, &mut on)?;
     }
     Ok(())
 }
 
-/// The spans read, de-duplicated (later wins), as records.
-fn latest_records(files: &[&[u8]], tails: &[&[u8]], budget: &mut Budget, want: impl Fn(&SpanRec) -> bool) -> Res<Vec<SpanRec>> {
-    let mut by: HashMap<Key, Option<SpanRec>> = HashMap::new();
-    each_span(files, tails, budget, |r, _, _| {
-        let k = (r.trace_id, r.span_id);
-        // The later row wins whether or not it is wanted: an unwanted later copy hides an earlier one.
-        by.insert(k, want(&r).then_some(r));
+/// The latest copy of each row key (files in the order given, then the tail), as a map from the
+/// key to its slot; a key whose latest copy is not wanted hides the earlier ones.
+struct Latest<T> {
+    index: HashMap<Key, u32>,
+    kept: Vec<Option<(T, u64)>>,
+}
+
+const HIDDEN: u32 = u32::MAX;
+
+impl<T> Latest<T> {
+    fn new() -> Latest<T> {
+        Latest { index: HashMap::new(), kept: Vec::new() }
+    }
+    /// `v` is the value and what it was charged (released if a later copy replaces it).
+    fn put(&mut self, k: Key, v: Option<(T, u64)>, mem: &mut Mem) {
+        match self.index.get(&k).copied() {
+            Some(i) if i != HIDDEN => {
+                if let Some((_, c)) = self.kept[i as usize].take() {
+                    mem.release(c);
+                }
+                match v {
+                    Some(v) => self.kept[i as usize] = Some(v),
+                    None => {
+                        self.index.insert(k, HIDDEN);
+                    }
+                }
+            }
+            _ => {
+                let slot = match v {
+                    Some(v) => {
+                        self.kept.push(Some(v));
+                        (self.kept.len() - 1) as u32
+                    }
+                    None => HIDDEN,
+                };
+                self.index.insert(k, slot);
+            }
+        }
+    }
+    fn values(self) -> impl Iterator<Item = T> {
+        self.kept.into_iter().flatten().map(|x| x.0)
+    }
+}
+
+/// The spans read, de-duplicated (later wins), as records: those `want` keeps by start.
+fn latest_records(files: &[&[u8]], tails: &[&[u8]], budget: &mut Budget, want: impl Fn(i64) -> bool) -> Res<Vec<SpanRec>> {
+    let mut by: Latest<SpanRec> = Latest::new();
+    each_span(files, tails, budget, want, |x, mem, _| {
+        match x {
+            Seen::Key(t, s) => by.put((t, s), None, mem),
+            Seen::Span(r) => {
+                let c = sigfiles::span_bytes(&r);
+                by.put((r.trace_id, r.span_id), Some((r, c)), mem)
+            }
+        }
         Ok(())
     })?;
-    Ok(by.into_values().flatten().collect())
+    Ok(by.values().collect())
 }
 
 /// Traces of the spans read (later row wins), each with its spans in `(start, span_id)` order
 /// and its summary computed from them; traces in `trace_id` order. With `window`, only spans
 /// whose start lies in `(lo, hi]` are kept (a metrics query whose plan is span-local).
 pub(crate) fn traces(files: &[&[u8]], tails: &[&[u8]], budget: &mut Budget, window: Option<(u64, u64)>) -> Res<Vec<Trace>> {
-    let mut by: HashMap<Key, Option<viz_traceql::Span>> = HashMap::new();
-    each_span(files, tails, budget, |r, mem, engine_res| {
-        let k = (r.trace_id, r.span_id);
-        let keep = window.is_none_or(|(lo, hi)| (r.start as u64) > lo && (r.start as u64) <= hi);
-        by.insert(k, if keep { Some(engine_span(&r, engine_res, mem)?) } else { None });
+    let mut by: Latest<viz_traceql::Span> = Latest::new();
+    let want = move |start: i64| window.is_none_or(|(lo, hi)| (start as u64) > lo && (start as u64) <= hi);
+    each_span(files, tails, budget, want, |x, mem, engine_res| {
+        match x {
+            Seen::Key(t, s) => by.put((t, s), None, mem),
+            Seen::Span(r) => {
+                let c = sigfiles::span_bytes(&r);
+                let k = (r.trace_id, r.span_id);
+                by.put(k, Some((engine_span(&r, engine_res, mem)?, c)), mem);
+            }
+        }
         Ok(())
     })?;
+    let mut ids: Vec<([u8; 16], u32)> = by.index.iter().filter(|(_, i)| **i != HIDDEN).map(|((t, _), i)| (*t, *i)).collect();
+    ids.sort_unstable();
+    let mut slots = by.kept;
     let mut grouped: BTreeMap<[u8; 16], Vec<viz_traceql::Span>> = BTreeMap::new();
-    for ((t, _), s) in by {
-        if let Some(s) = s {
+    for (t, i) in ids {
+        if let Some((s, _)) = slots[i as usize].take() {
             grouped.entry(t).or_default().push(s);
         }
     }
@@ -310,12 +395,20 @@ pub(crate) fn do_tq_plan(mut r: Req<'_>) -> Res<Vec<u8>> {
 
 /// `viz_q_tq_file_plan`: per fragment, the row groups of a `spans` file whose span starts
 /// overlap `[lo, hi]`, or of a `trace_index` file whose fragments overlap it and (with an id)
-/// whose trace id range holds the id.
+/// whose trace id range holds the id. With `ranges` (ABI 8; none: all of `[lo, hi]`), a row group
+/// must also overlap one of them: the ranges `viz_q_tq_extent` gave, so that a trace query reads
+/// the flush units its traces' pieces lie in, not every unit of their hull.
 pub(crate) fn do_tq_file_plan(mut r: Req<'_>) -> Res<Vec<u8>> {
     let gap = r.u64("gap")?;
     let table = r.u8("table")?;
     let (lo, hi) = (r.i64("lo")?, r.i64("hi")?);
     let id = read_id(&mut r)?;
+    let n = r.u32("n_ranges")?;
+    let mut ranges: Vec<(i64, i64)> = Vec::with_capacity((n as usize).min(4096));
+    for _ in 0..n {
+        ranges.push((r.i64("range lo")?, r.i64("range hi")?));
+    }
+    ranges.sort_unstable();
     let raw = r.files("index fragment")?;
     r.end()?;
     if table > 1 {
@@ -330,7 +423,7 @@ pub(crate) fn do_tq_file_plan(mut r: Req<'_>) -> Res<Vec<u8>> {
                 .iter()
                 .enumerate()
                 .filter(|(_, g)| {
-                    let time = g.max_ts >= lo && g.min_ts <= hi;
+                    let time = g.max_ts >= lo && g.min_ts <= hi && (ranges.is_empty() || in_ranges(&ranges, g.min_ts, g.max_ts));
                     let tid = match (table, id) {
                         (1, Some(id)) => g.min_tid.is_none_or(|a| a <= id) && g.max_tid.is_none_or(|b| id <= b),
                         _ => true,
@@ -343,6 +436,14 @@ pub(crate) fn do_tq_file_plan(mut r: Req<'_>) -> Res<Vec<u8>> {
         })
         .collect();
     Ok(serde_json::Value::Array(plans).to_string().into_bytes())
+}
+
+/// Whether `[a, b]` overlaps one of `ranges` (sorted by start, disjoint).
+fn in_ranges(ranges: &[(i64, i64)], a: i64, b: i64) -> bool {
+    // The last range that starts at or before `b`, and those before it while they may still end
+    // at or after `a`: disjoint and sorted, so only the last one can.
+    let k = ranges.partition_point(|x| x.0 <= b);
+    k > 0 && ranges[k - 1].1 >= a
 }
 
 fn read_id(r: &mut Req<'_>) -> Res<Option<[u8; 16]>> {
@@ -359,20 +460,37 @@ fn read_id(r: &mut Req<'_>) -> Res<Option<[u8; 16]>> {
 
 // ───────────────────────────── extents ─────────────────────────────
 
-/// Bytes charged per trace an extent holds (its id, extent and hour set in a hash map), and per
-/// hour in a trace's set: a fragment is not a span, so `max_spans` does not count them.
-const EXTENT_BYTES: u64 = 192;
+/// Bytes charged per trace id a pass holds (16 bytes in a hash set, with its growth), per tail
+/// piece held for the passes, per range before they are merged, and per hour in the answer.
+const ID_BYTES: u64 = 64;
+const PIECE_BYTES: u64 = 48;
+const RANGE_BYTES: u64 = 32;
 const HOUR_BYTES: u64 = 32;
+/// At most this many ranges are returned; beyond it the closest are joined (a superset).
+const MAX_RANGES: usize = 256;
+const HOUR: i64 = 3_600_000_000_000;
 
-/// `viz_q_tq_extent`: the traces whose extent overlaps `[lo, hi]` (or the one trace `id`),
-/// from `trace_index` fragments merged per trace and the spans of the tail: how many, the
-/// hull of their extents, and the `spans` hours that hold them (`contracts/TRACES.md`,
-/// `trace_index.hours`). Only what lies inside `bound` counts (ABI 7): a fragment that does not
-/// overlap it is passed over, a tail span whose start is outside it too, and the hull and hours
-/// are cut to it, as the span calls cut the data to the same bound ([`Budget`]). So the
-/// traces found and the spans the planner reads for them do not depend on which files or row
-/// groups outside the bound were read, and every span of a found trace that starts inside the
-/// bound is read: the planner reads the `spans` files of the hull (D62).
+/// `viz_q_tq_extent`: the traces whose extent overlaps `[lo, hi]` (or the one trace `id`), from
+/// `trace_index` fragments and the spans of the tail: how many, the hull of their extents, the
+/// `spans` hours that hold them (`contracts/TRACES.md`, `trace_index.hours`), and (ABI 8) the
+/// ranges their pieces cover. A piece is a fragment that overlaps `bound`, or a tail span that
+/// starts in it (ABI 7): nothing outside the bound counts, and the hull, hours and ranges are cut
+/// to it, as the span calls cut the data to the same bound ([`Budget`]). So the traces found and
+/// the spans the planner reads for them do not depend on which files or row groups outside the
+/// bound were read, and every span of a found trace that starts inside the bound starts inside
+/// one of the ranges: it lies within its own unit's fragment, a piece (D62).
+///
+/// A trace is found when its extent, merged over all its pieces, overlaps the window: when a
+/// piece overlaps the window, or when it has a piece wholly before the window and one wholly
+/// after it. The call does not hold every trace of the bound (review r2, R2-M3a: an extent per
+/// trace of the window plus 4 h refused a one-minute search at about 10 traces/s). It reads the
+/// pieces in passes, reading only the columns it needs:
+///   1. the ids of the traces with a piece in the window, and of those with a piece after it;
+///   2. a trace with a piece before the window and one after it, none in it, is found too; the
+///      ids after the window are let go;
+///   3. the hull, hours and ranges of the found traces' pieces.
+/// What it holds is the found traces' ids, and while pass 2 runs, the ids of the traces with a
+/// piece in the margin AFTER the window (none for a window that ends now), each charged.
 pub(crate) fn do_tq_extent(mut r: Req<'_>) -> Res<Vec<u8>> {
     let (lo, hi) = (r.i64("lo")?, r.i64("hi")?);
     let id = read_id(&mut r)?;
@@ -384,81 +502,174 @@ pub(crate) fn do_tq_extent(mut r: Req<'_>) -> Res<Vec<u8>> {
     if blo > bhi {
         return Err(Fail::Malformed(format!("bound [{blo}, {bhi}] is empty")));
     }
-    const HOUR: i64 = 3_600_000_000_000;
     let hour_in = |h: i32| {
         let start = (h as i64).saturating_mul(HOUR);
         start.saturating_add(HOUR - 1) >= blo && start <= bhi
     };
-    let mut ext: HashMap<[u8; 16], (i64, i64, BTreeSet<i32>)> = HashMap::new();
-    // `a` is the earliest start (cut to the bound) and `b` the latest end of what is added. A
-    // trace's entry is charged to the budget when it is made, an hour when it is added.
-    let mut add = |t: [u8; 16], a: i64, b: i64, hours: &mut dyn Iterator<Item = i32>| -> Res<()> {
-        if id.is_some_and(|x| x != t) {
+    let in_bound = |a: i64, b: i64| b >= blo && a <= bhi;
+    // The tail's pieces inside the bound, held once for the passes (a tail is at most
+    // `maxFetchBytes`, and its batches are decoded once rather than once a pass).
+    mem.stage = "the unflushed spans it reads";
+    let mut tail: Vec<([u8; 16], i64, i64)> = Vec::new();
+    for b in &tails {
+        sigfiles::batch_span_times(b, |t, start, end| {
+            if start >= blo && start <= bhi && id.is_none_or(|x| x == t) {
+                mem.charge(PIECE_BYTES)?;
+                tail.push((t, start, end));
+            }
+            Ok(())
+        })?;
+    }
+    // Pass 1 (by id: the trace has a piece). `found`: a piece overlaps the window; `after`: a
+    // piece lies wholly after it.
+    let mut found: std::collections::HashSet<[u8; 16]> = std::collections::HashSet::new();
+    let mut after: std::collections::HashSet<[u8; 16]> = std::collections::HashSet::new();
+    {
+        let mut pass1 = |t: [u8; 16], a: i64, b: i64, mem: &mut Mem| -> Res<()> {
+            if !in_bound(a, b) || id.is_some_and(|x| x != t) {
+                return Ok(());
+            }
+            if id.is_some() || (b >= lo && a <= hi) {
+                if !found.contains(&t) {
+                    mem.help = WINDOW_HELP;
+                    mem.charge_for("the traces of the window", ID_BYTES)?;
+                    found.insert(t);
+                }
+            } else if a > hi && !after.contains(&t) {
+                mem.help = MARGIN_HELP;
+                mem.charge_for("the ids of the traces in the margin after the window", ID_BYTES)?;
+                after.insert(t);
+            }
+            Ok(())
+        };
+        for f in &index {
+            sigfiles::read_trace_extents(f, false, |t, a, b, _| pass1(t, a, b, &mut mem))?;
+        }
+        for &(t, a, b) in &tail {
+            pass1(t, a, b, &mut mem)?;
+        }
+    }
+    // Pass 2: a trace with a piece wholly before the window and one wholly after it.
+    if !after.is_empty() {
+        let mut straddle: Vec<[u8; 16]> = Vec::new();
+        mem.help = MARGIN_HELP;
+        let mut pass2 = |t: [u8; 16], a: i64, b: i64, mem: &mut Mem| -> Res<()> {
+            if in_bound(a, b) && b < lo && !found.contains(&t) && after.remove(&t) {
+                mem.charge_for("the traces that straddle the window", ID_BYTES)?;
+                straddle.push(t);
+            }
+            Ok(())
+        };
+        for f in &index {
+            sigfiles::read_trace_extents(f, false, |t, a, b, _| pass2(t, a, b, &mut mem))?;
+        }
+        for &(t, a, b) in &tail {
+            pass2(t, a, b, &mut mem)?;
+        }
+        mem.release(ID_BYTES * (after.len() + straddle.len()) as u64);
+        drop(after);
+        for t in straddle {
+            found.insert(t);
+        }
+    }
+    // Pass 3: hull, hours and ranges of the found traces' pieces, cut to the bound.
+    mem.stage = "the ranges of the traces found";
+    mem.help = "Narrow the time range.";
+    let (mut hull, mut hours, mut ranges) = ((i64::MAX, i64::MIN), BTreeSet::new(), Vec::new());
+    let mut pass3 = |t: [u8; 16], a: i64, b: i64, hs: &mut dyn Iterator<Item = i32>, mem: &mut Mem| -> Res<()> {
+        if !in_bound(a, b) || !found.contains(&t) {
             return Ok(());
         }
-        let a = a.max(blo);
-        let e = match ext.entry(t) {
-            std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
-            std::collections::hash_map::Entry::Vacant(v) => {
-                mem.charge(EXTENT_BYTES)?;
-                v.insert((a, b, BTreeSet::new()))
-            }
-        };
-        e.0 = e.0.min(a);
-        e.1 = e.1.max(b);
-        for h in hours.filter(|h| hour_in(*h)) {
-            if e.2.insert(h) {
+        let (a, b) = (a.max(blo), b.min(bhi).max(a.max(blo)));
+        hull = (hull.0.min(a), hull.1.max(b));
+        for h in hs.filter(|h| hour_in(*h)) {
+            if !hours.contains(&h) {
                 mem.charge(HOUR_BYTES)?;
+                hours.insert(h);
             }
+        }
+        mem.charge(RANGE_BYTES)?;
+        ranges.push((a, b));
+        if ranges.len() >= 8192 {
+            let before = ranges.len();
+            merge(&mut ranges, MAX_RANGES);
+            mem.release(RANGE_BYTES * (before - ranges.len()) as u64);
         }
         Ok(())
     };
-    for f in &index {
-        sigfiles::read_trace_index(f, |g| {
-            // A fragment overlaps the bound when some span of it may start inside it.
-            if g.max_end >= blo && g.min_start <= bhi {
-                add(g.trace_id, g.min_start, g.max_end, &mut g.hours.iter().copied())?;
-            }
-            Ok(())
-        })?;
-    }
-    for b in &tails {
-        sigfiles::batch_span_times(b, |t, start, end| {
-            if start >= blo && start <= bhi {
-                add(t, start, end, &mut std::iter::once(start.div_euclid(HOUR) as i32))?;
-            }
-            Ok(())
-        })?;
-    }
-    let (mut n, mut hull, mut hours) = (0u64, (i64::MAX, i64::MIN), BTreeSet::new());
-    for (_, (a, b, h)) in ext {
-        if id.is_none() && (b < lo || a > hi) {
-            continue;
+    if !found.is_empty() {
+        for f in &index {
+            sigfiles::read_trace_extents(f, true, |t, a, b, hs| pass3(t, a, b, &mut hs.iter().copied(), &mut mem))?;
         }
-        n += 1;
-        hull = (hull.0.min(a), hull.1.max(b));
-        hours.extend(h);
+        for &(t, a, b) in &tail {
+            pass3(t, a, b, &mut std::iter::once(a.div_euclid(HOUR) as i32), &mut mem)?;
+        }
     }
+    merge(&mut ranges, MAX_RANGES);
+    let n = found.len() as u64;
     let mut out = serde_json::json!({"traces": n, "hours": hours.into_iter().collect::<Vec<_>>()});
-    if n > 0 {
+    if n > 0 && hull.0 <= hull.1 {
         // The planner reads spans by start: none of the data starts after the bound.
         out["lo"] = hull.0.to_string().into();
         out["hi"] = hull.1.min(bhi).max(hull.0).to_string().into();
+        out["ranges"] = ranges.iter().map(|(a, b)| serde_json::json!([a.to_string(), b.to_string()])).collect::<Vec<_>>().into();
     }
     Ok(out.to_string().into_bytes())
 }
 
+/// What a refusal while the window's traces are held advises.
+const WINDOW_HELP: &str = "Narrow the time range: every trace with a span in the window is held.";
+/// What a refusal while the margin's traces are held advises (review r2, R2-m5).
+const MARGIN_HELP: &str = "The traces with a span up to traceMarginMs after the window are held to find those that straddle it: a shorter window does not reduce them, a window that ends nearer the present does, and so does a smaller traceMarginMs (the operator's limit).";
+
+#[cfg(test)]
+pub(crate) fn merge_for_test(ranges: &mut Vec<(i64, i64)>, most: usize) {
+    merge(ranges, most)
+}
+
+/// Sort, join overlapping and touching ranges, and then join the closest until at most `most`
+/// remain (each join only widens: every range covers what it covered).
+fn merge(ranges: &mut Vec<(i64, i64)>, most: usize) {
+    ranges.sort_unstable();
+    let mut out: Vec<(i64, i64)> = Vec::with_capacity(ranges.len().min(most * 2));
+    for &(a, b) in ranges.iter() {
+        match out.last_mut() {
+            Some(last) if a <= last.1.saturating_add(1) => last.1 = last.1.max(b),
+            _ => out.push((a, b)),
+        }
+    }
+    if out.len() > most {
+        // The gaps between neighbours, smallest first: join every gap up to the one that leaves
+        // `most` ranges (ties may leave fewer).
+        let mut gaps: Vec<i64> = out.windows(2).map(|w| w[1].0 - w[0].1).collect();
+        gaps.sort_unstable();
+        let cut = gaps[out.len() - most - 1];
+        let mut joined: Vec<(i64, i64)> = Vec::with_capacity(most);
+        for &(a, b) in &out {
+            match joined.last_mut() {
+                Some(last) if a - last.1 <= cut => last.1 = last.1.max(b),
+                _ => joined.push((a, b)),
+            }
+        }
+        out = joined;
+    }
+    *ranges = out;
+}
+
 // ───────────────────────────── search and metrics ─────────────────────────────
 
-/// `u64 spans decoded, u64 traces`, then the body; the body is charged to the budget first.
-fn counts(budget: &mut Budget, traces: usize, json: String) -> Res<Vec<u8>> {
-    budget.mem.charge_answer(json.len() as u64)?;
+/// `u64 spans decoded, u64 traces`, then the body (charged to the budget before it was written).
+fn counts(budget: &Budget, traces: usize, json: String) -> Vec<u8> {
     let mut out = Vec::with_capacity(16 + json.len());
     out.extend_from_slice(&budget.decoded.to_le_bytes());
     out.extend_from_slice(&(traces as u64).to_le_bytes());
     out.extend_from_slice(json.as_bytes());
-    Ok(out)
+    out
 }
+
+/// What a refusal of a search or a whole-trace metrics query advises: the window decides what is
+/// held, the query's conditions do not (review r2, R2-m5).
+const SEARCH_HELP: &str = "Narrow the time range: every span of every trace that overlaps the window is held (its spans up to traceMarginMs outside the window too), whatever the query's conditions.";
 
 /// `viz_q_tq_search`: Tempo's `/api/search` body for a TraceQL query over the files and the tail.
 pub(crate) fn do_tq_search(mut r: Req<'_>) -> Res<Vec<u8>> {
@@ -469,23 +680,35 @@ pub(crate) fn do_tq_search(mut r: Req<'_>) -> Res<Vec<u8>> {
     let files = r.files("spans file")?;
     let tails = r.files("tail batch")?;
     r.end()?;
+    budget.advise(SEARCH_HELP);
     // Refuse a bad query before reading anything.
     viz_traceql::parse(q).map_err(tq_err)?;
     let ts = traces(&files, &tails, &mut budget, None)?;
     let n = ts.len();
     let req = SearchRequest { limit, spans_per_spanset: spss, start_unix_nano: start.max(0) as u64, end_unix_nano: end.max(0) as u64 };
     let out = viz_traceql::search(&MemSource::new(ts), q, &req).map_err(tq_err)?;
-    counts(&mut budget, n, out.to_json())
+    // The answer's exact length, charged before it is written.
+    budget.mem.help = "Narrow the time range, or lower limit or spss.";
+    budget.mem.charge_answer(out.json_len())?;
+    Ok(counts(&budget, n, out.to_json()))
 }
 
-/// Bytes charged per point of a TraceQL metrics series (its accumulator: a count, an exact
-/// sum and a count, or a min or max; a histogram's buckets are not counted: README, "Memory").
-const METRIC_POINT_BYTES: u64 = 48;
+/// What a TraceQL metrics evaluation was holding when it was refused, as a refusal says it.
+fn metrics_stage(what: &str) -> &'static str {
+    match what {
+        "histogram buckets" => "the histogram buckets it counts at each point",
+        "histogram series" => "the histogram's series (one per bucket and group, with every point)",
+        "sums" => "the exact sums it keeps",
+        _ => "the series it makes (every point of each, one per quantile)",
+    }
+}
 
 /// `viz_q_tq_metrics`: Tempo's `/api/metrics/query_range` (or `/query`, `instant`) body.
-/// The request is used as given: the caller aligns it (`viz_q_tq_plan`). The series a query
-/// may make are bounded by what the memory budget leaves once the spans are held: a series
-/// holds one accumulator per point.
+/// The request is used as given: the caller aligns it (`viz_q_tq_plan`). What the evaluation
+/// makes (every series' accumulator, histogram buckets and output series, one per quantile or
+/// bucket) is charged as it is made, against what the budget leaves once the spans are held
+/// (`viz_traceql::metrics::Meter`, ABI 8; review r2 R2-M2: before, only points were charged, 48
+/// bytes each, and a histogram's buckets not at all), and the answer before it is written.
 pub(crate) fn do_tq_metrics(mut r: Req<'_>) -> Res<Vec<u8>> {
     let mut budget = Budget::read(&mut r)?;
     let max_series = usize::try_from(r.u64("max_series")?).unwrap_or(usize::MAX);
@@ -501,27 +724,25 @@ pub(crate) fn do_tq_metrics(mut r: Req<'_>) -> Res<Vec<u8>> {
     // A span-local plan is evaluated over the spans that start in the window only (what the
     // engine's own pruning drops, `ReadPlan::span_may_match`), after de-duplication.
     let local = !(p.full_traces || !p.span_local || p.columns.iter().any(trace_level));
+    budget.advise(if local { "Narrow the time range." } else { SEARCH_HELP });
     let window = if local { p.span_window } else { None };
     let ts = traces(&files, &tails, &mut budget, window)?;
     let n = ts.len();
-    let points = req.points().max(1);
-    let fit = usize::try_from(budget.mem.left() / points.saturating_mul(METRIC_POINT_BYTES)).unwrap_or(usize::MAX).max(1);
-    let limits = viz_traceql::Limits { max_series: max_series.min(fit), max_points };
-    let out = viz_traceql::query_range_with(&MemSource::new(ts), q, &req, &limits).map_err(|e| {
-        let series = matches!(&e, viz_traceql::Error::Eval(m) if m.starts_with("the query produces more than"));
-        if series && fit < max_series {
-            // The series did not fit the memory left, before the series cap.
-            Fail::Limit(
-                "max_decoded_bytes",
-                budget.mem.max,
-                budget.mem.used.saturating_add((fit as u64 + 1).saturating_mul(points).saturating_mul(METRIC_POINT_BYTES)),
-                format!("query exceeded limit max_decoded_bytes: more than {fit} series of {points} points do not fit what the limit ({} bytes) leaves once the spans are held. Narrow the time range, use a longer step, or group by fewer values.", budget.mem.max),
-            )
-        } else {
-            tq_err(e)
+    let limits = viz_traceql::Limits { max_series, max_points, max_bytes: budget.mem.left() };
+    let out = viz_traceql::query_range_with(&MemSource::new(ts), q, &req, &limits).map_err(|e| match e {
+        viz_traceql::Error::Memory { what, used, .. } => {
+            budget.mem.stage = metrics_stage(what);
+            budget.mem.help = "Use a longer step, group by fewer values, ask for fewer quantiles, or narrow the time range.";
+            budget.mem.refusal(budget.mem.used.saturating_add(used))
         }
+        e => tq_err(e),
     })?;
-    counts(&mut budget, n, out.to_json())
+    // The series returned stay held while the answer is written: their charge, then the answer's
+    // exact length, before it is written.
+    budget.mem.help = "Use a longer step, group by fewer values, or narrow the time range.";
+    budget.mem.charge_for("the series it makes", out.held_bytes)?;
+    budget.mem.charge_answer(out.json_len())?;
+    Ok(counts(&budget, n, out.to_json()))
 }
 
 // ───────────────────────────── trace by ID ─────────────────────────────
@@ -543,7 +764,32 @@ fn base64(b: &[u8]) -> String {
     s
 }
 
-pub(crate) fn esc(s: &str, out: &mut String) {
+/// Where the trace writers put text: a `String`, or a count of the bytes they would write, so
+/// that each span's text is charged before it is written ([`trace_json`]).
+pub(crate) trait Out {
+    fn push_str(&mut self, s: &str);
+    fn push(&mut self, c: char);
+}
+impl Out for String {
+    fn push_str(&mut self, s: &str) {
+        String::push_str(self, s)
+    }
+    fn push(&mut self, c: char) {
+        String::push(self, c)
+    }
+}
+/// A count of bytes written.
+struct Len(u64);
+impl Out for Len {
+    fn push_str(&mut self, s: &str) {
+        self.0 += s.len() as u64;
+    }
+    fn push(&mut self, c: char) {
+        self.0 += c.len_utf8() as u64;
+    }
+}
+
+pub(crate) fn esc<O: Out>(s: &str, out: &mut O) {
     out.push('"');
     for c in s.chars() {
         match c {
@@ -589,7 +835,7 @@ fn js_number(v: f64) -> String {
     format!("{sign}{body}")
 }
 
-fn any_json(v: &Value<String>, out: &mut String) {
+fn any_json<O: Out>(v: &Value<String>, out: &mut O) {
     match v {
         Value::Str(s) => {
             out.push_str("{\"stringValue\":");
@@ -614,7 +860,7 @@ fn any_json(v: &Value<String>, out: &mut String) {
     }
 }
 
-fn attrs_json(attrs: &[viz_storage::otel::Attr<String>], out: &mut String) {
+fn attrs_json<O: Out>(attrs: &[viz_storage::otel::Attr<String>], out: &mut O) {
     out.push('[');
     for (i, a) in attrs.iter().enumerate() {
         if i > 0 {
@@ -632,7 +878,7 @@ fn attrs_json(attrs: &[viz_storage::otel::Attr<String>], out: &mut String) {
 const KINDS: [&str; 6] = ["SPAN_KIND_UNSPECIFIED", "SPAN_KIND_INTERNAL", "SPAN_KIND_SERVER", "SPAN_KIND_CLIENT", "SPAN_KIND_PRODUCER", "SPAN_KIND_CONSUMER"];
 const STATUSES: [&str; 3] = ["STATUS_CODE_UNSET", "STATUS_CODE_OK", "STATUS_CODE_ERROR"];
 
-fn span_json(s: &SpanRec, out: &mut String) {
+fn span_json<O: Out>(s: &SpanRec, out: &mut O) {
     out.push_str(&format!("{{\"traceId\":\"{}\",\"spanId\":\"{}\"", base64(&s.trace_id), base64(&s.span_id)));
     if !s.trace_state.is_empty() {
         out.push_str(",\"traceState\":");
@@ -713,9 +959,10 @@ fn span_json(s: &SpanRec, out: &mut String) {
 /// A trace as OTLP JSON in the protobuf JSON mapping Tempo answers with: resource spans as
 /// `batches`, ids in base64, enums by name, 64-bit integers as strings, empty fields left out.
 /// Spans in `(start, span_id)` order, grouped by resource and then instrumentation scope in
-/// the order their first span appears. The text is charged to `mem` as it grows
-/// ([`Mem::charge_answer`]): refused once it passes the budget, at most one span's text later.
-pub(crate) fn trace_json(spans: &[SpanRec], mem: &mut Mem) -> Res<String> {
+/// the order their first span appears. Each piece of the text (a resource's attributes, a
+/// span) is charged to `mem` before it is written ([`Mem::charge_answer`], its exact length
+/// counted first): refused before the text passes the budget (ABI 8; before, after one span).
+pub(crate) fn trace_json(spans: &[SpanRec], mem: &mut Mem, wrap: &str) -> Res<String> {
     let mut res: Vec<(&[viz_storage::otel::Attr<String>], Vec<((&str, &str, &str), Vec<&SpanRec>)>)> = Vec::new();
     for s in spans {
         let ri = match res.iter().position(|(r, _)| std::ptr::eq(*r, s.resource.as_slice()) || *r == s.resource.as_slice()) {
@@ -732,19 +979,24 @@ pub(crate) fn trace_json(spans: &[SpanRec], mem: &mut Mem) -> Res<String> {
             None => scopes.push((scope, vec![s])),
         }
     }
-    let mut out = String::from("{\"batches\":[");
+    let mut out = String::from(wrap);
+    out.push_str("{\"batches\":[");
     for (i, (r, scopes)) in res.iter().enumerate() {
         if i > 0 {
             out.push(',');
         }
         // A resource's attributes are written once per batch.
-        let at = out.len();
+        let mut len = Len(13);
+        if !r.is_empty() {
+            len.push_str("\"attributes\":");
+            attrs_json(r, &mut len);
+        }
+        mem.charge_answer(len.0)?;
         out.push_str("{\"resource\":{");
         if !r.is_empty() {
             out.push_str("\"attributes\":");
             attrs_json(r, &mut out);
         }
-        mem.charge_answer((out.len() - at) as u64)?;
         out.push_str("},\"scopeSpans\":[");
         for (j, ((name, version, attrs), list)) in scopes.iter().enumerate() {
             if j > 0 {
@@ -771,22 +1023,28 @@ pub(crate) fn trace_json(spans: &[SpanRec], mem: &mut Mem) -> Res<String> {
                 if k > 0 {
                     out.push(',');
                 }
-                // Charged as written: past the budget by at most one span's text.
-                let at = out.len();
+                // Charged before it is written.
+                let mut len = Len(0);
+                span_json(s, &mut len);
+                mem.charge_answer(len.0)?;
                 span_json(s, &mut out);
-                mem.charge_answer((out.len() - at) as u64)?;
             }
             out.push_str("]}");
         }
         out.push_str("]}");
     }
     out.push_str("]}");
+    if !wrap.is_empty() {
+        out.push('}');
+    }
     Ok(out)
 }
 
 /// `viz_q_tq_trace`: one trace by ID: `u8 found`, `u64 spans decoded`, then Tempo's v1 body
 /// (`{"batches":[…]}`) or v2 body (`{"trace":{"batches":[…]}}`); nothing after the counts when
-/// no span of the trace was read.
+/// no span of the trace was read. Only the trace's own spans are part of the data (ABI 8; review
+/// r2 R2-M4a): a span of another trace in the same row group is read to find the trace's and
+/// passed over before it is decoded, so it is neither held nor counted against `max_spans`.
 pub(crate) fn do_tq_trace(mut r: Req<'_>) -> Res<Vec<u8>> {
     let version = r.u8("version")?;
     let mut id = [0u8; 16];
@@ -795,17 +1053,22 @@ pub(crate) fn do_tq_trace(mut r: Req<'_>) -> Res<Vec<u8>> {
     let files = r.files("spans file")?;
     let tails = r.files("tail batch")?;
     r.end()?;
-    let mut spans = latest_records(&files, &tails, &mut budget, |s| s.trace_id == id)?;
+    budget.only = Some(id);
+    budget.advise(TRACE_HELP);
+    let mut spans = latest_records(&files, &tails, &mut budget, |_| true)?;
     spans.sort_by(|a, b| (a.start, a.span_id).cmp(&(b.start, b.span_id)));
     let mut out = vec![(!spans.is_empty()) as u8];
     out.extend_from_slice(&budget.decoded.to_le_bytes());
     if !spans.is_empty() {
-        let body = trace_json(&spans, &mut budget.mem)?;
-        let body = if version == 2 { format!("{{\"trace\":{body}}}") } else { body };
+        let body = trace_json(&spans, &mut budget.mem, if version == 2 { "{\"trace\":" } else { "" })?;
+        drop(spans);
         out.extend_from_slice(body.as_bytes());
     }
     Ok(out)
 }
+
+/// What a refusal of trace by ID advises: only the trace's own spans are held.
+const TRACE_HELP: &str = "The trace's own spans and its answer take more than this: it cannot be answered in one place. With start and end, only its spans within traceMarginMs of them are read.";
 
 // ───────────────────────────── tags ─────────────────────────────
 
@@ -815,10 +1078,6 @@ const INTRINSICS: [&str; 20] = [
     "span:status", "span:statusMessage", "status", "statusMessage", "trace:duration", "trace:rootName", "trace:rootService", "traceDuration",
 ];
 const SCOPES: [&str; 6] = ["resource", "span", "intrinsic", "event", "link", "instrumentation"];
-
-fn in_window(s: &SpanRec, lo: i64, hi: i64) -> bool {
-    s.start >= lo && s.start <= hi
-}
 
 /// `viz_q_tq_tags`: tag names of the spans that start in `[lo, hi]`. Version 1:
 /// `{"tagNames":[…]}` (no scope: resource and span); version 2: `{"scopes":[{"name","tags"}…]}`
@@ -835,42 +1094,95 @@ pub(crate) fn do_tq_tags(mut r: Req<'_>) -> Res<Vec<u8>> {
     if !scope.is_empty() && !SCOPES.contains(&scope.as_str()) {
         return Err(Fail::Query(QueryError::bad_data(format!("unknown scope {scope:?}: one of resource, span, intrinsic, event, link, instrumentation"))));
     }
-    let spans = latest_records(&files, &tails, &mut budget, |s| in_window(s, lo, hi))?;
+    budget.advise("Narrow the time range.");
+    let spans = latest_records(&files, &tails, &mut budget, |start| start >= lo && start <= hi)?;
+    // Each name is charged when it is first kept.
+    budget.mem.stage = "the tag names it lists";
     let mut names: BTreeMap<&str, BTreeSet<String>> = SCOPES.iter().map(|s| (*s, BTreeSet::new())).collect();
     names.get_mut("intrinsic").unwrap().extend(INTRINSICS.iter().map(|s| s.to_string()));
+    let mem = &mut budget.mem;
+    let mut put = |scope: &str, name: String, mem: &mut Mem| -> Res<()> {
+        let set = names.get_mut(scope).expect("a scope");
+        if !set.contains(&name) {
+            mem.charge(KEPT + name.len() as u64)?;
+            set.insert(name);
+        }
+        Ok(())
+    };
     for s in &spans {
-        names.get_mut("resource").unwrap().extend(s.resource.iter().map(|a| a.key.clone()));
-        names.get_mut("span").unwrap().extend(s.attrs.iter().map(|a| a.key.clone()));
+        for a in s.resource.iter() {
+            put("resource", a.key.clone(), mem)?;
+        }
+        for a in &s.attrs {
+            put("span", a.key.clone(), mem)?;
+        }
         for e in &s.events {
-            names.get_mut("event").unwrap().extend(sigfiles::kv_texts(&e.attrs)?.into_iter().map(|x| x.0));
+            for (k, _) in sigfiles::kv_texts(&e.attrs)? {
+                put("event", k, mem)?;
+            }
         }
         for l in &s.links {
-            names.get_mut("link").unwrap().extend(sigfiles::kv_texts(&l.attrs)?.into_iter().map(|x| x.0));
+            for (k, _) in sigfiles::kv_texts(&l.attrs)? {
+                put("link", k, mem)?;
+            }
         }
         if !s.scope_attrs.is_empty() {
-            names.get_mut("instrumentation").unwrap().extend(sigfiles::kv_texts(&s.scope_attrs)?.into_iter().map(|x| x.0));
+            for (k, _) in sigfiles::kv_texts(&s.scope_attrs)? {
+                put("instrumentation", k, mem)?;
+            }
         }
     }
-    let cut = |set: &BTreeSet<String>| -> Vec<String> { set.iter().take(if limit == 0 { usize::MAX } else { limit }).cloned().collect() };
-    let json = if version == 1 {
-        let wanted: Vec<&str> = if scope.is_empty() { vec!["resource", "span"] } else { vec![scope.as_str()] };
-        let mut all = BTreeSet::new();
-        for w in wanted {
-            all.extend(names[w].iter().cloned());
+    drop(spans);
+    let take = if limit == 0 { usize::MAX } else { limit };
+    // The answer (`serde_json`'s form: keys in order), its exact length charged before it is written.
+    let list = |out: &mut String, set: &mut dyn Iterator<Item = &String>| {
+        out.push('[');
+        for (i, x) in set.take(take).enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            sigfiles::json_str(x, out);
         }
-        serde_json::json!({"tagNames": cut(&all), "metrics": {}})
-    } else {
-        let list: Vec<serde_json::Value> = SCOPES
-            .iter()
-            .filter(|s| if scope.is_empty() { !names[**s].is_empty() } else { **s == scope })
-            .map(|s| serde_json::json!({"name": s, "tags": cut(&names[*s])}))
-            .collect();
-        serde_json::json!({"scopes": list, "metrics": {}})
+        out.push(']');
     };
-    let json = json.to_string();
-    budget.mem.charge_answer(json.len() as u64)?;
-    Ok(json.into_bytes())
+    let list_len = |set: &mut dyn Iterator<Item = &String>| -> u64 { 2 + set.take(take).map(|x| 1 + sigfiles::json_str_len(x)).sum::<u64>() };
+    if version == 1 {
+        let wanted: Vec<&str> = if scope.is_empty() { vec!["resource", "span"] } else { vec![scope.as_str()] };
+        let mut all: BTreeSet<&String> = BTreeSet::new();
+        for w in wanted {
+            all.extend(names[w].iter());
+        }
+        let len = 27 + list_len(&mut all.iter().copied());
+        budget.mem.charge_answer(len)?;
+        let mut out = String::with_capacity(len as usize);
+        out.push_str("{\"metrics\":{},\"tagNames\":");
+        list(&mut out, &mut all.iter().copied());
+        out.push('}');
+        Ok(out.into_bytes())
+    } else {
+        let chosen: Vec<&str> = SCOPES.iter().copied().filter(|s| if scope.is_empty() { !names[*s].is_empty() } else { *s == scope }).collect();
+        let len = 25 + chosen.iter().map(|s| 21 + s.len() as u64 + list_len(&mut names[*s].iter())).sum::<u64>();
+        budget.mem.charge_answer(len)?;
+        let mut out = String::with_capacity(len as usize);
+        out.push_str("{\"metrics\":{},\"scopes\":[");
+        for (i, s) in chosen.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str("{\"name\":");
+            sigfiles::json_str(s, &mut out);
+            out.push_str(",\"tags\":");
+            list(&mut out, &mut names[*s].iter());
+            out.push('}');
+        }
+        out.push_str("]}");
+        Ok(out.into_bytes())
+    }
 }
+
+/// Bytes charged per tag name or value a tag call keeps (its set's node share and string
+/// header), beside the text.
+const KEPT: u64 = 64;
 
 /// A typed tag value (`/api/v2/search/tag/<tag>/values`: `{"type","value"}`).
 fn typed(v: &AttrValue) -> Option<(&'static str, String)> {
@@ -933,14 +1245,19 @@ pub(crate) fn do_tq_tag_values(mut r: Req<'_>) -> Res<Vec<u8>> {
     let tails = r.files("tail batch")?;
     r.end()?;
     let filter = (!q.trim().is_empty()).then(|| viz_traceql::parse(&q).ok().filter(|root| matches!(root.query, Query::Search(_))).map(|_| q.clone())).flatten();
-    let recs = latest_records(&files, &tails, &mut budget, |s| in_window(s, lo, hi))?;
+    budget.advise("Narrow the time range, or pass a filter (q) that matches fewer spans.");
+    let recs = latest_records(&files, &tails, &mut budget, |start| start >= lo && start <= hi)?;
     let mut grouped: BTreeMap<[u8; 16], Vec<viz_traceql::Span>> = BTreeMap::new();
     // Each record is let go as its engine span is made, so the two are not held whole at once.
     for s in recs {
         let span = engine_span(&s, &mut budget.engine_res, &mut budget.mem)?;
         grouped.entry(s.trace_id).or_default().push(span);
     }
+    // Each distinct value is charged when it is first kept (ABI 8; review r2 R2-M2: 500 spans
+    // with 60 KB values held 107.7 MiB before the answer was charged).
+    budget.mem.stage = "the tag values it lists";
     let mut values: BTreeSet<(&'static str, String)> = BTreeSet::new();
+    let mut found: Vec<(&'static str, String)> = Vec::new();
     for (t, mut spans) in grouped {
         spans.sort_by(|a, b| (a.start_unix_nano, a.span_id).cmp(&(b.start_unix_nano, b.span_id)));
         let trace = Trace::new(t, spans);
@@ -955,20 +1272,17 @@ pub(crate) fn do_tq_tag_values(mut r: Req<'_>) -> Res<Vec<u8>> {
         };
         for i in chosen {
             let s = &trace.spans[i];
+            found.clear();
             let mut put = |v: &AttrValue| {
                 if let Some(x) = typed(v) {
-                    values.insert(x);
+                    found.push(x);
                 }
             };
             match &tag {
                 Tag::Name => put(&AttrValue::Str(s.name.clone())),
                 Tag::StatusMessage => put(&AttrValue::Str(s.status_message.clone())),
-                Tag::Status => {
-                    values.insert(("keyword", s.status.name().to_string()));
-                }
-                Tag::Kind => {
-                    values.insert(("keyword", s.kind.name().to_string()));
-                }
+                Tag::Status => found.push(("keyword", s.status.name().to_string())),
+                Tag::Kind => found.push(("keyword", s.kind.name().to_string())),
                 Tag::Attr(scope, k) => {
                     let get = |list: &[(String, AttrValue)]| viz_traceql::data::attr(list, k).cloned();
                     match scope {
@@ -984,17 +1298,46 @@ pub(crate) fn do_tq_tag_values(mut r: Req<'_>) -> Res<Vec<u8>> {
                     }
                 }
             }
+            for x in found.drain(..) {
+                if !values.contains(&x) {
+                    budget.mem.charge(KEPT + x.1.len() as u64)?;
+                    values.insert(x);
+                }
+            }
         }
     }
     let take = if limit == 0 { usize::MAX } else { limit };
-    let json = if version == 1 {
-        let v: Vec<String> = values.into_iter().filter(|(t, _)| *t == "string").map(|(_, v)| v).collect::<BTreeSet<_>>().into_iter().take(take).collect();
-        serde_json::json!({"tagValues": v, "metrics": {}})
+    // The answer (`serde_json`'s form, keys in order), its exact length charged before it is written.
+    if version == 1 {
+        let v: BTreeSet<&String> = values.iter().filter(|(t, _)| *t == "string").map(|(_, v)| v).collect();
+        let len = 28 + v.iter().take(take).map(|x| 1 + sigfiles::json_str_len(x)).sum::<u64>();
+        budget.mem.charge_answer(len)?;
+        let mut out = String::with_capacity(len as usize);
+        out.push_str("{\"metrics\":{},\"tagValues\":[");
+        for (i, x) in v.iter().take(take).enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            sigfiles::json_str(x, &mut out);
+        }
+        out.push_str("]}");
+        Ok(out.into_bytes())
     } else {
-        let v: Vec<serde_json::Value> = values.into_iter().take(take).map(|(t, v)| serde_json::json!({"type": t, "value": v})).collect();
-        serde_json::json!({"tagValues": v, "metrics": {}})
-    };
-    let json = json.to_string();
-    budget.mem.charge_answer(json.len() as u64)?;
-    Ok(json.into_bytes())
+        let len = 28 + values.iter().take(take).map(|(t, v)| 22 + t.len() as u64 + sigfiles::json_str_len(v)).sum::<u64>();
+        budget.mem.charge_answer(len)?;
+        let mut out = String::with_capacity(len as usize);
+        out.push_str("{\"metrics\":{},\"tagValues\":[");
+        for (i, (t, v)) in values.iter().take(take).enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str("{\"type\":");
+            sigfiles::json_str(t, &mut out);
+            out.push_str(",\"value\":");
+            sigfiles::json_str(v, &mut out);
+            out.push('}');
+        }
+        out.push_str("]}");
+        Ok(out.into_bytes())
+    }
 }

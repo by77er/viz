@@ -19,10 +19,13 @@
       { "name": "PUBLISHER_N1", "class_name": "TestPublisherN1" },
       // The D64 release (test/d64/, frozen at bcfe8db): reads the span and log tables and does not
       // publish them. Release N-1 of this one, which publishes them (design/DECISIONS.md D65).
-      { "name": "PUBLISHER_D64", "class_name": "TestPublisherD64" }
+      { "name": "PUBLISHER_D64", "class_name": "TestPublisherD64" },
+      // The release before re-bases and rebuilds in steps (test/m6/, frozen at 800b926): release N-1 of
+      // this one, which must ignore what a re-base or rebuild kept across invocations left (test/steps.test.ts).
+      { "name": "PUBLISHER_M6", "class_name": "TestPublisherM6" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TestPublisher", "Ledger", "LedgerAsBuilt"] }, { "tag": "v2", "new_sqlite_classes": ["LedgerBefore"] }, { "tag": "v3", "new_sqlite_classes": ["TestPublisherN1"] }, { "tag": "v4", "new_sqlite_classes": ["TestPublisherD64"] }],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TestPublisher", "Ledger", "LedgerAsBuilt"] }, { "tag": "v2", "new_sqlite_classes": ["LedgerBefore"] }, { "tag": "v3", "new_sqlite_classes": ["TestPublisherN1"] }, { "tag": "v4", "new_sqlite_classes": ["TestPublisherD64"] }, { "tag": "v5", "new_sqlite_classes": ["TestPublisherM6"] }],
   "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "viz-lake" }],
   "vars": { "CELL": "cell-0", "ICEBERG_LOCATION_PREFIX": "s3://viz-lake" }
 }

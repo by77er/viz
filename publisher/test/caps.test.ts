@@ -23,7 +23,7 @@ import { runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
 import { dataKeyPrefix, type FileEntry, type FlushUnit, type LedgerTable, type SignalTable } from '../../contracts/ledger'
-import { CURSORS_KEY, TABLE_NAMES } from '../src/iceberg'
+import { TABLE_NAMES } from '../src/iceberg'
 import type { PublishResult } from '../src/publisher'
 import { dumpOf, install } from './storage'
 import {
@@ -42,8 +42,7 @@ import {
   mirror,
   pairUnit,
   publisher,
-  readMetadata,
-  snapshotEntries,
+  readerView,
   type PublisherStub,
 } from './helpers'
 
@@ -128,23 +127,6 @@ async function alarmRun(p: PublisherStub): Promise<PublishResult> {
   const published = await p.publishes()
   expect(published).toHaveLength(1)
   return published[0]!
-}
-
-/**
- * What a reader of a table's current snapshot sees, with nothing that depends on how many commits
- * made it: every live data file (its whole `data_file`: path, partition, counts, sizes, bounds,
- * offsets), the snapshot's totals, the cursor object it points at, and the table's metadata without
- * its history, ids and location (the cell's name is replaced).
- */
-async function readerView(cell: string, table: LedgerTable): Promise<unknown> {
-  const meta = await readMetadata(cell, table)
-  const current = meta.snapshots.find((s) => s['snapshot-id'] === meta['current-snapshot-id'])!
-  const files = (await snapshotEntries(cell, table)).filter((e) => e.status !== 2).map((e) => [e.key, e.entry.data_file] as const)
-  files.sort(([a], [b]) => (a < b ? -1 : 1))
-  const totals = Object.fromEntries(Object.entries(current.summary).filter(([k]) => k.startsWith('total-')))
-  const cursors = (await (await env.BUCKET.get(keyOf(current.summary[CURSORS_KEY] as string)))!.json<{ cursors: unknown }>()).cursors
-  const { 'table-uuid': _u, location: _l, 'last-updated-ms': _m, 'current-snapshot-id': _c, snapshots: _s, 'snapshot-log': _sl, 'metadata-log': _ml, 'last-sequence-number': _q, refs: _r, ...rest } = meta as unknown as Record<string, unknown>
-  return JSON.parse(JSON.stringify({ files, totals, cursors, rest }, (_k, v: unknown) => (v instanceof Uint8Array ? [...v] : v)).replaceAll(cell, 'CELL'))
 }
 
 describe('the upgrade to D67 spread over publishes (review M-6)', () => {

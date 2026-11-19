@@ -99,11 +99,13 @@ async function checkpointsOf(cell: string, t: string, inc: number) {
   return { manifests, parts }
 }
 
-const nothingPublished = async (cell: string, p: PublisherStub, t: string) => {
+/** Nothing of the tenant committed; its stage empty, or (`kept`) holding that many parts staged before the read stopped, kept for the next publish. */
+const nothingPublished = async (cell: string, p: PublisherStub, t: string, kept = 0) => {
   for (const table of TABLES) expect(await metadataVersions(cell, table), table).toEqual([])
   expect(await p.cursors('metric_samples')).toEqual({})
   expect(await p.pending()).toEqual([t])
-  expect(await p.scratch()).toEqual({ stage: 0, liveNext: 0 })
+  if (kept === 0) expect(await p.scratch()).toEqual({ stage: 0, liveNext: 0 })
+  else expect((await p.steps())[t]).toMatchObject({ done: kept, target: null })
 }
 
 /** The tenant's files in the published tables are exactly its ledger's live files. */
@@ -390,7 +392,9 @@ describe('a part that is not there, or not what its manifest says, stops the re-
 })
 
 describe('eviction and concurrency', () => {
-  it('an eviction mid-stream: what was staged is never used, and the next publish reads it all again', async () => {
+  it('an eviction mid-stream: nothing is committed, the parts staged before it are kept with their progress, and the next publish reads only the rest', async () => {
+    // Since the re-base is kept across invocations (README, "Re-bases and rebuilds in steps"): before
+    // it, what was staged was thrown away and the next publish read every part again.
     const { cell, tenant } = fresh()
     const t = tenant('evict')
     await scenario(cell, t, 'parts')
@@ -409,18 +413,26 @@ describe('eviction and concurrency', () => {
     expect(await p.abortNow().then(() => 'returned', () => 'reset')).toBe('reset')
     expect(await done).toMatch(/^failed/)
     const q = publisher(cell) // a stub to the object as constructed afresh (the old one is broken by the reset)
-    // Some parts reached SQLite before the eviction; none of it was committed.
+    // Some parts reached SQLite before the eviction, with how far they got; none of it was committed.
     expect((await q.scratch()).stage).toBeGreaterThan(0)
+    const kept = (await q.steps())[t]!
+    expect(kept.done).toBeGreaterThan(0)
+    expect(kept.done).toBeLessThanOrEqual(WINDOW + 1)
     for (const table of TABLES) expect(await metadataVersions(cell, table)).toEqual([])
+    await q.r2()
     const r = await q.publish([t])
-    expect(r.tenants[0]).toMatchObject({ status: 'ok', rebase: { source: 'checkpoint', format: 2, objects: 1 + parts.length } })
+    expect(r.tenants[0]).toMatchObject({ status: 'ok', rebase: { source: 'checkpoint', format: 2, objects: 1 + parts.length - kept.done, resumedAt: kept.done } })
+    // The parts staged before the eviction are not read again.
+    const gets = (await q.r2()).gets
+    expect(gets.filter((k) => parts.includes(k))).toEqual(parts.slice(kept.done))
     expect(await q.scratch()).toEqual({ stage: 0, liveNext: 0 })
+    expect(await q.steps()).toEqual({})
     for (const table of TABLES) expect(await metadataVersions(cell, table)).toEqual([1])
     await expectLedger(cell, t)
     await expectVerified(q)
   })
 
-  it('a read that fails at a part, then an eviction: nothing published, the next publish reads it all again', async () => {
+  it('a read that fails at a part, then an eviction: nothing published, the parts before it kept, and the next publish reads from the failed one on', async () => {
     const { cell, tenant } = fresh()
     const t = tenant('crash')
     await scenario(cell, t, 'parts')
@@ -428,9 +440,10 @@ describe('eviction and concurrency', () => {
     const p = publisher(cell)
     await p.failOnGet(parts[WINDOW + 1]!.slice(parts[0]!.lastIndexOf('/', parts[0]!.lastIndexOf('/') - 1)))
     expect((await p.tryPublish([t])).error).toMatch(/injected: R2 failed/)
-    await nothingPublished(cell, p, t)
+    await nothingPublished(cell, p, t, WINDOW + 1)
     await evictDurableObject(p)
-    expect((await p.publish([t])).tenants[0]).toMatchObject({ status: 'ok', rebase: { source: 'checkpoint', format: 2 } })
+    expect((await p.publish([t])).tenants[0]).toMatchObject({ status: 'ok', rebase: { source: 'checkpoint', format: 2, resumedAt: WINDOW + 1, objects: 1 + parts.length - (WINDOW + 1) } })
+    expect(await p.steps()).toEqual({})
     await expectLedger(cell, t)
     await expectVerified(p)
   })

@@ -812,9 +812,9 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
 
 ```
 npm install
-npm test             # 164 tests in 20 files, in workerd (at most 2 workers)
+npm test             # 214 tests in 23 files, in workerd (at most 2 workers)
 npx tsc --noEmit     # clean
-npm run mutants      # 145 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md)
+npm run mutants      # 189 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md)
 npm run gen:openapi  # rewrite openapi.json from src/openapi.ts
 ```
 
@@ -1110,6 +1110,78 @@ What the tests establish:
   outbox drain; the Worker has one `idFromName`, on `identity.tenant`.
 
 ### Rate limits in front of OAuth (D70)
+
+**Round 2: the second review's findings** (`design/reviews/d70-rate-limits-r2.md`, approve with
+changes; fixed 2026-11-19). Runs (`npx tsc --noEmit && npx vitest run --maxWorkers=2` in `control/`):
+`tsc` clean; **214 of 214 in 23 files**, 31–43 s, machine load average 3–6 from other builders. In
+`mcp/` after the contract change: `npx tsc --noEmit` clean, `npx vitest run test/oauth.test.ts` 15
+of 15.
+
+| Finding | Disposition | Evidence |
+|---|---|---|
+| R2-M1 (fuse asked alone when the narrow limiter is skipped or absent) | **Fixed**: a wider key is asked only while every narrower one was checked (`firstRefusal`); absent bindings are still each logged once. While a narrow limiter is down, its fuse counts nothing in that isolate (D70 says so) | `ratelimit-review-r2.test.ts` N2 (hang, throw) and N2b: the victim is served and the fuse counted none of the 13 requests; before, 12 counted and the victim got 429. Mutant 166 |
+| R2-M2 (farmed refresh tokens trip the token fuse for 30 days after revocation; no per-tenant remedy; D70's "live tokens anyway" false for the token fuse) | **Fixed** by the list of dead credentials (the owner's decision over the residual; D70 (p), the per-tenant not-before, recorded and not chosen), the grant view's `refreshesLastDay`, and D70 rewritten: the false sentence corrected, the thief of an idle grant's token added, the remedy (revoke the grant) and the remaining window stated | N1 at `/oauth/token` and at `/oauth/revoke`, N1b (thief), a new isolate reading the list from KV with the record's expiration checked, 5 dead access tokens × 3 at introspection, the farming count in the grant view and the revocation's audit entry; `deadlist.test.ts`, 13 tests. Mutants 169–189 |
+| M-2 (carried: no deploy gate) | **Open**, the deploy's: restated in "Needed changes elsewhere" 3, with m-3's floor as 6 | none here |
+| m-1 (a slow narrow check eats the shared budget; the healthy fuse is blamed) | **Fixed**: each check has an even share of `CHECK_BUDGET_MS` as its own timer, and only a binding that overran its share is skipped | N3 in `ratelimit-review-r2.test.ts` (80/30 and 60/60 ms: the credential is skipped and the fuse not asked; 20/75 ms: the fuse is skipped, the credential bound; 30/30: both bound) and a share test in `ratelimit.test.ts`. Mutant 160 (re-anchored) |
+| m-2 (genuine expired credentials counted by network) | **Fixed**: answered as the object would, counted against nothing; a listed one too | `ratelimit-review-r2.test.ts` m-2 (10 + 10 expired from one network, then its budget whole); `ratelimit.test.ts`'s network test changed accordingly. Mutants 167, 168 |
+| m-3 (rollback below the fix once OAuth is public) | **Written** for the deploy: a `rollback_floors` rule keyed on a plain `OAUTH_PUBLIC` var, with evidence exports only this release has ("Needed changes elsewhere" 6) | none here |
+| m-4 (per-location fuse headroom) | **Recorded** with the numbers in D70 and above: two locations at the bearer fuse are 90–150% of one object, five at the token fuse 38–105% | modelled |
+| n-1 (who pays for Worker-hosted senders) | **Fixed** wording in D70 and `src/ratelimit.ts` | |
+| n-2 (`Date.now()` budget arithmetic) | **Gone**: the share is a timer | |
+
+**The reproductions, before and after.** `test/ratelimit-review-r2.test.ts` (14 tests) makes the
+review's N1, N1b, N2, N2b and N3 again, plus the variants this round had to close (the stock
+replayed at revocation and at introspection, a new isolate, the farming signal), each asserting that
+the victim is served. Run against a copy of `control/` and `contracts/` at `3f68591` (the code the
+review read, unchanged since `122229b`), with the same file, `vitest.config.ts` and `test/env.d.ts`:
+**13 of 14 fail** (N1: victim 429 "this tenant"; at revocation: 429; N1b: 429; new isolate: no KV
+record; introspection: `rate_limited`; farming: no field; N2: the fuse counted 12 and the victim got
+429; N2b: `rate_limited`; N3: `[bound, skipped]` for 80/30 and 60/60, `[bound, bound]` for 20/75;
+m-2: 429). The one that passes there is N3's 30/30 ms control, where nothing should change. Against
+this code: 14 of 14 pass.
+
+**Tests changed deliberately**, each because it asserted what this round changes:
+- `ratelimit.test.ts`:
+  - "each binding is logged once" now expects the narrowest binding of each chain logged once as
+    failing and the wider ones never asked (R2-M1); absent ones are still each logged once;
+  - "a binding that hangs takes the whole request's budget … tried by the next request" became "takes
+    only its own share; while it is skipped the wider binding is not asked at all" (R2-M1, m-1), and
+    a share test was added;
+  - "made-up credentials and bad requests from one network" no longer counts two expired credentials
+    by network (m-2): it presents three of each, uncounted, and two other bad requests;
+  - "the tenant fuse takes 12 ÷ 3 = 4 distinct unexpired credentials" spent the fuse with dead access
+    tokens, which are now listed after one request: it now spends it with four live refresh tokens
+    held at layer 2's limit (the object refuses them without calling them dead), and a new test shows
+    four dead credentials × 3 revocations and × 3 refreshes reach the object 4 times and the live
+    client is served.
+- `ratelimit-review.test.ts`: R1 was `[400 × 3, 429 × 10]` with 3 objects asked, now `[400 × 13]`
+  with none (its client's revocation listed the token); R2 was `[200 × 3, 429 × 10]`, now
+  `[200 × 13]` with one object request. A new test keeps the per-token key at revocation covered: a
+  live token revoked 13 times by another client (nothing changes, so it is never listed) is
+  `[200 × 3, 429 × 10]` and the victim is served (added after mutant 122 survived, below).
+- `oauth-review.test.ts`: revoking tagged unknown tokens at the object now answers `dead: true`.
+- `golden.test.ts`: `rpc.oauth`'s revocation sample has `dead: true`; a new golden file for
+  `kv.oauth-dead`, with the key's shape, the value and the expiration rule.
+- `oauth-cost.test.ts`: replays of dead credentials are split into the first (reaches the object,
+  lists it: one Worker KV write) and later ones (no object, nothing written; one KV read in a new
+  isolate), and the Worker's own KV reads and writes are counted (table below).
+- `rules.test.ts`: the list is the one KV writer outside the object's outbox (one `put`, under its
+  prefix, with an expiration, never a delete), and the rate limits and the list log fixed messages
+  only.
+
+`test/deadlist.test.ts`, 13 tests: what is listed (a refresh refused for its scope or resource is
+not, and one refused by layer 2 is not either, `ratelimit.test.ts`; at introspection `suspended` and `audience` are not and the token comes back,
+`unknown` is, and a new isolate answers it from KV; a live token revoked by another client is not,
+by its own client is); nothing written with less than 60 s left or for layout 1; one write per dead
+credential per isolate, also for 5 concurrent replays; one KV read per live token per isolate for 50
+introspections; the isolate's map holds at most 10,000 and drops the oldest; a KV read that throws or
+hangs is served within the budget, logged once, skipped for 10 s and shown `skipped` by `/healthz`; a
+failed write is logged once and the isolate still remembers; without `CONFIG` only the isolate
+refuses; keys carry the prefix and the tenant and never the credential.
+
+@@COST@@
+
+@@MUT@@
 
 **Runs after the review's fixes** (2026-11-19, `npx tsc --noEmit && npx vitest run --maxWorkers=2`
 in `control/`): `tsc` clean; 183 of 183 in 21 files, 46 s, with the machine's load average about 7–9

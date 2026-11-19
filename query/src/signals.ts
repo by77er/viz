@@ -132,20 +132,29 @@ async function fetchRound(c: Context, r: Round, have: Map<string, Uint8Array>, r
   }
 }
 
-/** The tails of a signal's shards above the plan's watermarks, under what the files leave of `maxFetchBytes`; null: refused, read the ledger again. */
+/**
+ * The tails of a signal's shards above the plan's watermarks, under what the files leave of
+ * `maxFetchBytes`; null: refused, read the ledger again. `bound` is the nanosecond range the
+ * caller selects rows in (inclusive): the shard skips span and log batches whose time bounds,
+ * recorded at append, lie outside it (D72; contracts/BATCH.md "Tail reads of spans and log
+ * records by time"), and returns every other batch whole. A shard of an earlier release
+ * ignores the range for these batches and returns them all, as before.
+ */
 async function readSignalTail(
   c: Context,
   signal: 'traces' | 'logs',
   watermarks: Watermark[],
   lakeBytes: number,
   rf: ReturnType<typeof refusals>,
+  bound: { lo: bigint; hi: bigint },
 ): Promise<Uint8Array[] | null> {
   const shards = await signalShards(c.env, c.tenant, signal, watermarks)
   c.cost.shardsAsked = shards.length
-  // No filter but the signal (`readTails` adds it): the time and series fields select metric rows
-  // only (shard/src/tail.ts). Paged under ONE budget over the signal's shards, each page checked
-  // against the query's deadline (`readShared`, review of D54 M-2 and m-7).
-  const t = await readTails(c, shards, watermarks, rf.known, rf.refused, {}, c.limits.maxFetchBytes - lakeBytes, signalByte(signal))
+  // The signal (`readTails` adds it) and the bound's milliseconds, each end floored: every batch
+  // holding a row inside the bound is returned (D72). Series fields stay unsent: they select
+  // metric rows only (shard/src/tail.ts). Paged under ONE budget over the signal's shards, each
+  // page checked against the query's deadline (`readShared`, review of D54 M-2 and m-7).
+  const t = await readTails(c, shards, watermarks, rf.known, rf.refused, msRange(bound.lo, bound.hi), c.limits.maxFetchBytes - lakeBytes, signalByte(signal))
   if (t.again) return null
   if (t.over) throw tooMuch(c, 'the data files in range plus the unflushed tail', lakeBytes + t.atLeast, !t.exact)
   return t.reads.flatMap((r) => r.batches.map((b) => b.payload))
@@ -197,7 +206,7 @@ export async function logQuery(c: Context, q: LogQuery): Promise<string> {
     capsBeforeFetch(c, [r], c.limits.maxLogRows, 'max_log_rows')
     const release = reserveBytes(r.bytes)
     try {
-      const [files, tails] = await Promise.all([fetchRound(c, r, have, rf.refused), readSignalTail(c, 'logs', p.watermarks, r.bytes, rf)])
+      const [files, tails] = await Promise.all([fetchRound(c, r, have, rf.refused), readSignalTail(c, 'logs', p.watermarks, r.bytes, rf, { lo, hi })])
       if (!files || !tails) continue
       checkDeadline(c)
       const out = engineCall(c, () =>
@@ -230,7 +239,7 @@ export async function logLabels(c: Context, kind: 'names' | 'values' | 'series',
     r.listed = p.files.length
     c.cost.pruning = pruning() ? 'fragments' : 'off'
     capsBeforeFetch(c, [r], c.limits.maxLogRows, 'max_log_rows')
-    const [files, tails] = await Promise.all([fetchRound(c, r, have, rf.refused), readSignalTail(c, 'logs', p.watermarks, r.bytes, rf)])
+    const [files, tails] = await Promise.all([fetchRound(c, r, have, rf.refused), readSignalTail(c, 'logs', p.watermarks, r.bytes, rf, { lo: startNs, hi: endNs })])
     if (!files || !tails) continue
     return engineCall(c, () => c.engine.lqLabels(kind, name, selectors, startNs, endNs, inPrecedenceOrder(fromFragments).map((f) => f.index), files, tails))
   }
@@ -287,7 +296,7 @@ async function traceRounds<T>(
     // Files and bytes only: a fragment is not a span. The engine holds one extent per trace
     // under the byte budget (`tqExtent`).
     capsBeforeFetch(c, [r1], c.limits.maxSpans, 'max_spans', [])
-    const [indexFiles, tails] = await Promise.all([fetchRound(c, r1, have, rf.refused), readSignalTail(c, 'traces', first.watermarks, r1.bytes, rf)])
+    const [indexFiles, tails] = await Promise.all([fetchRound(c, r1, have, rf.refused), readSignalTail(c, 'traces', first.watermarks, r1.bytes, rf, bound)])
     if (!indexFiles || !tails) continue
     const ext = engineCall(c, () => c.engine.tqExtent(indexFiles, tails, window.lo, window.hi, id, budget(c, bound)))
     if (ext.traces === 0 || ext.lo === undefined || ext.hi === undefined) return empty()
@@ -389,7 +398,7 @@ async function spansIn<T>(c: Context, window: { lo: bigint; hi: bigint }, finish
     capsBeforeFetch(c, [r], c.limits.maxSpans, 'max_spans')
     const release = reserveBytes(r.bytes)
     try {
-      const [files, tails] = await Promise.all([fetchRound(c, r, have, rf.refused), readSignalTail(c, 'traces', p.watermarks, r.bytes, rf)])
+      const [files, tails] = await Promise.all([fetchRound(c, r, have, rf.refused), readSignalTail(c, 'traces', p.watermarks, r.bytes, rf, window)])
       if (!files || !tails) continue
       checkDeadline(c)
       return finish(files, tails)

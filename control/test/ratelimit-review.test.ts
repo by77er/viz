@@ -153,8 +153,10 @@ describe('B-1, R2 since round 2: revocation still counts a token that is not dea
     expect(l.gets.length).toBe(3)
     const rf = await l.refresh(victim.clientId, victim.refresh)
     expect(rf.status, JSON.stringify(rf.body)).toBe(200)
-    // And the owner's token was not touched.
-    expect((await l.refresh(owner.clientId, owner.refresh)).status).toBe(200)
+    // The owner's grant was not touched (its refresh token's own allowance is spent for the minute:
+    // the key is the token's, shared by the token endpoint and revocation, which only its holder can spend).
+    expect((await l.introspect(owner.access)).status).toBe('active')
+    expect((await l.refresh(owner.clientId, owner.refresh)).body.error_description).toMatch(/this code or token/)
   })
 })
 

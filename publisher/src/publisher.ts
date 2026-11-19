@@ -248,8 +248,8 @@ export interface RebaseStepReport {
   phase: 'staging' | 'writing' | 'committed'
   /** The version of the checkpoint (or base) it started from. */
   version: number
-  /** Parts staged so far, of how many (a checkpoint in parts). */
-  parts: [number, number]
+  /** Parts staged so far, of how many (a checkpoint in parts; a base or a one-object checkpoint is one). */
+  parts: { done: number; of: number }
   /** The version its stage was carried to (the changes after its start applied), once it was. */
   target: number | null
   /** Files and tombstones staged, and added files written into manifests ahead of the commit, by this publish. */
@@ -1028,9 +1028,9 @@ export class Publisher extends DurableObject<PublisherEnv> {
 
   private progressOf(budget: RebaseBudget, step: Step): RebaseStepReport {
     let p = budget.progress.get(step.tenant)
-    if (!p) budget.progress.set(step.tenant, (p = { phase: 'staging', version: step.version, parts: [step.done, step.parts], target: step.target, staged: 0, written: 0 }))
+    if (!p) budget.progress.set(step.tenant, (p = { phase: 'staging', version: step.version, parts: { done: step.done, of: step.parts }, target: step.target, staged: 0, written: 0 }))
     p.version = step.version
-    p.parts = [step.done, step.parts]
+    p.parts = { done: step.done, of: step.parts }
     p.target = step.target
     p.phase = step.target === null ? 'staging' : 'writing'
     return p
@@ -1192,7 +1192,9 @@ export class Publisher extends DurableObject<PublisherEnv> {
         r.status = 'inconsistent'
         r.detail = why
       }
-      const ahead = budget.finishing !== null && plan.staged.includes(budget.finishing) ? this.aheadOf(budget.finishing, table) : null
+      // The re-base this publish finishes: its added files of the tables it re-bases were written ahead (a table it did not begin with, re-based by difference now, is written by the commit).
+      const finishing = budget.finishing !== null && plan.staged.includes(budget.finishing) ? this.stepOf(budget.finishing) : null
+      const ahead = finishing && table in finishing.tables ? this.aheadOf(finishing.tenant, table) : null
       tables[table] = await this.commit(store, cfg, table, plan, ahead)
       for (const log of logs) {
         const c = this.cursorOf(table, log.tenant)
@@ -1248,6 +1250,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
     if (!budget.resumed.has(tenant) && budget.work <= cfg.maxRebaseFilesPerPublish) {
       // Read whole, within the budget: committed in this publish, as before. Not kept.
       if (step) this.sql.exec(`DELETE FROM rebase_step WHERE tenant = ?`, tenant)
+      budget.progress.delete(tenant)
       return log
     }
     const s = this.catchUp(log, refused)
@@ -2263,14 +2266,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
         if ((body.v ?? 1) > CURSORS_FORMAT_VERSION) throw new MetadataTooNew(`metadata_too_new: cursors object of snapshot ${current['snapshot-id']} is version ${body.v}`)
         cursors = body.cursors
       }
-      // What each retained snapshot references, for the sweep. Known snapshots are not re-read.
-      const known = new Set(sql.exec(`SELECT snapshot_id FROM snap WHERE tbl = ?`, table).toArray().map((r) => r.snapshot_id as number))
-      const fresh = await inBatches(meta.snapshots.filter((s) => !known.has(s['snapshot-id'])), FANOUT, async (s) => {
-        const list = s === current ? manifests : await this.readManifestList(store, cfg, s['manifest-list'], table)
-        return { snapshot: s, files: [this.keyOf(cfg, s['manifest-list']), this.keyOf(cfg, s.summary[CURSORS_KEY] as string), ...list.map((m) => m.path)] }
-      })
-      const hint = await this.hint(store, table)
-      if (hint < version) await store.put(this.hintKey(table), String(version))
+      const fresh = await this.snapshotRefs(store, cfg, table, version, meta, current, manifests)
 
       const now = this.now()
       const seq = meta['last-sequence-number']
@@ -2301,6 +2297,117 @@ export class Publisher extends DurableObject<PublisherEnv> {
     } finally {
       sql.exec(`DELETE FROM live_next WHERE tbl = ?`, table)
     }
+  }
+
+  /**
+   * What each retained snapshot of `meta` that SQLite does not know yet references (for the sweep; the
+   * current one's manifests are `manifests`), and the version hint brought up to `version`.
+   */
+  private async snapshotRefs(store: Store, cfg: PublisherConfig, table: LedgerTable, version: number, meta: TableMetadata, current: Snapshot | undefined, manifests: ManifestInfo[]): Promise<{ snapshot: Snapshot; files: string[] }[]> {
+    const known = new Set(this.sql.exec(`SELECT snapshot_id FROM snap WHERE tbl = ?`, table).toArray().map((r) => r.snapshot_id as number))
+    const fresh = await inBatches(meta.snapshots.filter((s) => !known.has(s['snapshot-id'])), FANOUT, async (s) => {
+      const list = s === current ? manifests : await this.readManifestList(store, cfg, s['manifest-list'], table)
+      return { snapshot: s, files: [this.keyOf(cfg, s['manifest-list']), this.keyOf(cfg, s.summary[CURSORS_KEY] as string), ...list.map((m) => m.path)] }
+    })
+    const hint = await this.hint(store, table)
+    if (hint < version) await store.put(this.hintKey(table), String(version))
+    return fresh
+  }
+
+  /**
+   * One publish's part of rebuilding, from R2, a table SQLite has no state of (after a lost storage;
+   * README, "Re-bases and rebuilds in steps"). The manifests of the current snapshot of the newest
+   * version are recorded (`rebuild_manifest`), then decoded into `live` one at a time, each marked
+   * done in a transaction after its last rows; one an invocation did not finish is decoded again from
+   * its start (its rows carry its path and are deleted first). At least one manifest, then while the
+   * budget lasts. Once all are in: the manifests, cursors, snapshots and the table's version, in one
+   * transaction, as `resync` writes them. Until then the table has no `tbl` row and nothing reads its
+   * `live` rows (no tenant is read while a table is rebuilt). A newer version in R2 meanwhile (another
+   * writer) starts it over. Returns whether the table is rebuilt.
+   */
+  private async rebuildStep(store: CountingBucket, cfg: PublisherConfig, budget: RebaseBudget, table: LedgerTable): Promise<boolean> {
+    const sql = this.sql
+    const version = await this.latestVersion(store, table)
+    if (version === 0) {
+      await this.resync(store, cfg, table)
+      return true
+    }
+    const o = await store.get(this.metaKey(table, version))
+    if (!o) throw new Error(`publisher: ${this.metaKey(table, version)} vanished`)
+    const meta = await o.json<TableMetadata>()
+    // Never rebuild this code's view from a table a newer publisher evolved: the next commit would overwrite it.
+    checkMetadata(meta, this.metaKey(table, version))
+    const current = meta.snapshots.find((s) => s['snapshot-id'] === meta['current-snapshot-id'])
+    const kept = sql.exec(`SELECT version FROM rebuild WHERE tbl = ?`, table).toArray()[0]
+    if (!kept || kept.version !== version) {
+      const listed = current ? await this.readManifestList(store, cfg, current['manifest-list'], table) : []
+      this.ctx.storage.transactionSync(() => {
+        sql.exec(`DELETE FROM live WHERE tbl = ?`, table)
+        sql.exec(`DELETE FROM rebuild_manifest WHERE tbl = ?`, table)
+        sql.exec(`INSERT OR REPLACE INTO rebuild (tbl, version, moved) VALUES (?, ?, 0)`, table, version)
+        for (const [i, m] of listed.entries()) sql.exec(`INSERT INTO rebuild_manifest (tbl, ord, path, info, done) VALUES (?, ?, ?, ?, 0)`, table, i, m.path, JSON.stringify(m))
+      })
+    }
+    let wrote = false
+    for (const r of sql.exec(`SELECT info FROM rebuild_manifest WHERE tbl = ? AND done = 0 ORDER BY ord`, table).toArray()) {
+      if (wrote && budget.work >= cfg.maxRebaseFilesPerPublish) return false
+      const m = JSON.parse(r.info as string) as ManifestInfo
+      sql.exec(`DELETE FROM live WHERE tbl = ? AND manifest = ?`, table, m.path)
+      const body = await store.get(m.path)
+      if (!body) throw new Error(`publisher: manifest ${m.path} is not in R2`)
+      let batch: LiveFile[] = []
+      let n = 0
+      const flush = () => {
+        const run = batch
+        batch = []
+        this.ctx.storage.transactionSync(() => {
+          for (const f of run) this.insertLive(table, f, m.path)
+        })
+      }
+      await readAvro<ManifestEntryRecord<AnyPartition>>(new Uint8Array(await body.arrayBuffer()), (e) => {
+        if (e.status === STATUS_DELETED) return
+        batch.push(liveFromEntry(e, this.keyOf(cfg, e.data_file.file_path), { snapshotId: m.addedSnapshotId, seq: m.seq }))
+        n++
+        if (batch.length >= 500) flush()
+      })
+      flush()
+      this.ctx.storage.transactionSync(() => {
+        sql.exec(`UPDATE rebuild_manifest SET done = 1 WHERE tbl = ? AND path = ?`, table, m.path)
+        sql.exec(`UPDATE rebuild SET moved = ? WHERE tbl = ?`, this.now(), table)
+      })
+      budget.work += n
+      wrote = true
+    }
+    // Every manifest in: the rest of the table, from R2, as `resync` writes it.
+    const manifests = sql.exec(`SELECT info FROM rebuild_manifest WHERE tbl = ? ORDER BY ord`, table).toArray().map((r) => JSON.parse(r.info as string) as ManifestInfo)
+    let cursors: Record<string, Cursor> = {}
+    if (current) {
+      const c = await store.get(this.keyOf(cfg, current.summary[CURSORS_KEY] as string))
+      if (!c) throw new Error(`publisher: cursor object of snapshot ${current['snapshot-id']} is not in R2`)
+      const b = await c.json<{ v?: number; cursors: Record<string, Cursor> }>()
+      if ((b.v ?? 1) > CURSORS_FORMAT_VERSION) throw new MetadataTooNew(`metadata_too_new: cursors object of snapshot ${current['snapshot-id']} is version ${b.v}`)
+      cursors = b.cursors
+    }
+    const fresh = await this.snapshotRefs(store, cfg, table, version, meta, current, manifests)
+    const now = this.now()
+    const seq = meta['last-sequence-number']
+    this.ctx.storage.transactionSync(() => {
+      for (const t of ['manifest', 'cursor']) sql.exec(`DELETE FROM ${t} WHERE tbl = ?`, table)
+      sql.exec(`DELETE FROM removed AS r WHERE r.tbl = ? AND EXISTS (SELECT 1 FROM live l WHERE l.tbl = r.tbl AND l.tenant = r.tenant AND l.key = r.key)`, table)
+      for (const m of manifests) sql.exec(`INSERT INTO manifest (tbl, path, info) VALUES (?, ?, ?)`, table, m.path, JSON.stringify(m))
+      for (const [tenant, c] of Object.entries(cursors)) this.setCursor(table, tenant, c)
+      sql.exec(
+        `INSERT INTO tbl (name, version, snapshot_id, seq, uuid) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT (name) DO UPDATE SET version = excluded.version, snapshot_id = excluded.snapshot_id, seq = excluded.seq, uuid = excluded.uuid`,
+        table, version, meta['current-snapshot-id'] ?? null, seq, meta['table-uuid'],
+      )
+      for (const f of fresh) sql.exec(`INSERT INTO snap (tbl, snapshot_id, seq, files) VALUES (?, ?, ?, ?)`, table, f.snapshot['snapshot-id'], f.snapshot['sequence-number'], JSON.stringify(f.files))
+      this.dropExpired(table, new Set(meta.snapshots.map((s) => s['snapshot-id'])), oldestSeq(meta), now)
+      this.noteMetadata(cfg, table, meta, false)
+      sql.exec(`DELETE FROM rebuild_manifest WHERE tbl = ?`, table)
+      sql.exec(`DELETE FROM rebuild WHERE tbl = ?`, table)
+    })
+    return true
   }
 
   // ───────────────────────────── maintenance ─────────────────────────────

@@ -224,7 +224,7 @@ pub(crate) fn eval_logs(src: &dyn LogSource, e: &LogExpr, start: i64, end: i64, 
         entries.truncate(limit);
     };
     // The slot of a label set, charged when it is first held.
-    let mut slot_of = |key: Vec<(String, String)>, keys: &mut HashMap<Vec<(String, String)>, usize>, key_list: &mut Vec<Vec<(String, String)>>, meter: &mut Meter| -> Result<usize, Error> {
+    let slot_of = |key: Vec<(String, String)>, keys: &mut HashMap<Vec<(String, String)>, usize>, key_list: &mut Vec<Vec<(String, String)>>, meter: &mut Meter| -> Result<usize, Error> {
         if let Some(i) = keys.get(&key) {
             return Ok(*i);
         }

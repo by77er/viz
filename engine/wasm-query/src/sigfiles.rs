@@ -21,46 +21,72 @@ use viz_storage::sparse::Source;
 
 // ───────────────────────────── memory ─────────────────────────────
 
-/// The bytes of decoded rows one span or log call holds, counted as they are decoded and
-/// refused past `max` (`max_decoded_bytes`, an `execution` error naming the limit: the query
-/// Worker answers 422). The count is of what the call keeps, never of the bytes as stored:
-/// dictionary pages and snappy make a value that repeats almost free in a file, and every row
-/// that carries it would otherwise hold its own copy (design/reviews/signals-end-to-end.md
-/// M-2). Each row is charged a fixed overhead and the length of every string it holds; a span's
-/// resource is held once per distinct resource of the call ([`Resources`]) and charged once;
-/// the answer is charged before it is written out. What a charge means in WASM memory is
-/// measured, not assumed (README, "Memory").
+/// The bytes one span or log call holds, counted as each thing is made and refused BEFORE the
+/// thing that would pass `max` is held (`max_decoded_bytes`, an `execution` error naming the
+/// limit: the query Worker answers 422). The count is of what the call keeps, never of the bytes
+/// as stored: dictionary pages and snappy make a value that repeats almost free in a file, and
+/// every row that carries it would otherwise hold its own copy (design/reviews/
+/// signals-end-to-end.md M-2). Each row is charged a fixed overhead and the length of every
+/// string it holds; a span's resource is held once per distinct resource of the call
+/// ([`Resources`]) and charged once; what the evaluation derives from the rows (series, buckets,
+/// label sets, tag values, trace extents) is charged as it grows (review r2, R2-M1 and R2-M2);
+/// the answer is charged before it is written. What is let go is released. What a charge means
+/// in WASM memory is measured, not assumed (README, "Memory").
+///
+/// `stage` names what the call is holding when it is refused, and `help` what would make the
+/// query fit: each call sets them, so that a refusal never advises a change that cannot help
+/// (review r2, R2-m5).
 pub(crate) struct Mem {
     pub max: u64,
     pub used: u64,
+    pub peak: u64,
+    pub stage: &'static str,
+    pub help: &'static str,
 }
 
 impl Mem {
     pub fn new(max: u64) -> Mem {
-        Mem { max, used: 0 }
+        Mem { max, used: 0, peak: 0, stage: "the rows it reads", help: "Narrow the time range." }
     }
     /// What is left before the limit.
     pub fn left(&self) -> u64 {
         self.max.saturating_sub(self.used)
     }
-    /// Charge an answer of `n` bytes ([`ANSWER_COPIES`]).
+    /// Charge an answer of `n` bytes ([`ANSWER_COPIES`]), before it is written.
     pub fn charge_answer(&mut self, n: u64) -> Res<()> {
-        self.charge(n.saturating_mul(ANSWER_COPIES))
+        let stage = std::mem::replace(&mut self.stage, "its answer");
+        let r = self.charge(n.saturating_mul(ANSWER_COPIES));
+        self.stage = stage;
+        r
     }
+    /// Charge `n` bytes before they are held: refused, with nothing charged, past the limit.
     pub fn charge(&mut self, n: u64) -> Res<()> {
-        self.used = self.used.saturating_add(n);
-        if self.used > self.max {
-            return Err(Fail::Limit(
-                "max_decoded_bytes",
-                self.max,
-                self.used,
-                format!(
-                    "query exceeded limit max_decoded_bytes: the rows it reads and its answer decode to more than {} bytes, the limit is {}. Narrow the time range, select fewer streams or traces, or lower limit.",
-                    self.max, self.max
-                ),
-            ));
+        let next = self.used.saturating_add(n);
+        if next > self.max {
+            return Err(self.refusal(next));
         }
+        self.used = next;
+        self.peak = self.peak.max(next);
         Ok(())
+    }
+    /// Charge `n` bytes for `stage`.
+    pub fn charge_for(&mut self, stage: &'static str, n: u64) -> Res<()> {
+        let was = std::mem::replace(&mut self.stage, stage);
+        let r = self.charge(n);
+        self.stage = was;
+        r
+    }
+    pub fn release(&mut self, n: u64) {
+        self.used = self.used.saturating_sub(n);
+    }
+    /// The refusal for a charge that would bring the call to `reached` bytes.
+    pub fn refusal(&self, reached: u64) -> Fail {
+        Fail::Limit(
+            "max_decoded_bytes",
+            self.max,
+            reached,
+            format!("query exceeded limit max_decoded_bytes: {} would take more than the {} bytes one query may hold (the limit). {}", self.stage, self.max, self.help),
+        )
     }
 }
 
@@ -109,7 +135,7 @@ pub(crate) fn log_row_bytes(r: &LogRec) -> u64 {
     LOG_ROW_BYTES + r.line.len() as u64 + 2 * r.metadata.iter().map(|(k, v)| ATTR_BYTES + (k.len() + v.len()) as u64).sum::<u64>()
 }
 
-fn labels_bytes(l: &[(String, String)]) -> u64 {
+pub(crate) fn labels_bytes(l: &[(String, String)]) -> u64 {
     64 + l.iter().map(|(k, v)| ATTR_BYTES + (k.len() + v.len()) as u64).sum::<u64>()
 }
 
@@ -616,35 +642,63 @@ fn span_from_row(r: &Row, res: &mut Resources, mem: &mut Mem) -> Res<SpanRec> {
     })
 }
 
-/// Every span of the held row groups of a `spans` file, in file order, to `visit`; a span
-/// whose start `keep` refuses is skipped before anything but its start is decoded. Returns the
-/// spans decoded (skipped ones included).
-pub(crate) fn read_spans(bytes: &[u8], res: &mut Resources, mem: &mut Mem, keep: impl Fn(i64) -> bool, mut visit: impl FnMut(SpanRec, &mut Mem) -> Res<()>) -> Res<u64> {
+/// What a span read does with a span, decided from its trace id and start before anything else
+/// of it is decoded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Take {
+    /// Not part of the call's data (outside the bound, another trace): passed over.
+    Skip,
+    /// Part of the data, but not held: only its row key matters (a later copy of a key hides an
+    /// earlier one whether or not it is wanted).
+    Key,
+    /// Decoded whole, held and counted.
+    Full,
+}
+
+/// A span as a read hands it on: its row key alone, or the whole record.
+pub(crate) enum Seen {
+    Key([u8; 16], [u8; 8]),
+    Span(SpanRec),
+}
+
+/// Every span of the held row groups of a `spans` file, in file order, to `visit`, as `take`
+/// decides from its trace id and start (read before anything else of it). Returns the spans
+/// read (passed over ones included).
+pub(crate) fn read_spans(bytes: &[u8], res: &mut Resources, mem: &mut Mem, take: impl Fn(&[u8; 16], i64) -> Take, mut visit: impl FnMut(Seen, &mut Mem) -> Res<()>) -> Res<u64> {
     let f = open(bytes, "spans", SPANS_LEAVES)?;
     let mut n = 0u64;
     for g in f.held_groups() {
         f.rows(g, "spans", |r| {
             n += 1;
-            if !keep(l(get(r, "start_unix_nano")?, "start")?) {
-                return Ok(());
+            let tid = fixed::<16>(get(r, "trace_id")?, "trace_id")?;
+            match take(&tid, l(get(r, "start_unix_nano")?, "start")?) {
+                Take::Skip => Ok(()),
+                Take::Key => visit(Seen::Key(tid, fixed::<8>(get(r, "span_id")?, "span_id")?), mem),
+                Take::Full => {
+                    let rec = span_from_row(r, res, mem)?;
+                    visit(Seen::Span(rec), mem)
+                }
             }
-            let rec = span_from_row(r, res, mem)?;
-            visit(rec, mem)
         })?;
     }
     Ok(n)
 }
 
-/// The spans of a `VZB1` signal-2 batch, in row order (`keep` as for [`read_spans`]). Returns
-/// the spans decoded.
-pub(crate) fn batch_spans(bytes: &[u8], res: &mut Resources, mem: &mut Mem, keep: impl Fn(i64) -> bool, mut visit: impl FnMut(SpanRec, &mut Mem) -> Res<()>) -> Res<u64> {
+/// The spans of a `VZB1` signal-2 batch, in row order (`take` as for [`read_spans`]). Returns
+/// the spans read.
+pub(crate) fn batch_spans(bytes: &[u8], res: &mut Resources, mem: &mut Mem, take: impl Fn(&[u8; 16], i64) -> Take, mut visit: impl FnMut(Seen, &mut Mem) -> Res<()>) -> Res<u64> {
     let b = viz_storage::otel::decode_spans(bytes).map_err(|e| internal("span batch", e))?;
     // Each entry's resource is interned once, when a row of it is first kept.
     let mut shared: Vec<Option<Rc<Vec<Attr<String>>>>> = vec![None; b.entries.len()];
     for r in &b.rows {
         let e = b.entries.get(r.entry as usize).ok_or_else(|| internal("span batch", "entry out of range"))?;
-        if !keep(r.start) {
-            continue;
+        match take(&r.trace_id, r.start) {
+            Take::Skip => continue,
+            Take::Key => {
+                visit(Seen::Key(r.trace_id, r.span_id), mem)?;
+                continue;
+            }
+            Take::Full => {}
         }
         let resource = match &shared[r.entry as usize] {
             Some(x) => Rc::clone(x),
@@ -655,27 +709,27 @@ pub(crate) fn batch_spans(bytes: &[u8], res: &mut Resources, mem: &mut Mem, keep
             }
         };
         visit(
-            SpanRec {
-            trace_id: r.trace_id,
-            span_id: r.span_id,
-            parent: r.parent(),
-            trace_state: r.trace_state.to_string(),
-            flags: r.flags,
-            start: r.start,
-            end: r.end,
-            name: r.name.to_string(),
-            kind: r.kind,
-            status: r.status,
-            status_message: r.status_message.to_string(),
-            resource,
-            scope_name: e.scope_name.to_string(),
-            scope_version: e.scope_version.to_string(),
-            scope_attrs: e.scope_attrs.to_string(),
-            attrs: r.attrs.iter().map(Attr::to_owned_attr).collect(),
-            events: r.events.iter().map(|x| Event { time_unix_nano: x.time_unix_nano, name: x.name.to_string(), attrs: x.attrs.to_string() }).collect(),
-            links: r.links.iter().map(|x| Link { trace_id: x.trace_id, span_id: x.span_id, trace_state: x.trace_state.to_string(), attrs: x.attrs.to_string() }).collect(),
-            dropped: r.dropped,
-            },
+            Seen::Span(SpanRec {
+                trace_id: r.trace_id,
+                span_id: r.span_id,
+                parent: r.parent(),
+                trace_state: r.trace_state.to_string(),
+                flags: r.flags,
+                start: r.start,
+                end: r.end,
+                name: r.name.to_string(),
+                kind: r.kind,
+                status: r.status,
+                status_message: r.status_message.to_string(),
+                resource,
+                scope_name: e.scope_name.to_string(),
+                scope_version: e.scope_version.to_string(),
+                scope_attrs: e.scope_attrs.to_string(),
+                attrs: r.attrs.iter().map(Attr::to_owned_attr).collect(),
+                events: r.events.iter().map(|x| Event { time_unix_nano: x.time_unix_nano, name: x.name.to_string(), attrs: x.attrs.to_string() }).collect(),
+                links: r.links.iter().map(|x| Link { trace_id: x.trace_id, span_id: x.span_id, trace_state: x.trace_state.to_string(), attrs: x.attrs.to_string() }).collect(),
+                dropped: r.dropped,
+            }),
             mem,
         )?;
     }
@@ -692,42 +746,30 @@ pub(crate) fn batch_span_times(bytes: &[u8], mut visit: impl FnMut([u8; 16], i64
     Ok(b.rows.len() as u64)
 }
 
-/// Every `trace_index` row (fragment) of the held row groups, to `visit`.
-pub(crate) fn read_trace_index(bytes: &[u8], mut visit: impl FnMut(viz_storage::Fragment) -> Res<()>) -> Res<u64> {
+/// The trace id, earliest start and latest end (and, with `hours`, the `spans` hours) of every
+/// `trace_index` row (fragment) of the held row groups, to `visit`, reading those columns only:
+/// what the extent passes need (`traces::do_tq_extent`), not the roots and per-service lists.
+pub(crate) fn read_trace_extents(bytes: &[u8], hours: bool, mut visit: impl FnMut([u8; 16], i64, i64, &[i32]) -> Res<()>) -> Res<u64> {
     let f = open(bytes, "trace_index", TRACE_INDEX_LEAVES)?;
+    let schema = f.reader.metadata().file_metadata().schema_descr();
+    let want = |n: &str| n == "trace_id" || n == "min_start_unix_nano" || n == "max_end_unix_nano" || (hours && n == "hours");
+    let fields: Vec<parquet::schema::types::TypePtr> = schema.root_schema().get_fields().iter().filter(|t| want(t.name())).cloned().collect();
+    let projection = parquet::schema::types::Type::group_type_builder("trace_index").with_fields(fields).build().map_err(|e| internal("trace_index", e))?;
     let mut n = 0u64;
+    let mut hs: Vec<i32> = Vec::new();
     for g in f.held_groups() {
-        f.rows(g, "trace_index", |r| {
+        let rg = f.reader.get_row_group(g).map_err(|e| internal("trace_index", e))?;
+        for row in rg.get_row_iter(Some(projection.clone())).map_err(|e| internal("trace_index", e))? {
+            let r = row.map_err(|e| internal("trace_index", e))?;
             n += 1;
-            let root = match os(get(r, "root_span_name")?, "root_span_name")? {
-                None => None,
-                Some(name) => Some((
-                    os(get(r, "root_service_name")?, "root_service_name")?,
-                    name,
-                    l(get(r, "root_start_unix_nano")?, "root_start")?,
-                    fixed::<8>(get(r, "root_span_id")?, "root_span_id")?,
-                )),
-            };
-            let services = list(get(r, "services")?, "services")?
-                .iter()
-                .map(|e| {
-                    let g = group(e, "service")?;
-                    Ok((s(get(g, "name")?, "service name")?, i(get(g, "spans")?, "spans")?, i(get(g, "errors")?, "errors")?))
-                })
-                .collect::<Res<Vec<_>>>()?;
-            let hours = list(get(r, "hours")?, "hours")?.iter().map(|h| i(h, "hour")).collect::<Res<Vec<_>>>()?;
-            visit(viz_storage::Fragment {
-                trace_id: fixed::<16>(get(r, "trace_id")?, "trace_id")?,
-                min_start: l(get(r, "min_start_unix_nano")?, "min_start")?,
-                max_end: l(get(r, "max_end_unix_nano")?, "max_end")?,
-                span_count: i(get(r, "span_count")?, "span_count")?,
-                error_count: i(get(r, "error_count")?, "error_count")?,
-                root,
-                services,
-                services_truncated: matches!(get(r, "services_truncated")?, Field::Bool(true)),
-                hours,
-            })
-        })?;
+            hs.clear();
+            if hours {
+                for h in list(get(&r, "hours")?, "hours")? {
+                    hs.push(i(h, "hour")?);
+                }
+            }
+            visit(fixed::<16>(get(&r, "trace_id")?, "trace_id")?, l(get(&r, "min_start_unix_nano")?, "min_start")?, l(get(&r, "max_end_unix_nano")?, "max_end")?, &hs)?;
+        }
     }
     Ok(n)
 }
@@ -845,8 +887,9 @@ pub(crate) fn batch_logs(bytes: &[u8], mem: &mut Mem, mut visit: impl FnMut(LogR
 }
 
 /// The stream table of a `VZB1` signal-3 batch, and each stream's first and last `ts`
-/// (streams without a row in the batch are left out).
-pub(crate) fn batch_streams(bytes: &[u8]) -> Res<Vec<(Vec<(String, String)>, i64, i64)>> {
+/// (streams without a row in the batch are left out). Each stream's labels are charged to `mem`
+/// as they are copied; the caller releases the returned charge once it has let them go.
+pub(crate) fn batch_streams(bytes: &[u8], mem: &mut Mem) -> Res<(Vec<(Vec<(String, String)>, i64, i64)>, u64)> {
     let b = viz_storage::otel::decode_logs(bytes).map_err(|e| internal("log batch", e))?;
     let mut span: Vec<Option<(i64, i64)>> = vec![None; b.streams.len()];
     for r in &b.rows {
@@ -856,31 +899,92 @@ pub(crate) fn batch_streams(bytes: &[u8]) -> Res<Vec<(Vec<(String, String)>, i64
             Some((lo, hi)) => ((*lo).min(r.ts), (*hi).max(r.ts)),
         });
     }
-    Ok(b.streams
-        .iter()
-        .zip(span)
-        .filter_map(|(s, sp)| sp.map(|(lo, hi)| (s.labels.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect(), lo, hi)))
-        .collect())
+    let mut out = Vec::new();
+    let mut charged = 0u64;
+    for (st, sp) in b.streams.iter().zip(span) {
+        let Some((lo, hi)) = sp else { continue };
+        let n = labels_bytes_of(st.labels.iter().map(|(n, v)| (n.len(), v.len())));
+        mem.charge(n)?;
+        charged += n;
+        out.push((st.labels.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect(), lo, hi));
+    }
+    Ok((out, charged))
 }
 
 /// Streams of the held row groups of a `logs` file, read from the `labels` and `ts` columns
-/// only (for files whose fragment has no stream list): labels with first and last `ts`.
-pub(crate) fn file_streams(bytes: &[u8]) -> Res<Vec<(Vec<(String, String)>, i64, i64)>> {
+/// only (for files whose fragment has no stream list): labels with first and last `ts`. Each
+/// distinct labels text is charged to `mem` when it is first held, and its parsed labels when
+/// they are made; the caller releases the returned charge once it has let them go.
+pub(crate) fn file_streams(bytes: &[u8], mem: &mut Mem) -> Res<(Vec<(Vec<(String, String)>, i64, i64)>, u64)> {
     let f = open(bytes, "logs", LOGS_LEAVES)?;
     let schema = f.reader.metadata().file_metadata().schema_descr();
     let fields: Vec<parquet::schema::types::TypePtr> = schema.root_schema().get_fields().iter().filter(|t| t.name() == "labels" || t.name() == "ts").cloned().collect();
     let projection = parquet::schema::types::Type::group_type_builder("logs").with_fields(fields).build().map_err(|e| internal("logs", e))?;
     let mut by: std::collections::BTreeMap<String, (i64, i64)> = std::collections::BTreeMap::new();
+    let mut charged = 0u64;
     for g in f.held_groups() {
         let rg = f.reader.get_row_group(g).map_err(|e| internal("logs", e))?;
         for row in rg.get_row_iter(Some(projection.clone())).map_err(|e| internal("logs", e))? {
             let row = row.map_err(|e| internal("logs", e))?;
             let text = s(get(&row, "labels")?, "labels")?;
             let ts = l(get(&row, "ts")?, "ts")?;
-            let e = by.entry(text).or_insert((ts, ts));
-            e.0 = e.0.min(ts);
-            e.1 = e.1.max(ts);
+            match by.get_mut(&text) {
+                Some(e) => {
+                    e.0 = e.0.min(ts);
+                    e.1 = e.1.max(ts);
+                }
+                None => {
+                    let n = 64 + text.len() as u64;
+                    mem.charge(n)?;
+                    charged += n;
+                    by.insert(text, (ts, ts));
+                }
+            }
         }
     }
-    by.into_iter().map(|(t, (lo, hi))| Ok((viz_storage::json::parse_labels(&t).map_err(|e| internal("labels", e))?, lo, hi))).collect()
+    let mut out = Vec::with_capacity(by.len());
+    for (t, (lo, hi)) in by {
+        let labels = viz_storage::json::parse_labels(&t).map_err(|e| internal("labels", e))?;
+        let n = labels_bytes(&labels);
+        mem.charge(n)?;
+        charged += n;
+        out.push((labels, lo, hi));
+    }
+    Ok((out, charged))
+}
+
+/// [`labels_bytes`] from the lengths of names and values.
+fn labels_bytes_of(l: impl Iterator<Item = (usize, usize)>) -> u64 {
+    64 + l.map(|(k, v)| ATTR_BYTES + (k + v) as u64).sum::<u64>()
+}
+
+/// A JSON string as `serde_json` writes it (the form these calls answered in before ABI 8).
+pub(crate) fn json_str(s: &str, out: &mut String) {
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
+/// The length of [`json_str`]'s text, quotes included.
+pub(crate) fn json_str_len(s: &str) -> u64 {
+    2 + s
+        .chars()
+        .map(|c| match c {
+            '"' | '\\' | '\n' | '\r' | '\t' | '\u{8}' | '\u{c}' => 2,
+            c if (c as u32) < 0x20 => 6,
+            c => c.len_utf8() as u64,
+        })
+        .sum::<u64>()
 }

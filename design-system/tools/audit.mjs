@@ -553,7 +553,8 @@ for (const rm of reloadOnly ? [] : [{ w: 1500 }, { w: 400, coarse: true }]) { //
 const reloads = []
 for (const L of reloadPass ? [{ w: 1500 }, { w: 400, coarse: true }] : []) {
   const ctx = await browser.newContext({ viewport: { width: L.w, height: 900 }, ...(L.coarse ? { hasTouch: true, isMobile: true } : {}) })
-  await ctx.addInitScript(() => { const z = (window.__vzShift = []); try { new PerformanceObserver((l) => { for (const e of l.getEntries()) z.push([e.startTime, e.value, e.hadRecentInput]) }).observe({ type: 'layout-shift', buffered: true }) } catch {} })
+  await ctx.addInitScript(() => { const z = (window.__vzShift = []); try { new PerformanceObserver((l) => { for (const e of l.getEntries()) z.push([e.startTime, e.value, e.hadRecentInput]) }).observe({ type: 'layout-shift', buffered: true }) } catch {}
+    const y = (window.__vzY = []), tick = () => { const v = [Math.round(performance.now()), Math.round(scrollY), document.documentElement.scrollHeight]; if (!y.length || v[1] !== y.at(-1)[1] || v[2] !== y.at(-1)[2]) y.push(v); if (performance.now() < 5000) requestAnimationFrame(tick) }; requestAnimationFrame(tick) }) // the scroll position and page height, frame by frame, for a failure's message
   let page = await ctx.newPage(); const settle = async (p, ms) => { await page.evaluate(() => document.fonts.ready); await page.waitForTimeout(/fixture/.test(p) ? 600 : 0); await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))); await page.waitForTimeout(ms) }
   const lay = `${L.w}${L.coarse ? ' coarse' : ''}`
   for (const p of pages.filter((x) => !/\/flows\//.test(x))) {
@@ -568,10 +569,10 @@ for (const L of reloadPass ? [{ w: 1500 }, { w: 400, coarse: true }] : []) {
         await page.waitForTimeout(500)
         const j = await page.evaluate((i) => { const c = [...document.querySelectorAll('.vz-chart')].filter((x) => x.getClientRects().length)[i]; return { shift: window.__vzShift.filter(([t, , input]) => t >= window.__vzT[0] && !input).reduce((a, [, v]) => a + v, 0), moved: c.getBoundingClientRect().top - window.__vzT[1], top: c.getBoundingClientRect().top } }, i)
         await page.reload({ waitUntil: 'load', timeout: 60000 }); await settle(p, 2000)
-        const r = await page.evaluate((i) => { const c = [...document.querySelectorAll('.vz-chart')].filter((x) => x.getClientRects().length)[i]; return { shift: window.__vzShift.filter(([, , input]) => !input).reduce((a, [, v]) => a + v, 0), top: c.getBoundingClientRect().top } }, i)
+        const r = await page.evaluate((i) => { const c = [...document.querySelectorAll('.vz-chart')].filter((x) => x.getClientRects().length)[i]; return { shift: window.__vzShift.filter(([, , input]) => !input).reduce((a, [, v]) => a + v, 0), top: c.getBoundingClientRect().top, y: window.__vzY.slice(0, 8).map((v) => v.join('/')).join(' ') } }, i)
         const row = { page: p, layout: lay, chart: i + 1, of: n, title: jump, jumpShift: j.shift, jumpMoved: j.moved, reloadShift: r.shift, landed: r.top - j.top }; reloads.push(row)
         if (j.shift >= 0.05 || Math.abs(j.moved) > 1) results.push({ page: p, config: lay, kind: 'reload-shift', msg: `jumping to chart ${i + 1} of ${n} ("${jump}") shifts the page ${j.shift.toFixed(4)} and the chart moves ${Math.round(j.moved)} px after the jump` })
-        if (r.shift >= 0.05 || Math.abs(row.landed) > 1) results.push({ page: p, config: lay, kind: 'reload-shift', msg: `reloaded while scrolled to chart ${i + 1} of ${n} ("${jump}"): layout shift ${r.shift.toFixed(4)}, and the chart lands ${Math.round(row.landed)} px from where it was` })
+        if (r.shift >= 0.05 || Math.abs(row.landed) > 1) results.push({ page: p, config: lay, kind: 'reload-shift', msg: `reloaded while scrolled to chart ${i + 1} of ${n} ("${jump}"): layout shift ${r.shift.toFixed(4)}, and the chart lands ${Math.round(row.landed)} px from where it was (ms/scroll/height by frame: ${r.y})` })
       } catch (e) { results.push({ page: p, config: lay, kind: 'load', msg: `reload pass, chart ${i + 1}: ${e.message.split('\n')[0]}` }) }
     }
     process.stdout.write(`\rreload pass ${lay.padEnd(10)} ${relative(root, p).slice(-40).padEnd(40)} ${Math.round((Date.now() - started) / 1000)} s`)

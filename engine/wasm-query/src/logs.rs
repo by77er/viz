@@ -93,7 +93,7 @@ pub(crate) fn rows(files: &[&[u8]], tails: &[&[u8]], max_rows: u64, decoded: &mu
         }
         held += 1;
         if held > max_rows {
-            return Err(Fail::Limit("max_rows", max_rows, held, format!("query exceeded limit max_rows: more than {max_rows} log rows decoded, the limit is {max_rows}. Narrow the time range, or select fewer streams.")));
+            return Err(Fail::Limit("max_rows", max_rows, held, format!("query exceeded limit max_rows: it would hold more than {max_rows} log rows, the limit is {max_rows}. Narrow the time range, or select fewer streams (rows no selector reads are not held).")));
         }
         mem.charge(sigfiles::log_row_bytes(&r))?;
         let slots = index.entry(row_hash(&r)).or_default();
@@ -282,13 +282,27 @@ pub(crate) fn do_lq_query(mut r: Req<'_>) -> Res<Vec<u8>> {
         .map(|s| Sel { matchers: s.matchers, start: s.start_ns, end: s.end_ns })
         .collect();
     let mut decoded = 0u64;
+    mem.help = "Narrow the time range, or select fewer streams.";
     let src = rows(&files, &tails, max_rows, &mut decoded, Some(&sels), &mut mem)?;
     // A metric query's series hold one point per step: they must fit what the budget leaves.
     let steps = if kind == 1 { 1 } else { u64::try_from(end.saturating_sub(start) / step.max(1)).unwrap_or(u64::MAX).saturating_add(1) };
     let fit = usize::try_from(mem.left() / steps.saturating_mul(METRIC_POINT_BYTES)).unwrap_or(usize::MAX).max(1);
-    let opts = Options { limit, direction, max_steps, max_series: max_series.min(fit), now_ns: None };
+    // What the evaluation makes beyond the rows (label sets, samples, points, the vector
+    // operations' series) is charged as it is made against what is left (ABI 8; review r2 R2-M2).
+    let opts = Options { limit, direction, max_steps, max_series: max_series.min(fit), now_ns: None, max_bytes: mem.left() };
     let out = if kind == 1 { viz_logql::query_instant(&src, q, start, &opts) } else { viz_logql::query_range(&src, q, start, end, step, &opts) }.map_err(|e| {
-        if fit < max_series && e.to_string().contains("maximum of series") {
+        if let viz_logql::Error::Memory { what, used, .. } = e {
+            mem.stage = match what {
+                "entries" => "the log lines it keeps for the answer",
+                "stream label sets" | "streams" => "the label sets its pipeline makes (one stream each)",
+                "series label sets" => "the series its pipeline makes (one per label set)",
+                "samples" => "the samples of its series",
+                "points" => "the points of its series",
+                _ => "the series of its vector operations",
+            };
+            mem.help = "Narrow the time range, select fewer streams, group by fewer labels, use a longer step, or lower limit; stages that make a label per line (regexp, label_format, json, logfmt) make a series per distinct value.";
+            mem.refusal(mem.used.saturating_add(used))
+        } else if fit < max_series && e.to_string().contains("maximum of series") {
             Fail::Limit(
                 "max_decoded_bytes",
                 mem.max,
@@ -300,7 +314,10 @@ pub(crate) fn do_lq_query(mut r: Req<'_>) -> Res<Vec<u8>> {
         }
     })?;
     drop(src);
-    // The answer, before it is written: lines as JSON escapes them, points as text.
+    // What the result holds while the answer is written, then the answer, before it is written:
+    // lines as JSON escapes them, points as text.
+    mem.help = "Narrow the time range, select fewer streams, or lower limit.";
+    mem.charge_for("its result", out.held_bytes)?;
     mem.charge_answer(answer_bytes(&out.data))?;
     let json = out.data_json();
     let mut payload = Vec::with_capacity(8 + json.len());
@@ -351,10 +368,19 @@ fn selector(text: &str) -> Res<Vec<Matcher>> {
 /// selectors (none: every stream). Streams come from fragments' stream lists (a stream counts
 /// when its first-to-last span overlaps the window: Loki documents that it "may use a larger
 /// time span"), from the `labels` and `ts` columns of files without one, and from the tail.
+///
+/// Memory (ABI 8; design/reviews/signals-end-to-end-r2.md R2-M1: before, nothing was counted,
+/// and 300 streams of 3.45 MiB of files held 399 MiB): `max_bytes` bounds the label texts read
+/// from each file or batch (released once it is done), what the call keeps (only the names for
+/// kind 0, only the values of `name` for kind 1, the label sets for kind 2, each charged when it
+/// is first kept), and the answer, charged four times its exact length before it is written.
+/// Past it `max_decoded_bytes`, never a shortened list: Loki's API documents no `limit` for these
+/// calls (its HTTP API reference, read 2026-11-19), so a cut list would be a wrong answer.
 pub(crate) fn do_lq_labels(mut r: Req<'_>) -> Res<Vec<u8>> {
     let kind = r.u8("kind")?;
     let name = r.str("name")?.to_string();
     let (start, end) = (r.i64("start")?, r.i64("end")?);
+    let mut mem = Mem::new(r.u64("max_bytes")?);
     let selectors = r.strs("selector")?;
     let fragments = r.files("index fragment")?;
     let files = r.files("logs file")?;
@@ -363,52 +389,108 @@ pub(crate) fn do_lq_labels(mut r: Req<'_>) -> Res<Vec<u8>> {
     if kind > 2 {
         return Err(Fail::Malformed(format!("unknown kind {kind}")));
     }
+    mem.help = "Narrow the time range, or pass a stream selector that matches fewer streams (`query`, or `match[]` for series).";
     let sets: Vec<Compiled> = selectors
         .iter()
         .map(|s| Compiled::new(&selector(s)?).ok_or_else(|| Fail::Query(QueryError::bad_data(format!("invalid regular expression in {s:?}")))))
         .collect::<Res<_>>()?;
+    // What the answer lists: names, values of `name`, or label sets; each charged when first kept.
+    let mut names: BTreeSet<String> = BTreeSet::new();
     let mut streams: BTreeSet<Vec<(String, String)>> = BTreeSet::new();
-    let mut add = |labels: Vec<(String, String)>, lo: i64, hi: i64| {
+    let mut add = |labels: Vec<(String, String)>, lo: i64, hi: i64, mem: &mut Mem| -> Res<()> {
         if hi < start || lo > end {
-            return;
+            return Ok(());
         }
-        if sets.is_empty() || sets.iter().any(|c| c.matches(&labels)) {
-            streams.insert(labels);
+        if !(sets.is_empty() || sets.iter().any(|c| c.matches(&labels))) {
+            return Ok(());
         }
+        match kind {
+            0 => {
+                for (n, _) in labels {
+                    if !names.contains(&n) {
+                        mem.charge_for("the label names it lists", KEPT + n.len() as u64)?;
+                        names.insert(n);
+                    }
+                }
+            }
+            1 => {
+                if let Some((_, v)) = labels.into_iter().find(|(n, _)| *n == name) {
+                    if !names.contains(&v) {
+                        mem.charge_for("the label values it lists", KEPT + v.len() as u64)?;
+                        names.insert(v);
+                    }
+                }
+            }
+            _ => {
+                if !streams.contains(&labels) {
+                    mem.charge_for("the label sets it lists", KEPT + sigfiles::labels_bytes(&labels))?;
+                    streams.insert(labels);
+                }
+            }
+        }
+        Ok(())
     };
     for f in &fragments {
+        // A fragment lists at most `viz_storage::FRAGMENT_MAX_STREAMS` streams of at most
+        // `FRAGMENT_MAX_LABEL_BYTES` (16 KiB) of labels: parsed one at a time, let go after.
         let text = std::str::from_utf8(f).map_err(|e| sigfiles::internal("index fragment", e))?;
         let frag = sigfiles::Frag::parse(text).ok_or_else(|| sigfiles::internal("index fragment", "does not parse"))?;
         let list = frag.streams.ok_or_else(|| sigfiles::internal("index fragment", "has no stream list"))?;
         for s in list {
-            add(s.labels, s.min_ts, s.max_ts);
+            add(s.labels, s.min_ts, s.max_ts, &mut mem)?;
         }
     }
+    mem.stage = "the streams of the files it reads";
     for f in &files {
-        for (labels, lo, hi) in sigfiles::file_streams(f)? {
-            add(labels, lo, hi);
+        let (list, charged) = sigfiles::file_streams(f, &mut mem)?;
+        for (labels, lo, hi) in list {
+            add(labels, lo, hi, &mut mem)?;
         }
+        mem.release(charged);
     }
     for b in &tails {
-        for (labels, lo, hi) in sigfiles::batch_streams(b)? {
-            add(labels, lo, hi);
+        let (list, charged) = sigfiles::batch_streams(b, &mut mem)?;
+        for (labels, lo, hi) in list {
+            add(labels, lo, hi, &mut mem)?;
+        }
+        mem.release(charged);
+    }
+    // The answer: its exact length charged before it is written.
+    let len = match kind {
+        0 | 1 => 2 + names.iter().map(|x| 1 + sigfiles::json_str_len(x)).sum::<u64>(),
+        _ => 2 + streams.iter().map(|s| 3 + s.iter().map(|(n, v)| 2 + sigfiles::json_str_len(n) + sigfiles::json_str_len(v)).sum::<u64>()).sum::<u64>(),
+    };
+    mem.charge_answer(len)?;
+    let mut out = String::with_capacity(len as usize);
+    out.push('[');
+    if kind < 2 {
+        for (i, x) in names.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            sigfiles::json_str(x, &mut out);
+        }
+    } else {
+        for (i, s) in streams.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push('{');
+            for (j, (n, v)) in s.iter().enumerate() {
+                if j > 0 {
+                    out.push(',');
+                }
+                sigfiles::json_str(n, &mut out);
+                out.push(':');
+                sigfiles::json_str(v, &mut out);
+            }
+            out.push('}');
         }
     }
-    let json = match kind {
-        0 => serde_json::json!(streams.iter().flat_map(|s| s.iter().map(|(n, _)| n.clone())).collect::<BTreeSet<_>>()),
-        1 => serde_json::json!(streams.iter().filter_map(|s| s.iter().find(|(n, _)| *n == name).map(|(_, v)| v.clone())).collect::<BTreeSet<_>>()),
-        _ => serde_json::Value::Array(
-            streams
-                .iter()
-                .map(|s| {
-                    let mut m = serde_json::Map::new();
-                    for (n, v) in s {
-                        m.insert(n.clone(), v.clone().into());
-                    }
-                    serde_json::Value::Object(m)
-                })
-                .collect(),
-        ),
-    };
-    Ok(json.to_string().into_bytes())
+    out.push(']');
+    Ok(out.into_bytes())
 }
+
+/// Bytes charged per name, value or label set a label call keeps (its set's node share and
+/// string header), beside the text.
+const KEPT: u64 = 64;

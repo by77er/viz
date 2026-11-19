@@ -1,0 +1,38 @@
+{
+  // Spike S11 (see README.md). Deployed only for the measurement, then deleted.
+  "name": "viz-s11-ledger",
+  "main": "worker.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": { "enabled": false },
+  // No "limits": the CPU limit is the default (30 s per invocation), as in stack/wrangler.jsonc
+  // and publisher/wrangler.jsonc. A second deployment with "limits": { "cpu_ms": ... } is made
+  // only if a measurement does not fit, to see how much it needs (README, "Runs").
+  "durable_objects": {
+    "bindings": [
+      { "name": "LEDGER", "class_name": "Ledger" },
+      { "name": "LEDGER_R16", "class_name": "LedgerR16" },
+      { "name": "LEDGER_R64", "class_name": "LedgerR64" },
+      { "name": "LEDGER_R300", "class_name": "LedgerR300" },
+      { "name": "LEDGER_R300B", "class_name": "LedgerR300B" },
+      { "name": "PUBLISHER", "class_name": "Publisher" },
+      { "name": "WRITER", "class_name": "Writer" },
+      { "name": "DRIVER", "class_name": "Driver" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Ledger", "LedgerR16", "LedgerR64", "LedgerR300", "LedgerR300B", "Publisher", "Writer", "Driver"] }
+  ],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "viz-s11-lake" }],
+  "vars": {
+    "CELL": "cell-0",
+    // The ledger's measured limit (STATE_MEASURED_MAX_BYTES, 300 MiB), the state this spike fills to.
+    "LEDGER_STATE_MAX_BYTES": "314572800",
+    // Checkpoints governed by the byte rule, as in production at realistic write rates (README).
+    "LEDGER_CHECKPOINT_EVERY": "8",
+    "ICEBERG_LOCATION_PREFIX": "s3://viz-s11-lake",
+    // Every alarm of this Worker does nothing after this, and no new job starts.
+    "S11_DEADLINE": "2026-11-19T20:00:00Z"
+  }
+}

@@ -4,7 +4,7 @@ import { expect } from 'vitest'
 import { encodeLedgerSegment, ledgerSegmentKey, parseLedgerLogKey, type FileEntry, type FlushUnit, type LedgerChange, type LedgerTable, type Table } from '../../contracts/ledger'
 import type { Ledger } from '../../ledger/src/ledger'
 import { readAvro } from '../src/avro'
-import type { AnyPartition, ManifestEntryRecord, ManifestListRecord, TableMetadata } from '../src/iceberg'
+import { CURSORS_KEY, type AnyPartition, type ManifestEntryRecord, type ManifestListRecord, type TableMetadata } from '../src/iceberg'
 import type { TestPublisher } from './worker'
 
 export type LedgerStub = DurableObjectStub<Ledger>
@@ -275,3 +275,20 @@ export const publishSettled = async (p: PublisherStub, tenants?: string[], limit
 
 /** R2 operations of several publishes, added up. */
 export const opsOf = (rs: Published[]) => rs.reduce((a, r) => ({ list: a.list + r.ops.list, get: a.get + r.ops.get, head: a.head + r.ops.head, put: a.put + r.ops.put, delete: a.delete + r.ops.delete }), { list: 0, get: 0, head: 0, put: 0, delete: 0 })
+
+/**
+ * What a reader of a table's current snapshot sees, with nothing that depends on how many commits
+ * made it: every live data file (its whole `data_file`: path, partition, counts, sizes, bounds,
+ * offsets), the snapshot's totals, the cursor object it points at, and the table's metadata without
+ * its history, ids and location (the cell's name is replaced).
+ */
+export async function readerView(cell: string, table: LedgerTable): Promise<unknown> {
+  const meta = await readMetadata(cell, table)
+  const current = meta.snapshots.find((s) => s['snapshot-id'] === meta['current-snapshot-id'])!
+  const files = (await snapshotEntries(cell, table)).filter((e) => e.status !== 2).map((e) => [e.key, e.entry.data_file] as const)
+  files.sort(([a], [b]) => (a < b ? -1 : 1))
+  const totals = Object.fromEntries(Object.entries(current.summary).filter(([k]) => k.startsWith('total-')))
+  const cursors = (await (await env.BUCKET.get(keyOf(current.summary[CURSORS_KEY] as string)))!.json<{ cursors: unknown }>()).cursors
+  const { 'table-uuid': _u, location: _l, 'last-updated-ms': _m, 'current-snapshot-id': _c, snapshots: _s, 'snapshot-log': _sl, 'metadata-log': _ml, 'last-sequence-number': _q, refs: _r, ...rest } = meta as unknown as Record<string, unknown>
+  return JSON.parse(JSON.stringify({ files, totals, cursors, rest }, (_k, v: unknown) => (v instanceof Uint8Array ? [...v] : v)).replaceAll(cell, 'CELL'))
+}

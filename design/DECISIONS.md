@@ -3185,7 +3185,9 @@ send them. What reaches a tenant's object is a credential this deployment made:
   each;
 - a revocation: 1 to 18 rows;
 - an introspection: 0.9–1.5 ms, no write;
-- a **replay** of a spent, rotated or revoked credential: 0.75–2.1 ms, one object request, no write.
+- a **replay** of a spent, rotated or revoked credential: 0.75–2.1 ms, one object request, no write
+  (since the list below, only until the Worker has heard the object call it dead: then 0.1–0.25 ms
+  in that isolate, and one KV read in another).
 
 A credential's tag never expired, and anyone may hold dead credentials: a former client, a debug
 log, a code left in shell history (first review, B-1). And anyone holding one *live* refresh token
@@ -3425,7 +3427,7 @@ person's admin key and was already bounded exactly (20 a tenant an hour).
     a grant rotating far faster than its client needs while the stock is being built; after the
     revocation the stock is good for the one window above. Rotating `OAUTH_CLIENT_KEY` still ends
     every tenant's credentials at once, and is now never needed for this.
-- **While a narrow limiter is down in an isolate** (a fault, or a limit() call slower than its
+- **While a narrow limiter is down in an isolate** (a fault, or a `limit()` call slower than its
   share), that isolate's requests count against no fuse (R2-M1, above). Dead credentials reach the
   object once each and are listed; live ones reach it as often as they are sent. **While the list
   cannot be read as well**, dead credentials not already in the isolate's memory reach the object as
@@ -3459,15 +3461,18 @@ Cloudflare's analytics on a stage):
   a tenant of 50 such clients $1 to $11 a month, and a fraction of that for agents used an hour a
   day. Writes only for revocations by clients and for replays of dead credentials: a few a month,
   under $0.001. Records are about 170 bytes and live at most 30 days: storage is negligible.
-- **Per attack**: a stock of N dead credentials replayed costs N writes when each location's first
-  replay is the one that lists it, and at worst 5 (refresh tokens) per credential per location
-  before KV shows it: N = 1,200 is $0.006, and at worst $0.30 over 10 locations. Reads: one per
+- **Per attack**: a stock of N dead credentials replayed costs about N writes, one at each
+  credential's first answer, and more only from isolates that hear the object before KV shows them
+  the record: at worst 5 per refresh token per location (its per-credential limit). N = 1,200 is
+  $0.006, and at worst $0.30 over 10 locations. Reads: one per
   credential per isolate that meets it, for example 120,000 ($0.06) for 1,200 credentials over 100
   isolates.
 - **The ceiling**: every write is of a credential minted under layer 2. A tenant's 50 grants rotating
   at the limit mint 600 credentials a minute (an access and a refresh token per refresh); if every
-  one were later replayed dead from a fresh isolate, about 864,000 writes a day, $4.32 a day, beside
-  the $4.75 of rows the minting itself costs. Per grant, $0.09 a day beside its $0.10.
+  one were later replayed dead, at one write each, about 864,000 writes a day, $4.32 a day, beside
+  the $4.75 of rows the minting itself costs; per grant, $0.09 a day beside its $0.10. A replay
+  spread over many locations at once multiplies the writes by at most the per-credential limit in
+  each (above).
 - **Latency** (not measured on Cloudflare): one KV read on each refresh and on the first `/mcp`
   request per isolate a minute per token. Locally a read from KV took 1.3 ms a request
   (`oauth-cost.test.ts`); a cold read on Cloudflare is the number to measure.

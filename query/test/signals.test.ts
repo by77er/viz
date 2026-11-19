@@ -231,15 +231,40 @@ describe('caps: refused before anything is fetched, or by the engine as it decod
       const text = await res.text()
       expect([prefix, res.status, text.includes(name), cost(res, 'Scan-Rows')]).toEqual([prefix, 422, true, 0])
     }
-    // The same tail, under the same caps, read by queries that hold none of it (review m-3: the
-    // tail is read whole, but what lies outside the query costs no row): a log selector that no
-    // stream matches, and a search whose window, widened by the margin, ends days before the data.
+    // The same tail, under the same caps, read by queries that hold none of it: a log selector
+    // that no stream matches, over the data's time (the shard returns the batches, review m-3: what
+    // lies outside the query costs no row), and a search whose window, widened by the margin, ends
+    // days before the data (the shard skips every batch by its time bounds, D72: no tail byte).
     const logs = { ...pick(fx, 'loki/2/'), params: pick(fx, 'loki/2/').params.map(([k, v]): [string, string] => [k, k === 'query' ? '{service_name="no-such-service"}' : v]) }
     const early = { ...pick(fx, 'search/0/'), params: pick(fx, 'search/0/').params.map(([k, v]): [string, string] => [k, k === 'start' || k === 'end' ? String(Number(v) - 7 * 86_400) : v]) }
-    for (const c of [logs, early]) {
+    for (const [c, tail] of [[logs, true], [early, false]] as const) {
       const res = await call(w.a.key, c)
-      expect([c.id, res.status, cost(res, 'Tail-Bytes') > 0]).toEqual([c.id, 200, true])
+      expect([c.id, res.status, cost(res, 'Tail-Bytes') > 0]).toEqual([c.id, 200, tail])
     }
+  })
+
+  it('the tail is read inside each query\'s bound (D72): queries a day after the data take no tail byte; over the data, the same answers, with the shard\'s filter off and with a shard that ignores the range', async () => {
+    const fx = SEEDS[0]!
+    const w = await world()
+    // Every batch in the tail: what a query takes from the shards is all it reads.
+    await loadSignal(w, w.a, 'traces', { ...fx.spans, units: [], lake: 0 })
+    await loadSignal(w, w.a, 'logs', { ...fx.logs, units: [], lake: 0 })
+    const later = (c: Case, keys: string[]): Case => ({ ...c, params: c.params.map(([k, v]): [string, string] => [k, keys.includes(k) ? String(BigInt(v) + (v.length > 10 ? 86_400n * 1_000_000_000n : 86_400n)) : v]) })
+    const away = [later(pick(fx, 'search/0/'), ['start', 'end']), later(pick(fx, 'tags/v1'), ['start', 'end']), later(pick(fx, 'tag-values/v1'), ['start', 'end']), later(pick(fx, 'loki/2/'), ['start', 'end'])]
+    for (const c of away) {
+      const res = await call(w.a.key, c)
+      expect([c.id, res.status, cost(res, 'Tail-Bytes')], (await res.text()).slice(0, 200)).toEqual([c.id, 200, 0])
+    }
+    const some = { ...fx, cases: fx.cases.filter((_, k) => k % 3 === 0) }
+    expect((await runAll(w.a, some)).failures).toEqual([])
+    shardSignalFilter.enabled = false
+    try {
+      expect((await runAll(w.a, some)).failures).toEqual([])
+    } finally {
+      shardSignalFilter.enabled = true
+    }
+    tailHooks.previousRelease = () => true
+    expect((await runAll(w.a, some)).failures).toEqual([])
   })
 })
 
