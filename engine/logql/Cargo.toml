@@ -1,0 +1,39 @@
+[package]
+name = "viz-logql"
+version = "0.1.0"
+license = "Apache-2.0"
+edition = "2021"
+description = "LogQL engine for viz: parse, plan and evaluate log and metric queries. Pure, no I/O, runs natively and in WASM"
+publish = false
+
+[lib]
+name = "viz_logql"
+crate-type = ["rlib"]
+
+[dependencies]
+# Vector aggregations, binary operators with vector matching, label_replace and vector()
+# are evaluated by viz-promql's evaluator (see README, "Reuse of viz-promql").
+viz-promql = { path = "../promql" }
+# Same features as viz-promql, so one copy is linked.
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-perl", "unicode-case"] }
+
+[dev-dependencies]
+serde_json = "1"
+proptest = { version = "1", default-features = false, features = ["std"] }
+
+# engine/AGENTS.md: fat LTO, one codegen unit and opt-level 3 measured fastest for WASM.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# Tests build with some optimisation so the property and differential runs are quick.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[workspace]

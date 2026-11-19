@@ -1,0 +1,30 @@
+[package]
+name = "viz-logql-wasm-check"
+version = "0.1.0"
+license = "Apache-2.0"
+edition = "2021"
+description = "Measurement wrapper: viz-logql behind a minimal C ABI, to measure the WASM module and prove it loads with no imports. Not a product module (that is engine/wasm-query, see README Integration)."
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+viz-logql = { path = ".." }
+
+# The three stand-ins engine/query uses so that viz-promql's dependencies bring no
+# wasm-bindgen imports (engine/query/patches/README.md).
+[patch.crates-io]
+web-time = { path = "../../query/patches/web-time" }
+js-sys = { path = "../../query/patches/js-sys" }
+wasm-bindgen = { path = "../../query/patches/wasm-bindgen" }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[workspace]

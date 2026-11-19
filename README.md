@@ -34,7 +34,7 @@ and `design/DECISIONS.md` (each decision, its alternatives and what would change
 | `stack/` | The write path deployed as one script, with its queues, cron and soak test |
 | **Read path and engines** | |
 | `query/` | Prometheus HTTP API Worker, with query leaves as Durable Objects |
-| `engine/` | Rust engine crates compiled to WebAssembly: storage, PromQL, query |
+| `engine/` | Rust engine crates compiled to WebAssembly: storage, PromQL, query, TraceQL, LogQL (the last two clean-room, not yet wired into storage or the query Worker) |
 | `publisher/` | Publishes the ledgers as Iceberg tables that external engines can read |
 | **Control, monitors and agents** | |
 | `control/` | Tenant control plane: keys, dashboards, settings |
@@ -52,8 +52,7 @@ Each component has a README with what is implemented, what is not, how it was ve
 and its known risks.
 
 Not on `main` yet, all on the development branch: the web app and its design system (`app/`,
-`design-system/`), which merge after their design reviews approve; and the clean-room TraceQL and
-LogQL engines (`engine/traceql/`, `engine/logql/`), which merge in their own pull requests.
+`design-system/`), which merge after their design reviews approve.
 
 ## Licence
 
