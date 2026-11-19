@@ -247,7 +247,12 @@ export function fakeRuler(kv: () => KVNamespace): FakeRuler {
           if (!b || typeof b.monitor !== 'object' || b.monitor === null) return Response.json({ error: { code: 'invalid', message: '1 problem found; nothing was saved' }, problems: [{ path: 'monitor', message: 'give "monitor" (a monitor document) or "rule" (an alerting rule)', fix: 'Send the monitor you are about to save.' }] }, { status: 422 })
           if (typeof b.step !== 'string') return Response.json({ error: { code: 'invalid', message: '1 problem found; nothing was saved' }, problems: [{ path: 'step', message: 'step is required', fix: 'Give the resolution as a duration, e.g. "1m".' }] }, { status: 422 })
           const script = backtests.get(tenant)
-          const r = script ? await script(b) : { status: 200, body: fakeBacktest(b, []) }
+          // A slow answer is abandoned when the caller aborts, as a service binding's fetch is.
+          const aborted = new Promise<never>((_, reject) => {
+            if (req.signal.aborted) reject(req.signal.reason)
+            req.signal.addEventListener('abort', () => reject(req.signal.reason))
+          })
+          const r = await Promise.race([Promise.resolve(script ? script(b) : { status: 200, body: fakeBacktest(b, []) }), aborted])
           return Response.json(r.body, { status: r.status, headers: r.headers ?? {} })
         }
         if (req.method !== 'GET') return Response.json({ error: { code: 'method_not_allowed', message: `${req.method} is not supported on this path` } }, { status: 405 })

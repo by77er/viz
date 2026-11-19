@@ -768,6 +768,86 @@ export const MUTANTS = [
     edits: one('src/ruler.ts', '      if (room < budgets.warmupCpuMs && room < CPU.base / 1000) {', '      if (room < CPU.base / 1000) {'),
     tests: ['test/history.test.ts'],
   },
+
+  // ───────────── recorded samples through viz-ingest's RecordedSamples entrypoint (D45, D52) ─────────────
+  {
+    name: 'entrypoint, tenant: the tenant argument is dropped (the batches are passed first)',
+    edits: one('src/recorded.ts', 'await binding.write(tenant, batches)', 'await (binding as any).write(batches)'),
+    tests: ['test/recorded.test.ts'],
+  },
+  {
+    name: 'entrypoint, tenant: one tenant per isolate (the first Ruler object\'s tenant is passed for every object)',
+    edits: [
+      { file: 'src/recorded.ts', find: 'export function recordedSamplesSink(', replace: 'let firstTenant: string | null = null\nexport function recordedSamplesSink(' },
+      { file: 'src/recorded.ts', find: 'await binding.write(tenant, batches)', replace: 'await binding.write((firstTenant ??= tenant), batches)' },
+    ],
+    tests: ['test/recorded.test.ts'],
+  },
+  {
+    name: 'entrypoint, acknowledgement: the sink returns before the RPC resolves (its result is not awaited)',
+    edits: one('src/recorded.ts', 'await binding.write(tenant, batches)', 'void binding.write(tenant, batches).catch(() => {})'),
+    tests: ['test/recorded.test.ts'],
+  },
+  {
+    name: 'entrypoint, acknowledgement: the tick does not wait for the sink (the next batch is evaluated before the samples are written)',
+    edits: one('src/ruler.ts', 'await Promise.race([this.sink().write(batch.map((p) => p.batch)), timeout])', 'void this.sink().write(batch.map((p) => p.batch)).catch(() => {})'),
+    tests: ['test/recorded.test.ts'],
+  },
+  {
+    name: 'entrypoint, refusals: every refusal is retryable (unauthorized, invalid, series_limit retried)',
+    edits: one('src/recorded.ts', 'RECORDED_SAMPLES_RETRYABLE.includes(refusal)', 'true'),
+    tests: ['test/recorded.test.ts'],
+  },
+  {
+    name: 'entrypoint, refusals: the tick retries a refusal the sink says is permanent',
+    edits: one('src/ruler.ts', '          if (e instanceof SinkError && !e.retryable) break\n', ''),
+    tests: ['test/recorded.test.ts'],
+  },
+  {
+    name: 'entrypoint, refusals: overload and backpressure are not retried (only unavailable is)',
+    edits: one('src/recorded.ts', 'RECORDED_SAMPLES_RETRYABLE.includes(refusal)', "refusal === 'unavailable'"),
+    tests: ['test/recorded.test.ts'],
+  },
+  {
+    name: 'entrypoint, refusals: an overloaded ingest is retried at once (the hint is ignored)',
+    edits: one('src/recorded.ts', ', retryHintMs(message))', ', 0)'),
+    tests: ['test/recorded.test.ts'],
+  },
+  {
+    name: 'entrypoint, refusals: too_large is not split (reported like invalid)',
+    edits: one('src/recorded.ts', "if (refusal === 'too_large' && batches.length > 1) {", 'if (false) {'),
+    tests: ['test/recorded.test.ts'],
+  },
+  {
+    name: 'entrypoint, refusals: a split stops at the first half that fails (the batches after it are not sent)',
+    edits: one('src/recorded.ts', 'first ??= e', 'throw e'),
+    tests: ['test/recorded.test.ts'],
+  },
+  {
+    name: 'entrypoint, fallback: every rejection, refusals included, goes to Remote Write',
+    edits: one('src/recorded.ts', 'if (refusal === null) {', 'if (refusal === null || fallback) {'),
+    tests: ['test/recorded.test.ts'],
+  },
+  {
+    name: 'entrypoint, fallback: none (an ingest release without the entrypoint loses the samples of a rollback window)',
+    edits: one('src/recorded.ts', 'if (!fallback) throw', 'if (true) throw'),
+    tests: ['test/recorded.test.ts'],
+  },
+  {
+    name: 'entrypoint, fallback: Remote Write whenever INGEST is bound (the entrypoint is never used)',
+    edits: one('src/ruler.ts', 'if (binding) return recordedSamplesSink(binding, this.tenant, remote)', 'if (binding && !remote) return recordedSamplesSink(binding, this.tenant, remote)'),
+    tests: ['test/recorded.test.ts'],
+  },
+  {
+    name: 'entrypoint, duplicates: a replayed tick names its batches by wall-clock time (not the same batch again)',
+    edits: one('src/ruler.ts', 'batch: { id: `${this.tenant}/${this.shard}/${g.spec.name}/${rule.key}@${ts}`', 'batch: { id: `${this.tenant}/${this.shard}/${g.spec.name}/${rule.key}@${ts}#${Date.now()}`'),
+    tests: ['test/recorded.test.ts'],
+  },
+  {
+    name: 'entrypoint, health: /healthz does not count a missing sink',
+    edits: one('src/index.ts', "  if (!env.SINK && !env.INGEST) missing.push('SINK')\n", ''),
+    tests: ['test/wiring.test.ts'],
+  },
 ]
 
 const hasGo = spawnSync('go', ['version'], { encoding: 'utf8' }).status === 0

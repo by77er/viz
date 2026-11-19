@@ -9,7 +9,8 @@ changes no component: everything it needs from one is under "Needed changes".
 | `workers.json` | Which Workers exist, in dependency order (callees first), which are deployed, and why the others are not. Deployment-wide settings: domain, observability sampling, Durable Object code-update mode, resource names, shared vars |
 | `configure.mjs` | Generates each Worker's production (or staged) wrangler config into `generated/` from the component's own `wrangler.jsonc` |
 | `resources.mjs` | Creates the R2 bucket, KV namespace and queues (idempotent); `destroy --stage` deletes a stage |
-| `release.mjs` | Upload every Worker, then promote callees first; the migration gate; release records (with schema versions and whether the release is forward-only); rollback, refused across a forward-only release |
+| `release.mjs` | Upload every Worker, then promote callees first; the migration gate; release records (with schema versions and whether the release is forward-only); rollback, refused across a forward-only release; `plan` |
+| `lib/secrets.mjs` | Worker secrets the deploy generates (viz-control's `OAUTH_CLIENT_KEY`): put on the release's upload only where missing, value on wrangler's stdin, replaced only when asked ("Worker secrets the deploy generates") |
 | `lib/schemas.mjs` | Reads every Durable Object class's `SchemaSpec` from the component sources (esbuild, no Worker run) for the manifest, the `VIZ_SCHEMAS` var of each version, and the rollback check |
 | `deploy.sh` | The whole deploy: WASM, `npm ci`, resources, configure, release, smoke test, automatic rollback |
 | `smoke.mjs` | `/healthz` until the release just promoted answers, then a real Remote Write and a query that must return it within 60 s |
@@ -20,6 +21,8 @@ changes no component: everything it needs from one is under "Needed changes".
 | `trial/` | Trial 2: `sink/index.ts`, a webhook receiver Worker for a stage, and `trial2.mjs`, which drives a stage end to end (monitors, alerting, MCP) and reports. Trial 3: `probe/index.ts`, a stand-in for the ruler's `SINK` binding |
 | `ci/matrix.mjs` | Which components CI checks in this checkout |
 | `scripts/mutants-release.mjs` | Mutation check of the schema rules in `release.mjs`, `configure.mjs`, `lib/schemas.mjs` (run on a copy) |
+| `scripts/mutants-secrets.mjs` | Mutation check of the generated secrets (`lib/secrets.mjs`, its use in `release.mjs`, stdin in `lib/wrangler.mjs`; run on a copy) |
+| `test/fake-wrangler.mjs` | A stand-in for wrangler that `test/secrets.test.mjs` runs as a real child process (`VIZ_WRANGLER_BIN`, tests only) |
 | `resources.json` | KV namespace ids by title (not secret; rewritten by `resources.mjs`) |
 | `generated/` | Build output: configs, manifests, release records. Git-ignored |
 
@@ -39,7 +42,8 @@ push to main
                                             viz-flush-dlq, viz-maint-dlq
                  configure.mjs              generated/production/*.jsonc + manifest.json
                  release.mjs deploy         plan → refuse unacknowledged migrations (exit 3)
-                                            phase 1: upload every Worker (serves nothing)
+                                            phase 1: upload every Worker (serves nothing); viz-control's
+                                                     OAUTH_CLIENT_KEY put on its upload if missing
                                             phase 2: promote viz-publisher, viz-ingest, viz-control,
                                                      viz-query, viz-ruler, viz-mcp, viz-gateway
                  smoke.mjs                  /healthz until the new release answers; Remote Write +
@@ -84,6 +88,8 @@ with `rollback_to: <sha>`, restores the release recorded for that commit instead
 | `/api/v1/control`, `/api/v1/control/*` | viz-control | |
 | `GET /api/v1/rules`, `GET /api/v1/alerts`, `/api/v1/monitors`, `/api/v1/monitors/*` | viz-ruler | Prometheus' rule and alert reads, and the monitors API (monitors, groups, rule files, backtest, detectors, notifier config, silences): `ruler/src/http.ts` `ROUTES`. `/api/v2/alerts` (Alertmanager ingestion) is not served |
 | `/mcp` (exactly), `/api/v1/agent`, `/api/v1/agent/*` | viz-mcp | MCP over Streamable HTTP, and the same tools as JSON. `/mcp/` and `/mcp/x` are 404 at the gateway |
+| `/.well-known/oauth-protected-resource`, `/.well-known/oauth-protected-resource/mcp` (exactly) | viz-mcp | OAuth protected resource metadata of `/mcp` (RFC 9728, D44) |
+| `/.well-known/oauth-authorization-server`, `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke` (exactly) | viz-control | The OAuth authorization server for MCP clients (D44; methods in `control/README.md`). `/oauth/register` answers 503 and is not advertised while viz-control has no `OAUTH_CLIENT_KEY`, which the deploy generates ("Worker secrets the deploy generates") |
 | `GET /healthz` | the gateway | asks each backend's own `GET /healthz` through its service binding (ingest, query, control, ruler, mcp; none is public, since the gateway answers `/healthz` itself); 200 `healthy` or 503 naming the backend. The ruler's and mcp's say 503 when a binding they need is missing |
 | `POST /api/v1/bootstrap` | the gateway | exists only while the one-time secret is set ("Bootstrap") |
 | anything else | the gateway | 404, JSON listing the entry points. No web UI and no page: the UI comes later, through design review |
@@ -147,6 +153,83 @@ version and every Durable Object moves to it, even when a Worker's code did not 
 keeps "which release is serving" a single answer (also shown by `/healthz`), and it means the
 cutover the trial measures happens on every deploy.
 
+## Worker secrets the deploy generates
+
+One today: **`OAUTH_CLIENT_KEY` on viz-control**, the HMAC-SHA-256 key that signs the OAuth client
+registrations of MCP clients (`control/src/oauth.ts`, D44). Without it (or with fewer than 32
+characters) `/oauth/register` answers 503 and is not advertised. Replacing it invalidates every
+registered client: they register again; grants and tokens are unaffected. Decision D53.
+
+What Cloudflare and wrangler do, read 2026-11-19 (wrangler is read in the pinned 4.164.0, whose
+licence is MIT OR Apache-2.0):
+
+| Fact | Source | What the deploy does |
+|---|---|---|
+| "`wrangler secret put` creates a new version of the Worker and deploys it immediately." "If using gradual deployments, instead use the `wrangler versions secret put` command": it "will only create a new version of the Worker, that can then be deployed using `wrangler versions deploy`" | [Secrets](https://developers.cloudflare.com/workers/configuration/secrets/); [Wrangler commands](https://developers.cloudflare.com/workers/wrangler/commands/workers/) ("This action creates a new version of the Worker and deploys it immediately") | `versions secret put`, never `secret put`: nothing is deployed outside phase 2 |
+| `versions secret put` patches the **newest** version (`PATCH …/versions/latest` with the secret in `env`), tags it with `--tag` and `--message`, reads the value from stdin when stdin is not a terminal, and fails (10222) on a Worker with no version | wrangler source, `src/versions/secrets/put.ts` and `index.ts` | Runs right after viz-control's upload, once the newest version is checked to be that upload; the new version must then list the secret and carry this release's `VIZ_RELEASE`; it is tagged with the release |
+| `secret put` is refused (10214, 10215) while the newest version is not the deployed one, "to prevent accidental deployment when using Worker versions and secrets together"; on a Worker that does not exist it creates one whose code is `export default { fetch() {} }`, answering yes by itself in CI | wrangler source, `src/secret/index.ts` | Not used here. (`bootstrap.mjs` uses it on the gateway, which exists by then) |
+| "Secrets are never deleted by deployments"; wrangler uploads with `keep_bindings: ["secret_text", "secret_key"]`, which the API calls "binding types to keep from previous_upload"; an `inherit` binding's version "Defaults to "latest"" | [Wrangler commands](https://developers.cloudflare.com/workers/wrangler/commands/workers/); [API: upload a version](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/versions/methods/create/); wrangler source | Once made, the key rides along on every later version and the deploy only checks it is there. That uploads inherit from the newest version is read into "previous_upload", not stated, and not measured ("Known risks") |
+| The API lists "the names of secrets bound to a Worker script" (from which version is not said); a version's `resources.bindings` list secrets by name and type | [API: list secrets](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/secrets/methods/list/); the version API (read back on Cloudflare in Trial 3 for `VIZ_SCHEMAS`) | Presence is judged by name only: on the version to be promoted, and, for the refusal below, in the secret list and the serving versions |
+| The rollback documentation says nothing about secrets. wrangler's `rollback` handles an API error 10220 ("The following secrets have changed") by asking and retrying with `force`; `versions deploy`, which `release.mjs` rolls back with, does not | [Rollbacks](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/); wrangler source, `src/versions/rollback/index.ts` | Nothing special. Whether a rollback to a version without the key is refused is not known ("Known risks") |
+
+**The step.** `versions secret put` on the version this release just made, only when that version
+does not carry the key:
+
+- **viz-control uploaded in phase 1** (every release once it exists): after its `versions
+  upload`, the key goes on that upload, and phase 2 promotes the keyed version in viz-control's
+  turn instead of the upload. Nothing serves early, nothing but this release's code is promoted,
+  a failure stops the release before phase 2 with the previous release untouched, and
+  `previous.json`, the release record and any rollback name versions exactly as they served.
+- **viz-control deployed with `wrangler deploy` in phase 2** (new, as on the **first production
+  deploy**, or applying a Durable Object migration): there is no version to put it on before, so
+  it goes on the version just deployed, and the keyed version is deployed (`versions deploy`, the
+  same code-update mode) before the next Worker. On the first deploy that is before the gateway
+  exists, so no request reaches viz-control without the key; a failure there stops the release
+  before the gateway.
+
+**Never over one that exists.** If viz-control has the key now (its secret list, or a version
+serving now) but the version to be promoted does not carry it, the release is **refused, exit 3,
+before anything is promoted**, naming where it was seen: a new value would invalidate every
+registered client. A put is also refused when the newest version is not this release's upload
+(it would build on code that is not this release).
+
+Why not the alternatives (D53): `wrangler secret put` before phase 1 deploys the serving code plus
+the key outside any release record, is refused whenever an undeployed version is newest, and
+creates a placeholder Worker on the first deploy; after phase 2 it is a second deployment (the
+Tenant objects move twice, and the new release serves for a while without the key);
+`--secrets-file` needs the value in a file; by hand, it is forgotten and the symptom is a quiet
+503. **Would change if** a stage shows uploads not inheriting the key, or a rollback refused with
+10220; control verifies under two keys (then rotation can overlap and be automatic); or wrangler
+takes secrets on stdin for `versions upload` (then code and key in one version).
+
+**Plan.** `release.mjs plan`, and the plan `deploy` prints first, have one line per generated
+secret: `secret OAUTH_CLIENT_KEY on viz-control: not set; would be created on the version uploaded
+in phase 1, before anything is promoted (32 random bytes, handed to wrangler on stdin)`, or `set
+(…); kept`, or `REPLACED as asked`. The plan creates nothing: it runs no wrangler command and only
+reads the API. Its JSON line carries `secrets: [{worker, name, action}]`.
+
+**Rotation, by hand only.** No deploy replaces the key by itself. To replace it on purpose (it
+leaked, say), name it in a deploy, from a clean checkout of the commit to deploy (normally
+`main`), with the two Cloudflare variables set:
+
+```
+VIZ_ROTATE_SECRETS=OAUTH_CLIENT_KEY deploy/deploy.sh
+node deploy/release.mjs deploy --rotate-secret OAUTH_CLIENT_KEY      # the same, after configure.mjs
+node deploy/release.mjs plan --rotate-secret OAUTH_CLIENT_KEY        # what it would do; changes nothing
+```
+
+The new key goes on that release's upload exactly as a first one would, the record says
+`rotated`, and every registered client must register again. A failed smoke test rolls back as for
+any release, to versions that carry the old key (so the old registrations work again; see "Known
+risks" for whether Cloudflare allows that rollback). A name the deploy does not generate is
+refused, exit 3, before anything happens. The workflow has no input for this yet ("Needed
+changes").
+
+**Never shown.** The value exists in the deploy process's memory and in the pipe to wrangler's
+stdin. It is not on a command line, in an environment variable, in a log (wrangler's output for
+the put is not relayed, and is scrubbed before it can appear in an error), in a file, or in the
+release record, which says `secrets: [{ worker, name, action, versionId }]`.
+
 ## Durable Object migrations
 
 Detection: for each Worker, the newest `migrations` tag in its generated config is compared
@@ -190,6 +273,7 @@ these five (Trial 2 measured the four before viz-publisher was deployed).
   "forwardOnlyBecause": [{ "worker": "viz-ingest", "kind": "schema", "component": "ledger.Ledger", "previousKnows": 1,
     "latest": 3, "compat": 2, "migrations": [{ "version": 2, "readableFrom": 2, "name": "…" }, "…"], "why": "…" }],
   "via": { "viz-ingest": "deploy", "viz-control": "versions", "...": "..." },
+  "secrets": [{ "worker": "viz-control", "name": "OAUTH_CLIENT_KEY", "action": "kept", "versionId": "…" }],
   "workers": [{ "name": "viz-ingest", "versionId": "…", "migrationTag": "v2", "release": "<sha>" }, "…"] }
 ```
 
@@ -267,6 +351,8 @@ queue consumers (not versioned), nor data.
 |---|---|---|
 | Refused (exit 3): unacknowledged migration | the previous release, untouched | add the trailer or the dispatch input, if the migration is intended |
 | Phase 1 (upload) | the previous release, untouched (uploaded versions serve nothing) | fix the build |
+| Phase 1, generated secret: refused (exit 3: set now but missing from the upload, or the newest version is not this release's) or the put failed (exit 1) | the previous release, untouched | read the reason; never rotate to make it pass unless replacing the key is intended ("Worker secrets the deploy generates") |
+| Phase 2, a new viz-control's key could not be put | viz-control without the key (`/oauth/register` 503); nothing after it was promoted | deploy again: the next release puts the key on its upload |
 | Phase 2, before any migration was applied | Workers promoted so far are put back automatically | read the wrangler error in the log |
 | Phase 2, after a migration was applied | a mix; nothing is rolled back | fix forward |
 | Smoke test, no migration | the previous release, restored automatically | the job fails; read the smoke output |
@@ -292,7 +378,8 @@ that happens, dispatch it again.
 2. **First deploy**: run the Deploy workflow on `main` with `acknowledge_migrations` =
    `viz-publisher@v1 viz-ingest@v1 viz-control@v1 viz-query@v1 viz-ruler@v2` (see above). It
    creates `viz-lake`, `viz-config` and the four queues, deploys the seven Workers and attaches
-   `vis.bitcru.sh`.
+   `vis.bitcru.sh`. It also generates viz-control's `OAUTH_CLIENT_KEY` right after viz-control's
+   first `wrangler deploy` ("Worker secrets the deploy generates"); nothing to set by hand.
    Without `SMOKE_KEY` the smoke test checks health only.
 3. **First tenant**, from a machine with the two Cloudflare variables set and `npm ci` done
    in `deploy/`:

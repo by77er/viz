@@ -445,12 +445,14 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
   sends the same bytes under the same `Idempotency-Key`.
 - **As built, until query exports an RPC entrypoint** (D39), a tick sends its group's
   expressions to viz-query's Prometheus HTTP API one at a time (one engine call in flight per
-  `Ruler` object: a service-bound callee shares its caller's six connections), recording rules
-  write through Remote Write, and both authenticate with a service key the tenant's control
-  plane issues (`service:viz-ruler/<shard>`, visible and revocable there). viz-ingest now
-  also exports `RecordedSamples` (`contracts/ingest.ts`, D45): an RPC entrypoint the ruler can
-  bind as `SINK`, authenticated by the binding itself (no key), with the tenant an explicit,
-  validated argument; the ruler's binding is not added yet (`edge/README.md`, "Needed changes").
+  `Ruler` object: a service-bound callee shares its caller's six connections), authenticated
+  with a service key the tenant's control plane issues (`service:viz-ruler/<shard>`, visible
+  and revocable there). Recording rules write through viz-ingest's `RecordedSamples`
+  entrypoint (`contracts/ingest.ts`, D45), which the ruler binds as `SINK`: the binding is the
+  credential (no key), the tenant an explicit, validated argument, and each refusal is handled
+  as the contract says. For one release, a call the entrypoint does not answer by its contract
+  (an ingest release without it, during a rollback or while a deploy propagates) goes through
+  Remote Write with the service key instead (D52); in steady state no write uses the key.
 - **Anomaly detection** is statistics first. An *anomaly rule* is a rule kind
   (`contracts/rules.ts`, version 2): each tick the ruler feeds every series of one PromQL
   expression to that series' detector, through the same batch call as other rules, and the
@@ -596,7 +598,9 @@ have to change. The deploy records each class's schema version in every release 
 on every Worker version, marks a release forward-only when a class's `readableFrom` is above
 what the release before it knew, and refuses a rollback when any version that ran since the
 target wrote storage the target cannot open (D46; `deploy/README.md`). Format versions are not
-in that check yet.
+in that check yet. Secrets the deploy generates (control's OAuth client key) are put on the
+version a release uploads, before anything is promoted, only when that version lacks them, and
+are never replaced except by a deploy told to (D53).
 
 ## 12. Launch scope
 

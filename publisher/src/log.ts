@@ -8,8 +8,9 @@
  *   segments   {inc}/seg-{first:012}-{last:012}.jsonl: a header line, then the changes
  *              first..last, one per line. The incarnation's first segment begins with its
  *              `base`. What the ledger writes since LEDGER-LOG.md was built. Checkpoints
- *              ({inc}/ckpt-…) exist only to speed up the ledger's own rebuild; this reader
- *              never reads them.
+ *              ({inc}/ckpt-{version}.jsonl: format 1, one object; format 2, a manifest naming
+ *              parts under ckpt-{version}-{attempt}/) hold the state at their version; a re-base
+ *              starts from the newest one this code reads, else from the base.
  *   objects    {inc}/base.json and {inc}/{version:012}.json, one object per change: the first
  *              layout. Still read, because a deployment that ran the trial stage may hold
  *              incarnations in it (LEDGER-LOG.md "Versions", COMPATIBILITY.md §3.6 step 3).
@@ -18,25 +19,37 @@
  *
  *   readTenantLog   what `publish` uses: the changes after a cursor, in version order, up to
  *                   the first hole or the first object this code may not read. With segments
- *                   it advances over whole segments only.
+ *                   it advances over whole segments only. A re-base (no cursor in the newest
+ *                   incarnation) streams the state it starts from into a `BaseSink` (the
+ *                   publisher's SQLite), a part or a few hundred files at a time: nothing here
+ *                   holds a state, whatever its size.
  *   replayAt        what `verify` uses: the ledger's whole live set at a cursor, rebuilt from
  *                   the incarnation's base with every change checked against the state before it.
+ *                   It holds that set in memory (README, "Not implemented").
  *
  * Refuse, never guess (contracts/COMPATIBILITY.md §3.2): a segment header `v` or `kind`, a change
  * `v` or `kind`, or a file table this code does not know stops the tenant BEFORE that segment
  * (status `unsupported`); a hole stops it before the hole (`gap`); an object that is not what its
- * key says stops it before that object (`corrupt`). Nothing after a stop is ever returned, so it
- * can never be skipped; the publisher keeps the tenant pending and tries again.
+ * key says stops it before that object (`corrupt`); a checkpoint part its manifest names that is
+ * not there stops it (`incomplete`). Nothing after a stop is ever returned, so it can never be
+ * skipped; the publisher keeps the tenant pending and tries again. A re-base that stops returns no
+ * base, so nothing of what it read is published.
  */
 import {
+  checkpointHeaderProblem,
+  decodeLedgerCheckpointManifest,
+  decodeLedgerCheckpointPart,
   decodeLedgerSegment,
   ledgerBaseKey,
+  ledgerCheckpointPartKey,
   ledgerIncarnationPrefix,
   ledgerLogKey,
   ledgerSegmentsStartingAfter,
   parseLedgerLogKey,
+  readLedgerLogStream,
   type FileEntry,
   type LedgerChange,
+  type LedgerSegmentHeader,
   type Table,
 } from '../../contracts/ledger'
 
@@ -47,13 +60,103 @@ export interface Cursor {
 
 export const cursorCompare = (a: Cursor, b: Cursor): number => a.ledgerIncarnation - b.ledgerIncarnation || a.version - b.version
 
-/** The parts of R2 the publisher uses. `CountingBucket` implements it. */
+/** What the publisher reads of an R2 object. `R2ObjectBody` is one. */
+export interface StoreObject {
+  readonly key: string
+  readonly size: number
+  readonly body: ReadableStream<Uint8Array>
+  text(): Promise<string>
+  json<T>(): Promise<T>
+  arrayBuffer(): Promise<ArrayBuffer>
+}
+
+/** The parts of R2 the publisher uses. `CountingBucket` implements it (and `R2Bucket` is one). */
 export interface Store {
-  get(key: string): Promise<R2ObjectBody | null>
+  get(key: string): Promise<StoreObject | null>
   head(key: string): Promise<R2Object | null>
   list(options: R2ListOptions): Promise<R2Objects>
   put(key: string, value: string | Uint8Array, options?: R2PutOptions): Promise<R2Object | null>
   delete(keys: string | string[]): Promise<void>
+}
+
+/**
+ * Outbound connections one Durable Object invocation may have in flight (AGENTS.md: six, R2
+ * binding reads included). Every R2 operation of a publish, a sweep or a verify takes a slot of
+ * one shared `Slots`, and a GET keeps its slot until its body has been read, so the readers of
+ * every tenant, the parts read ahead and the commit's writes together never exceed it.
+ */
+export const R2_CONNECTIONS = 6
+
+/** A counting semaphore: `take` waits for a free slot and returns its release (idempotent). */
+export class Slots {
+  private free: number
+  private readonly waiting: (() => void)[] = []
+  /** Slots held now, and the most ever held at once. */
+  held = 0
+  highWater = 0
+  constructor(readonly size: number) {
+    this.free = size
+  }
+  async take(): Promise<() => void> {
+    if (this.free > 0) this.free--
+    else await new Promise<void>((resolve) => this.waiting.push(resolve))
+    this.held++
+    this.highWater = Math.max(this.highWater, this.held)
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      this.held--
+      const next = this.waiting.shift()
+      if (next) next()
+      else this.free++
+    }
+  }
+}
+
+/**
+ * The object `o` with `release` called once its body has been read (or failed, or was
+ * cancelled): the slot of a GET is held for as long as its connection is.
+ */
+export function holding(o: StoreObject, release: () => void): StoreObject {
+  const after = async <T>(read: () => Promise<T>): Promise<T> => {
+    try {
+      return await read()
+    } finally {
+      release()
+    }
+  }
+  let body: ReadableStream<Uint8Array> | null = null
+  return {
+    key: o.key,
+    size: o.size,
+    text: () => after(() => o.text()),
+    json: <T>() => after(() => o.json<T>()),
+    arrayBuffer: () => after(() => o.arrayBuffer()),
+    get body() {
+      if (body) return body
+      const reader = o.body.getReader()
+      body = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          try {
+            const { done, value } = await reader.read()
+            if (done) {
+              release()
+              controller.close()
+            } else controller.enqueue(value)
+          } catch (e) {
+            release()
+            controller.error(e)
+          }
+        },
+        cancel(reason) {
+          release()
+          return reader.cancel(reason)
+        },
+      })
+      return body
+    },
+  }
 }
 
 export type LogStatus =
@@ -78,6 +181,13 @@ export type LogStatus =
    * waits for a publisher that reads it.
    */
   | 'unsupported'
+  /**
+   * A re-base found a checkpoint whose manifest names a part that is not in R2: deleted while it
+   * was being read (the ledger deletes a checkpoint's parts once a newer one is complete), or
+   * lost. Nothing read from it is used (`base` is null); the tenant stays pending, and the next
+   * publish lists the checkpoints again.
+   */
+  | 'incomplete'
 
 /** A removed key with its table: from `LedgerChange.removedFiles`, or from the key layout for logs written before it (null if the key does not follow it). */
 export interface RemovedFile {
@@ -96,13 +206,48 @@ export interface TenantLog {
   incarnation: number
   /** The layout of that incarnation, once known. */
   layout: 'segments' | 'objects' | null
-  /** Loaded when the reader started from the base (no cursor, or an older incarnation). */
-  base: LogChange | null
+  /**
+   * Set when the reader started from the state an incarnation holds at some version (no cursor,
+   * or one in an older incarnation): its base, or its newest checkpoint. Its files and tombstones
+   * are in the `BaseSink`; null whenever that read did not complete, so a partial one is never used.
+   */
+  base: BaseInfo | null
   /** The version `changes` starts after. */
   start: number
   /** Contiguous: `changes[i].version === start + 1 + i`. */
   changes: LogChange[]
   gapAt?: number
+}
+
+/**
+ * Where a re-base puts the state it reads: the publisher's SQLite (`stage`), never memory. Calls
+ * come in batches of at most a part (or `BASE_BATCH` files of a base); each is one transaction.
+ */
+export interface BaseSink {
+  /** Forget whatever an earlier read left for this tenant. */
+  reset(tenant: string): void
+  /** Live files at the base's version. Throws if a key repeats. */
+  files(tenant: string, files: FileEntry[]): void
+  /** Removed files whose objects may still exist (tombstones), removed at or below that version. */
+  tombstones(tenant: string, tombstones: { key: string; table: Table }[]): void
+}
+
+/** What a re-base started from. Its files are in the `BaseSink`, not here. */
+export interface BaseInfo {
+  /** The ledger version of that state. */
+  version: number
+  /** The head of the incarnation's first segment, or a checkpoint. */
+  source: 'base' | 'checkpoint'
+  /** For a checkpoint: format 1 (one object) or 2 (a manifest and parts). */
+  format: 1 | 2 | null
+  files: number
+  tombstones: number
+  /** Log objects read for it: 1, or a manifest and its parts. */
+  objects: number
+  /** The most checkpoint parts requested and not yet applied at any moment (at most `PART_WINDOW`). */
+  window: number
+  /** Checkpoints passed over because this code does not read their format, newest first. */
+  passedOver: string[]
 }
 
 /** The tables a ledger file may belong to, as far as this publisher knows (contracts/ledger.ts `Table`). */
@@ -111,6 +256,15 @@ const CHANGE_OBJECT = /\/(\d{12,})\.json$/
 /** `{cell}/data/{table}/…` (contracts/TABLES.md): the table of a removed key in a log written before `removedFiles`. */
 const KEY_TABLE = /^[^/]+\/data\/([^/]+)\//
 const READ_FANOUT = 6
+/**
+ * Checkpoint parts requested ahead of, or held with, the one being applied. A part is at most
+ * about 1 MiB (`LEDGER_CHECKPOINT_PART_MAX_BYTES`; a single larger record goes alone), so a
+ * re-base holds a few MiB of it whatever the state. The reads also take slots of the shared
+ * `Slots`, so they never add to what else is in flight beyond `R2_CONNECTIONS`.
+ */
+export const PART_WINDOW = 4
+/** Files of a base (or a format-1 checkpoint) handed to the sink per transaction. */
+export const BASE_BATCH = 256
 
 // ───────────────────────────── what this code reads ─────────────────────────────
 //
@@ -120,8 +274,15 @@ const READ_FANOUT = 6
 
 /** Segment and checkpoint header versions (`v`) this publisher reads. */
 export const LEDGER_SEGMENT_VERSION = 1
-/** The segment header kind this publisher reads (checkpoints are never read here). */
+/** The segment header kind this publisher reads. */
 const SEGMENT_KIND = 'viz.ledger.segment'
+/**
+ * Checkpoint formats this publisher reads (header `v` of `ckpt-{version}.jsonl`): 1, one object;
+ * 2, a manifest and parts (contracts/LEDGER-LOG.md, "Checkpoints"). A checkpoint of a higher
+ * format is passed over for an older one or the base, as the ledger's rebuild does: a checkpoint
+ * is only a shortcut, so nothing is skipped and no reader has to be released first.
+ */
+export const LEDGER_CHECKPOINT_VERSION = 2
 /** The `LedgerChange` versions this code reads (absent `v` = 1) and the kinds it knows how to apply. */
 export const LEDGER_CHANGE_VERSION = 1
 const KINDS: ReadonlySet<string> = new Set<LedgerChange['kind']>(['base', 'add_unit', 'replace', 'expire', 'register_stream'])

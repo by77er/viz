@@ -1,4 +1,4 @@
-// node --test deploy/test/: the secrets the deploy generates (lib/secrets.mjs, D52), through the real
+// node --test deploy/test/: the secrets the deploy generates (lib/secrets.mjs, D53), through the real
 // release.mjs deploy and plan, against a fake wrangler run as a child process (test/fake-wrangler.mjs)
 // and a fake Cloudflare API (fetch stubbed here). Nothing here reaches Cloudflare: the token is a
 // dummy and any request the fake does not know is answered 400.

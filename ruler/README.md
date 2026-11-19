@@ -19,9 +19,10 @@ viz (design §7, decision D7). Three Durable Object classes and one Worker:
 
 The ruler takes the engine as injected interfaces (`BatchEvaluator`, `RangeEvaluator`,
 `Validator`). **In production they are viz-query's Prometheus HTTP API** over the `QUERY`
-service binding, recording rules go to viz-ingest's Remote Write over `INGEST`, both with a
-service key the tenant's control plane issues, and notifications go to the destination set in
-control (part 9, decision D39). The measurements of parts 1–8 were produced against scripted
+service binding, with a service key the tenant's control plane issues; recording rules go to
+viz-ingest's `RecordedSamples` entrypoint over the `SINK` service binding, with no key (part 15,
+decisions D45 and D52); and notifications go to the destination set in control (part 9, decision
+D39). The measurements of parts 1–8 were produced against scripted
 fakes, so they are **ruler overhead only**; part 9's trial is the first run on Cloudflare
 (`deploy/README.md`, "Trial 2").
 
@@ -34,7 +35,8 @@ fakes, so they are **ruler overhead only**; part 9's trial is the first run on C
 | `src/evaluator.ts` | The single-call → batch adapter; the permissive `Validator` stand-in |
 | `src/engine.ts` | Production engine: viz-query's HTTP API (`/query`, `/query_range`, `/plan`) behind one gate per object (one call in flight) |
 | `src/credential.ts` | The shard's service key from control (`contracts/control.ts` `serviceKey`): stored, refreshed, never shown |
-| `src/remote.ts` | Production sink: Remote Write 1.0 to viz-ingest (protobuf + snappy encoder) |
+| `src/recorded.ts` | Production sink: viz-ingest's `RecordedSamples` entrypoint (contracts/ingest.ts): refusals handled as the contract says, `too_large` split by whole batches, the Remote Write fallback (part 15) |
+| `src/remote.ts` | Remote Write 1.0 to viz-ingest (protobuf + snappy encoder): the sink's fallback for one release, and the sink of a config without `SINK` |
 | `src/backtest.ts` | `trackIntervals`: any rule's per-step result through `evalAlertingRule`, as intervals with the annotations each alert entered with; summary, resolution note |
 | `src/slo.ts` | SLO rules (part 10): the `slo` block, defaults, the per-tick expression, the bucket rings with block-cached window sums, one evaluation (pure), the sentence, the stored rows |
 | `src/history.ts` | Parts 11–14: warm-ups and backtests of every kind read in planned, memory-sized windows (`streamHistory`), the memory and CPU models, the budgets (pure apart from the engine calls) |
@@ -51,7 +53,7 @@ fakes, so they are **ruler overhead only**; part 9's trial is the first run on C
 | `src/rules.ts`, `src/template.ts`, `src/classify.ts`, `src/payload.ts` | Rule-file validation; template subset; cost classification; webhook and Slack bodies |
 | `openapi.json` | OpenAPI 3.1 description of every route (checked against `ROUTES` by `test/http.test.ts`) |
 | `tools/promcheck/` | Go: Prometheus' own code reading what the ruler writes (see parts 2 and 5) |
-| `test/harness.ts` | The test worker: the classes with clock, evaluators, sink, receiver and crash points overridden; `FakeQuery` and `FakeIngest` entrypoints (edge's real `authenticate`, tenant from the key) and control's real `Tenant` for the production wiring |
+| `test/harness.ts` | The test worker: the classes with clock, evaluators, sink, receiver and crash points overridden; `FakeQuery` and `FakeIngest` entrypoints (edge's real `authenticate`, tenant from the key), `FakeRecordedSamples` (viz-ingest's entrypoint as a caller sees it: caller from `props`, tenant and batch ids validated, one value per series and time) and control's real `Tenant` for the production wiring |
 | `test/anomaly.bench.ts`, `vitest.measure.config.ts` | Anomaly rule measurements in workerd (`npm run bench:anomaly`); the config adds `HOST`, which reads workerd's CPU time, its resident memory and the load average in Node |
 | `test/slo.bench.ts` | SLO tick, warm-up and 7-day backtest measurements in workerd (`npm run bench:history`) |
 | `test/cpu.bench.ts`, `test/memory.bench.ts` | Calibration of the CPU model (µs per point by rule kind, and per point parsed) and of the memory model (bytes per point held) |
@@ -60,12 +62,15 @@ fakes, so they are **ruler overhead only**; part 9's trial is the first run on C
 `wrangler.jsonc` is the production shape, from which `deploy/configure.mjs` generates the
 deployed config: bindings `RULER`, `NOTIFIER`, `RULER_INDEX`, `CONFIG` (edge's API-key KV
 namespace, by edge's placeholder id; never the unrelated account namespace also called
-`CONFIG`), `QUERY` (viz-query) and `INGEST` (viz-ingest) service bindings, `TENANT` (control's
+`CONFIG`), `QUERY` (viz-query), `SINK` (viz-ingest's `RecordedSamples` entrypoint, `props: {
+caller: "viz-ruler" }`) and `INGEST` (viz-ingest, Remote Write: the fallback) service bindings, `TENANT` (control's
 `Tenant` object by `script_name`), the cron `*/15 * * * *`, and the compatibility flag
 `global_fetch_strictly_public` (webhooks always leave over the public internet). It is deployed
 after viz-control, viz-query and viz-ingest and before viz-mcp and viz-gateway
 (`deploy/workers.json`). Tests run against `wrangler.test.jsonc`, which binds the subclasses in
-`test/harness.ts`, the fake query and ingest services, and control's real `Tenant`.
+`test/harness.ts`, the fake query and ingest services (and the entrypoint as `SINK`, an ingest
+release without it as `OLD_SINK`, and the entrypoint for another caller as `OTHER_SINK`), and
+control's real `Tenant`.
 
 ## What is implemented
 
@@ -357,7 +362,7 @@ request after the group's budget is spent fails with the abort reason. Backtests
 read, nothing fetched or evaluated): `bad_data` and `unsupported` refuse the save with the
 engine's message at the expression's path; any other failure (an outage, a key not yet
 propagated) saves without blocking, as before. Matrices and strings are refused as a rule
-result. `EVALUATOR` / `SINK` RPC bindings, when they exist, win.
+result. An `EVALUATOR` RPC binding, when one exists, wins.
 
 **Six connections.** A Worker reached through a service binding spends from its caller's six
 simultaneous connections (AGENTS.md, spike S1), and one query of viz-query may open several
@@ -368,8 +373,8 @@ save-time validation, passes one gate that admits **one call at a time**
 notifier's webhooks run in the `Notifier`, another object with its own six, one at a time.
 Cost: a group's tick takes the sum of its queries' latencies (see "Risks").
 
-**Credential** (`src/credential.ts`, `contracts/control.ts`). The query API and Remote Write
-take the tenant from an API key. A tick has no caller to borrow one from, so each Ruler object
+**Credential** (`src/credential.ts`, `contracts/control.ts`). The query API (and Remote Write,
+now only the recorded samples' fallback, part 15) take the tenant from an API key. A tick has no caller to borrow one from, so each Ruler object
 holds a **service key** issued by the tenant's `Tenant` object over the `TENANT` binding:
 `service:viz-ruler/<shard>`, scopes `read` and `write` (fixed by the contract), listed among the
 tenant's keys, audited (`key.service`), revocable. The ruler asks for one when it has none, and
@@ -382,10 +387,11 @@ disabled the ruler's service key …" until it is enabled. The key is stored in 
 exported with a group. The tenant is the Ruler object's own (from its name, which the HTTP API
 derived from a credential); every callee takes it from the key.
 
-**Recording rules** (`src/remote.ts`): one Remote Write 1.0 request per sink call to viz-ingest
-over `INGEST`, with the same key (`write`). Values are parsed from Prometheus' text form
-(`+Inf`, `-Inf`, `NaN` included); a series and timestamp written again is the same row, so the
-ruler's retries are harmless.
+**Recording rules** go to viz-ingest's `RecordedSamples` entrypoint over `SINK`, with no key
+(part 15). Remote Write (`src/remote.ts`: one Remote Write 1.0 request per sink call over
+`INGEST`, with the same key, values parsed from Prometheus' text form, `+Inf`, `-Inf`, `NaN`
+included) is the sink of a config without `SINK`, and for one release the fallback when the
+entrypoint does not answer by its contract (D52).
 
 **Notifications to the destination set in control.** The tenant's control plane holds a default
 webhook (`PUT /api/v1/control/settings/notifications`: URL, `webhookFormat` `alertmanager` or
@@ -415,8 +421,9 @@ destination changes, groups are re-derived as on `setConfig`.
   Nothing in the ruler or the notifier logs a URL, a key or a secret.
 
 **Health.** `GET /healthz` (and `HEAD`), outside the API and without a credential, as the other
-viz Workers serve it: 200 `ok` with `CONFIG`, `RULER`, `NOTIFIER`, `RULER_INDEX`, `TENANT` and
-`QUERY` (or an `EVALUATOR`) bound, 503 naming the missing ones; it calls nothing. The gateway asks
+viz Workers serve it: 200 `ok` with `CONFIG`, `RULER`, `NOTIFIER`, `RULER_INDEX`, `TENANT`,
+`QUERY` (or an `EVALUATOR`) and `SINK` (or, in a config from before it, `INGEST`) bound, 503
+naming the missing ones; it calls nothing. The gateway asks
 it through its `RULER` binding.
 
 **A staged trial stops by itself.** `VIZ_STAGE_EXPIRES_AT` (set by `deploy/configure.mjs
@@ -683,6 +690,53 @@ carries `cpu` (HTTP 422, beside `plan`, `budget` and `memory`).
 What this does not bound: the live ticks' own CPU (measured per tick in parts 8 and 10), and the
 model's accuracy on Cloudflare's CPUs (calibrated here; see Risks).
 
+### 15. Recorded samples through viz-ingest's `RecordedSamples` entrypoint (D45, D52)
+
+**The call** (`src/recorded.ts`). Each flush of a group's recorded samples (before a rule that
+reads one of them, and at the end of the group) is one `SINK.write(tenant, batches)` to
+viz-ingest's `RecordedSamples` entrypoint (`contracts/ingest.ts`), bound in `wrangler.jsonc` with
+`props: { caller: "viz-ruler" }`. The binding is the credential: no key goes with the call. The
+tenant is the explicit first argument, the Ruler object's own (from its name, which the HTTP API
+derived from a credential); every batch id starts with it (`<tenant>/<shard>/<group>/<rule
+key>@<time>`). Nothing goes through Remote Write, and the service key writes nothing, while the
+entrypoint answers by its contract.
+
+**What the answer does.** A resolved call means every sample is durably appended; the tick goes
+on (and only then: the next batch of the group is evaluated after the call resolved). A
+rejection's message starts with the refusal word:
+
+| Refusal | The ruler |
+|---|---|
+| `unauthorized`, `invalid`, `series_limit` | reports it on every rule of the flush (`sink: <message>`) at once, counts the flush in `samplesDropped`; never retried, never sent another way |
+| `too_large` | splits the call in two by whole batches and sends both halves, down to single batches; a batch too large alone is reported like `invalid` (a batch is never split: its id names one rule at one time) |
+| `backpressure`, `overloaded` | retried in the tick after the message's `retry after <n> ms` (at most 5 s, ended early at the group's deadline); three calls in all |
+| `unavailable` | retried at once, as before; three calls in all |
+| none (any other message) | the entrypoint did not answer by its contract: the same batches go through Remote Write over `INGEST` with the service key, and the Worker logs one line (no key in it). Without `INGEST`, retried like `unavailable` |
+
+**Upgrade in place and rollback** (contracts/COMPATIBILITY.md §1, §3.3; `deploy/README.md`).
+viz-ingest is promoted before viz-ruler and rolled back after it, so a ruler with `SINK` normally
+meets an ingest that has the entrypoint (it shipped with D45, a release before or with this one).
+It can still meet one without it: while a deployment propagates (both directions of skew), and
+during a rollback of both below the release that added the entrypoint, when Ruler objects keep
+the newer code for up to 30 s (`deferred 30s`) after viz-ingest is already back. Recorded samples
+have no outbox (they are sent inside the tick; a tick that cannot deliver them drops them), so
+without a fallback every recording rule due in that window would lose a tick. The fallback is
+Remote Write, the path of the release before: re-sending is harmless on both paths (one value per
+series and timestamp), and the key it uses is the one queries already hold (scopes `read` and
+`write`, fixed by `contracts/control.ts`). It is taken only for a rejection with no refusal
+word, so a refusal is never bypassed (D52). A ruler rolled back to the release before this one
+has no `SINK` and uses Remote Write as before; the new ingest still serves it.
+
+**Nothing stored changes.** No schema migration, no new format: recorded samples were never
+stored, and the hand-off outbox to the notifier is untouched, so its rows written by either
+release drain as before. The release is not forward-only.
+
+**Exactly-once.** As before: at least once inside a tick, idempotent at the write path. A tick
+that crashes after the samples were written and before it committed runs again and sends the
+same batches (same ids, samples and time), which the write path keeps once (`recorded.test.ts`).
+A flush given up on (three retryable failures, or one permanent refusal) is lost and counted,
+as before; nothing re-sends it later.
+
 ### Versioned storage and formats (`contracts/COMPATIBILITY.md`)
 
 - **Storage.** `Ruler`, `Notifier` and `RulerIndex` open SQLite in the constructor, inside
@@ -758,7 +812,18 @@ data names the tenant.
 - **The engine side of the contract as an RPC.** viz-query exports no entrypoint, so there is
   no `EVALUATOR` binding: a group's batch is N HTTP requests in sequence, not one plan with
   shared scans (DESIGN §7), and the ruler needs a stored service key (part 9; "Needed
-  changes"). No `SINK` RPC either: recording rules go through Remote Write.
+  changes"). Recording rules no longer need it, but for the fallback (part 15).
+- **Recorded samples (part 15):** an outbox: a flush given up on is lost (counted), not kept and
+  re-sent later; the fallback's removal (it goes once every viz-ingest release that may run has
+  `RecordedSamples`, "Needed changes"); a count of fallbacks in `health()` (only the Worker's log
+  says, see "Contract issues"); a per-rule report of a flush that failed in part (after a
+  `too_large` split, every rule of the flush shows the error, including those whose batches were
+  written); chunking a flush before the call (one call carries the whole flush, so a flush past
+  the RPC's message size limit, 32 MiB on Cloudflare per its documentation, not measured here,
+  fails without a refusal word and falls back to Remote Write, whose 8 MiB body limit it also
+  exceeds); the behaviour on Cloudflare of a binding to an entrypoint the serving viz-ingest does
+  not export (not measured: workerd refuses to start such a binding, so the tests stand in an
+  entrypoint without `write`).
 - **Selectors from validation.** `/api/v1/plan` parses and plans but reports no selectors, so
   `Validator.selectors` stays empty and same-tick dependencies are still found by text.
 - **Email notifications** (control's `notifications.email`): stored there, sent by nothing.
@@ -806,18 +871,21 @@ data names the tenant.
 - **Metrics about itself** (`viz_rule_evaluations_total`…): `health()` only.
 - **`DESIGN.md` / `DECISIONS.md`**: the earlier tasks' items under "Contract issues" (13) are
   still not made. Anomaly rules are in DESIGN §7 and D33; SLO rules, warm-ups and backtests in
-  DESIGN §7, D42, D43 and D51; the published design page (`design/artifact/viz-design.html`) was not
-  regenerated for either (outside this component).
+  DESIGN §7, D42, D43 and D51; the recorded-samples sink in DESIGN §7 and D52; the published design
+  page (`design/artifact/viz-design.html`) was not regenerated for any of them (outside this
+  component).
 - **Production deployment.** The pipeline deploys viz-ruler (`deploy/workers.json`); it has run
-  on Cloudflare only as a staged trial, since destroyed (`deploy/README.md`, "Trial 2").
+  on Cloudflare only as a staged trial, since destroyed (`deploy/README.md`, "Trial 2"). The
+  ruler has not written through `RecordedSamples` on Cloudflare: Trial 3 measured the entrypoint
+  through a probe Worker standing in for the ruler. Not deployed in this change.
 
 ## Verification
 
 ```
-npm test                # 374 tests in 22 files, in workerd, at most 2 workers (npx vitest run --maxWorkers=2): all pass (the `*.bench.ts` files run only under `bench:*`)
+npm test                # 381 tests in 23 files, in workerd, at most 2 workers (npx vitest run --maxWorkers=2): all pass (the `*.bench.ts` files run only under `bench:*`)
 npx tsc --noEmit        # clean
 npm run independent     # capture, then Prometheus' own code (Go, tools/promcheck): 2 Go tests pass (not re-run in the anomaly change)
-npm run mutants         # 130 mutants (50 earlier + 9 for versioning + 22 for anomaly rules + 12 for the production wiring + 22 for SLO rules, warm-ups and backtests + 7 for streaming + 8 for CPU), on a scratch copy; vitest runs with at most 2 workers
+npm run mutants         # 145 mutants (50 earlier + 9 for versioning + 22 for anomaly rules + 12 for the production wiring + 22 for SLO rules, warm-ups and backtests + 7 for streaming + 8 for CPU + 15 for the recorded-samples entrypoint), on a scratch copy; vitest runs with at most 2 workers
 npm run bench           # the measurements below
 npm run bench:anomaly   # anomaly rules in workerd (one worker): the "Anomaly rules" measurements below
 npm run bench:history   # SLO ticks, warm-ups and 7-day backtests in workerd (one worker; run each `B.` case alone with -t, and MINIFLARE_WORKERD_V8_FLAGS=--max-old-space-size=128 for the heap limit): the "SLO rules, warm-ups and backtests" and "Streaming" measurements below
@@ -848,9 +916,10 @@ in the module cache here, plus one fetched from the Go proxy for `go mod tidy`).
 | `independent.test.ts` | 2 | captures for `tools/promcheck` |
 | `compat.test.ts` | 17 | versioned storage: version 2 storage with anomaly state upgraded to 3 without a row changing, then SLO state surviving eviction; releases knowing 1 or 1–2 still rollback targets; schema goldens per class and version; the pre-versioning dump adopted; refusal and its effects; newer readable storage; version 1 storage with data upgraded to 2; the previous release still a rollback target |
 | `golden.test.ts` | 5 | golden formats, including the stored anomaly rule and key, its state rows and the `anomaly_detail` annotation; the stored SLO rule, its key and per-tick expression, its rows, the warm-up status and the `slo_detail` annotation |
-| `wiring.test.ts` | 14 | warm-ups and backtests ask `/api/v1/plan` (start, end, step) for every read before any `/api/v1/query_range`, and an over-budget backtest fetches nothing; part 9, against fake query and ingest services behind real service bindings (edge's real `authenticate`, tenant from the key) and control's real `Tenant`: every tick's queries carry the shard's one service key and the tick time; two tenants in one isolate each read only their own data with their own key; a key a person disabled: `unauthorized` within the propagation grace with nothing asked of control, then "disabled" with no new key, then after enabling a new key and the rule `ok` again (two `key.service` audit entries); one engine call in flight with four groups due at once (12 queries); `/api/v1/plan` refuses a parse error with its message and a 503 does not block the save; recording rules through Remote Write decoded with edge's snappy decoder (labels, `+Inf`, tick time); backtests through `query_range`; `/healthz`; notifications to control's destination: the plain JSON body's content and signature, no URL, secret or key in it; the Alertmanager form through a route naming `viz:default`, `viz:default` refused as a tenant receiver, and a URL change in control followed after the refresh; 500, a dropped connection, then 200: three attempts, one key, identical bytes, and no secret in any API answer, outbox, health or console output; a stored delivery error with the URL cut out; two tenants' alerts each at their own destination, each signed with its own secret |
+| `wiring.test.ts` | 14 | warm-ups and backtests ask `/api/v1/plan` (start, end, step) for every read before any `/api/v1/query_range`, and an over-budget backtest fetches nothing; part 9, against fake query and ingest services behind real service bindings (edge's real `authenticate`, tenant from the key) and control's real `Tenant`: every tick's queries carry the shard's one service key and the tick time; two tenants in one isolate each read only their own data with their own key; a key a person disabled: `unauthorized` within the propagation grace with nothing asked of control, then "disabled" with no new key, then after enabling a new key and the rule `ok` again (two `key.service` audit entries); one engine call in flight with four groups due at once (12 queries); `/api/v1/plan` refuses a parse error with its message and a 503 does not block the save; without a `SINK` binding (a config from before it), recording rules through Remote Write decoded with edge's snappy decoder (labels, `+Inf`, tick time); backtests through `query_range`; `/healthz` (503 naming `SINK` when neither `SINK` nor `INGEST` is bound); notifications to control's destination: the plain JSON body's content and signature, no URL, secret or key in it; the Alertmanager form through a route naming `viz:default`, `viz:default` refused as a tenant receiver, and a URL change in control followed after the refresh; 500, a dropped connection, then 200: three attempts, one key, identical bytes, and no secret in any API answer, outbox, health or console output; a stored delivery error with the URL cut out; two tenants' alerts each at their own destination, each signed with its own secret |
 | `slo.test.ts` | 20 | part 10: detection within one bucket of the SRE Workbook's formula for 100% to 0.1% error ratios (never where it says never), the library's table (1, 9, 44 and 217 minutes; 865 and 2,161), agreement with the library's own `burnRate.detect` at every point of 7,320 buckets (sentence included), the strict threshold with exactly representable numbers, coverage; the sentence and every number of `slo_detail` against an independent computation; in the object: one query per tick in the batch, page at the first bad minute and ticket at the fifth routed by severity, the page resolving 30 minutes after the outage; three rows a steady tick; evictions and replayed ticks, and a crash in the commit, giving exactly the state of a pure reference run; refusals (series cap, unpaired parts, a newer release's rows) changing nothing; a shard move; another tenant's rows neither loaded nor touched; validation with paths, fixes and warnings |
 | `history.test.ts` | 20 | parts 11–14: a backtest priced over its CPU budget refused after reading one window, with the projection the allowed run then costs exactly (RPC and HTTP 422 `cpu`); a run stopped before the first window whose series take it over; a warm-up refused by its CPU budget (also below the model's base) starting cold at once; an SLO backtest's evaluated part priced apart from its warm-up part; two warm-ups in one alarm: the second waits for the next alarm (no attempt, through an eviction), then equals the library's state; two groups in one late alarm do not both spend the budget;  windowed backtests across hundreds of boundaries equal to one window and to live evaluation (anomaly and SLO); the memory refusal before any plan or fetch (an SLO's rings over a small budget; 1,000 series of SLO state at the default budget, over HTTP); a warm-up refused by its memory budget; a window holding more points than sized for; an anomaly warm-up reads exactly the look-back and leaves the library's state; over budget (and through the monitors API), an engine refusal, engine failures retried then given up, a crash in the warm-up's commit; an SLO warm-up's two reads planned before either is fetched; backtests equal to live alerts with their annotations (anomaly and SLO); every kind refused whole past the budget; the monitors API routes, 422 `over_budget`, and tenant isolation of `POST /monitors/{id}/backtest` |
+| `recorded.test.ts` | 7 | part 15, through the production wiring with the entrypoint behind a real service binding (`FakeRecordedSamples`: caller from `props`, tenant and batch ids validated, one value per series and time): two tenants in one isolate each write with their own tenant as the argument and only their own batches, `+Inf` and `NaN` kept as text, no Remote Write; a rule reading the recorded series in the same tick sees it written (the entrypoint takes 60 ms to resolve); a refusal reported on the rule after one call; `unauthorized` (a binding naming `viz-mcp`), `invalid`, `series_limit`: one call each, no retry, no Remote Write, counted; `overloaded` then `backpressure` with a 300 ms hint: three calls at least 280 ms apart, written; `unavailable` once retried at once; three `unavailable`: given up, reported, counted; `too_large`: split by whole batches until each fits, a batch too large alone reported while the others are written; an ingest release without the entrypoint (`OLD_SINK`): the same samples by Remote Write with the service key, one log line without the key, nothing dropped, and after it the entrypoint again with no Remote Write; a crash in the commit after the write: the replay sends the identical batches, one row per series and time, one hand-off |
 | `anomaly.test.ts` | 22 | part 8: alert content against the library run on its own; NaN and pruning; the series cap, state limits per series, rule and object, rows per tick; state across evictions, a replayed tick, a crash in the commit, a newer release's rows and detector names, another tenant's rows; edits, intervals, rule files, `/api/v1/rules`; the monitors API: defaults, errors and warnings, the detectors guide, authorisation, tenant isolation, documented schemas |
 
 The first seven files held the 123 tests that existed before this task; all still pass.

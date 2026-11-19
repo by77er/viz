@@ -23,7 +23,8 @@ import { poolMap } from '../../edge/src/route'
 import { ENGINE_LOAD_PREFIX, type FetchRange, type FilePlan, type FileRead, type Grid, type LeafSummary, type QueryEngine, type QueryLimits, type QueryStats, leafSummary, planBytes, sparseFile } from '../../engine/wasm-query/js/index'
 import { hash32, shardName, tenantSlots } from '../../shard/src/pool'
 import { type Env, type TenantLimits, fileCacheTtl, leafPoolSize } from './config'
-import { type EvaluateAnswer, type EvaluateRequest, type EvaluateStats, type FileRef, MAX_BYTES_PER_CALL, MAX_READS_PER_CALL, type ReadItem, type ReadResult } from './leaf'
+import { type EvaluateAnswer, type EvaluateRequest, type EvaluateStats, type FileRef, MAX_BYTES_PER_CALL, MAX_READS_PER_CALL, type ReadItem, type ReadResult, type TailRefusal } from './leaf'
+import { type TailBudget, type TailFilter, type TailPart, type TailRead, readPages, tailEstimate, tailFilter } from './tail'
 
 /** Largest and smallest timestamps storage can hold (contracts/BATCH.md). */
 export const MIN_TS = 0
@@ -101,12 +102,19 @@ export interface Cost {
    * series were read: CARDINALITY.md item 2).
    */
   pruning: string
+  /**
+   * How the shards' tails were read: `filtered` (every shard applied the read's filter and
+   * paged, D48), `unfiltered` (a shard of the previous release answered with its whole tail),
+   * with `+leaves` when the tail did not fit the coordinator and each split part read the
+   * rest of it, in its own key range, itself. Empty when no shard was read.
+   */
+  tailMode: string
 }
 
 export const newCost = (): Cost => ({
   ledgerVersion: 0, planAttempts: 0, filesListed: 0, filesSkipped: 0, filesRead: 0, scanSamples: 0, seriesEstimate: 0, bytesRead: 0, cacheHits: 0, r2Gets: 0, leafCalls: 0,
   leavesUsed: 0, leafRounds: 0, shardsAsked: 0, shardCalls: 0, tailBatches: 0, tailBytes: 0, seriesLoaded: 0, samplesLoaded: 0, engineMs: 0, wasmMemoryBytes: 0,
-  execution: '', splitReason: '', splitLeaves: 0, readerCalls: 0, rpcBytes: 0, leafPeakWasmBytes: 0, leafMaxSamples: 0, leafReruns: 0, pruning: '',
+  execution: '', splitReason: '', splitLeaves: 0, readerCalls: 0, rpcBytes: 0, leafPeakWasmBytes: 0, leafMaxSamples: 0, leafReruns: 0, pruning: '', tailMode: '',
 })
 
 /** The plan-only answer's fields that come from what was recorded so far. */
@@ -389,17 +397,20 @@ async function fetchFiles(c: Context, entries: (FileEntry | Planned)[], have: Ma
 
 // ────────────────────────────────── tail ──────────────────────────────────
 
-type Tail = { status: 'ok'; batches: Uint8Array[]; bytes: number } | { status: 'refused'; why: string }
+type Tail = { status: 'ok'; read: TailRead } | { status: 'refused'; why: string }
 
 /**
- * Rows of one shard above the ledger's watermark for it.
+ * Rows of one shard above the ledger's watermark for it, filtered by `filter` and paged
+ * under `budget` (D48: `readPages`). A shard of the previous release ignores the filter and
+ * answers with its whole tail (`paged` false); that is used as it is.
  *
  * `known` remembers, across re-plans of this query, the incarnation each shard said its
  * stream has. The cases:
  *
  *   - The ledger has a watermark for the shard: ask above it. `stale_watermark` (the
  *     shard discarded past it: a flush was recorded since the plan) and
- *     `incarnation_mismatch` are refusals; the caller re-reads the ledger.
+ *     `incarnation_mismatch`, on any page, are refusals; the caller re-reads the ledger
+ *     and the pages read so far are dropped.
  *   - After such a mismatch the fresh plan still has the older incarnation: the shard's
  *     stream is one the ledger has never registered, so everything in it is tail.
  *   - The ledger has never registered the shard: ask for the stream's incarnation, then
@@ -407,8 +418,11 @@ type Tail = { status: 'ok'; batches: Uint8Array[]; bytes: number } | { status: '
  *     shard answers `stale_watermark` and the caller re-reads the ledger.
  *   - The ledger knows a NEWER incarnation than the shard has: the shard is behind the
  *     ledger, which cannot be answered correctly. Refused.
+ *
+ * A read that stops at the budget comes back `complete: false`; the caller refuses the
+ * query or hands the rest to leaves. Every other status is a retryable 503.
  */
-async function readTail(c: Context, shard: string, w: Watermark | undefined, known: Map<string, number>): Promise<Tail> {
+async function readTail(c: Context, shard: string, w: Watermark | undefined, known: Map<string, number>, filter: TailFilter, budget: TailBudget): Promise<Tail> {
   const stub = c.env.SHARD.get(c.env.SHARD.idFromName(shard))
   let incarnation = w?.incarnation ?? 0
   let above = w?.seq ?? 0
@@ -417,27 +431,16 @@ async function readTail(c: Context, shard: string, w: Watermark | undefined, kno
     incarnation = learned
     above = 0
   }
+  const alter = hooks.alterTail
   for (let call = 0; call < 2; call++) {
-    c.cost.shardCalls++
-    const raw = await stub.tailRead(c.tenant, incarnation, above)
-    const r = hooks.alterTail ? (hooks.alterTail(shard, raw) as typeof raw) : raw
-    if (r.status === 'ok') {
-      if (!Array.isArray(r.batches)) throw new ApiError('unavailable', `shard ${shard} answered ok without batches; retry`)
-      let bytes = 0
-      const batches = r.batches.map((b) => {
-        bytes += b.payload.byteLength
-        return b.payload
-      })
-      return { status: 'ok', batches, bytes }
-    }
-    if (r.status === 'stale_watermark') return { status: 'refused', why: `shard ${shard} has discarded rows above the watermark` }
-    // Every other status is handled by name (contracts/COMPATIBILITY.md §2.4, §3.2): a shard
-    // whose storage is newer than this release reads, or a status it does not know, is a
-    // retryable failure, never an empty tail and never a stream to re-read.
-    const status: string = r.status
-    if (status === 'schema_too_new') throw new ApiError('unavailable', `shard ${shard} runs a newer storage schema than this release reads (schema_too_new); retry`)
-    // (`page_limit`, a paged tail this release does not read yet, is one of these: it fails closed.)
-    if (r.status !== 'incarnation_mismatch') throw new ApiError('unavailable', `shard ${shard} answered a status this release does not know (${status.slice(0, 40)}); retry`)
+    const r = await readPages(stub, shard, c.tenant, incarnation, above, filter, budget, 'coordinator', undefined, alter && ((a: unknown) => alter(shard, a)))
+    c.cost.shardCalls += r.calls
+    if (r.status === 'ok') return { status: 'ok', read: r }
+    if (r.status === 'stale') return { status: 'refused', why: `shard ${shard} has discarded rows above the watermark` }
+    // Every other status by name (contracts/COMPATIBILITY.md §2.4, §3.2): a newer schema, a
+    // status this release does not know, options the shard refuses: retryable, never an empty
+    // tail and never a stream to re-read.
+    if (r.status === 'unavailable') throw new ApiError('unavailable', `${r.reason}; retry`)
     if (r.incarnation < incarnation) return { status: 'refused', why: `shard ${shard} is behind the ledger` }
     known.set(shard, r.incarnation)
     if (w) return { status: 'refused', why: `shard ${shard} has a newer stream than the ledger knows` }
@@ -447,6 +450,50 @@ async function readTail(c: Context, shard: string, w: Watermark | undefined, kno
   }
   return { status: 'refused', why: `shard ${shard} changed its stream twice during one read` }
 }
+
+/** Every shard's tail as read, or a refusal that sends the query back to the ledger. */
+type Tails = { again: true } | { again: false; reads: TailRead[]; bytes: number; over: boolean; atLeast: number }
+
+/**
+ * The tails of `shards`, in parallel, under one budget of `cap` bytes. `over`: the tail does
+ * not fit (a read stopped at the budget, or together they passed it); `atLeast` is then a
+ * lower bound of its bytes. Refusals are counted with `refused` (which throws past the bound).
+ */
+async function readTails(c: Context, shards: string[], watermarks: Watermark[], known: Map<string, number>, refused: (who: string, why: string) => void, filter: TailFilter, cap: number): Promise<Tails> {
+  const budget: TailBudget = { cap: Math.max(0, cap), used: 0 }
+  const tails = await Promise.all(shards.map((s) => readTail(c, s, watermarks.find((w) => w.shard === s), known, filter, budget)))
+  let again = false
+  shards.forEach((s, i) => {
+    const t = tails[i]!
+    if (t.status === 'refused') {
+      refused(`shard ${s}`, t.why)
+      again = true
+    }
+  })
+  if (again) return { again: true }
+  const reads = tails.map((t) => (t as Extract<Tail, { status: 'ok' }>).read)
+  const bytes = reads.reduce((a, r) => a + r.bytes, 0)
+  const over = reads.some((r) => !r.complete) || bytes > budget.cap
+  c.cost.tailMode = reads.length === 0 ? '' : reads.every((r) => r.paged) ? 'filtered' : 'unfiltered'
+  c.cost.tailBatches = reads.reduce((a, r) => a + r.batches.length, 0)
+  c.cost.tailBytes = bytes
+  return { again: false, reads, bytes, over, atLeast: bytes + reads.reduce((a, r) => a + r.overBytes, 0) }
+}
+
+/** The tail's batches in the order the engine reads them: shards in name order, each in sequence order. */
+const tailBatchesOf = (reads: TailRead[]): Uint8Array[] => reads.flatMap((r) => r.batches.map((b) => b.payload))
+
+/** Where a part reads the rest of a shard's tail that stopped at the coordinator's budget: above the last batch the coordinator has. */
+const restOf = (r: TailRead, filter: TailFilter): TailPart['rest'] =>
+  r.complete ? null : { incarnation: r.incarnation, above: r.batches.reduce((a, b) => Math.max(a, b.seq), r.above), through: r.through, filter }
+
+/**
+ * Whether the shards can cut a split's tail by key (`keyRange` of `series_id`): when the split
+ * key is the `series_id` of every series that carries none of `without`'s labels, and those
+ * labels are ones series rarely carry (`__type__`, `__unit__`). A leaf that meets a series
+ * carrying one says so (`strays`), and the query is refused rather than answered wrong.
+ */
+export const shardsCanCut = (without: string[]): boolean => without.every((l) => l === '__type__' || l === '__unit__')
 
 /** Shards to ask: every slot the tenant may write to, and every stream the ledger has registered. */
 async function shardsOf(c: Context, watermarks: Watermark[]): Promise<string[]> {
@@ -475,11 +522,41 @@ export function checkDeadline(c: Context): void {
 let inFlightBytes = 0
 export const ISOLATE_BUDGET_BYTES = 48 << 20
 
-const tooMuch = (c: Context, what: string, bytes: number): ApiError =>
+/** `atLeast`: `bytes` is a lower bound (a read stopped at the limit, D48). */
+const tooMuch = (c: Context, what: string, bytes: number, atLeast = false): ApiError =>
   new ApiError(
     'execution',
-    `query exceeded limit max_fetch_bytes: ${what} is ${bytes} bytes, the limit is ${c.limits.maxFetchBytes}. Narrow the time range, or select fewer metrics by name.`,
+    `query exceeded limit max_fetch_bytes: ${what} is ${atLeast ? 'at least ' : ''}${bytes} bytes, the limit is ${c.limits.maxFetchBytes}. Narrow the time range, or select fewer metrics by name.`,
   )
+
+/** A part's tail as the coordinator hands it to a leaf: cut here (`tails`), or cut here and read in part by the leaf (`tailParts`). */
+export interface PartTail {
+  tails: Uint8Array[]
+  tailParts?: TailPart[]
+}
+
+/**
+ * A leaf's refusal of its part of the tail (`Leaf`, `readRests`), handled as the
+ * coordinator handles its own: a discarded watermark or another stream sends the query back
+ * to the ledger (counted against the shard's bound); a part's tail over the byte cap, or a
+ * tail the shards could not cut by key, is 422; anything else a retryable 503.
+ */
+function tailRefused(c: Context, x: TailRefusal, known: Map<string, number>, refused: (who: string, why: string) => void, parts: number): void {
+  if (x.kind === 'stale') return refused(`shard ${x.shard}`, `shard ${x.shard} has discarded rows above the watermark`)
+  if (x.kind === 'mismatch') {
+    if (x.incarnation < x.asked) return refused(`shard ${x.shard}`, `shard ${x.shard} is behind the ledger`)
+    known.set(x.shard, x.incarnation)
+    return refused(`shard ${x.shard}`, `shard ${x.shard} has a newer stream than the ledger knows`)
+  }
+  if (x.kind === 'too_large') throw tooMuch(c, `the unflushed tail of one of ${parts} parts`, x.bytes, true)
+  if (x.kind === 'strays') {
+    throw new ApiError(
+      'execution',
+      `query exceeded limit max_fetch_bytes: the unflushed tail is more than ${c.limits.maxFetchBytes} bytes, the limit, and holds series with a __type__ or __unit__ label, which the shards cannot cut by key. Narrow the time range, or select fewer metrics by name.`,
+    )
+  }
+  throw new ApiError('unavailable', `${x.reason}; retry`)
+}
 
 /**
  * How many series a query loads, summed over its reads as `max_series` counts them,
@@ -617,6 +694,73 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
     refusals.set(who, n)
     if (n > MAX_REFUSALS) throw new ApiError('unavailable', `${why}, and the ledger does not catch up; retry later`)
   }
+  // What every shard is asked to keep (D48): the hull of the ranges' times, their metric
+  // names, the label values every range pins. The engine applies the ranges exactly.
+  const filter = tailFilter(ranges)
+
+  /**
+   * Split execution from one ledger version. The tail is the one read in one place that did
+   * not fit there (`prior`), or is read now under `maxFetchBytes`. When it fits it is cut by
+   * part here, as before; when it does not (and the shards can cut it by key) each part gets
+   * its cut of what was read and reads the rest of each shard's tail itself, in its key range.
+   * `again`: a shard, a leaf or a missing file sent the query back to the ledger.
+   */
+  const splitPath = async (
+    snap: Snapshot,
+    series: FileEntry[],
+    samples: FileEntry[],
+    scan: number,
+    seriesEst: number,
+    lakeBytes: number,
+    spec: SplitSpec<T>,
+    prior: Tails | null,
+  ): Promise<{ again: true } | { again: false; value: T }> => {
+    let t = prior
+    if (!t) {
+      const shards = await shardsOf(c, snap.watermarks)
+      c.cost.shardsAsked = shards.length
+      t = await readTails(c, shards, snap.watermarks, known, refused, filter, c.limits.maxFetchBytes)
+    }
+    if (t.again) return { again: true }
+    const reads = t.reads
+    c.cost.filesRead = series.length + samples.length
+    c.cost.bytesRead = lakeBytes
+    const pool = leafPoolSize(c.env)
+    let L: number
+    let tailFor: (j: number) => PartTail
+    if (!t.over) {
+      // The tail is held here while it is cut by part (each part goes to its leaf).
+      L = hooks.forceLeaves ?? leafCount(c.limits, pool, scan + Math.ceil(t.bytes / 20), seriesEst)
+      const parts = c.engine.splitTails(tailBatchesOf(reads), spec.without, L, ranges)
+      tailFor = (j) => ({ tails: parts[j]! })
+    } else {
+      if (!shardsCanCut(spec.without)) throw tooMuch(c, 'the unflushed tail', t.atLeast, !reads.every((r) => r.complete))
+      // Leaves sized for the whole tail as estimated from what was read (and its series),
+      // with each part's share of it under half of a leaf's byte cap.
+      const est = tailEstimate(reads)
+      const most = Math.max(1, Math.min(c.limits.maxLeaves, pool))
+      L = hooks.forceLeaves ?? Math.min(most, Math.max(leafCount(c.limits, pool, scan + Math.ceil(est.bytes / 20), Math.max(seriesEst, est.series)), Math.ceil(est.bytes / (0.5 * c.limits.maxFetchBytes))))
+      const cut = reads.map((r) => (r.batches.length === 0 ? [] : c.engine.splitTails(r.batches.map((b) => b.payload), spec.without, L, ranges)))
+      const rests = reads.map((r) => restOf(r, filter))
+      if (rests.every((r) => r === null)) tailFor = (j) => ({ tails: cut.flatMap((parts) => parts[j] ?? []) })
+      else {
+        c.cost.tailMode += '+leaves'
+        tailFor = (j) => ({ tails: [], tailParts: reads.map((r, i) => ({ shard: r.shard, batches: cut[i]![j] ?? [], rest: rests[i]! })) })
+      }
+    }
+    checkDeadline(c)
+    const r = await runSplit(c, spec, ranges, series, samples, L, tailFor)
+    if (r.status === 'missing') {
+      refused(`file ${r.key}`, `data file ${r.key} is listed by the ledger but is not in R2`)
+      return { again: true }
+    }
+    if (r.status === 'tail') {
+      tailRefused(c, r.refusal, known, refused, L)
+      return { again: true }
+    }
+    return { again: false, value: spec.done(r.out) }
+  }
+
   let reserved = 0
   try {
     for (let attempt = 1; ; attempt++) {
@@ -703,37 +847,13 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
         return explain({ ...planOf(c), execution: splitting ? 'split' : 'single', splitReason: why, leaves, filesToRead: wanted.length, bytesToRead: lakeBytesAll, refusal: refusal && { errorType: refusal.errorType, error: refusal.message } })
       }
       if (split && splitting) {
-        // ── Split execution: leaves read and evaluate parts of the series; only the tail is held here. ──
+        // ── Split execution: leaves read and evaluate parts of the series. ──
         c.cost.execution = 'split'
         c.cost.splitReason = ''
         if (refusal) throw refusal
-        const shards = await shardsOf(c, snap.watermarks)
-        c.cost.shardsAsked = shards.length
-        const tails = await Promise.all(shards.map((s) => readTail(c, s, snap.watermarks.find((w) => w.shard === s), known)))
-        let again = false
-        shards.forEach((s, i) => {
-          const t = tails[i]!
-          if (t.status === 'refused') {
-            refused(`shard ${s}`, t.why)
-            again = true
-          }
-        })
-        if (again) continue
-        const tailBatches = tails.flatMap((t) => (t.status === 'ok' ? t.batches : []))
-        const tailBytes = tails.reduce((a, t) => a + (t.status === 'ok' ? t.bytes : 0), 0)
-        // The coordinator holds the tail while it cuts it by part.
-        if (tailBytes > c.limits.maxFetchBytes) throw tooMuch(c, 'the unflushed tail', tailBytes)
-        c.cost.filesRead = wanted.length
-        c.cost.bytesRead = lakeBytesAll
-        c.cost.tailBatches = tailBatches.length
-        c.cost.tailBytes = tailBytes
-        checkDeadline(c)
-        const r = await runSplit(c, split, ranges, series, samples, tailBatches, scan + Math.ceil(tailBytes / 20), seriesEst)
-        if (r.status === 'missing') {
-          refused(`file ${r.key}`, `data file ${r.key} is listed by the ledger but is not in R2`)
-          continue
-        }
-        return split.done(r.out)
+        const r = await splitPath(snap, series, samples, scan, seriesEst, lakeBytesAll, split, null)
+        if (r.again) continue
+        return r.value
       }
       if (split) {
         c.cost.execution = 'single'
@@ -748,23 +868,16 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
         inFlightBytes += reserved
       }
 
-      // Tails strictly after the plan; shards and leaves in parallel.
+      // Tails strictly after the plan; shards and leaves in parallel. The tail may take what
+      // the files leave of `maxFetchBytes`; a read stops there (D48), it is not read whole first.
       const shards = await shardsOf(c, snap.watermarks)
       c.cost.shardsAsked = shards.length
       const files = fetchFiles(c, carrier ? samplePlans : [...seriesPlans, ...samplePlans], have).then(
         (bytes) => ({ ok: true as const, bytes }),
         (error: unknown) => ({ ok: false as const, error }),
       )
-      const tails = await Promise.all(shards.map((s) => readTail(c, s, snap.watermarks.find((w) => w.shard === s), known)))
-
-      let again = false
-      shards.forEach((s, i) => {
-        const t = tails[i]!
-        if (t.status === 'refused') {
-          refused(`shard ${s}`, t.why)
-          again = true
-        }
-      })
+      const tails = await readTails(c, shards, snap.watermarks, known, refused, filter, c.limits.maxFetchBytes - lakeBytes)
+      let again = tails.again
       const got = await files
       if (!got.ok) {
         if (!(got.error instanceof MissingFile)) throw got.error
@@ -773,15 +886,25 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
         refused(`file ${got.error.key}`, got.error.message)
         again = true
       }
-      if (again) continue
-
-      const tailBatches = tails.flatMap((t) => (t.status === 'ok' ? t.batches : []))
-      const tailBytes = tails.reduce((a, t) => a + (t.status === 'ok' ? t.bytes : 0), 0)
-      if (lakeBytes + tailBytes > c.limits.maxFetchBytes) throw tooMuch(c, 'the data files in range plus the unflushed tail', lakeBytes + tailBytes)
+      if (again || tails.again) continue
+      if (tails.over) {
+        // The tail does not fit one place. A query that decomposes, over a split key the shards
+        // can cut, is split instead: each part reads the rest of the tail in its key range.
+        if (split && shardsCanCut(split.without)) {
+          have.clear()
+          c.cost.execution = 'split'
+          c.cost.splitReason = ''
+          const splitRefusal = refusalBeforeFetch(c, true, scan, wanted.length, lakeBytesAll)
+          if (splitRefusal) throw splitRefusal
+          const r = await splitPath(snap, series, samples, scan, seriesEst, lakeBytesAll, split, tails)
+          if (r.again) continue
+          return r.value
+        }
+        throw tooMuch(c, 'the data files in range plus the unflushed tail', lakeBytes + tails.atLeast, !tails.reads.every((t) => t.complete))
+      }
+      const tailBatches = tailBatchesOf(tails.reads)
       c.cost.filesRead = wanted.length
       c.cost.bytesRead = lakeBytes
-      c.cost.tailBatches = tailBatches.length
-      c.cost.tailBytes = tailBytes
       checkDeadline(c)
 
       if (hooks.sampleOrder) hooks.sampleOrder(samples.map((f) => f.key))

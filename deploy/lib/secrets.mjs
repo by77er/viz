@@ -1,4 +1,4 @@
-// Worker secrets the deploy generates itself (design/DECISIONS.md D52; deploy/README.md, "Worker
+// Worker secrets the deploy generates itself (design/DECISIONS.md D53; deploy/README.md, "Worker
 // secrets the deploy generates"). Today one: viz-control's OAUTH_CLIENT_KEY.
 //
 // - Made here with a CSPRNG only when the version a release would promote does not already carry

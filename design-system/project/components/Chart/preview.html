@@ -86,42 +86,56 @@ if (!window.vzChart) (function () {
   }
 
   // ---- rules as functions ----
-  /* Series colour (Chart README, "Series colour", the algorithm). The view's map records, for every series it has seen:
-       slot   the slot it was drawn in (1 to 8), or 0 for Other, the last time it was there;
-       held   the number of the last result in which it was there holding that slot;
-       on     whether it was there at the last result: in the result, or filtered out by the view's own filter (hidden, not gone).
-     and `ever`, the slots any series has held, and `n`, the number of results seen. One result, numbered n:
-       1. Continuing series (there now and at the last result) keep their slot, or Other.
-       2. Returning series keep the colour they had: one that was in Other stays in Other; one that had a slot takes it back if no series
-          holds it now (when two want the same slot, the one that held it more recently).
-       3. New series, and returning ones whose slot another series holds, in order of rank (highest value in the window, largest first;
-          ties by key): the lowest slot no series has ever held; else the reserved slot (one no series holds now) whose last holder was
-          there longest ago; else Other.
-       4. Every series that is there and has a slot records n.
-     A slot is free when no series has ever held it, held when a series that is there has it, and reserved otherwise. "Colour the eight
-     largest" (the person's choice) starts the map again from what is drawn. */
-  const newMap = () => ({ v: 6, n: 0, ever: [], s: {} })
-  const slotOf = (map, k) => map.s[k]?.slot
+  /* Series colour (Chart README, "Series colour", the algorithm: what a person sees wins). A series is on screen when it is in the
+     result and the view's filter does not hide it; hidden when the view's own filter hides it (a filter in the chart, or a label matcher
+     a dashboard filter adds to the query); away otherwise. The view's map records, for every series it has had on screen:
+       slot   the slot it last had (1 to 8), or 0 for Other;
+       held   the number of the last step at which it was on screen holding that slot;
+       was    where it was at the last step: 'screen', 'hidden' or 'away';
+     and owner[1..8], the series each slot now belongs to (null while no series ever had it: the slot is free). A slot whose owner is on
+     screen is held; one whose owner is hidden is reclaimable; one whose owner is away is reserved for it. Each step (a result, or a
+     change of the filter), numbered n:
+       1. Series on screen now and at the last step keep their slot, or Other.
+       2. Series that come on screen take back the slot they had if no series on screen owns it (a hidden or away owner gives it up);
+          when two want one slot, the one that held it more recently. One that was in Other stays in Other (rule 4 may colour it).
+       3. New series on screen, and those whose slot a series on screen owns, by rank (largest first; ties by key): the lowest free
+          slot; else the reserved slot whose owner has been away longest (ties: the lowest); else the lowest reclaimable slot; else Other.
+       4. While a slot is free or reclaimable and a series on screen is in Other, the largest such series takes the lowest such slot.
+       5. Series on screen with a slot record n.
+     Hidden series are never given a slot; they keep theirs until rule 3 or 4 gives it to a series on screen. "Colour the eight largest"
+     starts the map again from what is on screen. */
+  const newMap = () => ({ v: 7, n: 0, owner: [null, null, null, null, null, null, null, null, null], s: {} })
+  const slotOf = (map, k) => { const e = map.s[k]; return e && e.slot && map.owner[e.slot] === k ? e.slot : 0 }
   const byRank = (a, b) => b.rank - a.rank || (a.key < b.key ? -1 : 1)
+  const SLOTS = [1, 2, 3, 4, 5, 6, 7, 8]
   function assignSeries(map, series, opts = {}) {
-    const n = ++map.n, S = map.s, present = new Set(series.map((s) => s.key)), out = opts.filteredOut || (() => false)
-    const there = (k) => present.has(k) || out(k), holds = new Map()
-    for (const [k, e] of Object.entries(S)) if (e.on && there(k) && e.slot) holds.set(e.slot, k) // 1. continuing
-    const pool = series.filter((s) => !S[s.key])
-    for (const s of series.filter((x) => S[x.key] && !S[x.key].on && S[x.key].slot).sort((a, b) => S[b.key].held - S[a.key].held || (a.key < b.key ? -1 : 1))) { // 2.
-      const e = S[s.key]; if (!holds.has(e.slot)) holds.set(e.slot, s.key); else pool.push(s) }
-    const lastThere = (i) => Math.max(0, ...Object.values(S).filter((e) => e.slot === i).map((e) => e.held))
-    for (const s of pool.sort(byRank)) { // 3.
-      let slot = 0
-      for (let i = 1; i <= 8 && !slot; i++) if (!map.ever.includes(i)) slot = i
-      if (!slot) { let best = Infinity; for (let i = 1; i <= 8; i++) if (!holds.has(i) && lastThere(i) < best) { best = lastThere(i); slot = i } }
-      const e = S[s.key] || (S[s.key] = { slot: 0, held: 0, on: false })
-      e.slot = slot; if (slot) { holds.set(slot, s.key); if (!map.ever.includes(slot)) map.ever.push(slot) }
+    const n = ++map.n, S = map.s, O = map.owner, inResult = new Map(series.map((s) => [s.key, s]))
+    const shown = opts.visible || (() => true), out = opts.filteredOut || (() => false)
+    const where = (k) => (inResult.has(k) ? (shown(inResult.get(k)) ? 'screen' : 'hidden') : out(k) ? 'hidden' : 'away')
+    const screen = series.filter((s) => where(s.key) === 'screen'), ownerIs = (i) => (O[i] ? where(O[i]) : 'free')
+    const take = (s, i) => { const e = S[s.key] || (S[s.key] = { slot: 0, held: 0, was: 'away' }); e.slot = i; if (i) O[i] = s.key }
+    // 2. coming on screen with a slot: back into it unless a series on screen owns it
+    const pool = []
+    for (const s of screen.filter((x) => S[x.key] && S[x.key].was !== 'screen' && S[x.key].slot).sort((a, b) => S[b.key].held - S[a.key].held || (a.key < b.key ? -1 : 1))) {
+      const i = S[s.key].slot; if (O[i] === s.key || ownerIs(i) !== 'screen') take(s, i); else pool.push(s) }
+    // 3. new on screen, and displaced: free, else reserved (away longest), else reclaimable, else Other
+    for (const s of screen) if (!S[s.key]) pool.push(s)
+    for (const s of pool.sort(byRank)) {
+      let slot = SLOTS.find((i) => ownerIs(i) === 'free') ?? 0
+      if (!slot) { let best = Infinity; for (const i of SLOTS) if (ownerIs(i) === 'away' && S[O[i]].held < best) { best = S[O[i]].held; slot = i } }
+      if (!slot) slot = SLOTS.find((i) => ownerIs(i) === 'hidden') ?? 0
+      take(s, slot)
     }
-    for (const [k, e] of Object.entries(S)) { e.on = there(k); if (e.on && e.slot) e.held = n } // 4.
+    // 4. what a person sees wins: no series on screen stays grey while a slot is free or held only by a hidden series
+    for (const s of screen.filter((x) => !slotOf(map, x.key)).sort(byRank)) {
+      const slot = SLOTS.find((i) => ownerIs(i) === 'free') ?? SLOTS.find((i) => ownerIs(i) === 'hidden'); if (!slot) break
+      take(s, slot) }
+    // 5.
+    for (const [k, e] of Object.entries(S)) { e.was = where(k); if (e.was === 'screen' && e.slot && O[e.slot] === k) e.held = n }
     return map
   }
-  /* "Colour the eight largest": the view's map starts again from what is drawn, the largest first. Series filtered out are placed after it. */
+  /* "Colour the eight largest": the map starts again from what is on screen: the eight largest take slots 1 to 8, the rest are in Other.
+     Series hidden or away have no slot afterwards; they are placed by rule 3 when they come on screen. */
   function recolour(map, m) { Object.assign(map, newMap()); assignSeries(map, [...m.listed].sort(byRank)); return map }
   /* Legend names: labels every series shares are dropped (and stated once); the rest are ordered by how many distinct values they
      take, most first, so the part that tells series apart is read first. */
@@ -185,17 +199,17 @@ if (!window.vzChart) (function () {
   function chartModel(spec, map, view) {
     const i0 = Math.round((view.t0 - spec.t0) / spec.step), i1 = Math.round((view.t1 - spec.t0) / spec.step), n = i1 - i0 + 1
     const result = spec.series.map((s) => { const v = s.values.slice(i0, i1 + 1); let last = null, min = Infinity, max = -Infinity; for (const x of v) if (x != null) { last = x; if (x < min) min = x; if (x > max) max = x } return { labels: s.labels, key: key(s.labels), v, last, min: last == null ? null : min, max: last == null ? null : max, rank: last == null ? -Infinity : max } })
-    assignSeries(map, result, { filteredOut: view.filteredOut })
-    for (const s of result) s.slot = slotOf(map, s.key) || 0
+    assignSeries(map, result, { visible: view.filter, filteredOut: view.filteredOut })
+    for (const s of result) s.slot = slotOf(map, s.key)
     const listed = view.filter ? result.filter(view.filter) : result
     const coloured = listed.filter((s) => s.slot).sort((a, b) => a.slot - b.slot), other = listed.filter((s) => !s.slot).sort(byRank)
     const lo = [], hi = []; for (let i = 0; i < n; i++) { let a = Infinity, b = -Infinity; for (const s of other) { const p = s.v[i]; if (p != null) { if (p < a) a = p; if (p > b) b = p } } lo.push(a === Infinity ? null : a); hi.push(b === -Infinity ? null : b) }
     const smallest = coloured.length ? Math.min(...coloured.map((s) => s.max ?? -Infinity)) : null, larger = smallest == null ? [] : other.filter((s) => (s.max ?? -Infinity) > smallest)
-    // where the slots not drawn are: held by a series the filter hides, or by none in this result
-    const hidden = result.filter((s) => s.slot && !listed.includes(s)).length + Object.entries(map.s).filter(([k, e]) => e.slot && e.on && !result.some((s) => s.key === k)).length
-    const absent = map.ever.length - coloured.length - hidden
+    // where the slots not drawn are: owned by a series the filter hides, or by one not in this result
+    const onScreen = new Set(listed.map((s) => s.key)), inResult = new Set(result.map((s) => s.key)), out = view.filteredOut || (() => false)
+    let hidden = 0, absent = 0; for (const k of map.owner) if (k && !onScreen.has(k)) { if (inResult.has(k) || out(k)) hidden++; else absent++ }
     const big = Math.max(0, ...listed.map((s) => Math.max(Math.abs(s.max ?? 0), Math.abs(s.min ?? 0))), spec.threshold ? Math.abs(spec.threshold.value) : 0)
-    return { i0, n, t0: view.t0, t1: view.t1, result, listed, series: listed, coloured, other, band: { lo, hi }, larger, hiddenColoured: hidden, absentColoured: Math.max(0, absent), names: distinguish(listed), unit: scaleUnit(spec.unit, big), byKey: new Map(result.map((s) => [s.key, s])) }
+    return { i0, n, t0: view.t0, t1: view.t1, result, listed, series: listed, coloured, other, band: { lo, hi }, larger, hiddenColoured: hidden, absentColoured: absent, names: distinguish(listed), unit: scaleUnit(spec.unit, big), byKey: new Map(result.map((s) => [s.key, s])) }
   }
   /* What is drawn: the coloured series not switched off in the legend, the members of Other picked out (at most three, in ink), and the band. */
   function drawnSet(m, st) {
@@ -205,11 +219,11 @@ if (!window.vzChart) (function () {
   /* The legend note about Other: one sentence, counted over the series the legend lists, so it never names a colour that is not drawn. */
   function otherNote(m) {
     if (!m.other.length) return null
-    if (!m.coloured.length) { const f = m.hiddenColoured, a = m.absentColoured, n = f + a, are = (k) => (k === 1 ? 'is' : 'are')
-      const why = f && a ? `${f} filtered out, ${a} not in this result` : f ? `the ${n === 1 ? 'one' : n} coloured ${are(n)} filtered out` : a ? `the ${n === 1 ? 'one' : n} coloured ${are(n)} not in this result` : 'none has a slot'
-      return { kind: 'none-coloured', text: `No series is coloured: ${why}` } }
+    // Nothing coloured on screen while Other is: every slot waits for a series that is away (a filter's slots go to the screen, rule 4)
+    if (!m.coloured.length) { const a = m.absentColoured
+      return { kind: 'none-coloured', text: `No series is coloured: ${a ? `the ${a === 1 ? 'one' : a} coloured ${a === 1 ? 'is' : 'are'} not in this result` : 'none has a slot'}` } }
     if (m.larger.length) { const k = m.larger.length; return { kind: 'larger', count: k, text: `${k} in Other ${k === 1 ? 'is' : 'are'} now larger than a coloured series` } }
-    return { kind: 'by-size', coloured: m.coloured.length, other: m.other.length, text: `${m.coloured.length} coloured by size when first seen; ${m.other.length} in Other` }
+    return { kind: 'by-size', coloured: m.coloured.length, other: m.other.length, text: `${m.coloured.length} coloured by size; ${m.other.length} in Other` }
   }
   /* Facts over every drawn series, members of Other included: the highest at a point (the readout), the series above the threshold at the
      end of the range and earlier in it (the text form), the highest member of Other, and the note. One computation for the readout, the
@@ -248,8 +262,8 @@ if (!window.vzChart) (function () {
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
   const PATTERNS = ['solid', 'dash', 'dot'] // a member of Other picked out: ink, in this pattern, in the order picked; at most three at once
   const maps = {} // the colour map of each view; kept in sessionStorage, so a reload in the same tab keeps colours
-  const loadMap = (id) => { if (!maps[id]) { try { const m = JSON.parse(sessionStorage.getItem('vz-series6:' + id)); maps[id] = m && m.v === 6 ? m : newMap() } catch { maps[id] = newMap() } } return maps[id] }
-  const saveMap = (id) => { try { sessionStorage.setItem('vz-series6:' + id, JSON.stringify(maps[id])) } catch {} }
+  const loadMap = (id) => { if (!maps[id]) { try { const m = JSON.parse(sessionStorage.getItem('vz-series7:' + id)); maps[id] = m && m.v === 7 ? m : newMap() } catch { maps[id] = newMap() } } return maps[id] }
+  const saveMap = (id) => { try { sessionStorage.setItem('vz-series7:' + id, JSON.stringify(maps[id])) } catch {} }
   const SVGNS = 'http://www.w3.org/2000/svg'
 
   function vzChart(root, spec) {

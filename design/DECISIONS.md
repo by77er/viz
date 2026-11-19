@@ -1553,3 +1553,114 @@ delays its rule's first evaluation by an interval.
 (a) or (b)); viz-query's plan reports the series a read returns (then the check can refuse before
 any read); Cloudflare's measured `cpuTime` for the same runs disagrees with the model by more than
 its margin (then the prices change); or the platform exposes CPU time to the running code.
+
+## D52. The ruler writes recorded samples through `RecordedSamples`, and falls back to Remote Write for one release when the entrypoint does not answer by its contract
+
+**Decision.** The ruler binds viz-ingest's `RecordedSamples` entrypoint as `SINK` (`props: {
+caller: "viz-ruler" }`, D45) and sends every recording-rule flush there with the Ruler object's
+own tenant; no key goes with it (`ruler/src/recorded.ts`). It treats the answer as
+`contracts/ingest.ts` says: `unauthorized`, `invalid` and `series_limit` are reported on the rules
+at once, never retried; `too_large` splits the call by whole batches; `backpressure`, `overloaded`
+and `unavailable` are retried inside the tick, after the hint in the message (at most 5 s, and
+never past the group's budget). A rejection whose message starts with **no** refusal word means
+the entrypoint did not answer by its contract (the viz-ingest release serving the call lacks it,
+or the platform failed the call); then, and only then, the same batches go through Remote Write
+over `INGEST` with the shard's service key, the path of the release before, and the Worker logs
+that it did. `INGEST` stays bound for this purpose for one release.
+
+**Alternatives.** (a) No fallback: a rejection without a refusal word is retried like
+`unavailable` and, after three attempts, the tick's samples are dropped (counted). Promotion is
+callee first (viz-ingest before viz-ruler) and rollback caller first, but both directions of skew
+remain while a deployment propagates, and a rollback leaves Ruler objects on the newer code for up
+to 30 s (deferred code updates) while viz-ingest is already back on a release without the
+entrypoint (contracts/COMPATIBILITY.md §1); every recording rule due in that window would lose a
+tick. (b) Fall back on any rejection: a refusal says the entrypoint exists and decided; sending
+the same samples by Remote Write would bypass its whole-call validation (Remote Write keeps the
+valid part of a request) and double the load on an overloaded shard. (c) Recognise the platform's
+"missing entrypoint" error by its text: not documented, not measured on Cloudflare (workerd
+refuses to start such a binding at all), so it would be a guess; the contract's refusal words are
+the one thing that is promised. (d) Two releases, entrypoint first and the binding later, with
+no fallback: still loses ticks on a rollback across the second release, and the entrypoint
+already shipped with D45. (e) A flag var to switch sinks: vars belong to a version, so a rollback
+restores the old value with the old code; it adds a step and no safety.
+
+**Why.** Recorded samples have no outbox: they are sent inside the tick, and a tick that cannot
+deliver them drops them, so a sink that fails during an ordinary rollback would put a gap in every
+recorded series, which contracts/COMPATIBILITY.md exists to prevent. Re-sending is harmless on both
+paths (one value per series and timestamp), so falling back costs nothing in correctness; the
+service key it uses already exists for queries (D39) and already carries `write`. Falling back
+only when the contract was not followed keeps every contract answer meaningful and keeps the key
+out of steady-state writes.
+
+**Cost.** One more code path for one release, and `INGEST` kept bound. In steady state no write
+uses the key (tested); in a skew window each flush is one failed RPC plus one Remote Write.
+Whether Cloudflare accepts a version whose binding names an entrypoint the serving callee lacks,
+and what such a call returns, is **not measured**: the fallback does not depend on the answer,
+but if the upload is refused, a release adding a new entrypoint and its first caller must ship
+the entrypoint one release earlier (a stage trial settles it: deploy the previous ingest, upload
+this ruler, run a recording rule).
+
+**Would change if.** Every viz-ingest release that may run (the rollback floor and later) has
+`RecordedSamples`: then the fallback and `INGEST` go (callee first, contracts/COMPATIBILITY.md
+§4), and once query has its own entrypoint the ruler holds no key at all; or recorded samples get
+an outbox (then a failed write waits instead of falling back).
+
+## D53. The deploy generates control's OAuth client key once, on the version it uploads for a release, and never replaces it unless a deploy is told to
+
+**Decision.** viz-control's Worker secret `OAUTH_CLIENT_KEY` (the HMAC key that signs OAuth
+client registrations, D44) is made by the deploy, not by a person: 32 bytes from Node's CSPRNG,
+base64url, handed to `wrangler versions secret put` on stdin (`deploy/lib/secrets.mjs`). It is
+put only when the version a release would promote does not carry it. Where: right after phase 1
+uploads viz-control, on that upload (checked to be the newest version, since the command patches
+the newest one), so the keyed version is the release's own code and config and serves nothing
+until phase 2 promotes it in place of the upload. A viz-control that goes out with `wrangler
+deploy` (new, as on the first production deploy, or applying a Durable Object migration) gets it
+on the version just deployed, and the keyed version is deployed before the next Worker. Every
+later upload inherits it. It is replaced only by a deploy run with `VIZ_ROTATE_SECRETS=
+OAUTH_CLIENT_KEY`. If the Worker has it now (its secret list or a serving version) but the
+upload does not carry it, the release is refused before anything is promoted (exit 3) instead of
+generating a new one. The release record names each such secret and what was done (kept,
+created, rotated), never a value. `release.mjs plan` says it would create the key and changes
+nothing.
+
+**Alternatives.** (a) `wrangler secret put` before phase 1: Cloudflare documents that it "creates
+a new version of the Worker and deploys it immediately"; it deploys outside the release (the
+serving code plus the key, a deployment no record names), wrangler 4.164.0 refuses it with code
+10215 whenever the newest version is not the deployed one (a failed earlier run leaves one), and
+on a Worker that does not exist (the first deploy) it creates a placeholder Worker `export
+default { fetch() {} }` without asking in CI. (b) `wrangler secret put` after phase 2: a second
+deployment of viz-control after promotion, so its Durable Objects move twice, the new release
+serves for a while without the key, and the record names a version that no longer serves. (c)
+`--secrets-file` on `versions upload` or `deploy`: one version with code and key, but the value
+must come from a file (or `/dev/stdin`, platform-dependent) and "process environment values
+override file values". (d) The operator sets it by hand once, as for the bootstrap token: easy
+to forget, and the failure is a silent 503 on `/oauth/register`. (e) Declaring the secret as
+required in control's wrangler config (Cloudflare documents that deploys then fail when it is
+missing): a check, not provisioning, and it would fail the first `wrangler deploy` of viz-control,
+since `versions secret put` needs a version to exist.
+
+**Why.** Cloudflare says to use `wrangler versions secret put` "if using gradual deployments": it
+"will only create a new version of the Worker, that can then be deployed using `wrangler versions
+deploy`" (Workers docs, Secrets, read 2026-11-19). That is exactly the upload-then-promote flow:
+nothing serves early, nothing but the release's code is promoted, a failure stops before phase 2,
+the release record and `previous.json` name versions as they served, and a rollback restores
+versions as for any release. Never generating over a key that exists is what keeps registered
+clients valid; refusing when the evidence disagrees is the fail-closed reading of
+contracts/COMPATIBILITY.md's promise.
+
+**Cost.** One to three more API reads and, on the release that creates or rotates the key, one
+more version of viz-control. Not run on Cloudflare: inheritance of secrets by later uploads is
+from wrangler's `keep_bindings: ["secret_text", "secret_key"]` and the API's "keep from
+previous_upload" (taken to mean the newest version, as `inherit` bindings default to "latest"),
+not measured. Whether a deployment of an older version that lacks a secret the serving one has
+is refused (wrangler's rollback command handles an API error 10220, "secrets have changed", by
+asking; `versions deploy`, which the automatic rollback uses, does not) is not documented and
+not measured; if it is, the automatic rollback of the release that created the key fails loudly
+and that release keeps serving. Rotation needs a deploy; there is no dispatch input for it yet.
+
+**Would change if.** A stage shows uploads not inheriting the key, or a rollback refused with
+10220 (then the rollback passes `force` or the key is put before the rollback); control verifies
+registrations under an old and a new key (then rotation can be automatic and overlapping);
+wrangler can upload a version with secrets read from stdin (then code and key go in one version);
+or more generated secrets appear (they join `GENERATED_SECRETS`, and one `versions secret bulk`
+replaces one put per secret).

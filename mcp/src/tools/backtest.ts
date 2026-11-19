@@ -23,6 +23,8 @@ export const MAX_BACKTEST_STEPS = 11_000
 export const DEFAULT_INTERVAL_MS = 60_000
 /** Intervals rendered at most, firing first. The rest are counted in the answer, never dropped silently. */
 export const MAX_LISTED_INTERVALS = 1_000
+/** The smallest max_tokens this tool takes (the generic floor is 200). */
+export const MIN_BACKTEST_TOKENS = 600
 
 type Kind = 'threshold' | 'anomaly' | 'slo'
 
@@ -497,7 +499,7 @@ function refusal(a: Extract<BacktestAnswer, { ok: false }>, ctx: Ctx, s: Session
     })
   }
   if (a.code === 'timeout') {
-    return new ToolError('ruler-timeout', `The ruler did not answer within ${Math.round(s.limits.backtestTimeoutMs / 1000)} s; any result it computes after that is lost.`, 'Shorten the range, use a coarser step (threshold monitors only) or narrow the query; nothing is cached, so the same call costs the same again.', { status: 504, detail, data })
+    return new ToolError('ruler-timeout', `The ruler did not answer within ${Number((s.limits.backtestTimeoutMs / 1000).toPrecision(3))} s; any result it computes after that is lost.`, 'Shorten the range, use a coarser step (threshold monitors only) or narrow the query; nothing is cached, so the same call costs the same again.', { status: 504, detail, data })
   }
   if (a.code === 'too_large') return new ToolError('too-large', 'The ruler\'s answer is larger than this server reads.', 'Shorten the range or narrow the query (fewer series, so fewer intervals).', { status: 422, detail, data })
   if (a.status === 401) return new ToolError('ruler-refused', 'The ruler did not accept this key (HTTP 401).', 'Use a key that is enabled and not expired.', { status: 401, detail, data })
@@ -531,7 +533,8 @@ export const backtestMonitor: ToolDef = {
       start: TIME_ARG('Start of the past range', 'now-24h'),
       end: TIME_ARG('End of the range, not in the future', 'now'),
       step: { type: ['string', 'number'], maxLength: 32, description: 'Evaluation step: a duration ("1m") or seconds. Default: the monitor\'s interval. A threshold monitor whose range needs more than 11,000 steps at its interval gets the smallest step that fits, and the result says so.' },
-      max_tokens: MAX_TOKENS_ARG(1500),
+      // At least 600: the summary and the cost alone take up to about 450 tokens, and both are always shown whole.
+      max_tokens: { ...MAX_TOKENS_ARG(1500), minimum: MIN_BACKTEST_TOKENS },
       cursor: CURSOR_ARG,
     },
   },
@@ -573,20 +576,20 @@ export const backtestMonitor: ToolDef = {
       `backtest_monitor: ${kindWord} monitor over ${iso(range.fromMs)} → ${iso(range.toMs)} (${durText(range.toMs - range.fromMs)}), step ${durText(stepMs)}, ${grouped(steps)} steps. Nothing was saved or sent.`,
       range.raisedFromMs !== null ? `The step was raised from the monitor's interval (${durText(range.raisedFromMs)}) to ${durText(range.stepMs)}: the range needs more than ${grouped(MAX_BACKTEST_STEPS)} steps at the interval.` : '',
       sum.firingCount === 0
-        ? `Would not have fired.${sum.pendingCount ? ` Pending ${sum.pendingCount} time(s): ${sum.clearedCount} cleared before firing${sum.pendingCount - sum.clearedCount ? `, ${sum.pendingCount - sum.clearedCount} still pending at the end` : ''}.` : ' Never pending either.'}`
-        : `Would have fired ${sum.firingCount} time(s) on ${sum.firingSeries} series, firing ${durText(sum.firingMs)} in total (longest ${durText(sum.longestFiringMs)}); first fire ${iso(sum.firstFiringMs!)}, last fire ${iso(sum.lastFiringMs!)}${sum.firingAtEnd ? ', still firing at the end' : `, last resolved ${iso(sum.lastResolvedMs!)}`}. ${sum.clearedCount} pending span(s) cleared without firing.`,
+        ? `Would not have fired.${sum.pendingCount ? ` Pending ${grouped(sum.pendingCount)} time(s): ${grouped(sum.clearedCount)} cleared before firing${sum.pendingCount - sum.clearedCount ? `, ${grouped(sum.pendingCount - sum.clearedCount)} still pending at the end` : ''}.` : ' Never pending either.'}`
+        : `Would have fired ${grouped(sum.firingCount)} time(s) on ${grouped(sum.firingSeries)} series, firing ${durText(sum.firingMs)} in total (longest ${durText(sum.longestFiringMs)}); first fire ${iso(sum.firstFiringMs!)}, last fire ${iso(sum.lastFiringMs!)}${sum.firingAtEnd ? ', still firing at the end' : `, last resolved ${iso(sum.lastResolvedMs!)}`}. ${grouped(sum.clearedCount)} pending span(s) cleared without firing.`,
       `Edges are within ${durText(edgeMs)} of where live evaluation (every ${durText(liveMs)}) would put them; the ruler's note on resolution opens the data block.`,
       warmup ? `Warm-up: ${grouped(warmup.points)} point(s) before the start fed through the ${kind === 'slo' ? 'burn-rate windows' : 'detector'} without alerts, as for a new monitor.` : '',
-      malformed ? `${malformed} interval(s) in a form this server does not read are left out of the list and the counts.` : '',
+      malformed ? `${grouped(malformed)} interval(s) in a form this server does not read are left out of the list and the counts.` : '',
       sorted.length === 0
         ? 'No intervals.'
-        : `Intervals: ${sorted.length}, firing first, each with the annotations its alert carried on entering the state${omitted ? `; the first ${grouped(listed.length)} are listed, ${grouped(omitted)} more (${grouped(omittedFiring)} firing, ${grouped(omitted - omittedFiring)} pending) are only counted above` : ''}.`,
+        : `Intervals: ${grouped(sorted.length)}, firing first, each with the annotations its alert carried on entering the state${omitted ? `; the first ${grouped(listed.length)} are listed, ${grouped(omitted)} more (${grouped(omittedFiring)} firing, ${grouped(omitted - omittedFiring)} pending) are only counted above` : ''}.`,
     ]
     return pagedResult({
       tool: this.name,
       s,
       args,
-      maxTokens: budgetOf(args.max_tokens, this.defaultTokens),
+      maxTokens: Math.max(MIN_BACKTEST_TOKENS, budgetOf(args.max_tokens, this.defaultTokens)),
       header: lines.filter(Boolean).join('\n') + '\n',
       items: listed.map(itemOf),
       offset: c?.o ?? 0,
@@ -602,6 +605,7 @@ export const backtestMonitor: ToolDef = {
         intervals: { total: sorted.length, listed: listed.length, omitted, omittedFiring, malformed },
         cost,
       },
+      data: { resolutionNote: clean(typeof res?.note === 'string' ? res.note : '', { max: MAX.long }) },
     })
   },
 }

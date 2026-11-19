@@ -30,7 +30,7 @@
 //   record says so and why. A rollback refuses, naming the release and migration, when any
 //   version that ran since the target wrote storage the target cannot open (`canOpen`): that
 //   is exactly crossing a forward-only release, including one that was itself rolled back.
-// - Secrets the deploy generates (lib/secrets.mjs, D52: viz-control's OAUTH_CLIENT_KEY) are put
+// - Secrets the deploy generates (lib/secrets.mjs, D53: viz-control's OAUTH_CLIENT_KEY) are put
 //   on the version phase 1 uploaded (or, for a Worker that goes out with `wrangler deploy`, on
 //   the version it just deployed) only when that version does not carry them, value on stdin;
 //   phase 2 promotes the keyed version. Replaced only when asked (--rotate-secret,

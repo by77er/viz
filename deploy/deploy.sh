@@ -11,12 +11,16 @@
 #   VIZ_WASM_PREBUILT=1    use the .wasm modules already in place (CI: built and tested by the checks)
 #   VIZ_SKIP_NPM_CI=1      use node_modules as they are (a shared checkout where others are working)
 #   VIZ_STAGE_EXPIRES_AT   a stage only: ISO time after which its ruler stops evaluating by itself
+#   VIZ_ROTATE_SECRETS     generated Worker secrets to REPLACE in this release, e.g. "OAUTH_CLIENT_KEY"
+#                          (invalidates every registered OAuth client; see deploy/README.md). Without
+#                          it a generated secret is created only where it is missing, never replaced.
 #
 # Steps: build both WASM engines; npm ci in each deployed component; resources; configure;
 # release (upload every Worker, then promote callees first); smoke test through the public
 # URL. A failed smoke test rolls back to the previous release when the release applied no
 # Durable Object migration; with a migration it fails loudly instead. Exit codes: 0 deployed
-# and healthy; 1 failed; 3 refused before anything was promoted (unacknowledged migration).
+# and healthy; 1 failed; 3 refused before anything was promoted (unacknowledged migration, or a
+# generated secret that is set but missing from the upload).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -95,9 +99,13 @@ set +e
 node deploy/release.mjs deploy ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"}
 rc=$?
 set -e
-if [ $rc -eq 3 ]; then note "release: REFUSED before promoting anything (unacknowledged Durable Object migration)"; exit 3; fi
+if [ $rc -eq 3 ]; then note "release: REFUSED before promoting anything (see above: an unacknowledged Durable Object migration, or a generated secret)"; exit 3; fi
 if [ $rc -ne 0 ]; then note "release: FAILED during upload or promotion (see above)"; exit 1; fi
 note "release: promoted; record deploy/generated/$TARGET/release.json"
+# Generated secrets, by name only (lib/secrets.mjs): kept, created or rotated.
+# shellcheck disable=SC2016
+SECRETS=$(node -e 'const r=require(process.argv[1]);console.log((r.secrets||[]).map(s=>`${s.name} on ${s.worker} ${s.action}`).join(", "))' "$OUT/release.json")
+if [ -n "$SECRETS" ]; then note "secrets: $SECRETS"; fi
 # shellcheck disable=SC2016  # the single quotes hold JavaScript, not shell
 MIGRATED=$(node -e 'const r=require(process.argv[1]);console.log((r.migrations||[]).map(m=>`${m.worker} ${m.from??"(none)"}→${m.to}`).join(", "))' "$OUT/release.json")
 # Forward-only for a schema reason (contracts/COMPATIBILITY.md §6): a class's storage may already

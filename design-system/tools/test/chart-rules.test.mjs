@@ -1,19 +1,24 @@
 // The Chart rules as properties. Runs the reference chart's own functions (project/components/Chart/preview.html, the one source of
 // dist/viz-chart.js) without a page, over random sequences of what happens to a view: series arriving and leaving, a filter applied and
 // cleared (in the chart, or in the query), a query edited and edited back, values moving, Other opened and members picked, and the
-// person's "Colour the eight largest". After every step it checks the properties the README states:
-//   P1  a series that is in two consecutive results keeps its colour (slot, or Other), unless the person asked to colour the largest;
-//   P2  a filter applied and cleared returns every series it hid in its own colour, whatever arrived or left meanwhile; a query edited
-//       and edited back returns every series in its own colour;
-//   P3  a series that comes back takes the colour it had: Other if it was in Other, its slot if no series that is there holds it; a new
-//       series, or one whose slot another holds, goes to Other only when all eight slots are held, and among those placed together the
-//       larger is never grey while the smaller is coloured;
+// person's "Colour the eight largest" (with or without a filter in force). After every step it checks the properties the Chart README
+// states ("Series colour", the algorithm: what a person sees wins). A series is on screen when it is in the result and the view's filter
+// does not hide it; hidden when the view's filter hides it (in the chart, or a label matcher in the query); away otherwise.
+//   P1  a series on screen at two consecutive steps that has a colour keeps it (unless the person asked to colour the largest); a series
+//       on screen in Other that takes a colour takes one that no series on screen had at the step before;
+//   P2  a query edited and edited back returns every series in its own colour;
+//   P3  the largest series on screen is never grey while a slot is free or held only by hidden series ("what a person sees wins"); a
+//       series coming on screen takes its own slot back whenever no other series on screen holds it; hidden series never gain a slot;
+//       among the series placed in one step the larger is never grey while the smaller is coloured, and series on screen take
+//       reclaimed slots largest first;
 //   P4  the readout's "highest" is the highest of every drawn series, members of Other included;
 //   P5  the text form's threshold lines, Other line and note are computed over every drawn series, members of Other included;
 //   P6  the legend note never claims a colour that is not drawn: its counts are the legend's, and "larger than a coloured series" needs
-//       a coloured series.
-// And the reviewer's two sequences (v5 review, images 01 and 02) as fixed cases, and one case per rule of M2 (negative values, precision,
-// threshold scope, small negative values).
+//       a coloured series;
+//   P7  "Colour the eight largest" colours the eight largest series on screen, largest in slot 1, and nothing hidden or away.
+// Fixed cases: the v6 review's sequences D and E (B2), each blocker example of the review rubric's Many series row, the v5 review's
+// sequences under the v7 rule, flow screen 5, and one case per rule of v5's M2 (negative values, precision, threshold scope, small
+// negative values).
 //   node --test tools/test/chart-rules.test.mjs            (VIZ_DS_ROOT=<other copy> runs it against another version of the system)
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -24,24 +29,29 @@ const script = readFileSync(root + 'project/components/Chart/preview.html', 'utf
 const win = {}
 vm.runInNewContext(script, { window: win, document: { readyState: 'complete', querySelectorAll: () => [] }, sessionStorage: { getItem: () => null, setItem() {} }, Date, Math, JSON, Set, Map, Object, String, Number, Array, Infinity, console })
 const R = win.vzChartRules, D = win.vzChartDemos
-const v6 = typeof R.chartModel === 'function'
 
 // ---- a view, driven the way the reference chart drives it ----
 const MIN = 60000, T0 = Date.UTC(2026, 10, 18, 9, 16), STEP = 6 * MIN
 const keyOf = (labels) => Object.keys(labels).sort().map((k) => k + '=' + labels[k]).join(',')
+const podOf = (k) => k == null ? 'none' : (k.match(/pod=([^,]+)/) ?? k.match(/service=([^,]+)/) ?? [k, k])[1]
 class View {
-  constructor() { this.map = v6 ? R.newMap() : {}; this.clientFilter = null; this.serverOut = null; this.st = { picked: new Set(), pickOrder: [], open: 0 } }
+  constructor() { this.map = R.newMap(); this.clientFilter = null; this.serverOut = null; this.st = { picked: new Set(), pickOrder: [], open: 0 }; this.known = new Set() }
   // one result: the series in it (labels, values), and the filters in force
   show(spec) {
     this.spec = spec
     const n = spec.series[0]?.values.length ?? 1, st = { ...this.st, t0: spec.t0, t1: spec.t0 + (n - 1) * spec.step, filter: this.clientFilter && ((s) => !this.clientFilter.has(s.key)), filteredOut: this.serverOut && ((k) => this.serverOut.has(k)) }
-    if (v6) { this.m = R.chartModel(spec, this.map, st); this.vis = R.drawnSet(this.m, st); this.facts = R.chartFacts(this.m, this.vis, spec); return }
-    // v5: the chart filtered first and assigned colours over what was left (its model(), verbatim in effect)
-    const all = spec.series.map((s) => { const v = s.values.filter((x) => x != null); return { ...s, key: keyOf(s.labels), rank: v.length ? Math.max(...v) : -1 } })
-    const listed = all.filter((s) => !st.filter || st.filter(s)); R.assignSeries(this.map, listed)
-    this.m = { listed, all }
+    this.m = R.chartModel(spec, this.map, st); this.vis = R.drawnSet(this.m, st); this.facts = R.chartFacts(this.m, this.vis, spec)
+    for (const s of this.m.result) this.known.add(s.key)
   }
-  slot(k) { if (v6) return R.slotOf(this.map, k); const x = this.map[k]; return x === undefined ? undefined : x }
+  slot(k) { return R.slotOf(this.map, k) || 0 }
+  // where every series the view has seen is now
+  states() {
+    const screen = new Set(this.m.listed.map((s) => s.key)), hidden = new Set([...this.m.result.map((s) => s.key).filter((k) => !screen.has(k)), ...(this.serverOut ?? [])])
+    const away = new Set([...this.known].filter((k) => !screen.has(k) && !hidden.has(k)))
+    return { screen, hidden, away }
+  }
+  rank(k) { return this.m.byKey.get(k)?.rank ?? -Infinity }
+  recolour() { R.recolour(this.map, this.m); this.st.picked.clear(); this.st.pickOrder = [] }
 }
 
 // ---- data ----
@@ -54,32 +64,46 @@ function universe(r, count) { // pods with a heavy-tailed size, as a real fleet
 }
 const wave = (r, base) => Array.from({ length: N }, () => +(base * (0.7 + 0.6 * r())).toFixed(4))
 const specOf = (u, keys, extra = {}) => ({ unit: 'cores', agg: 'max', t0: T0, step: STEP, series: [...keys].map((k) => ({ labels: u.get(k).labels, values: u.get(k).values })), ...extra })
+const lcg = (seed) => { let s = seed >>> 0; return () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296 }
+const newPod = (name = 'checkout-api-7d9f8c6b5-new01', level = 3.4) => { const r = lcg(99); return { labels: { __name__: 'pod_cpu_usage_cores', namespace: 'prod', service: 'checkout-api', pod: name, node: 'node-b' }, values: Array.from({ length: 61 }, () => level + (r() - 0.5) * 0.3) } }
+const ranked = (spec) => spec.series.map((s) => ({ key: keyOf(s.labels), max: Math.max(...s.values.filter((v) => v != null)) })).sort((a, b) => b.max - a.max)
 
 // ---- the properties, checked after each step ----
+// prev: Map key -> slot for the series on screen at the step before; ctx.lastOn: Map key -> the slot it had when it was last on screen
 function checkStep(view, prev, ctx) {
-  const inResult = new Set(view.spec.series.map((s) => keyOf(s.labels))), here = new Set([...inResult, ...(view.serverOut ?? [])])
-  const slots = new Map([...here].map((k) => [k, view.slot(k)]))
-  // P1: in two consecutive results (or filtered out in either), the same colour
-  if (prev && !ctx.recoloured) for (const [k, s] of slots) if (prev.has(k)) assert.equal(s, prev.get(k), `P1 ${ctx.what}: ${k} changed from slot ${prev.get(k)} to ${s}`)
-  // no two series in the result share a slot
-  const used = new Map(); for (const [k, s] of slots) if (s) { assert.ok(!used.has(s), `slot ${s} held by ${k} and ${used.get(s)}`); used.set(s, k) }
-  if (v6) {
-    // P3: a series that comes back takes the colour it had (Other, or its slot when no series that is there holds it); a new series, or one
-    // whose slot another holds, goes to Other only when all eight slots are held; and of those, the larger is never grey while a smaller is coloured
-    const last = ctx.last, placed = [...inResult].filter((k) => !prev?.has(k)), rankOf = (k) => view.m.byKey.get(k)?.rank ?? -Infinity
-    const ranked = []
-    for (const k of placed) {
-      const had = last.get(k), now = slots.get(k)
-      if (had === 0 && !ctx.recoloured) assert.equal(now, 0, `P3 ${ctx.what}: ${k} was in Other and came back in slot ${now}`)
-      else if (had > 0 && now !== had && !ctx.recoloured) { assert.ok([...used].some(([s, q]) => s === had && q !== k), `P3 ${ctx.what}: ${k} did not get slot ${had} back, which no series holds`); ranked.push(k) }
-      else if (had === undefined) ranked.push(k)
-    }
-    if (!ctx.recoloured) { const grey = ranked.filter((k) => !slots.get(k)), col = ranked.filter((k) => slots.get(k))
-      if (grey.length) assert.equal(used.size, 8, `P3 ${ctx.what}: ${grey[0]} put in Other while only ${used.size} slots are held`)
-      for (const g of grey) for (const c of col) assert.ok(rankOf(c) >= rankOf(g), `P3 ${ctx.what}: ${g} (${rankOf(g)}) grey while smaller ${c} (${rankOf(c)}) was coloured`) }
-    for (const [k, s] of slots) last.set(k, s)
-    checkFacts(view, ctx)
+  const { screen, hidden } = view.states(), slots = new Map([...screen].map((k) => [k, view.slot(k)]))
+  // no two series on screen or hidden hold one slot (a series away may still name the slot it waits for)
+  const own = new Map(); for (const k of [...screen, ...hidden]) { const s = view.slot(k); if (s) { assert.ok(!own.has(s), `${ctx.what}: slot ${s} held by ${podOf(k)} and ${podOf(own.get(s))}`); own.set(s, k) } }
+  if (ctx.recoloured) ctx.seen.clear()
+  for (const s of own.keys()) ctx.seen.add(s)
+  if (prev && !ctx.recoloured) for (const [k, s] of slots) if (prev.has(k)) {
+    // P1: a colour on screen is kept while the series stays on screen
+    if (prev.get(k)) assert.equal(s, prev.get(k), `P1 ${ctx.what}: ${podOf(k)} stayed on screen and changed from slot ${prev.get(k)} to ${s}`)
+    // P1: a series on screen leaves Other only for a slot no series that stays on screen had
+    else if (s) assert.ok(![...prev].some(([q, t]) => q !== k && t === s && screen.has(q)), `P1 ${ctx.what}: ${podOf(k)} took slot ${s} from a series that stays on screen`)
   }
+  // P3: what a person sees wins: the largest series on screen is never grey while a slot is free or held only by hidden series
+  const reclaimable = [1, 2, 3, 4, 5, 6, 7, 8].filter((i) => (own.has(i) ? hidden.has(own.get(i)) : !ctx.seen.has(i)))
+  const grey = [...screen].filter((k) => !slots.get(k))
+  if (reclaimable.length) assert.equal(grey.length, 0, `P3 ${ctx.what}: ${grey.length} on screen in Other (the largest ${podOf(grey.sort((a, b) => view.rank(b) - view.rank(a))[0] ?? '')}) while slot ${reclaimable[0]} is ${own.has(reclaimable[0]) ? 'held only by the hidden ' + podOf(own.get(reclaimable[0])) : 'free'}`)
+  // P3: a series coming on screen takes its own slot back whenever no other series on screen holds it
+  for (const k of screen) if (prev && !prev.has(k) && !ctx.recoloured) { const had = ctx.lastOn.get(k)
+    if (had && slots.get(k) !== had) assert.ok(screen.has(own.get(had)) && own.get(had) !== k, `P3 ${ctx.what}: ${podOf(k)} came back ${slots.get(k) ? 'in slot ' + slots.get(k) : 'grey'} while slot ${had}, its own, is held by no series on screen`) }
+  // P3: hidden series never gain a slot
+  for (const k of hidden) { const s = view.slot(k); if (s) assert.equal(s, ctx.lastOn.get(k), `P3 ${ctx.what}: hidden ${podOf(k)} has slot ${s}, which it never had on screen`) }
+  // P3: placed by rank: of the series that took a colour or went to Other in this step, a larger one is never grey while a smaller is
+  // coloured (a series back on screen that was in Other is not placed: it stays in Other unless rule 4 colours it)
+  if (prev && !ctx.recoloured) { const moved = [...screen].filter((k) => !prev.has(k) || (!prev.get(k) && slots.get(k)))
+    const g = moved.filter((k) => !slots.get(k) && ctx.lastOn.get(k) !== 0), c = moved.filter((k) => slots.get(k) && (!prev.has(k) ? !ctx.lastOn.get(k) || ctx.lastOn.get(k) !== slots.get(k) : true))
+    for (const a of g) for (const b of c) assert.ok(view.rank(b) >= view.rank(a), `P3 ${ctx.what}: ${podOf(a)} (${view.rank(a)}) grey while smaller ${podOf(b)} (${view.rank(b)}) took slot ${slots.get(b)}`) }
+  // P3: a series on screen in Other takes a slot nobody on screen holds largest first: every grey series left on screen is smaller
+  if (prev && !ctx.recoloured) for (const [k, s] of slots) if (prev.has(k) && !prev.get(k) && s) for (const g of grey) assert.ok(view.rank(k) >= view.rank(g), `P3 ${ctx.what}: ${podOf(k)} (${view.rank(k)}) left Other for slot ${s} while the larger ${podOf(g)} (${view.rank(g)}) stays grey`)
+  // P7: "Colour the eight largest" colours the eight largest on screen, largest first
+  if (ctx.recoloured) { const order = [...screen].sort((a, b) => view.rank(b) - view.rank(a) || (a < b ? -1 : 1))
+    order.forEach((k, i) => assert.equal(slots.get(k), i < 8 ? i + 1 : 0, `P7 ${ctx.what}: ${podOf(k)}, ${i + 1}th largest on screen, in slot ${slots.get(k)}`))
+    for (const k of view.known) if (!screen.has(k)) { assert.equal(view.slot(k), 0, `P7 ${ctx.what}: ${podOf(k)} is not on screen and kept slot ${view.slot(k)}`); ctx.lastOn.delete(k) } }
+  for (const [k, s] of slots) ctx.lastOn.set(k, s)
+  checkFacts(view, ctx)
   return slots
 }
 function checkFacts(view, ctx) {
@@ -112,87 +136,148 @@ function checkFacts(view, ctx) {
   if (note) assert.ok(text.includes(note.text), `P5 ${ctx.what}: the text form lacks the note "${note.text}"`)
   if (th != null) for (const s of facts.threshold.aboveAtEnd) assert.ok(text.includes(R.seriesName(m, s)), `P5 ${ctx.what}: the text form does not name ${s.key} above the threshold`)
 }
+// a fixed sequence with the properties checked at every step
+function stepper() {
+  const view = new View(), ctx = { lastOn: new Map(), seen: new Set(), log: [] }; let prev = null
+  const step = (what, fn, opts = {}) => { fn?.(view); ctx.log.push(what); prev = checkStep(view, prev, { ...ctx, what: ctx.log.join(' > '), ...opts }); return view }
+  return { view, step }
+}
 
 // ---- the random sequences ----
 const OPS = ['arrive', 'arrive', 'leave', 'leave', 'move', 'client-filter', 'server-filter', 'clear', 'edit-and-back', 'open-other', 'pick', 'recolour']
 function runSequence(seed, steps) {
   const r = rng(seed), u = universe(r, 40), keys = [...u.keys()], view = new View(), result = new Set(keys.slice(0, 10 + Math.floor(r() * 20)))
-  let prev = null, log = [], filtered = null, snapshot = null; const last = new Map()
+  let prev = null, log = [], filtered = null; const lastOn = new Map(), seen = new Set()
   const threshold = r() < 0.5 ? { value: 1.5, label: '1.5 cores limit' } : null
-  const show = (what, ctx = {}) => { view.show(specOf(u, result, threshold ? { threshold } : {})); log.push(what); prev = checkStep(view, prev, { what: log.join(' > '), last, ...ctx }) }
+  const show = (what, ctx = {}) => { view.show(specOf(u, result, threshold ? { threshold } : {})); log.push(what); prev = checkStep(view, prev, { what: log.join(' > '), lastOn, seen, ...ctx }) }
   show('first result')
   for (let i = 0; i < steps; i++) {
     const op = OPS[Math.floor(r() * OPS.length)]
-    if (op === 'arrive') { const k = keys[Math.floor(r() * keys.length)]; if (result.has(k) || (filtered && filtered.has(k))) continue; result.add(k); if (r() < 0.3) u.get(k).values = wave(r, 3.5 * r()); show(`arrive ${k}`) }
-    else if (op === 'leave') { const pool = [...result].filter((k) => !filtered?.has(k)); if (pool.length < 2) continue; const k = pool[Math.floor(r() * pool.length)]; result.delete(k); show(`leave ${k}`) }
+    if (op === 'arrive') { const k = keys[Math.floor(r() * keys.length)]; if (result.has(k) || (filtered && filtered.has(k))) continue; result.add(k); if (r() < 0.3) u.get(k).values = wave(r, 3.5 * r()); show(`arrive ${podOf(k)}`) }
+    else if (op === 'leave') { const pool = [...result].filter((k) => !filtered?.has(k)); if (pool.length < 2) continue; const k = pool[Math.floor(r() * pool.length)]; result.delete(k); show(`leave ${podOf(k)}`) }
     else if (op === 'move') { for (const k of result) if (r() < 0.3) u.get(k).values = wave(r, 3.5 * r() ** 2); show('values move') }
-    else if (op === 'client-filter' && !filtered) { filtered = new Set([...result].filter(() => r() < 0.3)); view.clientFilter = filtered; snapshot = new Map([...filtered].map((k) => [k, view.slot(k)])); show(`filter in the chart (${filtered.size})`) }
-    else if (op === 'server-filter' && !filtered) { filtered = new Set([...result].filter(() => r() < 0.3)); for (const k of filtered) result.delete(k); view.serverOut = filtered; snapshot = new Map([...filtered].map((k) => [k, view.slot(k)])); show(`filter in the query (${filtered.size})`) }
+    else if (op === 'client-filter' && !filtered) { filtered = new Set([...result].filter(() => r() < 0.3)); view.clientFilter = filtered; show(`filter in the chart (${filtered.size})`) }
+    else if (op === 'server-filter' && !filtered) { filtered = new Set([...result].filter(() => r() < 0.3)); for (const k of filtered) result.delete(k); view.serverOut = filtered; show(`filter in the query (${filtered.size})`) }
     else if (op === 'clear' && filtered) {
       if (view.serverOut) for (const k of filtered) result.add(k)
+      // P2: a hidden series that still holds its slot when the filter is cleared (no series on screen needed it) comes back in it
+      const snapshot = new Map([...filtered].map((k) => [k, view.slot(k)]))
       view.clientFilter = null; view.serverOut = null; show('clear the filter')
-      for (const [k, s] of snapshot) assert.equal(view.slot(k), s, `P2 ${log.join(' > ')}: ${k} came back in slot ${view.slot(k)}, had ${s}`)
-      filtered = null; snapshot = null
+      for (const [k, s] of snapshot) if (s) assert.equal(view.slot(k), s, `P2 ${log.join(' > ')}: ${podOf(k)} held slot ${s} while hidden and came back in slot ${view.slot(k)}`)
+      filtered = null
     } else if (op === 'edit-and-back' && !filtered) {
       const before = new Map([...result].map((k) => [k, view.slot(k)])), other = universe(r, 30), saved = new Set(result)
       for (const [k, v] of other) u.set('q2:' + k, { ...v, labels: { ...v.labels, service: 'search' } })
       const q2 = [...u.keys()].filter((k) => k.startsWith('q2:'))
       // the edited query: another service's pods (keys made unique by the service label)
-      view.show(specOf(u, q2)); log.push('edit the query'); prev = checkStep(view, null, { what: log.join(' > '), last, recoloured: false })
+      view.show(specOf(u, q2)); log.push('edit the query'); prev = checkStep(view, prev, { what: log.join(' > '), lastOn, seen })
       result.clear(); for (const k of saved) result.add(k)
       show('edit it back')
-      for (const [k, s] of before) assert.equal(view.slot(k), s, `P2 ${log.join(' > ')}: ${k} came back in slot ${view.slot(k)}, had ${s}`)
+      for (const [k, s] of before) assert.equal(view.slot(k), s, `P2 ${log.join(' > ')}: ${podOf(k)} came back in slot ${view.slot(k)}, had ${s}`)
       for (const k of q2) u.delete(k)
     } else if (op === 'open-other') { view.st.open = (view.st.open + 20) % 60; show('show more of Other') }
-    else if (op === 'pick' && v6) { const m = view.m, k = m.other[Math.floor(r() * m.other.length)]?.key; if (!k) continue; if (view.st.picked.has(k)) { view.st.picked.delete(k); view.st.pickOrder = view.st.pickOrder.filter((q) => q !== k) } else if (view.st.pickOrder.length < 3) { view.st.picked.add(k); view.st.pickOrder.push(k) } show('pick a member of Other') }
-    else if (op === 'recolour' && v6 && !filtered) { R.recolour(view.map, view.m); view.st.picked.clear(); view.st.pickOrder = []; last.clear(); show('colour the eight largest', { recoloured: true }) }
+    else if (op === 'pick') { const m = view.m, k = m.other[Math.floor(r() * m.other.length)]?.key; if (!k) continue; if (view.st.picked.has(k)) { view.st.picked.delete(k); view.st.pickOrder = view.st.pickOrder.filter((q) => q !== k) } else if (view.st.pickOrder.length < 3) { view.st.picked.add(k); view.st.pickOrder.push(k) } show('pick a member of Other') }
+    else if (op === 'recolour') { view.recolour(); show(`colour the eight largest${filtered ? ' (a filter in force)' : ''}`, { recoloured: true }) }
   }
 }
 
-test('B1, image 01: filter out the three largest, a larger pod arrives, clear: the largest returns in its own colour', () => {
-  const view = new View(), spec = D.s36(), all = spec.series.map((s) => ({ key: keyOf(s.labels), max: Math.max(...s.values) })).sort((a, b) => b.max - a.max)
-  view.show(spec); const before = new Map(all.map((s) => [s.key, view.slot(s.key)]))
-  assert.equal(before.get(all[0].key), 1, 'the largest pod is slot 1 at first sight')
-  const top3 = new Set(all.slice(0, 3).map((s) => s.key)); view.clientFilter = top3; view.show(spec)
-  const next = D.s36(), r = (() => { let s = 99; return () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296 })()
-  next.series.push({ labels: { __name__: 'pod_cpu_usage_cores', namespace: 'prod', service: 'checkout-api', pod: 'checkout-api-7d9f8c6b5-new01', node: 'node-b' }, values: Array.from({ length: 61 }, () => 3.4 + (r() - 0.5) * 0.3) })
-  view.show(next); view.clientFilter = null; view.show(next)
-  for (const s of all.slice(0, 8)) assert.equal(view.slot(s.key), before.get(s.key), `${s.key.match(/pod=([^,]+)/)[1]} came back in slot ${view.slot(s.key)}, had ${before.get(s.key)}`)
-  if (v6) { assert.equal(view.facts.note.kind, 'larger'); assert.equal(view.facts.note.text, '1 in Other is now larger than a coloured series') }
+// ---- the v6 review's sequences (B2), as the project lead decided them: what a person sees wins ----
+test('B2, sequence D: a pod comes back while its slot is held only by a hidden series: it takes its slot back', () => {
+  // eight services, all coloured: nothing is grey on screen, so the hidden newcomer keeps slot 1 until catalog comes back for it
+  const { view, step } = stepper(), s8 = D.s8(), catalog = keyOf(s8.series[0].labels), extra = { labels: { namespace: 'prod', service: 'catalog-canary' }, values: s8.series[0].values.map((v) => v * 1.01) }
+  step('eight services', (v) => v.show(s8)); assert.equal(view.slot(catalog), 1)
+  step('catalog missing from one result, catalog-canary arrives', (v) => v.show({ ...s8, series: [...s8.series.slice(1), extra] }))
+  const canary = keyOf(extra.labels); assert.equal(view.slot(canary), 1, 'the newcomer takes the reserved slot of the series that left')
+  step('catalog-canary filtered out', (v) => { v.clientFilter = new Set([canary]); v.show({ ...s8, series: [...s8.series.slice(1), extra] }) })
+  step('catalog comes back', (v) => v.show({ ...s8, series: [...s8.series, extra] }))
+  assert.equal(view.slot(catalog), 1, `catalog came back ${view.slot(catalog) ? 'in slot ' + view.slot(catalog) : 'grey'}: slot 1 was held only by the hidden catalog-canary`)
+  step('clear the filter', (v) => { v.clientFilter = null; v.show({ ...s8, series: [...s8.series, extra] }) })
+  assert.equal(view.slot(catalog), 1, 'catalog kept slot 1: it stayed on screen'); assert.equal(view.slot(canary), 0, 'catalog-canary comes back in Other: a series on screen holds its slot')
+  assert.equal(view.facts.note.kind, 'larger')
+})
+test('B2, sequence D as the reviewer ran it (36 pods): hiding the newcomer gives its slot to the largest grey pod at once; the returning pod finds it held on screen', () => {
+  const { view, step } = stepper(), s36 = D.s36(), all = ranked(s36), big = all[0].key, pod = newPod()
+  step('36 pods', (v) => v.show(s36)); assert.equal(view.slot(big), 1)
+  const without = { ...s36, series: [...s36.series.filter((s) => keyOf(s.labels) !== big), pod] }, newcomer = keyOf(pod.labels)
+  step('the largest pod missing from one result while new01 arrives', (v) => v.show(without)); assert.equal(view.slot(newcomer), 1)
+  step('new01 filtered out', (v) => { v.clientFilter = new Set([newcomer]); v.show(without) })
+  assert.equal(view.slot(all[8].key), 1, 'the largest pod on screen in Other (the ninth largest) took slot 1, held only by the hidden new01')
+  step('the largest pod comes back', (v) => v.show({ ...s36, series: [...s36.series, pod] }))
+  assert.equal(view.slot(big), 0, 'slot 1 is held by a pod on screen, which keeps it'); assert.equal(view.facts.note.text, '1 in Other is now larger than a coloured series')
+})
+test('B2, sequence E: "Without the three largest", a larger pod arrives, "Colour the eight largest", clear: each step follows what is on screen', () => {
+  const { view, step } = stepper(), s36 = D.s36(), all = ranked(s36), top3 = new Set(all.slice(0, 3).map((s) => s.key)), pod = newPod()
+  step('36 pods', (v) => v.show(s36))
+  step('without the three largest', (v) => { v.clientFilter = top3; v.show(s36) })
+  for (let i = 0; i < 3; i++) assert.equal(view.slot(all[8 + i].key), i + 1, `the ${9 + i}th largest pod takes slot ${i + 1}, held only by a hidden pod`)
+  for (let i = 3; i < 8; i++) assert.equal(view.slot(all[i].key), i + 1, 'the coloured pods on screen keep their colours')
+  const next = { ...s36, series: [...s36.series, pod] }
+  step('a pod larger than all arrives', (v) => v.show(next)); assert.equal(view.slot(keyOf(pod.labels)), 0); assert.equal(view.facts.note.text, '1 in Other is now larger than a coloured series')
+  step('colour the eight largest', (v) => { v.recolour(); v.show(next) }, { recoloured: true })
+  assert.equal(view.slot(keyOf(pod.labels)), 1, 'the largest on screen, the new pod, is slot 1')
+  step('clear the filter', (v) => { v.clientFilter = null; v.show(next) })
+  for (const k of top3) assert.equal(view.slot(k), 0, `${podOf(k)} comes back in Other: every slot is held on screen`)
+  assert.equal(view.facts.note.text, '3 in Other are now larger than a coloured series'); assert.ok(view.m.larger.length && view.m.coloured.length === 8, 'and "Colour the eight largest" is offered')
 })
 
-test('B1, image 02: edit the query to another service and back: every colour returns, and the note stays true', () => {
-  const view = new View(), spec = D.s36()
-  view.show(spec); const before = new Map(spec.series.map((s) => [keyOf(s.labels), view.slot(keyOf(s.labels))]))
+// ---- the review rubric's Many series row: each blocker example ----
+test('Rubric blocker: a readout naming a smaller series as highest', () => {
+  const view = new View(), next = D.s36(); next.series.push(newPod('checkout-api-7d9f8c6b5-new02', 3.6)); view.show(D.s36()); view.show(next)
+  const top = view.m.byKey.get(keyOf(next.series.at(-1).labels)); assert.equal(top.slot, 0, 'the new pod is in Other')
+  for (const i of [0, 30, 60]) assert.equal(view.facts.highestAt(i).key, top.key, `at ${i} the readout names ${podOf(view.facts.highestAt(i).key)}, not the highest`)
+})
+test('Rubric blocker: a series on screen changing colour while it stays on screen (deploy churn, a filter, a query edit)', () => {
+  const { view, step } = stepper(), s36 = D.s36(), all = ranked(s36)
+  step('36 pods', (v) => v.show(s36)); const kept = new Map(all.slice(3, 8).map((s) => [s.key, view.slot(s.key)]))
+  const churn = { ...s36, series: [...s36.series.filter((s) => !all.slice(0, 3).some((a) => a.key === keyOf(s.labels))), newPod('a-1', 3.3), newPod('a-2', 3.2), newPod('a-3', 3.1)] }
+  step('a deploy replaces the three largest', (v) => v.show(churn)); step('a filter hides a new pod', (v) => { v.clientFilter = new Set([keyOf(churn.series.at(-1).labels)]); v.show(churn) }); step('clear', (v) => { v.clientFilter = null; v.show(churn) })
+  for (const [k, s] of kept) assert.equal(view.slot(k), s, `${podOf(k)} stayed on screen and is in slot ${view.slot(k)}, had ${s}`)
+})
+test('Rubric blocker: the largest series on screen grey while a slot is held only by a hidden series', () => {
+  const { view, step } = stepper(), s36 = D.s36(), all = ranked(s36)
+  step('36 pods', (v) => v.show(s36)); step('filter out slot 2', (v) => { v.clientFilter = new Set([all[1].key]); v.show(s36) })
+  assert.equal(view.slot(all[8].key), 2, 'the largest pod in Other takes slot 2 at once')
+})
+test('Rubric blocker: a series coming back grey or in another colour while no series on screen holds its slot', () => {
+  const { view, step } = stepper(), s36 = D.s36(), all = ranked(s36), gone = all[2].key
+  step('36 pods', (v) => v.show(s36)); step('a pod restarts: missing from one result', (v) => v.show({ ...s36, series: s36.series.filter((s) => keyOf(s.labels) !== gone) }))
+  step('it is back', (v) => v.show(s36)); assert.equal(view.slot(gone), 3, 'back in its own slot: nothing on screen held it')
+})
+test('Rubric blocker: a query edited and edited back not returning every colour (v5 review, image 02)', () => {
+  const { view, step } = stepper(), spec = D.s36()
+  step('36 pods', (v) => v.show(spec)); const before = new Map(spec.series.map((s) => [keyOf(s.labels), view.slot(keyOf(s.labels))]))
   const other = D.many(36, 37); for (const s of other.series) s.labels.service = 'search'
-  view.show(other)
-  view.show(D.s36())
-  for (const [k, s] of before) assert.equal(view.slot(k), s, `${k.match(/pod=([^,]+)/)[1]}: slot ${view.slot(k)}, had ${s}`)
-  if (v6) { assert.equal(view.m.coloured.length, 8); assert.equal(view.facts.note.text, '8 coloured by size when first seen; 28 in Other') }
+  step('the query edited to another service', (v) => v.show(other)); step('and back', (v) => v.show(D.s36()))
+  for (const [k, s] of before) assert.equal(view.slot(k), s, `${podOf(k)}: slot ${view.slot(k)}, had ${s}`)
+  assert.equal(view.m.coloured.length, 8); assert.equal(view.facts.note.text, '8 coloured by size; 28 in Other')
 })
 
-test('B1, flow screen 5: one series, a query that returns 36 pods, and back: the one series returns in slot 1', () => {
+// ---- earlier reviews' sequences under the v7 rule ----
+test('v5 image 01 under v7: filter out the three largest, a larger pod arrives, clear: the three take colours back only where nothing on screen holds them', () => {
+  const { view, step } = stepper(), spec = D.s36(), all = ranked(spec), top3 = new Set(all.slice(0, 3).map((s) => s.key)), next = { ...D.s36(), series: [...D.s36().series, newPod()] }
+  step('36 pods', (v) => v.show(spec)); step('without the three largest', (v) => { v.clientFilter = top3; v.show(spec) })
+  step('a larger pod arrives', (v) => v.show(next)); step('clear the filter', (v) => { v.clientFilter = null; v.show(next) })
+  for (const k of top3) assert.equal(view.slot(k), 0)
+  assert.equal(view.facts.note.text, '4 in Other are now larger than a coloured series', 'the note says the four largest are in Other, beside "Colour the eight largest"')
+})
+test('A filter round trip with nothing grey on screen returns every colour (eight services, filter in the query)', () => {
+  const { view, step } = stepper(), s8 = D.s8(), keys = s8.series.map((s) => keyOf(s.labels)), out = new Set(keys.slice(0, 3))
+  step('eight services', (v) => v.show(s8)); const before = new Map(keys.map((k) => [k, view.slot(k)]))
+  step('a dashboard filter drops three', (v) => { v.serverOut = out; v.show({ ...s8, series: s8.series.filter((s) => !out.has(keyOf(s.labels))) }) })
+  step('cleared', (v) => { v.serverOut = null; v.show(s8) })
+  for (const [k, s] of before) assert.equal(view.slot(k), s)
+})
+test('Flow screen 5: one series, a query that returns 36 pods, and back: the one series returns in slot 1', () => {
   const view = new View(), cart = { unit: 'cores', agg: 'max', t0: T0, step: STEP, series: [{ labels: { service: 'cart' }, values: Array(12).fill(0.4) }] }
   view.show(cart); assert.equal(view.slot(keyOf({ service: 'cart' })), 1)
-  const pods = D.many(36, 36); view.show(pods); view.show(cart)
+  view.show(D.many(36, 36)); view.show(cart)
   assert.equal(view.slot(keyOf({ service: 'cart' })), 1, 'cart came back grey or in another colour')
 })
-
-test('B1: a filter in the query (not the chart) applied and cleared, with pods arriving meanwhile', () => {
-  const view = new View(), spec = D.s36(), keys = spec.series.map((s) => keyOf(s.labels))
-  view.show(spec); const before = new Map(keys.map((k) => [k, view.slot(k)])), coloured = keys.filter((k) => before.get(k))
-  const out = new Set(coloured.slice(0, 3)); view.serverOut = out
-  const narrowed = { ...spec, series: spec.series.filter((s) => !out.has(keyOf(s.labels))) }
-  view.show(narrowed)
-  narrowed.series.push({ labels: { pod: 'new-pod-1', namespace: 'prod' }, values: Array(61).fill(9) }); view.show(narrowed)
-  view.serverOut = null; view.show({ ...spec, series: [...spec.series, narrowed.series.at(-1)] })
-  for (const k of out) assert.equal(view.slot(k), before.get(k))
+test('Random sequences of arrivals, departures, filters, query edits, Other opened and picked, recolouring (400 of 30 steps)', () => {
+  for (let seed = 1; seed <= 400; seed++) runSequence(seed, 30)
 })
 
-test('B1: random sequences of arrivals, departures, filters, query edits, Other opened and picked, recolouring', () => {
-  for (let seed = 1; seed <= (v6 ? 400 : 60); seed++) runSequence(seed, 30)
-})
-
+// ---- v5's M2: axes and numbers ----
 test('M2: values below zero: the axis extends below zero and every value lies on the plot', () => {
   const ax = R.valueTicks({ lo: -120, hi: 120, plotH: 160, lineH: 16 })
   assert.ok(ax.bottom <= -120 && ax.top >= 120, `axis ${ax.bottom} to ${ax.top}`)
@@ -219,8 +304,7 @@ test('M2: negative values keep their sign, and a small one says which side of ze
   assert.equal(R.numberFormat(50, '').value(-120), '−120')
   assert.equal(R.numberFormat(50, '').tick(-50), '−50')
 })
-test('M1, image 06: a member of Other above the threshold is in the text form', () => {
-  assert.ok(v6, 'v5 has no text form outside a page')
+test('M1 (v5), image 06: a member of Other above the threshold is in the text form', () => {
   const view = new View(), spec = D.s36()
   view.show(spec)
   const next = D.s36(); next.threshold = { value: 3.5, label: '3.5 cores limit' }

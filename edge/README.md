@@ -464,27 +464,14 @@ The original list:
 
 In components others own; not made here.
 
-1. **ruler: write recorded samples through the entrypoint, with no stored key** (the ruler's
-   README, "Needed changes" 2). The ruler already prefers a `SINK` binding
-   (`ruler/src/ruler.ts`, `sink()`: `binding.write(this.tenant, batches)`, with the Ruler
-   object's own tenant, derived from its name). The whole change is one binding in
-   `ruler/wrangler.jsonc`, under `"services"`:
-
-   ```jsonc
-   // Recording rules: viz-ingest's RecordedSamples entrypoint (contracts/ingest.ts). The binding
-   // is the credential; the tenant is the Ruler object's own.
-   { "binding": "SINK", "service": "viz-ingest", "entrypoint": "RecordedSamples", "props": { "caller": "viz-ruler" } }
-   ```
-
-   and the same in `ruler/wrangler.test.jsonc` pointing at the test script's stand-in (or at a
-   script exporting edge's `RecordedSamples`, as `edge/wrangler.jsonc` does for its tests), plus
-   `SINK` in the ruler's `RulerEnv` health check if it should count. `deploy/configure.mjs`
-   already maps `service: viz-ingest` per stage and keeps `entrypoint` and `props`; viz-ingest
-   deploys before viz-ruler. Then:
-   - a rejection is already "not written" to the ruler (it retries three times, then marks the
-     rule `sink: <message>`), which is what this entrypoint promises; the message starts with
-     the refusal word, so `invalid`, `series_limit` and `unauthorized` could be reported without
-     the retries;
-   - the service key needs only `read` (queries) until query has its own entrypoint (the
-     ruler's "Needed changes" 1); after both, no stored key at all, and `INGEST` can go once no
-     release that may run still uses it (callee first: keep `INGEST` for one release).
+1. **ruler: write recorded samples through the entrypoint. Done for writes (2026-11-19,
+   D52)**; the stored key remains for queries. The ruler binds `SINK` → viz-ingest's `RecordedSamples` with `props:
+   { caller: "viz-ruler" }` (`ruler/wrangler.jsonc`; `deploy/configure.mjs` keeps `entrypoint`
+   and `props` and refuses a release whose callee does not export the entrypoint), sends every
+   flush with the Ruler object's own tenant, reports `unauthorized`, `invalid` and
+   `series_limit` without retrying, splits on `too_large` and retries the rest after the hint
+   (`ruler/src/recorded.ts`). For one release, a rejection with no refusal word (an ingest
+   release without the entrypoint) goes through Remote Write over `INGEST` with the service key
+   instead; `INGEST` goes once every ingest release that may run has the entrypoint (the
+   ruler's README, "Needed changes"). The service key now writes only in that fallback; it needs
+   `read` for queries until query has its own entrypoint.
