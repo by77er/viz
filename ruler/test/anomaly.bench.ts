@@ -10,7 +10,7 @@
  *      machine, the state rows written to SQLite in the commit), against the counterfactual of the
  *      same group with an alerting rule that returns nothing;
  *   D. robust z at the default window (1,500 points), and at 4,000, stored as version 1 (JSON) and
- *      as version 2 (Float64 ring blocks, design D56) by the gate, at 18 and at 100 series: bytes a
+ *      as version 2 (Float64 ring blocks, design D60) by the gate, at 18 and at 100 series: bytes a
  *      series, rows and bytes written per tick, CPU per tick (`npm run bench:anomaly -- -t "D."`).
  *
  * CPU is the workerd process's thread time from `/proc` (the `HOST` binding in
