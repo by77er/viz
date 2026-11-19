@@ -161,7 +161,9 @@ first outbox row". It lags the committed watermark by up to one drain cycle.
   incarnation: a rebuilt ledger has none, and a ledger converted from the first layout has
   their effect in the new base, which is already in R2.
 - **Checkpoints** are deleted once a newer checkpoint of their incarnation is complete, its
-  manifest in R2 (only the ledger's rebuild reads them): first the older manifests, then every
+  manifest in R2 (the ledger's rebuild and the publisher's re-base read them; a reader that
+  listed the older manifest meets a missing part as `incomplete` and lists again): first the
+  older manifests, then every
   part that is not the new checkpoint's (older checkpoints' parts, and abandoned attempts'), so
   no listed manifest ever names a part that is gone. Never before: while a newer one is being
   written, the older one is what a rebuild uses. A failure leaves the rest for the next one.
@@ -220,8 +222,8 @@ incarnation (phase `stuck`), never replays one layout and skips the other (revie
   readers-first release:** a reader that knows only format 1 (the release before) sees its
   manifest as `unsupported` and passes over it for an older checkpoint or the base, which is
   always there, so it still rebuilds exactly (tested, `ledger/test/checkpoint.test.ts`); the
-  publisher never reads checkpoints, and part keys parse as nothing to an older
-  `parseLedgerLogKey`. The schema change that goes with it (migration 3: tables `ckpt` and
+  release before's publisher reads no checkpoint (it re-bases from the base), this release's
+  reads both formats (D55), and part keys parse as nothing to an older `parseLedgerLogKey`. The schema change that goes with it (migration 3: tables `ckpt` and
   `ckpt_pre`) is additive (`readableFrom` 2), so the release before stays a rollback target;
   a checkpoint it leaves untracked is abandoned. A state above 16 MiB cannot be rebuilt by that
   release in one isolate, so after a rollback such a tenant is stuck, not lost, until rolled
