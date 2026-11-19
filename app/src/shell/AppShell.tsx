@@ -138,8 +138,12 @@ export function AppShell() {
                   Cannot reach the API at <span className="app-num">{settings.baseUrl || window.location.origin}</span>. Check the address in
                   settings.
                 </>
+              ) : info.error instanceof PromApiError && info.error.status === 403 ? (
+                'The API key in settings cannot read metrics. Use a key with the read scope.'
+              ) : settings.token.trim() === '' ? (
+                'The API needs an API key. Enter one in settings.'
               ) : (
-                'The API rejected the credentials. Enter a valid bearer token in settings.'
+                'The API did not accept the API key. Enter a valid key in settings.'
               )}
             </p>
             <button className="vz-button" data-size="sm" onClick={() => setSettingsOpen(true)}>

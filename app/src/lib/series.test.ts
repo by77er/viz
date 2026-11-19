@@ -89,6 +89,13 @@ describe('alignMatrix in one pass (B3)', () => {
       { numRuns: 500 },
     )
   })
+  it('keeps the API\'s millisecond grid for a sub-second step: a missing step is a gap, not a bridged line', () => {
+    // A 0.1 s step as the API answers it (times are whole milliseconds), with the third step missing.
+    const text = '{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"a":"x"},"values":[[1794994200,"1"],[1794994200.1,"2"],[1794994200.3,"4"],[1794994200.4,"5"]]}]}}'
+    const a = alignSeries(parseMatrix(text).series, 1794994200, 1794994200.4, 0.1)
+    expect(a.xs).toHaveLength(5)
+    expect([...a.series[0]!.values]).toEqual([1, 2, NaN, 4, 5])
+  })
   it('turns every value that cannot be drawn into a gap', () => {
     const a = alignMatrix({ resultType: 'matrix', result: [{ metric: {}, values: [[0, 'NaN'], [15, '+Inf'], [30, '-Inf'], [45, '2.5'], [60, 'Inf']] }] }, 0, 60, 15)
     expect([...a.series[0]!.values]).toEqual([NaN, NaN, NaN, 2.5, NaN])

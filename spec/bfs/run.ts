@@ -7,14 +7,13 @@
 //   node bfs/run.ts liveness        AG EF query-done on the full state graph
 //   node bfs/run.ts <name> [...]    named experiments
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { check, type Result } from './check.ts'
 import { type Cfg, SAFETY } from './model.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const out = join(here, '..', 'results', 'bfs')
-mkdirSync(out, { recursive: true })
 
 // ------------------------------------------------------------------ configurations
 
@@ -31,6 +30,8 @@ export const AMENDED: Cfg = {
   delLogged: true, missingErr: true, keying: 'content', sweep: 'impl', sweepIncLogged: true, reg: 'logged', query: 'impl', unknownStream: 'refuse',
   f6Register: true, readBound: true, log: 'segments', rebuild: 'strict', drainRetrySame: true, baseFirst: true, baseTombstones: false, compKey: 'unique',
   compConflictDelete: true, fpScope: 'stream', tailScope: 'stream', noRetryAcrossLoss: true, retain: false,
+  sweepSteps: false, sweepAge: true, purgeSteps: false, startSteps: false, goal: 'query', sweepGone: 'both', sweepOrder: 'listFirst',
+  sweepNewerLogged: true,
 }
 
 /**
@@ -60,22 +61,36 @@ export const IMPL_V1: Cfg = {
 }
 
 /**
- * As built now: IMPL_V1 with the F13/F14/F15 fix of compact/ and janitor/ (2026-11-19): output
- * keys unchanged (hash of inputs + bytes), outputs carry their inputs as R2 metadata, a step
- * never deletes its outputs, the sweeper deletes an unreferenced output only when one of its
- * inputs is neither live nor in R2, and a newer incarnation makes old flush files dead only once
- * its logged watermark is above 0.
+ * D30 (design/DECISIONS.md), compact/src/compact.ts and janitor/src/janitor.ts as of HEAD
+ * 09f601d: output keys unchanged (hash of the input keys + of the bytes), each output carries
+ * its inputs as R2 metadata `viz-inputs`, a step never deletes an output (not on conflict
+ * either); the orphan sweep lists the prefix, then reads the ledger once, then deletes an
+ * unreferenced, untombstoned output only if one of its inputs is absent from the listing and
+ * not live; a newer incarnation makes an old flush file dead only once it has a logged
+ * watermark above 0 (F15). Modelled with NO clock (no age floor), the sweep, the purge and the
+ * ledger start as separate steps.
  */
-export const IMPL: Cfg = { ...IMPL_V1, sweep: 'inputs', compConflictDelete: false }
+export const D30: Partial<Cfg> = { sweep: 'inputs', sweepNewerLogged: true, sweepGone: 'both', sweepOrder: 'listFirst', sweepAge: false, sweepSteps: true, compKey: 'inputs', compConflictDelete: false, purgeSteps: true }
+/** The ledger's segment log as built (contracts/LEDGER-LOG.md, ledger.ts): F10 and F11 fixed, tombstones in the base, the base PUT before the commit. */
+export const LOG_AS_BUILT: Partial<Cfg> = { log: 'segments', drainRetrySame: true, baseFirst: true, baseTombstones: true, startSteps: true }
+
+/**
+ * The code as on disk at HEAD 09f601d (2026-11-19): IMPL_V1 with D30, the segment log as
+ * built, shard.ts `readSegment` bound to (incarnation, seqLo, seqHi) and used so by flush.ts
+ * (F12 fix), and `tailRead` refusing an incarnation it does not hold (`incarnation_mismatch(0)`)
+ * but still answering ok/empty to incarnation 0; registration still lazy (by flush.ts), and
+ * nothing re-registers a stream the shard lost (no `f6Register`).
+ */
+export const IMPL: Cfg = { ...IMPL_V1, ...D30, ...LOG_AS_BUILT, readBound: true, unknownStream: 'refuse', f6Register: false }
 
 /** As built, with the segment log as LEDGER-LOG.md stated it at the start of this work (before F10 and F11 were fixed). */
-export const IMPL_PLANNED: Cfg = { ...IMPL_V1, log: 'segments', drainRetrySame: false, baseFirst: false, baseTombstones: false }
+export const IMPL_PLANNED: Cfg = { ...IMPL_V1, log: 'segments', drainRetrySame: false, baseFirst: false, baseTombstones: false, startSteps: false }
 
 const ALLSAFE = SAFETY
 
-interface Exp {
+export interface Exp {
   name: string
-  kind: 'teeth' | 'finding' | 'amended' | 'liveness'
+  kind: 'teeth' | 'finding' | 'amended' | 'liveness' | 'd30' | 'log'
   label: string
   cfg: Cfg
   props: string[]
@@ -83,7 +98,7 @@ interface Exp {
   maxStates?: number
 }
 
-const E: Exp[] = []
+export const E: Exp[] = []
 const teeth = (name: string, label: string, over: Partial<Cfg>, prop: string) =>
   E.push({ name, kind: 'teeth', label, cfg: { ...AMENDED, ...over }, props: [prop], expect: 'violated' })
 const finding = (name: string, label: string, cfg: Cfg, props: string[]) =>

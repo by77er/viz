@@ -51,6 +51,23 @@ describe('step selection', () => {
     expect(alignWindow(1007, 4612, 15)).toEqual({ start: 1005, end: 4605, step: 15 })
     expect(alignWindow(100, 100, 60)).toEqual({ start: 60, end: 120, step: 60 })
   })
+  it('works in whole milliseconds, as the API evaluates (a 0.1 s step gives the API\'s grid, not 1794994200.0000002)', () => {
+    expect(alignWindow(1794994200.00004, 1794994200.5, 0.1)).toEqual({ start: 1794994200, end: 1794994200.5, step: 0.1 })
+    expect(alignWindow(1794994200.0004, 1794994200.003, 0.002)).toEqual({ start: 1794994200, end: 1794994200.002, step: 0.002 })
+    fc.assert(
+      fc.property(fc.integer({ min: 1e12, max: 2e12 }), fc.integer({ min: 0, max: 1e8 }), fc.integer({ min: 1, max: 3_600_000 }), (fromMs, spanMs, stepMs) => {
+        const w = alignWindow(fromMs / 1000, (fromMs + spanMs) / 1000, stepMs / 1000)
+        // What the client sends, read back as the API reads it: decimal seconds, at most three decimals.
+        for (const v of [w.start, w.end, w.step]) expect(String(v)).toMatch(/^\d+(\.\d{1,3})?$/)
+        const [s, e, st] = [w.start, w.end, w.step].map((v) => Math.round(v * 1000))
+        expect(st).toBe(stepMs)
+        expect(s! % stepMs).toBe(0)
+        expect(e! % stepMs).toBe(0)
+        expect(e! > s!).toBe(true)
+      }),
+      { numRuns: 300 },
+    )
+  })
 })
 
 describe('series colours', () => {

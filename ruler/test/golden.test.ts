@@ -103,6 +103,52 @@ describe('golden formats', () => {
     })
   })
 
+  it('anomaly rules: the stored rule and its key, the stored detector state, and the explanation an alert carries', async () => {
+    const { tenant, stub, w } = await setup({ heartbeatMs: 30 * MIN }, 'goldenanom')
+    const saved = ok(await stub.saveGroups(tenant, {
+      groups: [{
+        name: 'anomalies/1m',
+        interval: '1m',
+        rules: [{ alert: 'LatencyAnomaly', expr: 'sum by (service) (rate(latency_ms_sum[5m]))', annotations: { summary: '{{ $labels.service }} latency' }, anomaly: { detector: 'ewma', params: { halfLifePoints: 5, k: 4, minPoints: 5 }, unit: 'ms' } }],
+      }],
+    }))
+    const values = [100, 102, 99, 101, 100, 98, 101, 100, 99, 160]
+    let i = 0
+    w.evaluate = () => vec([{ service: 'checkout' }, values[Math.min(i++, values.length - 1)]!])
+    for (let t = 0; t < values.length; t++) {
+      world.now = Math.max(world.now, ok(await stub.health(tenant)).alarmAtMs!)
+      expect(await runDurableObjectAlarm(stub)).toBe(true)
+    }
+    const stored = await runInDurableObject(stub, (_i, s) => ({
+      spec: s.storage.sql.exec('SELECT spec FROM rule_group WHERE tenant = ?', tenant).toArray()[0]?.spec as string,
+      state: s.storage.sql.exec('SELECT rule_key, chunk, body FROM anomaly_state WHERE tenant = ? ORDER BY rule_key, chunk', tenant).toArray(),
+    }))
+    const rule = saved.groups[0]!.rules[0]!
+    expectGolden(file('store.anomaly-rule'), {
+      format: 'store.anomaly-rule',
+      version: FORMATS['store.anomaly-rule'],
+      stored: stored.spec,
+      key: rule.key,
+      bareId: bareRuleId('anomalies/1m', rule.key),
+      history: rule.history,
+      extended: exportRuleFile(ok(await stub.listGroups(tenant)).groups, { extensions: true }).yaml,
+    })
+    expectGolden(file('store.anomaly-state'), {
+      format: 'store.anomaly-state',
+      version: FORMATS['store.anomaly-state'],
+      seriesKey: fingerprint({ service: 'checkout' }),
+      rows: stored.state,
+    })
+    const firing = w.ingestCalls.flat().find((u) => u.status === 'firing')
+    expect(firing, 'the anomaly fired').toBeDefined()
+    expectGolden(file('annotation.anomaly-detail'), {
+      format: 'annotation.anomaly-detail',
+      version: FORMATS['annotation.anomaly-detail'],
+      labels: firing!.labels,
+      annotations: firing!.annotations,
+    })
+  })
+
   it('id.placement: the registry partition of a tenant and the shard of a group', () => {
     expectGolden(file('id.placement'), {
       format: 'id.placement',

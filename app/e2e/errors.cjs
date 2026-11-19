@@ -6,9 +6,11 @@
 //   node e2e/errors.cjs        needs `npm run build`; starts the mock and vite preview itself
 //
 // Checks:
-//   busy, no Retry-After      the line says the API is busy and when it asks again (1, 2, 4 s);
-//                             the previous result stays; after four tries, the error state says
-//                             how many tries over how long, and never "change the query"
+//   busy, no Retry-After      a 503 page from the platform (no envelope): the line says the API is
+//                             busy and when it asks again (1, 2, 4 s); the previous result stays;
+//                             after four tries, the error state says how many tries over how long,
+//                             that the answer was not the API's, and never "change the query"
+//   busy, Retry-After: 1      the real API's "the query service is busy": asked again after 1 s each time
 //   busy, then an answer      a 503 with Retry-After: 1, then success: the result, no error
 //   429 with Retry-After: 10  "limiting requests … Asking again in 10 s", and Cancel works
 //   502 from the gateway      retried like a 503
@@ -44,9 +46,9 @@ async function main() {
     const requests = []
     page.on('request', (r) => requests.push(r))
 
-    // ---- busy with no Retry-After, four times: retried at 1, 2 and 4 s, then the error state.
+    // ---- busy with no Retry-After (the platform's 503 page), four times: retried at 1, 2 and 4 s, then the error state.
     await page.goto(url(Q_RATE)); await ready(page)
-    await setMockFailure('busy', 4)
+    await setMockFailure('platform', 4)
     let n0 = queryRanges(requests)
     let t0 = Date.now()
     await page.click('[data-testid=run]')
@@ -59,8 +61,19 @@ async function main() {
     const took = Date.now() - t0
     const advice = await text(page, '[data-testid=error-advice]')
     const tries = queryRanges(requests) - n0
-    check('busy four times: four tries in about 7 s (1 + 2 + 4), then the error state says so', tries === 4 && took > 6500 && took < 12000 && /the query was sent 4 times over [78] s/.test(advice) && !/Change the query/.test(advice), `${tries} tries in ${took} ms; "${advice}"`)
+    check('busy four times: four tries in about 7 s (1 + 2 + 4), then the error state says so, and that the answer was not the API\'s', tries === 4 && took > 6500 && took < 12000 && /^The answer was HTTP 503 with no API error in it\. The API stayed busy: the query was sent 4 times over [78] s/.test(advice) && !/Change the query/.test(advice), `${tries} tries in ${took} ms; "${advice}"`)
     check('busy: the error state offers to run the query again', /Run the query again/.test(await text(page, '[data-testid=error-fix]')))
+
+    // ---- the real API's own busy refusal carries Retry-After: 1: every retry goes after 1 s.
+    await setMockFailure('busy', 4)
+    n0 = queryRanges(requests)
+    t0 = Date.now()
+    await page.click('[data-testid=error-fix]')
+    await page.waitForFunction(() => /Asking again in/.test(document.querySelector('[data-testid=progress-text]')?.textContent || ''))
+    const busyLine1 = await text(page, '[data-testid=progress-text]')
+    await page.waitForSelector('[data-testid=error-state]', { timeout: 20000 })
+    const took1 = Date.now() - t0
+    check('busy with Retry-After: 1 (the real API\'s): asked again after 1 s each time, four tries in about 3 s', /^The API is busy \(HTTP 503\)\. Asking again in 1 s\.$/.test(busyLine1) && queryRanges(requests) - n0 === 4 && took1 > 2500 && took1 < 7000, `${busyLine1}; ${queryRanges(requests) - n0} tries in ${took1} ms`)
 
     // ---- busy once with Retry-After: 1, then an answer: the result, and no error.
     await setMockFailure('storage', 1)
@@ -122,7 +135,8 @@ async function main() {
     const stopApp = await lib.startPreview(Number(new URL(APP).port), MOCK)
     try {
       for (const [label, key, kind, re] of [
-        ['401 (no key)', '', 'auth', /unauthorized with HTTP 401\. The API did not accept the API key\. Enter a valid key in Settings\./],
+        ['401 (no key)', '', 'auth', /unauthorized with HTTP 401\. No API key is set\. Enter a key with the read scope in Settings\./],
+        ['401 (a key the API does not know)', 'e2e-unknown', 'auth', /unauthorized with HTTP 401\. The API did not accept the API key\. Enter a valid key in Settings\./],
         ['403 (a key without the read scope)', 'e2e-write', 'scope', /forbidden with HTTP 403\. The API key in Settings cannot read metrics\. Use a key with the read scope\./],
       ]) {
         const c = await lib.contextWithKey(browser, key)

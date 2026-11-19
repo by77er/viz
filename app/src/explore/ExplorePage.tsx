@@ -2,7 +2,7 @@ import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo,
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
 import { PromApiError } from '../api/client'
-import { busyLine, errorAdvice, errorKind, retryDelayMs, shouldRetry } from '../api/errors'
+import { answerLine, busyLine, errorAdvice, errorKind, retryDelayMs, shouldRetry } from '../api/errors'
 import type { ParsedMatrix } from '../api/matrix'
 import type { ApiCost } from '../api/types'
 import { TimeSeriesChart, type ChartSeries, type RenderInfo } from '../charts'
@@ -133,7 +133,7 @@ export function ExplorePage() {
   const search = useMemo(() => parseExploreSearch(rawSearch), [rawSearch])
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const { client, connectionId } = useSettings()
+  const { client, connectionId, settings } = useSettings()
   const { resolved: theme } = useTheme()
   const backend = useBackendInfo()
   const coarse = useCoarsePointer()
@@ -668,10 +668,13 @@ export function ExplorePage() {
               error={error}
               tries={query.failureCount}
               elapsedMs={lastWaitMs.current}
+              keySet={settings.token.trim() !== ''}
+              autoStep={search.step === 'auto'}
               syntaxErrorAt={() => (editorReady ? (editorRef.current?.syntaxErrorAt(q) ?? null) : null)}
               onGoTo={(at) => editorRef.current?.focus(at)}
               onRetry={run}
               onOpenSettings={openSettings}
+              onAutoStep={() => setSearch({ step: 'auto' })}
             />
           ) : q === '' ? (
             <StartState mock={!!backend.data?.mock} />
@@ -804,21 +807,30 @@ function ErrorState({
   error,
   tries,
   elapsedMs,
+  keySet,
+  autoStep,
   syntaxErrorAt,
   onGoTo,
   onRetry,
   onOpenSettings,
+  onAutoStep,
 }: {
   error: Error
   /** How many times the query was sent before this error (busy answers are retried). */
   tries: number
   /** How long those tries took, in ms. */
   elapsedMs: number
+  /** Whether Settings holds an API key: a 401 without one asks for a key, not a valid one. */
+  keySet: boolean
+  /** Whether the step is the automatic one. */
+  autoStep: boolean
   /** Where the editor's own parser finds the first syntax error in the query, when the API gives no position. */
   syntaxErrorAt: () => number | null
   onGoTo: (at: number) => void
   onRetry: () => void
   onOpenSettings: () => void
+  /** Clears an explicit step: the fix for a step too small for the range (running it again would be refused again). */
+  onAutoStep: () => void
 }) {
   const api = error instanceof PromApiError ? error : null
   const kind = errorKind(error)
@@ -837,17 +849,19 @@ function ErrorState({
       <p data-testid="error-message">{error.message}</p>
       {api && (
         <p data-testid="error-advice">
-          The API answered{' '}
-          <span data-testid="error-type">
-            <span className="app-num">{api.errorType}</span>
-            {api.status ? (
-              <>
-                {' '}
-                with HTTP <span className="app-num">{api.status}</span>
-              </>
-            ) : null}
-          </span>
-          . {errorAdvice(error, Math.max(1, tries), elapsedMs, MOD)}
+          {/* The API's own error type and status when it sent its error envelope; otherwise what came back (api/errors.ts answerLine). */}
+          {api.errorType !== 'network' && api.errorType !== 'http' && api.errorType !== 'parse' && api.status ? (
+            <>
+              The API answered{' '}
+              <span data-testid="error-type">
+                <span className="app-num">{api.errorType}</span> with HTTP <span className="app-num">{api.status}</span>
+              </span>
+              .
+            </>
+          ) : (
+            answerLine(api)
+          )}{' '}
+          {errorAdvice(error, Math.max(1, tries), elapsedMs, MOD, { keySet, autoStep })}
         </p>
       )}
       {character !== null ? (
@@ -857,6 +871,10 @@ function ErrorState({
       ) : kind === 'auth' || kind === 'scope' ? (
         <button className="vz-button" data-size="sm" onClick={onOpenSettings} data-testid="error-fix">
           Open settings
+        </button>
+      ) : kind === 'resolution' && !autoStep ? (
+        <button className="vz-button" data-size="sm" onClick={onAutoStep} data-testid="error-fix" data-focus-after="[data-testid=run]">
+          Use the automatic step
         </button>
       ) : (
         <button className="vz-button" data-size="sm" onClick={onRetry} data-testid="error-fix" data-focus-after="[data-testid=run]">

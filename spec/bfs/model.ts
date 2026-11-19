@@ -45,6 +45,9 @@ export interface Cfg {
   sweepAge: boolean // with 'inputs': keep the age floor (an object is a candidate only if its uploader was no longer in flight when listed); false = no clock at all
   purgeSteps: boolean // purge as janitor.ts runs it: delete the object, then (separately) forget the tombstone (false: one atomic step)
   startSteps: boolean // with baseFirst: a ledger start is two steps, PUT the base, then commit; nothing is served in between, and storage can be lost again in between
+  sweepGone: 'both' | 'notLive' | 'absent' // with 'inputs': an input is gone for good if absent from the listing AND not live (janitor.ts) / only not live / only absent
+  sweepOrder: 'listFirst' | 'readFirst' // with sweepSteps: list R2 before the ledger read (janitor.ts) / read the ledger first, then list
+  sweepNewerLogged: boolean // with 'inputs': a newer incarnation makes an old flush file dead only if it has a logged watermark > 0 (F15 fix)
   goal: 'query' | 'clean' // liveness goal: the query completes / every object in R2 is live (no object leaks: I11's no-leak half)
   reg: 'design' | 'logged' | 'impl' // stream registration: before writes (committed) / before writes (logged) + repeat / lazily by flush (as built)
   query: 'design' | 'impl' // ask only streams in the plan / also every pool shard, unregistered streams from 0 (coordinator.ts)
@@ -168,6 +171,7 @@ export interface Sw {
   ph: number // 0 listed; 1 ledger read done, deleting
   ls: number[][] // the listing: [key, file (bytes), 1 if old enough when listed]
   dm: number[] // doomed files (by their listed bytes), still to delete
+  rd: Pick<Led, 'fi' | 'tb' | 'wm' | 'lg'> | null // sweepOrder 'readFirst': the ledger read, taken before the listing
 }
 
 export interface Job {
@@ -282,7 +286,7 @@ function cp(s: St): St {
     })),
     q: { st: s.q.st, t: s.q.t, fi: s.q.fi, wm: s.q.wm, nd: s.q.nd, tl: s.q.tl, mu: s.q.mu, ex: s.q.ex, ln: s.q.ln.slice(), rs: s.q.rs, dup: s.q.dup, miss: s.q.miss, leak: s.q.leak },
     nSL: s.nSL, nQ: s.nQ, cN: s.cN,
-    sw: s.sw ? { t: s.sw.t, ph: s.sw.ph, ls: s.sw.ls, dm: s.sw.dm } : null,
+    sw: s.sw ? { t: s.sw.t, ph: s.sw.ph, ls: s.sw.ls, dm: s.sw.dm, rd: s.sw.rd } : null,
   }
 }
 
@@ -862,12 +866,24 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
     // 2. ONE ledger read (orphanCheck) about the listed keys and the inputs absent from the
     // listing; 3. delete the doomed keys. Separate steps; the run can stop at any point.
     const w = s.sw
+    const listing = (t: number) => s.obj.filter((o) => FILES[o[1]!]!.t === t).map((o) => [o[0]!, o[1]!, o[2] === -1 ? 1 : 0])
+    const judge = (L: Pick<Led, 'fi' | 'tb' | 'wm' | 'lg'>, ls: number[][]) =>
+      ls.filter((x) => doomed(c, L as Led, x[0]!, x[1]!, x[2] === 1, (key) => ls.some((y) => y[0] === key))).map((x) => x[1]!)
     if (!w) {
       for (let t = 0; t < c.nt; t++) {
-        const ls = s.obj.filter((o) => FILES[o[1]!]!.t === t).map((o) => [o[0]!, o[1]!, o[2] === -1 ? 1 : 0])
+        if (c.sweepOrder === 'readFirst') {
+          // the (wrong) other order: one ledger read, then the listing, judged together
+          const L = s.L[t]!
+          if (off(L) || !s.obj.some((o) => FILES[o[1]!]!.t === t)) continue
+          const ns = cp(s)
+          ns.sw = { t, ph: 2, ls: [], dm: [], rd: { fi: L.fi, tb: L.tb, wm: L.wm.map((x) => [...x]), lg: L.lg.slice() } }
+          emit(`orphan sweep${c.nt > 1 ? ` t${t}` : ''}: orphanCheck first`, ns)
+          continue
+        }
+        const ls = listing(t)
         if (ls.length === 0) continue
         const ns = cp(s)
-        ns.sw = { t, ph: 0, ls, dm: [] }
+        ns.sw = { t, ph: 0, ls, dm: [], rd: null }
         emit(`orphan sweep${c.nt > 1 ? ` t${t}` : ''}: list ${ls.map((x) => FILES[x[1]!]!.name).join(', ')}`, ns)
       }
     } else {
@@ -878,17 +894,23 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
       }
       const L = s.L[w.t]!
       if (w.ph === 0 && !off(L)) {
-        const dm = w.ls.filter((x) => doomed(c, L, x[0]!, x[1]!, x[2] === 1, (key) => w.ls.some((y) => y[0] === key))).map((x) => x[1]!)
+        const dm = judge(L, w.ls)
         const ns = cp(s)
-        ns.sw = dm.length ? { t: w.t, ph: 1, ls: [], dm } : null
+        ns.sw = dm.length ? { t: w.t, ph: 1, ls: [], dm, rd: null } : null
         emit(`orphan sweep: orphanCheck -> ${dm.length ? `doomed ${dm.map((f) => FILES[f]!.name).join(', ')}` : 'nothing to delete'}`, ns)
+      }
+      if (w.ph === 2) {
+        const dm = judge(w.rd!, listing(w.t))
+        const ns = cp(s)
+        ns.sw = dm.length ? { t: w.t, ph: 1, ls: [], dm, rd: null } : null
+        emit(`orphan sweep: list -> ${dm.length ? `doomed ${dm.map((f) => FILES[f]!.name).join(', ')}` : 'nothing to delete'}`, ns)
       }
       if (w.ph === 1) {
         for (const f of w.dm) {
           const ns = cp(s)
           r2delete(ns, FILES[f]!.key)
           const dm = without(w.dm, f)
-          ns.sw = dm.length ? { t: w.t, ph: 1, ls: [], dm } : null
+          ns.sw = dm.length ? { t: w.t, ph: 1, ls: [], dm, rd: null } : null
           emit(`orphan sweep: delete ${FILES[f]!.name}`, ns)
         }
       }
@@ -972,9 +994,14 @@ function doomed(c: Cfg, L: Led, k: number, f: number, old: boolean, present: (ke
     // incarnation of the stream is newer and has a logged watermark above 0 (F15 fix). The age
     // floor is kept only with `sweepAge` (the code keeps one; it is not what makes this safe).
     if (c.sweepAge && !old) return false
-    if (F.comp) return F.ins.some((i) => !present(FILES[i]!.key) && !liveKey(L, FILES[i]!.key))
+    if (F.comp) {
+      return F.ins.some((i) => {
+        const k = FILES[i]!.key
+        return c.sweepGone === 'notLive' ? !liveKey(L, k) : c.sweepGone === 'absent' ? !present(k) : !present(k) && !liveKey(L, k)
+      })
+    }
     const w = L.wm[sh!]!
-    return (w[0]! > inc! && L.lg[sh!]! > 0) || (w[0] === inc && L.lg[sh!]! >= hi)
+    return (w[0]! > inc! && (!c.sweepNewerLogged || L.lg[sh!]! > 0)) || (w[0] === inc && L.lg[sh!]! >= hi)
   }
   // 'impl', janitor.ts before D30: flush file dead by the LOGGED watermark (or a newer
   // incarnation); compaction output by age. Age is untimed here: the object's uploader is no

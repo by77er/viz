@@ -15,7 +15,7 @@
 //     identical, character for character, on the real API and on the mock
 //   - the real API's refusals, as a person meets them: a parse error (and where it is), an
 //     unknown function, PromQL viz does not run (422), too many points (400), a query over
-//     16 KiB (422), no key (401), a key without the read scope (403), an unreadable limits
+//     16 KiB (422), no key (401), an unknown key (401), a key without the read scope (403), an unreadable limits
 //     record (503 with Retry-After: 30), and the API's time limit (503 timeout)
 const lib = require('./lib.cjs')
 const { chromium, T0, T1, Q_RATE, Q_CPU, Q_P95, Q_MANY, Q_BAD } = lib
@@ -151,7 +151,14 @@ async function main() {
     check('real API, PromQL viz does not run: 422 unsupported, and the advice says so', e.kind === 'unsupported' && /unsupported with HTTP 422\. viz does not run this part of PromQL yet/.test(e.advice), `${e.message} | ${e.advice}`)
     await page.goto(at(APP_REAL, Q_RATE, '&step=500ms'))
     e = await errorState(page)
-    check('real API, more than 11,000 points: 400, and the button runs the query again', /exceeded maximum resolution of 11000 points/.test(e.message) && e.fix === 'Run the query again', e.message)
+    check('real API, more than 11,000 points: 400, the advice is about the step (not the query), and the button clears the step', /exceeded maximum resolution of 11000 points/.test(e.message) && /bad_data with HTTP 400\. The step is too small for this time range: the API returns at most 11,000 points per series\./.test(e.advice) && e.fix === 'Use the automatic step', `${e.message} | ${e.advice} | ${e.fix}`)
+    await page.click('[data-testid=error-fix]')
+    await ready(page)
+    check('real API, more than 11,000 points: "Use the automatic step" runs the query with it, and the result is drawn', !/step=/.test(page.url()) && /^4 series, one point every/.test(await text(page, '[data-testid=status]')), `${page.url()} | ${await text(page, '[data-testid=status]')}`)
+    // A sub-second step: the API evaluates on whole milliseconds; the app asks for that grid and draws it.
+    await page.goto(`${APP_REAL}/explore?q=${encodeURIComponent('up{instance="auth-5f8a1-q9xgc"}')}&from=${T0}&to=${T0 + 30000}&step=100ms`)
+    await ready(page)
+    check('real API, a 100 ms step: one point every 100 ms, the window\'s 301 points', /^1 series, one point every 100 ms\.$/.test(await text(page, '[data-testid=status]')) && (await page.$('[data-testid=error-state]')) === null, await text(page, '[data-testid=status]'))
     // Typed, not in the address: a 25 KB URL is refused by the server before the app loads (431).
     await page.goto(at(APP_REAL, Q_RATE)); await ready(page)
     await page.click('.cm-content')
@@ -162,9 +169,10 @@ async function main() {
     check('real API, a query over 16 KiB: 422, a limit, and the advice says so', e.kind === 'limit' && /max_query_bytes/.test(e.message) && /asks for more than the API allows/.test(e.advice), e.advice)
 
     // No key; a key without the read scope.
-    for (const [label, key, kind, re] of [
-      ['no key: 401', '', 'auth', /unauthorized with HTTP 401\. The API did not accept the API key/],
-      ['a key without the read scope: 403', keys.write, 'scope', /forbidden with HTTP 403\. The API key in Settings cannot read metrics/],
+    for (const [label, key, kind, re, bannerRe] of [
+      ['no key: 401', '', 'auth', /unauthorized with HTTP 401\. No API key is set\. Enter a key with the read scope in Settings\./, /^The API needs an API key\. Enter one in settings\./],
+      ['a key the API does not know: 401', 'viz_AAAAAAAAAAAAAAAA_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'auth', /unauthorized with HTTP 401\. The API did not accept the API key\./, /^The API did not accept the API key\. Enter a valid key in settings\./],
+      ['a key without the read scope: 403', keys.write, 'scope', /forbidden with HTTP 403\. The API key in Settings cannot read metrics/, /^The API key in settings cannot read metrics\. Use a key with the read scope\./],
     ]) {
       const c = await lib.contextWithKey(browser, key)
       const p = await c.newPage()
@@ -173,7 +181,7 @@ async function main() {
       const banner = await p.waitForSelector('.app-notices [role=alert]', { timeout: 10000 }).then((b) => b.textContent(), () => '')
       await p.click('[data-testid=error-fix]')
       const opened = await p.waitForSelector('dialog[open] #set-token', { timeout: 3000 }).then(() => true, () => false)
-      check(`real API, ${label}: the advice names the key, the button opens Settings, and the shell says the credentials were refused`, s.kind === kind && re.test(s.advice) && opened && /rejected the credentials/.test(banner), `${s.message} | ${s.advice}`)
+      check(`real API, ${label}: the advice says what is wrong with the key, the button opens Settings, and the shell's banner says the same`, s.kind === kind && re.test(s.advice) && opened && bannerRe.test(banner.trim()), `${s.message} | ${s.advice} | ${banner.trim()}`)
       if (key === '') {
         await p.fill('#set-token', keys.read)
         await p.click('dialog[open] button[type=submit]')

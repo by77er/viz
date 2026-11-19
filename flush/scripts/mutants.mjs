@@ -2,8 +2,19 @@
 // it to FAIL, restore the file.
 //   node scripts/mutants.mjs [substring of a mutant name]
 //   node scripts/mutants.mjs --stack      the same mutants against the end-to-end suite in ../stack
+//
+// AGENTS.md (Evidence): mutants are applied to a COPY of the tree in a scratch area, never in
+// place in the shared checkout. The script refuses to run in a git checkout; copy the tree
+// (with each component's node_modules linked) and run it from the copy's flush/.
 import { execSync } from 'node:child_process'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
+const ROOT = fileURLToPath(new URL('../../', import.meta.url))
+if (existsSync(`${ROOT}.git`)) {
+  console.error(`mutants: ${ROOT} is a git checkout. Run this on a copy in a scratch directory (AGENTS.md, Evidence).`)
+  process.exit(2)
+}
 
 const F = 'src/flush.ts'
 const mutants = [
@@ -15,14 +26,19 @@ const mutants = [
     "      if (w >= seg.seqLo) throw new Stop('overlap', `the ledger's watermark ${w} is inside segment ${seg.seqLo}..${seg.seqHi}`)",
     "      if (w < seg.seqHi) return { outcome: 'admitted', result }"],
   ['two segments in one unit', F,
-    '  const batches = await c.shard.readSegment(c.tenant, seg.seqLo)\n',
-    `  let batches = await c.shard.readSegment(c.tenant, seg.seqLo)
+    '  const batches = await c.shard.readSegment(c.tenant, seg.seqLo, seg.incarnation, seg.seqHi)\n',
+    `  let batches = await c.shard.readSegment(c.tenant, seg.seqLo, seg.incarnation, seg.seqHi)
   const following = (await c.shard.pendingSegments(c.tenant)).find((p) => p.seqLo === seg.seqHi + 1)
   if (batches && following) {
-    batches = [...batches, ...((await c.shard.readSegment(c.tenant, following.seqLo)) ?? [])]
+    batches = [...batches, ...((await c.shard.readSegment(c.tenant, following.seqLo, following.incarnation, following.seqHi)) ?? [])]
     seg = { ...seg, seqHi: following.seqHi }
   }
 `],
+  // spec/README.md F12: the read is bound to the incarnation and range the segment was listed with.
+  ['F12: a segment is read unbound to its incarnation and range', F,
+    'c.shard.readSegment(c.tenant, seg.seqLo, seg.incarnation, seg.seqHi)', 'c.shard.readSegment(c.tenant, seg.seqLo)'],
+  ['F12: a refused bound read is not reported as an incarnation change', F,
+    "    if (now?.incarnation !== seg.incarnation) throw new Stop('shard_incarnation_changed',", "    if (false) throw new Stop('shard_incarnation_changed',"],
   ['series file omitted from the unit', F,
     '  for (const f of encoded) {', "  for (const f of encoded.filter((x) => x.table !== 'metric_series')) {"],
   ['a refused PUT trusted without comparing the existing object', F,
@@ -56,23 +72,25 @@ const only = process.argv.slice(2).find((a) => a !== '--stack')
 let survived = 0
 for (const [name, file, from, to] of mutants) {
   if (only && !name.includes(only)) continue
-  const original = readFileSync(file, 'utf8')
+  const path = `${ROOT}flush/${file}`
+  const original = readFileSync(path, 'utf8')
   if (!original.includes(from)) {
     console.log(`NOT APPLIED  ${name} (pattern not found in ${file})`)
     survived++
     continue
   }
-  writeFileSync(file, original.replace(from, to))
+  writeFileSync(path, original.replace(from, to))
   let failed = false
   let detail = ''
   try {
-    execSync(stack ? 'npx vitest run test/e2e.test.ts' : 'npx vitest run test/flush.test.ts', { cwd: stack ? '../stack' : '.', stdio: 'pipe', env: { ...process.env, NO_COLOR: '1' } })
+    // At most two test workers (AGENTS.md, shared machine).
+    execSync(stack ? 'npx vitest run --maxWorkers=2 test/e2e.test.ts' : 'npx vitest run --maxWorkers=2 test/flush.test.ts', { cwd: stack ? `${ROOT}stack` : `${ROOT}flush`, stdio: 'pipe', env: { ...process.env, NO_COLOR: '1' } })
   } catch (e) {
     failed = true
     const out = String(e.stdout) + String(e.stderr)
     detail = [...out.matchAll(/^\s+× (.+?)(?: \d+ms)?$/gm)].map((m) => m[1]).slice(0, 3).join(' | ') || (out.match(/Error: .*/)?.[0] ?? '')
   } finally {
-    writeFileSync(file, original)
+    writeFileSync(path, original)
   }
   if (!failed) survived++
   console.log(`${failed ? 'KILLED  ' : 'SURVIVED'}  ${name}${detail ? `  ← ${detail}` : ''}`)

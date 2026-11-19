@@ -166,8 +166,15 @@ describe('mock PromQL: range queries and errors', () => {
     expect(() => parse('c_total and g')).toThrow(expect.objectContaining({ errorType: 'unsupported', message: 'set operator "and" (not implemented by the viz mock backend)' }))
     expect(() => parse('{}')).toThrow(/at least one non-empty matcher/)
   })
-  it('enforces the 11,000 point limit, in the real API\'s words', () => {
+  it('enforces the 11,000 point limit, in the real API\'s words, counting points as the real engine does', () => {
     expect(() => queryRange(store, 'g', 0, 11001, 1)).toThrow('exceeded maximum resolution of 11000 points per timeseries. Try decreasing the query resolution (?step=XX)')
+    // 11,000 steps are 11,001 points: refused by the real API (engine/query check_range), though Prometheus takes them.
+    expect(() => queryRange(store, '1', 0, 11000, 1)).toThrow(/exceeded maximum resolution/)
+    expect(queryRange(store, '1', 0, 10999, 1).result[0]!.values).toHaveLength(11000)
+  })
+  it('evaluates on a grid of whole milliseconds, as the real API does', () => {
+    const r = queryRange(store, 'time()', 1794994200, 1794994200.5, 0.1)
+    expect(r.result[0]!.values.map(([t]) => t)).toEqual([1794994200, 1794994200.1, 1794994200.2, 1794994200.3, 1794994200.4, 1794994200.5])
   })
 })
 
@@ -241,6 +248,16 @@ describe('mock API: the real API\'s HTTP surface (e2e/contract.cjs checks it aga
   const form = { 'content-type': 'application/x-www-form-urlencoded' }
   const range = (q: string) => `query=${encodeURIComponent(q)}&start=${t - 60}&end=${t}&step=15`
 
+  it('reads times and steps as the real API does: milliseconds rounded on the fourth decimal, the step floored to a whole millisecond', () => {
+    const times = (body: string) => ((api.handle('POST', '/api/v1/query_range', body, { ...auth, ...form }).body as any).data.result[0].values as [number, string][]).map(([x]) => x)
+    // The real stack's answers (e2e/contract.cjs, "range: a fractional start" and "range: a step of 1.5 ms").
+    expect(times(`query=time()&start=1794994200.0006&end=1794994201&step=0.25`)).toEqual([1794994200.001, 1794994200.251, 1794994200.501, 1794994200.751])
+    expect(times(`query=time()&start=1794994200.0004&end=1794994200.003&step=0.0015`)).toEqual([1794994200, 1794994200.002])
+    expect(api.handle('POST', '/api/v1/query_range', 'query=time()&start=1794994200&end=1794994200.003&step=0.0004', { ...auth, ...form })).toMatchObject({
+      status: 400,
+      body: { error: 'invalid parameter "step": zero or negative query resolution step widths are not accepted. Try a positive integer' },
+    })
+  })
   it('takes the methods each endpoint takes, and says which with Allow', () => {
     expect(api.handle('DELETE', '/api/v1/query', '', auth)).toMatchObject({ status: 405, body: { errorType: 'method_not_allowed', error: 'method not allowed' }, headers: { Allow: 'GET, POST' } })
     expect(api.handle('POST', '/api/v1/metadata', '', auth)).toMatchObject({ status: 405, headers: { Allow: 'GET' } })

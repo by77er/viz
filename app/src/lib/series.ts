@@ -67,6 +67,10 @@ export interface SampleColumns {
 export function alignSeries(result: readonly SampleColumns[], start: number, end: number, step: number): AlignedData {
   const byName = (a: AlignedSeries, b: AlignedSeries) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
   const n = Math.floor((end - start) / step + 1e-9) + 1
+  // A sample is on the grid when it is within 5 µs of a grid time. The API's times are whole
+  // milliseconds; as doubles near 1.8e9 s they are off by about 0.2 µs, which for a 0.1 s step
+  // is 2e-6 of a step (a tolerance in steps, as before, sent such results down the slow path).
+  const tolerance = 5e-6 / step
 
   // The usual case, in one pass: every sample is on the grid, so its index is computed, not
   // looked up. The first sample off the grid abandons this pass for the general one below.
@@ -81,7 +85,7 @@ export function alignSeries(result: readonly SampleColumns[], start: number, end
       for (let k = 0; k < times.length; k++) {
         const pos = (times[k]! - start) / step
         const i = Math.round(pos)
-        if (i < 0 || i >= n || Math.abs(pos - i) > 1e-6) {
+        if (i < 0 || i >= n || Math.abs(pos - i) > tolerance) {
           onGrid = false
           break outer
         }

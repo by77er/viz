@@ -37,9 +37,16 @@ export interface QueryWindow {
 /**
  * Align a window to the step so that successive refreshes of a relative range hit the same
  * evaluation timestamps (stable lines, cacheable requests).
+ *
+ * In whole milliseconds, as the viz API (and Prometheus) evaluates: it rounds `start` and
+ * `end` to the millisecond and floors `step` to one (query/src/params.ts), so a window
+ * computed in fractional seconds (1794994200.0000002 for a 0.1 s step) asks for one grid and
+ * receives another. Here start, end and step are whole milliseconds, and their decimal
+ * forms (`String(ms / 1000)`) are read back by the API as exactly those milliseconds.
  */
 export function alignWindow(startSec: number, endSec: number, step: number): QueryWindow {
-  const start = Math.floor(startSec / step) * step
-  const end = Math.max(start + step, Math.floor(endSec / step) * step)
-  return { start, end, step }
+  const stepMs = Math.max(1, Math.round(step * 1000))
+  const startMs = Math.floor(Math.round(startSec * 1000) / stepMs) * stepMs
+  const endMs = Math.max(startMs + stepMs, Math.floor(Math.round(endSec * 1000) / stepMs) * stepMs)
+  return { start: startMs / 1000, end: endMs / 1000, step: stepMs / 1000 }
 }

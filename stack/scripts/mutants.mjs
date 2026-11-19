@@ -1,6 +1,7 @@
 // Mutation check for the automatic write path: break one property at a time in the source,
 // run the tests that should notice, expect them to FAIL, restore the source.
 //   node scripts/mutants.mjs [part] [substring of a mutant name]      (from stack/)
+//   MUTANT_FILES=compact/,janitor/ node scripts/mutants.mjs all          only mutants in those files
 // Parts: trigger, compaction, precedence, deletion, limit, review. Paths are relative to the
 // root of the tree the script sits in.
 //
@@ -157,9 +158,9 @@ const mutants = [
   ['deletion', 'a compaction output\'s age floor is only the flush files\' grace', 'janitor/src/janitor.ts', T.janitor,
     "  const compactGraceMs = Math.max(graceMs, 2 * (opts.maxCompactStepMs ?? DEFAULT_POLICY.maxStepMs))", "  const compactGraceMs = graceMs"],
   ['deletion', 'series files are not expired', 'janitor/src/janitor.ts', T.janitor,
-    "  const series = await ledger.expire({ table: 'metric_series', beforeDay })", "  const series = { removed: [] as string[] }"],
+    "ledger.expire({ tables: ['metric_samples', 'metric_series'], beforeDay })", "ledger.expire({ tables: ['metric_samples'], beforeDay })"],
   ['deletion', 'retention keeps one day too few', 'janitor/src/janitor.ts', T.janitor,
-    "new Date(now - policy.metric_samples_days * DAY_MS)", "new Date(now - (policy.metric_samples_days - 1) * DAY_MS)"],
+    "  const cutoff = now - policy.metric_samples_days * DAY_MS", "  const cutoff = now - (policy.metric_samples_days - 1) * DAY_MS"],
   ['deletion', 'retention is due at every midnight (idle tenants wake daily)', 'stack/src/maintain.ts', T.triggers,
     "  if (days.length > 0 && expired.keepDays !== null) due.push(Date.parse(`${days[0]}T00:00:00Z`) + (expired.keepDays + 1) * DAY_MS)", "  if (days.length > 0) due.push((Math.floor(now / DAY_MS) + 1) * DAY_MS)"],
   ['deletion', 'retention is due a day before the oldest day expires', 'stack/src/maintain.ts', T.triggers,
@@ -231,6 +232,10 @@ const mutants = [
     "  if (r.status === 'conflict') return {", "  if (r.status !== 'ok') return {"],
   ['review', 'F15: a newer incarnation counts before its registration is logged', 'janitor/src/janitor.ts', T.janitorUnit,
     "return w.seq > 0 ? 'dead' : 'pending_unit'", "return 'dead'"],
+  ['review', 'F12: flush reads a segment unbound to its incarnation and range', 'flush/src/flush.ts', T.flushUnit,
+    "c.shard.readSegment(c.tenant, seg.seqLo, seg.incarnation, seg.seqHi)", "c.shard.readSegment(c.tenant, seg.seqLo)"],
+  ['review', 'F12: a refused bound read is not reported as an incarnation change', 'flush/src/flush.ts', T.flushUnit,
+    "    if (now?.incarnation !== seg.incarnation) throw new Stop('shard_incarnation_changed',", "    if (false) throw new Stop('shard_incarnation_changed',"],
   ['review', 'R-7: one shard that throws stops the flush sweep', 'flush/src/sweep.ts', T.cron,
     "const answers = await Promise.allSettled(group.map(", "const answers = await Promise.all(group.map("],
   ['review', 'R-7: the maintenance sweep waits on the flush sweep', 'stack/src/index.ts', T.cron,
@@ -279,11 +284,14 @@ const mutants = [
 ]
 
 const [part, only] = process.argv.slice(2)
+// MUTANT_FILES=compact/,janitor/ runs only the mutants of files under those prefixes.
+const files = process.env.MUTANT_FILES ? process.env.MUTANT_FILES.split(',') : null
 let survived = 0
 const tally = {}
 for (const [p, name, file, [cwd, cmd], from, to] of mutants) {
   if (part && part !== 'all' && p !== part) continue
   if (only && !name.includes(only)) continue
+  if (files && !files.some((f) => file.startsWith(f))) continue
   const path = ROOT + file
   const original = readFileSync(path, 'utf8')
   tally[p] ??= { killed: 0, survived: 0 }
