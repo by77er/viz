@@ -1420,8 +1420,9 @@ values copied as bytes), at most `maxBytes` a page, with `page.next` bound to th
 incarnation, watermark and filter, through the end fixed by the first page. A batch whose kept
 rows do not fit a page is refused (`page_limit`), never cut. Without options the answer is as
 before; an older shard ignores options, so `page` in the answer is how a caller knows. An
-answer without `page` in the middle of a paged read is the whole tail: the caller drops the
-pages it has and uses that answer alone. A new filter field comes with `v` 2, because a `v` 1
+answer without `page` in the middle of a paged read is the whole tail: the caller either drops
+the pages it has and uses that answer alone, or refuses the read retryably and plans again;
+never mixes the two (the query coordinator refuses with 503, D54). A new filter field comes with `v` 2, because a `v` 1
 shard ignores fields it does not know and still pages (review of D47, D48 and D55, P-9;
 `shard/README.md`, "Needed changes elsewhere").
 
