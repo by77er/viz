@@ -284,7 +284,7 @@ Labels are sorted by name in UTF-8 byte order, names unique, values non-empty; n
 | 7 | `severity_number` | u8[n] | 1 to 24; 0 when absent |
 | 8 | `line` | variable | UTF-8, at most 262,144 bytes (256 KiB); may be empty |
 | 9 | `severity_text` | variable | UTF-8, at most 1,024 bytes; empty when absent |
-| 10 | `metadata` | variable | per row: `n u16` (at most 128), then `name_len u16, name, value_len u16, value` per entry, sorted by name in UTF-8 byte order, names unique and following the label-name rule, values non-empty and at most 8,192 bytes, names and values together at most 65,536 bytes |
+| 10 | `metadata` | variable | per row: `n u16` (at most 128), then `name_len u16, name, value_len u16, value` per entry, sorted by name in UTF-8 byte order, names unique and following the label-name rule, values non-empty, at most 8,192 bytes and without NUL, names and values together at most 65,536 bytes |
 
 With these limits a row and its stream entry always fit one batch.
 

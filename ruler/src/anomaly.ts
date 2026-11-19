@@ -84,15 +84,16 @@ export const ANOMALY_STATE_VERSION = 1
 const EWMA_HELD_OUT = { halfLifePoints: 100, k: 8 }
 
 /**
- * Robust z with the quantile spread at the largest window whose stored state fits the per-series
- * limit (64 KiB) for any values: 1,500 points, measured at 60.9 KB with the longest number
- * encoding (39.7 bytes a point; the save-time estimate, 36, would allow 1,781, where such values
- * reach 72 KB and are refused at run time), leaving about 4.6 KB for labels and the explanation.
+ * Robust z with the quantile spread at the largest window whose state fitted the per-series limit
+ * (64 KiB) for any values when it was stored as JSON (version 1 of `store.anomaly-state`): 1,500
+ * points, measured at 60.9 KB with the longest number encoding (39.7 bytes a point). Stored as
+ * Float64 ring blocks (version 2, design D56) the same window keeps about 18.8 KB a series whatever
+ * the values, and up to about 5,600 points fit; the default was not changed with the storage (D33).
  * k 2 and the 99th percentile are the configuration frozen on NAB (anomaly/bench/smd-frozen.json);
  * only the window differs from it (design D33; ruler/README.md part 8).
  */
 export const ROBUST_Z_DEFAULTS = { windowPoints: 1500, k: 2, spread: 'quantile', spreadQuantile: 0.99 } as const
-/** The configuration frozen on NAB before SMD was fetched and confirmed there; nameable, but over the per-series limit (about 145 KB a series). */
+/** The configuration frozen on NAB before SMD was fetched and confirmed there: about 145 KB a series as JSON, over the per-series limit; about 47 KB as ring blocks (version 2), within it. */
 export const ROBUST_Z_CONFIRMED = { windowPoints: 4000, k: 2, spread: 'quantile', spreadQuantile: 0.99 } as const
 /** Seasonal with the quantile spread: the configuration frozen on NAB and confirmed on SMD. */
 export const SEASONAL_DEFAULTS = { seasons: 1, k: 2, adapt: 'robust', spread: 'quantile', spreadQuantile: 0.99 } as const
@@ -121,13 +122,13 @@ export const DETECTOR_GUIDE: Record<string, DetectorGuide> = {
       kind: 'held_out',
       defaultsValidated: true,
       nab: { standard: 42.6, lowFp: 29.7, lowFn: 55.4 },
-      note: 'Window 1,500 is the largest whose state fits this ruler\'s 64 KiB per series for any values (the window was set by that limit, not by the data); k 2 and the 99th percentile are as frozen on NAB. Held out on NAB 42.6; on SMD 42.5, post hoc (only the 4,000-point window was frozen before SMD was seen; it scored 42.8 there and is refused here for its state, about 145 KB a series). A rule keeps at most 18 series by default (about 55 KB of state each, 1 MiB a rule), and its warm-up is modelled at about 0.35 ms of CPU a point (0.53 s a series). With spread "mad" the library\'s defaults apply (window 288, k 3.5), as before 2026-11-19; the MAD scored below a static threshold on both benchmarks.',
+      note: 'Window 1,500 was the largest whose state fitted this ruler\'s 64 KiB per series for any values while state was stored as JSON (the window was set by that limit, not by the data); k 2 and the 99th percentile are as frozen on NAB. Held out on NAB 42.6; on SMD 42.5, post hoc (only the 4,000-point window was frozen before SMD was seen; it scored 42.8 there). State is now stored as Float64 ring blocks: about 18.8 KB a series at 1,500 points, so a rule keeps at most 55 series by default (1 MiB a rule), and the 4,000-point window fits (about 47 KB). Its warm-up is modelled at about 0.35 ms of CPU a point (0.53 s a series). With spread "mad" the library\'s defaults apply (window 288, k 3.5), as before 2026-11-19; the MAD scored below a static threshold on both benchmarks.',
       lines: [
         { kind: 'held_out', data: 'NAB', config: 'quantile spread, window 1,500 (this default), k chosen on each half from 1, 1.5, 2, 3', score: { standard: 42.6, lowFp: 29.7, lowFn: 55.4 }, text: 'Above EWMA (30.1) and the static threshold (21.8) in every profile. The halves chose k 1.5 and 2 (standard), 2 and 2 (low FP); the default is 2, the frozen k. Window recall 66%, event precision 31%.' },
         { kind: 'post_hoc', data: 'SMD', config: 'quantile spread, window 1,500, k 2 (this default)', score: { standard: 42.5, lowFp: 21.2, lowFn: 50.8 }, text: 'Scored after the frozen results were seen. Over EWMA +32.0 [20.6, 48.1], over the static threshold +26.0 [14.6, 35.1] (standard, 95% machine bootstrap); event F1 0.382 (EWMA 0.206, threshold 0.328); 12.2 unmatched alarm onsets per machine-day.' },
-        { kind: 'confirmed', data: 'SMD', config: 'quantile spread, window 4,000, k 2 (frozen on NAB)', score: { standard: 42.8, lowFp: 23.0, lowFn: 44.0 }, text: 'The pre-registered configuration: generalised by the rule written in advance (over EWMA +32.4 [20.7, 48.7], event F1 0.441). Nameable as params { windowPoints: 4000 }, but its state, about 145 KB a series, is over this ruler\'s per-series limit, so the save is refused unless that limit is raised; then at most 7 series a rule, and modelled at 0.92 ms of CPU a point (3.7 s to warm one series, over the 5 s warm-up budget at 2).' },
+        { kind: 'confirmed', data: 'SMD', config: 'quantile spread, window 4,000, k 2 (frozen on NAB)', score: { standard: 42.8, lowFp: 23.0, lowFn: 44.0 }, text: 'The pre-registered configuration: generalised by the rule written in advance (over EWMA +32.4 [20.7, 48.7], event F1 0.441). Nameable as params { windowPoints: 4000 }: its state, about 47 KB a series as Float64 ring blocks (145 KB as JSON, when the default was chosen), fits the per-series limit, at most 22 series a rule; modelled at 0.92 ms of CPU a point (3.7 s to warm one series: the 5 s warm-up budget warms one, a rule with more starts cold).' },
         { kind: 'post_hoc', data: 'NAB', config: 'quantile spread, window and k chosen on each half (window 4,000)', score: { standard: 44.8, lowFp: 33.7, lowFn: 52.3 }, text: 'The quantile spread itself was chosen after seeing the MAD results below; SMD was fetched only after it was frozen.' },
-        { kind: 'held_out', data: 'NAB', config: 'quantile spread, window 1,000, k chosen on each half', score: { standard: 39.4, lowFp: 25.6, lowFn: 52.1 }, text: 'A smaller window: 28 series a rule by default. On SMD (k 2, post hoc) 37.6 / 9.9 / 48.0: below the static threshold (15.5) in the low-false-positive profile.' },
+        { kind: 'held_out', data: 'NAB', config: 'quantile spread, window 1,000, k chosen on each half', score: { standard: 39.4, lowFp: 25.6, lowFn: 52.1 }, text: 'A smaller window: 78 series a rule by default. On SMD (k 2, post hoc) 37.6 / 9.9 / 48.0: below the static threshold (15.5) in the low-false-positive profile.' },
         { kind: 'held_out', data: 'NAB', config: 'MAD spread (spread "mad"), window 1,000, k 10 chosen on each half', score: { standard: -105.9, lowFp: -282.4, lowFn: -45.6 }, text: 'Below a static threshold: on heavy-tailed series the MAD describes only the bulk.' },
         { kind: 'confirmed', data: 'SMD', config: 'MAD spread, frozen', score: { standard: -318.2, lowFp: -698.7, lowFn: -190.4 }, text: 'The hypothesis written in advance (the MAD below the static threshold) held; below even a random detector (−68.0).' },
       ],
@@ -177,7 +178,7 @@ export const DETECTOR_GUIDE: Record<string, DetectorGuide> = {
     name: 'seasonal',
     inRules: true,
     goodFor: 'Values wrong for the time of day or week (4 of 4 phase-wrong artificial anomalies caught on NAB against 1 of 4 without it; nyc_taxi). Needs periodMs and a season of history.',
-    notFor: 'Series without a season, and paging. Not better than robust z in aggregate on either benchmark. A daily season at a 1-minute interval keeps about 59 KB of state a series (estimated), near the 64 KiB limit: values that print long reach about 68 KB and are refused at run time; use 5-minute rollups.',
+    notFor: 'Series without a season, and paging. Not better than robust z in aggregate on either benchmark. A daily season at a 1-minute interval keeps about 34 KB of state a series (Float64 ring blocks, whatever the values), 30 series a rule; a weekly one needs rollups.',
     pageAllowed: true,
     defaultSeverity: 'ticket',
     defaults: { ...SEASONAL_DEFAULTS },
@@ -392,6 +393,19 @@ export function cpuStateBytes(rule: Pick<AnomalyRuleV2, 'anomaly'>, intervalMs: 
   return estimateStateBytes(rule.anomaly.detector, rule.anomaly.params, intervalMs, 1)
 }
 
+/** The most robust z window points (`windowPoints`) whose estimated state fits `limit` bytes a series, in the version the gate writes. */
+export function maxRobustWindow(limit: number, version: 1 | 2 = ANOMALY_STATE_WRITE): number {
+  let lo = 1
+  let hi = 1_000_000
+  if (estimateStateBytes('robust_z', { windowPoints: lo }, 60_000, version) > limit) return 0
+  while (lo < hi) {
+    const m = Math.ceil((lo + hi) / 2)
+    if (estimateStateBytes('robust_z', { windowPoints: m }, 60_000, version) <= limit) lo = m
+    else hi = m - 1
+  }
+  return lo
+}
+
 const CLASS_ORDER: CostClass[] = ['tail', 'recent', 'rollup']
 export const maxClass = (a: CostClass, b: CostClass): CostClass => (CLASS_ORDER.indexOf(a) >= CLASS_ORDER.indexOf(b) ? a : b)
 
@@ -578,7 +592,7 @@ export function parseAnomalySpec(c: ParseContext, v: unknown, path: string, inte
       detector === 'seasonal'
         ? 'Use a coarser interval (rollups) for long seasons, or fewer seasons.'
         : detector === 'robust_z'
-          ? `Use a shorter window: windowPoints ${ROBUST_Z_DEFAULTS.windowPoints}, the default, is the largest whose state fits 65,536 bytes a series for any values (NAB held out ${evidenceScore('robust_z', 'NAB', 'quantile spread, window 1,500')}, SMD ${evidenceScore('robust_z', 'SMD', 'quantile spread, window 1,500')} post hoc). A longer window needs the operator to raise RulerLimits.maxAnomalyStateBytesPerSeries.`
+          ? `Use a shorter window: at most ${maxRobustWindow(limits.maxAnomalyStateBytesPerSeries)} points fit ${limits.maxAnomalyStateBytesPerSeries} bytes a series; the default is ${ROBUST_Z_DEFAULTS.windowPoints} (NAB held out ${evidenceScore('robust_z', 'NAB', 'quantile spread, window 1,500')}, SMD ${evidenceScore('robust_z', 'SMD', 'quantile spread, window 1,500')} post hoc). A longer window needs the operator to raise RulerLimits.maxAnomalyStateBytesPerSeries.`
           : 'Use a shorter window.',
     )
     return null

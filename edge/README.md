@@ -457,6 +457,103 @@ So roughly 4–7 µs of CPU per sample, or roughly 100–150 ms per megabyte of 
 Most of it is the series id: FNV-1a is one multiply per byte in a serial chain, about
 3.6 ms per MiB of label bytes here.
 
+### Traces and logs (2026-11-19)
+
+```
+npx vitest run --maxWorkers=2      # 90 tests in 11 files (19 new in test/traces.test.ts and test/logs.test.ts)
+npx tsc --noEmit                   # clean
+node scripts/mutants.mjs otel:     # on a copy outside the git checkout
+node bench/otel.mjs                # decode CPU per request
+node scripts/otel-corpus.mjs OUT 1 2   # then engine/storage/readback and tools/otel_independent_check.py
+```
+
+**Last run: 90 passed, 0 failed; `tsc --noEmit` clean.** The 71 metrics and entrypoint tests are
+unchanged and pass. New, all through the Worker against the real Shard, with requests written by
+test-side protobuf and JSON writers and batches read back by a test-side signal 2/3 decoder
+that share no code with `src/` (`test/otelhelpers.ts`), compared with an oracle of the
+contracts' mapping written separately:
+
+- **Round trips (properties):** 40 random OTLP traces requests (1–3 resources, 1–2 scopes, 1–8
+  spans each; attributes of every AnyValue kind with Unicode, astral characters, U+FFFF, NUL and
+  control characters, empty strings, NaN, ±Inf, −0, nested arrays and key-value lists, bytes;
+  events, links, clamped ends) and 36 OTLP logs requests, protobuf, JSON and gzip; 12 Loki
+  pushes (protobuf with snappy, JSON, gzip). Every stored row equals the input under the
+  contract's rules.
+- **Refusals:** 15 kinds of invalid span and 11 kinds of invalid log record, each refused on its
+  own with the rest stored, counted exactly in `partial_success` (protobuf and JSON bodies
+  decoded and checked), a refused resource counting each of its spans; Loki: 7 refused of 9
+  entries answered 400 with every reason and "2 written", unparseable labels, repeated label and
+  metadata names; 413 above `maxSpans`; 400 with a `Status` for bodies that do not decode; 415.
+- **Tenancy:** a resource attribute, stream label and metadata named `tenant`, `X-Scope-OrgID`,
+  other headers and a query string naming another tenant move nothing.
+- **Routing:** each resource's spans in the slot `slotFor` gives its `job`/`instance` key, the
+  same slot number its metrics take; Loki streams by `job`/`instance`; nothing in the metrics
+  pool; batches of at most 1 MiB in arrival order. A JSON request carrying the same spans as an
+  earlier protobuf one produced the same batch bytes and was stored once (fingerprint).
+- **Mapping:** OTLP labels, flattening, `;` joins, level precedence, `unknown_service`, body to
+  line, observed time, column fields; `stream_id` equal to values computed in Python.
+- **Flag:** 404 without `INGEST_SIGNALS`, and for the signal it does not name.
+
+**Cross-language:** `scripts/otel-corpus.mjs` encodes random requests with **protobufjs**
+(from .proto definitions; field numbers as in opentelemetry-proto and Loki's `pkg/push`, both
+Apache-2.0) and snappyjs, runs this code's decoders, and `engine/storage`'s strict decoder
+accepted every batch and re-encoded each to the same bytes; flushed, the files read back equal
+the generator's expected rows in Rust, PyArrow and DuckDB, and TraceQL and LogQL answer the
+same over them as over their in-memory sources (`engine/storage/README.md`, five seeds). That
+run found a bug here: a double inside an array or key-value list was read from the wrong bytes
+when the body was a Node `Buffer` (`slice` is a view there); fixed by copying.
+
+**Mutants (2026-11-19)**, `node scripts/mutants.mjs otel:` on a copy of `contracts/`, `shard/` and
+`edge/` in a scratch directory, each against the whole suite: **19 of 19 killed**; the two older
+mutants whose patterns this change moved (`no map refetch on stale_epoch`, `no re-split after
+too_large`) were updated and re-run: killed. `--check`: all 69 patterns apply.
+
+| Mutant | Killed by (one of) |
+|---|---|
+| tenant from the body (OTLP traces: a resource attribute `tenant`) | takes the tenant from the credential only |
+| tenant from the body (Loki push: a stream label `tenant`) | takes the tenant from the credential only (X-Scope-OrgID is ignored) |
+| tenant from `X-Scope-OrgID` (Loki push) | same |
+| partial success counts a refused resource once, not each span | refuses each invalid span on its own and counts it |
+| partial success says whether, not how many | the same, and its JSON and logs counterparts |
+| partial success omitted | the three partial-success tests |
+| Loki push 204 despite refused entries | Loki push: invalid entries … refused with 400 |
+| `stream_id` without the separator after each value | stream ids are series ids; Loki round trip; OTLP mapping |
+| `stream_id` over values only | same |
+| span attributes after the third dropped | stores every span exactly; round-trips random requests |
+| resource and scope attributes dropped from log metadata | OTLP mapping; OTLP logs round trip |
+| the first of a repeated key kept, not the last | logs and traces round trips |
+| end before start stored as is | traces round trips; refusals test (the clamped span) |
+| span accept window not applied | refuses each invalid span on its own |
+| an attribute with an empty key accepted | same |
+| OTLP log stream labels from every resource attribute | OTLP mapping; OTLP logs round trip |
+| a record without a timestamp stored at 0 | OTLP mapping; OTLP record refusals |
+| spans appended to the metrics pool | every test reading the signal pools |
+| routes served without `INGEST_SIGNALS` | the two flag tests |
+
+**Decode CPU per request** (`node bench/otel.mjs`, Node 22, V8 but not workerd or Cloudflare's
+CPU; 4 shared cores at load average 7 to 9; median of 15 runs after 3 warm-ups, range in
+brackets; decode, validation, mapping, batches and SHA-256, no gzip). Measured after removing
+per-item allocations (a profile showed GC 30% and `TextEncoder.encode` 30% before; the same
+table measured 2.5 to 4 times slower then):
+
+| Request | Items | Body | CPU per request | Per item |
+|---|---|---|---|---|
+| OTLP traces, protobuf | 1,000 spans, 10 resources, 9 attributes each | 432 KiB | 18.0 ms (8.6–27.0) | 18 µs |
+| OTLP traces, JSON | 1,000 | 892 KiB | 17.4 ms (14.4–45.9) | 17 µs |
+| OTLP traces, protobuf | 8,000 | 3,440 KiB | 128 ms (103–225) | 16 µs |
+| OTLP traces, JSON | 8,000 | 7,100 KiB | 173 ms (133–361) | 22 µs |
+| OTLP logs, protobuf | 1,000 records, 3 attributes, trace ids | 268 KiB | 12.9 ms (6.3–16.6) | 13 µs |
+| OTLP logs, JSON | 1,000 | 502 KiB | 15.6 ms (7.2–30.1) | 16 µs |
+| OTLP logs, protobuf | 8,000 | 2,142 KiB | 83 ms (54–247) | 10 µs |
+| OTLP logs, JSON | 8,000 | 3,995 KiB | 151 ms (71–225) | 19 µs |
+| Loki push, protobuf + snappy | 1,000 entries, 10 streams | 47 KiB | 4.9 ms (3.1–20.0) | 5 µs |
+| Loki push, JSON | 1,000 | 206 KiB | 2.8 ms (2.4–11.5) | 3 µs |
+| Loki push, protobuf + snappy | 8,000 | 373 KiB | 37 ms (29–81) | 5 µs |
+| Loki push, JSON | 8,000 | 1,637 KiB | 38 ms (22–90) | 5 µs |
+
+Spans cost three to four times a metric sample (4–7 µs): attributes are canonicalised and
+typed, and every request's resource is hashed over its canonical JSON.
+
 ## Known risks
 
 - **A refused recorded-sample write is an `exception` in viz-ingest's metrics** (Trial 3 on
@@ -495,6 +592,14 @@ Most of it is the series id: FNV-1a is one multiply per byte in a serial chain, 
   `target_info`, which the compatibility spec prefers; high-cardinality resources make
   wide series. The `;` join of colliding attribute names follows arrival order, not the
   spec's sorted order.
+- **Traces and logs CPU.** An 8,000-span request costs 100 to 230 ms of CPU here (Node, noisy);
+  OTLP's recommended 64 MiB body would cost seconds. `maxDecompressedBytes` (32 MiB) bounds
+  it; nothing was measured in workerd or on Cloudflare.
+- **Traces and logs are refused, not truncated**, when an attribute or field is over its limit;
+  senders with very long attribute values (SQL statements over 64 KiB) lose those spans and are
+  told why.
+- **Retries of logs and spans are safe only by row key**, as for metrics; a retry that falls on
+  the other side of the accept window is partly refused the second time.
 - **Series ids use a hand-written 64-bit multiply.** The contract's BigInt form exists as
   `fnv1a64` and the tests hold the two equal, but the hot path is the integer one.
 
