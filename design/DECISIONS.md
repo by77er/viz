@@ -2206,7 +2206,9 @@ memory per span held and 1 KiB per log row, `query/README.md` "Measurements"). W
 fallback every metrics query of a tenant with a span or log stream registered failed, since the
 ledger names those streams in every plan (D57) and the shard's metric filter throws on their
 batches. (e) would turn a wrong shard choice into a silent hole; the header check makes it a
-refusal.
+refusal. The shard's own signal filter (`TailFilter.signals`) landed the same day and is sent
+with every read; shards of an earlier release ignore it, which is why the name rule and the header
+check stay.
 
 **Cost of it.** A search reads its window's `trace_index` before any span: one more ledger plan
 and round of reads. A trace whose lake spans all lie outside the window and whose fragments do
@@ -2218,6 +2220,6 @@ in a query's window are refused until split execution exists. A metric pool whos
 reads are then refused by the header check, not misread.
 
 **Would change if.** The engines gain exact partials (then (c), and the caps become per part);
-the shard's tail filter takes a signal (then tails are chosen by it and the name rule goes);
+every shard running answers the signal filter (then tails are chosen by it and the name rule goes);
 `trace_index` re-aggregation at compaction removes the over-count (then (a) for search over
 compacted data); or projection by the plan's columns cuts the memory per span (then larger caps).

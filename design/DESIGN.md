@@ -440,20 +440,35 @@ is pinned near the bucket so that hits concentrate.
 
 ### 6.4 Traces and logs
 
-- **Trace by ID:** `trace_index` is sorted by trace id, so the row is found by page-index
-  search; the row names the hours to read, and inside an hour compaction keeps few files
-  whose bloom filters pick the row groups. Without a time hint, days are searched newest
-  first.
-- **TraceQL search:** conditions are pushed to sorted and promoted columns. Structural
-  operators shuffle candidate spans by trace-id hash to leaves that join per trace. Queries
-  are bounded by scanned bytes and return partial results with a cursor.
+As built (2026-11-19, `query/README.md` "Traces and logs", D62): the query Worker answers
+Tempo's and Loki's HTTP APIs behind `QUERY_SIGNALS`, off until the write side of stage 2 lists
+the `spans`, `trace_index` and `logs` tables in the ledger. The engines (`engine/traceql`,
+`engine/logql`, clean-room, D35, D40, D50) are linked into the read path's one WASM module
+(`engine/wasm-query`, ABI 6), which reads the files `engine/storage` writes and the span and log
+tail batches through the engines' read seams. The seam with the tail is the metrics one (§2):
+one ledger version per query, tails strictly after the plan and above its watermarks, refusals
+re-planned. Every read asks only its signal's shards and every tail batch is checked by its
+header (a batch of another signal refuses the query, never misread).
+
+- **Trace by ID:** the `trace_index` row groups whose trace-id range (from the index fragment)
+  holds the id are read; the trace's fragments name its extent and the `spans` hours that hold
+  it, and only those hours' files are read, their row groups chosen by time. Without a time hint
+  every day is planned (newest-first waves are not built). Inside an hour a flush unit's row
+  group is decoded whole to find the trace (the bloom filters are not used yet; measured: the
+  cost of a call is the hour's spans, not the trace's).
+- **TraceQL search** reads `trace_index` over the window, finds the traces whose extent overlaps
+  it and reads every span of them (the hull of their extents), so a trace's summary is computed
+  from its spans; metrics queries whose pipeline is span-local read only the spans that start in
+  the window. Structural operators are evaluated per trace in one place. Queries are bounded by
+  files, bytes and rows decoded (`maxSpans`); split execution by trace-id hash, partial results
+  with a cursor, and pushing predicates to sorted and promoted columns are not built.
 - **Tables and engine:** the `spans` and `trace_index` tables are specified in
-  `contracts/TRACES.md`; `engine/storage` writes them, nothing flushes or reads them yet. The TraceQL engine is
-  `engine/traceql` (clean-room, D35, D40): parser, read plan for pruning, search and metrics
-  evaluation over that table's logical view, Tempo HTTP API JSON. It is not yet wired into
-  storage, ingest or the query Worker (its README, "Integration").
-- **Logs:** sort order and statistics, then the per-file token filter. Scans beyond a byte
-  budget return partial results with a cursor.
+  `contracts/TRACES.md` and written by `engine/storage`; flushing them is stage 2's write side.
+- **Logs:** row groups are chosen from each file's stream list and times; rows of streams no
+  selector matches, or outside every selector's range, are dropped before they are held. One
+  place, bounded by `maxLogRows`; the per-file token filter (no builder yet), split execution
+  and partial results with a cursor are not built. Labels and series come from the fragments'
+  stream lists without reading data where the lists exist.
 
 ### 6.5 Cost visibility
 

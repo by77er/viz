@@ -45,7 +45,7 @@ import {
   type ReplaceRequest,
   type ReplaceResult,
   type StreamRef,
-  type Table,
+  type LedgerTable as Table, // frozen copy: the contract's `Table` has since become the metric tables only
   type Watermark,
 } from '../../../contracts/ledger'
 import { type SchemaSpec, type SchemaTooNew, SchemaTooNewError, columnsOf, openSchema, refusalOf } from '../../../contracts/schema'
@@ -665,7 +665,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     const version = this.version() + 1
     this.setMeta('version', version)
     const change: LedgerChange = { ledgerIncarnation: this.ledgerIncarnation(), version, at: Date.now(), kind, added, removed: removed.map((r) => r.key) }
-    if (removed.length > 0) change.removedFiles = removed.map((r) => ({ key: r.key, table: r.table }))
+    if (removed.length > 0) change.removedFiles = removed.map((r) => ({ key: r.key, table: r.table })) as LedgerChange['removedFiles'] // frozen copy: a type cast only
     if (watermark) change.watermark = watermark
     if (unit) change.unit = unit
     sql.exec(`INSERT INTO outbox (version, body) VALUES (?, ?)`, version, JSON.stringify(change))

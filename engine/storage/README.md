@@ -125,8 +125,10 @@ New modules; the metrics code and its outputs are untouched (the golden files of
 - Promoted label columns, rollup tables, native histograms.
 - Zero-copy file input: each Parquet file is copied once into a `bytes::Bytes` because
   the `parquet` reader needs an owned buffer.
-- **Spans and logs, stage 2**: a query-path reader (column readers with pruning by
-  statistics, page index and bloom filters, tail batches merged in), compaction and merge of
+- **Spans and logs, stage 2**: a query-path reader in this crate (one exists since 2026-11-19 in
+  `engine/wasm-query/src/sigfiles.rs`: row groups chosen from the index fragments, decoded through
+  the record API row group by row group, tail batches merged in; column readers with page index
+  and bloom filters are not built), compaction and merge of
   `spans`, `trace_index` and `logs` files (including re-aggregating `trace_index` from
   de-duplicated spans), the nested-set columns, per-tenant promotion, the token filter's
   builder and reader (format in `contracts/LOGS.md` §6), a WASM binding for `encode_spans` /

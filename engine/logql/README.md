@@ -478,26 +478,32 @@ and 4.9 s at 128 KiB; the shared translator takes 0.8, 1.6, 3.9 and 10 ms.
   against Tempo, not against Loki; Loki documents its regexes as Go's RE2 syntax, so
   the rules should hold, but no Loki probe covers the edges listed in section (g).
 
-## Integration (not done here)
+## Integration (outside this crate)
 
-- **Storage**: a `logs` table writer (flush, compaction) and a `LogSource` over Parquet row
-  groups plus tail batches, per `contracts/LOGS.md` (stream-first sort, dedup on the row key,
-  index fragments, the phase-2 token filter fed by `selectors().required`); the tail batch
-  format for logs (`BATCH.md`, signal 2).
-- **Ingest**: OTLP logs and Loki push (`/loki/api/v1/push`, JSON and protobuf) in `edge`,
-  with the OTLP-to-labels mapping and limits of `contracts/LOGS.md`.
-- **Query Worker**: `/loki/api/v1/query` and `query_range` (time parsing, `limit`,
-  `direction`, `step` defaults, 400 for instant log queries), labels/series endpoints (need
-  a stream index), `stats` timing, error mapping (`Error::error_type`). The engine should
-  join `engine/wasm-query`'s module (it already links viz-promql) behind new C ABI
-  operations rather than ship as a second module; `wasm-check/` shows the ABI shape.
-- **Contracts**: `contracts/engine.ts` says LogQL result shapes are not defined yet and needs
-  them (this crate's `Data`). (`contracts/README.md` has its `LOGS.md` row, done.)
-- **Split execution and rules**: decomposable LogQL aggregations over leaves, and LogQL rule
-  evaluation in the ruler.
-- **Design text**: `design/DESIGN.md` (§1, the `logs` row of §5.1, §6.1, §12) and decisions
-  D49 (vector operations on viz-promql) and D50 (following Loki's observed behaviour) were
-  updated with this crate.
+Built on 2026-11-19 (this crate did not change):
+
+- **Storage**: `engine/storage` writes `logs` files (stage 1). `engine/wasm-query` (ABI 6) is the
+  `LogSource` over them and over log tail batches: row groups chosen from the index fragment's
+  stream list and times, rows decoded through the record API, structured metadata built as
+  `contracts/LOGS.md` §3 says, duplicates on `(stream_id, ts, line, metadata)` removed with the
+  later row winning, each stream's rows in `(ts, line, metadata)` order. It drops, before holding
+  them, rows of streams no selector matches and rows outside every selector's range (both parts
+  of the row key); it does not use `required` (no token filter builder exists).
+- **WASM**: in `engine/wasm-query`'s module, beside `viz-promql`, behind `viz_q_lq_*` operations
+  (as this README asked; `wasm-check/` stays a measurement wrapper).
+- **Query Worker** (`query/`, behind `QUERY_SIGNALS`): `/loki/api/v1/query_range`, `/query`,
+  `/labels`, `/label/<name>/values`, `/series`, with Loki's parameters and defaults (time
+  formats, `limit`, `direction`, `step`; 400 for an instant log query). Labels and series come
+  from the fragments' stream lists where they have one. Answers equal this crate's over a
+  `MemSource` of the same rows, `stats` included, over three seeds of edge's corpus, pruning on
+  and off (`query/test/signals.test.ts`).
+- **Contracts**: `contracts/engine.ts` defines the LogQL result shapes since 2026-11-19
+  (`LokiData`, `LokiLabels`, `LokiSeries`).
+
+Still needed: split execution of decomposable LogQL aggregations over leaves, a streaming source
+(every row a query reads is held until it is evaluated: about 1 KiB of WASM memory a row,
+measured, so `maxLogRows` bounds a query to one isolate, D62), the phase-2 token filter, `stats`
+times, and LogQL rule evaluation in the ruler.
 
 ## Layout
 

@@ -389,6 +389,7 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
 .vz-series:focus-visible { outline: 0; }
 .vz-series[aria-disabled="true"] { color: var(--ink-disabled); cursor: not-allowed; } /* three members of Other are drawn: a fourth cannot be told apart */
 .vz-series-name { overflow: hidden; }
+.vz-table.vz-legend-table tr[data-key="other"] .vz-series-name { flex: none; } /* "Other" is never cut: its count ("28 series") gives way first, with an ellipsis (v8: the audit's cut check at 320 px) */
 .vz-series-rest { color: var(--ink-muted); overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .vz-legend-note { display: flex; flex-direction: column; min-width: 0; font: var(--text-small); color: var(--ink-muted); }
 .vz-legend-note[hidden] { display: none; }
@@ -457,7 +458,7 @@ dialog.vz-dialog { max-width: calc(100% - 2 * var(--space-4)); max-height: calc(
 /* Navigation: the product's sections. The current one is marked by weight and an underline, like a tab. */
 .vz-nav { display: flex; align-items: center; gap: var(--space-6); padding: 0 var(--space-6); height: calc(var(--control-md) + var(--space-4)); border-bottom: var(--hairline) solid var(--rule); overflow-x: auto; scrollbar-width: none; }
 .vz-nav-name { font: var(--text-heading); letter-spacing: var(--text-heading-track); flex: none; }
-.vz-nav a { position: relative; flex: none; display: inline-flex; align-items: center; color: var(--ink-secondary); text-decoration: none; white-space: nowrap; }
+.vz-nav a { position: relative; flex: none; display: inline-flex; align-items: center; padding-inline: var(--space-1); margin-inline: calc(-1 * var(--space-1)); color: var(--ink-secondary); text-decoration: none; white-space: nowrap; } /* side padding, given back by the margin: a ring drawn inside the link stays off its letters (v8) */
 .vz-nav a:hover { color: var(--ink); }
 .vz-nav a[aria-current="page"] { color: var(--ink); font: var(--text-ui-strong); }
 .vz-nav .vz-nav-end { margin-left: auto; } /* the first item of the group at the right: the tenant, settings */

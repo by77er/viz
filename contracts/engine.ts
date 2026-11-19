@@ -18,7 +18,7 @@
  *   unparsed (as for PromQL), so the types below describe text a client parses.
  */
 
-import type { Table } from './ledger'
+import type { SignalTable, Table } from './ledger'
 
 /** One Parquet file produced from a sealed segment. */
 export interface EncodedFile {
@@ -47,8 +47,8 @@ export interface EncodedFile {
  *   trace_index  smallest `min_start_unix_nano`, largest `max_end_unix_nano`
  *   logs         smallest and largest `ts`
  */
-export interface EncodedSignalFile extends EncodedFile {
-  table: 'spans' | 'trace_index' | 'logs'
+export interface EncodedSignalFile extends Omit<EncodedFile, 'table'> {
+  table: SignalTable
   /** `spans` only: the UTC hour (0 to 23) of `day` that every row's start time falls in; null for the other tables. */
   hour: number | null
   minNs: string

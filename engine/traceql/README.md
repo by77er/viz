@@ -545,24 +545,33 @@ from surrogate escapes, on which Go itself is inconsistent).
 
 ## Integration (not part of this crate; what it needs)
 
-- **Storage reader** (`engine/storage`): Parquet writer and reader for `spans` and
-  `trace_index` per `contracts/TRACES.md`; a `SpanSource` over files and tail batches that
-  applies `ReadPlan` (columns for projection, predicates on row-group statistics and the
-  `trace_id` bloom filter, `full_traces` → fetch every span of candidate traces by
-  `trace_id`), and the merged `TraceSummary` from `trace_index`. Test it with pruning on and
-  off and rows split between files and tail, as `engine/AGENTS.md` requires.
-- **Ingest**: an OTLP traces decoder in `edge` and a span batch format in `BATCH.md`
-  (`contracts/TRACES.md`, "Ingest batch").
-- **WASM binding**: operations in `engine/wasm-query` (C ABI like `viz_q_*`): search,
-  query_range/instant and plan, with spans passed as batches or files, typed errors
-  (`bad_data` for Parse/Validation, `unsupported`, `execution`), limits per call.
-- **Query Worker**: `/api/search`, `/api/metrics/query_range`, `/api/metrics/query` (Tempo's
-  parameters: `q`, `limit`, `spss`, `start`/`end` in seconds, `step`, `since`); apply
-  `align_request` to range queries as Tempo's frontend does; choose a default `step`;
-  `/api/traces/<id>` and tag search are lookups in storage.
-- **Split execution**: search splits by trace id hash (spans of a trace must meet); metrics
-  without structural operators split by span and merge per point (sums and counts add;
-  min/max; quantiles merge histograms; `topk` after merging).
+Built on 2026-11-19 (outside this crate, which did not change):
+
+- **Storage reader and WASM binding**: `engine/wasm-query` (ABI 6) reads `spans` and
+  `trace_index` files written by `engine/storage` (row group by row group, whole files or the byte
+  ranges a file plan fetched) and span tail batches into this crate's `Span`, de-duplicates on
+  `(trace_id, span_id)` with the later row winning, builds traces with `Trace::new` (summaries
+  from the spans read, not from `trace_index` counts) and evaluates through `MemSource`: `search`,
+  `query_range_with`, `matching_spansets` (filtered tag values), `plan` and `align_request`.
+  Typed errors (`bad_data` for Parse/Validation, `unsupported`, `execution`), limits per call.
+  Pruning uses the plan's window, `full_traces` and `span_local`; the predicates on row-group
+  statistics and the `trace_id` bloom filters are not used yet.
+- **Query Worker** (`query/`, behind `QUERY_SIGNALS`): `/api/search`, `/api/metrics/query_range`,
+  `/api/metrics/query`, `/api/traces/<id>` and v2, tag names and values (v1 and v2), with
+  Tempo's parameters; range requests aligned as Tempo's frontend does; a default `step` of the
+  range over 250 points (`query/README.md`, "Traces and logs"). Answers equal this crate's over
+  an in-memory `MemSource` of the same spans, over three seeds of edge's corpus, with pruning on
+  and off (`query/test/signals.test.ts`).
+
+What is still needed:
+
+- **Split execution**: search split by trace id hash (each part's top `limit`, merged), metrics
+  without structural operators split by span with partial aggregates that merge exactly (sums
+  and counts add; min/max; quantiles merge histograms; `topk` after merging). Until then one
+  isolate is the bound (`maxSpans`, D62).
+- **Projection by `ReadPlan::columns`** (the reader holds every attribute of every span: about
+  1.5 KiB of WASM memory a span, measured).
+- `with(extrapolate=true)` needs sampling weights stored (`contracts/TRACES.md`).
 
 ## Known risks
 
@@ -594,9 +603,9 @@ from surrogate escapes, on which Go itself is inconsistent).
 
 ## Contract issues
 
-- `contracts/engine.ts` defines no TraceQL shapes ("TraceQL and LogQL result shapes are not
-  defined yet"). The binding should return the JSON text of `to_json()` as `viz-promql`'s
-  `queryRangeJson` does.
+- `contracts/engine.ts` defines the TraceQL shapes since 2026-11-19 (`TempoSearchResponse`,
+  `TempoMetricsResponse`, `OtlpTrace`, the tag bodies) and the binding returns the JSON text of
+  `to_json()`, as `viz-promql`'s `queryRangeJson` does.
 - `contracts/TRACES.md` is new and proposed; storage does not implement it.
 
 ## Layout

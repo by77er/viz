@@ -45,6 +45,7 @@ import {
   type ReplaceResult,
   type StreamRef,
   TABLES,
+  type LedgerTable,
   type Table,
   type Watermark,
   dataKeyPrefix,
@@ -425,7 +426,7 @@ function refProblem(ref: StreamRef): string | null {
 }
 
 const toEntry = (r: Row): LiveFile => ({
-  table: r.tbl as Table,
+  table: r.tbl as LedgerTable,
   day: r.day as string,
   key: r.key as string,
   bytes: r.bytes as number,
@@ -624,7 +625,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
    * Inside the transaction that removes `keys` from the live set: remember them, with the
    * version that removal is about to get, until their objects have been deleted.
    */
-  private bury(keys: { key: string; table: Table }[]): void {
+  private bury(keys: { key: string; table: LedgerTable }[]): void {
     const version = this.version() + 1
     const at = Date.now()
     for (const k of keys) {
@@ -685,7 +686,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
   private record(
     kind: LedgerChange['kind'],
     added: LiveFile[],
-    removed: { key: string; table: Table }[],
+    removed: { key: string; table: LedgerTable }[],
     watermark?: Watermark,
     unit?: { seqLo: number; seqHi: number },
   ): number {
@@ -693,7 +694,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     const version = this.version() + 1
     this.setMeta('version', version)
     const change: LedgerChange = { ledgerIncarnation: this.ledgerIncarnation(), version, at: Date.now(), kind, added, removed: removed.map((r) => r.key) }
-    if (removed.length > 0) change.removedFiles = removed.map((r) => ({ key: r.key, table: r.table }))
+    if (removed.length > 0) change.removedFiles = removed.map((r) => ({ key: r.key, table: r.table })) as LedgerChange['removedFiles'] // any LedgerTable: see the contract's note on `removedFiles`
     if (watermark) change.watermark = watermark
     if (unit) change.unit = unit
     sql.exec(`INSERT INTO outbox (version, body) VALUES (?, ?)`, version, JSON.stringify(change))
@@ -1059,13 +1060,13 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     if (g) await g
     // One table (`table`) or several (`tables`): every named table's old days leave in ONE
     // change, so a samples file and its series file leave together (contracts/TABLES.md).
-    const tables = 'tables' in req && req.tables !== undefined ? req.tables : [(req as { table: Table }).table]
+    const tables = 'tables' in req && req.tables !== undefined ? req.tables : [(req as { table: LedgerTable }).table]
     if (!Array.isArray(tables) || tables.length === 0 || tables.some((t) => !TABLES.includes(t))) throw new Error('ledger: unknown table')
     if (typeof req.beforeDay !== 'string' || !DAY.test(req.beforeDay)) throw new Error('ledger: beforeDay must be YYYY-MM-DD')
     const sql = this.ctx.storage.sql
     const named = [...new Set(tables)]
     const result = this.ctx.storage.transactionSync(() => {
-      const gone: { key: string; table: Table }[] = []
+      const gone: { key: string; table: LedgerTable }[] = []
       for (const table of named) {
         for (const r of sql.exec(`SELECT key FROM file WHERE tbl = ? AND day < ? ORDER BY key`, table, req.beforeDay)) gone.push({ key: r.key as string, table })
       }
@@ -1095,7 +1096,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
   // ───────────────────────────── LedgerJanitorRpc ─────────────────────────────
 
   private static toTombstone(r: Row): Tombstone {
-    return { key: r.key as string, table: r.tbl as Table, version: r.version as number, at: r.at as number }
+    return { key: r.key as string, table: r.tbl as LedgerTable, version: r.version as number, at: r.at as number }
   }
 
   /** The lowest version still in the outbox: everything below it is in R2. */

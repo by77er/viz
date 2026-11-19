@@ -9,7 +9,7 @@
 //! every span of it that was read (`TraceSummary::from_spans`), never from `trace_index`
 //! counts (which over-count spans retried into another unit, `contracts/TRACES.md`): the
 //! index fragments only say which hours and which time hull to read.
-use crate::sigfiles::{self, hex, SpanRec};
+use crate::sigfiles::{self, SpanRec};
 use crate::{Fail, Req, Res};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use viz_query::QueryError;
@@ -868,10 +868,4 @@ pub(crate) fn do_tq_tag_values(mut r: Req<'_>) -> Res<Vec<u8>> {
         serde_json::json!({"tagValues": v, "metrics": {}})
     };
     Ok(json.to_string().into_bytes())
-}
-
-/// The hex id of a trace as Tempo prints it in search results (no leading zeros); used by tests.
-#[allow(dead_code)]
-pub(crate) fn trace_hex(id: &[u8; 16]) -> String {
-    hex(id)
 }

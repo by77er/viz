@@ -5,25 +5,26 @@
  */
 
 /**
- * The tables the ledger lists files of. `spans`, `trace_index` and `logs` were added on
- * 2026-11-19 (stage 2 of traces and logs; contracts/TRACES.md, contracts/LOGS.md). Additive
- * for every reader that ignores tables it does not act on; a reader that must act on every
- * file (the publisher) refuses a change naming a table it does not know (COMPATIBILITY.md
- * §3.2), so those readers deploy first (§3.3): `edge` writes these tables only where
- * `INGEST_SIGNALS` enables a signal. For TypeScript the wider union is not additive where a
- * `Record<Table, …>` maps every value: such code names `MetricTable` instead (the publisher's
- * Iceberg definitions; publisher/README.md has the change).
+ * The metric tables. Until 2026-11-19 these were every table of the ledger, and `Table` keeps
+ * that meaning for the code written against it (the publisher's Iceberg definitions map every
+ * `Table`, `Record<Table, …>`): widening it in place would have broken those builds rather
+ * than added values. A table the ledger lists is a `LedgerTable`.
  */
-export type Table = MetricTable | SignalTable
-/** The metric tables: every value `Table` had before 2026-11-19. Code that maps each metric table (the publisher's Iceberg definitions) names this type. */
-export type MetricTable = 'metric_samples' | 'metric_series'
-/** The span and log tables (contracts/TRACES.md, contracts/LOGS.md). */
+export type Table = 'metric_samples' | 'metric_series'
+/** The span and log tables (contracts/TRACES.md, contracts/LOGS.md), added 2026-11-19 (stage 2 of traces and logs). */
 export type SignalTable = 'spans' | 'trace_index' | 'logs'
+/**
+ * Every table the ledger lists files of. Additive for every reader that acts only on the tables
+ * it knows; a reader that must act on every file (the publisher) refuses a change naming a table
+ * it does not know (COMPATIBILITY.md §3.2), so such readers deploy first (§3.3): `edge` writes
+ * the span and log tables only where `INGEST_SIGNALS` enables a signal.
+ */
+export type LedgerTable = Table | SignalTable
 
 /** Every table, in the order the ledger, the janitor and the checks list them. */
-export const TABLES: readonly Table[] = ['metric_samples', 'metric_series', 'spans', 'trace_index', 'logs']
+export const TABLES: readonly LedgerTable[] = ['metric_samples', 'metric_series', 'spans', 'trace_index', 'logs']
 /** The tables of each signal. A flush unit holds the files of ONE signal (one shard stream holds one signal: contracts/BATCH.md "Streams per signal"). */
-export const METRIC_TABLES: readonly MetricTable[] = ['metric_samples', 'metric_series']
+export const METRIC_TABLES: readonly Table[] = ['metric_samples', 'metric_series']
 export const TRACE_TABLES: readonly SignalTable[] = ['spans', 'trace_index']
 export const LOG_TABLES: readonly SignalTable[] = ['logs']
 
@@ -32,12 +33,12 @@ export const LOG_TABLES: readonly SignalTable[] = ['logs']
  * keys"): `{cell}/data/{table}/tenant={tenant}/day={day}/`, and for `spans` one more level,
  * `hour={HH}/`. Every key the ledger admits is directly under this prefix (no further `/`).
  */
-export const dataKeyPrefix = (cell: string, table: Table, tenant: string, day: string, hour?: number): string =>
+export const dataKeyPrefix = (cell: string, table: LedgerTable, tenant: string, day: string, hour?: number): string =>
   `${cell}/data/${table}/tenant=${tenant}/day=${day}/${hour === undefined ? '' : `hour=${String(hour).padStart(2, '0')}/`}`
 
 /** One immutable Parquet object. */
 export interface FileEntry {
-  table: Table
+  table: LedgerTable
   /** UTC day, `YYYY-MM-DD`: of the rows (metrics, logs), of their start time (`spans`), of the fragments' first start (`trace_index`). */
   day: string
   /**
@@ -225,7 +226,7 @@ export interface LoggedWatermark extends Watermark {
 }
 
 export interface PlanRequest {
-  table: Table
+  table: LedgerTable
   /** Inclusive Unix-millisecond range, for every table (spans and logs too: `FileEntry.minTs`). */
   minTs: number
   maxTs: number
@@ -271,11 +272,11 @@ export type ReplaceResult =
  */
 export type ExpireRequest =
   | {
-      table: Table
+      table: LedgerTable
       /** Remove files whose `day` is strictly before this `YYYY-MM-DD`. */
       beforeDay: string
     }
-  | { tables: Table[]; beforeDay: string }
+  | { tables: LedgerTable[]; beforeDay: string }
 
 /** A change, as appended to the ledger's R2 log and consumed by the publisher. */
 export interface LedgerChange {
@@ -298,6 +299,11 @@ export interface LedgerChange {
    * `removed` keeps its meaning (contracts/COMPATIBILITY.md §4, never repurpose).
    */
   removedFiles?: { key: string; table: Table }[]
+  // Since 2026-11-19 `table` here is any `LedgerTable` (a ledger with span and log files writes
+  // them). It stays typed `Table` because readers built before compile against that type and
+  // check the value at run time (the publisher refuses one it does not know); retype it as
+  // `LedgerTable` once those readers handle the span and log tables (publisher/README.md).
+  // Writers cast; readers must not trust the static type.
   /** For `add_unit` and `register_stream`: the stream's watermark after the change. */
   watermark?: Watermark
   /** For `add_unit`: the sequence range admitted, so a reader can check contiguity. */
@@ -373,7 +379,7 @@ export interface LedgerAdminRpc {
  */
 export interface Tombstone {
   key: string
-  table: Table
+  table: LedgerTable
   /** Ledger version of the `replace` or `expire` that removed the key. */
   version: number
   /** Ledger clock (Unix ms) when it was removed. */

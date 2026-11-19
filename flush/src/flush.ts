@@ -1,5 +1,5 @@
 import type { EncodedFile, EncodedSignalFile, Engine, SignalFlushEngine } from '../../contracts/engine'
-import { TENANT_ID, type AddUnitResult, type FileEntry, type FlushUnit, type Table } from '../../contracts/ledger'
+import { TENANT_ID, type AddUnitResult, type FileEntry, type FlushUnit, type LedgerTable } from '../../contracts/ledger'
 import type { Ledger } from '../../ledger/src/ledger'
 import type { Segment, Shard } from '../../shard/src/shard'
 import { dataFileKey, hex } from './keys'
@@ -53,7 +53,7 @@ export interface FlushEnv {
 
 export interface FlushedFile {
   key: string
-  table: Table
+  table: LedgerTable
   day: string
   bytes: number
   rows: number
@@ -263,7 +263,7 @@ function signalOf(payload: Uint8Array): number | null {
 }
 
 /** Which tables each signal's encoder may produce: anything else is refused before a PUT. */
-const SIGNAL_TABLES: Record<1 | 2 | 3, readonly Table[]> = { 1: ['metric_samples', 'metric_series'], 2: ['spans', 'trace_index'], 3: ['logs'] }
+const SIGNAL_TABLES: Record<1 | 2 | 3, readonly LedgerTable[]> = { 1: ['metric_samples', 'metric_series'], 2: ['spans', 'trace_index'], 3: ['logs'] }
 
 /**
  * Step 2: the segment's files, by the signal of its batches. Every batch of a stream has the

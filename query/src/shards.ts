@@ -1,5 +1,6 @@
 /**
- * Which signal a shard holds, and the check that a tail read got only its own signal.
+ * Which signal a shard holds, the shard's signal filter, and the check that a tail read got only
+ * its own signal.
  *
  * Spans and log records are appended to shards of their own (contracts/BATCH.md "Streams per
  * signal", D57): for a tenant whose pool is `{pool}`, `{pool}/traces/{slot}` and
@@ -11,9 +12,9 @@
  * is checked by its header: a batch of another signal refuses the query (503), it is never
  * read as the wrong signal and never dropped.
  *
- * The shard's tail filter has no signal field yet (`query/README.md`, "Needed changes
- * elsewhere"); until it has, the name is the only way to choose, and the header check is what
- * keeps a wrong choice from becoming a wrong answer.
+ * The shard's tail filter takes a signal since 2026-11-19 (`signals`, sent below); shards of an
+ * earlier release ignore it, so the name still chooses, and the header check is what keeps a
+ * wrong choice or an older shard from becoming a wrong answer.
  */
 import type { Watermark } from '../../contracts/ledger'
 import { poolMap, signalMap } from '../../edge/src/route'
@@ -62,14 +63,15 @@ export function checkSignal(shard: string, payload: Uint8Array, want: 1 | 2 | 3)
 export const signalByte = (s: Signal): 1 | 2 | 3 => SIGNAL_BYTE[s]
 
 /**
- * The shard's own signal filter (stage 2, being added to `shard/src/shard.ts` by the write
- * side's engineer; not in the tree when this was written). The shape this release sends once
- * it is on: `signals: [n]` in `TailReadOptions`, the `VZB1` signal numbers to keep; a batch of
- * another signal is passed over (never an error). Off until the shard's contract text lands
- * (README, "Needed changes elsewhere"): a shard that validated a field of another shape would
- * refuse every read. Today's shards ignore the field (`compileFilter` reads named fields only).
+ * The shard's own signal filter (`shard/src/tail.ts` `TailFilter.signals`, added 2026-11-19 by
+ * the write side): `signals: [n]` in `TailReadOptions` keeps only batches of signal `n`; a batch
+ * of another signal is passed over, never an error. On: a metrics read that meets a span or log
+ * shard gets nothing from it, and a span or log read gets its batches whole. A shard of an
+ * earlier release ignores the field (its `compileFilter` reads named fields only) and answers
+ * as before, which is why the shards are still chosen by name and every batch is still checked
+ * by its header. A test turns it off to run as before the shard had it.
  */
-export const shardSignalFilter = { enabled: false }
+export const shardSignalFilter = { enabled: true }
 
 /** `filter` with the signal field when the shard's filter has it. */
 export function withSignal<F extends object>(filter: F, signal: 1 | 2 | 3): F {

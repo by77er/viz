@@ -1,4 +1,4 @@
-import { LOG_TABLES, METRIC_TABLES, TABLES, TENANT_ID, TRACE_TABLES, type LoggedWatermark, type Table } from '../../contracts/ledger'
+import { LOG_TABLES, METRIC_TABLES, type SignalTable, TABLES, TENANT_ID, TRACE_TABLES, type LoggedWatermark } from '../../contracts/ledger'
 import { COMPACTION_INPUTS_META, DEFAULT_POLICY, decodeCompactionInputs } from '../../compact/src/compact'
 import type { Ledger } from '../../ledger/src/ledger'
 import type { Publisher } from '../../publisher/src/publisher'
@@ -178,7 +178,7 @@ export const cutoffDay = (now: number, days: number): string => {
 
 /** What retention did for the span and log tables, one entry per ledger request (`ExpireResult.signals`). */
 export interface SignalExpiry {
-  tables: Table[]
+  tables: SignalTable[]
   /** The first day kept. */
   beforeDay: string
   keepDays: number
@@ -222,7 +222,7 @@ export async function expireTenant(env: JanitorEnv, tenant: string, now = Date.n
   // Spans with their trace_index files (one change: a unit's spans and trace_index files leave
   // together, contracts/TRACES.md), and logs. A ledger with no such files removes nothing and
   // uses no version, so a tenant without traces or logs sees no change in its log.
-  const groups = new Map<string, { tables: Table[]; keepDays: number }>()
+  const groups = new Map<string, { tables: SignalTable[]; keepDays: number }>()
   for (const [tables, keepDays] of [[TRACE_TABLES, policy.trace_days], [LOG_TABLES, policy.log_days]] as const) {
     const day = cutoffDay(now, keepDays)
     const g = groups.get(day)

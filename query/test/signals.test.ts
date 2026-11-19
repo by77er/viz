@@ -277,18 +277,18 @@ describe('signals in shard tails', () => {
     }
   })
 
-  it('with the signal field in the tail options (the shard filter being added, off until it lands): the same answers, from shards that do not know it yet', async () => {
+  it('without the signal field in the tail options (as before the shard had it): the same answers', async () => {
     const fx = SEEDS[1]!
     const w = await world()
     await ingest(w)
     await load(w, w.a, fx)
-    shardSignalFilter.enabled = true
+    shardSignalFilter.enabled = false
     try {
       const r = await runAll(w.a, { ...fx, cases: fx.cases.filter((_, k) => k % 5 === 0) })
       expect(r.failures).toEqual([])
       for (const q of QUERIES.filter((_, k) => k % 9 === 0)) expect(await (await run(w.a.key, q)).json(), q.id).toEqual(expected.a[q.id])
     } finally {
-      shardSignalFilter.enabled = false
+      shardSignalFilter.enabled = true
     }
   })
 

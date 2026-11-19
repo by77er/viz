@@ -28,7 +28,7 @@ import {
   type ReplaceRequest,
   type ReplaceResult,
   type StreamRef,
-  type Table,
+  type LedgerTable as Table, // frozen copy: the contract's `Table` has since become the metric tables only
   type Watermark,
 } from '../../../contracts/ledger'
 

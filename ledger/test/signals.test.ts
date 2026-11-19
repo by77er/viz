@@ -14,7 +14,7 @@
 import { runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
-import { type FileEntry, type Table, dataKeyPrefix } from '../../contracts/ledger'
+import { type FileEntry, type LedgerTable as Table, dataKeyPrefix } from '../../contracts/ledger'
 import type { Ledger } from '../src/ledger'
 import { DAY_MS, INC, S, T0, breakR2, dayOf, dumpState, everything, heal, loseStorage, open, pair, readLog, sleep, tenantName, unit } from './helpers'
 

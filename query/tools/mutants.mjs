@@ -590,6 +590,13 @@ const MUTANTS = [
     replace: 'for (const w of watermarks) names.add(w.shard)',
   },
   {
+    name: 'Wrong signal from the tail: every tail read asks the shards for signal 1 (metrics), span and log reads included',
+    tests: ['test/signals.test.ts'],
+    file: 'src/coordinator.ts',
+    find: '  const asked = withSignal(filter, signal)',
+    replace: '  const asked = withSignal(filter, 1)',
+  },
+  {
     name: 'Wrong signal from the tail: a batch of another signal is read as the one asked for (no header check)',
     tests: ['test/signals.test.ts'],
     file: 'src/shards.ts',
@@ -680,7 +687,10 @@ for (const m of chosen) apply(readFileSync(rel(m.file), 'utf8'), m)
 
 // Type errors that are there before any mutant (another component mid-edit) are not the
 // mutant's: a mutant is invalid only if it adds one.
-const tscErrors = () => new Set(run('npx', ['tsc', '--noEmit']).stdout.split('\n').filter((l) => /error TS\d+/.test(l)))
+// Only errors in the copied directories count: other components are links into the shared tree,
+// which other engineers edit while this runs (a type error in flush/ appearing mid-run made every
+// mutant INVALID on 2026-11-19); a mutant can add errors only where it changes something.
+const tscErrors = () => new Set(run('npx', ['tsc', '--noEmit']).stdout.split('\n').filter((l) => /error TS\d+/.test(l) && !/^\.\.\/(?!engine\/(query|wasm-query)\/)/.test(l)))
 const baseline = tscErrors()
 if (baseline.size > 0) console.log(`tsc reports ${baseline.size} error(s) before any mutant (not counted against mutants):\n  ${[...baseline].slice(0, 3).join('\n  ')}`)
 

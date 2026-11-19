@@ -137,6 +137,10 @@ export async function awaitLogged(t: SimTenant, where: string, timeoutMs = LOG_W
 }
 
 export interface SettleHooks {
+  /** After a tenant is quiesced (its log drained by an explicit `drain()`), before its expiry and merges commit (tests: inject an outage). */
+  afterQuiesce?(t: SimTenant): Promise<void>
+  /** After a tenant's expiry and merges have committed, before the graces are waited out (tests: let the drain back off, heal). */
+  afterRemovals?(t: SimTenant): Promise<void>
   /** After the graces have passed, before waiting for the logs (tests: the state the end phase finds). */
   afterGrace?(t: SimTenant): Promise<void>
 }
@@ -149,13 +153,17 @@ export interface SettleHooks {
 export async function settle(sim: Sim, g: Graces, did: Count = () => {}, hooks: SettleHooks = {}): Promise<void> {
   for (const t of sim.tenants) {
     await quiesce(sim, t)
-    t.model.expire((await expireTenant(sim.env, t.name)).beforeDay!)
+    await hooks.afterQuiesce?.(t)
+    const expired = await expireTenant(sim.env, t.name)
+    t.model.expire(expired.beforeDay!)
+    t.signals?.expire(expired)
     for (let i = 0; i < 200; i++) {
       const x = await compactStep(sim.env, engine, t.name, { now: Date.now() + 3 * DAY_MS, policy: { maxInputPairs: 4, maxStepMs: g.stepMs } })
       if (x.status === 'idle') break
       expect(x.status).toBe('merged')
     }
     await checkTenant(sim, t, g.deleteGraceMs, 'end, before deletion')
+    await hooks.afterRemovals?.(t)
   }
   await sleep(Math.max(g.deleteGraceMs, 2 * g.stepMs, g.orphanGraceMs) + 200)
   for (const t of sim.tenants) {

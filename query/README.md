@@ -603,13 +603,14 @@ metrics query of a tenant with a span or log stream registered would have failed
 - **every batch a tail read returns is checked by its header**: a batch of another signal refuses
   the query with a retryable 503 naming the shard (`WrongSignal`), it is never read as the wrong
   signal and never dropped;
-- span and log tails are read with paging only (no filter fields: the shard's filter reads
-  metric batches only), under what the files leave of `maxFetchBytes`.
+- span and log tails are read with paging and the signal only (no time or series fields: those
+  select metric rows), under what the files leave of `maxFetchBytes`;
 
-The shard's tail filter has no signal field yet; one is being added by the write side's
-engineer. `src/shards.ts` is coded against the shape `signals: [n]` (`shardSignalFilter`, off
-until the shard's contract text lands; a test runs every endpoint with it on against today's
-shards, which ignore the field).
+- **the shard's own signal filter** (`TailFilter.signals`, added to `shard/src/tail.ts` by the write
+  side's engineer on 2026-11-19, while this was built) is sent with every read: `signals: [1]` for
+  metrics, `[2]` or `[3]` for spans and logs (`src/shards.ts` `shardSignalFilter`; a test runs
+  every endpoint without it, as before it existed). A shard of an earlier release ignores the
+  field, which is why the name rule and the header check stay.
 
 ### Caps
 
@@ -698,6 +699,19 @@ rows in two attempts, then one), both against the real coordinator.
 check", rows 74 to 79.
 
 ## Not implemented
+
+- **Traces and logs, what is left** ("Traces and logs"; D62): split execution (a query over
+  `maxSpans`, `maxLogRows`, `maxFetchBytes` or `maxFiles` is refused, never split or answered in
+  part); partial results with a cursor; newest-first day waves for trace by ID without a time
+  hint (every day is planned at once, under the caps); the trace id bloom filters and page reads
+  inside an hour (trace by ID decodes the hour's row group); projection by the TraceQL plan's
+  columns; the logs token filter (no builder); tag-based search (`tags`, `minDuration`,
+  `maxDuration`), Tempo's `q` and span pruning on trace by ID, `Accept: application/protobuf`,
+  exemplars, Loki's `interval`, live tail, volume, patterns and the index stats endpoints; the
+  plan-only endpoint for these queries; cost headers specific to them beyond `X-Viz-Scan-Rows`
+  and `X-Viz-Rows-Decoded`. No independent OTLP reader was run on the trace-by-ID JSON (it is
+  compared with an answer written independently from the decoded batches, not decoded by an OTLP
+  implementation). Nothing of it ran on Cloudflare.
 
 - **Split execution, what is left.** Queries that do not decompose (`quantile` or
   `absent` over raw series, binary operators between vectors below an aggregation,
@@ -1126,6 +1140,12 @@ rebuilt module had the same SHA-256 as before the run.
 | 71 | **a part that saw a foreign series is ignored** (no second run with whole series files) | tail › a series whose split key is not its id (lake) |
 | 72 | a reader does not report the foreign series it saw (first read) | tail › the same (one such series alone) |
 | 73 | a split leaf does not add up its readers' foreign series | tail › the same |
+| 74 | **wrong signal from the tail**: metrics reads ask every shard the ledger names, span and log shards included | (filled by the run below) |
+| 75 | **wrong signal from the tail**: a batch of another signal is read as the one asked for (no header check) | |
+| 76 | **pruning drops a matching hour**: trace by ID reads the span files of the hour after each one its fragments name | |
+| 77 | **a cap not enforced**: the rows the fragments say a span or log query decodes are not checked before fetching | |
+| 78 | **tenant from the query string** (Tempo search: `orgId`) | |
+| 79 | **a result shape field renamed**: trace by ID answers `resourceSpans` for `batches` (Rust; rebuilds the module) | |
 
 **Run 2026-11-19, 01:16 to 01:53 UTC, all 43 mutants on a scratch copy** (load average 7 to
 21): **43 of 43 killed, none survived, none invalid**; the unmutated suite passed first in
@@ -1435,6 +1455,61 @@ is warm); contention when many queries share leaves; the cost of a Cache API rea
 `design/VERIFICATION.md` S1 extended with this Worker: the same two queries on Cloudflare,
 cold and warm.
 
+## Needed changes elsewhere (traces and logs, 2026-11-19)
+
+What `QUERY_SIGNALS` needs before it is turned on in production, for the owners of `shard/`,
+`ledger/`, `flush/`, `edge/` and the gateway (none of them edited here).
+
+1. **Done by `shard/` while this was built (2026-11-19): a signal field in the tail filter.**
+   `query/` sends it (`src/shards.ts` `shardSignalFilter`, on). The shape it was coded against,
+   which is the shape that landed, `shard/src/tail.ts` `TailFilter`:
+
+   ```ts
+   /**
+    * The `VZB1` signals to keep (contracts/BATCH.md byte 4: 1 metrics, 2 spans, 3 log records).
+    * A stored batch of another signal is passed over, never an error and never returned; absent:
+    * every batch, as before. The metric fields (`metrics`, `labels`, `keyRange`, and the time
+    * range) apply to signal-1 batches only; a batch of signal 2 or 3 that is kept is returned
+    * whole. Part of the canonical text a cursor is bound to.
+    */
+   signals?: number[]
+   ```
+
+   What is left: once every shard running answers `signals`, `query/` can choose shards by the
+   filter alone instead of by name (`signalOfShard`, item 4).
+2. **`ledger/`: list the span and log tables.** `contracts/ledger.ts` names them since
+   2026-11-19 (`Table`, `TABLES`, `dataKeyPrefix`); `ledger/src/ledger.ts` still refuses them
+   (`plan` throws `ledger: unknown table`, `addUnit` answers `invalid`), so every Tempo and Loki
+   call is 503 with that reason until it accepts them. The two lines the tests apply to their
+   bundle (`vitest.ledger.ts`) are the change, or the contract's `TABLES` imported:
+
+   ```ts
+   const TABLES: readonly Table[] = ['metric_samples', 'metric_series', 'spans', 'trace_index', 'logs']
+   // fileProblem: a `spans` key lies one level deeper, under `hour={HH}/` (contracts/TRACES.md)
+   if (!f.key.startsWith(p) || f.key.length === p.length || (f.table === 'spans' ? f.key.slice(p.length).replace(/^hour=\d{2}\//, '') : f.key.slice(p.length)).includes('/')) return `file key ${f.key} is not under ${p}`
+   ```
+
+   (The contract also asks the ledger to check that a `spans` file's `[minTs, maxTs]` lies in its
+   hour; `query/` reads a span file's hour from its `minTs` and does not depend on the key.)
+3. **`flush/`: span and log units as the readers here expect them**: `FileEntry.minTs`/`maxTs`
+   in milliseconds, the floor of the files' nanosecond bounds (`contracts/engine.ts`
+   `EncodedSignalFile`); a unit's `spans` files and its `trace_index` file in ONE `addUnit`
+   (contracts/TRACES.md "Object keys"), so a plan never lists a trace's fragments without its
+   spans; keys per `dataKeyPrefix`. No other field is read.
+4. **`edge/` (or wherever pool names are checked): no base pool name ending in `/traces` or
+   `/logs`**, so that `…/traces/{slot}` names only span shards while shards are told apart by
+   name (`signalOfShard`). Today such a pool would have its metric shards classified as span
+   shards: their reads would be refused by the header check (503), not misread. Unneeded once
+   item 1 is in and `query/` chooses by the filter.
+5. **The gateway (`deploy/gateway/src/index.ts`)**: route to QUERY `/api/search`,
+   `/api/search/…`, `/api/traces/…`, `/api/v2/traces/…`, `/api/v2/search/…`,
+   `/api/metrics/query`, `/api/metrics/query_range`, `/loki/api/v1/query`,
+   `/loki/api/v1/query_range`, `/loki/api/v1/labels`, `/loki/api/v1/label/…`,
+   `/loki/api/v1/series` (and `/api/v1/plan`, which it does not route today); to INGEST
+   `/v1/traces`, `/v1/logs`, `/loki/api/v1/push`. Every other `/loki/…` path stays 404.
+6. **`deploy/`**: `QUERY_SIGNALS` on `viz-query` only after 1 to 3 are live (with 2 missing the
+   endpoints answer 503; with 3 missing they answer from nothing).
+
 ## Needed changes in other components
 
 Nothing outside `query/`, `engine/wasm-query/`, `engine/query` and `engine/promql` (an
@@ -1489,6 +1564,11 @@ additive, tested hook: `EvalHooks`) was edited. These are for their owners.
 
 ## Contract issues
 
+Traces and logs (2026-11-19): `contracts/engine.ts` gained, in a change of its own, the TraceQL
+and LogQL result shapes and the span and log operations of the engine (`SignalEngine`), additive.
+`contracts/ledger.ts` was widened by the write side's engineer the same day (`Table` names
+`spans`, `trace_index`, `logs`; `dataKeyPrefix`); `src/signals.ts` uses it. The tail read's
+signal field is still in no contract ("Needed changes elsewhere", 1). Before that, for metrics,
 `contracts/` was not edited.
 
 1. **`contracts/engine.ts` has no place for the read path's needs**: errors with a type,
@@ -1564,6 +1644,20 @@ New with split execution, each with its alternative:
   caps, a refusal above.
 
 ## Known risks
+
+- **Traces and logs are tested against fixtures from one generator** (edge's corpus, three
+  seeds, a few hundred spans and about a thousand log rows each) and measured on synthetic data
+  up to 40,000 spans and 80,000 rows; larger tenants were not run through the Worker, and the
+  caps (`maxSpans`, `maxLogRows`) were chosen from two sizes' memory (about 1.5 KiB a span,
+  1 KiB a row) and a 128 MB isolate, not from a soak test.
+- **Shards are told apart by name** while shards of an earlier release (no signal filter) may
+  answer: a metric pool named `…/traces` or `…/logs` would have its reads refused (never misread). The ledger is not edited
+  here and still refuses the span and log tables: with the flag on, every Tempo and Loki call is
+  503 until it accepts them; the tests apply that change to their bundle only (`vitest.ledger.ts`).
+- **A trace straddling the window from the lake into the tail** (lake spans and their fragments
+  all outside the window, unflushed spans inside it) is summarised from the spans read (D62).
+- **Tempo compatibility of trace by ID** rests on Tempo's documentation and Grafana's
+  documented trace JSON (`batches`, base64 ids); no Tempo client was run against it.
 
 - **The series estimate is coarse.** It counts whole row groups of the series files, so for
   a small metric among large ones, or a selector that matches a few series of a large

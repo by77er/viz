@@ -1,4 +1,4 @@
-import { TENANT_ID, type Table, dataKeyPrefix } from '../../contracts/ledger'
+import { type LedgerTable, TENANT_ID, dataKeyPrefix } from '../../contracts/ledger'
 
 /**
  * Object keys for data files, exactly as contracts/TABLES.md states them:
@@ -18,7 +18,7 @@ import { TENANT_ID, type Table, dataKeyPrefix } from '../../contracts/ledger'
  */
 export interface KeyParts {
   cell: string
-  table: Table
+  table: LedgerTable
   tenant: string
   day: string
   level: number
