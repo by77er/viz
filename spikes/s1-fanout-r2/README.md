@@ -10,6 +10,8 @@ Decides the query fan-out topology (`design/VERIFICATION.md` §4, S1; `design/DE
 - Endpoints need the `x-key` header (a Worker secret, not in the repository). Nothing runs
   on a timer; idle, it costs only the stored 32 MiB.
 
+**Deleted 2026-11-19 02:09 UTC** (Worker and bucket `viz-spike-s1` with its one object), with the commands below; the account's Workers and R2 buckets were listed afterwards and hold nothing of this spike. The results below stand.
+
 Remove with:
 
 ```

@@ -8,6 +8,8 @@ open questions: billed CPU on Cloudflare, and behaviour at the 128 MB limit.
 Worker `viz-spike-s2-engine` (workers.dev): the benchmark's Rust/WASM core (Arrow reader,
 SIMD) and its JavaScript counterpart, each running the benchmark's two queries over a
 Parquet file sent as the request body. Endpoints need the `x-key` header (a Worker secret).
+**Deleted 2026-11-19 02:09 UTC** (Worker), with the commands below; the account's Workers and R2 buckets were listed afterwards and hold nothing of this spike. The results below stand.
+
 Nothing runs on a timer. Remove with `npx wrangler delete --name viz-spike-s2-engine`.
 
 `src/vizcore.wasm` (3.6 MB) is the exact binary that was measured, kept so a rerun measures
