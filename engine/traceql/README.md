@@ -137,7 +137,10 @@ Cloudflare. `CARGO_TARGET_DIR` was outside the repository.
 Go and no network: `tests/api.rs` (14 tests), `tests/props.rs` (6 properties, 48 cases
 each), `tests/conformance.rs` (prints `SKIPPED: … not found` and passes when the Tempo list
 has not been fetched), and the differential exporter, which is `#[ignore]`d. Nothing in the
-default run needs Tempo, its corpus or Go. The checks that do are explicit commands:
+default run needs Tempo, its corpus or Go. Verified on the final code with `testdata/upstream/`
+deleted, Go removed from `PATH` and `cargo test -j 2 --offline`: api 14 passed, props 6
+passed, conformance 1 passed (printed `SKIPPED`), differential 1 ignored, exit 0 (14 s with a
+warm build directory). The checks that do need them are explicit commands:
 
 | Check | Command (from `engine/traceql`) | Needs |
 |---|---|---|
@@ -264,7 +267,8 @@ when they are event or link fields (`echo_event_choice`).
 
 `tests/props.rs` (proptest; generated data and the query generator of the differential
 run, 4–14 queries per case). `cargo test` runs 48 cases per property; the final run used
-`PROPTEST_CASES=2000` (release build, 54 s): all six pass.
+`PROPTEST_CASES=2000` (release build; 36.5 s of tests, 74 s with compilation, load average
+about 10, after the last fixes): all six pass.
 
 | Property | |
 |---|---|
@@ -305,7 +309,7 @@ the copy. The source tree is never modified.
 | 15 | trace id printed with leading zeros | api (`search_json_has_tempo_shape`, `pipelines_aggregates_by_coalesce_select`) |
 | 16 | unscoped attribute looks at the resource first | api (`intrinsics_and_scopes`) |
 
-**16 of 16 caught** on the final run; the copy was restored and re-run green after each,
+**16 of 16 caught** on the final run (after the last semantic fixes); the copy was restored and re-run green after each,
 then deleted. The first run caught 13: mutant 3 then filtered the left side only, which is
 an equivalent mutant (an unconnected span can relate only to unconnected spans, and the
 right side is filtered), so it was moved to the right side; mutants 5 and 16 survived
@@ -324,11 +328,11 @@ under Node 22:
 
 | | |
 |---|---:|
-| `.wasm` | **1,284,736 B** (final build) |
-| gzip -9 | **437,995 B** |
+| `.wasm` | **1,285,286 B** (final build) |
+| gzip -9 (Node `zlib`, as `check.mjs` reports) | **438,117 B** |
 | imports | **0** (instantiates with `{}`) |
 | exports | `memory`, `viz_tq_alloc`, `viz_tq_free`, `viz_tq_run` |
-| `new WebAssembly.Instance(module, {})` | 0.34 ms and 2.2 ms (means of 200, two runs at load average 15–19) |
+| `new WebAssembly.Instance(module, {})` | 0.24 ms (final build, load average 8.5); earlier builds 0.34 ms and 2.2 ms at load average 15–19 (means of 200) |
 | linear memory after the run | 2 MiB |
 
 The only dependency is `regex` (Unicode tables trimmed as in `viz-promql`); no

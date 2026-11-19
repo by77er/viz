@@ -1023,27 +1023,30 @@ shared (only the self-binding case was measured), the gate can admit more.
 
 ## D40. TraceQL: a hand-written parser; where Tempo's documentation is silent, its evaluator's observed behaviour, not its storage shortcuts
 
-**Decision.** `engine/traceql` parses TraceQL with a hand-written lexer and recursive-descent /
-precedence-climbing parser (no parser crate or generator). Its semantics come from Tempo's
-public documentation; where the documentation is silent (operator precedence, the metrics
-time grid, quantile buckets, how missing, empty-array and NaN values compare, result keys),
-from Tempo v3.1.1's behaviour observed as a black box. Where Tempo answers the same question
-two ways depending on its query plan (its storage layer applying a condition itself versus
-its evaluator), viz follows the evaluator; where Tempo contradicts its documentation (`!=` on
-arrays, union structural operators), viz follows the documentation. Each such difference is a
-named rule in the crate's differential comparison (`engine/traceql/README.md`).
+**Decision.** `engine/traceql` parses TraceQL with a hand-written lexer and recursive-descent
+/ precedence-climbing parser (no parser crate or generator). Its semantics come from Tempo's
+public documentation; where the documentation is silent (operator precedence, the metrics time
+grid, quantile buckets, how missing, empty-array and NaN values compare, result keys), from
+Tempo v3.1.1's behaviour observed as a black box. Where Tempo answers the same question two
+ways depending on its query plan (its storage layer applying a condition itself versus its
+evaluator), viz follows the evaluator; where Tempo contradicts its documentation (union
+structural operators such as `&>>` returning only some of the left-hand spans), viz follows
+the documentation. Each such difference is a named rule in the crate's differential comparison
+(`engine/traceql/README.md`).
 
 **Alternatives.** A permissively licensed parser crate or a parser generator (none exists for
-TraceQL; a generated parser carries grammar tables into the WASM module, as `promql-parser`'s
-are about 90% of `viz-promql`'s module). Reproducing every observed Tempo answer, plan
-artefacts included (byte-compatible with one Tempo release, but its answers to
-`{ !(status = error) }` or `{ v = "1.0" || .b }` are wrong by its own evaluator's rules).
-Following only the documentation (leaves precedence and the metrics grid undefined).
+TraceQL; a generated parser carries grammar tables into the WASM module: `promql-parser` and
+what it pulls in, grammar tables included, are about 90% of `viz-promql`'s module,
+`engine/promql/README.md`). Reproducing every observed Tempo answer, plan artefacts included
+(byte-compatible with one Tempo release, but it would copy defects: Tempo returns nothing for
+a lone `{ !(status = error) }`, and `{ v = "1.0" || .b }` drops spans without `b`). Following
+only the documentation (leaves precedence and the metrics grid undefined).
 
-**Why.** The hand-written parser is small (no tables in the module: 1.28 MB raw for the whole
-engine), reports positions directly, and keeps the clean-room record simple (D35). Tempo is the
-compatibility target, so its evaluator settles what the documentation leaves open; answers
-that depend on Tempo's internal plan cannot be specified and are not copied.
+**Why.** The hand-written parser is small (no grammar tables in the module: the whole engine
+is 1.29 MB raw and 0.44 MB gzipped, measured here), reports positions directly, and keeps the
+clean-room record simple (D35). Tempo is the compatibility target, so its evaluator settles
+what the documentation leaves open; answers that depend on Tempo's internal plan cannot be
+specified and are not copied.
 
 **Would change if.** Tempo documents a different semantics, or fixes the plan-dependent cases
 differently; or clients turn out to depend on a Tempo artefact (then that one rule is copied
