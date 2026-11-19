@@ -4,7 +4,7 @@ import wasm from '../../engine/wasm-query/js/viz_query.wasm'
 import { hash32 } from '../../shard/src/pool'
 import type { Shard } from '../../shard/src/shard'
 import { Listing } from './meta'
-import { type TailPart, readRests, splitKeyRange } from './tail'
+import { type TailPart, cutByKey, readRests, splitKeyRange } from './tail'
 
 /**
  * A query leaf: a stateless Durable Object that reads data files from R2 for a
@@ -105,9 +105,13 @@ export interface ExtractRequest {
   /**
    * New 2026-11-19 (ABI 5): read the series files by the part's `series_id` range too (when
    * the key is the id of every series that carries no `__type__`/`__unit__`), and say how many
-   * foreign series were seen (`foreign`); the coordinator runs the split again with series
-   * files read by name and time if any part saw one. A reader of an earlier release ignores
-   * it and reads them by name and time (and says nothing: none is foreign then).
+   * foreign series were seen (`foreign`: in the part's id range, key another part's); the
+   * coordinator runs the split again with series files read by name and time if any part saw
+   * one. A reader of this release always answers `foreign` with a number. A reader of an
+   * earlier release ignores the field and reads by name and time: its own part is whole, but
+   * it says nothing of the series of other parts it saw, which the reader of the part their
+   * key is in may have missed. So an answer without `foreign` is "unknown", never 0, and the
+   * split runs again by name and time (review B-1).
    */
   seriesByPart?: boolean
 }
@@ -148,6 +152,8 @@ export interface EvaluateRequest {
   tenant?: string
   /** Pass `seriesByPart` to the readers (`ExtractRequest`). */
   seriesByPart?: boolean
+  /** The query's deadline (Unix ms): no page of the rest is asked for after it (review m-7). */
+  deadline?: number
 }
 
 /** What a part read of the tail itself (present exactly when it was given `tailParts`). */
@@ -184,6 +190,7 @@ export interface CardinalityRequest {
   tailParts?: TailPart[]
   tailMaxBytes?: number
   tenant?: string
+  deadline?: number
 }
 
 /**
@@ -211,6 +218,7 @@ export interface MetaRequest {
   tails: Uint8Array[]
   tailParts?: TailPart[]
   tenant?: string
+  deadline?: number
   cacheTtlS: number
 }
 
@@ -243,6 +251,12 @@ export interface EvaluateStats {
   readerEngineMaxMs: number
   /** Foreign series its readers saw (`ExtractRequest.seriesByPart`). */
   foreign: number
+  /**
+   * Asked for `seriesByPart`, some reader answered without `foreign` (one of the previous
+   * release): the count is not known, and the coordinator treats it as "some" (review B-1).
+   * A leaf of the previous release sends neither field, which the coordinator treats alike.
+   */
+  foreignUnknown: boolean
 }
 
 export type EvaluateAnswer = { status: 'ok'; answer: Uint8Array; stats: EvaluateStats; tail?: TailStats } | { status: 'missing'; key: string } | { status: 'refused'; reason: string } | TailRefusal
@@ -282,9 +296,9 @@ export function covers(have: FilePlan['read'], need: Exclude<FilePlan['read'], '
 /**
  * The part's tail from `tailParts`: per shard, what the coordinator sent and then the rest,
  * read in the part's key range. `cut` turns a shard's rest into the part's batches; it gets
- * `paged` false for a shard of the previous release (the whole tail, to cut exactly) and
- * returns null when a paged rest holds rows of another part (a series whose split key is not
- * its id), so the part is not what the shard's key range gave.
+ * `filtered` false for batches that are a whole tail (to cut exactly) and returns null when a
+ * filtered rest holds rows of another part (a series whose split key is not its id), so the
+ * part is not what the shard's key range gave.
  */
 export async function partTail(
   env: Pick<LeafEnv, 'SHARD'>,
@@ -293,9 +307,10 @@ export async function partTail(
   part: number,
   nParts: number,
   cap: number,
-  cut: (batches: Uint8Array[], paged: boolean) => Uint8Array[] | null,
+  cut: (batches: Uint8Array[], filtered: boolean) => Uint8Array[] | null,
+  deadline?: number,
 ): Promise<{ status: 'ok'; batches: Uint8Array[]; stats: TailStats } | TailRefusal> {
-  const rest = await readRests((shard) => env.SHARD.get(env.SHARD.idFromName(shard)), tenant, parts, splitKeyRange(part, nParts), cap)
+  const rest = await readRests((shard) => env.SHARD.get(env.SHARD.idFromName(shard)), tenant, parts, splitKeyRange(part, nParts), cap, deadline)
   if (rest.status === 'stale') return { status: 'tail', kind: 'stale', shard: rest.shard, incarnation: rest.incarnation, asked: rest.asked }
   if (rest.status === 'mismatch') return { status: 'tail', kind: 'mismatch', shard: rest.shard, incarnation: rest.incarnation, asked: rest.asked }
   if (rest.status === 'too_large') return { status: 'tail', kind: 'too_large', bytes: rest.bytes }
@@ -315,7 +330,7 @@ export async function partTail(
     stats.bytes += r.bytes
     const mine = cut(
       r.batches.map((b) => b.payload),
-      r.paged,
+      r.filtered,
     )
     if (mine === null) return { status: 'tail', kind: 'strays' }
     out.push(...mine)
@@ -477,7 +492,7 @@ export class Leaf extends DurableObject<LeafEnv> {
     if (leafHooks.beforeEvaluate) await leafHooks.beforeEvaluate(req.part, 0)
     if (leafHooks.resetBeforeEvaluate && openSessions === 0) leafEngine.reset()
     const stats: EvaluateStats = {
-      readerCalls: 0, readerRetries: 0, extractBytes: 0, extractRows: 0, bytesRead: 0, cacheHits: 0, r2Gets: 0, wasmMemoryBytes: 0, ms: 0, ownEngineMs: 0, readerEngineMs: 0, readerEngineMaxMs: 0, foreign: 0,
+      readerCalls: 0, readerRetries: 0, extractBytes: 0, extractRows: 0, bytesRead: 0, cacheHits: 0, r2Gets: 0, wasmMemoryBytes: 0, ms: 0, ownEngineMs: 0, readerEngineMs: 0, readerEngineMaxMs: 0, foreign: 0, foreignUnknown: false,
     }
     const own = <T>(f: () => T): T => {
       const t = performance.now()
@@ -490,13 +505,29 @@ export class Leaf extends DurableObject<LeafEnv> {
     // The rest of the tail, read while the readers work (D48).
     const useParts = req.tailParts !== undefined && !leafHooks.ignoreTailParts
     const tailRead = useParts
-      ? partTail(this.env, req.tenant ?? '', req.tailParts!, req.part, req.parts, req.tailMaxBytes ?? 0, (batches, paged) => {
-          const cut = own(() => leafEngine.splitTails(batches, req.without, req.parts, req.ranges))
-          // A paged rest is this part's key range of `series_id`: rows of another part mean a
-          // series whose split key is not its id, and the part is not what the shard gave.
-          if (paged && cut.some((list, k) => k !== req.part && list.length > 0)) return null
-          return cut[req.part] ?? []
-        })
+      ? partTail(
+          this.env,
+          req.tenant ?? '',
+          req.tailParts!,
+          req.part,
+          req.parts,
+          req.tailMaxBytes ?? 0,
+          (batches, filtered) => {
+            // By split key in JavaScript, not in the engine (review M-2: the engine's cut held 6.2
+            // times the tail in WASM memory). A filtered rest is this part's key range of
+            // `series_id`: rows of another part mean a series whose split key is not its id, and
+            // the part is not what the shard gave.
+            const mine: Uint8Array[] = []
+            for (const b of batches) {
+              const pieces = cutByKey(b, req.parts, req.without)
+              if (filtered && pieces.some((x, k) => k !== req.part && x !== null)) return null
+              const piece = pieces[req.part]
+              if (piece) mine.push(piece)
+            }
+            return mine
+          },
+          req.deadline,
+        )
       : null
     // Awaited below; a rejection before then (another failure first) must not go unhandled.
     tailRead?.catch(() => undefined)
@@ -535,7 +566,9 @@ export class Leaf extends DurableObject<LeafEnv> {
             stats.r2Gets += answer.r2Gets
             stats.readerEngineMs += answer.engineMs ?? 0
             stats.readerEngineMaxMs = Math.max(stats.readerEngineMaxMs, answer.engineMs ?? 0)
-            stats.foreign += answer.foreign ?? 0
+            // A reader that does not say (the previous release) leaves the count unknown, never 0 (review B-1).
+            if (typeof answer.foreign === 'number') stats.foreign += answer.foreign
+            else if (req.seriesByPart) stats.foreignUnknown = true
             // Gathered as it arrives, with its group's precedence: arrival order does not matter.
             const batch = answer.batch
             if (!aborted && missing === null && refused === null && batch.byteLength > 0) aborted = own(() => leafEngine.gatherAdd(handle, gi, batch).aborted)
@@ -574,7 +607,7 @@ export class Leaf extends DurableObject<LeafEnv> {
     // The rest of the tail in this part's key range (D48), read while the files are. The
     // report keeps a part's series by `series_id` itself, so batches go in as read.
     const useParts = req.tailParts !== undefined && !leafHooks.ignoreTailParts
-    const tailRead = useParts ? partTail(this.env, req.tenant ?? '', req.tailParts!, req.part, req.parts, req.tailMaxBytes ?? 0, (batches) => batches) : null
+    const tailRead = useParts ? partTail(this.env, req.tenant ?? '', req.tailParts!, req.part, req.parts, req.tailMaxBytes ?? 0, (batches) => batches, req.deadline) : null
     tailRead?.catch(() => undefined)
     const bytes: Uint8Array[] = new Array(req.files.length)
     let cacheHits = 0
@@ -633,7 +666,7 @@ export class Leaf extends DurableObject<LeafEnv> {
     }
     // The rest of the tail in this part's key range, while the files are read: under its own cap.
     const useParts = req.tailParts !== undefined && !leafHooks.ignoreTailParts
-    const tailRead = useParts ? partTail(this.env, req.tenant ?? '', req.tailParts!, req.part, req.parts, req.maxBytes, (batches) => batches) : null
+    const tailRead = useParts ? partTail(this.env, req.tenant ?? '', req.tailParts!, req.part, req.parts, req.maxBytes, (batches) => batches, req.deadline) : null
     tailRead?.catch(() => undefined)
     const stats = { cacheHits: 0, r2Gets: 0, bytesRead: 0 }
     const listing = new Listing(req.kind)

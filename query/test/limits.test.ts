@@ -34,6 +34,7 @@ describe('limits', () => {
       splitAboveSamples: 1_500_000, splitAboveSeries: 15_000, maxQuerySamples: 64_000_000, maxQuerySeries: 640_000, maxQueryScanSamples: 100_000_000, maxQueryFetchBytes: 512 << 20,
       maxQueryFiles: 20_000, maxLeaves: 32, maxCardinalitySeries: 1_000_000, maxCardinalityPairs: 400_000, cardinalitySplitAboveSeries: 50_000,
       maxMetadataSeries: 200_000,
+      maxTailReadParts: 16,
     })
   })
 

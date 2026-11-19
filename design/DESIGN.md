@@ -385,9 +385,15 @@ with label-based access rules. A caller cannot omit it.
   are bounded by seal size, so the shard needs no query engine and no second index. The
   filter (time range, metric names, exact label values, a range of series keys) is applied
   by the shard and the answer comes in pages with a continuation (D48), so a query takes only
-  the tail it needs. The coordinator reads it under its byte budget; when it does not fit and
-  the query splits by `series_id`, each part reads the rest in its own key range (D54). A
-  shard of the previous release answers unfiltered and is read as before. Shards
+  the tail it needs. The coordinator reads it under one byte budget for all the shards, and cuts
+  it by split key in JavaScript, never in the engine. When it does not fit and the query splits by
+  `series_id`, the coordinator fixes each shard's end (from the first page, or from the shard when
+  that page did not fit), and each part reads the rest in its own key range through that end, so
+  every part answers the same moment of each shard; at most `maxTailReadParts` parts read rests,
+  since each read scans the shard's tail on the object that acknowledges writes (D54). A shard of
+  the previous release answers unfiltered and is read as before. Split readers read their id range
+  of the series files and the split runs again by name and time when any part saw a series whose
+  key is not its id, or cannot say (a reader of the previous release, during a deploy: D59). Shards
   keep recorded segments for a short bounded time, and a refused split is retried on its
   own with a fresh ledger read, so a busy shard cannot make a whole query loop.
 - **Leaves are Durable Objects.** Measured on Cloudflare (`spikes/s1-fanout-r2/`): R2 reads

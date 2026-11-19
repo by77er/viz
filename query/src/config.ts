@@ -92,6 +92,14 @@ export interface TenantLimits extends QueryLimits {
    * or value for the other two.
    */
   maxMetadataSeries: number
+  /**
+   * Parts of one query (a split, the cardinality report, a label call over leaves) that may read
+   * the rest of a tail that did not fit the coordinator themselves. Each such read scans every
+   * shard's whole tail for the tenant, on the object that acknowledges writes (D48 "Cost of it"),
+   * so a query costs each shard (1 + parts) scans; past this the query is refused (D54, review
+   * M-3). See README "Measurements" for the time one scan takes.
+   */
+  maxTailReadParts: number
 }
 
 /**
@@ -125,6 +133,7 @@ export const DEFAULT_LIMITS: TenantLimits = {
   maxCardinalityPairs: 400_000,
   cardinalitySplitAboveSeries: 50_000,
   maxMetadataSeries: 200_000,
+  maxTailReadParts: 16,
 }
 
 /** A configuration that cannot be trusted: the query is refused (503), never run on a guess. */
