@@ -738,9 +738,10 @@ quantile spread with the configuration frozen on NAB (robust z as above; seasona
 adapt robust); `spread: "mad"` gets the library's own defaults, with a warning that quotes both
 benchmarks. EWMA stays nameable, warned with both numbers. CUSUM defaults to `info` and may not
 page; STL and PELT are not rule detectors; burn rate is the SLO rule kind (D42). The window is the
-largest whose stored state fits the per-series limit (64 KiB) for any values; the configuration
-frozen with a 4,000-point window can be named and is refused at save over that limit, with what it
-is and what fits. Defaults are resolved and written out when a rule is saved, so every rule stored
+largest whose stored state fitted the per-series limit (64 KiB) for any values while state was
+stored as JSON; the configuration frozen with a 4,000-point window can be named (it was refused at
+save over that limit; since D60 stores the window as Float64 ring blocks it fits, and is still not
+the default). Defaults are resolved and written out when a rule is saved, so every rule stored
 before keeps what it was saved with; a rule saved again over a stored one (the same group, and the
 same monitor id, or the same name and expression) keeps, for each field it leaves out, the stored
 value that was the default when it was stored, and the save says so. The guide, served at
@@ -778,22 +779,29 @@ an unchanged rule file. (h): on SMD the quantile spread's low-FP lead over the t
 significant (+7.5 [−8.8, 19.7] at 4,000 points, +5.7 [−12.4, 19.0] at 1,500) and it raised about
 eight times the threshold's unmatched alarms per machine-day (12.2 against 1.5).
 
-**Cost.** State: about 55 KB a series (estimate; 1.4 KB for EWMA), so a default rule keeps at most
-18 series (1 MiB a rule; it was 100), and a shard holds about 16 such rules at their cap (16 MiB).
+**Cost.** State: about 55 KB a series as JSON (estimate; 1.4 KB for EWMA), so a default rule kept
+at most 18 series (1 MiB a rule; it was 100). Since D60 (Float64 ring blocks, 2026-11-19) it is
+about 18.8 KB a series (estimate; 17.8 KB measured here, whatever the values), so a default rule
+keeps at most 55 series, and a shard holds about 16 such rules at their cap (16 MiB).
 CPU, by the D51 model (extrapolated: its robust z prices were calibrated at 3,992 and 11,768 bytes of
 state, here 55,400): 0.35 ms a point, so a warm-up costs 0.53 s a series and the 5 s budget warms
 about 9 series; a rule with more starts cold and warms live (it scores after 20 points; its window is
 full after 25 h at a 1-minute interval). In Node here the per-point cost grew 4.4–5.6 times from 288
 to 1,500 points, the model 4.5 times; it is not measured in workerd at this size. Each tick
-serialises and writes each series' state (whole batches per row: 2 or 3 rows a tick at 18 series).
-The 4,000-point configuration, where its limit is raised: 0.92 ms a point by the same model (3.7 s
-to warm one series), at most 7 series a rule. A rule saved again may keep EWMA indefinitely; each
+serialised and wrote each series' state (whole batches per row: 2 rows and 879 KB a tick at 18
+series, measured); since D60 a tick writes the head and the current block (2 rows, 13 KB). With more
+series a rule, more of them start cold: the warm-up budget still warms about 9.
+The 4,000-point configuration: 0.92 ms a point by the same model (3.7 s
+to warm one series); at most 7 series a rule as JSON with its limit raised, 22 as ring blocks within
+the default limits (D60; 46.1 KB a series measured here). A rule saved again may keep EWMA indefinitely; each
 such save warns. The evidence is two public benchmarks, nothing measured on viz's own data, and the
 chosen window's SMD score is post hoc.
 
 **Would change if.** viz's own labelled incidents rank the detectors differently; a third benchmark
 contradicts SMD; the window's state can be stored incrementally (then the frozen 4,000 points, or a
-window in time on rollups); the CPU model, measured in workerd at 1,500 points, prices warm-ups
+window in time on rollups: D60 has done this, and the 4,000-point window now fits; the default stays
+1,500 until this decision is taken again, with the warm-up of a 4,000-point rule measured in
+workerd); the CPU model, measured in workerd at 1,500 points, prices warm-ups
 higher (then a smaller window or a larger budget); or a detector gains a calibrated false-alarm rate
 fit to page.
 
@@ -2024,3 +2032,63 @@ range, then whole). Readers parse the labels of the series they see either way.
 
 **Would change if.** The split key stops leaving out `__type__`/`__unit__` (then nothing is
 foreign), or series files are written per part (then the check is moot).
+
+## D60. Robust z and seasonal keep their windows as Float64 values in ring blocks on the interval grid, a tick writing a head and the current block; version 2 of the stored format ships behind a version gate that is on
+
+**Decision.** The state of a robust z or seasonal anomaly rule is stored as `store.anomaly-state`
+version 2 (`ruler/src/anomalystore.ts`): in the same `anomaly_state` rows, a head (every series'
+labels, last outcome and the detector's scalars) and blocks of 60 slots on the rule's interval grid
+holding every series' values there as little-endian Float64 in base64, NaN where a slot holds no
+point. Timestamps are implicit (slot n is the grid's phase + n · interval); a robust z point off the
+grid, and a series with less than half a block of points, are written as explicit (time, value)
+pairs. A tick writes the head and the block its points fall in; a block no series needs any more is
+deleted, or rewritten without the series that left it. The CPU and memory models of warm-ups and
+backtests keep pricing the window by its JSON size, which they were calibrated against. The release
+reads versions 1 and 2 and writes version 2 for these two detectors behind `ANOMALY_STATE_WRITE`
+(`ruler/src/schema.ts`), which is on; EWMA, threshold and CUSUM keep version 1. A rule's rows are
+rewritten in the gate's version at its next tick. Caps follow from the size: a default robust z
+rule keeps 55 series (it was 18).
+
+**Alternatives.** (a) Keep JSON (version 1). (b) Float32 values: half the bytes, but scores and
+explanations change. (c) Raw Float64 in a BLOB column or a new table: 8 bytes a slot instead of
+10.7, but a schema change older releases cannot follow without a forward-only migration, and the
+shard-move bundle (`GroupBundle.anomalyState`, strings) would change type. (d) One row per series and
+block: row writes are billed, 100 a tick at 100 series. (e) Explicit timestamps always: 16 bytes a
+point. (f) Compressed JSON: sizes that depend on the values (the limits then still guess), and CPU
+at every tick. (g) The whole state in binary, rewritten every tick: smaller, but every row every
+tick. (h) Forward-only with a schema migration (`readableFrom` its own version) instead of a gate.
+(i) The gate shipped off (this release the reader), turned on in the next.
+
+**Why.** The window was the cost: about 37 bytes a point as JSON, 39.7 at the longest number
+encoding, so the window was set by the storage (1,500 points, D33) and a default rule held 18
+series; every tick serialised and rewrote all of it. Float64 keeps the scores bit for bit, which
+(b) does not; with base64 the size is 10.7 bytes a slot whatever the values, so the save-time
+estimate is the stored size up to labels and explanations, which JSON's never was. Blocks on the
+interval grid make the timestamps free and the per-tick write one block for every series, the SLO
+rings' layout (D42), which (d) and (g) are not. (c) would save a quarter of the bytes for a
+migration and a contract change; base64 inside the existing JSON body keeps the table, the column,
+the bundle and an older release's refusal (it reads `"v":2` and refuses the rule, keeping the rows)
+as they are. (h) raises the rollback floor of the whole ruler for one format. (i) is what
+contracts/COMPATIBILITY.md §3.3 asks where a release that reads only version 1 can be rolled back
+to; the gate makes it one constant, and it ships on because the caps are the point of the change
+and the ruler has not run in production. Measured here (workerd, 1,500 points, `ruler/README.md`
+part 8): 48.8 KB a series as JSON against 17.8 KB as blocks; bytes written a tick 879 KB → 12.7 KB
+at 18 series, 4.9 MB → 70 KB at 100; rows a tick 2 → 2 at 18 series, 10 → 2 at 100; CPU a tick
+15 → 9 ms at 18 series, 92 → 43 ms at 100. Scores, alerts and stored state are the same as with
+JSON over the anomaly fixtures and a long random sequence with gaps, evictions and replays (tested).
+
+**Cost.** A rollback to the release before this one leaves rules already rewritten as version 2
+refused there (`state_unreadable`) until this release returns: stuck, not lost, and the release
+record does not stop that rollback (format versions are not in it, D46). The head (labels and last
+outcomes of every series) is still rewritten every tick, 13 KB at 18 series and 70 KB at 100; a
+third row about once an hour when a block leaves the window. Base64 costs a third more than raw
+Float64. A series with few points in a block costs a full block for seasonal (robust z writes them
+explicitly). Points a window has evicted stay in their block until it is rewritten or deleted, and
+are dropped when read. More series a rule means more of them start cold: the warm-up CPU budget
+still warms about 9 series at the default window (D51, unchanged).
+
+**Would change if.** A production release that reads only version 1 can be rolled back to (then the
+next change of this kind ships the reader first, the gate at 1); the release record carries format
+versions (then the rollback tool can refuse a rollback below the reader); heads grow large enough
+to matter (then labels move to a row of their own, written when the series set changes); or a
+detector's state stops being a window of values on the grid.

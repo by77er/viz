@@ -359,7 +359,7 @@ otherwise keep EWMA.
   post hoc: only the 4,000-point window was pre-registered.
 
 **What it costs.** Since state is stored as Float64 ring blocks (`store.anomaly-state` v2, below and
-DECISION_D: the version gate is on), about 18.8 KB a series (estimate; **17.8 KB measured here**, the
+D60: the version gate is on), about 18.8 KB a series (estimate; **17.8 KB measured here**, the
 same whatever the values) against EWMA's 1.4 KB: a default rule's `max_series` is **55** (1 MiB a
 rule; the save warns), and a shard holds about 16 such rules at their cap. As JSON (version 1, while
 the window was chosen) it was about 55 KB a series (estimate; 48.8 KB measured with 17-digit values,
@@ -458,7 +458,7 @@ current block, a third when a block leaves the window), at 18 series as at 100 (
 detector state", and `anomalystore.test.ts`); as version 1 they were 2 and 4–6 at the bench's
 sizes, and 10 for robust z at 1,500 points × 100 series.
 
-**Windowed detector state as Float64 ring blocks (`store.anomaly-state` v2, DECISION_D).** As JSON
+**Windowed detector state as Float64 ring blocks (`store.anomaly-state` v2, D60).** As JSON
 (version 1) robust z's window took about 37 bytes a point (39.7 at the longest number encoding,
 60.9 KB a series at 1,500 points), which capped a default rule at 18 series, and every row of the
 rule's state was rewritten at every tick. `src/anomalystore.ts` stores the windows of robust z and
