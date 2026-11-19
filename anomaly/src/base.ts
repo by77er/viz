@@ -1,6 +1,6 @@
 /** Helpers shared by the detectors. */
 import type { Point, Series, Summary } from './types.ts'
-import { inferStep } from './stats.ts'
+import { inferStep, okTs } from './stats.ts'
 
 export interface CommonParams {
   /** Series resolution. 0 = inferred from the timestamps (median spacing), then kept in state. */
@@ -24,8 +24,14 @@ export const COMMON_DEFAULTS: CommonParams = { stepMs: 0, minDeviation: 0, direc
  */
 export const MAX_ABS = 1e150
 export const val = (v: number): number => (Math.abs(v) <= MAX_ABS ? v + 0 : NaN)
-/** Timestamps: -0 → 0 (JSON cannot keep -0). */
-export const tsv = (t: number): number => t + 0
+/**
+ * Timestamps: outside ±MAX_TS (the Date range) or non-finite → NaN, so the point is missing and
+ * nothing overflows; -0 → 0 (JSON cannot keep -0).
+ */
+export const tsv = (t: number): number => (okTs(t) ? t + 0 : NaN)
+
+/** Largest step accepted (the span of the Date range); a larger param or stored step is ignored. */
+const MAX_TS_STEP = 8.64e15
 
 export const length = (s: Series) => Math.min(s?.ts?.length ?? 0, s?.values?.length ?? 0)
 
@@ -67,15 +73,15 @@ export function warmingPoint(ts: number, value: number, expected: number | null 
  * which points the first call happened to see.
  */
 export function resolveStep(paramStep: number, stateStep: number | undefined, series: Series, lastTs?: number | null): number {
-  if (paramStep > 0 && Number.isFinite(paramStep)) return paramStep
-  if (stateStep && stateStep > 0) return stateStep
+  if (paramStep > 0 && paramStep <= 2 * MAX_TS_STEP) return paramStep
+  if (stateStep && stateStep > 0 && stateStep <= 2 * MAX_TS_STEP) return stateStep
   const n = length(series)
   const inferred = inferStep(series.ts.subarray(0, n))
   if (inferred > 0 && Number.isFinite(inferred)) return inferred
-  if (lastTs !== null && lastTs !== undefined) {
+  if (lastTs !== null && lastTs !== undefined && okTs(lastTs)) {
     for (let i = 0; i < n; i++) {
       const t = series.ts[i]!
-      if (Number.isFinite(t) && t > lastTs) return Number.isFinite(t - lastTs) ? t - lastTs : 0
+      if (okTs(t) && t > lastTs) return t - lastTs
     }
   }
   return 0

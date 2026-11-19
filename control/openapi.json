@@ -15,6 +15,7 @@
       "get": {
         "operationId": "GET_whoami",
         "summary": "Who the credential is",
+        "description": "Tenant, subject, kind, name, scopes, and mayApply: whether direct dashboard writes by this caller take effect.",
         "security": [
           {
             "apiKey": [
@@ -23,7 +24,10 @@
               "dashboards:write",
               "dashboards:apply",
               "write",
-              "read"
+              "read",
+              "monitors:read",
+              "monitors:write",
+              "monitors:ack"
             ]
           }
         ],
@@ -33,7 +37,10 @@
           "dashboards:write",
           "dashboards:apply",
           "write",
-          "read"
+          "read",
+          "monitors:read",
+          "monitors:write",
+          "monitors:ack"
         ],
         "responses": {
           "200": {
@@ -2560,7 +2567,7 @@
             "name": "dashboard",
             "in": "query",
             "required": false,
-            "description": "Only this dashboard.",
+            "description": "Only this dashboard (or, for kind create, the id it would create).",
             "schema": {
               "type": "string"
             }
@@ -2640,6 +2647,135 @@
           },
           "403": {
             "description": "The credential lacks the scope, or the action is not allowed for this identity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The tenant is held by a newer release during a deployment or rollback (code schema-too-new); nothing was changed. Retry after Retry-After seconds",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "POST_proposals",
+        "summary": "Propose a new dashboard",
+        "description": "A whole viz.dashboard/v1 spec for a person to review and apply. It is validated (422 invalid-dashboard with each error) and its id must be free (409 dashboard-exists or dashboard-deleted). Nothing is created until it is applied, which needs the right to create dashboards directly (see whoami mayApply). The same caller sending the same spec again while its proposal is open gets that proposal back: 200, outcome \"unchanged\", nothing written.",
+        "security": [
+          {
+            "apiKey": [
+              "admin",
+              "dashboards:write",
+              "dashboards:apply"
+            ]
+          }
+        ],
+        "x-scopes": [
+          "admin",
+          "dashboards:write",
+          "dashboards:apply"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "spec": {
+                    "type": "object",
+                    "description": "viz.dashboard/v1"
+                  },
+                  "message": {
+                    "type": "string",
+                    "description": "Why, for the reviewer."
+                  },
+                  "dryRun": {
+                    "type": "boolean",
+                    "description": "Run everything, report exactly what would happen, change nothing. The response carries \"dryRun\": true."
+                  }
+                },
+                "required": [
+                  "spec",
+                  "message"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Stored. 200 with outcome \"unchanged\" when this caller already has the same proposal open.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProposalResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed request (bad JSON, cursor, limit, If-Match), or a tenant was named in the request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, unknown, disabled or expired credential",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The credential lacks the scope, or the action is not allowed for this identity",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict: stale revision or version, needs rebase, closed proposal, or a limit reached",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Too large",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Not valid: the body, the dashboard or the setting",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2780,7 +2916,7 @@
       "put": {
         "operationId": "PUT_proposals_proposal",
         "summary": "Edit an open proposal",
-        "description": "Replaces its changes with ones that apply to the current revision, which also rebases it. The proposer, or anyone who may apply.",
+        "description": "Replaces its changes with ones that apply to the current revision, which also rebases it; for a proposal of kind create, replaces its spec (same id). The proposer, or anyone who may apply.",
         "security": [
           {
             "apiKey": [
@@ -2829,6 +2965,10 @@
                   },
                   "reason": {
                     "type": "string"
+                  },
+                  "spec": {
+                    "type": "object",
+                    "description": "Kind create only: the whole new spec."
                   },
                   "dryRun": {
                     "type": "boolean",
@@ -2927,7 +3067,7 @@
       "post": {
         "operationId": "POST_proposals_proposal_apply",
         "summary": "Apply a proposal, whole or in part",
-        "description": "Creates a normal revision attributed to the caller, with the proposer recorded. \"changes\" selects a subset by name. Refused with 409 needs-rebase when the dashboard moved and the changes no longer fit, and with 403 self-apply for an agent applying its own proposal unless agentsMayApply is true.",
+        "description": "Creates a normal revision attributed to the caller, with the proposer recorded. \"changes\" selects a subset by name. Refused with 409 needs-rebase when the dashboard moved and the changes no longer fit, and with 403 self-apply for an agent applying its own proposal unless agentsMayApply is true. A proposal of kind create is applied whole (no \"changes\", no base revision) and makes revision 1 of the new dashboard; it needs the right to create dashboards directly, so an agent is refused with 403 agents-may-not-apply unless agentsMayApply is true, and 409 dashboard-exists when the id was taken meanwhile. Applying twice is 409 proposal-closed, with appliedNumber.",
         "security": [
           {
             "apiKey": [
@@ -3902,13 +4042,18 @@
             "items": {
               "$ref": "#/components/schemas/Scope"
             }
+          },
+          "mayApply": {
+            "type": "boolean",
+            "description": "Whether this caller's direct dashboard writes (create, patch, revert, delete, restore, owner, and applying a proposal that creates a dashboard) take effect, rather than being refused or turned into a proposal. False without dashboards:apply (or admin), and for an agent while the tenant's agentsMayApply is false."
           }
         },
         "required": [
           "tenant",
           "subject",
           "kind",
-          "scopes"
+          "scopes",
+          "mayApply"
         ]
       },
       "Scope": {
@@ -3918,8 +4063,12 @@
           "dashboards:write",
           "dashboards:apply",
           "write",
-          "read"
-        ]
+          "read",
+          "monitors:read",
+          "monitors:write",
+          "monitors:ack"
+        ],
+        "description": "admin and dashboards:* are checked by this API; write and read by ingest and the query service; monitors:* by the ruler. Each service checks its own scopes; any scope reaches GET /whoami here."
       },
       "Key": {
         "type": "object",
@@ -4359,8 +4508,16 @@
           "id": {
             "type": "string"
           },
+          "kind": {
+            "enum": [
+              "patch",
+              "create"
+            ],
+            "description": "patch: named changes to an existing dashboard. create: a whole new dashboard, applied whole; baseRevision is \"\" and baseNumber 0, changes is empty."
+          },
           "dashboard": {
-            "type": "string"
+            "type": "string",
+            "description": "The dashboard changed, or for kind create the id of the dashboard it creates."
           },
           "status": {
             "enum": [
@@ -4456,10 +4613,15 @@
                 "type": "null"
               }
             ]
+          },
+          "spec": {
+            "type": "object",
+            "description": "Kind create, when one proposal is shown: the proposed viz.dashboard/v1 spec."
           }
         },
         "required": [
           "id",
+          "kind",
           "dashboard",
           "status",
           "message",
@@ -4474,16 +4636,33 @@
       "Review": {
         "type": "object",
         "properties": {
+          "kind": {
+            "enum": [
+              "create"
+            ],
+            "description": "Present for a proposal that creates a dashboard."
+          },
           "current": {
-            "type": "object",
-            "properties": {
-              "revision": {
-                "type": "string"
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "revision": {
+                    "type": "string"
+                  },
+                  "number": {
+                    "type": "integer"
+                  }
+                }
               },
-              "number": {
-                "type": "integer"
+              {
+                "type": "null"
               }
-            }
+            ]
+          },
+          "exists": {
+            "type": "boolean",
+            "description": "Kind create: a dashboard (live or deleted) holds the id now, so it cannot be applied."
           },
           "moved": {
             "type": "boolean",
@@ -4579,7 +4758,8 @@
           "outcome": {
             "enum": [
               "proposed",
-              "edited"
+              "edited",
+              "unchanged"
             ]
           },
           "proposal": {

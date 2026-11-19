@@ -73,7 +73,11 @@ async function waitFor(u, ms = 20000) {
   return false
 }
 
-/** Start the mock and `vite preview` of the built app; returns a stop function. */
+/**
+ * Start the mock and `vite preview` of the built app in `root`; returns a stop function. The
+ * mock is always this checkout's (ROOT), so two builds measured one after the other talk to
+ * the same backend.
+ */
 async function startServers(root = ROOT) {
   if (!fs.existsSync(path.join(root, 'dist/index.html'))) throw new Error('dist/ missing: run `npm run build` first')
   const procs = []
@@ -85,7 +89,7 @@ async function startServers(root = ROOT) {
   }
   if (await ping(`${MOCK}/api/v1/status/buildinfo`)) throw new Error(`port ${MOCK_PORT} is already in use (set VIZ_E2E_MOCK_PORT)`)
   if (await ping(APP)) throw new Error(`port ${APP_PORT} is already in use (set VIZ_E2E_APP_PORT)`)
-  start(process.execPath, ['--import', 'tsx', 'mock/server.ts', '--port', String(MOCK_PORT)])
+  start(process.execPath, ['--import', 'tsx', path.join(ROOT, 'mock/server.ts'), '--port', String(MOCK_PORT)])
   start(process.execPath, ['node_modules/vite/bin/vite.js', 'preview', '--port', String(APP_PORT), '--host', '127.0.0.1'])
   const stop = () => procs.forEach((p) => { try { p.kill('SIGTERM') } catch {} })
   process.on('exit', stop)

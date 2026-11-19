@@ -209,7 +209,9 @@ if (!window.vzChart) (function () {
     function drawPlot(gg) {
       const t = tokens(), { m, vis, L, T, plotW, plotH, x, xt, y, ax, labels, fmt, long } = gg; let o = ''
       for (const v of ax.ticks) o += `<line class="${v === 0 ? 'vz-baseline' : 'vz-gridline'}" x1="${L}" x2="${L + plotW}" y1="${y(v * m.unit.div)}" y2="${y(v * m.unit.div)}"/><text x="${L - t.sp(2)}" y="${y(v * m.unit.div) + 4}" text-anchor="end">${fmt.tick(v)}</text>`
-      o += `<text class="vz-axis-unit" x="${L - t.sp(2)}" y="${T - t.sp(2) - 2}" text-anchor="end">${esc(m.unit.unit)}</text>`
+      // the unit: over the tick numbers when it fits the axis gutter, else from the chart's left edge into the strip, never off the page
+      const uw = measure(m.unit.unit, t.micro), ufits = uw <= L - t.sp(2)
+      o += `<text class="vz-axis-unit" x="${ufits ? L - t.sp(2) : 0}" y="${T - t.sp(2) - 2}" text-anchor="${ufits ? 'end' : 'start'}">${esc(m.unit.unit)}</text>`
       const range = st.t1 - st.t0, tstep = TSTEPS.find((s) => plotW / (range / s) >= (long ? 56 : 64)) || 7 * D, tl = (tm) => (long ? (new Date(tm).getUTCHours() === 0 && new Date(tm).getUTCMinutes() === 0 ? day(tm) : clock(tm)) : clock(tm)), ty = T + plotH + t.sp(4)
       const endW = measure(stamp(st.t1, long), t.micro) + t.sp(4), startW = measure(stamp(st.t0, long), t.micro) + t.sp(4)
       o += `<text x="${L}" y="${ty}">${stamp(st.t0, long)}</text><text x="${L + plotW}" y="${ty}" text-anchor="end">${stamp(st.t1, long)}</text>`
@@ -222,8 +224,9 @@ if (!window.vzChart) (function () {
       // lines: every coloured series (hidden ones with display none, so a toggle only flips it), last slot first so slot 1 is on top; picked members of Other in ink with their pattern
       o += '<g data-layer="lines">' + [...m.coloured].reverse().map((s) => lineMarkup(s, s.slot, null, x, y, !vis.lines.includes(s))).join('') + vis.picked.map((s) => lineMarkup(s, 'picked', patternOf(s.key), x, y, false)).join('') + '</g>'
       // markers: a hairline with its word above the plot; words that would collide are dropped (the readout names a marker under the crosshair)
-      let lastEnd = -1e9, words = ''; for (const k of [...(spec.markers || [])].sort((a, b) => a.t - b.t)) { const px = xt(k.t); if (px < L || px > L + plotW) continue; const w = measure(k.label, t.micro), left = px + 3 + w <= L + plotW ? px + 3 : Math.max(L, px - 3 - w)
-        o += `<line class="vz-marker" x1="${px}" x2="${px}" y1="${T - t.sp(1)}" y2="${T + plotH}"/>`; if (left > lastEnd + t.sp(2)) { words += `<text x="${left}" y="${T - t.sp(2) - 2}">${esc(k.label)}</text>`; lastEnd = left + w } }
+      // a marker an agent placed says "Agent:" and carries the agent's rule before its word
+      let lastEnd = -1e9, words = ''; for (const k of [...(spec.markers || [])].sort((a, b) => a.t - b.t)) { const px = xt(k.t); if (px < L || px > L + plotW) continue; const label = k.agent && !/^Agent:/.test(k.label) ? 'Agent: ' + k.label : k.label, pad = k.agent ? t.sp(2) : 0, w = measure(label, t.micro) + pad, left = px + 3 + w <= L + plotW ? px + 3 : Math.max(L, px - 3 - w), ty = T - t.sp(2) - 2
+        o += `<line class="vz-marker" x1="${px}" x2="${px}" y1="${T - t.sp(1)}" y2="${T + plotH}"/>`; if (left > lastEnd + t.sp(2)) { words += (k.agent ? `<line class="vz-agent-rule" x1="${left + 1}" x2="${left + 1}" y1="${ty - t.microLh + 4}" y2="${ty + 3}"/>` : '') + `<text x="${left + pad}" y="${ty}">${esc(label)}</text>`; lastEnd = left + w } }
       if (spec.threshold) { const ty2 = y(spec.threshold.value); o += `<line class="vz-threshold" x1="${L}" x2="${L + plotW}" y1="${ty2}" y2="${ty2}"/>`; words += `<text class="vz-on-plot" x="${L + t.sp(1)}" y="${ty2 - t.sp(1)}">${esc(spec.threshold.label)}</text>` }
       // an interval's word starts at its span; one too long for the room ends at the plot's edge, and if that would put it over time before the span, it is cut to its first word
       for (const s of spec.spans || []) { const a = Math.max(L, xt(s.from)); if (a > L + plotW || xt(s.to) < L) continue; let label = s.label, w = measure(label, t.micro); if (a + t.sp(1) + w > L + plotW && L + plotW - t.sp(1) - w < a) { label = s.label.split(' ')[0]; w = measure(label, t.micro) } const right = a + t.sp(1) + w > L + plotW; words += `<text class="vz-on-plot" x="${right ? L + plotW - t.sp(1) : a + t.sp(1)}" y="${T + t.sp(3)}" text-anchor="${right ? 'end' : 'start'}">${esc(label)}</text>` }
@@ -360,7 +363,7 @@ if (!window.vzChart) (function () {
       if (m.other.length) lines.push(`Other, ${m.other.length} series: last ${fmt.value(Math.min(...m.other.map((s) => s.last ?? 0)))} to ${fmt.value(Math.max(...m.other.map((s) => s.last ?? 0)))}.`)
       if (spec.threshold) { const over = m.coloured.filter((s) => (s.max ?? 0) > spec.threshold.value); lines.push(`${spec.threshold.label}: ${over.length ? over.map((s) => s.labels[m.names.order[0]]).join(', ') + ' above it' : 'no series above it'}.`) }
       for (const s of spec.spans || []) lines.push(`${s.label}: ${when(s.from)} to ${when(s.to)}.`)
-      for (const k of spec.markers || []) lines.push(`${k.label}.`)
+      for (const k of spec.markers || []) lines.push(`${k.agent && !/^Agent:/.test(k.label) ? 'Agent: ' : ''}${k.label}.`)
       el.innerHTML = '<ul>' + lines.map((l) => `<li>${esc(l)}</li>`).join('') + '</ul>'
     }
     function showError() {

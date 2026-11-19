@@ -146,7 +146,7 @@ async function audit() {
   page.on('pageerror', (e) => fail(`audit page error: ${e.message}`))
   await page.setContent(html, { waitUntil: 'load' }); await page.waitForTimeout(200)
   // states the previews do not show at rest: a chosen legend row (so the others are off), and Other opened
-  await page.evaluate(() => { const charts = [...document.querySelectorAll('.vz-chart')]; for (const c of charts) { const tr = c.querySelector('tbody tr[data-key]'); if (c.vz && tr) c.vz.toggle(tr.dataset.key); c.querySelector('[data-more]')?.click() }
+  await page.evaluate(() => { const charts = [...document.querySelectorAll('.vz-chart')]; for (const c of charts) { const tr = c.querySelector('tbody tr[data-key]'); if (c.vz && tr) c.vz.toggle(tr.dataset.key); if (c.vz && c.querySelector('tbody tr[data-key="other"]')) c.vz.toggle('other'); c.querySelector('[data-more]')?.click() }
     // and a row brought forward, so the lines that step back are measured too
     for (const c of charts.filter((x) => x.querySelectorAll('tbody tr[data-key]').length > 3).slice(0, 2)) c.querySelectorAll('tbody tr[data-key] .vz-series')[1]?.dispatchEvent(new FocusEvent('focusin', { bubbles: true })) })
   const measure = (pass) => page.evaluate((pass) => {

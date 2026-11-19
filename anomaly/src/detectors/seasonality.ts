@@ -19,7 +19,7 @@
 import type { Series } from '../types.ts'
 import { length, val } from '../base.ts'
 import { duration, fmt } from '../explain.ts'
-import { inferStep } from '../stats.ts'
+import { inferStep, okTs } from '../stats.ts'
 
 export const HOUR_MS = 3_600_000
 export const DAY_MS = 86_400_000
@@ -69,7 +69,7 @@ export function toGrid(series: Series, stepMs: number): { start: number; values:
   let first = NaN, last = NaN
   for (let i = 0; i < n; i++) {
     const t = series.ts[i]!
-    if (!Number.isFinite(t) || !Number.isFinite(val(series.values[i]!))) continue
+    if (!okTs(t) || !Number.isFinite(val(series.values[i]!))) continue
     if (!(t >= first)) first = Number.isFinite(first) ? Math.min(first, t) : t
     if (!(t <= last)) last = Number.isFinite(last) ? Math.max(last, t) : t
   }
@@ -80,7 +80,7 @@ export function toGrid(series: Series, stepMs: number): { start: number; values:
   const cnt = new Float64Array(m)
   for (let i = 0; i < n; i++) {
     const t = series.ts[i]!, v = val(series.values[i]!)
-    if (!Number.isFinite(t) || !Number.isFinite(v)) continue
+    if (!okTs(t) || !Number.isFinite(v)) continue
     const s = Math.round((t - first) / stepMs)
     sum[s]! += v
     cnt[s]! += 1

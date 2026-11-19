@@ -8,8 +8,13 @@
 // page is Explore over a fixed three-hour window, once per case of --series:
 //   4    sum by (service) of the request rate, from the mock
 //   36   sum by (service, route, status), from the mock
-//   200  a synthetic matrix of 200 series (the mock has 128), answered by this script through
-//        Playwright's request interception, so the same data reaches any build under test
+//   200  viz_synthetic_series: 200 slow sines. Until 2026-11-19 this script synthesised them and
+//        answered through Playwright's request interception; the mock now holds them (and
+//        real/seed.ts writes them to the real API), so the body comes over the shaped network,
+//        gzip-compressed as the real API sends it, like the other two cases. The mock is always
+//        this checkout's (lib.startServers), so every build under test gets the same bytes.
+// Every run records the machine's load average (1 minute) at its start and end: the machine
+// is shared, and a figure means little without it.
 // With one case the file is e2e/measurements/<label>.json as before; with several, each case
 // is written to <label>-<series>.json.
 // The same script measures the app before the restyle (--root pointing at a copy of the old
@@ -65,23 +70,9 @@ const CASES = arg('series', '4').split(',').map(Number)
 const TYPED = 'sum by (route) (rate(http_requests_total{status="500"}[5m]))'
 const Q_SYNTH = 'viz_synthetic_series'
 const QUERIES = { 4: Q_RATE, 36: lib.Q_MANY, 200: Q_SYNTH }
-
-/** A Prometheus matrix of `n` series on the request's own grid; a pure function of (n, start, end, step). */
-const synthCache = new Map()
-function synthetic(n, start, end, step) {
-  const key = `${n}/${start}/${end}/${step}`
-  if (synthCache.has(key)) return synthCache.get(key)
-  const result = []
-  for (let i = 0; i < n; i++) {
-    const metric = { __name__: Q_SYNTH, service: `svc-${String(i % 10).padStart(2, '0')}`, route: `/r/${Math.floor(i / 10) % 5}`, status: String(200 + 100 * (Math.floor(i / 50) % 4)) }
-    const values = []
-    for (let t = start; t <= end + 1e-9; t += step) values.push([t, (3 * (i + 1) + 2 * Math.sin(t / 600 + i)).toFixed(4)])
-    result.push({ metric, values })
-  }
-  const body = JSON.stringify({ status: 'success', data: { resultType: 'matrix', result } })
-  synthCache.set(key, body)
-  return body
-}
+/** --skip typing,crosshair: leave those steps out (for quicker comparisons of candidates). */
+const SKIP = new Set(arg('skip', '').split(',').filter(Boolean))
+const os = require('node:os')
 const FAST_4G = { offline: false, latency: 165, downloadThroughput: (9e6 / 8) * 0.9, uploadThroughput: (1.5e6 / 8) * 0.9 }
 
 const p75 = (xs) => { const s = xs.filter((x) => x != null && Number.isFinite(x)).sort((a, b) => a - b); return s.length ? s[Math.min(s.length - 1, Math.ceil(0.75 * s.length) - 1)] : null }
@@ -190,13 +181,7 @@ async function measureCase(browser, SERIES) {
       await cdp.send('Network.enable')
       await cdp.send('Network.emulateNetworkConditions', FAST_4G)
       await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 })
-      if (SERIES === 200) {
-        await page.route('**/api/v1/query_range', async (route) => {
-          const p = new URLSearchParams(route.request().postData() || '')
-          if (p.get('query') !== Q_SYNTH) return route.continue()
-          await route.fulfill({ status: 200, contentType: 'application/json', body: synthetic(200, Number(p.get('start')), Number(p.get('end')), Number(p.get('step'))) })
-        })
-      }
+      const load1 = os.loadavg()[0]
 
       // ---- first load
       await page.goto(url(QUERIES[SERIES]))
@@ -204,7 +189,7 @@ async function measureCase(browser, SERIES) {
       await page.waitForSelector('[data-testid=chart] canvas')
       await page.waitForSelector('.cm-content')
       await page.waitForTimeout(1200)
-      const r = { clsLoad: await page.evaluate(() => window.__m.shifts.reduce((a, s) => a + s.value, 0)) }
+      const r = { load1, clsLoad: await page.evaluate(() => window.__m.shifts.reduce((a, s) => a + s.value, 0)) }
       const hasTable = !!(await page.$('[data-testid=view-table]'))
 
       // ---- run a query
@@ -235,6 +220,13 @@ async function measureCase(browser, SERIES) {
       r.inpEvent = ev.length ? ev.reduce((a, e) => (e.duration > a.duration ? e : a)).name : '(all under 16 ms)'
       r.inputDelay = ev.length ? Math.max(...ev.map((e) => e.delay)) : 0
 
+      if (SKIP.has('crosshair') && SKIP.has('typing')) {
+        r.loadEnd = os.loadavg()[0]
+        runs.push(r)
+        console.log(`[${SERIES} series] run ${i + 1}/${RUNS}  ` + Object.entries(r).filter(([k]) => k !== 'keys').map(([k, v]) => `${k}=${typeof v === 'number' ? (k.startsWith('cls') ? v.toFixed(4) : k.startsWith('load') ? v.toFixed(1) : v.toFixed(0)) : v}`).join(' '))
+        await ctx.close()
+        continue
+      }
       // ---- crosshair: 30 moves across the plot, each waited for
       const over = await page.locator('[data-testid=chart] .u-over').boundingBox()
       await page.mouse.move(over.x + over.width * 0.1, over.y + over.height * 0.5)
@@ -267,8 +259,9 @@ async function measureCase(browser, SERIES) {
       r.keys = keys.map((x) => Math.round(x * 10) / 10)
       const evAll = await page.evaluate(() => window.__m.events)
       r.inpAll = evAll.length ? Math.max(...evAll.map((e) => e.duration)) : 16
+      r.loadEnd = os.loadavg()[0]
       runs.push(r)
-      console.log(`[${SERIES} series] run ${i + 1}/${RUNS}  ` + Object.entries(r).filter(([k]) => k !== 'keys').map(([k, v]) => `${k}=${typeof v === 'number' ? (k.startsWith('cls') ? v.toFixed(4) : v.toFixed(0)) : v}`).join(' '))
+      console.log(`[${SERIES} series] run ${i + 1}/${RUNS}  ` + Object.entries(r).filter(([k]) => k !== 'keys').map(([k, v]) => `${k}=${typeof v === 'number' ? (k.startsWith('cls') ? v.toFixed(4) : k.startsWith('load') ? v.toFixed(1) : v.toFixed(0)) : v}`).join(' '))
       await ctx.close()
     }
   }
@@ -279,12 +272,12 @@ async function measureCase(browser, SERIES) {
   const file = path.join(lib.ROOT, 'e2e', 'measurements', `${name}.json`)
   if (process.argv.includes('--append') && fs.existsSync(file)) runs.unshift(...JSON.parse(fs.readFileSync(file, 'utf8')).raw)
 
-  const keys = ['press', 'busy', 'chartToTable', 'tableToText', 'chartToText', 'textToChart', 'picker', 'response', 'responseFull', 'inp', 'inputDelay', 'crosshair', 'crosshairWorst', 'typing', 'typingWorst', 'typingOver', 'inpAll', 'clsLoad', 'clsRun', 'clsRunAll']
+  const keys = ['load1', 'loadEnd', 'press', 'busy', 'chartToTable', 'tableToText', 'chartToText', 'textToChart', 'picker', 'response', 'responseFull', 'inp', 'inputDelay', 'crosshair', 'crosshairWorst', 'typing', 'typingWorst', 'typingOver', 'inpAll', 'clsLoad', 'clsRun', 'clsRunAll']
   const summary = {}
   for (const k of keys) {
     const xs = runs.map((r) => r[k])
     if (xs.every((x) => x == null)) continue
-    summary[k] = { p75: p75(xs), median: median(xs), max: Math.max(...xs.filter((x) => x != null)) }
+    summary[k] = { p75: p75(xs), median: median(xs), max: Math.max(...xs.filter((x) => x != null)), min: Math.min(...xs.filter((x) => x != null)) }
   }
   const allKeys = runs.flatMap((r) => r.keys || [])
   if (allKeys.length) summary.typingKeys = { p75: p75(allKeys), median: median(allKeys), max: Math.max(...allKeys), count: allKeys.length, over50: allKeys.filter((x) => x > 50).length }
@@ -294,7 +287,7 @@ async function measureCase(browser, SERIES) {
   fs.writeFileSync(file, JSON.stringify(out, null, 2) + '\n')
   console.log(`\n${name}: ${SERIES} series, 75th percentile of ${runs.length} runs (median, max)`)
   for (const [k, v] of Object.entries(summary)) {
-    const f = (x) => (k.startsWith('cls') ? x.toFixed(4) : k === 'typingOver' ? `${x.toFixed(0)} keys` : `${x.toFixed(0)} ms`)
+    const f = (x) => (k.startsWith('cls') ? x.toFixed(4) : k.startsWith('load') ? x.toFixed(1) : k === 'typingOver' ? `${x.toFixed(0)} keys` : `${x.toFixed(0)} ms`)
     console.log(`  ${k.padEnd(14)} ${f(v.p75).padStart(9)}   (${f(v.median)}, ${f(v.max)})`)
   }
   console.log('  bytes', JSON.stringify(out.bytes))

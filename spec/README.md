@@ -376,7 +376,7 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new.
   be listed by THIS step. Delete them, unless the ledger … knows them" (live or tombstoned).
   Output keys are a hash of the input keys and of the bytes, so two steps with the same inputs
   write the same object, and steps "can run … twice at once".
-- **Trace** (`F14_impl_comp_conflict_delete`, 25 steps): units for batches 0 and 1 admitted and
+- **Trace** (`F14_impl_comp_conflict_delete`, 21 steps): units for batches 0 and 1 admitted and
   logged → two compaction steps read the same two inputs → retention expires input 1
   (committed, not yet logged) → both steps PUT the same output → step B's `replace` is
   `conflict`; the output is neither live nor tombstoned, so B deletes it → the ledger loses its
@@ -391,14 +391,14 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new.
   not this one; the model follows the current code.)
 - **Fix (smallest).** A fresh step id in compaction output keys, so no two steps ever share an
   object; a step then deletes on conflict only objects no other step can make live. Modelled
-  as `compKey: 'unique'` (a never-reused step id); `IMPL_6`, `DESIGN_7` and the `A_*` runs check it.
+  as `compKey: 'unique'` (a never-reused step id); `IMPL_5`, `DESIGN_7` and the `A_*` runs check it.
 
 ### F12 (major, code: `shard/src/shard.ts` with lazy registration) — A flush that spans a shard storage loss files the new incarnation's rows under the old one
 
 - **Code.** `pendingSegments` labels segments with the current incarnation; `readSegment(tenant,
   seqLo)` takes no incarnation and returns whichever stream holds that `seqLo` now; `flush.ts`
   checks only the count and the sequence numbers.
-- **Trace** (`F12_impl_read_unbound`, 13 steps; the same as peel step `IMPL_2`): batch 0
+- **Trace** (`F12_impl_read_unbound`, 13 steps): batch 0
   acknowledged and sealed; a flush Worker lists `inc 1, 1..1` → the shard loses its storage →
   batch 1 arrives, incarnation 2, seq 1, sealed → the Worker's `readSegment(tenant, 1)` returns
   batch 1, which it encodes as `inc 1 1..1` → `addUnit(inc 1, 1..1)` is admitted (and registers
@@ -423,8 +423,8 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new.
   is admitted and logged → the shard loses its storage → the tail read "inc 1, above 0" gets
   `ok`, nothing → the query completes without batch 0 (I4), though batch 0 is safe in a file
   the plan predates.
-- **(b) As built, an unregistered stream** (`F6_impl_unknown_stream`, 13 steps; peel step
-  `IMPL_3`): the stream's first segment is flushed but not yet admitted when the query plans,
+- **(b) As built, an unregistered stream** (`F6_impl_unknown_stream`, 11 steps; the shortest
+  violation of the code as built, peel step `IMPL_1`): the stream's first segment is flushed but not yet admitted when the query plans,
   so the plan has no watermark for that shard and the coordinator asks it with incarnation 0
   → the unit is admitted and logged → the shard loses its storage → "incarnation 0, above 0"
   gets `ok`, nothing → batch 0 missed (I4). The shard cannot tell "never held this tenant"
@@ -494,8 +494,8 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new.
   Worker 2, which read the segment before the loss, has still to report. Rare.
 - **Fix.** Count a newer incarnation only once its registration is logged (`orphanCheck`
   returns, per stream, the incarnation as of the logged prefix). Modelled as
-  `sweepIncLogged`; `DESIGN_7` and `IMPL_5`/`IMPL_6` check it. It also surfaced in the as-built
-  peel (`IMPL_4`, 17 steps).
+  `sweepIncLogged`; `DESIGN_7` and `IMPL_4`/`IMPL_5` check it. It also surfaced in the as-built
+  peel (`IMPL_2`, 17 steps).
 
 ### F4 (major, unstated assumption) — "A missing planned file is an error that re-plans" is load-bearing and not in the text
 

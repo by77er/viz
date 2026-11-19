@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import fc from 'fast-check'
 import type { PromMatrixData } from '../api/types'
-import { alignMatrix, parseSampleValue, seriesKey, seriesName, type AlignedData } from './series'
+import { parseMatrix } from '../api/matrix'
+import { alignMatrix, alignSeries, parseSampleValue, seriesKey, seriesName, type AlignedData } from './series'
 
 /** The implementation before the one-pass rewrite (design review B3), kept as the reference. */
 function reference(data: PromMatrixData, start: number, end: number, step: number): AlignedData {
@@ -70,6 +71,20 @@ describe('alignMatrix in one pass (B3)', () => {
         }
         const end = start + steps * step
         expect(alignMatrix(data, start, end, step)).toEqual(reference(data, start, end, step))
+      }),
+      { numRuns: 500 },
+    )
+  })
+  it('property: the body read into typed arrays (api/matrix.ts) aligns to exactly what the previous implementation gave', () => {
+    fc.assert(
+      fc.property(matrix, fc.integer({ min: 0, max: 28 }), (rows, steps) => {
+        const data: PromMatrixData = {
+          resultType: 'matrix',
+          result: rows.map((r) => ({ metric: r.metric, values: [...r.values].sort((a, b) => a[0] - b[0]).map(([o, v]) => [start + o * step, v] as [number, string]) })),
+        }
+        const end = start + steps * step
+        const text = JSON.stringify({ status: 'success', data })
+        expect(alignSeries(parseMatrix(text).series, start, end, step)).toEqual(reference(data, start, end, step))
       }),
       { numRuns: 500 },
     )

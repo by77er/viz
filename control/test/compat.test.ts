@@ -3,7 +3,10 @@
  *
  *   - the schema of every released version is pinned (golden files);
  *   - storage written by the pre-versioning code (a checked-in dump with data) is adopted
- *     as version 1 without a row changing, and the result survives eviction;
+ *     as version 1 without a row changing, then migrated to the latest by additive steps
+ *     only, and the result survives eviction;
+ *   - storage at every earlier version, with data, migrates to the latest once and serves;
+ *   - the previous release stays a valid rollback target (every migration since is additive);
  *   - storage a newer release migrated past what this code may read is refused on every
  *     entry point, and nothing is written;
  *   - storage a newer release declared readable by this code is served and left at its version;
@@ -26,6 +29,8 @@ import { call, createDashboard, get, newTenant, post, stubOf } from './helpers'
 import { type Dump, dumpOf, install, replaceWith, schemaRow, withoutVersion } from './storage'
 
 const V0 = v0 as unknown as Dump & { tenant: string; admin: { id: string }; agent: { id: string; keyId: string } }
+/** A valid spec from the old storage (dashboard "red"), to propose a new dashboard with. */
+const V0_SPEC = JSON.parse(V0.rows.revisions!.find((r) => r.dashboard === 'red' && r.number === 1)!.spec as string)
 const LATEST = TENANT_SCHEMA.migrations.length
 const norm = (sql: string) => sql.replace(/\s+/g, ' ').trim()
 const withMigration = (m: Omit<Migration, 'version'>): SchemaSpec => ({ ...TENANT_SCHEMA, migrations: [...TENANT_SCHEMA.migrations, { ...m, version: LATEST + 1 }] })
@@ -61,7 +66,7 @@ describe('versioned storage: the schema of every released version is pinned', ()
 })
 
 describe('versioned storage: opening storage made by other code', () => {
-  it('adopts storage written by the pre-versioning code (checked-in dump) as version 1, changes no row, serves it, and keeps it across eviction', async () => {
+  it('adopts storage written by the pre-versioning code (checked-in dump) as version 1, migrates it with no row changed but for the new NULL column, serves it, and keeps it across eviction', async () => {
     const tenant = fresh('adopt')
     const stub = stubOf(tenant)
     const rewrite = (_t: string, r: Record<string, unknown>) => ('tenant' in r ? { ...r, tenant } : r)
@@ -73,10 +78,15 @@ describe('versioned storage: opening storage made by other code', () => {
     const live = await stub.resolveKey(tenant, V0.agent.keyId)
     expect(live).toMatchObject({ kind: 'agent', name: 'bot', scopes: ['dashboards:read', 'dashboards:write'] })
     const after = await runInDurableObject(stub, (_i, s) => ({ row: schemaRow(s), dump: dumpOf(s) }))
-    expect(after.row).toMatchObject({ component: 'control.Tenant', version: 1, compat: 1 })
+    // Adopted as version 1 (no DDL ran: its statements are IF NOT EXISTS), then migrated on to the latest.
+    expect(after.row).toMatchObject({ component: 'control.Tenant', version: LATEST, compat: 1 })
     const kept = withoutVersion(after.dump)
-    expect(canon(kept.rows)).toEqual(canon(expected.rows))
-    expect(kept.schema.map((s) => [s.name, norm(s.sql)])).toEqual(V0.schema.map((s) => [s.name, norm(s.sql)]))
+    // Every row is as it was; migration 2 gave each proposal a NULL spec and changed nothing else.
+    expect(canon(kept.rows)).toEqual(canon({ ...expected.rows, proposals: expected.rows.proposals!.map((r) => ({ ...r, spec: null })) }))
+    // The schema is the old one except for the columns added since, which are those of the latest golden file.
+    const latest = Object.fromEntries((goldenDir('schema')[`v${LATEST}.json`] as { schema: { name: string; sql: string }[] }).schema.map((s) => [s.name, s.sql]))
+    expect(kept.schema.map((s) => [s.name, norm(s.sql)])).toEqual(V0.schema.map((s) => [s.name, s.name === 'proposals' ? latest.proposals : norm(s.sql)]))
+    expect(latest.proposals).toBe(norm(V0.schema.find((s) => s.name === 'proposals')!.sql).replace(', PRIMARY KEY (tenant, id))', ', spec TEXT, PRIMARY KEY (tenant, id))'))
 
     // It serves the old data through the real operations.
     const adminKeyId = V0.rows.key_secrets!.find((r) => r.key === V0.admin.id)!.key_id as string
@@ -98,7 +108,51 @@ describe('versioned storage: opening storage made by other code', () => {
     await evictDurableObject(stub)
     const again = await runInDurableObject(stub, (_i, s) => ({ row: schemaRow(s), reopen: openSchema(s.storage, TENANT_SCHEMA) }))
     expect(again.row).toEqual(after.row)
-    expect(again.reopen).toMatchObject({ status: 'ok', version: 1, migrated: [], adopted: false })
+    expect(again.reopen).toMatchObject({ status: 'ok', version: LATEST, migrated: [], adopted: false })
+  })
+
+  it('upgrades storage at every earlier version, with data, to the latest: once, keeping every row, and serving old and new kinds of proposal', async () => {
+    for (let v = 1; v < LATEST; v++) {
+      const tenant = fresh(`upgrade-v${v}`)
+      const stub = stubOf(tenant)
+      const rewrite = (_t: string, r: Record<string, unknown>) => ('tenant' in r ? { ...r, tenant } : r)
+      await runInDurableObject(stub, () => undefined)
+      // Storage as release v left it: the pre-versioning dump opened by migrations 1..v.
+      const atV = await runInDurableObject(stub, (_i, s) => {
+        replaceWith(s, V0, rewrite)
+        expect(openSchema(s.storage, { ...TENANT_SCHEMA, migrations: TENANT_SCHEMA.migrations.slice(0, v) })).toMatchObject({ status: 'ok', version: v })
+        return dumpOf(s)
+      })
+      await evictDurableObject(stub)
+
+      // The real class constructs itself on it and migrates.
+      expect(await stub.resolveKey(tenant, V0.agent.keyId)).toMatchObject({ kind: 'agent', name: 'bot' })
+      const after = await runInDurableObject(stub, (_i, s) => ({ row: schemaRow(s), dump: withoutVersion(dumpOf(s)), schema: describeSchema(s.storage.sql) }))
+      expect(after.row, `from v${v}`).toMatchObject({ component: 'control.Tenant', version: LATEST, compat: schemaRelease(TENANT_SCHEMA).compat })
+      expect({ version: LATEST, schema: after.schema }).toEqual(goldenDir('schema')[`v${LATEST}.json`])
+      const before = withoutVersion(atV).rows
+      const added = (r: Record<string, unknown>) => ('spec' in r ? r : { ...r, spec: null })
+      expect(canon(after.dump.rows), `from v${v}: rows`).toEqual(canon({ ...before, proposals: before.proposals!.map(added) }))
+
+      // It serves: the old proposal reads as a change to an existing dashboard; a new dashboard can be proposed and applied.
+      const adminKeyId = V0.rows.key_secrets!.find((r) => r.key === V0.admin.id)!.key_id as string
+      const admin: Identity = { tenant, subject: `key:${V0.admin.id}`, kind: 'key', scopes: ['admin'], keyId: adminKeyId }
+      const invoke = async (op: OpName, i: Partial<OpInput>) => (await stub.invoke(admin, op, { params: {}, query: {}, body: null, ...i })) as unknown as OpResult & { body: any }
+      const old = await invoke('proposals.get', { params: { proposal: V0.rows.proposals![0]!.id as string } })
+      expect(old.status).toBe(200)
+      expect(old.body.proposal).toMatchObject({ kind: 'patch', dashboard: 'red' })
+      const proposed = await invoke('proposals.createDashboard', { body: { spec: { ...structuredClone(V0_SPEC), metadata: { ...V0_SPEC.metadata, id: 'upgraded' } }, message: 'after the upgrade' } })
+      expect(proposed.status, JSON.stringify(proposed.body)).toBe(202)
+      const applied = await invoke('proposals.apply', { params: { proposal: proposed.body.proposal.id } })
+      expect(applied.status, JSON.stringify(applied.body)).toBe(200)
+      expect(applied.body).toMatchObject({ number: 1, dashboard: { id: 'upgraded' } })
+
+      // Not migrated twice.
+      await evictDurableObject(stub)
+      const again = await runInDurableObject(stub, (_i, s) => ({ row: schemaRow(s), reopen: openSchema(s.storage, TENANT_SCHEMA) }))
+      expect(again.row).toEqual(after.row)
+      expect(again.reopen).toMatchObject({ status: 'ok', version: LATEST, migrated: [] })
+    }
   })
 
   it('refuses storage a newer release migrated past what it knows: 503 on every surface, the alarm kept, nothing written', async () => {
@@ -130,6 +184,19 @@ describe('versioned storage: opening storage made by other code', () => {
     const after = await runInDurableObject(stub, async (_i, s) => ({ dump: dumpOf(s), alarm: await s.storage.getAlarm() }))
     expect(after.dump).toEqual(before)
     expect(after.alarm, 'the refusing release re-arms the alarm for the release that owns the storage').toBeGreaterThanOrEqual(t0 + 25_000)
+  })
+
+  it('the previous release, which knows one version less, may open storage this release wrote (a proposal to create a dashboard in it), and changes nothing', async () => {
+    const t = await newTenant('rollback')
+    const proposed = await post(t.admin, '/proposals', { spec: example('service_red', 'proposed_red'), message: 'made by this release' })
+    expect(proposed.status, proposed.text).toBe(202)
+    const res = await runInDurableObject(stubOf(t.tenant), (_i, s) => {
+      const before = dumpOf(s)
+      const opened = openSchema(s.storage, { ...TENANT_SCHEMA, migrations: TENANT_SCHEMA.migrations.slice(0, LATEST - 1) })
+      return { opened, before, after: dumpOf(s) }
+    })
+    expect(res.opened).toMatchObject({ status: 'ok', version: LATEST, compat: 1, known: LATEST - 1, migrated: [] })
+    expect(res.after).toEqual(res.before)
   })
 
   it('serves newer storage that declares itself readable by this release, and leaves its version alone', async () => {
@@ -206,6 +273,10 @@ describe('the runner refuses what no retry can fix, and the rollback rule', () =
 
   it('what this release declares, and when a rollback may cross it', () => {
     expect(schemaRelease(TENANT_SCHEMA)).toEqual({ component: 'control.Tenant', latest: LATEST, compat: 1 })
+    // Every migration so far is additive, so every earlier release may still open this storage:
+    // the previous release stays a valid rollback target (COMPATIBILITY.md §2.3, §6).
+    for (let known = 1; known < LATEST; known++) expect(canOpen(known, schemaRelease(TENANT_SCHEMA)), `a release that knows ${known}`).toBe(true)
+    expect(TENANT_SCHEMA.migrations.map((m) => m.readableFrom)).toEqual(TENANT_SCHEMA.migrations.map(() => 1))
     expect(canOpen(1, { version: 2, compat: 2 })).toBe(false)
     expect(canOpen(1, { version: 2, compat: 1 })).toBe(true)
     expect(canOpen(2, { version: 1, compat: 1 })).toBe(true)

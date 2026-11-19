@@ -85,8 +85,17 @@ export async function sealAll(w: World, tenants = [w.a, w.b]): Promise<void> {
 export async function flushAll(w: World, tenants = [w.a, w.b]): Promise<void> {
   for (const t of tenants) {
     for (const s of w.shards) {
-      const r = await exports.Flush.flushTenant(t.name, s)
+      let r = await exports.Flush.flushTenant(t.name, s)
       if (r.status !== 'ok') throw new Error(`flush ${t.name} ${s}: ${JSON.stringify(r)}`)
+      // The shard is told `recorded` only up to the ledger's LOGGED watermark (flush step 6),
+      // which moves when the ledger's alarm drains its outbox to the R2 log. Do what that
+      // alarm would do, and flush again so the shard learns it (and may discard).
+      for (let i = 0; i < 3 && r.awaitingLog; i++) {
+        await runDurableObjectAlarm(ledgerOf(t))
+        r = await exports.Flush.flushTenant(t.name, s)
+        if (r.status !== 'ok') throw new Error(`flush ${t.name} ${s}: ${JSON.stringify(r)}`)
+      }
+      if (r.awaitingLog) throw new Error(`flush ${t.name} ${s}: the ledger's log did not catch up`)
     }
   }
 }

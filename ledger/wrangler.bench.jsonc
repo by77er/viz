@@ -1,0 +1,17 @@
+{
+  // The in-workerd benchmark (bench/): the ledger, the frozen as-built ledger, and writer
+  // clients that are each their own Durable Object. Not deployed.
+  "name": "viz-ledger-bench",
+  "main": "bench/worker.ts",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "LEDGER", "class_name": "Ledger" },
+      { "name": "LEDGER_ASBUILT", "class_name": "LedgerAsBuilt" },
+      { "name": "WRITER", "class_name": "Writer" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Ledger", "LedgerAsBuilt", "Writer"] }],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "viz-lake" }],
+  "vars": { "CELL": "cell-0" }
+}

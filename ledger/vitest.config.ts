@@ -10,4 +10,6 @@ export default defineConfig({
       miniflare: { bindings: { LEDGER_DRAIN_DELAY_MS: '60000' } },
     }),
   ],
+  // bench/ has its own config (`npm run bench`).
+  test: { exclude: ['bench/**', 'node_modules/**'] },
 })

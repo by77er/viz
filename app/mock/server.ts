@@ -26,6 +26,7 @@
  * query that would take longer is answered 503 `timeout` at the limit.
  */
 import { createServer } from 'node:http'
+import { gzipSync } from 'node:zlib'
 import { costHeaders, createMockApi, fail, MOCK_VERSION, type MockResponse } from './handler'
 import { syntheticStorage } from './data'
 import { durationSeconds } from './promql'
@@ -133,9 +134,12 @@ const server = createServer((req, res) => {
       }
     }
     const payload = out.text ?? JSON.stringify(out.body)
+    // Compressed when the client accepts it, as the real API's answers are (workerd and
+    // Cloudflare send gzip): over a slow network a 3.4 MB matrix is about 0.4 MB.
+    const gzip = payload.length > 1024 && /\bgzip\b/.test(String(req.headers['accept-encoding'] ?? ''))
     const send = () => {
-      res.writeHead(out.status, { ...c, 'Content-Type': 'application/json', 'X-Viz-Mock': '1', 'Cache-Control': 'no-store', ...out.headers })
-      res.end(payload)
+      res.writeHead(out.status, { ...c, 'Content-Type': 'application/json', 'X-Viz-Mock': '1', 'Cache-Control': 'no-store', ...(gzip ? { 'Content-Encoding': 'gzip', Vary: 'Origin, Accept-Encoding' } : {}), ...out.headers })
+      res.end(gzip ? gzipSync(payload) : payload)
     }
     if (after > 0) setTimeout(send, after)
     else send()

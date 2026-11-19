@@ -3,7 +3,8 @@ import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-quer
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
 import { PromApiError } from '../api/client'
 import { busyLine, errorAdvice, errorKind, retryDelayMs, shouldRetry } from '../api/errors'
-import type { ApiCost, PromMatrixData } from '../api/types'
+import type { ParsedMatrix } from '../api/matrix'
+import type { ApiCost } from '../api/types'
 import { TimeSeriesChart, type ChartSeries, type RenderInfo } from '../charts'
 import type { PromqlEditorHandle } from '../editor/PromqlEditor'
 import { assignSeries, DEFAULT_POLICY, loadAssignment, saveAssignment } from '../lib/assign'
@@ -13,7 +14,7 @@ import { digestSeries, renderDigest } from '../lib/digest'
 import { nameSeries } from '../lib/naming'
 import { useCoarsePointer } from '../lib/pointer'
 import { countRender } from '../lib/renders'
-import { alignMatrix, seriesStats } from '../lib/series'
+import { alignSeries, type AlignedData, seriesStats } from '../lib/series'
 import { alignWindow, autoStep, bucketWidth, type QueryWindow } from '../lib/step'
 import { absoluteSpec, formatDateTime, parseDuration, resolveTimeSpec, stepWords } from '../lib/time'
 import { axisUnitLabel, BINARY_INCREMENTS, formatInScale, formatValue, inferUnit, scaleFor, UNITS } from '../lib/units'
@@ -55,7 +56,7 @@ const VIEW_URL_DELAY = 300
 
 /** Text digests by result, then by unit and title: one per result as long as the result is kept. */
 const digests = new WeakMap<object, Map<string, string>>()
-function cachedDigest(aligned: ReturnType<typeof alignMatrix>, title: string, unit: string, format: (v: number | null) => string): string {
+function cachedDigest(aligned: AlignedData, title: string, unit: string, format: (v: number | null) => string): string {
   let byKey = digests.get(aligned)
   if (!byKey) digests.set(aligned, (byKey = new Map()))
   const key = `${unit}\n${title}`
@@ -73,7 +74,8 @@ function cachedDigest(aligned: ReturnType<typeof alignMatrix>, title: string, un
  * the page writes about data on screen is derived from this object, never from `search`.
  */
 interface RangeResult extends ResultIdentity {
-  data: PromMatrixData
+  /** The response, read into typed arrays as it arrived (api/matrix.ts). */
+  matrix: ParsedMatrix
   warnings: string[]
   /** What the API said the query cost (`X-Viz-*`); kept with the result, not shown yet. */
   cost: ApiCost
@@ -197,10 +199,13 @@ export function ExplorePage() {
       const w = window_!
       const request = current
       const t0 = performance.now()
-      const res = await client.queryRange(request.q, w.start, w.end, w.step, { signal })
+      const res = await client.queryRangeMatrix(request.q, w.start, w.end, w.step, { signal })
       // The result takes its own description with it: the request, the window, the unit, the time.
-      return { ...identify(request, w, Date.now()), data: res.data, warnings: res.warnings, cost: res.cost, elapsedMs: performance.now() - t0 }
+      return { ...identify(request, w, Date.now()), matrix: res.matrix, warnings: res.warnings, cost: res.cost, elapsedMs: performance.now() - t0 }
     },
+    // A result is new every time and never edited: comparing it with the last one, field by
+    // field, is work for nothing.
+    structuralSharing: false,
     // A busy API (429, 502, 503 other than its time limit) is asked again after its Retry-After,
     // or 1, 2 and 4 s, at most three times and never past the 60 s stop (api/errors.ts).
     retry: (failures, error) => shouldRetry(error, failures, performance.now() - waitStartedAt.current, WAIT.stopAfter),
@@ -263,7 +268,7 @@ export function ExplorePage() {
   const description = useMemo(() => (result ? describeResult(result, { unit: search.unit }, current) : null), [result, search.unit, current])
   const unit = description?.unit ?? 'none'
   const aligned = useMemo(
-    () => (result ? alignMatrix(result.data, result.window.start, result.window.end, result.window.step) : null),
+    () => (result ? alignSeries(result.matrix.series, result.window.start, result.window.end, result.window.step) : null),
     [result],
   )
   // Prepared once per result: names, statistics, colours. None of it depends on the view or on what is typed.
@@ -505,7 +510,7 @@ export function ExplorePage() {
 
   // ---- render
   const error = q !== '' && query.isError ? query.error : null
-  const isEmpty = !!result && result.data.result.length === 0
+  const isEmpty = !!result && result.matrix.series.length === 0
   const hasData = !!aligned && aligned.series.length > 0
   const shownResult = !error && (hasData || isEmpty) ? result : undefined
   const shown = shownResult && description ? description : null
@@ -700,7 +705,7 @@ export function ExplorePage() {
                   ) : view === 'text' ? (
                     <TextView text={digestText} />
                   ) : (
-                    <JsonView data={result!.data} elapsedMs={result!.elapsedMs} />
+                    <JsonView data={result!.matrix} elapsedMs={result!.elapsedMs} />
                   )}
                 </>
               )}

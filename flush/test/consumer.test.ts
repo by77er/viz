@@ -236,3 +236,124 @@ describe('sweep', () => {
     await env.CONFIG.delete(`pool:${a.tenant}`)
   })
 })
+
+/** A bucket that counts PUTs (and can be told to fail them). */
+function countingBucket(fail = false) {
+  const puts: string[] = []
+  const BUCKET = new Proxy(env.BUCKET, {
+    get(target, prop) {
+      if (prop === 'put') return async (key: string, ...rest: unknown[]) => {
+        puts.push(key)
+        if (fail) throw new Error('injected: R2 down')
+        return (target.put as (...a: unknown[]) => unknown)(key, ...rest)
+      }
+      const v = Reflect.get(target, prop)
+      return typeof v === 'function' ? v.bind(target) : v
+    },
+  })
+  return { puts, env: { ...env, BUCKET } }
+}
+
+async function deliverWith(e: typeof env, batch: MessageBatch<unknown>, opts: Parameters<typeof consumeFlushBatch>[3] = {}) {
+  const ctx = createExecutionContext()
+  const outcomes = await consumeFlushBatch(batch, e, engine, opts)
+  const result = await getQueueResult(batch, ctx)
+  return { outcomes, acked: result.explicitAcks, retried: result.retryMessages.map((r) => r.msgId) }
+}
+
+// Review R-11(b): maintenance is asked for only when a flush changed something.
+describe('review R-11(b): maintenance only after a flush that changed something', () => {
+  it('a duplicate delivery that finds nothing does not ask for maintenance', async () => {
+    const a = await sealed('r11-dup')
+    const seen: FlushResult[] = []
+    const first = await deliver(batchOf([a.msg]), { onFlushed: (r) => void seen.push(r) })
+    expect(first.outcomes[0]!.action).toBe('done')
+    expect(seen).toHaveLength(1)
+    // The same message again (at-least-once): nothing pending, nothing written, nothing recorded.
+    const again = await deliver(batchOf([a.msg]), { onFlushed: (r) => void seen.push(r) })
+    expect(again.outcomes[0]!.action).toBe('done')
+    expect(seen).toHaveLength(1)
+  })
+
+  it('a redelivery after the request for maintenance failed asks again, although it changes nothing', async () => {
+    const a = await sealed('r11-redo')
+    const bad = await deliver(batchOf([a.msg]), { onFlushed: () => { throw new Error('queue down') } })
+    expect(bad.outcomes[0]).toMatchObject({ action: 'again', why: 'exception: queue down' })
+    // The flush itself completed; the retry finds nothing to do, but it is a redelivery.
+    const seen: string[] = []
+    const retry = await deliver(batchOf([a.msg], [2]), { onFlushed: (r) => void seen.push(r.tenant) })
+    expect(retry.outcomes[0]!.action).toBe('done')
+    expect(retry.outcomes[0]!.result!.segments).toEqual([])
+    expect(seen).toEqual([a.tenant])
+  })
+
+  it('a run that admitted something and then stopped with an error still asks for maintenance', async () => {
+    const a = await sealed('r11-err')
+    const stopped: FlushResult = {
+      status: 'error', reason: 'object_conflict', detail: 'injected', tenant: a.tenant, shard: a.shardName,
+      segments: [{ incarnation: 1, seqLo: 1, seqHi: 1, outcome: 'admitted', files: [] }], loggedThrough: 1, recordedThrough: 0, awaitingLog: false, remaining: 0, changed: true,
+    } as FlushResult
+    const seen: string[] = []
+    const r = await deliver(batchOf([a.msg]), { flush: async () => stopped, onFlushed: (x) => void seen.push(x.tenant) })
+    expect(r.outcomes[0]).toMatchObject({ action: 'again', why: 'object_conflict' })
+    expect(seen).toEqual([a.tenant])
+  })
+})
+
+// Review R-12 (flush part): dead letters are written as one object per invocation.
+describe('review R-12: one R2 write per dead-letter batch', () => {
+  it('consumeDeadLetters writes ONE object for the whole batch, and every letter can be listed', async () => {
+    const queue = `viz-flush-dlq-r12-${Date.now().toString(36)}`
+    const c = countingBucket()
+    const batch = batchOf([1, 2, 3, 4, 5].map((i) => ({ tenant: `t${i}`, shard: 'p/0' })), [6, 6, 6, 6, 6], queue)
+    const ctx = createExecutionContext()
+    expect(await consumeDeadLetters(batch, c.env)).toBe(5)
+    expect(c.puts).toHaveLength(1)
+    expect((await getQueueResult(batch, ctx)).explicitAcks).toHaveLength(5)
+    const letters = await listDeadLetters(env, queue)
+    expect(letters.map((l) => [l.id, l.body, l.attempts, l.reason])).toEqual(batch.messages.map((m) => [m.id, m.body, 6, 'retries exhausted']))
+  })
+
+  it('if that one write fails, every message of the batch is retried, none acknowledged', async () => {
+    const queue = `viz-flush-dlq-r12f-${Date.now().toString(36)}`
+    const c = countingBucket(true)
+    const batch = batchOf([{ tenant: 't1', shard: 'p/0' }, { tenant: 't2', shard: 'p/0' }], [6, 6], queue)
+    const ctx = createExecutionContext()
+    expect(await consumeDeadLetters(batch, c.env)).toBe(0)
+    const result = await getQueueResult(batch, ctx)
+    expect(result.explicitAcks).toEqual([])
+    expect(result.retryMessages).toHaveLength(2)
+    expect(c.puts).toHaveLength(1)
+  })
+
+  it('junk on the flush queue is dead-lettered with one write per batch', async () => {
+    const queue = `viz-flush-r12j-${Date.now().toString(36)}`
+    const c = countingBucket()
+    const r = await deliverWith(c.env, batchOf(['garbage', { tenant: '../x', shard: 's' }, 42], [], queue))
+    expect(r.acked).toHaveLength(3)
+    expect(c.puts).toHaveLength(1)
+    expect((await listDeadLetters(env, queue)).map((l) => l.body)).toEqual(['garbage', { tenant: '../x', shard: 's' }, 42])
+  })
+})
+
+// contracts/COMPATIBILITY.md §3.2 and design/UPGRADES.md §7 item 6: a message of a version this
+// release does not know is retried, never flushed on a guess, never dead-lettered.
+describe('flush messages carry a version', () => {
+  it('v absent or 1 is flushed; any other v is retried, even when the rest of the body looks invalid', async () => {
+    const a = await sealed('ver')
+    const runs: string[] = []
+    const { flushTenant } = await import('../src/flush')
+    const queue = `viz-flush-ver-${Date.now().toString(36)}`
+    const batch = batchOf([{ ...a.msg, v: 2 }, { v: 2 }, { v: 'x', tenant: a.tenant, shard: a.shardName }], [], queue)
+    const r = await deliver(batch, { flush: (t, s) => (runs.push(t), flushTenant(env, engine, t, s)) })
+    expect(runs).toEqual([])
+    expect(r.acked).toEqual([])
+    expect(r.retried.map((x) => x.msgId).sort()).toEqual(batch.messages.map((m) => m.id).sort())
+    expect(await listDeadLetters(env, queue)).toEqual([])
+    expect(await a.shard.pendingSegments(a.tenant)).toHaveLength(1)
+    // Version 1, spelt out or not, is flushed.
+    const ok = await deliver(batchOf([{ ...a.msg, v: 1 }, a.msg], [], queue), { flush: (t, s) => (runs.push(t), flushTenant(env, engine, t, s)) })
+    expect(runs).toEqual([a.tenant])
+    expect(ok.acked).toHaveLength(2)
+  })
+})
