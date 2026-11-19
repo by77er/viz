@@ -54,7 +54,7 @@ What fails:
   controls). Keyboard walks with a ring check on every stop; reduced motion.
 - A finger's press (CDP touch, held), a mouse press and a scroll that starts on a button, on the fixture.
 - `tools/speed.mjs fixtures/speed-phone.json --runs 3`.
-- Machine: 4 cores shared with other sessions; 1-minute load 8.6 to 14.3 throughout, 12.4 to 14.0 during
+- Machine: 4 cores shared with other sessions; 1-minute load 8.6 to 17.2 throughout, 12.4 to 14.0 during
   the speed run (calibration 679 ms against about 100 ms idle). **No timing here can be judged.**
 
 Not checked: a screen reader by ear, Safari and Firefox, real touch hardware, enlarged text as distinct
@@ -86,7 +86,7 @@ subject matter my own way; `chart-rules.test.mjs` ran here, 10 of 10).
 | M2 Chart spec open | **Fixed** | Rules 4 and 5 replaced by one algorithm with its consequences; values below zero extend the axis (`05`); "above" split into at the end and earlier, over every drawn series; precision defined by the step's leading digit (7.4321 at a 2.5 step → "7.4", as the rule now says); "> −0.1" for a small negative value; unsaved series in a panel map stated. New open point: the tie when several reserved slots were vacated in the same result is broken by slot number in the code and not in the text (minor m1). |
 | M3 harness | **Fixed**, Speed row still open | Presses by touch on the phone layout, measured by the painted fill; menu, theme, query sent and view change rows added; load per sample; calibration context only. Finger held on Run: pressed fill in 7 to 21 ms (6 presses; v5: never). No row can be judged at this load (below). |
 | M4 rubric two readings | **Fixed** | Charts names the shared-step pairs and what tells them apart; Speed: judged only at load ≤ cores, "whatever the calibration ratio"; Type lists its three exceptions; Tokens: "a literal it misses is still this row's failure". One new conflict: **B2**. |
-| M5 `check.mjs` passes literals | **Fixed** for all 32 | Every one of my v5 mutants is now caught, most with a message naming the v5 finding. 18 of 20 new ones survive: **M1**. |
+| M5 `check.mjs` passes literals | **Fixed** for all 32 | Every one of my v5 mutants is now caught, most with a message naming the v5 finding. 17 of 20 new ones survive: **M1**. |
 | M6 dashboard figures disagree | **Fixed** | "Requests to checkout-api 1,087", "Errors on POST /v2/orders 2.41", "p99 of POST /v2/orders 912"; the table's p99 315 and 117 are the chart's last values; every route is checkout-api's. |
 | M7 list caption, order, ages | **Fixed** | "3 of 12 dashboards, most recently changed first"; 15 Nov, 6 Nov, 2 Oct, each with a time (`06`). |
 
@@ -166,8 +166,8 @@ series included, when the person asks for the eight largest, or name the button 
 
 Rubric: Tokens ("a literal it misses is still this row's failure"); AGENTS.md, "Tests must have teeth".
 My v5 mutants: all 32 caught (X1 to X32; most messages name the v5 finding). Twenty new ones, each on a
-copy; all were run with the token, structure and lint checks, and the eight presence-defeating ones
-again with the rendered audit (results below). Survived the static checks:
+copy; all were run with the token, structure and lint checks, and the eight that override a guarded fix
+were run again with the rendered audit. **17 of 20 survived both**:
 
 | Mutant | Broken | Kind |
 |---|---|---|
@@ -184,15 +184,15 @@ again with the rendered audit (results below). Survived the static checks:
 | Y12 | `.vz-table-wrap { position: static }` (v5 B2.1 back) | presence |
 | Y13 | `.vz-swatch[data-series="6"] { border-inline-width: 0; background: var(--series) }` | presence |
 | Y15 | `.vz-plot[data-emph] .vz-series-g .vz-line { stroke: var(--series); stroke-width: var(--stroke) }` (emphasis undone) | presence |
-| Y16 | `.vz-chart { min-height: 0 }` | presence |
 | Y17 | `.vz-table .vz-status { white-space: nowrap !important }` (v5 B2.2 back) | presence |
 | Y18 | `.vz-button[data-pressed] { background: var(--ground) }` (a finger's press painted as rest) | presence |
 | Y19 | `<style media="(max-width: 800px)">` | breakpoints: only `@media`/`@container` preludes are read |
 | Y20 | `content: "\1F525"` (an emoji) | no rule |
 
-Caught: Y2 (system colours, `AccentColor`), and Y14 (a transition put back under reduced motion), but
-only by an unrelated rule (a press with no 0 s twin), so its subject is not guarded either.
-RENDERPASS
+Caught: Y2 (system colours, `AccentColor`); Y16 (`.vz-chart { min-height: 0 }`, by the rendered audit's
+reserved-against-drawn check: "reserves 0 px and draws 490.5 px"); and Y14 (a transition put back under
+reduced motion), but only by an unrelated rule (a press with no 0 s twin), so its subject is not guarded
+either. The rendered pass (load 11.8 to 13.8) caught none of the other seven overrides.
 
 None of these patterns is in the real CSS, previews, compositions or flow screens today (searched). The
 presence rules are v6's best idea, and each is defeated by one later rule because it asks "is the fix
@@ -283,7 +283,7 @@ tables stand.
 |---|---|
 | M4: the rubric now has one reading, the Many series row "names both blocker cases" | The row says "a series returning grey while no series **on screen** holds its slot"; the Chart README's algorithm counts a series the filter hides as holding its slot. Sequence D meets the row's words and follows the README (B2). |
 | M5: "every value is walked at every depth"; colours "hex, named and system colours, any colour function in any case" | Declarations inside `@property` and nested rules are not walked (Y6, Y7); a named colour written with a CSS escape passes (Y1); a named colour or a width in an SVG attribute passes (Y8). |
-| M5 / structure: "presence checks for every fix of v4, v5 and v6", "so removing a fix fails the check" | True of removing a fix; one later rule that overrides it passes for every fix I tried: the focus ring, the coarse hit areas, the positioned table wrap, a dashed swatch, emphasis, the reservation, the kept column's wrap, a finger's press (Y10 to Y13, Y15 to Y18). |
+| M5 / structure: "presence checks for every fix of v4, v5 and v6", "so removing a fix fails the check" | True of removing a fix; one later rule that overrides it passes for seven of the eight I tried: the focus ring, the coarse hit areas, the positioned table wrap, a dashed swatch, emphasis, the kept column's wrap, a finger's press (Y10 to Y13, Y15, Y17, Y18). The reservation's override is caught by the rendered audit (Y16). |
 | B2: the fold pattern's changes leave "0 findings on the system's pages" | True of the pages the audit loads; none of them folds a list with long keys, kept columns and row actions, which is where the changes fail (B1). |
 | Housekeeping: "the last runs … are on the tree as it is now" | `dist/fixture/index.html` on disk was built before the last CSS change (`dd` links); a rebuild differs in that rule (m6). |
 
