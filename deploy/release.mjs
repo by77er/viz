@@ -112,7 +112,8 @@ export function planRelease(manifest, live, acks) {
 /**
  * Live state of each Worker: exists, migration tag in force, the versions serving now, their
  * release tag, and what the serving version declares it knows of each class (`schemas`, from
- * its VIZ_SCHEMAS var; null when it declares nothing or more than one version serves).
+ * its VIZ_SCHEMAS var) and of each format (`formats`, from VIZ_FORMATS); each null when it
+ * declares nothing or more than one version serves.
  */
 export async function liveState(names) {
   const scripts = await listScripts()
@@ -120,19 +121,21 @@ export async function liveState(names) {
   for (const name of names) {
     const s = scripts.find((x) => x.id === name)
     if (!s) {
-      out[name] = { exists: false, migrationTag: null, versions: [], release: null, schemas: null }
+      out[name] = { exists: false, migrationTag: null, versions: [], release: null, schemas: null, formats: null }
       continue
     }
     const dep = await currentDeployment(name)
     const versions = dep?.versions ?? []
     let release = null
     let schemas = null
+    let formats = null
     if (versions.length === 1) {
       const v = await versionInfo(name, versions[0].version_id)
       release = annotation(v, 'workers/tag')
       schemas = schemasOfVersion(v)
+      formats = formatsOfVersion(v)
     }
-    out[name] = { exists: true, migrationTag: s.migration_tag ?? null, versions, release, schemas }
+    out[name] = { exists: true, migrationTag: s.migration_tag ?? null, versions, release, schemas, formats }
   }
   return out
 }
@@ -147,6 +150,10 @@ export async function liveState(names) {
  *   which is also the safe direction. A Worker that does not exist yet has no older code.
  * - `lifecycle`: a Durable Object migration tag changes on a Worker that exists (Cloudflare
  *   refuses a rollback across it too).
+ * - `format`: this release writes a version of a format that the serving release does not read
+ *   (COMPATIBILITY.md §6). What the serving release reads of a format is what every serving
+ *   Worker that this release declares the format for reads; one that declares nothing about it
+ *   (VIZ_FORMATS absent, or no entry) is taken to read version 1 (lib/formats.mjs `readsOf`).
  */
 export function forwardOnlyReasons(manifest, live) {
   const out = []
@@ -172,6 +179,27 @@ export function forwardOnlyReasons(manifest, live) {
         compat: sc.compat,
         migrations: crossing,
         why: `${sc.component}: ${crossing.map((m) => `migration ${m.version} ("${m.name}") has readableFrom ${m.readableFrom}`).join('; ')}, above version ${knows}, which ${declared ? 'the release serving before it knew' : 'is all the release serving before it is taken to know (it declares no schema versions)'}`,
+      })
+    }
+  }
+  for (const name of manifest.order) {
+    const w = manifest.workers.find((x) => x.name === name)
+    for (const f of w.formats ?? []) {
+      if (f.writes === null) continue
+      // The serving versions of every Worker this release declares the format for.
+      const declaring = manifest.workers.filter((x) => manifest.order.includes(x.name) && (x.formats ?? []).some((y) => y.format === f.format) && live[x.name]?.exists)
+      if (declaring.length === 0) continue // nothing older runs it
+      const reads = readsOf(Object.fromEntries(declaring.map((x) => [x.name, live[x.name].formats ?? {}])), f.format)
+      if (reads.includes(f.writes)) continue
+      const previousDeclared = declaring.some((x) => Boolean(live[x.name].formats?.[f.format]))
+      out.push({
+        worker: name,
+        kind: 'format',
+        format: f.format,
+        writes: f.writes,
+        previousReads: reads,
+        previousDeclared,
+        why: `${f.format}: ${name} writes version ${f.writes}, and the release serving before it reads only ${reads.join(', ')}${previousDeclared ? '' : ' (it declares no version of this format, so it is taken to read version 1)'}; contracts/COMPATIBILITY.md §3.3 deploys the reader first`,
       })
     }
   }

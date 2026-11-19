@@ -18,6 +18,7 @@ import { Problem, invalid, notFound } from './errors'
 import type { Actor } from './identity'
 import { mayApply } from './ops-dashboards'
 import { dropKey, mintKey, newKey } from './ops-keys'
+import { REFRESHES_PER_WINDOW, REFRESH_WINDOW_MS } from './ratelimit'
 import {
   type AuthzRequest,
   approverScopes,
@@ -425,6 +426,15 @@ export async function refreshTokens(t: Tenant, req: TokenRequest, now: number): 
       if ('unknown' in asked || !asked.ok.every((s) => held.includes(s))) return { error: fail('invalid_scope', `A refresh may ask only for scopes the grant holds: ${held.join(' ')}.`) }
       scopes = asked.ok
     }
+    // D68: what a client stuck in a refresh loop can make this object write, bounded exactly and from
+    // every location at once, by rows it already keeps (refresh tokens issued for the grant in the
+    // last minute, the code exchange's included). Checked after reuse detection and before the
+    // presented token is spent, so a refused refresh writes nothing and can be retried with it.
+    const recent = t.one<{ n: number; first: number | null }>(
+      "SELECT COUNT(*) AS n, MIN(issued_at) AS first FROM oauth_tokens WHERE tenant = ? AND grant_id = ? AND kind = 'refresh' AND issued_at > ?",
+      t.tenant, g.id, now - REFRESH_WINDOW_MS,
+    )!
+    if (recent.n >= REFRESHES_PER_WINDOW) return { error: { v: 1, status: 'rate_limited', retryAfterMs: Math.max(1, recent.first! + REFRESH_WINDOW_MS - now) } }
     t.run('UPDATE oauth_tokens SET rotated_at = ? WHERE tenant = ? AND hash = ?', now, t.tenant, hash)
     // Keep rotated tokens a day (reuse detection), expired ones not at all.
     t.run(

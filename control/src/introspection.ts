@@ -8,6 +8,7 @@ import {
   parseCredential,
 } from '../../contracts/oauth'
 import { type OAuthEnv, credentialTagValid, oauthConfig } from './oauth'
+import { type RateLimitEnv, limitBearer } from './ratelimit'
 import type { Tenant } from './tenant'
 
 /**
@@ -24,10 +25,13 @@ import type { Tenant } from './tenant'
  *   other is `unauthorized` and reaches no object;
  * - the tenant is the one the token names: there is no tenant argument;
  * - a token not shaped like an access token, or without this deployment's tag, is `inactive` and
- *   reaches no object (M-2).
+ *   reaches no object (M-2);
+ * - a tagged token is counted against itself, then against its tenant (src/ratelimit.ts, D68),
+ *   before the tenant's object is asked: over either, `rate_limited` and no object. A made-up token
+ *   is refused before it counts, so it cannot spend a tenant's budget.
  */
 
-export interface IntrospectionEnv extends OAuthEnv {
+export interface IntrospectionEnv extends OAuthEnv, RateLimitEnv {
   TENANT: DurableObjectNamespace<Tenant>
 }
 
@@ -39,6 +43,8 @@ export async function introspectFor(env: IntrospectionEnv, caller: unknown, toke
   const cred = typeof token === 'string' ? parseCredential(token) : null
   if (!cred || cred.kind !== 'access' || typeof resource !== 'string') return unknown
   if (!(await credentialTagValid(oauthConfig(env).clientKey, token))) return unknown
+  const limited = await limitBearer(env, cred.tenant, token as string)
+  if (limited) return limited
   // The one place this picks a tenant's object: the tenant the token names.
   const stub = env.TENANT.get(env.TENANT.idFromName(cred.tenant)) as unknown as TenantOAuthRpc
   const r = await stub.introspectAccessToken(cred.tenant, token as string, resource)

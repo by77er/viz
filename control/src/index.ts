@@ -1,6 +1,7 @@
 import { Problem } from './errors'
 import { type Identity, type IdentityEnv, identify } from './identity'
 import { OAUTH_PATHS, readCapped, serveOAuth } from './oauth-http'
+import type { RateLimitEnv } from './ratelimit'
 import { type OpInput, type OpName, type OpResult, PREFIX, matchRoute } from './routes'
 import type { TenantEnv } from './tenant'
 import spec from '../openapi.json'
@@ -24,7 +25,7 @@ export { clearAuthCache } from '../../edge/src/auth'
  * `OAuthIntrospection`, the entrypoint the agent surface checks access tokens through
  * (src/introspection.ts).
  */
-export interface Env extends IdentityEnv, TenantEnv {
+export interface Env extends IdentityEnv, TenantEnv, RateLimitEnv {
   /** Comma-separated origins allowed to call from a browser. */
   CORS_ALLOW_ORIGINS?: string
 }

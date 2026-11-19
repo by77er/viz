@@ -23,7 +23,7 @@ import { tailHooks } from '../src/tail'
 import seed1 from './fixtures/signals/seed-1.json'
 import seed2 from './fixtures/signals/seed-2.json'
 import seed3 from './fixtures/signals/seed-3.json'
-import { type Case, type Fixture, load, loadSignal, unb64 } from './signals-load'
+import { type Case, type Fixture, appendBatches, load, loadSignal, unb64 } from './signals-load'
 import { type Tenant, type World, api, cost, expected, ingest, ledgerOf, run, shardOf, QUERIES, world } from './world'
 
 const SEEDS = [seed1, seed2, seed3] as unknown as Fixture[]
@@ -345,4 +345,103 @@ describe('the flag', () => {
     }
     void exports
   })
+})
+
+/**
+ * The review of D54 (design/reviews/d54-d56-d59.md) on the span and log reads, which go through
+ * the same `readTails` as metrics: one byte budget over the signal's shards (M-2), resumed in a
+ * second round with the signal's filter; shards of the previous release checked together (whole
+ * answers); a page that does not advance the read (m-7). Each signal's tail is spread over its two
+ * shards, so that the budget has two reads to share.
+ */
+describe('span and log tails under one byte budget over the signal\'s shards (review of D54)', () => {
+  const PREFIXES = ['search/0/', 'loki/0/', 'trace/0', 'metrics/0', 'tags/v1', 'loki-labels']
+  const payloadBytes = (answer: unknown): number => {
+    const a = answer as { status?: string; batches?: { payload: Uint8Array }[] }
+    return a.status === 'ok' && Array.isArray(a.batches) ? a.batches.reduce((x, b) => x + b.payload.byteLength, 0) : 0
+  }
+
+  /** Seed 1 with each signal's tail over two shards: slot 0 the lake and the first half of the tail, slot 1 the rest (a stream with no flushed unit). */
+  async function twoShards(): Promise<{ w: World; fx: Fixture }> {
+    const fx = SEEDS[0]!
+    const w = await world()
+    for (const [signal, s] of [['traces', fx.spans], ['logs', fx.logs]] as const) {
+      const half = s.lake + Math.ceil((s.batches.length - s.lake) / 2)
+      expect(half).toBeLessThan(s.batches.length)
+      await loadSignal(w, w.a, signal, { ...s, batches: s.batches.slice(0, half) })
+      await appendBatches(w, w.a, `${w.map.pool}/${signal}/1`, s.batches.slice(half))
+    }
+    return { w, fx }
+  }
+
+  it('the tail over two shards: the same answers; at its size they answer, resumed with the signal\'s filter; under it, 422 with never more than the cap received', async () => {
+    const { w, fx } = await twoShards()
+    const all = await runAll(w.a, { ...fx, cases: fx.cases.filter((_, k) => k % 4 === 0) })
+    expect(all.failures).toEqual([])
+    for (const prefix of PREFIXES) {
+      const c = pick(fx, prefix)
+      const free = await call(w.a.key, c)
+      const tail = cost(free, 'Tail-Bytes')
+      expect([prefix, await check(free, c), tail > 0]).toEqual([prefix, null, true])
+      const got = new Map<string, number>()
+      tailHooks.alter = (shard, answer, where) => {
+        if (where === 'coordinator') got.set(shard, (got.get(shard) ?? 0) + payloadBytes(answer))
+        return answer
+      }
+      // Exactly the tail: each read first under half of it; one then goes on with what the other
+      // left (from the page that stopped: its cursor is bound to the signal's filter).
+      hooks.tailCap = tail
+      const at = await call(w.a.key, c)
+      expect([prefix, await check(at, c), cost(at, 'Tail-Bytes')]).toEqual([prefix, null, tail])
+      expect([prefix, got.size]).toEqual([prefix, 2])
+      for (const cap of [tail - 1, Math.floor(tail * 0.45)]) {
+        got.clear()
+        hooks.tailCap = cap
+        const res = await call(w.a.key, c)
+        const text = await res.text()
+        const received = [...got.values()].reduce((a, b) => a + b, 0)
+        expect([prefix, cap, res.status, /max_fetch_bytes/.test(text), received <= cap]).toEqual([prefix, cap, 422, true, true])
+      }
+      delete hooks.tailCap
+      delete tailHooks.alter
+    }
+  }, 300_000)
+
+  it('shards of the previous release (whole answers): tails that fit one by one but not together are over the budget', async () => {
+    const { w, fx } = await twoShards()
+    tailHooks.previousRelease = () => true
+    for (const prefix of ['search/0/', 'loki/0/']) {
+      const c = pick(fx, prefix)
+      const free = await call(w.a.key, c)
+      const tail = cost(free, 'Tail-Bytes')
+      expect([prefix, await check(free, c), free.headers.get('X-Viz-Tail-Mode')]).toEqual([prefix, null, 'unfiltered'])
+      hooks.tailCap = tail
+      expect([prefix, await check(await call(w.a.key, c), c)]).toEqual([prefix, null])
+      hooks.tailCap = tail - 1
+      const res = await call(w.a.key, c)
+      expect([prefix, res.status, /max_fetch_bytes: the data files in range plus the unflushed tail is \d+ bytes/.test(await res.text())]).toEqual([prefix, 422, true])
+      delete hooks.tailCap
+    }
+  }, 300_000)
+
+  it('a span or log shard whose pages do not advance the read: 503, not asked for again (m-7)', async () => {
+    const fx = SEEDS[0]!
+    const w = await world()
+    await load(w, w.a, fx)
+    const shards = (['traces', 'logs'] as const).map((s) => `${w.map.pool}/${s}/0`)
+    // A shard that examines nothing per call answers every page with the cursor it was given.
+    for (const s of shards) await shardOf(s).configure({ tailScanMaxBytes: 0 })
+    // A valve, so that code without the check ends (and fails here) instead of spinning.
+    let calls = 0
+    tailHooks.alter = (_s, answer) => (++calls > 60 ? { status: 'valve' } : answer)
+    try {
+      for (const prefix of ['loki/0/', 'search/0/']) {
+        calls = 0
+        const res = await call(w.a.key, pick(fx, prefix))
+        expect([prefix, res.status, /answered a page that did not advance the read/.test(await res.text()), cost(res, 'Shard-Calls') < 10]).toEqual([prefix, 503, true, true])
+      }
+    } finally {
+      for (const s of shards) await shardOf(s).configure({ tailScanMaxBytes: 32 << 20 })
+    }
+  }, 120_000)
 })
