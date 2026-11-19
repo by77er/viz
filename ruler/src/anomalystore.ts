@@ -6,7 +6,9 @@
  * encoding) and every row is rewritten at every tick. Version 2 keeps them as **Float64 values in
  * ring blocks** on the rule's interval grid, like the SLO rings (`slo.ts`):
  *
- *   head (chunk HEAD_CHUNK + i)  each series' labels, last outcome and the detector's scalars
+ *   head (chunk HEAD_CHUNK + i)  each series' labels, last outcome and the detector's scalars;
+ *                                and the blocks that exist (`blocks`, ranges of block numbers)
+ *                                with how many series entries they hold in all (`entries`)
  *   block b (chunk b)            slots b·BLOCK .. b·BLOCK + BLOCK − 1 of every series: values as
  *                                little-endian Float64, base64 in the JSON body; NaN where a slot
  *                                holds no point
@@ -17,6 +19,11 @@
  * tick writes the head and the block its new points fall in (one, normally); blocks no series still
  * needs are deleted. Values are Float64, so the state read back is the state written, bit for bit
  * (−0 written as 0, as JSON writes it), and every score is the same.
+ *
+ * The head is rewritten at every write, in the same transaction as the blocks, so its block list is
+ * exact: a block row missing, one the head does not list, or a block holding fewer or more series
+ * entries than the head counts is refused when read (`state_unreadable`, rows kept), never read as
+ * a state with fewer points (review of D60, m-12).
  *
  * Pure: no storage, no clock. `ruler.ts` runs a plan in the tick's transaction.
  */
@@ -327,8 +334,11 @@ export function planV2(
     store.rows.set(b, byteLength(body))
     store.entries.set(b, sizes)
   }
-  // The head: every series' entry, in rows of whole entries.
-  const head = { detector, stepMs: I, phase, block: B, w: windowMs }
+  // The head: every series' entry, in rows of whole entries; and the blocks the rows hold after this
+  // write, with their series entries in all, so a reader can tell that none is missing.
+  let entryCount = 0
+  for (const m of store.entries.values()) entryCount += m.size
+  const head = { detector, stepMs: I, phase, block: B, w: windowMs, blocks: blockRanges([...store.entries.keys()]), entries: entryCount }
   const chunks: string[][] = []
   let cur: string[] = []
   let size = 0
@@ -369,6 +379,32 @@ export function planV2(
   return { purge, upserts, deletes, deleteFrom: null, store, bytes, perSeries }
 }
 
+/** Block numbers as sorted, inclusive ranges `[[lo, hi], …]`: a rule's blocks are mostly contiguous, so this is short. */
+export function blockRanges(blocks: number[]): [number, number][] {
+  const out: [number, number][] = []
+  for (const b of [...blocks].sort((x, y) => x - y)) {
+    const last = out[out.length - 1]
+    if (last && b === last[1] + 1) last[1] = b
+    else out.push([b, b])
+  }
+  return out
+}
+
+/** The block numbers `blockRanges` lists, or null when the list is not one it writes (or names more than `max`). */
+function expandRanges(ranges: unknown, max: number): number[] | null {
+  if (!Array.isArray(ranges)) return null
+  const out: number[] = []
+  let prev = -Infinity
+  for (const r of ranges) {
+    if (!Array.isArray(r) || r.length !== 2 || !Number.isSafeInteger(r[0]) || !Number.isSafeInteger(r[1])) return null
+    const [lo, hi] = r as [number, number]
+    if (lo > hi || (prev !== -Infinity && lo <= prev + 1) || out.length + (hi - lo + 1) > max) return null
+    for (let b = lo; b <= hi; b++) out.push(b)
+    prev = hi
+  }
+  return out
+}
+
 // ───────────────────────────── reading ─────────────────────────────
 
 interface HeadRow {
@@ -381,6 +417,9 @@ interface HeadRow {
   phase: number | null
   block: number
   w: number | null
+  /** The blocks the rows hold, as `blockRanges` writes them, and their series entries in all. */
+  blocks: unknown
+  entries: unknown
   series: Record<string, unknown>[]
 }
 interface BlockRow {
@@ -392,7 +431,8 @@ interface BlockRow {
 
 /**
  * A rule's state from its version 2 rows (`chunk`, and the body parsed). Refused (an error) when a
- * row is not what version 2 says, or a head row is missing: never guessed. A row stored under
+ * row is not what version 2 says, a head row is missing, or the blocks are not the ones the head
+ * lists (one missing, one extra, or an entry missing from one): never guessed. A row stored under
  * another chunk than its own (moved by a release that numbers rows 0, 1, …) is read by what it
  * says, and the rows are rewritten whole at the next write.
  */
@@ -416,8 +456,17 @@ export function readV2(rows: { chunk: number; body: Record<string, unknown>; tex
   if (heads.length === 0) return blocks.length === 0 ? { series, store } : { error: 'anomaly_state has blocks but no head row' }
   heads.sort((a, b) => a.i - b.i)
   const h = heads[0]!
-  if (heads.some((x, i) => x.i !== i || x.n !== heads.length || x.detector !== h.detector || x.stepMs !== h.stepMs || x.phase !== h.phase || x.block !== h.block || x.w !== h.w)) return { error: `anomaly_state head rows are incomplete or disagree (${heads.length} of ${h.n})` }
+  if (heads.some((x, i) => x.i !== i || x.n !== heads.length || x.detector !== h.detector || x.stepMs !== h.stepMs || x.phase !== h.phase || x.block !== h.block || x.w !== h.w || JSON.stringify(x.blocks) !== JSON.stringify(h.blocks) || x.entries !== h.entries)) return { error: `anomaly_state head rows are incomplete or disagree (${heads.length} of ${h.n})` }
   if (!WINDOWED.has(h.detector) || !(h.stepMs > 0) || !Number.isInteger(h.block) || h.block < 1) return { error: `anomaly_state head describes ${JSON.stringify(h.detector)} at step ${h.stepMs}, block ${h.block}: not something version 2 encodes` }
+  // The blocks are exactly the ones the head lists, holding as many entries as it counts.
+  const listed = expandRanges(h.blocks, Math.max(blocks.length, 1) * 4 + 1024)
+  if (listed === null || !Number.isSafeInteger(h.entries)) return { error: 'anomaly_state head does not list its blocks' }
+  const present = new Set(blocks.map((b) => b.b))
+  const missing = listed.filter((b) => !present.has(b))
+  if (missing.length > 0) return { error: `anomaly_state is missing block row${missing.length > 1 ? 's' : ''} ${missing.slice(0, 5).join(', ')}${missing.length > 5 ? ', …' : ''} that its head lists` }
+  if (present.size !== blocks.length || present.size !== listed.length) return { error: `anomaly_state holds ${blocks.length} block rows; its head lists ${listed.length}` }
+  const held = blocks.reduce((n, b) => n + b.series.length, 0)
+  if (held !== h.entries) return { error: `anomaly_state blocks hold ${held} series entries; its head counts ${String(h.entries)}` }
   const B = h.block
   const I = h.stepMs
   const phase = h.phase ?? 0

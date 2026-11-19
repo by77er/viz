@@ -20,9 +20,13 @@
 // (lib/schemas.mjs) into the manifest, and into each version's `VIZ_SCHEMAS` var, where later
 // deploys and rollbacks read what that version knows (contracts/COMPATIBILITY.md §6).
 //
+// Durable Object classes of another Worker (by script_name) are bound only where workers.json
+// lists them under the binding Worker's `binds_classes`: such a binding can call every method of
+// every object of the class, for any tenant.
+//
 // Service bindings to a named entrypoint (`entrypoint`, with the `props` the binding carries,
-// e.g. the ruler's SINK → viz-ingest's RecordedSamples, contracts/ingest.ts) are kept as the
-// component wrote them; the callee's main module (as deployed: a stage's shim included) must
+// e.g. the ruler's SINK → viz-ingest's RecordedSamples, contracts/ingest.ts, and viz-mcp's OAUTH →
+// viz-control's OAuthIntrospection, contracts/oauth.ts) are kept as the component wrote them; the callee's main module (as deployed: a stage's shim included) must
 // export that name, or the release is refused before anything is uploaded (callee first,
 // contracts/COMPATIBILITY.md §3.3).
 //
@@ -50,11 +54,6 @@ function canonicalScript(name, plan, where) {
   const canonical = plan.script_aliases?.[name] ?? name
   if (!plan.workers.some((w) => w.name === canonical)) throw new Error(`${where}: refers to "${name}", which is not a Worker in deploy/workers.json`)
   return canonical
-}
-
-/** The Worker a `script_name` or `service` means, as deployed (stage applied). */
-function resolveScript(name, plan, stage, where) {
-  return stagedName(canonicalScript(name, plan, where), stage)
 }
 
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/
@@ -182,7 +181,14 @@ export function generateWorker({ worker, cfg, componentDir, plan, stage, release
   const crossScript = []
   for (const b of out.durable_objects?.bindings ?? []) {
     if (b.script_name) {
-      b.script_name = resolveScript(b.script_name, plan, stage, `${where} durable_objects ${b.name}`)
+      const at = `${where} durable_objects ${b.name}`
+      // A class binding reaches every method of every object of the class (any tenant): only the
+      // ones workers.json lists, with why, are deployed (review of D44, M-1).
+      const owner = canonicalScript(b.script_name, plan, at)
+      if (!Object.hasOwn(worker.binds_classes ?? {}, `${owner}:${b.class_name}`)) {
+        throw new Error(`${at}: binds ${owner}'s Durable Object class ${b.class_name}, which deploy/workers.json does not list under ${worker.name}'s "binds_classes". Such a binding can call every method of every object of that class, for any tenant; bind a named entrypoint of ${owner} that answers only what ${worker.name} needs (as viz-mcp binds viz-control's OAuthIntrospection), or list it there with why`)
+      }
+      b.script_name = stagedName(owner, stage)
       crossScript.push(`${b.name} → ${b.script_name}:${b.class_name}`)
     }
   }

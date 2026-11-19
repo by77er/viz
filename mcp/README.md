@@ -13,7 +13,7 @@ new.
 | File | Contents |
 |---|---|
 | `src/index.ts` | The Worker: routing, Origin check, tenant-in-request refusal, identity, the per-request session |
-| `src/auth.ts` | `identify()`: edge's API-key verifier, then the control plane's `whoami`; `identifyOAuth()`: an OAuth access token, checked by control's `Tenant` object for this resource |
+| `src/auth.ts` | `identify()`: edge's API-key verifier, then the control plane's `whoami`; `identifyOAuth()`: an OAuth access token, checked for this resource through control's `OAuthIntrospection` entrypoint (binding `OAUTH`) |
 | `src/oauth.ts` | This Worker as an OAuth protected resource: RFC 9728 metadata, the 401 and 403 `WWW-Authenticate` challenges |
 | `src/mcp.ts` | The MCP surface: `@modelcontextprotocol/server` 2.4.0 `createMcpHandler`, a server per request |
 | `src/rest.ts` | The JSON surface, `/api/v1/agent/…` |
@@ -491,8 +491,12 @@ status: 400 bad arguments, 403 scope or refusal, 404 unknown, 409/422 from the c
   only when the control plane is unreachable or is an older release that answers 403
   `no-scopes` (possible during a deploy), and then edge's scopes are used.
 - **Scopes.** `read` (telemetry), `dashboards:read`, `dashboards:write`, `dashboards:apply`,
-  `monitors:read`. A tool needs all of its scopes. `admin` is not honoured (control's README
-  notes that `admin` is total; an agent should not inherit that).
+  `monitors:read`. A tool needs all of its scopes. The dashboards scopes include each other as
+  control's do: `dashboards:apply` covers `dashboards:write`, which covers `dashboards:read` (MCP
+  2026-07-28, Step-Up Authorization Flow: "Servers MUST account for scope hierarchies"; review of
+  D44, m-6), so a token holding `dashboards:apply` is neither stepped up for nor refused a
+  `dashboards:write` tool. `admin` is not honoured (control's README notes that `admin` is total;
+  an agent should not inherit that).
 - **OAuth 2.1 (decision D44; MCP 2026-07-28, "Authorization").** This Worker is the protected
   resource `<PUBLIC_URL>/mcp`; the control plane is its authorization server.
   - **Metadata** (RFC 9728) at `/.well-known/oauth-protected-resource/mcp` and, the MCP fallback,
@@ -502,19 +506,33 @@ status: 400 bad arguments, 403 scope or refusal, 404 unknown, 409/422 from the c
   - **401 from `/mcp`**: `WWW-Authenticate: Bearer realm="viz", resource_metadata="…", scope="read
     dashboards:read monitors:read"`, plus `error="invalid_token"` and a description when a
     credential was sent (none when nothing was, RFC 6750 §3.1). The JSON surface's 401 is as before.
-  - **A token** (`Bearer vza1.<tenant>.<secret>`) is checked on every request by the `Tenant`
-    object of the tenant it names (binding `TENANT`, by `script_name` viz-control;
-    `introspectAccessToken`): not expired, its grant live and not suspended, and **issued for this
-    resource** (audience: the `resource` this Worker is configured as). That object holds only the
-    token's hash, so a token edited to name another tenant is unknown there. A refresh token or a
-    code sent as a bearer is refused. A result version this release does not know, a newer
-    release holding the storage, or a missing binding: 503, never accepted.
+  - **A token** (`Bearer vza1.<tenant>.<secret>`) is checked on every request through control's
+    **`OAuthIntrospection` entrypoint** (`contracts/oauth.ts`; binding `OAUTH`: `{ "service":
+    "viz-control", "entrypoint": "OAuthIntrospection", "props": { "caller": "viz-mcp" } }`):
+    not expired, its grant live and not suspended, and **issued for this resource** (audience: the
+    `resource` this Worker is configured as). The call carries the token and the resource only:
+    control takes the tenant from the token, refuses one without its tag before any object, and
+    the tenant's object holds only the token's hash, so a token edited to name another tenant is
+    unknown there. A refresh token or a code sent as a bearer is refused. A result version this
+    release does not know, a newer release holding the storage, a missing binding, or a binding
+    control does not accept (`unauthorized`: its props name another caller): 503
+    `oauth-unavailable` or `unavailable`, never accepted.
+  - **What this Worker can ask control** is exactly that and its HTTP API with a caller's own key
+    (review of D44, M-1). It holds no binding to control's `Tenant` class any more: such a binding
+    reaches every method of every tenant's object (`invoke` with a made-up identity, which minted
+    an admin key in the review, `provision`, `serviceKey`, `notificationTarget`), and this is the
+    Worker that runs tool calls an LLM chose on untrusted text. `deploy/configure.mjs` refuses to
+    deploy viz-mcp with one (`deploy/workers.json` `binds_classes`), and the tests give the agent
+    surface no `TENANT` (`test/helpers.ts`), only the setup does.
   - **The identity** is the grant's: kind `agent`, the grant's scopes, `mayApply` as `whoami`
     gives it, subject and name of the grant's key (`oauth:<grantId>`). **Scopes are enforced per
     tool exactly as for keys** (the same `hasScopes` in the dispatcher, the same tool list); for
     OAuth a `tools/call` of a tool the token lacks scopes for is also answered **403** with
     `WWW-Authenticate: Bearer error="insufficient_scope", scope="<every scope the tool needs>",
-    resource_metadata="…"`, before the server sees it, so a client can step up.
+    resource_metadata="…"`, before the server sees it, so a client can step up. That check reads
+    a copy of the body from the stream with a 1 MiB cap: a body sent without `Content-Length` is
+    not buffered past it, and a call larger than the cap gets the dispatcher's refusal instead of
+    the HTTP 403 (as one with a `Content-Length` over the cap always did; review of D44, m-2).
   - **No token passthrough.** Downstream calls (query service, control plane, ruler) carry the
     grant's own agent key, which introspection returns (control keeps it sealed under the
     tokens), never the client's token. Those services check that key as any other: tenancy,
@@ -627,9 +645,9 @@ with a deadline and partial results; the budget hook.
 
 ```
 npm install
-npm test               # 219 tests in 11 files, in workerd (npx vitest run --maxWorkers=2)
+npm test               # 222 tests in 11 files, in workerd (npx vitest run --maxWorkers=2)
 npx tsc --noEmit       # clean
-npm run mutants        # 39 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md); vitest with at most 2 workers
+npm run mutants        # 41 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md); vitest with at most 2 workers
 npm run conformance    # the official conformance suite against wrangler dev on 127.0.0.1:8921
 npm run oauth-client   # the whole OAuth flow with the official SDK v2 client, against wrangler dev on 127.0.0.1:8922
 npm run measure        # read_dashboard tokens and wall time per example and budget
@@ -637,7 +655,17 @@ npm run spike:libs     # the library check above (3 tests)
 ```
 
 Measured here: vitest 5.1.1 in workerd, TypeScript 5.9, Node 22.23, wrangler 4. The suite
-takes about 25–75 s on a shared machine. Last run 2026-11-19: 218 of 218 pass (29 s), `tsc` clean.
+takes about 25–75 s on a shared machine. Last run 2026-11-19, after the review of D44 (below):
+222 of 222 pass (about 20 s), `tsc` clean.
+
+**After the review of D44** (`design/reviews/d44-d52-d53-d60.md`), in `oauth.test.ts`: the agent
+surface checks every OAuth token through `OAUTH` with no `TENANT` in its environment (the whole
+OAuth suite runs that way), a binding whose props name another caller gets `unauthorized` and the
+surface answers 503 `oauth-unavailable` (M-1); a token edited to name another tenant is 401; the
+dashboards scopes include each other (m-6: `hasScopes`, and a `read dashboards:apply` token lists
+and calls `write_dashboard`, `search_dashboards` and `annotate` without a 403); the step-up check's
+capped read (m-2: a 4 MiB stream is cut after the cap; through the Worker a padded tool call over
+the cap gets the same answer chunked as with its length, not the 403, and under the cap the 403).
 
 | File | Tests | What |
 |---|---|---|
@@ -702,7 +730,7 @@ identity. *Tenancy*: A's token edited to name B is 401; a tenant argument or hea
 nothing. *Audience*: refused by a resource configured at another URL, by the JSON agent API
 (`wrong-audience`), by the control API and by the query service; a refresh token as bearer is
 401. *Expired and revoked*: expiry, a person's revocation and the client's RFC 7009 revocation
-each give 401 on the next request; without the `TENANT` binding, 503. *No credential in a log line
+each give 401 on the next request; without the `OAUTH` binding, 503. *No credential in a log line
 or error body*: across five failure paths, with a probe showing the object's own log lines reach
 the spy, no token, its secret part, a refresh token's secret or the grant key's secret appears.
 
@@ -868,7 +896,7 @@ the dry-run probe that `mayApply` replaced).
 | 29 | OAuth: the JSON agent API accepts access tokens (audience widened) | oauth (1) |
 | 30 | OAuth: no 403 `insufficient_scope` (step-up never signalled) | oauth (2) |
 | 31 | OAuth: the 401 challenge does not name the protected resource metadata | oauth (1) |
-| 32 | OAuth: the tenant object asked is the one a request header names, not the token's | oauth (1) |
+| 32 | OAuth: a binding control does not accept (props naming another caller) is taken for an unknown token (401), not a deployment fault (503). (Replaces "the tenant object asked is the one a request header names": this Worker no longer picks a tenant's object; control's entrypoint takes the tenant from the token, mutated in control/README.md 94–101) | oauth (1) |
 | 33 | OAuth: protected resource metadata names no authorization server | oauth (1) |
 | 34 | `backtest_monitor`: tenant taken from the arguments (accepted by the schema and sent to the ruler) | backtest (1) |
 | 35 | `backtest_monitor`: a refusal swallowed and answered as an empty backtest | backtest, injection (10) |
@@ -876,6 +904,17 @@ the dry-run probe that `mayApply` replaced).
 | 37 | `backtest_monitor`: intervals past the listing cap dropped without the count (structure) | backtest (1) |
 | 38 | `backtest_monitor`: `over_budget` does not say which budget (plan, memory, CPU) refused | backtest (5) |
 | 39 | `backtest_monitor`: a refusal retried once | backtest (9) |
+| 40 | review m-6: scopes compared literally (`dashboards:apply` does not cover `dashboards:write`) | oauth (1) |
+| 41 | review m-2: the step-up check reads the whole body (no cap on one without `Content-Length`) | oauth (1) |
+
+40, 41 and the rewritten 32 (review of D44) were run on 2026-11-19 in a copy of the whole tree in a
+scratch directory outside git (`node scripts/mutants.mjs 26 32 40 41`), with 26 because its anchor
+moved (`TENANT` → `OAUTH` in `/healthz`, same mutation): **4 of 4 killed, first run**. 32 used to
+make the tenant's object the one a request header names; this Worker no longer picks an object at
+all (control's entrypoint takes the tenant from the token, and its mutants 94–101 cover that), so
+the slot now holds the misbound-entrypoint case. 1–25, 27–31 and 33–39 were not re-run: this change
+touches only `identifyOAuth`, `hasScopes`, `/healthz` and the step-up read. The copy's `src/` was
+equal to the shared tree's afterwards.
 
 34–39 (`backtest_monitor`) were run on 2026-11-19 in a copy in a uniquely named scratch directory
 (`node scripts/mutants.mjs 34 35 36 37 38 39`), taken after the copy's unmutated suite passed 218
@@ -980,8 +1019,16 @@ suite ran on the same machine.
 - **Run on Cloudflare once**, in a staged trial since destroyed (`deploy/README.md`, "Trial 2",
   2026-11-19): `tools/list` and five tools over `/mcp` with an agent key, 279–915 ms per call
   from outside. OAuth has not run on Cloudflare.
-- **OAuth: one more Durable Object call per request** (introspection), where an API key costs a
-  KV read and `whoami`. Not measured.
+- **OAuth: one more call per request** (introspection through `OAUTH`, which asks the token's
+  tenant object), where an API key costs a KV read and `whoami`. Measured here only (local
+  workerd, control/README.md "How it was verified"): a live token's introspection through the
+  `OAUTH` service binding 1.76–2.42 ms, against 0.90–1.62 ms on the object directly as before the
+  review of D44, so the narrow entrypoint costs one hop, about 0.6–0.9 ms here; a made-up token
+  0.58–0.89 ms and no object. Not measured on Cloudflare.
+- **OAuth: no rate limit in front of OAuth bearers at `/mcp` yet**; a made-up token costs this
+  Worker and control's entrypoint an HMAC each, no tenant's object. Required before public
+  exposure (control/README.md, "Known risks", with why the Workers Rate Limiting binding was not
+  the check).
 - **OAuth: a grant's key may not have reached KV everywhere** when its first token is used: the
   downstream call is then refused (401 from that service), shown to the agent as that service's
   error; it works once KV has the record. Modelled, not measured (control/README.md, "Known risks").
@@ -1025,9 +1072,10 @@ the package's footer; `design/DECISIONS.md` D25–D29 and DESIGN §8. Still open
    `ruler/contracts-proposal/rules.v2.ts`, so `src/clients.ts` declares the subset it uses.
 4. **`stack/`**: mount this Worker with `QUERY`, `CONTROL`, `RULER` and `CONFIG`; **`app/`**:
    a dashboard route, so deep links can open a dashboard rather than one query.
-5. **`deploy/`** (OAuth, D44): viz-mcp now binds control's `Tenant` class by `script_name`
-   (`TENANT`, in `wrangler.jsonc`), which `deploy/configure.mjs` resolves like the gateway's and
-   the ruler's; viz-mcp already deploys after viz-control. `PUBLIC_URL` must be the same for
+5. **`deploy/`** (OAuth, D44): viz-mcp binds control's `OAuthIntrospection` entrypoint (`OAUTH`,
+   in `wrangler.jsonc`; since the review of D44 it binds no Durable Object class of control's),
+   which `deploy/configure.mjs` keeps as written and checks control exports (done in this change,
+   with the `binds_classes` refusal); viz-mcp already deploys after viz-control. `PUBLIC_URL` must be the same for
    viz-mcp and viz-control (the resource and the issuer are built from it), and viz-control needs
    its `OAUTH_CLIENT_KEY` secret (control/README.md, "Needed changes" 9). The gateway routes the
    OAuth paths (`deploy/gateway`, done); `deploy/README.md`'s route table does not list them yet.

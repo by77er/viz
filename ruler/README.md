@@ -469,9 +469,11 @@ every tick. Version 2 (`src/anomalystore.ts`), which this release reads and writ
 gate on (readers first, below), stores the windows of robust z and seasonal instead as:
 
 - **a head** (chunk `HEAD_CHUNK` + i, rows of whole entries up to 512 KiB): the grid's phase, the
-  interval, the block size, robust z's window in ms, and per series its key, labels, last outcome
-  (so a replayed tick reproduces it), last time seen, and the detector's scalars (`lastTs`; for
-  seasonal `origin`, `lastSlot`, `run`, the ring lengths and the slot shift);
+  interval, the block size, robust z's window in ms, **the blocks the rows hold** (`blocks`: sorted
+  ranges of block numbers, `[[lo, hi], …]`, short because a rule's blocks are mostly contiguous)
+  **and how many series entries they hold in all** (`entries`), and per series its key, labels, last
+  outcome (so a replayed tick reproduces it), last time seen, and the detector's scalars (`lastTs`;
+  for seasonal `origin`, `lastSlot`, `run`, the ring lengths and the slot shift);
 - **blocks** (chunk b): slots b·60 … b·60 + 59 of every series that has a point there, as
   little-endian **Float64** values in base64 inside the JSON body, NaN where a slot holds no point
   (seasonal: two arrays, values and residuals). Slot n is the time phase + n·interval, so
@@ -539,7 +541,14 @@ rows as version 2 at its next tick, and its save-time estimates, and so the caps
 (robust z 55 series at the default window); this release stays its rollback target. EWMA, threshold
 and CUSUM are written as version 1 either way. Rows in another version (3), of both versions at
 once, or a version 2 row that is not what the format says, are refused (`state_unreadable`), kept,
-and carried by a shard move as they are. A move carries every row (`GroupBundle.anomalyState`, the
+and carried by a shard move as they are. **So are blocks that disagree with the head** (review of
+D60, m-12): a block row the head lists that is missing, one it does not list, or blocks holding
+more or fewer series entries than it counts (a partial block), and a head without the list. The
+head is rewritten in the same transaction as the blocks at every write, so the list is exact; before
+the review the reader could not tell, and read a rule with a middle block deleted as a shorter
+window (596 points became 536, no error). The list was added before any release wrote version 2,
+so the format is still version 2 (its golden file, `test/golden/formats/store.anomaly-state.v2.json`,
+was regenerated: only the head row changed, gaining `"blocks":[[1139568,1139569]],"entries":4`). A move carries every row (`GroupBundle.anomalyState`, the
 head first), in the gate's version; a release that knows only version 1 imports rows it cannot read
 numbered 0, 1, …, and a release with this reader reads them by what they say and rewrites them whole
 under their own chunks. No schema migration: the rows live in the same table and column, so `compat`
@@ -1160,11 +1169,11 @@ data names the tenant.
 ## Verification
 
 ```
-npm test                # 414 tests in 24 files, in workerd, at most 2 workers (npx vitest run --maxWorkers=2): all pass (the `*.bench.ts` files run only under `bench:*`)
-TEST_ANOMALY_STATE_WRITE=2 npx vitest run --maxWorkers=2   # the same 414 with every test Ruler object writing store.anomaly-state v2 (the next release's gate): all pass
+npm test                # 419 tests in 24 files, in workerd, at most 2 workers (npx vitest run --maxWorkers=2): all pass (the `*.bench.ts` files run only under `bench:*`); last run 2026-11-19, after the review of D60
+TEST_ANOMALY_STATE_WRITE=2 npx vitest run --maxWorkers=2   # the same 419 with every test Ruler object writing store.anomaly-state v2 (the next release's gate): all pass
 npx tsc --noEmit        # clean
 npm run independent     # capture, then Prometheus' own code (Go, tools/promcheck): 2 Go tests pass (not re-run in the anomaly change)
-npm run mutants         # 185 mutants (50 earlier + 9 for versioning + 22 for anomaly rules + 12 for the production wiring + 22 for SLO rules, warm-ups and backtests + 7 for streaming + 8 for CPU + 15 for the recorded-samples entrypoint + 12 for the anomaly defaults of D33 + 11 for planning what is fetched, ported from PR #3 + 5 for `over_budget` naming its budget + 12 for windowed state as ring blocks and its readers-first gate), on a scratch copy; vitest runs with at most 2 workers
+npm run mutants         # 191 mutants (50 earlier + 9 for versioning + 22 for anomaly rules + 12 for the production wiring + 22 for SLO rules, warm-ups and backtests + 7 for streaming + 8 for CPU + 15 for the recorded-samples entrypoint + 12 for the anomaly defaults of D33 + 11 for planning what is fetched, ported from PR #3 + 5 for `over_budget` naming its budget + 12 for windowed state as ring blocks and its readers-first gate + 6 for the head's block list, review of D60), on a scratch copy; vitest runs with at most 2 workers
 node --experimental-strip-types tools/anomaly-default/nab-window.ts   # held-out NAB at windows 1,000 and 1,500 (about 1 minute; needs anomaly/bench/fetch-nab.sh)
 VIZ_SCRATCH=<scratch> bash tools/anomaly-default/smd-window.sh        # SMD at window 1,500, post hoc, on a scratch copy of anomaly/ (about 5 minutes; needs anomaly/bench/fetch-smd.sh)
 npm run bench           # the measurements below
@@ -1202,7 +1211,7 @@ in the module cache here, plus one fetched from the Go proxy for `go mod tidy`).
 | `history.test.ts` | 25 | parts 11–14: which budget each refusal names (`exceeded`: scan samples and bytes, queries, memory, CPU, null for the engine's own refusal; RPC, HTTP and the warm-up status); windows that would take more than 1,000 range queries refused once the counts are read; a week's alerting backtest of three series in two range queries and two plans; a long look-back expression whose windows' plans (each re-reading its look-back and day files) pass the budget though the whole read's plan fits: refused with only the count read, and allowed, a cost equal to what was fetched; past 32 windows, grouped plans at least what is fetched (with a plan that grows with a range's end) and a refusal at one sample less; a count over the rule's bound stopping the run before any window; a window holding more than its count said; a backtest priced over its CPU budget by its counts refused before any window, with the projection the allowed run then costs exactly (RPC and HTTP 422 `cpu`); a read not counted priced at the rule's bound before anything is fetched; a warm-up refused by its CPU budget (also below the model's base) starting cold at once; an SLO backtest's evaluated part priced apart from its warm-up part; two warm-ups in one alarm: the second waits for the next alarm (no attempt, through an eviction), then equals the library's state; two groups in one late alarm do not both spend the budget;  windowed backtests across hundreds of boundaries equal to one window and to live evaluation (anomaly and SLO); the memory refusal before any plan or fetch (an SLO's rings over a small budget; 1,000 series of SLO state at the default budget, over HTTP); a warm-up refused by its memory budget; a window holding more points than sized for; an anomaly warm-up reads exactly the look-back and leaves the library's state; over budget (and through the monitors API), an engine refusal, engine failures retried then given up, a crash in the warm-up's commit; an SLO warm-up's two reads planned before either is fetched; backtests equal to live alerts with their annotations (anomaly and SLO); every kind refused whole past the budget; the monitors API routes, 422 `over_budget`, and tenant isolation of `POST /monitors/{id}/backtest` |
 | `recorded.test.ts` | 7 | part 15, through the production wiring with the entrypoint behind a real service binding (`FakeRecordedSamples`: caller from `props`, tenant and batch ids validated, one value per series and time): two tenants in one isolate each write with their own tenant as the argument and only their own batches, `+Inf` and `NaN` kept as text, no Remote Write; a rule reading the recorded series in the same tick sees it written (the entrypoint takes 60 ms to resolve); a refusal reported on the rule after one call; `unauthorized` (a binding naming `viz-mcp`), `invalid`, `series_limit`: one call each, no retry, no Remote Write, counted; `overloaded` then `backpressure` with a 300 ms hint: three calls at least 280 ms apart, written; `unavailable` once retried at once; three `unavailable`: given up, reported, counted; `too_large`: split by whole batches until each fits, a batch too large alone reported while the others are written; an ingest release without the entrypoint (`OLD_SINK`): the same samples by Remote Write with the service key, one log line without the key, nothing dropped, and after it the entrypoint again with no Remote Write; a crash in the commit after the write: the replay sends the identical batches, one row per series and time, one hand-off |
 | `anomaly.test.ts` | 28 | part 8: alert content against the library run on its own; NaN and pruning; the series cap, state limits per series, rule and object, rows per tick; state across evictions, a replayed tick, a crash in the commit, a newer release's rows and detector names, another tenant's rows; edits, intervals, rule files, `/api/v1/rules`; the monitors API: defaults, errors and warnings, the detectors guide and its evidence kinds, authorisation, tenant isolation, documented schemas; the defaults across the 2026-11-19 change (D33): rules stored by the release before (`test/fixtures/anomaly/`) evaluate as stored (EWMA, the MAD) after the upgrade, saved again they keep their stored defaults, key and state, a renamed monitor stays EWMA, a new rule gets robust z, the 4,000-point configuration nameable, within the per-series limit as ring blocks (22 series) and refused under a lower one with what fits, `PREVIOUS_DEFAULTS` pinned to the fixture, the default window's longest-printing state under the per-series limit |
-| `anomalystore.test.ts` | 20 | part 8, `store.anomaly-state` v2, readers first: this release (the gate as shipped) writes v1, the next (the gate on) reads it and writes v2, and rolled back to this release v2 is read and rewritten as v1, alerts and state as a run that never changed; the suite's gate switch takes effect; Float64 through base64 bit for bit (−0 as 0, not Float32); the library's robust z and seasonal states (six configurations, gaps, missing values, points off the grid) written and read back equal what JSON gives back; the ruler's evaluation from v2 rows equals it from v1 rows at every tick of 700–2,200 (gaps, evictions, replays), two rows a steady tick; one series gone quiet keeps no other's old entries, within the estimates; the caps in effect follow the version written (18 now, 55 with v2; the 4,000-point window within the limit with v2) and the CPU and memory models price robust z by its JSON size either way (D51 unchanged, 4,000 points 921 µs); through the Ruler object, the anomaly fixtures and today's defaults over 1,700 random ticks with evictions and replays: the same alerts, annotations and state as an object writing v1; two rows a tick at 18 and at 100 series;  v3 rows refused, kept and moved; a move carrying v2 rows, continued off the grid (explicit pairs); rows renumbered by a release without v2 read and rewritten whole |
+| `anomalystore.test.ts` | 25 | part 8, `store.anomaly-state` v2, readers first: this release (the gate as shipped) writes v1, the next (the gate on) reads it and writes v2, and rolled back to this release v2 is read and rewritten as v1, alerts and state as a run that never changed; the suite's gate switch takes effect; Float64 through base64 bit for bit (−0 as 0, not Float32); the library's robust z and seasonal states (six configurations, gaps, missing values, points off the grid) written and read back equal what JSON gives back; the ruler's evaluation from v2 rows equals it from v1 rows at every tick of 700–2,200 (gaps, evictions, replays), two rows a steady tick; one series gone quiet keeps no other's old entries, within the estimates; the caps in effect follow the version written (18 now, 55 with v2; the 4,000-point window within the limit with v2) and the CPU and memory models price robust z by its JSON size either way (D51 unchanged, 4,000 points 921 µs); through the Ruler object, the anomaly fixtures and today's defaults over 1,700 random ticks with evictions and replays: the same alerts, annotations and state as an object writing v1; two rows a tick at 18 and at 100 series;  v3 rows refused, kept and moved; a move carrying v2 rows, continued off the grid (explicit pairs); rows renumbered by a release without v2 read and rewritten whole; **after the review of D60 (m-12), 5 more**: the head lists the blocks the rows hold and their entries in all, and intact rows read whole (240 points); a missing block row (first, middle, last) refused naming it; a partial block (one series' entry gone), an entry cut short, a block the head does not list, a head without the list, and a list naming absurdly many blocks, each refused; 400 incremental ticks with a global gap, a series pruned and returning, every write's rows read back without an error; through the Ruler object (gate on), a block row deleted or cut to one series after 130 ticks: `state_unreadable` with the reason, and the rows kept exactly as they were |
 
 The first seven files held the 123 tests that existed before this task; all still pass.
 Checked by per-file count (unchanged except `bench.test.ts`, which gained the two
@@ -1462,6 +1471,20 @@ the new "dryRun on every write" test.
 | 183 | save-time estimate: the blocks a window spans counted one short | anomaly: "saved again unchanged, a stored rule keeps the defaults …" (+1 more: anomalystore's caps by version) |
 | 184 | readers first broken: this release writes version 2 while gated off (the gate shipped on) | anomalystore: "readers first: this release (the gate as shipped) writes version 1; the next … reads those rows …" |
 | 185 | readers first broken: gated off, this release cannot read version 2 (the next release's rows refused after a rollback) | anomalystore: "the stored form is the state, bit for bit: robust_z, 50 points …" (+13 more, every reading of version 2) |
+| 186 | review m-12: the reader checks no block against the head (a missing block is read as a shorter window) | anomalystore: "a missing or partial block is detected … a missing block row: refused …", "… a partial block …", "through the Ruler object: … state_unreadable …" |
+| 187 | review m-12: a block row the head lists may be missing (neither the missing check nor the count) | anomalystore: "a missing or partial block is detected … a missing block row: refused …", "… a partial block …", "through the Ruler object …" |
+| 188 | review m-12: a partial block (one series' entry gone) is read (entries not counted) | anomalystore: "a missing or partial block is detected … a partial block …", "through the Ruler object …" |
+| 189 | review m-12: a block row the head does not list is accepted | anomalystore: "a missing or partial block is detected … a partial block …, an extra block, a head without the list: refused" |
+| 190 | review m-12: a head without the block list is read (the format before the review) | anomalystore: "a missing or partial block is detected … a partial block …, an extra block, a head without the list: refused" |
+| 191 | review m-12: the writer lists only the blocks this write touched | anomalystore: "results do not change: … robust_z, the default window (1,500 points), 2,200 ticks …" (+9 more, among them the incremental-writes test) |
+
+**The head's block list (review of D60, m-12): mutants 186–191** (`VIZ_SCRATCH=<scratch> node
+scripts/mutants.mjs 186 187 188 189 190 191`, the script's own copy of a copy of the whole tree in
+a scratch directory, deleted after): **6 of 6 killed on the first run**, shared tree unchanged.
+189 and 190 are caught by one test only (the one that removes a series' entry, adds a block, and
+strips the list); 191, a writer that lists only the blocks it touched, is caught by every
+version 2 evaluation test, since the next read of its rows is refused. 1–185 were not re-run: this
+change touches only `readV2`, the head `planV2` writes, and nothing else of the ruler.
 
 **Readers first: mutants 184–185, and 146–157, 174–183 re-run with the gate off** (`VIZ_SCRATCH=<scratch>
 node scripts/mutants.mjs 184 185 174 … 183 146 … 157`, on a scratch copy, deleted after): **24 of 24 killed on the first run**, shared tree unchanged.
@@ -1949,6 +1972,46 @@ Outside `ruler/`; not made here.
    `RecordedSamples`), upload and promote this ruler, run a recording rule: whether the upload is
    accepted, what the call returns, and that the fallback writes; then promote the current
    ingest and see the fallback stop. Not run (this change does not deploy).
+8. **`edge/src/recorded.ts`: every failure the entrypoint can see answered with a refusal word**
+   (review of D52, m-8, `design/reviews/d44-d52-d53-d60.md`; edge/ is not carried by pull request
+   #6, so not made here). Today `writeRecorded` calls `refuseEarly` outside any `try`: when a shard
+   of the isolate is marked hot and the tenant's `pool:<tenant>` cannot be read (or is of a newer
+   version, or KV fails), the rejection is the bare `shard pool map is invalid`, and the ruler
+   (`src/recorded.ts`) takes an entrypoint that exists and decided for one "not answering by its
+   contract" and sends the same batches by Remote Write, a second write to an ingest that is
+   already struggling (D52 alternative (b)). The change, exactly:
+   ```ts
+   // edge/src/recorded.ts, writeRecorded: replace
+   const early = await refuseEarly(env, t, now)
+   // with
+   let early: Awaited<ReturnType<typeof refuseEarly>>
+   try {
+     early = await refuseEarly(env, t, now)
+   } catch (e) {
+     // The pool map (KV) cannot be read or is not one this release reads: the contract's `unavailable`.
+     return refuse('unavailable', e instanceof Error ? e.message : String(e))
+   }
+
+   // and RecordedSamples.write: replace its body with
+   const props = (this.ctx as { props?: Partial<RecordedSamplesProps> }).props
+   try {
+     await writeRecorded(this.env, props?.caller, tenant, batches)
+   } catch (e) {
+     // Every failure this code can see leaves with a refusal word (contracts/ingest.ts): only a
+     // missing entrypoint or a platform failure (CPU, memory, a lost connection) has none.
+     if (e instanceof RecordedSamplesError) throw e
+     throw new RecordedSamplesError('unavailable', e instanceof Error ? e.message : String(e))
+   }
+   ```
+   Test, in `edge/test/recorded.test.ts`: the review's case (`edge/test/review-d52.test.ts` in the
+   reviewer's scratch copy: a shard of the isolate marked hot through a test-only export of
+   `route.ts`'s `hot` map, and no readable `pool:<tenant>`) through the `RULER_SINK` self-binding
+   must reject with a message starting `unavailable: `, and a pool map of a newer version the same;
+   mutant: drop the `try` around `refuseEarly`, and the test must fail. The ruler needs no change:
+   `src/recorded.ts` already treats `unavailable` as a refusal (retry, no fallback). Considered and
+   left as it is: falling back at most once per tick (the review's second suggestion); with the
+   change above only a missing entrypoint or a platform failure falls back, and the three attempts
+   of a tick are already bounded by the group's timeout.
 
 ## Contract issues
 

@@ -81,7 +81,7 @@ per-tenant ledger has none of those problems and is a far smaller thing to prove
 | `Ruler` | Durable Object, one per tenant rule shard | Rule ticks (one batch evaluation per group), alert state machine, acknowledgements, backtests, hands transitions to the notifier. Serves the Prometheus `/api/v1/rules` and `/api/v1/alerts` shapes and viz's `/api/v1/monitors` | every rule interval |
 | `Notifier` | Durable Object, one per tenant | Routing, grouping, inhibition, silences, and the delivery outbox. One per tenant because grouping spans that tenant's rulers | when alerts change, and on its group timers |
 | `Scraper` | Durable Object, one per target group | Pull ingest | every scrape interval |
-| `Tenant` | Durable Object, one per tenant | Keys, dashboards and revisions, proposed changes, settings (retention, limits, pool, notifications), audit log; publishes what the data path needs to KV; issues service keys to the ruler and gives it the default notification destination over its binding (`contracts/control.ts`, D39). Rule groups are held by the `Ruler` | per control-plane request; the data path reads its KV records, never the object; the ruler asks it when it has no key and at most once a minute while notifying |
+| `Tenant` | Durable Object, one per tenant | Keys, dashboards and revisions, proposed changes, settings (retention, limits, pool, notifications), audit log; publishes what the data path needs to KV; issues service keys to the ruler and gives it the default notification destination over its binding (`contracts/control.ts`, D39); OAuth grants and tokens (D44), which the agent surface checks through control's `OAuthIntrospection` entrypoint, never through this object's binding. Rule groups are held by the `Ruler` | per control-plane request; the data path reads its KV records, never the object; the ruler asks it when it has no key and at most once a minute while notifying |
 | `app` | Worker + static assets | UI, REST and Prometheus/Tempo-compatible APIs, OAuth | per request |
 | `mcp` | Worker | The agent surface: a stateless MCP server and the same tools as JSON under `/api/v1/agent/…`; no Durable Object (§8, D25–D27) | per agent call |
 | `LiveTail` | Durable Object | Hibernating WebSockets for live log tail | while a viewer is connected |
@@ -562,7 +562,8 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
   transaction that commits the alerts, and is rebuilt from there after eviction; a per-rule
   series cap and state limits refuse an evaluation rather than drop series. The windows of the
   robust z-score and the seasonal baseline can be kept as Float64 values in ring blocks on the
-  rule's interval grid (D60), like an SLO's buckets, a tick writing a head row and the block its
+  rule's interval grid (D60), like an SLO's buckets, a tick writing a head row (which lists the
+  blocks, so a missing one is refused, not read as a shorter window) and the block its
   points fall in: about 18 KB a series at the default window instead of about 50 KB of JSON, 55
   series a default rule instead of 18. Readers first: the current release reads that form and
   writes JSON; the release after it is in production writes the blocks. Defaults follow
@@ -620,7 +621,12 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
   approves each client with a key that holds `admin`; the grant never holds a scope that key
   lacks, and is backed by an agent key the MCP server acts with downstream, so the client's
   token never leaves `/mcp`. Control checks the token on every request, so revocation is
-  immediate there. Until a sign-in exists the consent step is a call to the control API.
+  immediate there; the MCP server asks through a named entrypoint of control that answers only
+  that question and takes the tenant from the token, never through control's `Tenant` objects
+  (review of D44, M-1). A code or token carries a tag made with control's key, so a made-up one
+  is refused in the Worker before any tenant's object is asked, and a request that changes
+  nothing writes nothing (M-2). Until a sign-in exists the consent step is a call to the control
+  API, and only an API key may approve.
   Fourteen tools: search telemetry, describe a metric, validate a query (with the query
   service's own plan: files, bytes, scan bound, refusal), run a query,
   search / get / read dashboards, the dashboard schema, write a dashboard, list revisions,
@@ -648,7 +654,13 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
 - **People and agents:** OAuth and OIDC single sign-on; roles plus label-matcher policies
   applied in the planner. Built so far: OAuth for agents (MCP clients), with the control
   plane as authorization server and grants that a person with an admin key approves (D44);
-  sign-in for people, roles and policies are not built.
+  sign-in for people, roles and policies are not built. Until sign-in exists, the control
+  plane accepts only API-key identities, and a grant whose approver is not a key ends.
+- **Service-to-service:** a Worker that needs one answer from another binds a named entrypoint
+  that answers only that, with the caller in the binding's `props` (D45; the MCP server's token
+  introspection, review of D44). A Durable Object class of another Worker is bound only where
+  `deploy/workers.json` lists it with why (`binds_classes`), because such a binding reaches every
+  method of every object of the class; today the ruler and the gateway still hold control's.
 - **Isolation:** tenant id comes only from the credential; files are tenant-pure; the ledger
   is per tenant. Cross-tenant reads are an invariant with its own fuzz suite.
 - **Quotas:** enforced in the shard, per tenant; rejection reasons are visible. Byte budgets
@@ -715,7 +727,10 @@ what the release before it knew, and refuses a rollback when any version that ra
 target wrote storage the target cannot open (D46; `deploy/README.md`). Format versions are not
 in that check yet. Secrets the deploy generates (control's OAuth client key) are put on the
 version a release uploads, before anything is promoted, only when that version lacks them, and
-are never replaced except by a deploy told to (D53).
+are never replaced except by a deploy told to (D53). A key seen on the serving version, in the
+secret list, or on a version newer than the serving one (left by a rollback) but missing from
+the upload stops the release rather than being made anew; wrangler runs that get a secret on
+stdin write no debug log and redact request bodies whatever the environment says.
 
 ## 12. Launch scope
 

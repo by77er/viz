@@ -1061,6 +1061,43 @@ export const MUTANTS = [
     edits: one('src/anomaly.ts', '    if (v !== ANOMALY_STATE_VERSION && v !== 2) return', '    if (v !== ANOMALY_STATE_VERSION) return'),
     tests: ['test/anomalystore.test.ts'],
   },
+  // review of D60 (design/reviews/d44-d52-d53-d60.md, m-12): the head's block list
+  {
+    name: 'review m-12: the reader checks no block against the head (a missing block is read as a shorter window)',
+    edits: [
+      { file: 'src/anomalystore.ts', find: "  const listed = expandRanges(h.blocks, Math.max(blocks.length, 1) * 4 + 1024)\n  if (listed === null || !Number.isSafeInteger(h.entries)) return { error: 'anomaly_state head does not list its blocks' }\n", replace: '  const listed = [...new Set(blocks.map((b) => b.b))]\n' },
+      { file: 'src/anomalystore.ts', find: '  if (held !== h.entries) return', replace: '  if (false) return' },
+    ],
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'review m-12: a block row the head lists may be missing (neither the missing check nor the count)',
+    edits: [
+      { file: 'src/anomalystore.ts', find: '  if (missing.length > 0) return', replace: '  if (false) return' },
+      { file: 'src/anomalystore.ts', find: '  if (present.size !== blocks.length || present.size !== listed.length) return', replace: '  if (present.size !== blocks.length) return' },
+    ],
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'review m-12: a partial block (one series\' entry gone) is read (entries not counted)',
+    edits: one('src/anomalystore.ts', '  if (held !== h.entries) return', '  if (false) return'),
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'review m-12: a block row the head does not list is accepted',
+    edits: one('src/anomalystore.ts', '  if (present.size !== blocks.length || present.size !== listed.length) return', '  if (present.size !== blocks.length) return'),
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'review m-12: a head without the block list is read (the format before the review)',
+    edits: one('src/anomalystore.ts', "  if (listed === null || !Number.isSafeInteger(h.entries)) return { error: 'anomaly_state head does not list its blocks' }", "  if (listed === null || !Number.isSafeInteger(h.entries)) return readV2(rows.map((r) => (r.body.part === 'head' ? { ...r, body: { ...r.body, blocks: blockRanges(blocks.map((b) => b.b)), entries: blocks.reduce((n, b) => n + b.series.length, 0) } } : r)))"),
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'review m-12: the writer lists only the blocks this write touched',
+    edits: one('src/anomalystore.ts', 'blocks: blockRanges([...store.entries.keys()]), entries: entryCount }', 'blocks: blockRanges([...dirty].filter((b) => store.entries.has(b))), entries: entryCount }'),
+    tests: ['test/anomalystore.test.ts'],
+  },
 ]
 
 const hasGo = spawnSync('go', ['version'], { encoding: 'utf8' }).status === 0

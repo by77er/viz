@@ -8,7 +8,7 @@
  "rows": [
   {
    "chunk": -1125899906842624,
-   "body": "{\"v\":2,\"part\":\"head\",\"detector\":\"robust_z\",\"stepMs\":60000,\"phase\":56197,\"block\":60,\"w\":1800000,\"i\":0,\"n\":1,\"series\":[{\"k\":\"61afe3f00db6398d\",\"l\":{\"service\":\"b\"},\"last\":{\"ts\":4102449296197,\"status\":\"ok\",\"flag\":false,\"value\":50,\"score\":1,\"explanation\":null},\"seen\":4102449296197,\"s\":{\"v\":1,\"lastTs\":4102449296197,\"stepMs\":60000}},{\"k\":\"e760033c0d175702\",\"l\":{\"service\":\"a\"},\"last\":{\"ts\":4102449296197,\"status\":\"ok\",\"flag\":false,\"value\":109.375,\"score\":0.47058823529411764,\"explanation\":null},\"seen\":4102449296197,\"s\":{\"v\":1,\"lastTs\":4102449296197,\"stepMs\":60000}}]}"
+   "body": "{\"v\":2,\"part\":\"head\",\"detector\":\"robust_z\",\"stepMs\":60000,\"phase\":56197,\"block\":60,\"w\":1800000,\"blocks\":[[1139568,1139569]],\"entries\":4,\"i\":0,\"n\":1,\"series\":[{\"k\":\"61afe3f00db6398d\",\"l\":{\"service\":\"b\"},\"last\":{\"ts\":4102449296197,\"status\":\"ok\",\"flag\":false,\"value\":50,\"score\":1,\"explanation\":null},\"seen\":4102449296197,\"s\":{\"v\":1,\"lastTs\":4102449296197,\"stepMs\":60000}},{\"k\":\"e760033c0d175702\",\"l\":{\"service\":\"a\"},\"last\":{\"ts\":4102449296197,\"status\":\"ok\",\"flag\":false,\"value\":109.375,\"score\":0.47058823529411764,\"explanation\":null},\"seen\":4102449296197,\"s\":{\"v\":1,\"lastTs\":4102449296197,\"stepMs\":60000}}]}"
   },
   {
    "chunk": 1139568,

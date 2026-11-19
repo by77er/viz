@@ -157,8 +157,8 @@ test('every service a Worker binds is deployed before it, and resolves to a depl
   const ruler = m.workers.find((w) => w.canonical === 'viz-ruler')
   assert.deepEqual(ruler.crossScript.sort(), ['INGEST → viz-citest-ingest', 'QUERY → viz-citest-query', 'SINK → viz-citest-ingest#RecordedSamples', 'TENANT → viz-citest-control:Tenant'])
   const mcp = m.workers.find((w) => w.canonical === 'viz-mcp')
-  // mcp/ may bind more (its OAuth work binds control's Tenant too); the order check above covers every binding.
-  for (const b of ['CONTROL → viz-citest-control', 'QUERY → viz-citest-query', 'RULER → viz-citest-ruler']) assert.ok(mcp.crossScript.includes(b), `${b} in ${mcp.crossScript.join(', ')}`)
+  // mcp/ binds control's OAuthIntrospection entrypoint, never its Tenant class (review of D44, M-1).
+  assert.deepEqual(mcp.crossScript.sort(), ['CONTROL → viz-citest-control', 'OAUTH → viz-citest-control#OAuthIntrospection', 'QUERY → viz-citest-query', 'RULER → viz-citest-ruler'])
   const gateway = m.workers.find((w) => w.canonical === 'viz-gateway')
   assert.ok(gateway.crossScript.includes('RULER → viz-citest-ruler') && gateway.crossScript.includes('MCP → viz-citest-mcp'))
 })
@@ -295,4 +295,39 @@ test('an entrypoint a binding names is exported by the callee as deployed (a sta
   assert.throws(() => gen('viz-ruler', undefined, withSink({ binding: 'SINK', service: 'viz-ingest', entrypoint: 'Recorded-Samples' })), /entrypoint must name an export/)
   assert.throws(() => gen('viz-ruler', undefined, withSink({ binding: 'SINK', service: 'viz-ingest', entrypoint: 'RecordedSamples', props: 'viz-ruler' })), /props must be an object/)
   assert.throws(() => gen('viz-ruler', undefined, withSink({ binding: 'SINK', service: 'viz-elsewhere', entrypoint: 'RecordedSamples' })), /not a Worker in deploy\/workers.json/)
+})
+
+test('viz-mcp: control\'s OAuthIntrospection entrypoint with props naming viz-mcp, a caller contracts/oauth.ts allows, and no Durable Object class of control\'s (review of D44, M-1)', () => {
+  for (const stage of [undefined, 'trial']) {
+    const { config, summary } = gen('viz-mcp', stage)
+    assert.deepEqual(config.services.find((s) => s.binding === 'OAUTH'), { binding: 'OAUTH', service: stagedName('viz-control', stage), entrypoint: 'OAuthIntrospection', props: { caller: 'viz-mcp' } })
+    assert.deepEqual(config.durable_objects?.bindings ?? [], [])
+    assert.deepEqual(summary.entrypoints, [{ binding: 'OAUTH', callee: 'viz-control', entrypoint: 'OAuthIntrospection' }])
+    assert.ok(!summary.crossScript.some((b) => b.includes(':Tenant')), summary.crossScript.join(', '))
+  }
+  const contract = readFileSync(join(REPO_ROOT, 'contracts', 'oauth.ts'), 'utf8')
+  assert.equal(/OAUTH_INTROSPECTION_ENTRYPOINT = '(\w+)'/.exec(contract)[1], 'OAuthIntrospection')
+  const callers = JSON.parse(/OAUTH_INTROSPECTION_CALLERS: readonly string\[\] = (\[[^\]]*\])/.exec(contract)[1].replace(/'/g, '"'))
+  assert.deepEqual(callers, ['viz-mcp'])
+  // control's main module exports it (callee first), and a control without it is refused.
+  const controlMain = join(REPO_ROOT, 'control/src/index.ts')
+  assert.ok(exportedNames(controlMain).has('OAuthIntrospection'))
+  const e = [{ binding: 'OAUTH', callee: 'viz-control', entrypoint: 'OAuthIntrospection' }]
+  checkEntrypoints('viz-mcp', e, new Map([['viz-control', controlMain]]))
+  assert.throws(() => checkEntrypoints('viz-mcp', e, new Map([['viz-control', join(REPO_ROOT, 'control/src/tenant.ts')]])), /does not export: a callee ships an entrypoint before or with its first caller/)
+})
+
+test('a Durable Object class of another Worker is bound only where workers.json lists it: viz-mcp with control\'s Tenant class is refused', () => {
+  const cfg = readJsonc(join(REPO_ROOT, 'mcp/wrangler.jsonc'))
+  const withTenant = { ...cfg, durable_objects: { bindings: [{ name: 'TENANT', class_name: 'Tenant', script_name: 'viz-control' }] } }
+  assert.throws(() => gen('viz-mcp', undefined, withTenant), /binds viz-control's Durable Object class Tenant, which deploy\/workers.json does not list under viz-mcp's "binds_classes"/)
+  assert.throws(() => gen('viz-mcp', 'trial', withTenant), /does not list under viz-mcp's "binds_classes"/)
+  // The listed ones, each with a reason, by the owner's canonical name (aliases resolved).
+  const listed = Object.fromEntries(plan.workers.filter((w) => w.binds_classes).map((w) => [w.name, Object.keys(w.binds_classes).sort()]))
+  assert.deepEqual(listed, { 'viz-ingest': ['viz-publisher:Publisher'], 'viz-query': ['viz-ingest:Ledger', 'viz-ingest:Shard'], 'viz-ruler': ['viz-control:Tenant'], 'viz-gateway': ['viz-control:Tenant'] })
+  for (const w of plan.workers) for (const [k, why] of Object.entries(w.binds_classes ?? {})) assert.ok(typeof why === 'string' && why.length > 10, `${w.name} ${k}`)
+  // query names the write path by an alias (viz-edge, viz-flush): still matched, and still refused once unlisted.
+  const q = readJsonc(join(REPO_ROOT, 'query/wrangler.jsonc'))
+  const queryW = { ...worker('viz-query'), binds_classes: { 'viz-ingest:Shard': 'x' } }
+  assert.throws(() => generateWorker({ worker: queryW, cfg: q, componentDir: join(REPO_ROOT, 'query'), plan, stage: undefined, release: 'r', ids, outDir: join(GENERATED_DIR, 'production') }), /viz-ingest's Durable Object class Ledger/)
 })

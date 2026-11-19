@@ -1336,8 +1336,12 @@ URL>/mcp`, RFC 8707). mcp publishes RFC 9728 metadata and answers 401 and 403 wi
   service, the control plane and the ruler with that key, never with the client's token. The
   key's secret is not stored: it is sealed (AES-256-GCM, key derived by HKDF from the credential)
   under each live code, access token and refresh token, which are themselves stored only as
-  SHA-256. Control unseals it when it validates a token for the resource
-  (`introspectAccessToken`, over the `Tenant` Durable Object binding, by `script_name`).
+  SHA-256. Control unseals it when it validates a token for the resource. The resource asks
+  through `OAuthIntrospection`, a named entrypoint of viz-control (`contracts/oauth.ts`): one
+  method, `introspectAccessToken(token, resource)`, answered only to a binding whose `props.caller`
+  is `viz-mcp`, with the tenant taken from the token. viz-mcp holds no binding to control's
+  `Tenant` class (review of D44, M-1: such a binding reaches every method of every tenant's object,
+  `invoke` with a made-up identity included), and `deploy/configure.mjs` refuses to deploy one.
 - **Every request is checked by control**: audience, expiry, grant and key state. Revocation
   takes effect at `/mcp` on the next request. Codes are single use (a second use revokes the
   grant); refresh tokens rotate on every use (presenting a used one revokes the grant).
@@ -1345,6 +1349,22 @@ URL>/mcp`, RFC 8707). mcp publishes RFC 9728 metadata and answers 401 and 403 wi
   the tenant's object; that object holds only the credential's SHA-256, so a credential edited to
   name another tenant matches nothing. Because a forged one can name any string, a `Tenant` object
   nobody provisioned no longer creates storage when it is constructed: `provision` opens it.
+- **A made-up credential reaches no object** (review of D44, M-2). The secret's 43 characters are
+  27 random ones and a 16-character tag, HMAC-SHA-256 under a key derived by HKDF from
+  `OAUTH_CLIENT_KEY`, over the prefix, tenant and random part. `/oauth/token`, `/oauth/revoke` and
+  `OAuthIntrospection` check the tag in the Worker before any tenant's object is asked; a
+  credential without it gets the answer an unknown one gets. The tag does not make a credential
+  valid (the object's hash does). And a token request or revocation that changed nothing writes
+  nothing: the alarm is re-armed only after a write (each `setAlarm` is billed as a row written).
+  Measured here (local workerd, three runs of 300 sequential forged `/oauth/token` requests against
+  a tenant with a live grant): 1.50–1.69 ms, one object call and two `setAlarm` each before;
+  0.13–0.18 ms, none and none after. The entrypoint costs every `/mcp` request one service-binding
+  hop: a live token's introspection took 1.76–2.42 ms through it against 0.90–1.62 ms on the object
+  directly (measured here; not on Cloudflare).
+- **Only a key approves, until people can be checked.** `Tenant.invoke` accepts only an identity
+  with an API key, which it checks against its own keys whatever the caller says about it; an
+  approver that is not a key is refused, and a grant recorded with one counts as ended (the check
+  fails closed). An approver key's expiry is an alarm deadline.
 
 **Alternatives.** (a) `@cloudflare/workers-oauth-provider` wrapping mcp's `fetch`: grants and
 tokens in KV outside the tenant's object and its audit log, revocation bounded by KV
@@ -1369,11 +1389,33 @@ service already enforces (scopes, tenancy, liveness) and keeps the token's audie
 Sealing means neither a database dump nor a token without control yields the downstream
 credential.
 
+**Alternatives to the tag (review of D44, M-2).** (h) A record per known tenant in KV, checked
+before the object: it stops names nobody provisioned, but not the attack the review measured,
+forged credentials naming a real tenant, and a record published at approval may not have reached
+the location of the code exchange that follows within seconds (KV propagation, and cached misses).
+(i) A negative cache in KV: the same, plus writes driven by unauthenticated requests. (j) A
+Workers Rate Limiting binding as the check: approximate and per Cloudflare location by its
+documentation ("Requests can exceed your configured limit"; "Other Cloudflare locations maintain
+separate counts"), and keyed by the only identifiers an unauthenticated request has (IP, which the
+documentation advises against, or the tenant, which hands the attacker the limit); it bounds a
+source's rate, not what reaches a tenant's object. Still wanted before public exposure, for the
+Worker's own CPU (`control/README.md`, Known risks).
+
+**Cost of the tag.** Replacing `OAUTH_CLIENT_KEY` (D53, by a deploy told to) now also ends every
+code and token: clients connect again and a person approves again, rather than only registering
+again. One HMAC per token, revocation and introspection request in the Worker.
+
 **Would change if.** A sign-in exists (then `/oauth/authorize` shows a consent page to a signed-in
-person and redirects); Client ID Metadata Documents become what clients use (then they replace
-registration and its signing key); KV propagation of a new key record is measured slow enough to
-break the first downstream call after approval (then the resource retries, or control publishes
-the key earlier); or sender-constrained tokens (DPoP) become required.
+person and redirects, and the approver check learns to follow a person); Client ID Metadata
+Documents become what clients use (then they replace registration and its signing key); KV
+propagation of a new key record is measured slow enough to break the first downstream call after
+approval (then the resource retries, or control publishes the key earlier); sender-constrained
+tokens (DPoP) become required; or a rotation of `OAUTH_CLIENT_KEY` must keep sessions (then the tag
+key becomes a generated secret of its own, or control verifies tags under two keys).
+
+*Amended 2026-11-19 after the review of D44, D52, D53 and D60 (`reviews/d44-d52-d53-d60.md`, M-1,
+M-2, m-1 to m-3, m-5, m-6): the entrypoint, the tag, no writes on no change, key-only approvers.
+The decision itself stands.*
 
 ## D45. The ruler writes recorded samples through a named entrypoint of viz-ingest; the service binding is the credential
 
@@ -1715,9 +1757,12 @@ until phase 2 promotes it in place of the upload. A viz-control that goes out wi
 deploy` (new, as on the first production deploy, or applying a Durable Object migration) gets it
 on the version just deployed, and the keyed version is deployed before the next Worker. Every
 later upload inherits it. It is replaced only by a deploy run with `VIZ_ROTATE_SECRETS=
-OAUTH_CLIENT_KEY`. If the Worker has it now (its secret list or a serving version) but the
-upload does not carry it, the release is refused before anything is promoted (exit 3) instead of
-generating a new one. The release record names each such secret and what was done (kept,
+OAUTH_CLIENT_KEY`. If the Worker has it now (its secret list, a serving version, or a version
+newer than every serving one, which a rollback across the release that created the key leaves
+behind) but the upload does not carry it, the release is refused before anything is promoted
+(exit 3) instead of generating a new one. Every wrangler run that gets a value on stdin runs with
+`WRANGLER_LOG_SANITIZE=true` and `WRANGLER_WRITE_LOGS=false`, whatever the deploy's environment
+says. The release record names each such secret and what was done (kept,
 created, rotated), never a value. `release.mjs plan` says it would create the key and changes
 nothing.
 
@@ -1746,8 +1791,22 @@ versions as for any release. Never generating over a key that exists is what kee
 clients valid; refusing when the evidence disagrees is the fail-closed reading of
 contracts/COMPATIBILITY.md's promise.
 
-**Cost.** One to three more API reads and, on the release that creates or rotates the key, one
-more version of viz-control. Not run on Cloudflare: inheritance of secrets by later uploads is
+**After the review (2026-11-19, `reviews/d44-d52-d53-d60.md`).** m-10: wrangler 4.164.0 writes
+every log level to a debug log file unless `WRANGLER_WRITE_LOGS` is false and redacts request
+bodies only while `WRANGLER_LOG_SANITIZE` is true; with sanitising off in the deploy's
+environment, the key's PATCH body was in that file (reproduced with the real wrangler). Both are
+now forced for runs with stdin, which is what "never in a file" needs. m-9: after a rollback across
+the key's creation, an upload that did not inherit the key was given a new one, silently. Of
+refusing the rollback or detecting it at the next deploy, detecting it was chosen: a rollback is
+the incident tool and must not be blocked by a key, the next deploy has to look anyway, and the
+evidence is cheap (one list call, and one read per version newer than the serving one, none
+normally). The release then stops with exit 3 and names the version that carries the key; the
+operator promotes that release again or replaces the key on purpose. m-11 (another run of the same
+release uploading between the newest-version check and the put) is open (`deploy/README.md`, Known
+risks).
+
+**Cost.** One to three more API reads (after a rollback, one more per version newer than the
+serving one) and, on the release that creates or rotates the key, one more version of viz-control. Not run on Cloudflare: inheritance of secrets by later uploads is
 from wrangler's `keep_bindings: ["secret_text", "secret_key"]` and the API's "keep from
 previous_upload" (taken to mean the newest version, as `inherit` bindings default to "latest"),
 not measured. Whether a deployment of an older version that lacks a secret the serving one has
@@ -2051,7 +2110,11 @@ every series' values there as little-endian Float64 in base64, NaN where a slot 
 Timestamps are implicit (slot n is the grid's phase + n · interval); a robust z point off the grid,
 and a series with less than half a block of points, are written as explicit (time, value) pairs. A
 tick writes the head and the block its points fall in; a block no series needs any more is deleted,
-or rewritten without the series that left it. **Readers first**: this release reads versions 1 and 2
+or rewritten without the series that left it. The head lists the blocks the rows hold (ranges of
+block numbers) and how many series entries they hold in all; a block row missing or extra, or one
+holding fewer or more entries, is refused when read (`state_unreadable`, rows kept), never read as
+a smaller window (added after the review of D60, m-12, before any release wrote version 2, so the
+format is still version 2). **Readers first**: this release reads versions 1 and 2
 (`ANOMALY_STATE_READS`) and writes version 1; the version gate `ANOMALY_STATE_WRITE` in
 `ruler/src/schema.ts` is 1, and `FORMATS['store.anomaly-state']` follows it. **Writing version 2
 turns on in the release after one with this reader has been deployed to production**, by setting
@@ -2293,7 +2356,11 @@ and logs to follow their metric retention (then (g), or a control-side default).
 ## D64. The publisher reads the span and log tables and does not publish them yet: it records them per tenant, releases their removed files to the janitor, and never stops a tenant for them; `INGEST_SIGNALS` goes on only once this publisher release is the oldest a rollback can reach
 
 (Written 2026-11-19. Step 1 of publishing traces and logs; publishing them as Iceberg tables is
-the next step, not done: `publisher/README.md`, "Not implemented".)
+the next step, not done: `publisher/README.md`, "Not implemented". **Since D67 the release after
+this one publishes them**: its record and its release of removed files are replaced there by the
+tables' Iceberg state and the snapshot rule. The rollout rule below stands: this release stays the
+oldest viz-publisher a rollback may reach once `INGEST_SIGNALS` is on, and D67 is shown to roll
+back to it.)
 
 **Decision.** The publisher's log reader knows every table the ledger lists (`LedgerTable`): it
 publishes `metric_samples` and `metric_series` as before and reads `spans`, `trace_index` and
@@ -2470,7 +2537,9 @@ time columns from `minTs`/`maxTs` widened by the last millisecond, for `service_
 released by the snapshot rule, as metric files are. The first publish after an upgrade from D64's
 release re-bases every tenant once (D55; the new tables have no cursor); the metric tables move on
 from their cursors and are committed only if their files changed. D64's `unpublished` records are
-left alone. New golden formats `iceberg.signal-metadata` and `iceberg.signal-manifest`;
+left alone. The alarm's deadlines and orphan sightings of the new tables live in tables of their own
+(storage migration 5, additive), because the D64 release, the rollback floor, re-arms at the earliest
+row of `due` and `orphan` and would wake for ever on rows of tables it does not publish. New golden formats `iceberg.signal-metadata` and `iceberg.signal-manifest`;
 `viz.format-version` stays 1, so a metric table's `metadata.json` is unchanged.
 
 **Alternatives.** Partitioning `spans`: (a) `identity(day)` plus an optional `hour` int column
@@ -2505,8 +2574,8 @@ as pyarrow does, under a schema equal to the files' (1,542 checks, 0 failed; PyI
 list as empty, counted), prune by
 tenant, hour and day, and give rows that viz-storage's readers read identically and on which
 viz-traceql and viz-logql answer identically (1,786 checks, 960 TraceQL and 576 LogQL answers, 0
-different). A first publication of 10,000 `spans` files took 0.8–1.1 s of commit and 399 kB of
-metadata, 10,000 `logs` files 0.8–1.0 s and 253 kB (three runs, load average 8.5–10.6).
+different). A first publication of 10,000 `spans` files took 0.8–1.4 s of commit and 399 kB of
+metadata, 10,000 `logs` files 0.8–1.2 s and 253 kB (four runs, load average 8.5–13.6).
 
 **Cost of it.** A publish that moves a tenant's cursors without a commit costs one R2 HEAD per
 table (up to five, three more than before) to check that no other writer is ahead. A `spans`

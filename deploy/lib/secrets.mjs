@@ -14,9 +14,10 @@
 //   `wrangler deploy` in phase 2 (new, or applying a Durable Object migration) gets the same on
 //   the version it just deployed, then `versions deploy` of the keyed one, before the next
 //   Worker is promoted.
-// - Fail closed: if the Worker has the secret now (its secret list, or a version serving now)
-//   but the version this release would promote does not carry it, nothing is generated and
-//   nothing is promoted: a new value would invalidate every registered OAuth client.
+// - Fail closed: if the Worker has the secret now (its secret list, a version serving now, or a
+//   version uploaded after the one serving, as a rollback leaves behind) but the version this
+//   release would promote does not carry it, nothing is generated and nothing is promoted: a new
+//   value would invalidate every registered OAuth client.
 import { randomBytes } from 'node:crypto'
 
 export const GENERATED_SECRETS = [
@@ -72,8 +73,15 @@ export function rotateProblems(rotate, specs) {
 
 /**
  * What the account holds now, by name only: for each generated secret, whether the Worker's
- * secret list or a version serving now carries it. Read before phase 1. `api`: { listSecrets,
- * versionInfo } (lib/cf.mjs).
+ * secret list, a version serving now, or a version newer than every serving one carries it. Read
+ * before phase 1. `api`: { listSecrets, versionInfo, listVersions } (lib/cf.mjs).
+ *
+ * The newer versions are what a rollback leaves behind: after a rollback across the release that
+ * created the key, the serving version and the secret list may not have it while the release
+ * that made it is still among the versions (review of D53, m-9). An upload that then does not
+ * inherit it is refused instead of silently given a new key. Normally no version is newer than
+ * the serving one (one API call to list); after a rollback, one call per newer version, at most
+ * the 100 Cloudflare keeps.
  */
 export async function secretsNow(specs, live, api) {
   const out = []
@@ -85,8 +93,17 @@ export async function secretsNow(specs, live, api) {
     }
     const seenIn = []
     if ((await api.listSecrets(spec.worker)).some((s) => s?.name === spec.name)) seenIn.push("the Worker's secret list")
+    let newestServing = -Infinity
     for (const v of now.versions ?? []) {
-      if (secretNamesOf(await api.versionInfo(spec.worker, v.version_id)).includes(spec.name)) seenIn.push(`serving version ${v.version_id}`)
+      const info = await api.versionInfo(spec.worker, v.version_id)
+      if (secretNamesOf(info).includes(spec.name)) seenIn.push(`serving version ${v.version_id}`)
+      newestServing = Math.max(newestServing, Number.isFinite(info?.number) ? info.number : Infinity)
+    }
+    if (newestServing !== Infinity) {
+      for (const v of await api.listVersions(spec.worker)) {
+        if (!(Number.isFinite(v.number) && v.number > newestServing)) continue
+        if (secretNamesOf(await api.versionInfo(spec.worker, v.id)).includes(spec.name)) seenIn.push(`version ${v.id} (number ${v.number}), newer than the one serving: a rollback left it`)
+      }
     }
     out.push({ ...spec, exists: true, known: seenIn.length > 0, seenIn })
   }

@@ -8,8 +8,10 @@ import { runInDurableObject } from 'cloudflare:test'
 import { Client, InsufficientScopeError, StreamableHTTPClientTransport, auth, type OAuthClientMetadata, type OAuthClientProvider } from '@modelcontextprotocol/client'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { OAUTH_SCOPES } from '../../contracts/oauth'
+import { hasScopes } from '../src/auth'
 import { httpControlClient, httpMonitorsClient, httpQueryClient, type Fetcher } from '../src/clients'
-import { BASE, type Harness, NOW, controlCall, controlFetcher, harness, makeKey, newTenant, rest, rpc, stubOf, telemetry } from './helpers'
+import { STEP_UP_MAX_BYTES, readCapped } from '../src/index'
+import { BASE, type Harness, NOW, controlCall, controlFetcher, env, harness, makeKey, newTenant, rest, rpc, stubOf, telemetry } from './helpers'
 
 const ORIGIN = 'https://vis.bitcru.sh'
 const SERVER = `${ORIGIN}/mcp`
@@ -297,10 +299,14 @@ describe('scopes, audience and tenancy at the resource', () => {
     await route(`${ORIGIN}/oauth/revoke`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ token: r.access, client_id: r.clientId }) })
     expect((await list(r.access)).status).toBe(401)
 
-    // without the Tenant binding OAuth tokens cannot be checked: 503, never accepted
-    const unbound = harness({ env: { TENANT: undefined } })
+    // without the OAUTH binding OAuth tokens cannot be checked: 503, never accepted
+    const unbound = harness({ env: { OAUTH: undefined } })
     const s = await connect(dana)
     expect((await list(s.access, unbound)).status).toBe(503)
+    // nor with a binding whose props name a caller control does not accept (a misdeployment): 503
+    const misbound = harness({ env: { OAUTH: env.OAUTH_AS_RULER } })
+    expect((await list(s.access, misbound)).status).toBe(503)
+    expect((await list(s.access, misbound)).body.error.data.code).toBe('oauth-unavailable')
   })
 })
 
@@ -324,7 +330,7 @@ describe('no token, code or secret in a log line or an error body', () => {
     await keep(callTool(c.access, 'query', { expr: 'up' })) // 403 insufficient_scope
     await keep(rpc(h, c.access.slice(0, -1) + 'Z', { jsonrpc: '2.0', id: 1, method: 'tools/list' })) // unknown
     await keep(list(c.refresh)) // not an access token
-    await keep(list(c.access, harness({ env: { TENANT: undefined } }))) // 503
+    await keep(list(c.access, harness({ env: { OAUTH: undefined } }))) // 503
     const viaRest = await rest(h, c.access, 'search_dashboards', {})
     bodies.push(JSON.stringify(viaRest.structured))
     await controlCall(c.access, 'GET', '/whoami')
@@ -340,5 +346,78 @@ describe('no token, code or secret in a log line or an error body', () => {
     }
     expect(bodies.length).toBe(5)
     void NOW
+  })
+})
+
+describe('review of D44 (design/reviews/d44-d52-d53-d60.md): what the agent surface holds and checks', () => {
+  it('M-1: it checks tokens through OAUTH only; it is given no Tenant namespace, and a binding naming another caller gets no answer', async () => {
+    const t = await newTenant('m1')
+    telemetry(h, t.tenant)
+    const c = await connect(await personKey(t.admin))
+    // h's env has no TENANT (helpers.ts strips it), as production binds none.
+    expect((await list(c.access)).status).toBe(200)
+    expect(await env.OAUTH_AS_RULER.introspectAccessToken(c.access, SERVER)).toEqual({ v: 1, status: 'unauthorized' })
+    // The entrypoint takes the tenant from the token: one edited to name another tenant matches nothing.
+    const other = await newTenant('m1b')
+    expect((await list(c.access.replace(`.${t.tenant}.`, `.${other.tenant}.`))).status).toBe(401)
+  })
+
+  it('m-6: scopes include each other as control\'s do: dashboards:apply covers write and read, write covers read', async () => {
+    const id = (scopes: string[]) => ({ tenant: 't', keyId: 'k', subject: 'key:k', kind: 'agent' as const, name: null, scopes, mayApply: null, source: 'oauth' as const })
+    expect(hasScopes(id(['dashboards:apply']), ['dashboards:write'])).toBe(true)
+    expect(hasScopes(id(['dashboards:apply']), ['dashboards:read'])).toBe(true)
+    expect(hasScopes(id(['dashboards:write']), ['dashboards:read'])).toBe(true)
+    expect(hasScopes(id(['dashboards:write']), ['dashboards:apply'])).toBe(false)
+    expect(hasScopes(id(['dashboards:read']), ['dashboards:write'])).toBe(false)
+    expect(hasScopes(id(['dashboards:apply']), ['dashboards:write', 'read'])).toBe(false)
+    expect(hasScopes(id(['admin']), ['dashboards:read'])).toBe(false)
+    // A token holding dashboards:apply (and read) is not stepped up for dashboards:write or dashboards:read.
+    const t = await newTenant('m6')
+    telemetry(h, t.tenant)
+    const c = await connect(await personKey(t.admin), 'read dashboards:apply')
+    const tools = await listTools(c.access)
+    expect(tools).toEqual(expect.arrayContaining(['write_dashboard', 'search_dashboards', 'get_dashboard']))
+    for (const [name, args] of [['search_dashboards', {}], ['annotate', { text: 'x', at: NOW }]] as const) {
+      const r = await callTool(c.access, name, args)
+      expect(r.status, name).toBe(200)
+      expect(r.headers.get('WWW-Authenticate'), name).toBeNull()
+    }
+  })
+
+  it('m-2: the step-up check reads a copy of the body with a cap; a body without Content-Length is not buffered past it', async () => {
+    const chunk = new Uint8Array(64 * 1024).fill(0x20)
+    let sent = 0
+    const body = new ReadableStream<Uint8Array>({
+      pull(ctl) {
+        if (sent >= 64) return ctl.close()
+        sent++
+        ctl.enqueue(chunk)
+      },
+    })
+    expect(await readCapped({ body }, STEP_UP_MAX_BYTES)).toBeNull()
+    expect(sent).toBeLessThanOrEqual(STEP_UP_MAX_BYTES / chunk.length + 2)
+    const small = new Request('https://x.example/', { method: 'POST', body: '{"a":1}' })
+    expect(new TextDecoder().decode((await readCapped(small, STEP_UP_MAX_BYTES))!)).toBe('{"a":1}')
+
+    // Through the Worker: a tool call past the cap is not looked into by the step-up check, sent
+    // chunked or with its length, alike (no 403 insufficient_scope from it); under the cap it is.
+    const t = await newTenant('m2s')
+    telemetry(h, t.tenant)
+    const c = await connect(await personKey(t.admin), 'dashboards:read')
+    const call = JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'query', arguments: { expr: 'up' } } })
+    const padded = call + ' '.repeat(STEP_UP_MAX_BYTES + 10)
+    const headers = { Authorization: `Bearer ${c.access}`, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', ...L }
+    const status = async (body: BodyInit, extra: Record<string, string> = {}) => (await h.fetch(new Request(`${BASE}/mcp`, { method: 'POST', headers: { ...headers, ...extra }, body, duplex: 'half' } as RequestInit))).status
+    expect(await status(call)).toBe(403)
+    const withLength = await status(padded, { 'Content-Length': String(new TextEncoder().encode(padded).length) })
+    const bytes = new TextEncoder().encode(padded)
+    const chunked = new ReadableStream<Uint8Array>({
+      start(ctl) {
+        for (let i = 0; i < bytes.length; i += 64 * 1024) ctl.enqueue(bytes.subarray(i, i + 64 * 1024))
+        ctl.close()
+      },
+    })
+    expect(withLength).not.toBe(403)
+    expect(await status(chunked)).toBe(withLength)
   })
 })

@@ -19,9 +19,10 @@ data path never calls it.
 | `src/ops-settings.ts` | Settings: general, retention, limits, pool, notifications |
 | `src/ops-audit.ts` | The audit log's two read routes |
 | `src/openapi.ts`, `openapi.json` | OpenAPI 3.1, written next to the handlers, generated to JSON, held equal to the route table by a test |
-| `src/oauth.ts` | OAuth building blocks: issuer and resource, credentials and their hashes, sealing, signed registrations, PKCE, scopes, redirect URIs, the authorization request handle |
+| `src/oauth.ts` | OAuth building blocks: issuer and resource, credentials (with their tag) and their hashes, sealing, signed registrations, PKCE, scopes, redirect URIs, the authorization request handle |
 | `src/ops-oauth.ts` | OAuth grants in the Tenant object: approve (the consent step), list, get, revoke; the token endpoint's code exchange and refresh; RFC 7009 revocation; introspection for the agent surface; the alarm's sweep |
-| `src/oauth-http.ts` | The authorization server's public endpoints: RFC 8414 metadata, `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke` |
+| `src/oauth-http.ts` | The authorization server's public endpoints: RFC 8414 metadata, `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke`; `readCapped`, a body read with a cap |
+| `src/introspection.ts` | `OAuthIntrospection`, the named entrypoint the agent surface binds (`contracts/oauth.ts`): token introspection for one caller, the tenant from the token, nothing else |
 
 Runtime dependencies: none. It imports `../edge/src/auth` (key verification),
 `../dashboard/src` (the `viz.dashboard/v1` model) and `../contracts/ledger` (`TENANT_ID`).
@@ -260,10 +261,14 @@ holds, revocable, and good only at `/mcp`. mcp/README.md describes the resource 
 | Endpoint | What it does |
 |---|---|
 | `GET /.well-known/oauth-authorization-server` | RFC 8414: issuer `PUBLIC_URL`, the endpoints below, `code_challenge_methods_supported: ["S256"]`, `token_endpoint_auth_methods_supported: ["none"]`, the five grantable scopes, `authorization_response_iss_parameter_supported: true` (RFC 9207). `registration_endpoint` only when the signing key is set |
-| `POST /oauth/register` | RFC 7591, public clients only. **Stores nothing**: the client id is the registration (name, redirect URIs, issue time), signed with HMAC-SHA-256 under the Worker secret `OAUTH_CLIENT_KEY` (format `id.oauth-client`). Redirect URIs: 1 to 5, https or http on `localhost`/`127.0.0.1`/`[::1]`, no fragment, no user info, no spaces or backslashes, at most 512 characters. Confidential auth methods, other grant or response types and unknown scopes are refused. 503 without the key |
+| `POST /oauth/register` | RFC 7591, public clients only. **Stores nothing**: the client id is the registration (name, redirect URIs, issue time), signed with HMAC-SHA-256 under the Worker secret `OAUTH_CLIENT_KEY` (format `id.oauth-client`). Redirect URIs: 1 to 5, https or http on `localhost`/`127.0.0.1`/`[::1]`, no fragment, no user info, no spaces or backslashes, **ASCII only** (a bidirectional or invisible character could make the URI read as another on the consent page; percent-encode, and write an IDN host as punycode: review of D44, m-3), at most 512 characters. Confidential auth methods, other grant or response types and unknown scopes are refused. 503 without the key |
 | `GET /oauth/authorize` | Validates the request: the client id's signature, the redirect URI **exactly** equal to a registered one (else 400 and nothing is sent anywhere), `response_type=code`, a 43-character `code_challenge` with method `S256` (plain and none refused), known scopes (default `read dashboards:read monitors:read`), one `resource` equal to `<PUBLIC_URL>/mcp` (scheme and host compared without case). It answers a **plain-text page** (no markup, `no-store`, CSP `default-src 'none'; frame-ancestors 'none'`): what is asked and how a person approves it, with a request handle (format `oauth.request`). Errors the client should hear about are shown with the callback link that would deliver them; **this server never redirects by itself** (every redirect URI is the client's own claim, so an automatic redirect would make it an open redirector) |
-| `POST /oauth/token` | `authorization_code` (with `code_verifier`, `redirect_uri`, `client_id`, `resource`) and `refresh_token`. Form encoding only; a parameter sent twice, an `Authorization` header or a `client_secret` is refused. Answers `{ access_token, token_type: "Bearer", expires_in: 3600, refresh_token, scope }`, `Cache-Control: no-store` |
-| `POST /oauth/revoke` | RFC 7009 with `token` and `client_id`. An access token ends alone; a refresh token ends its grant. Unknown tokens and tokens of another client: 200, nothing changes |
+| `POST /oauth/token` | `authorization_code` (with `code_verifier`, `redirect_uri`, `client_id`, `resource`) and `refresh_token`. Form encoding only; a parameter sent twice, an `Authorization` header or a `client_secret` is refused. A code or refresh token without this deployment's tag (below) is `invalid_grant` **without asking any tenant's object**. Answers `{ access_token, token_type: "Bearer", expires_in: 3600, refresh_token, scope }`, `Cache-Control: no-store` |
+| `POST /oauth/revoke` | RFC 7009 with `token` and `client_id`. An access token ends alone; a refresh token ends its grant. Unknown tokens and tokens of another client: 200, nothing changes; one without the tag reaches no object |
+
+Every body here (and the control API's own) is read from the stream with a cap: one sent without
+`Content-Length` is never buffered past the limit (16 KiB for the form endpoints, 8 KiB for
+registration, 1 MiB for the API; review of D44, m-2).
 
 **The gateway** (`deploy/gateway/src/index.ts`) forwards exactly these five paths here and
 `/.well-known/oauth-protected-resource` and `…/mcp` to viz-mcp; near misses (`/oauth`, `/oauth/x`,
@@ -278,7 +283,10 @@ does not list these paths yet (another engineer's file).
 `dryRun`). There is no sign-in and no web UI yet, so the person approves through the API with
 their own key: `{ "request": "<handle from the page>", "scopes"?: [...] }`.
 - Only a **person**: kind `key` (later `user`) with `admin`. An agent key is refused with 403
-  `approver-not-a-person`, whatever its scopes.
+  `approver-not-a-person`, whatever its scopes. Until a person signed in can be followed the way a
+  key is, **only an API key approves**: an approver whose subject is not `key:<id>` is refused
+  (403 `approver-not-a-key`; review of D44, M-1), and `Tenant.invoke` accepts no identity without
+  an API key in the first place.
 - The grant holds the requested scopes (or the subset in `scopes`; a scope not asked for is 422)
   **that the approving key itself holds**; `admin` counts for the dashboards scopes it stands for
   in this API, never for `read` or `monitors:read`, and is never granted itself. The rest are
@@ -292,8 +300,10 @@ their own key: `{ "request": "<handle from the page>", "scopes"?: [...] }`.
   like any key) and the code; one audit entry `oauth.grant.approve`. The answer carries
   `redirect`: the client's callback with `code`, `state` and `iss`, which the person opens in
   the browser that started the connection (within 10 minutes), plus `returnsTo` (host and URI)
-  and `warnings` (the client's name is unverified; a loopback callback can be received by any
-  program on that computer; what was withheld).
+  and `warnings` (the client's name is unverified; approve only a connection you started
+  yourself, since anyone can make an authorization link and send it, said for every redirect,
+  review of D44, m-5; a loopback callback can be received by any program on that computer; what
+  was withheld). The authorize page says the same for every redirect.
 - Bounds per tenant: 20 approvals in any hour (429 with `Retry-After`), 50 clients, 50 live
   grants, and each grant's key counts against the 200-key cap.
 
@@ -332,22 +342,43 @@ The interface goes through design review (AGENTS.md, "Design changes"); none is 
   own (409 `grant-key`: revoke the grant), and persons cannot create keys named `oauth:…`.
 - **A grant follows its approver's key**, so it is never broader than that key later either:
   while the approver's key is disabled the grant is `suspended`; once it is deleted or expired
-  the resource and the token endpoint refuse the grant at once, and the alarm, due immediately,
-  ends it (`approver-gone`) with its key.
+  the resource and the token endpoint refuse the grant at once, and the alarm ends it
+  (`approver-gone`) with its key: at once for a deletion, and at the key's `expiresAt` for an
+  expiry (an alarm deadline since the review of D44, m-1). **It fails closed**: a grant whose
+  recorded approver is not a key counts as ended (`revoked` at introspection, `approver-gone` at
+  the next alarm).
 
 **What is stored, and the service surface.**
 - Codes and tokens are stored as the SHA-256 of the whole string (format `credential.oauth`:
   `<vzc1|vza1|vzr1>.<tenant>.<43 base62>`; the tenant is in clear so the server can find the
   tenant's object, which then holds only the hash, so a credential edited to name another tenant
   matches nothing there).
+- **The 43 characters are 27 random ones and a 16-character tag** (`contracts/oauth.ts`
+  `CREDENTIAL_TAG`): HMAC-SHA-256 under a key derived by HKDF from `OAUTH_CLIENT_KEY` (its own
+  salt, so not the registration key itself), over prefix, tenant and random part, each of the
+  first 16 bytes as `BASE62[byte % 62]` (about 95 bits; the random part is about 160). The
+  token endpoint, revocation and `OAuthIntrospection` check it in the Worker, before any tenant's
+  object is asked: a made-up credential, for a tenant that exists or not, reaches no object and
+  writes nothing (review of D44, M-2). The tag makes nothing valid; the object's hash does.
+  Without `OAUTH_CLIENT_KEY` nothing is minted (approve answers 503 `oauth-unavailable`) and every
+  credential is refused before the object. **Replacing the key ends every code and token too.**
 - **The grant key's secret is never stored in clear.** It is sealed (AES-256-GCM, key derived by
   HKDF-SHA-256 from the credential, tenant and grant authenticated; format `oauth.sealed`) under
   each live code, access token and refresh token. Only a request presenting one of them can
   recover it, so neither a dump of the object nor a stolen database yields a working credential.
 - `Tenant.oauthToken`, `oauthRevoke` and `introspectAccessToken` (`contracts/oauth.ts`
   `TenantOAuthRpc`, results `v: 1`, format `rpc.oauth`) are reachable only through the Durable
-  Object binding: the first two by this Worker's `/oauth/*` handlers, the third by the agent
-  surface (viz-mcp binds `Tenant` by `script_name`, as the ruler does). Introspection checks the
+  Object binding, which only this Worker uses for them: the first two from its `/oauth/*`
+  handlers, the third from **`OAuthIntrospection`** (`src/introspection.ts`), a named
+  `WorkerEntrypoint` export of this Worker and the one thing the agent surface binds here
+  (`{ "binding": "OAUTH", "service": "viz-control", "entrypoint": "OAuthIntrospection", "props":
+  { "caller": "viz-mcp" } }`, review of D44, M-1). Its whole surface is
+  `introspectAccessToken(token, resource)`: a caller whose `props.caller` is not in
+  `OAUTH_INTROSPECTION_CALLERS` (`viz-mcp`) gets `{ v: 1, status: "unauthorized" }`; the tenant is
+  the one the token names (no tenant argument); a token not shaped like an access token, or
+  without the tag, is `inactive` (`unknown`) and reaches no object. viz-mcp holds no binding to
+  the `Tenant` class any more, which could call every method of every tenant's object (`invoke`
+  with a made-up identity, `provision`, `serviceKey`, `notificationTarget`). Introspection checks the
   token's expiry, its grant's state, the audience (the resource the caller names must be the
   grant's), and the key's state, then returns the identity (`key:<id>`, kind `agent`, the
   grant's scopes, `mayApply` as `whoami` computes it) and the grant's key for downstream calls.
@@ -358,8 +389,13 @@ The interface goes through design review (AGENTS.md, "Design changes"); none is 
   ignores them (tested). Rolled back to it, OAuth stops (no token endpoint, no introspection),
   and each grant's key stays an ordinary agent key that expires with its grant.
 - The alarm also wakes for: a grant's end, an unexchanged code's expiry, a grant going idle, a
-  client to forget, and an ended grant to delete. Expired and rotated tokens are deleted on the
-  next refresh of their grant and by any alarm.
+  client to forget, an ended grant to delete, and an approver key's expiry. Expired and rotated
+  tokens are deleted on the next refresh of their grant and by any alarm.
+- **A token request or a revocation that changed nothing writes nothing.** The alarm is set (and
+  KV published) only after one that wrote a row (`Tenant.rowsWritten`, a counter of this
+  instance's own statements, compared before and after): each `setAlarm` is billed as a row
+  written, and before the review of D44 (M-2) every such request, a made-up one included, set
+  it twice.
 
 ### Audit log
 
@@ -395,14 +431,24 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
   "not provisioned" without touching SQLite. Added with OAuth: an OAuth credential names its
   tenant in clear, so a forged one could otherwise create storage under any name it chose
   (tested: three such names through introspection, the token endpoint and revocation leave no
-  table, and no alarm).
+  table, and no alarm). Since the review of D44 a made-up credential does not reach the object
+  at all (the tag, above).
+- **A request that changes nothing writes nothing**, alarm included: the OAuth token endpoint and
+  revocation re-arm the alarm only after a write (tested with a counter of `setAlarm` and
+  `deleteAlarm` calls and of rows written, for unknown codes, refresh and access tokens that carry
+  the tag, at the object itself). Mutations already did (`NoChange`, dry runs).
 - **Every statement names the tenant** (a test reads the source and checks; the one
   exception reads which tenant the object is bound to).
 - **Mutation, audit row and outbox rows commit in one transaction.** KV is written only
   afterwards, from the outbox, in order, by one drain at a time.
 - **One alarm**, at the earliest of: an open proposal's expiry, a deleted dashboard's purge
-  time, and, as a third deadline the task did not list, 30 s after a KV publication failed.
-  It is deleted when none applies. The handler is idempotent.
+  time, and, as a third deadline the task did not list, 30 s after a KV publication failed
+  (and the OAuth deadlines above). It is deleted when none applies. The handler is idempotent.
+- **Tenant identity only from the credential, also over the binding.** `invoke` accepts an
+  identity only with an API key id, and replaces what the caller says about the key (subject,
+  kind, name, scopes) with the object's own record of it: a holder of the binding cannot make an
+  identity up (review of D44, M-1; tested with `key:nobody`, `system:anything`, `user:dana` and a
+  real key id given admin scopes it does not have).
 - `blockConcurrencyWhile` is used once: in the constructor, around opening (migrating) local
   SQLite, with no await inside. Handlers do not await between reading and writing.
 
@@ -487,7 +533,7 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
 
 ```
 npm install
-npm test             # 132 tests in 16 files, in workerd (at most 2 workers)
+npm test             # 148 tests in 18 files, in workerd (at most 2 workers)
 npx tsc --noEmit     # clean
 npm run mutants      # 97 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md)
 npm run gen:openapi  # rewrite openapi.json from src/openapi.ts
@@ -497,6 +543,65 @@ Measured here: vitest 5.1 in workerd, TypeScript 5.9, Node 22.23. The suite take
 on a shared machine (75 s on a cold cache with the load average above 6). Last run
 2026-11-19, after the pool rule of D66 (`npx vitest run --maxWorkers=2`): 132 of 132 pass in 31 s,
 `tsc` clean.
+
+2026-11-19, the review of D44 ported onto the development branch (with D66): 148 of 148 pass,
+`tsc` clean. The first run failed one test, `isolation.test.ts`'s fuzz property, on a false alarm:
+B sent `var.env=<A's tenant id>` to `GET /dashboards/beta_dash?view=resolved`, and the resolved
+view's issue (`"<value>" given but not among the variable's values; ignored`) echoed B's own input,
+which the leak check read as A's tenant id. The check now removes exactly that echo, and only when
+the request carried that value; every other occurrence of A's tenant id, ids or marker still fails
+it. Not specific to this change (the fuzzer reached it at run 155 of 400); five further runs of the
+file passed.
+
+**After the review of D44** (`design/reviews/d44-d52-d53-d60.md`; dispositions there):
+`test/oauth-review.test.ts`, 15 tests, and `test/forged-cost.test.ts`, 1. The entrypoint is
+bound in `vitest.config.ts` (miniflare service bindings to this Worker itself) as three callers:
+viz-mcp's props, the ruler's, and none. *Tags*: codes, access and refresh tokens carry the tag; one
+edited in its random part, its tag or its tenant, made up, or tagged under another key has none.
+*M-1*: the entrypoint answers viz-mcp exactly as the object does and `unauthorized` to the other two;
+`invoke`, `provision`, `serviceKey`, `notificationTarget`, `resolveKey`, `recordUsage` and
+`oauthToken` are not implemented on it (its prototype holds one method) and no key appears; a token
+edited to name another tenant, or made up, reaches no object (a namespace that counts `get()`);
+the review's R1 inverted: `invoke` with `key:nobody`, `system:anything`, `user:dana` (no key id) is
+401 and creates nothing, and a real key id given admin scopes it lacks is 403; approve refuses a
+`user:` approver (`approver-not-a-key`), and a grant recorded with one is `revoked` at
+introspection, its refresh refused, the alarm due now, and ended `approver-gone`. *M-2*: 20 rounds
+of forged codes, refresh tokens and revocations (refresh and access) for a tenant with a live grant
+reach no object, write no row, call neither `setAlarm` nor `deleteAlarm`, and leave the alarm where
+it was; for a tenant nobody provisioned, the same, and that object has no table and no alarm; at
+the object itself, tagged but unknown codes, refresh and access tokens (revoke and introspect too)
+write nothing and set no alarm, and a ghost tenant answers `not_provisioned` with no storage; a
+revocation of a real refresh token does write, re-arm and delete the grant key's KV record, and a
+rotating refresh re-arms. *Minors*: an approver key expiring in 6 minutes sets the alarm no later
+than its expiry (R6 inverted); 4 MiB chunked bodies to `/oauth/token`, `/oauth/revoke` and
+`/oauth/register` are refused after at most 3 of 64 chunks, and to the API (413) after at most 6 of
+16 (R5 inverted); U+202E, U+200B, an IDN host and a non-ASCII path are refused at registration,
+punycode and percent-encoding accepted (R4 inverted); the page and the approval's warnings say
+"Approve only a connection you started yourself" for an https redirect. Without `OAUTH_CLIENT_KEY`,
+approve answers `oauth-unavailable` and the token endpoint reaches no object.
+
+**What a made-up credential costs, measured here** (`test/forged-cost.test.ts`; local workerd,
+one test file, sequential, 300 requests of each kind against a tenant with a live grant; "before"
+is the same file in a scratch copy of the tree the review read, with introspection called on the
+object as viz-mcp did; a shared 4-core machine):
+
+| 300 sequential requests of each | Before: ms each (3 runs) | objects asked | `setAlarm` + `deleteAlarm` | rows written | After: ms each (3 runs) | objects asked | alarm calls | rows written |
+|---|---|---|---|---|---|---|---|---|
+| forged code at `/oauth/token` | 1.50–1.69 | 300 | 600 | 0 | 0.13–0.18 | 0 | 0 | 0 |
+| forged refresh token at `/oauth/token` | 1.53–2.33 | 300 | 600 | 0 | 0.11–0.20 | 0 | 0 | 0 |
+| forged refresh token at `/oauth/revoke` | 1.39–1.63 | 300 | 600 | 0 | 0.09–0.11 | 0 | 0 | 0 |
+| forged access token, introspection as viz-mcp asks it | 0.41–0.55 (the object, by its binding) | 300 | 0 | 0 | 0.58–0.89 through the `OAUTH` service binding; 0.017–0.027 for the entrypoint's own work | 0 | 0 | 0 |
+
+Each `setAlarm` is billed as a row written (Cloudflare's Durable Objects pricing, read by the
+review), so before, every forged token or revocation request cost two billed writes and a request
+to the tenant's object, whose one thread also serves that tenant's whole control plane; after, it
+costs the Worker one HMAC. In local workerd the service-binding hop costs more than the object call
+it replaced for a made-up token (0.58–0.89 against 0.41–0.55 ms), and for a **live** token, measured
+the same way in a scratch copy (300 calls, 3 rounds), introspection through the binding took
+1.76–2.42 ms against 0.90–1.62 ms on the object directly: the price of the narrow entrypoint is
+one hop per `/mcp` request, about 0.6–0.9 ms here. Not measured on Cloudflare (a spike with clients
+as Durable Objects, AGENTS.md, would; review M-2's modelled throughput is unchanged as a model).
+The machine's load average was about 10 during these runs.
 
 What the tests establish:
 
@@ -746,7 +851,7 @@ first run, before a container restart, did not report, so this is their only res
 | # | Mutant | Caught by (tests failing) |
 |---|---|---|
 | 1 | Tenant taken from a request parameter (`?tenant=`) | isolation, rules (3) |
-| 2 | The same, and the Tenant object trusting the tenant it is told | isolation, rules (3) |
+| 2 | The same, and the Tenant object trusting the tenant it is told (since the review of D44: and taking the caller's word for the key) | isolation, rules (3); re-run after the review: isolation, oauth-review, rules (4) |
 | 3 | Secret stored in clear | isolation, compat, creation, dashboards, durability, golden, http, keys, openapi, property, proposals, scopes, settings (68) |
 | 4 | List returning the stored secret material | keys (2) |
 | 5 | Base-revision check skipped on patch | dashboards, http, property, settings (6) |
@@ -849,6 +954,38 @@ shared tree after its suite passed there (132 of 132) and checked green in the c
 Afterwards the copy's `control/src` and `contracts/` were compared with the shared tree byte for
 byte: equal. 1–93 were not re-run in this change.
 
+| 98 | review M-1: `OAuthIntrospection` answers any caller (`props.caller` not checked) | oauth-review (1) |
+| 99 | review M-1: `invoke` accepts an identity without a key, as the caller states it | oauth-review (1) |
+| 100 | review M-1: a grant whose approver is not a key counts as live (the approver check fails open) | oauth-review (1) |
+| 101 | review M-1: `approve` accepts an approver that is not a key | oauth-review (1) |
+| 102 | review M-2: the token endpoint asks the object without checking the tag | forged-cost, oauth-review (4) |
+| 103 | review M-2: revocation asks the object without checking the tag | forged-cost, oauth-review (3) |
+| 104 | review M-2: `OAuthIntrospection` asks the object without checking the tag | forged-cost, oauth-review (3) |
+| 105 | review M-2: any credential of the right shape passes the tag check | forged-cost, oauth-review (5) |
+| 106 | review M-2: the token endpoint re-arms the alarm after a request that wrote nothing | oauth-review (1) |
+| 107 | review M-2: revocation re-arms the alarm after a request that wrote nothing | oauth-review (1) |
+| 108 | review M-2: a request that wrote something does not re-arm the alarm or publish (the fix overdone) | oauth-review, oauth (3) |
+| 109 | review m-1: an approver key's expiry is no alarm deadline | oauth-review (1) |
+| 110 | review m-2: a body without `Content-Length` is read whole before its size is checked | oauth-review (1) |
+| 111 | review m-3: a redirect URI may carry non-ASCII (bidirectional, invisible) characters | oauth-review (1) |
+| 112 | review m-5: the approval warns to approve only what one started for loopback redirects only | oauth-review (1) |
+| 113 | review m-5: the authorize page warns for loopback redirects only | oauth-review (1) |
+
+**98–113** (the review of D44, `design/reviews/d44-d52-d53-d60.md`) were run on 2026-11-19 in a
+copy of the whole tree in a scratch directory outside git, after its unmutated suite passed 147 of
+147 there (`node scripts/mutants.mjs "review"`): **16 of 16 killed, first run**. They were run a
+second time, with the same result, because the first run's report named no files: the runner's
+pattern for a failing file did not accept a hyphen (`oauth-review`); it does now. Two earlier
+mutants whose text this change moved were brought up to date and run again: 2 ("tenant taken from
+a request parameter, and the Tenant object trusting what it is told": the object now checks every
+identity's key, so trusting means taking the caller's word for the key's subject, kind and scopes)
+**killed** by isolation, oauth-review and rules (4); 88 ("a code stored in clear, not hashed": `p.code!`)
+**killed** by oauth (1). 106 and 107 are each caught by one test only, the one that calls the
+object directly with tagged but unknown credentials: through HTTP the tag check (102, 103) stops a
+forged credential first. 1, 3–87 and 89–93 were not re-run. The copy's `src/`, `scripts/`, `test/`
+and `contracts/` were compared with the worktree's afterwards: equal, but for one comment line in
+`contracts/oauth.ts` and one table row in `contracts/README.md`, written after the copy was taken.
+
 Mutants 36–40 break `contracts/schema.ts`, the runner every component shares; they are run
 here because this suite tests it most fully.
 
@@ -935,14 +1072,51 @@ insert, then retried, yields one dashboard and one entry.
   person approves again). Strict by choice; a grace window would let a copied token through.
 - **OAuth: the tenant id is readable in codes and tokens.** Only their holder, the client acting
   for that tenant, sees them; they are never logged.
-- **OAuth: a forged, well-formed credential costs one Durable Object request** (at `/mcp`,
-  `/oauth/token`, `/oauth/revoke`): the object of the tenant it names is asked, and refuses. It
-  writes nothing (above), but there is no rate limit in front of these paths yet.
+- **OAuth: no rate limit in front of `/oauth/token`, `/oauth/revoke` and OAuth bearers at
+  `/mcp` yet. Required before public exposure.** Since the review of D44 (M-2) a made-up
+  credential costs one HMAC in the Worker and reaches no tenant's object (before: one object
+  request and two billed `setAlarm` writes each; it was this README's claim that it "writes
+  nothing", which the review found false). What remains is the Workers' own CPU and requests,
+  which scale with the attacker. The Workers Rate Limiting binding (developers.cloudflare.com/
+  workers/runtime-apis/bindings/rate-limit/, read 2026-11-19, page modified 2026-11-12) was read
+  and not used for the check the review asked for: its limits are "local to the Cloudflare
+  location that your Worker runs in", "approximate" ("Requests can exceed your configured limit
+  before those updates arrive"; "Other Cloudflare locations maintain separate counts"), periods
+  of 10 or 60 s only, and the page advises against keying on IP addresses ("since these can be
+  shared by many users"), which with the tenant are the only identifiers an unauthenticated
+  request has; keyed by tenant it would hand the limit to the attacker. Its `namespace_id` is an
+  integer that "uniquely defines this rate limiting namespace within your Cloudflare account",
+  and the account holds unrelated Workers, so the deploy would also have to allocate ids it can
+  show are not in use. **Before public exposure**: a zone rate-limiting rule on
+  `vis.bitcru.sh` for these paths keyed by client IP, or the binding keyed by `<IP>|<tenant>` as a
+  per-source throttle with namespace ids allocated by `deploy/configure.mjs` per deployment.
+- **OAuth: the ruler and the gateway still bind the `Tenant` class** (`deploy/workers.json`
+  `binds_classes` lists both with why), so either can call any method of any tenant's object.
+  Neither handles untrusted text the way viz-mcp does, and `invoke` no longer accepts an identity
+  without a key, but `serviceKey` (a rotation without overlap) and `notificationTarget` (webhook
+  secrets) are reachable from both. Open: named entrypoints of viz-control for the ruler's two
+  questions and the gateway's bootstrap, as for viz-mcp (review of D44, M-1).
+- **OAuth: a concurrent refresh of the same token ends the grant, and one answer can be a 200
+  with tokens that are already dead** (review of D44, m-4, reproduced): the request that rotated
+  first stores its tokens before the other sees the reuse and revokes the grant with them. The
+  strictness is documented above and RFC 9700 §4.14.2 permits it; the client learns at its next
+  request (401). Open; a grace window would let a copied token through.
+- **OAuth: consent is not tied to the browser that started the flow** (review of D44, m-5).
+  Anyone can make an authorization link and ask an admin to run the `curl`; the warning to
+  approve only a connection one started is now shown for every redirect, but the real fix is a
+  sign-in (D44 "Would change if"). The `kind` of an approver key is a label: an agent given a
+  person's admin key can approve itself. Open.
+- **OAuth: `localhost` is accepted as a loopback redirect host** (RFC 8252 §8.3: NOT
+  RECOMMENDED; review of D44, m-7), because MCP clients register `http://localhost:<port>/…`;
+  and a signed registration does not name its issuer, so two deployments sharing
+  `OAUTH_CLIENT_KEY` would accept each other's client ids (the deploy generates one per Worker,
+  D53, so defence in depth only). Both open.
 - **OAuth: registration is open and stateless.** Anyone can register any https or loopback
   callback; the person's consent (with the host shown and the name marked unverified) is the
   gate, as with any dynamic registration. Rotating `OAUTH_CLIENT_KEY` invalidates every client
-  id: clients register again (grants and tokens are unaffected; the token endpoint compares the
-  stored client id, not the signature).
+  id, and, since the credential tag (review of D44, M-2), every code and token: clients connect
+  again and a person approves again. A rotation should therefore be what it is meant for, a
+  response to a leaked key.
 
 ## Needed changes
 

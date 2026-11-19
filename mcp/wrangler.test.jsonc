@@ -1,11 +1,17 @@
 {
-  // Tests only. The main module re-exports the REAL control plane's Tenant object, so the
-  // agent surface is tested against control/ itself; the query service and the ruler are fakes
-  // (test/fake/), reached in-process.
+  // Tests only. The main module re-exports the REAL control plane's Tenant object and its
+  // OAuthIntrospection entrypoint, so the agent surface is tested against control/ itself; the
+  // query service and the ruler are fakes (test/fake/), reached in-process. OAUTH is bound as in
+  // wrangler.jsonc (entrypoint and props), to this script; TENANT is only for the tests' own setup
+  // (provisioning tenants), never passed to the agent surface.
   "name": "viz-mcp-test",
   "main": "test/worker.ts",
   "compatibility_date": "2026-10-01",
   "durable_objects": { "bindings": [{ "name": "TENANT", "class_name": "Tenant" }] },
+  "services": [
+    { "binding": "OAUTH", "service": "viz-mcp-test", "entrypoint": "OAuthIntrospection", "props": { "caller": "viz-mcp" } },
+    { "binding": "OAUTH_AS_RULER", "service": "viz-mcp-test", "entrypoint": "OAuthIntrospection", "props": { "caller": "viz-ruler" } }
+  ],
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Tenant"] }],
   "kv_namespaces": [{ "binding": "CONFIG", "id": "viz-mcp-test-config" }],
   "vars": {

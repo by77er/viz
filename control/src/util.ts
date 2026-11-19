@@ -1,6 +1,6 @@
 import { Problem, invalid } from './errors'
 
-const B62 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+export const B62 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
 
 /** `n` characters of base62 from the system CSPRNG, without modulo bias. 22 characters are about 131 bits. */
 export function randomId(n: number): string {

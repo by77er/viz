@@ -5,6 +5,8 @@ declare namespace Cloudflare {
   }
   interface Env {
     TENANT: DurableObjectNamespace<import('../../control/src/tenant').Tenant>
+    OAUTH: Service<import('../../control/src/introspection').OAuthIntrospection>
+    OAUTH_AS_RULER: Service<import('../../control/src/introspection').OAuthIntrospection>
     CONFIG: KVNamespace
     DEFAULT_POOL?: string
     APP_URL?: string
