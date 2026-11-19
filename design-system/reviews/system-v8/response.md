@@ -303,7 +303,7 @@ fold (the row as the key's target) and rings without a change of markup; their p
 
 - `src/components.css` (v8: rings inside where clipped, the fold's row target and stacked spacing, strong words, `--mark-size`,
   segmented rows, the navigation's side padding, "Other" never cut), `project/tokens.json` (version 8), `project/README.md` (colour, focus ring, a token defined once, numbers
-  right-aligned, the segmented exception removed), `project/review.md` (the Many series row), `project/method.md`.
+  right-aligned, the segmented control's coarse rule), `project/review.md` (the Many series row), `project/method.md`.
 - Components: Chart (`preview.html`: the v8 algorithm, `legendActions`, the "node-b only" segment, the picked panel, the
   narrowed panel, Other's figures and cells; `README.md`:
   rules 3 to 7 and "Why this rule"), Table (`preview.html`: `vz-right` on Memory; `README.md`: the row as the key's target, alignment
@@ -320,4 +320,16 @@ fold (the row as the key's target) and rings without a change of markup; their p
 
 ## Housekeeping
 
-@@HOUSEKEEPING@@
+No mutant was applied in the tree: every one ran on a copy under the session's scratch area, each deleted after its run (the runner
+refuses a directory inside the tree). One corpus run was stopped early on purpose, to fix the navigation ring first; its copy and its
+browser were removed, and the corpus was run again in full on the final tree. The final runs of `check.mjs`, `npm test`, the corpus
+and the audit are on the tree as it is now, with one exception: `tools/speed.mjs` (the tie rule) changed after the corpus, and no
+check, test or mutant reads it. No edit is half-finished.
+
+The v7 copy used for "before", the raw captures, probes and JSON outputs were deleted at the end (the scratch work directory, 13 MB).
+Servers started by the audit, the harness and `shots.mjs` stopped with them; no process of this session is left running.
+
+Two slips, said plainly: once, a read-only `git status` ran inside a command by mistake (its output discarded; nothing else was
+done with git); and a `pkill -f "node tools/mutants.mjs"` meant for my own corpus run also matched another session's process of the
+same name in `/home/user/viz/query` (it kept running). Since then I stopped processes by PID only. No Cloudflare resource was touched;
+nothing was published.

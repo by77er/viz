@@ -9,7 +9,7 @@
 //   Z1-Z8   v7's fixes, each removed or overridden
 //   W1-W10, W17, W23, W24  the v7 review's 13 (reviews/system-v7/review.md, M3): overrides limited to one context (a pointer, a theme, a
 //           mouse, a clipping parent, reduced motion with a coarse pointer), lint bypasses, picked members of Other, tokens redefined locally
-//   U1-U9   v8's fixes, each removed or overridden, and the review's W23 and W24 written where only the rendered checks can see them (U1)
+//   U1-U11  v8's fixes, each removed or overridden, and the review's W23 and W24 written where only the rendered checks can see them (U1)
 //   C1-C15  the Chart rules (tools/test/chart-rules.test.mjs must fail)
 //   A1-A4   the rendered page audit (tools/audit.mjs must fail)
 //   H1-H4   harmless edits (everything must pass)
@@ -165,6 +165,8 @@ export const corpus = [
   { id: 'U7', what: "the navigation's focus ring outside its links again: cut by the strip with a coarse pointer", run: 'audit', edit: append('.vz-nav a:focus-visible { outline-offset: var(--stroke); }'), args: ['dist/preview/Nav.html'], all: [/ring is cut/] },
   { id: 'U8', what: "a wrapped segmented control's rows without their gap with a coarse pointer (v7 review, m3: drawn at its own height)", run: 'audit', edit: css('  .vz-segmented { row-gap: calc(var(--control-touch) - var(--control-md) + 2 * var(--hairline)); }', ''), args: ['dist/preview/Chart.html'], all: [/hit-area/] },
   { id: 'U9', what: "strong words at the browser's 700 again", run: 'audit', edit: css('.vz b, .vz strong { font-weight: var(--text-ui-strong-weight); }', ''), args: ['dist/preview/Section.html'] /* a claim's strong words have their own rule */, all: [/font-weight: 700/] },
+  { id: 'U10', what: "a stacked folded row's key line ending at the line \"Actions…\" is on: its hit area takes the key's last words", run: 'audit', edit: css('.vz-table[data-fold]:has(th[data-priority="1"] ~ th[data-priority="1"]) tbody td[data-key] { padding-bottom: calc((var(--control-touch) - var(--control-sm)) / 2); }', ''), args: ['reviews/system-v8/compositions/folded-list.html'], all: [/hit-area.*part of what it draws/] },
+  { id: 'U11', what: '"Other" in the legend allowed to shrink: cut beside a wide range at 320 px', run: 'audit', edit: css('.vz-table.vz-legend-table tr[data-key="other"] .vz-series-name { flex: none; }', ''), args: ['dist/reference.html'], all: [/cut.*"Other"/] },
   // ---- the Chart rules: tools/test/chart-rules.test.mjs must fail ----
   // C1 was v5's order (the filter applied before colours are assigned); under v8 a hidden series and one not in the result are the same to
   // the colours, so that order gives the same colours and the mutant became equivalent. C1 now forgets a series' slot when it leaves the screen.

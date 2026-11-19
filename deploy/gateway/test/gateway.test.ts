@@ -31,6 +31,7 @@ describe('routing', () => {
     ['/api/v1/series', 'query'],
     ['/api/v1/metadata', 'query'],
     ['/api/v1/status/buildinfo', 'query'],
+    ['/api/v1/plan', 'query'],
     ['/api/v1/control', 'control'],
     ['/api/v1/control/keys', 'control'],
     ['/api/v1/control/dashboards/d1/revisions/3', 'control'],
@@ -89,7 +90,7 @@ describe('routing', () => {
   })
 
   const notFound = [
-    '/', '/index.html', '/api', '/api/v1', '/api/v1/query_exemplars', '/api/v1/write/', '/api/v1/controls', '/api/v1/label', '/healthz/x', '/app',
+    '/', '/index.html', '/api', '/api/v1', '/api/v1/query_exemplars', '/api/v1/write/', '/api/v1/controls', '/api/v1/label', '/healthz/x', '/app', '/api/v1/plan/', '/api/v1/planx', '/api/v1/plans',
     // near misses of the trace and log paths: exact paths, one segment per path parameter
     '/v1/traces/', '/v1/tracesx', '/v1/trace', '/v1/logs/', '/v1/logsx', '/v1/log', '/v1', '/loki/api/v1/push/', '/loki/api/v1/pushx', '/otlp/v1/logs', '/api/prom/push',
     '/api/traces', '/api/traces/', '/api/traces/abc/x', '/api/v2/traces', '/api/v2/traces/', '/api/v3/traces/abc', '/api/tracesx/abc', '/api/v1/traces/abc', '/querier/api/traces/abc',

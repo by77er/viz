@@ -7,7 +7,7 @@
  *   /v1/traces, /v1/logs, /loki/api/v1/push                     → INGEST  (OTLP/HTTP traces and logs, Loki push;
  *                                                                 edge serves them only with INGEST_SIGNALS, else 404)
  *   /api/v1/query, /query_range, /labels, /label/…, /series,
- *   /metadata, /status/…                                        → QUERY   (viz-query)
+ *   /metadata, /status/…, /plan                                 → QUERY   (viz-query)
  *   Tempo: /api/traces/<id>, /api/v2/traces/<id>, /api/search,
  *   /api/search/tags, /api/v2/search/tags,
  *   /api/search/tag/<tag>/values, /api/v2/search/tag/<tag>/values,
@@ -59,7 +59,7 @@ const INGEST_PATHS = new Set(['/api/v1/write', '/api/v1/push', '/v1/metrics'])
  * (grafana.com/docs/loki/latest/reference/loki-http-api/, "Ingest logs"). Read 2026-11-19.
  */
 const SIGNAL_INGEST_PATHS = new Set(['/v1/traces', '/v1/logs', '/loki/api/v1/push'])
-const QUERY_PATHS = new Set(['/api/v1/query', '/api/v1/query_range', '/api/v1/labels', '/api/v1/series', '/api/v1/metadata'])
+const QUERY_PATHS = new Set(['/api/v1/query', '/api/v1/query_range', '/api/v1/labels', '/api/v1/series', '/api/v1/metadata', '/api/v1/plan'])
 const QUERY_PREFIXES = ['/api/v1/label/', '/api/v1/status/']
 /**
  * Tempo's and Loki's read paths that viz-query serves (behind `QUERY_SIGNALS`; query/src/sigroutes.ts),
@@ -131,6 +131,7 @@ export const ENTRYPOINTS = {
     'GET|POST /api/v1/series',
     'GET /api/v1/metadata',
     'GET /api/v1/status/buildinfo',
+    'GET|POST /api/v1/plan (what a query would read, without running it)',
     'GET /api/traces/<id>, /api/v2/traces/<id>, /api/search, /api/search/tags, /api/v2/search/tags, /api/search/tag/<tag>/values, /api/v2/search/tag/<tag>/values, /api/metrics/query_range, /api/metrics/query (Tempo; when the deployment enables traces)',
     'GET|POST /loki/api/v1/query, /loki/api/v1/query_range, /loki/api/v1/labels, /loki/api/v1/label/<name>/values, /loki/api/v1/series (Loki; when the deployment enables logs)',
   ],

@@ -39,6 +39,7 @@ const MUTANTS = [
   ['the span and log ingest paths are not routed', "if (INGEST_PATHS.has(path) || SIGNAL_INGEST_PATHS.has(path)) return 'ingest'", "if (INGEST_PATHS.has(path)) return 'ingest'"],
   ['the Tempo and Loki read paths are not routed', "  if (SIGNAL_QUERY_PATHS.has(path) || SIGNAL_QUERY_PATTERNS.some((p) => p.test(path))) return 'query'\n", ''],
   ['a trace id matched as a prefix (/api/traces/abc/x reaches query)', 'traces\\/[^/]+$/', 'traces\\//'],
+  ['/api/v1/plan is not routed (the plan-only endpoint is unreachable from outside)', "'/api/v1/metadata', '/api/v1/plan'])", "'/api/v1/metadata'])"],
   ['every /loki/ path goes to query (/loki/api/v1/tail, index, rules reach it)', "  if (SIGNAL_QUERY_PATHS.has(path) || SIGNAL_QUERY_PATTERNS", "  if (path.startsWith('/loki/') || SIGNAL_QUERY_PATHS.has(path) || SIGNAL_QUERY_PATTERNS"],
 ]
 

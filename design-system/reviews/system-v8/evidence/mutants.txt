@@ -167,3 +167,12 @@ user	2m17.105s
 sys	0m22.885s
 exit 0
 load before: 7.28 5.32 4.49 11/320 27739; after: 1.41 4.19 5.45 1/124 2826
+
+# Added after the full run: U10 and U11 (node tools/mutants.mjs <scratch dir> --only U10,U11), on the same tree plus the two corpus entries
+load average 1.31 3.40 4.47 on 4 cores
+| Mutant | What was broken | Run | Expected | Result | First line the check printed |
+|---|---|---|---|---|---|
+| U10 | a stacked folded row's key line ending at the line "Actions…" is on: its hit area takes the key's last words | audit | caught | caught | hit-area      320 coarse      light: <a.vz-link> "checkout-api p99 latency, POST /": part of what it draws (268, 38 px in) belongs to <button.vz-butto |
+| U11 | "Other" in the legend allowed to shrink: cut beside a wide range at 320 px | audit | caught | caught | cut           320 coarse      "Other" in <span.vz-series-name> "Other" is cut (60 to 95, visible 60 to 93)  (and at 320 coarse, 320 coarse, 320 coarse |
+U: 2 of 2 as expected
+Every mutant caught; every harmless edit passes.

@@ -1,5 +1,5 @@
 import { cloudflareTest } from '@cloudflare/vitest-plugin'
-import { defineConfig } from 'vitest/config'
+import { configDefaults, defineConfig } from 'vitest/config'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -27,6 +27,7 @@ export default defineConfig({
       miniflare: { bindings: { SOAK_STEPS: process.env.SOAK_STEPS ?? '400', SOAK_SEED: process.env.SOAK_SEED ?? '20261118', SOAK_SIGNALS: process.env.SOAK_SIGNALS ?? 'off,on', ...signalsCorpus() } },
     }),
   ],
-  // The suites share four cores with each other and with the soak.
-  test: { testTimeout: 120_000 },
+  // The suites share four cores with each other and with the soak. test/gateway/ runs in a
+  // script of its own (vitest.gateway.config.ts: the gateway, ingest and query together).
+  test: { testTimeout: 120_000, exclude: [...configDefaults.exclude, 'test/gateway/**'] },
 })
