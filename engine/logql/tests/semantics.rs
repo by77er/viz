@@ -149,6 +149,9 @@ fn log_query_order_limit_and_bounds() {
     assert_eq!(r.data_json().matches("\"a2\"").count() + r.data_json().matches("\"b1\"").count(), 2, "{}", r.data_json());
     let r = query_range(&s, r#"{app=~"a|b"}"#, S, 4 * S, S, &Options { limit: 1, direction: Direction::Backward, ..Options::default() }).unwrap();
     assert!(r.data_json().contains("\"a3\""), "{}", r.data_json());
+    // Backward, a tie at the limit also goes to the smaller label set.
+    let r = query_range(&s, r#"{app=~"a|b"}"#, S, 3 * S, S, &Options { limit: 1, direction: Direction::Backward, ..Options::default() }).unwrap();
+    assert!(r.data_json().contains("\"a2\""), "{}", r.data_json());
 }
 
 #[test]

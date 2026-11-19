@@ -97,9 +97,12 @@ pub fn labels(i: usize) -> Vec<(String, String)> {
     ]
 }
 
-/// The pod a one-series query asks for.
+/// The pod a one-series query asks for: the first from the middle of the pods whose
+/// `series_id` lies in the middle half of the id order, so its row group is not the one
+/// next to the footer (which a range read could join to the footer's read).
 pub fn one_pod(n: usize) -> String {
-    format!("pod-{:07}", n / 2 + 17)
+    let i = (n / 2..n).find(|i| batch::series_id(&labels(*i)).unsigned_abs() < 1 << 61).unwrap_or(n / 2);
+    format!("pod-{i:07}")
 }
 
 /// One flush unit of `n` series, ten scrapes from `t0`: a samples file and a series file.

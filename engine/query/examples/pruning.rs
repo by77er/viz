@@ -74,36 +74,45 @@ fn main() {
             let resolvable = reads.iter().any(|r| r.matchers.iter().any(|m| !(m.name == "__name__" && m.op == viz_query::MatchOp::Eq)));
             let over = verdict(decomposes, scan0, est0, series_bytes + sample_bytes0, series.len() + files.len()) != "one place";
             let (v, n_files, n_gets, rounds, bytes, scan, est, answer, wall, cpu, peak);
+            let unlimited: Result<String, String>;
             if meta {
                 // The label calls: series files only.
                 let input = ScanInput { series_files: series.iter().map(|b| &b[..]).collect(), sample_files: vec![], tail_batches: vec![] };
-                let lim = Limits { max_series: 200_000, ..Limits::default() };
-                let r = measure_n(3, || match &shape.kind {
+                let eval = |lim: Limits| match &shape.kind {
                     Kind::LabelValues { label, matchers } => viz_query::label_values_with(&input, label, matchers, start, end, &lim).map(|v| viz_query::to_json(&v).unwrap()).map_err(|e| e.message),
                     Kind::Series(m) => viz_query::series_with(&input, &[m.clone()], start, end, &lim).map(|v| viz_query::labels_to_json(&v)).map_err(|e| e.message),
                     Kind::Range(_) => unreachable!(),
-                });
+                };
+                // The Worker's limit for the label calls (`maxMetadataSeries`).
+                let r = measure_n(3, || eval(Limits { max_series: 200_000, ..Limits::default() }));
                 (answer, wall, cpu, peak) = r;
+                unlimited = eval(Limits::unlimited());
                 v = if series_bytes > 16 << 20 { "refused (max_fetch_bytes)".to_string() } else { "one place, series files only".to_string() };
                 (n_files, n_gets, rounds, bytes, scan, est) = (series.len(), series_gets, 1, series_bytes, 0, 0);
             } else {
                 let Kind::Range(q) = &shape.kind else { unreachable!() };
                 let resolve = over && resolvable && series_bytes <= 16 << 20;
-                // The engine's work: planning (when resolved) and one-place evaluation over the reads.
-                let r = measure_n(3, || {
-                    let (mplans, scan, est) = if resolve {
+                // The engine's work: planning (when resolved) and one-place evaluation over the
+                // reads, with the carrier instead of the series files when there is one.
+                let work = |limits: Limits| {
+                    let (mplans, scan, est, carrier) = if resolve {
                         let s: Vec<&[u8]> = series.iter().map(|b| &b[..]).collect();
                         let rp = sample_plan(&s, &m_idx, &reads, None, RANGE_GAP).unwrap();
                         let scan: u64 = rp.files.iter().map(|f| f.rows.unwrap()).sum();
-                        (rp.files, scan, rp.series)
+                        (rp.files, scan, rp.series, rp.carrier)
                     } else {
-                        (mp.clone(), scan0, est0)
+                        (mp.clone(), scan0, est0, None)
                     };
                     let samples: Vec<Vec<u8>> = files.iter().zip(&mplans).filter_map(|((m, _), p)| cut(&m.bytes, p)).collect();
-                    let input = ScanInput { series_files: series.iter().map(|b| &b[..]).collect(), sample_files: samples.iter().map(|b| &b[..]).collect(), tail_batches: vec![] };
-                    let a = viz_query::query_range_with(&input, q, start, end, SCRAPE, &Options::default()).map(|r| viz_query::to_json(&r.matrix).unwrap()).map_err(|e| e.message);
+                    let input = match &carrier {
+                        Some(c) => ScanInput { series_files: vec![], sample_files: samples.iter().map(|b| &b[..]).collect(), tail_batches: vec![&c[..]] },
+                        None => ScanInput { series_files: series.iter().map(|b| &b[..]).collect(), sample_files: samples.iter().map(|b| &b[..]).collect(), tail_batches: vec![] },
+                    };
+                    let a = viz_query::query_range_with(&input, q, start, end, SCRAPE, &Options { limits, ..Options::default() }).map(|r| viz_query::to_json(&r.matrix).unwrap()).map_err(|e| e.message);
                     (a, mplans, scan, est)
-                });
+                };
+                let r = measure_n(3, || work(Limits::default()));
+                unlimited = if n >= 1_000_000 && q.contains("by (job)") { Err("SKIPPED".into()) } else { work(Limits::unlimited()).0 };
                 let ((a, mplans, s, e), w, c, p) = r;
                 (answer, wall, cpu, peak) = (a, w, c, p);
                 let sb: u64 = files.iter().zip(&mplans).map(|((m, _), p)| p.bytes(m.bytes.len() as u64)).sum();
@@ -115,8 +124,11 @@ fn main() {
                     split_rows.push((shape.name, ranges.clone(), v.clone(), q.clone(), scan0, est0));
                 }
             }
-            let text = match &answer {
+            // Compared: the answers with the limits lifted (the outcome with the Worker's
+            // limits is in the table).
+            let text = match &unlimited {
                 Ok(j) => j.clone(),
+                Err(e) if e == "SKIPPED" => "SKIPPED".to_string(),
                 Err(e) => format!("ERROR {e}"),
             };
             let path = format!("{before}/{n}-{}.txt", shape.name.replace(['/', ' '], "_"));

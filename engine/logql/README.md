@@ -201,24 +201,24 @@ queries and 10 metric queries per data set, 40% of the metric ones also as insta
 plus literals). `tools/lokidiff/compare.py` compares and classifies.
 
 Final run: five generator seeds (7, 11, 12, 21, 33) × 60 data sets = 300 data sets, 1,924
-streams, 75,458 rows; a third of the streams put rows on whole seconds so rows fall exactly
-on window edges and on other streams' timestamps.
+streams, 75,502 rows; a third of the streams put rows on whole seconds, so rows fall exactly
+on window edges and on other streams' timestamps (ties at the log limit).
 
 | queries | evaluations | agree | both fail | explained difference | unexplained |
 |---|---:|---:|---:|---:|---:|
-| log (range) | 3,600 | 3,558 | 10 | 32 | 0 |
-| metric, range | 3,000 | 2,816 | 159 | 25 | 0 |
-| metric, instant | 1,195 | 1,164 | 28 | 3 | 0 |
-| literals | 86 | 86 | 0 | 0 | 0 |
-| **total** | **7,881** | **7,624** | **197** | **60** | **0** |
+| log (range) | 3,600 | 3,564 | 12 | 24 | 0 |
+| metric, range | 3,000 | 2,802 | 171 | 27 | 0 |
+| metric, instant | 1,193 | 1,148 | 37 | 8 | 0 |
+| literals | 102 | 102 | 0 | 0 | 0 |
+| **total** | **7,895** | **7,616** | **220** | **59** | **0** |
 
-"Both fail" is mostly metric queries whose samples carry errors (171: JSONParserErr 94,
-SampleExtractionErr 36, LogfmtParserErr 26, LabelFilterErr 15), 5 many-to-one matches
-without `group_left`, and 21 generated queries both reject (for example a grouping on
+"Both fail" is mostly metric queries whose samples carry errors (189: JSONParserErr 111,
+SampleExtractionErr 37, LogfmtParserErr 25, LabelFilterErr 16), 5 many-to-one matches
+without `group_left`, and 26 generated queries both reject (for example a grouping on
 `sum_over_time`). Values agree within 1e-9 relative (labels, timestamps and log lines
-exactly). Explained differences by class: `loki-empty-labels-without-label_replace` 24,
-`oracle-merged-streams-unsorted` 17, `oracle-merged-streams` 15,
-`loki-sum-ignores-parser-errors` 2, `loki-topk-ties-nondeterministic` 2.
+exactly). Explained differences by class: `loki-empty-labels-without-label_replace` 30,
+`oracle-merged-streams-unsorted` 13, `oracle-merged-streams` 11,
+`loki-topk-ties-nondeterministic` 3, `loki-sum-ignores-parser-errors` 2.
 
 Every difference is classified; none is unexplained. The classes (each a rule in
 `compare.py` with its evidence):
@@ -236,7 +236,9 @@ fixed: colons kept in sanitised keys; `| unpack != "x"` parsed as a label filter
 `Value is string, but can't find closing '"' symbol` and `Malformed JSON error` wording;
 `|>` requires non-empty captures; `ip()` label filters search the value for addresses and
 pass entries that already carry an error; `__error__` filters run after the other filters
-of their run; line filters after `decolorize`. Earlier, hand-written probes (about 320
+of their run; line filters after `decolorize`. The run with whole-second rows found one
+more: at the log limit, entries with equal timestamps go to the smaller label set in both
+directions (viz had reversed it for backward queries). Earlier, hand-written probes (about 320
 queries) fixed the window edges, `rate_counter`, error precedence, sanitising, pattern
 anchoring and the instant/range shapes before the generated runs.
 
@@ -309,9 +311,11 @@ to 53 ms. Pipelines with parsers allocate a label set per row; templates run at 
 
 ## Differences from Loki (by design or undecidable)
 
-- **Equal timestamps.** Entries that share a timestamp are ordered by stream labels, then by
-  arrival, for the limit; within a series, samples by value. Loki keeps arrival order.
-  `contracts/LOGS.md` fixes storage order as `(ts, line)` within a stream.
+- **Equal timestamps.** Across streams, entries that share a timestamp go to the smaller
+  label set first in both directions (as observed in Loki); within a stream, arrival order
+  (reversed for backward), which `contracts/LOGS.md` fixes as `(ts, line)`. Within a metric
+  series, samples that share a timestamp are ordered by value, so sums and `first`/`last`
+  do not depend on arrival order; Loki uses arrival order there.
 - **Streams merged by `drop`/`keep`** are merged by time (the API's documented order).
 - **Parser errors under `sum`** fail the query (see the differential class).
 - **`topk`/`bottomk` ties** are broken by label set (viz-promql); Loki's choice varies.

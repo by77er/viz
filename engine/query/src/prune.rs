@@ -9,6 +9,7 @@ use crate::plan::FetchRange;
 use crate::split::SplitKey;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use viz_promql::{CompiledMatcher, MatchOp, NAME_LABEL};
+use viz_storage::batch::{Row, SeriesDef};
 use viz_storage::FileIndex;
 
 /// For each index fragment (one per file, of either table): `true` if the file may hold
@@ -117,6 +118,13 @@ pub struct ReadPlan {
     /// the distinct series whose labels match and that are in the read's time range in some
     /// series file (decided per file). Exact for the lake; the tail is not in it.
     pub series: u64,
+    /// When every read selects by more than its metric's name (so every label set was
+    /// parsed): a `VZB1` batch whose series table holds exactly the series some read
+    /// selects, with one row each at a timestamp no read covers. Evaluating over the planned
+    /// sample files with this batch first among the tail batches, and no series files, gives
+    /// the same result as with the series files (the extract's carrier, `crate::split`): the
+    /// series are then not resolved a second time, and the series files need not be held.
+    pub carrier: Option<Vec<u8>>,
 }
 
 /// Which row groups of one fragment the reads use, and the rows they decode.
@@ -243,6 +251,9 @@ pub fn sample_plan(series_files: &[&[u8]], indexes: &[&str], reads: &[FetchRange
 
     // series_id -> (in the part, which reads match), decided once from its labels.
     let mut decided: HashMap<i64, (bool, Vec<bool>)> = HashMap::new();
+    // The selected series' labels, for the carrier (only when every read parses labels).
+    let carry = part.is_none() && !rs.is_empty() && rs.iter().all(|r| !r.name_only);
+    let mut selected: Vec<SeriesDef> = Vec::new();
     for (fi, f) in series_files.iter().enumerate() {
         catalog::for_each_series_with(f, fi, &want_range, &want, need_labels, &mut |row| {
             let (mine, hits) = match decided.get(&row.series_id) {
@@ -265,6 +276,11 @@ pub fn sample_plan(series_files: &[&[u8]], indexes: &[&str], reads: &[FetchRange
                             r.ms.iter().all(|m| m.matches(l))
                         };
                         hits.push(hit);
+                    }
+                    if carry && mine && hits.iter().any(|h| *h) {
+                        if let Some(l) = labels.clone() {
+                            selected.push(SeriesDef { series_id: row.series_id, labels: l });
+                        }
                     }
                     decided.insert(row.series_id, (mine, hits.clone()));
                     (mine, hits)
@@ -312,7 +328,15 @@ pub fn sample_plan(series_files: &[&[u8]], indexes: &[&str], reads: &[FetchRange
             decide(&index, &groups, rows, gap)
         })
         .collect();
-    Ok(ReadPlan { files, series })
+    let carrier = match (carry, crate::split::outside(reads)) {
+        (true, Some(nowhere)) => {
+            selected.sort_by_key(|d| d.series_id);
+            let rows: Vec<Row> = (0..selected.len()).map(|i| Row::new(i as u32, nowhere, 0.0)).collect();
+            Some(viz_storage::batch::encode(&selected, &rows).map_err(|e| QueryError::internal(format!("sample plan: carrier batch: {e}")))?)
+        }
+        _ => None,
+    };
+    Ok(ReadPlan { files, series, carrier })
 }
 
 /// The `series_id`s whose split key is in part `part` of `parts` when the key is the

@@ -413,7 +413,7 @@ fn within(iv: &[(i64, i64)], t: i64) -> bool {
 }
 
 /// A timestamp storage can hold that no range covers (for the carrier batch's rows).
-fn outside(ranges: &[FetchRange]) -> Option<i64> {
+pub(crate) fn outside(ranges: &[FetchRange]) -> Option<i64> {
     let covered = |t: i64| ranges.iter().any(|r| t >= r.min_ts && t <= r.max_ts);
     let mut cands = vec![MAX_TS, MIN_TS];
     for r in ranges {

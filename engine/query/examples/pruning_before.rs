@@ -51,15 +51,22 @@ fn main() {
             let n_gets: usize = series.iter().chain(&samples).map(|b| whole_gets(b.len())).sum();
             let v = verdict(decomposes, scan, est, bytes, n_files);
             let input = ScanInput { series_files: series.clone(), sample_files: samples.clone(), tail_batches: vec![] };
-            let opts = Options::default();
-            let (answer, wall, cpu, peak) = measure_n(3, || match &shape.kind {
-                Kind::Range(q) => viz_query::query_range_with(&input, q, start, end, SCRAPE, &opts).map(|r| viz_query::to_json(&r.matrix).unwrap()).map_err(|e| e.message),
-                Kind::LabelValues { label, matchers } => viz_query::label_values_with(&input, label, matchers, start, end, &Limits::default()).map(|v| viz_query::to_json(&v).unwrap()).map_err(|e| e.message),
-                Kind::Series(m) => viz_query::series_with(&input, &[m.clone()], start, end, &Limits::default()).map(|v| viz_query::labels_to_json(&v)).map_err(|e| e.message),
-            });
-            let text = match &answer {
-                Ok(j) => j.clone(),
-                Err(e) => format!("ERROR {e}"),
+            let eval = |limits: Limits| match &shape.kind {
+                Kind::Range(q) => viz_query::query_range_with(&input, q, start, end, SCRAPE, &Options { limits, ..Options::default() }).map(|r| viz_query::to_json(&r.matrix).unwrap()).map_err(|e| e.message),
+                Kind::LabelValues { label, matchers } => viz_query::label_values_with(&input, label, matchers, start, end, &limits).map(|v| viz_query::to_json(&v).unwrap()).map_err(|e| e.message),
+                Kind::Series(m) => viz_query::series_with(&input, &[m.clone()], start, end, &limits).map(|v| viz_query::labels_to_json(&v)).map_err(|e| e.message),
+            };
+            // The outcome with the engine's default limits (timed), and the answer with the
+            // limits lifted, for the comparison (not at 1,000,000 series for the whole metric:
+            // one place cannot hold it, before or after).
+            let (answer, wall, cpu, peak) = measure_n(3, || eval(Limits::default()));
+            let text = if n >= 1_000_000 && matches!(shape.kind, Kind::Range(ref q) if q.contains("by (job)")) {
+                "SKIPPED".to_string()
+            } else {
+                match eval(Limits::unlimited()) {
+                    Ok(j) => j,
+                    Err(e) => format!("ERROR {e}"),
+                }
             };
             std::fs::write(format!("{out}/{n}-{}.txt", shape.name.replace(['/', ' '], "_")), &text).unwrap();
             let short = match &answer {

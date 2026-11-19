@@ -109,7 +109,16 @@ proptest! {
             let (series, samples) = planned(&s, &series_plan, &sp.files);
             let got = run(&input(&series, &samples, &s.tail), q, start, end, step);
             let want = run(&whole, q, start, end, step);
-            prop_assert_eq!(got, want, "query {}", q);
+            prop_assert_eq!(&got, &want, "query {}", q);
+            // With the carrier instead of the series files (the series not resolved again).
+            if let Some(carrier) = &sp.carrier {
+                let mut tail = vec![carrier.clone()];
+                tail.extend(s.tail.iter().cloned());
+                let got = run(&input(&[], &samples, &tail), q, start, end, step);
+                prop_assert_eq!(&got, &want, "query {} with the carrier", q);
+            } else {
+                prop_assert!(reads.iter().any(|r| r.matchers.iter().all(|m| m.name == "__name__" && m.op == MatchOp::Eq)), "query {}: no carrier, yet every read parses labels", q);
+            }
             // The bound still bounds: what select loads from the lake never exceeds the rows planned.
             let rows: u64 = sp.files.iter().map(|f| f.rows.unwrap()).sum();
             let lake_only = input(&series, &samples, &[]);

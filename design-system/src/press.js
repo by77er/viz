@@ -2,7 +2,7 @@
    first budget row). CSS :active alone does not do that for a finger: Chromium applies it to a touch at the release, or after a delay, and
    not while the finger is held (v5 review, M3: "never" while a finger was down). This sets data-pressed, the same state as :active in
    components.css, on the pressed control and its ancestors from pointerdown until the press ends. It changes no layout and starts no work.
-   Load it once per page, after the stylesheet: <script src="viz-press.js" defer></script>. */
+   Load it once per page, after the stylesheet (a script element whose src is viz-press.js, deferred). */
 (() => {
   if (window.vzPress) return
   window.vzPress = true

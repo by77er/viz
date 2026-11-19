@@ -163,6 +163,12 @@ export interface ReadPlan {
   /** Series the reads select (summed over reads, per file in their window): exact for the lake. */
   series: number
   files: FilePlan[]
+  /**
+   * When every read selects by more than a name: a batch of exactly the selected series
+   * (rows at a time no read covers). Evaluate with it FIRST among the tail batches and no
+   * series files: same answer, without resolving the series again or holding the series files.
+   */
+  carrier: Uint8Array | null
 }
 
 /** Ranges less than this many bytes apart are read as one (contracts/TABLES.md, "Reading part of a file"). */
@@ -631,7 +637,11 @@ export function createQueryEngine(module: WebAssembly.Module): QueryEngine {
       const req = new Request().u64(limit('gap', gap))
       if (part) req.u8(1).strs(part.without).count('part', part.part).count('parts', part.parts)
       else req.u8(0)
-      return call('viz_q_sample_plan', req.ranges(reads).files(seriesFiles).strs(indexes), json<ReadPlan>)
+      return call('viz_q_sample_plan', req.ranges(reads).files(seriesFiles).strs(indexes), (payload) => {
+        const n = new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getUint32(0, true)
+        const plan = JSON.parse(text.decode(payload.subarray(4, 4 + n))) as Omit<ReadPlan, 'carrier'>
+        return { ...plan, carrier: payload.byteLength > 4 + n ? payload.slice(4 + n) : null }
+      })
     },
     partPlan: (indexes, ranges, part, parts, gap = RANGE_GAP) =>
       call('viz_q_part_plan', new Request().u64(limit('gap', gap)).count('part', part).count('parts', parts).ranges(ranges).strs(indexes), json<FilePlan[]>),

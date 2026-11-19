@@ -153,15 +153,15 @@ pub(crate) fn eval_logs(src: &dyn LogSource, e: &LogExpr, start: i64, end: i64, 
     let ms = crate::source::compile_matchers(&e.matchers)?;
     let mut err: Option<Error> = None;
     let req = SelectRequest { matchers: &e.matchers, start_ns: start, end_ns: end, required: &required };
-    // Entries that share a timestamp are ordered by their stream's labels, then by arrival,
-    // so that the limit does not depend on the order streams are read in.
+    // Entries that share a timestamp are ordered by their stream's labels (ascending in both
+    // directions, as observed in Loki), then by arrival (reversed for backward), so that the
+    // limit does not depend on the order streams are read in.
     let trim = |entries: &mut Vec<(i64, u64, usize, String)>, keys: &Vec<Vec<(String, String)>>| {
         entries.sort_by(|a, b| {
-            let o = a.0.cmp(&b.0).then_with(|| keys[a.2].cmp(&keys[b.2])).then(a.1.cmp(&b.1));
             if fwd {
-                o
+                a.0.cmp(&b.0).then_with(|| keys[a.2].cmp(&keys[b.2])).then(a.1.cmp(&b.1))
             } else {
-                o.reverse()
+                b.0.cmp(&a.0).then_with(|| keys[a.2].cmp(&keys[b.2])).then(b.1.cmp(&a.1))
             }
         });
         entries.truncate(limit);

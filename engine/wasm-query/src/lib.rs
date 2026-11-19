@@ -60,7 +60,7 @@
 //! | `viz_q_card_part` | `i64 start, i64 end, u32 part, u32 parts, u64 max_series, u64 max_pairs, u32 n, str* (series files), u32 m, str* (tail batches)` | a cardinality summary (`viz_query::cardinality::Summary`) |
 //! | `viz_q_card_report` | `u64 max_series, u64 max_pairs, u32 limit, i64 start, i64 end, i64 lookback_start, u32 n, str* (summaries)` | `u32 n`, the `/status/tsdb` JSON (n bytes), then the `/status/cardinality` JSON |
 //! | `viz_q_file_plan` | `u64 gap, ranges, u32 n, str* (index fragments)` | JSON `[plan, …]`, one per fragment: how to read each file by name and time (`viz_query::file_plan`) |
-//! | `viz_q_sample_plan` | `u64 gap, u8 has_part, [key, u32 part, u32 parts], ranges (the reads), u32 n, str* (series files, whole or sparse), u32 m, str* (sample files' index fragments)` | JSON `{"series":n,"files":[plan, …]}`: the matchers resolved against the series files, and how to read each sample file (`viz_query::sample_plan`) |
+//! | `viz_q_sample_plan` | `u64 gap, u8 has_part, [key, u32 part, u32 parts], ranges (the reads), u32 n, str* (series files, whole or sparse), u32 m, str* (sample files' index fragments)` | `u32 n`, JSON `{"series":n,"files":[plan, …]}` (n bytes), then the carrier batch (`VZB1`; empty: none): the matchers resolved against the series files, how to read each sample file, and the selected series to evaluate with instead of the series files (`viz_query::sample_plan`) |
 //! | `viz_q_part_plan` | `u64 gap, u32 part, u32 parts, ranges, u32 n, str* (sample files' index fragments)` | JSON `[plan, …]`: one split part's row groups by its `series_id` range, from the fragments alone (`viz_query::part_plan`) |
 //! | `viz_q_abi_version` | (no request) | returns 3 |
 //!
@@ -495,8 +495,13 @@ fn do_sample_plan(mut r: Req<'_>) -> Res<Vec<u8>> {
     }
     let filter = part.as_ref().map(|(key, part, parts)| PartFilter { key, part: *part, parts: *parts });
     let p = viz_query::sample_plan(&series, &index_texts(&raw), &ranges, filter, gap)?;
-    let v = serde_json::json!({"series": p.series, "files": p.files.iter().map(plan_json).collect::<Vec<_>>()});
-    Ok(v.to_string().into_bytes())
+    let v = serde_json::json!({"series": p.series, "files": p.files.iter().map(plan_json).collect::<Vec<_>>()}).to_string();
+    let carrier = p.carrier.unwrap_or_default();
+    let mut out = Vec::with_capacity(4 + v.len() + carrier.len());
+    out.extend_from_slice(&(v.len() as u32).to_le_bytes());
+    out.extend_from_slice(v.as_bytes());
+    out.extend_from_slice(&carrier);
+    Ok(out)
 }
 
 fn do_split_plan(mut r: Req<'_>) -> Res<Vec<u8>> {

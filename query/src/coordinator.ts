@@ -657,6 +657,8 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
       // matchers against the series files first: then only the sample row groups that hold a
       // selected series are counted and read, and the series estimate is exact. One more round
       // of reads, so only when it can change the answer.
+      // The selected series, to evaluate with instead of the series files (engine `samplePlan`).
+      let carrier: Uint8Array | null = null
       if (!explain && hooks.forceLeaves === undefined && overOnePlace(scan, seriesEst, lakeBytesAll, series.length + samples.length) && resolvable(reads) && sumPlanned(seriesPlans) <= c.limits.maxFetchBytes) {
         let got: Uint8Array[]
         try {
@@ -673,6 +675,9 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
         samplePlans = toPlanned(samples, rp.files)
         samples = samples.filter((_, i) => rp.files[i]!.read !== 'skip')
         seriesEst = rp.series
+        carrier = rp.carrier
+        // With the carrier, the series files are not needed again: let them go.
+        if (carrier) for (const p of seriesPlans) have.delete(planKey(p))
         lakeBytesAll = sumPlanned(seriesPlans) + sumPlanned(samplePlans)
         c.cost.scanSamples = scan
         c.cost.seriesEstimate = seriesEst
@@ -738,7 +743,7 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
       // Tails strictly after the plan; shards and leaves in parallel.
       const shards = await shardsOf(c, snap.watermarks)
       c.cost.shardsAsked = shards.length
-      const files = fetchFiles(c, [...seriesPlans, ...samplePlans], have).then(
+      const files = fetchFiles(c, carrier ? samplePlans : [...seriesPlans, ...samplePlans], have).then(
         (bytes) => ({ ok: true as const, bytes }),
         (error: unknown) => ({ ok: false as const, error }),
       )
@@ -773,7 +778,11 @@ export async function gather<T>(c: Context, ranges: FetchRange[], reads: FetchRa
 
       if (hooks.sampleOrder) hooks.sampleOrder(samples.map((f) => f.key))
       const all = got.ok ? got.bytes : []
-      const input: ScanInput = { seriesFiles: all.slice(0, seriesPlans.length), sampleFiles: all.slice(seriesPlans.length), tailBatches }
+      // The carrier goes first among the tail batches: its rows lie outside every range, so
+      // it only names the series (engine `sample_plan`), and the series files are not needed.
+      const input: ScanInput = carrier
+        ? { seriesFiles: [], sampleFiles: all, tailBatches: [carrier, ...tailBatches] }
+        : { seriesFiles: all.slice(0, seriesPlans.length), sampleFiles: all.slice(seriesPlans.length), tailBatches }
       return timed(c, evaluate, input)
     }
   } finally {

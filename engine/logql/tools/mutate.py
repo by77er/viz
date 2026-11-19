@@ -66,9 +66,9 @@ MUTANTS = [
      'LineFilterOp::Contains => {\n                    let lits', 'LineFilterOp::Contains | LineFilterOp::NotContains => {\n                    let lits'),
     (21, 'rate_counter ignores counter resets', 'src/eval.rs',
      'if v < prev {\n            increase += prev;\n        }', ''),
-    (22, 'equal timestamps in a log query not tie-broken by stream labels', 'src/eval.rs',
-     'let o = a.0.cmp(&b.0).then_with(|| keys[a.2].cmp(&keys[b.2])).then(a.1.cmp(&b.1));',
-     'let o = a.0.cmp(&b.0).then(a.1.cmp(&b.1));'),
+    (22, 'equal timestamps in a backward log query tie-broken by descending stream labels', 'src/eval.rs',
+     'b.0.cmp(&a.0).then_with(|| keys[a.2].cmp(&keys[b.2])).then(b.1.cmp(&a.1))',
+     'b.0.cmp(&a.0).then_with(|| keys[b.2].cmp(&keys[a.2])).then(b.1.cmp(&a.1))'),
 ]
 
 
