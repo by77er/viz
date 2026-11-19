@@ -2,13 +2,13 @@ import { evictDurableObject } from 'cloudflare:test'
 import { env, exports } from 'cloudflare:workers'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { parquetMetadata, parquetReadObjects } from '../../bench/node_modules/hyparquet/src/index.js'
-import type { FileEntry, LedgerChange } from '../../contracts/ledger'
+import { type FileEntry, type LedgerChange, decodeLedgerSegment, parseLedgerLogKey } from '../../contracts/ledger'
 import { bitsOf, seriesId } from '../../engine/wasm/test/vzb1'
-import { breakLedgerLog, dataKeys, discardRecorded, listKeys, liveKeys, loseLedgerStorage, read, sha256Hex } from '../../flush/test/helpers'
+import { breakLedgerLog, dataKeys, discardRecorded, flushSettled, listKeys, liveKeys, loseLedgerStorage, read, sha256Hex } from '../../flush/test/helpers'
 import { StaleTail } from '../../flush/test/read'
 import { type Segment, Shard } from '../../shard/src/shard'
 import { engine, flushTenant } from '../src/index'
-import { type Tenant, type World, flushAll, ledgerOf, prwWorkload, sealAll, sendAll, sendPrw, sendPrwWithLimits, shardOf, world } from './world'
+import { type Tenant, type World, drainLedger, flushAll, ledgerOf, prwWorkload, sealAll, sendAll, sendPrw, sendPrwWithLimits, shardOf, world } from './world'
 
 // These tests drive flush by hand, step by step. The stack's real flush queue would flush
 // behind their backs as soon as a shard seals, so seal notifications are dropped here;
@@ -45,12 +45,16 @@ async function expectExact(w: World, opts: Parameters<typeof read>[2] = {}): Pro
 const planOf = async (t: Tenant, table: 'metric_samples' | 'metric_series'): Promise<FileEntry[]> =>
   (await ledgerOf(t).plan({ table, minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })).files
 
+/** The `add_unit` changes in the tenant's change log in R2 (its segments, contracts/LEDGER-LOG.md), each checked against its key. */
 async function loggedUnits(tenant: string): Promise<LedgerChange[]> {
+  await drainLedger(tenant)
   const out: LedgerChange[] = []
   for (const key of await listKeys(`${env.CELL}/ledger/tenant=${tenant}/`)) {
-    if (key.endsWith('base.json')) continue
-    const c = await (await env.BUCKET.get(key))!.json<LedgerChange>()
-    if (c.kind === 'add_unit') out.push(c)
+    const p = parseLedgerLogKey(key)
+    if (p?.type !== 'segment') continue
+    const d = decodeLedgerSegment(await (await env.BUCKET.get(key))!.text(), { ledgerIncarnation: p.ledgerIncarnation, firstVersion: p.firstVersion, lastVersion: p.lastVersion, tenant })
+    if (d.status !== 'ok') throw new Error(`${key}: ${d.status}: ${d.reason}`)
+    for (const c of d.changes) if (c.kind === 'add_unit') out.push(c)
   }
   return out
 }
@@ -262,6 +266,9 @@ describe('flush is safe to repeat', () => {
       [w.a, w.b].flatMap((t) => w.shards.flatMap((s) => [exports.Flush.flushTenant(t.name, s), exports.Flush.flushTenant(t.name, s)])),
     )
     for (const r of runs) expect(r.status).toBe('ok')
+    // The runs admitted the units; the ledgers log them in the background, and the queue's
+    // retry of an `awaitingLog` run tells the shards `recorded`. Do both now.
+    for (const r of await flushAll(w)) expect(r).toMatchObject({ status: 'ok', awaitingLog: false })
     await expectBoth(w, async (t) => {
       await expectLedgerSound(t)
       const keys = await dataKeys(t.name)
@@ -343,7 +350,8 @@ describe('flush is safe to repeat', () => {
     // Evict everything between every two steps of every flush.
     let evictions = 0
     const hooks = { afterPut: async () => { evictions += await evictAll() }, afterAddUnit: async () => { evictions += await evictAll() }, afterRecorded: async () => { evictions += await evictAll() } }
-    for (const t of [w.a, w.b]) for (const s of w.shards) expect(await flushTenant(env, engine, t.name, s, { hooks })).toMatchObject({ status: 'ok', awaitingLog: false })
+    // Settled (flush, the ledger's drain, flush again), every run with the evictions.
+    for (const t of [w.a, w.b]) for (const s of w.shards) expect(await flushSettled(env, engine, t.name, s, { hooks })).toMatchObject({ status: 'ok', awaitingLog: false })
     expect(evictions).toBeGreaterThanOrEqual(8)
     await evictAll()
     await expectExact(w)

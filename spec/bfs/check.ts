@@ -14,7 +14,7 @@
 import { closeSync, mkdirSync, openSync, readSync, rmSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
 import { deflateRawSync, inflateRawSync } from 'node:zlib'
-import { type Cfg, type St, PROPS, init, successors, queryDone } from './model.ts'
+import { type Cfg, type St, PROPS, init, successors, goalOf, orphans } from './model.ts'
 
 /**
  * The breadth-first frontier lives on disk (one file per level), so memory holds only the
@@ -185,6 +185,7 @@ export function check(c: Cfg, o: Opts): Result {
   const tab = new Table()
   const parent = new IntVec()
   const keepGraph = c.liveness
+  const goal = goalOf(c)
   const edgeStart = new IntVec()
   const edges = new IntVec()
   const doneIds = new IntVec()
@@ -221,7 +222,7 @@ export function check(c: Cfg, o: Opts): Result {
       if (keepGraph) {
         while (edgeStart.n < from) edgeStart.push(edges.n) // ids are expanded in order
         edgeStart.push(edges.n)
-        if (queryDone(s)) doneIds.push(from)
+        if (goal(s)) doneIds.push(from)
       }
       let bad: { prop: string; id: number } | null = null
       successors(c, s, (_label, ns) => {
@@ -282,16 +283,26 @@ export function check(c: Cfg, o: Opts): Result {
   for (let i = 0; i < n; i++) {
     if (!good[i]) {
       // ids are assigned in breadth-first order: the first bad id is a shallowest one
-      const r = fail('LIVE_QueryCanComplete', i)
-      r.note = 'from the last state of the trace no continuation completes the query'
+      const r = fail(c.goal === 'clean' ? 'LIVE_NoLeak' : 'LIVE_QueryCanComplete', i)
+      if (c.goal === 'clean') {
+        const last = rebuildState(c, tab, parent, i)
+        r.note = `from the last state of the trace no continuation deletes every unlisted object; unlisted then: ${orphans(c, last).join('; ')}`
+      } else r.note = 'from the last state of the trace no continuation completes the query'
       return r
     }
   }
   return finish('holds')
 }
 
+/** The state with id `id`, by re-expanding along the parent chain. */
+function rebuildState(c: Cfg, tab: Table, parent: IntVec, id: number): St {
+  let last = init(c)
+  rebuild(c, tab, parent, id, (s) => { last = s })
+  return last
+}
+
 /** Rebuild the labelled trace to state `id` by re-expanding along the parent chain. */
-function rebuild(c: Cfg, tab: Table, parent: IntVec, id: number): string[] {
+function rebuild(c: Cfg, tab: Table, parent: IntVec, id: number, end?: (s: St) => void): string[] {
   const chain: number[] = []
   for (let x = id; x !== -1; x = parent.d[x]!) chain.push(x)
   chain.reverse()
@@ -308,5 +319,6 @@ function rebuild(c: Cfg, tab: Table, parent: IntVec, id: number): string[] {
     out.push((found as { label: string }).label)
     s = (found as { ns: St }).ns
   }
+  end?.(s)
   return out
 }

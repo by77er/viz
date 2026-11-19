@@ -168,7 +168,6 @@ fn generate(n: usize) -> Unit {
             match f.table {
                 viz_storage::Table::MetricSeries => unit.series_files.push(f.bytes),
                 viz_storage::Table::MetricSamples => unit.sample_files.push(f.bytes),
-                _ => {}
             }
         }
     }
@@ -281,11 +280,19 @@ fn query_section(n: usize, unit: &Unit, runs: usize) {
         Ok(r) => println!("query   one place, default limits: {:.1} ms, peak heap {:.1} MiB, {} samples of {} series loaded", t, mib(peak), r.stats.samples, r.stats.series),
         Err(e) => println!("query   one place, default limits: REFUSED after {:.1} ms (peak heap {:.1} MiB): {}", t, mib(peak), e.message),
     }
-    let lifted = Options { limits: Limits::unlimited(), ..Options::default() };
-    let (r, t, peak) = timed(runs, || viz_query::query_range_with(&lake, QUERY, start, end, step, &lifted).unwrap());
-    assert_eq!(r.matrix.series.len(), JOBS);
-    let reference = viz_query::to_json(&r.matrix).unwrap();
-    println!("query   one place, limits lifted: {} , peak heap {:.1} MiB, {} samples of {} series", fmt_ms(t), mib(peak), r.stats.samples, r.stats.series);
+    // One place with the limits lifted holds about 90 bytes a sample (91 MiB at 100,000
+    // series): above 200,000 series that is skipped, to keep this process under the
+    // shared machine's 1.5 GB, and the split result is compared with 32 parts instead.
+    let mut reference = if n <= 200_000 {
+        let lifted = Options { limits: Limits::unlimited(), ..Options::default() };
+        let (r, t, peak) = timed(runs, || viz_query::query_range_with(&lake, QUERY, start, end, step, &lifted).unwrap());
+        assert_eq!(r.matrix.series.len(), JOBS);
+        println!("query   one place, limits lifted: {} , peak heap {:.1} MiB, {} samples of {} series", fmt_ms(t), mib(peak), r.stats.samples, r.stats.series);
+        Some(viz_query::to_json(&r.matrix).unwrap())
+    } else {
+        println!("query   one place, limits lifted: not run above 200,000 series (about 90 B a sample of heap; see the source)");
+        None
+    };
 
     // What the Worker would decide (query/src/coordinator.ts): split only above
     // splitAboveSamples (1.5 M) of scan bound; leaves from samples alone.
@@ -299,10 +306,12 @@ fn query_section(n: usize, unit: &Unit, runs: usize) {
 
     let SplitPlan::Split { fragments, key } = viz_query::split_plan(QUERY, &defaults) else { panic!("the query splits") };
     let ranges = viz_query::plan(QUERY, start, end, step).unwrap();
+    let mut tried = Vec::new();
     for parts in [by_series.clamp(2, 32) as u32, 32] {
-        if parts == 32 && by_series >= 32 && n < 1_000_000 {
+        if tried.contains(&parts) {
             continue;
         }
+        tried.push(parts);
         let q_samples = MAX_QUERY_SAMPLES.min(parts as u64 * 2_000_000);
         let q_series = MAX_QUERY_SERIES.min(parts as u64 * 20_000);
         // Reader groups: at most six reads, so three (series, samples) file pairs.
@@ -345,8 +354,17 @@ fn query_section(n: usize, unit: &Unit, runs: usize) {
         let (merged, tm, pm) = once(|| split::merge_range(QUERY, start, end, step, &Options { limits, ..Options::default() }, &outputs));
         let outcome = match merged {
             Ok(m) => {
-                assert_eq!(viz_query::to_json(&m.matrix).unwrap(), reference, "split equals one place");
-                "answers, identical to one place".to_string()
+                let json = viz_query::to_json(&m.matrix).unwrap();
+                match &reference {
+                    Some(r) => {
+                        assert_eq!(&json, r, "split equals one place");
+                        "answers, identical to one place".to_string()
+                    }
+                    None => {
+                        reference = Some(json);
+                        "answers (the reference for the next split)".to_string()
+                    }
+                }
             }
             Err(e) => format!("REFUSED: {}", e.message),
         };

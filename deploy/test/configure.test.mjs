@@ -1,5 +1,6 @@
 // node --test deploy/test/: configure.mjs, without the network.
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { configure, durableObjectsOf, generateWorker, loadPlan, queuesOf } from '../configure.mjs'
@@ -112,4 +113,13 @@ test('configure writes every config and a manifest in dependency order', () => {
   assert.deepEqual(m.order, ['viz-citest-ingest', 'viz-citest-control', 'viz-citest-query', 'viz-citest-gateway'])
   assert.deepEqual(m.resources.r2, ['viz-citest-lake'])
   assert.ok(m.workers.filter((w) => !w.deploy).every((w) => w.reason))
+})
+
+test('the health path recorded for each backend is the one the gateway asks through its binding', () => {
+  // gateway/src/index.ts HEALTH_PATHS, read from the source (it is TypeScript for workerd).
+  const src = readFileSync(join(REPO_ROOT, 'deploy', 'gateway', 'src', 'index.ts'), 'utf8')
+  const block = /export const HEALTH_PATHS[^=]*= \{([^}]*)\}/.exec(src)[1]
+  const asked = Object.fromEntries([...block.matchAll(/(\w+): '([^']+)'/g)].map((m) => [m[1], m[2]]))
+  assert.deepEqual(Object.keys(asked).sort(), ['control', 'ingest', 'query'])
+  for (const [backend, path] of Object.entries(asked)) assert.equal(worker(`viz-${backend}`).health, path, `viz-${backend}`)
 })

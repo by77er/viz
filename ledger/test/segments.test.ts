@@ -446,6 +446,24 @@ describe('the drain on its own', () => {
     expect(await readLog(tenant)).toHaveLength(3)
     expect(await runDurableObjectAlarm(l)).toBe(false)
   })
+
+  it('a drain that writes everything deletes the alarm (nothing left to do); a commit sets it again; a failed drain keeps it', async () => {
+    const { l } = open()
+    const alarm = () => runInDurableObject(l, (_i, st) => st.storage.getAlarm())
+    await l.addUnit(pair(1, 3))
+    expect(await alarm()).not.toBeNull()
+    await l.drain()
+    expect(await alarm()).toBeNull()
+    await l.addUnit(pair(4, 4))
+    expect(await alarm()).not.toBeNull()
+    await breakR2(l)
+    expect(await failure(l, (i) => i.drain())).toMatch(/injected R2 failure/)
+    expect(await alarm()).not.toBeNull()
+    await heal(l)
+    await l.drain()
+    expect(await alarm()).toBeNull()
+    expect(await loggedOf(l)).toBe(4)
+  })
 })
 
 describe('readers refuse what they do not know (contracts/COMPATIBILITY.md §3.2)', () => {

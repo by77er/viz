@@ -75,8 +75,9 @@ per-tenant ledger has none of those problems and is a far smaller thing to prove
 | `Ruler` | Durable Object, one per tenant rule shard | Rule ticks (one batch evaluation per group), alert state machine, acknowledgements, backtests, hands transitions to the notifier. Serves the Prometheus `/api/v1/rules` and `/api/v1/alerts` shapes and viz's `/api/v1/monitors` | every rule interval |
 | `Notifier` | Durable Object, one per tenant | Routing, grouping, inhibition, silences, and the delivery outbox. One per tenant because grouping spans that tenant's rulers | when alerts change, and on its group timers |
 | `Scraper` | Durable Object, one per target group | Pull ingest | every scrape interval |
-| `Tenant` | Durable Object, one per tenant | Config, keys, dashboards and revisions, rule definitions, retention policy | on edits; reads are cached |
-| `app` | Worker + static assets | UI, REST and Prometheus/Tempo-compatible APIs, MCP, OAuth | per request |
+| `Tenant` | Durable Object, one per tenant | Keys, dashboards and revisions, proposed changes, settings (retention, limits, pool), audit log; publishes what the data path needs to KV. Rule groups are held by the `Ruler` | per control-plane request; the data path reads its KV records, never the object |
+| `app` | Worker + static assets | UI, REST and Prometheus/Tempo-compatible APIs, OAuth | per request |
+| `mcp` | Worker | The agent surface: a stateless MCP server and the same tools as JSON under `/api/v1/agent/…`; no Durable Object (§8, D25–D27) | per agent call |
 | `LiveTail` | Durable Object | Hibernating WebSockets for live log tail | while a viewer is connected |
 | `jobs` | Workflows | Compaction, rollups, retention, orphan sweep, scrubbing, investigations. As built, compaction, retention and deletion are a per-tenant maintenance run on a queue (§5.2) | scheduled or triggered |
 | Heavy worker | Container (fronted by a Durable Object) | The same engine for work that exceeds isolate limits | on demand |
@@ -408,10 +409,12 @@ result, limited per tenant, and exposed to agents through `validate_query`.
   search / get / read dashboards, the dashboard schema, write a dashboard, list revisions,
   list and get monitors, annotate (refused until an annotation store exists). Results are
   compact text within a token budget, with tenant text fenced as data, and the same page as
-  structured content. A JSON API (`/api/v1/agent/…`) serves the same tools through the same
-  dispatcher (D27); the in-app assistant, not built yet, is to call them too. Writes by agents are dry runs and proposals, for a new dashboard or a
-  change to one; a person applies them (D29). Rendering a live panel inside an agent host
-  (MCP Apps) comes after launch.
+  structured content; each result returns its usage counters, and budgets per identity are
+  the caller's to keep (D28). A JSON API (`/api/v1/agent/…`) serves the same tools through
+  the same dispatcher (D27); the in-app assistant, not built yet, is to call them too. Writes
+  by agents are dry runs and proposals, for a new dashboard or a change to one; a person
+  applies them (D29). Rendering a live panel inside an agent host (MCP Apps) comes after
+  launch.
 - **Compatibility.** The Prometheus and Tempo HTTP APIs are served, so Grafana and existing
   tooling work against viz from day one.
 - **Stack.** React 19 single-page app on Workers static assets; Hono; TanStack Router and

@@ -679,6 +679,41 @@
     }
    }
   },
+  "/api/v1/monitors/detectors": {
+   "get": {
+    "operationId": "listDetectors",
+    "summary": "What each anomaly detector is for, its defaults and the evidence behind them",
+    "description": "Scores are from the Numenta Anomaly Benchmark under a held-out protocol (parameters chosen on one half of the files, scored on the other). Nothing here was measured on viz's own data; a configuration chosen after seeing the results is marked as such and is never a default.",
+    "tags": [
+     "monitors"
+    ],
+    "security": [
+     {
+      "apiKey": [
+       "monitors:read"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Detectors",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Detectors"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     }
+    }
+   }
+  },
   "/api/v1/monitors/notifier": {
    "get": {
     "operationId": "getNotifierConfig",
@@ -1820,7 +1855,7 @@
     "required": [
      "name"
     ],
-    "description": "Give either `expr`, or `query` with `condition`.",
+    "description": "Give either `expr`, or `query` with `condition`, or `query` with `anomaly`.",
     "properties": {
      "name": {
       "type": "string"
@@ -1857,7 +1892,7 @@
      },
      "group": {
       "type": "string",
-      "description": "Default: monitors/<interval>, shared by monitors with the same interval"
+      "description": "Default: monitors/<interval> (anomaly monitors: anomalies/<interval>), shared by monitors with the same interval"
      },
      "description": {
       "type": "string"
@@ -1910,6 +1945,9 @@
      },
      "dryRun": {
       "type": "boolean"
+     },
+     "anomaly": {
+      "$ref": "#/components/schemas/AnomalyInput"
      }
     }
    },
@@ -1976,6 +2014,9 @@
       "items": {
        "$ref": "#/components/schemas/Problem"
       }
+     },
+     "history": {
+      "$ref": "#/components/schemas/AnomalyHistory"
      }
     }
    },
@@ -2143,8 +2184,10 @@
        "ok",
        "no_data",
        "error",
-       "unknown"
-      ]
+       "unknown",
+       "warming"
+      ],
+      "description": "warming: an anomaly monitor whose detector has not scored anything yet"
      },
      "firingSince": {
       "type": [
@@ -2293,6 +2336,17 @@
      },
      "historyRecorded": {
       "type": "boolean"
+     },
+     "anomaly": {
+      "oneOf": [
+       {
+        "$ref": "#/components/schemas/MonitorAnomaly"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "Set for an anomaly monitor"
      }
     }
    },
@@ -2582,7 +2636,7 @@
     "required": [
      "expr"
     ],
-    "description": "A Prometheus rule: `alert` or `record`. viz adds no_data, no_data_for, no_data_expr and monitor to alerting rules.",
+    "description": "A Prometheus rule: `alert` or `record`. viz adds no_data, no_data_for, no_data_expr and monitor to alerting rules, and `anomaly` (an anomaly rule: `expr` is the series to watch and a detector decides which series alert).",
     "properties": {
      "alert": {
       "type": "string"
@@ -2638,6 +2692,51 @@
      },
      "monitor": {
       "type": "object"
+     },
+     "anomaly": {
+      "type": "object",
+      "description": "detector, params, unit, severity, max_series (and given, written by the export). An export with extensions=false leaves anomaly rules out.",
+      "properties": {
+       "detector": {
+        "enum": [
+         "ewma",
+         "threshold",
+         "robust_z",
+         "seasonal",
+         "cusum"
+        ]
+       },
+       "params": {
+        "type": "object",
+        "additionalProperties": {
+         "type": [
+          "number",
+          "string",
+          "boolean",
+          "null"
+         ]
+        }
+       },
+       "unit": {
+        "type": "string"
+       },
+       "severity": {
+        "enum": [
+         "page",
+         "ticket",
+         "info"
+        ]
+       },
+       "max_series": {
+        "type": "integer"
+       },
+       "given": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       }
+      }
      }
     }
    },
@@ -2913,6 +3012,404 @@
         "description": "What this step can and cannot show"
        }
       }
+     }
+    }
+   },
+   "AnomalyInput": {
+    "type": "object",
+    "description": "An anomaly monitor: `query` is the series to watch (a gauge, or rate() of a counter) and a detector, not a condition, decides when it alerts. Defaults follow held-out evidence (GET /api/v1/monitors/detectors): detector ewma with halfLifePoints 100 and k 8, or threshold when severity is page; severity ticket (info for cusum); for 0s and keepFiringFor 10m; maxSeries 100.",
+    "properties": {
+     "detector": {
+      "enum": [
+       "ewma",
+       "threshold",
+       "robust_z",
+       "seasonal",
+       "cusum"
+      ],
+      "description": "Default ewma; threshold when severity is page (then params.above or params.below is required). stl, pelt and burn_rate are refused: they explain, they do not page."
+     },
+     "params": {
+      "type": "object",
+      "additionalProperties": {
+       "type": [
+        "number",
+        "string",
+        "boolean",
+        "null"
+       ]
+      },
+      "description": "The detector's parameters by name (anomaly/src/detectors). Not stepMs (the interval) or unit (use unit). Unknown names and wrong types are refused."
+     },
+     "unit": {
+      "type": "string",
+      "maxLength": 32,
+      "description": "Printed after numbers in the explanation, e.g. ms"
+     },
+     "severity": {
+      "enum": [
+       "page",
+       "ticket",
+       "info"
+      ]
+     },
+     "maxSeries": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Most series the query may return. Above it the evaluation is refused (state error, status series_cap_exceeded): nothing is scored and no alert changes; series are never dropped. Default 100."
+     }
+    }
+   },
+   "AnomalyHistory": {
+    "type": "object",
+    "required": [
+     "tick",
+     "coldStart",
+     "lookbackMs",
+     "tickLookbackMs",
+     "resolutionMs",
+     "minPoints",
+     "incremental",
+     "reason"
+    ],
+    "description": "What the detector reads, classified like a rule's query (design \u00a77).",
+    "properties": {
+     "tick": {
+      "enum": [
+       "tail",
+       "recent",
+       "rollup"
+      ]
+     },
+     "coldStart": {
+      "enum": [
+       "tail",
+       "recent",
+       "rollup"
+      ]
+     },
+     "lookbackMs": {
+      "type": "integer"
+     },
+     "tickLookbackMs": {
+      "type": "integer"
+     },
+     "resolutionMs": {
+      "type": "integer"
+     },
+     "minPoints": {
+      "type": "integer",
+      "description": "Valid points before anything is scored; until then the monitor is warming"
+     },
+     "incremental": {
+      "type": "boolean"
+     },
+     "reason": {
+      "type": "string"
+     }
+    }
+   },
+   "AnomalyStatus": {
+    "type": "object",
+    "required": [
+     "status",
+     "message",
+     "series",
+     "maxSeries",
+     "scored",
+     "warming",
+     "missing",
+     "anomalous",
+     "stateSeries",
+     "stateBytes",
+     "pruned"
+    ],
+    "properties": {
+     "status": {
+      "enum": [
+       "ok",
+       "warming",
+       "series_cap_exceeded",
+       "state_limit_exceeded",
+       "state_unreadable",
+       "unknown"
+      ],
+      "description": "A refused evaluation (series_cap_exceeded, state_limit_exceeded, state_unreadable) changes no state and no alert"
+     },
+     "message": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "series": {
+      "type": "integer",
+      "description": "Series the query returned at the last evaluation"
+     },
+     "maxSeries": {
+      "type": "integer"
+     },
+     "scored": {
+      "type": "integer"
+     },
+     "warming": {
+      "type": "integer"
+     },
+     "missing": {
+      "type": "integer",
+      "description": "NaN or infinite points: not scored, the previous flag kept"
+     },
+     "anomalous": {
+      "type": "integer"
+     },
+     "stateSeries": {
+      "type": "integer"
+     },
+     "stateBytes": {
+      "type": "integer"
+     },
+     "pruned": {
+      "type": "integer"
+     }
+    }
+   },
+   "DetectorGuide": {
+    "type": "object",
+    "required": [
+     "name",
+     "inRules",
+     "goodFor",
+     "notFor",
+     "pageAllowed",
+     "defaultSeverity",
+     "defaults",
+     "required",
+     "evidence"
+    ],
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "inRules": {
+      "type": "boolean",
+      "description": "Usable in a monitor; false: a library function for scheduled jobs and explanations"
+     },
+     "goodFor": {
+      "type": "string"
+     },
+     "notFor": {
+      "type": "string"
+     },
+     "pageAllowed": {
+      "type": "boolean"
+     },
+     "defaultSeverity": {
+      "enum": [
+       "page",
+       "ticket",
+       "info",
+       null
+      ]
+     },
+     "defaults": {
+      "type": "object",
+      "additionalProperties": {
+       "type": [
+        "number",
+        "string",
+        "boolean",
+        "null"
+       ]
+      },
+      "description": "Parameters the ruler fills in beyond the library's own"
+     },
+     "required": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "evidence": {
+      "type": "object",
+      "required": [
+       "kind",
+       "defaultsValidated",
+       "nab",
+       "note"
+      ],
+      "properties": {
+       "kind": {
+        "enum": [
+         "held_out",
+         "post_hoc",
+         "none",
+         "not_scorable"
+        ]
+       },
+       "defaultsValidated": {
+        "type": "boolean",
+        "description": "True only when the defaults are the configuration scored on held-out data"
+       },
+       "nab": {
+        "oneOf": [
+         {
+          "type": "object",
+          "required": [
+           "standard",
+           "lowFp",
+           "lowFn"
+          ],
+          "properties": {
+           "standard": {
+            "type": "number"
+           },
+           "lowFp": {
+            "type": "number"
+           },
+           "lowFn": {
+            "type": "number"
+           }
+          }
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "note": {
+        "type": "string"
+       }
+      }
+     }
+    }
+   },
+   "MonitorAnomaly": {
+    "type": "object",
+    "required": [
+     "detector",
+     "params",
+     "given",
+     "unit",
+     "severity",
+     "maxSeries",
+     "history",
+     "status",
+     "guide"
+    ],
+    "properties": {
+     "detector": {
+      "enum": [
+       "ewma",
+       "threshold",
+       "robust_z",
+       "seasonal",
+       "cusum"
+      ]
+     },
+     "params": {
+      "type": "object",
+      "additionalProperties": {
+       "type": [
+        "number",
+        "string",
+        "boolean",
+        "null"
+       ]
+      },
+      "description": "Every parameter, defaults written out when saved"
+     },
+     "given": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "The parameters the author gave"
+     },
+     "unit": {
+      "type": "string"
+     },
+     "severity": {
+      "enum": [
+       "page",
+       "ticket",
+       "info"
+      ]
+     },
+     "maxSeries": {
+      "type": "integer"
+     },
+     "history": {
+      "$ref": "#/components/schemas/AnomalyHistory"
+     },
+     "status": {
+      "oneOf": [
+       {
+        "$ref": "#/components/schemas/AnomalyStatus"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "guide": {
+      "$ref": "#/components/schemas/DetectorGuide"
+     }
+    }
+   },
+   "Detectors": {
+    "type": "object",
+    "required": [
+     "default",
+     "defaultForPage",
+     "monitorDefaults",
+     "detectors",
+     "source"
+    ],
+    "properties": {
+     "default": {
+      "enum": [
+       "ewma",
+       "threshold",
+       "robust_z",
+       "seasonal",
+       "cusum"
+      ]
+     },
+     "defaultForPage": {
+      "enum": [
+       "ewma",
+       "threshold",
+       "robust_z",
+       "seasonal",
+       "cusum"
+      ]
+     },
+     "monitorDefaults": {
+      "type": "object",
+      "properties": {
+       "for": {
+        "type": "string"
+       },
+       "keepFiringFor": {
+        "type": "string"
+       },
+       "severity": {
+        "enum": [
+         "page",
+         "ticket",
+         "info"
+        ]
+       }
+      }
+     },
+     "detectors": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/DetectorGuide"
+      }
+     },
+     "source": {
+      "type": "string"
      }
     }
    }

@@ -90,24 +90,52 @@ export function costHeaders(engineMs: number): Record<string, string> {
   return h
 }
 
+const DECIMAL = /^([+-]?)(\d+)(?:\.(\d*))?$/
+const RFC3339 = /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/
+
+/**
+ * Decimal seconds as whole milliseconds, as the real API reads them (query/src/params.ts):
+ * from the digits, the fourth decimal rounding half up ("1794994200.0005" is ...200001 ms).
+ */
+function decimalSecondsToMs(text: string): number | null {
+  const m = DECIMAL.exec(text)
+  if (!m) return null
+  if (m[2]!.length > 15) return m[1] === '-' ? -Infinity : Infinity
+  const frac = (m[3] ?? '').padEnd(4, '0')
+  let ms = Number(m[2]) * 1000 + Number(frac.slice(0, 3))
+  if (frac.charCodeAt(3) >= 53) ms += 1
+  return m[1] === '-' ? -ms : ms
+}
+
+/**
+ * A time parameter in whole milliseconds, read as the real API reads it: decimal seconds
+ * rounded to the millisecond, exponent forms, RFC 3339 with digits past the millisecond cut.
+ * Returned as seconds (milliseconds / 1000), so the mock's grid is the real API's.
+ */
 function parseTime(text: string | null, name: string, fallback?: number): number {
   if (text === null || text === '') {
     if (fallback !== undefined) return fallback
     throw new PromQLError(`invalid parameter "${name}": cannot parse "" to a valid timestamp`)
   }
-  const n = Number(text)
-  if (Number.isFinite(n)) return n
-  const ms = Date.parse(text)
-  if (Number.isFinite(ms)) return ms / 1000
-  throw new PromQLError(`invalid parameter "${name}": cannot parse ${JSON.stringify(text)} to a valid timestamp`)
+  let ms = decimalSecondsToMs(text)
+  if (ms === null) {
+    const f = Number(text)
+    if (text.trim() !== '' && !Number.isNaN(f) && /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(text)) ms = Math.round(f * 1000)
+    else if (RFC3339.test(text) && !Number.isNaN(Date.parse(text))) ms = Date.parse(text.replace(/(\.\d{3})\d+/, '$1'))
+    else throw new PromQLError(`invalid parameter "${name}": cannot parse ${JSON.stringify(text)} to a valid timestamp`)
+  }
+  return ms / 1000
 }
 
+/** The step as the real API takes it: a number of seconds or a duration, in milliseconds, then floored to a whole millisecond (0.4 ms is a step of 0). */
 function parseStep(text: string | null): number {
   if (text === null || text === '') throw new PromQLError('invalid parameter "step": cannot parse "" to a valid duration')
-  const n = Number(text)
-  if (Number.isFinite(n)) return n
-  if (/^(?:\d+(?:ms|[smhdwy]))+$/.test(text)) return durationSeconds(text)
-  throw new PromQLError(`invalid parameter "step": cannot parse ${JSON.stringify(text)} to a valid duration`)
+  let ms: number
+  if (/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(text)) ms = decimalSecondsToMs(text) ?? Number(text) * 1000
+  else if (/^(?:\d+(?:ms|[smhdwy]))+$/.test(text)) ms = Math.round(durationSeconds(text) * 1000)
+  else throw new PromQLError(`invalid parameter "step": cannot parse ${JSON.stringify(text)} to a valid duration`)
+  if (!Number.isFinite(ms)) throw new PromQLError(`invalid parameter "step": cannot parse ${JSON.stringify(text)} to a valid duration`)
+  return Math.floor(ms) / 1000
 }
 
 /** A label set with its names in order, as the real API (and Prometheus) writes every label set. */

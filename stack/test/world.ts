@@ -2,10 +2,12 @@
  * Test world for the end-to-end tests: two tenants that share one pool of two shards,
  * each sending a Remote Write request and an OTLP request through the edge Worker.
  */
+import { runInDurableObject } from 'cloudflare:test'
 import { env, exports } from 'cloudflare:workers'
 import { type PoolMap, shardName, slotFor } from '../../shard/src/pool'
 import { type PrwSeries, STALE_NAN, bitsOf, call, makeKey, otlpProto, setPool, snappyCompress, writeRequest } from '../../edge/test/helpers'
 import { Sent, ledgerStub, shardStub } from '../../flush/test/helpers'
+import type { Ledger } from '../../ledger/src/ledger'
 
 let n = 0
 
@@ -166,9 +168,38 @@ export async function sealAll(w: World): Promise<number> {
   return k
 }
 
-/** Flush every (tenant, shard) through the stack's `Flush` entrypoint, over RPC. */
+/**
+ * Run the ledger's drain now (what its alarm does about 200 ms after a commit). Inside the
+ * object, so a drain that fails (a test broke the log) is reported here and not as an
+ * unhandled rejection crossing the RPC boundary. Returns whether it wrote everything.
+ */
+export const drainLedger = (tenant: string): Promise<boolean> =>
+  runInDurableObject(ledgerStub(tenant), (l: Ledger) => l.drain().then(() => true, () => false))
+
+/**
+ * Flush every (tenant, shard) through the stack's `Flush` entrypoint, over RPC, until each
+ * run has told its shard `recorded` (`awaitingLog: false`). The ledger logs in the background
+ * (contracts/LEDGER-LOG.md), so a run that admitted units ends `awaitingLog` and the flush
+ * queue retries its message; here the drain runs at once and the flush is repeated, at most
+ * five times (a ledger whose log is broken stays `awaitingLog`). Each result is the last
+ * run's, with every segment as the run that first handled it saw it (as `flushSettled` in
+ * flush/test/helpers.ts).
+ */
 export async function flushAll(w: World) {
   const out = []
-  for (const t of [w.a, w.b]) for (const s of w.shards) out.push(await exports.Flush.flushTenant(t.name, s))
+  for (const t of [w.a, w.b]) {
+    for (const s of w.shards) {
+      let last = await exports.Flush.flushTenant(t.name, s)
+      const seen = new Map(last.segments.map((g) => [g.seqLo, g]))
+      let changed = last.changed
+      for (let i = 0; i < 5 && last.status === 'ok' && last.awaitingLog; i++) {
+        await drainLedger(t.name)
+        last = await exports.Flush.flushTenant(t.name, s)
+        changed ||= last.changed
+        for (const g of last.segments) if (!seen.has(g.seqLo)) seen.set(g.seqLo, g)
+      }
+      out.push({ ...last, changed, segments: [...seen.values()].sort((a, b) => a.seqLo - b.seqLo) })
+    }
+  }
   return out
 }

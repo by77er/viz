@@ -870,7 +870,14 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     const run = this.draining.then(async () => {
       this.drainActive = true
       try {
-        return await this.drainNow(maxSegments)
+        const written = await this.drainNow(maxSegments)
+        // Nothing left to write: the alarm set for it has nothing to do (AGENTS.md: one alarm,
+        // deleted when there is nothing to do). A commit after this check sets a new one.
+        if (this.alarmAt !== null && !this.hasPending()) {
+          this.alarmAt = null
+          this.ctx.storage.deleteAlarm().catch(() => undefined)
+        }
+        return written
       } finally {
         this.drainActive = false
         this.lastDrainEnd = Date.now()

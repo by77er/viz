@@ -1,7 +1,7 @@
 import { createExecutionContext, createMessageBatch, createScheduledController, getQueueResult, runDurableObjectAlarm, runInDurableObject, waitOnExecutionContext } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { dataKeys, liveKeys } from '../../flush/test/helpers'
+import { dataKeys, ledgerStub, liveKeys } from '../../flush/test/helpers'
 import { listDeadLetters } from '../../flush/src/index'
 import { PENDING_MARKER_PREFIX, pendingMarkerKey } from '../../shard/src/shard'
 import worker, { FLUSH_QUEUE_NAME, MAINT_MARKER_PREFIX, MAINT_QUEUE_NAME, type StackEnv, consumeMaintBatch, engine, enqueueDue, handleQueue, handleScheduled, maintMarkerKey, maintainTenant, noteFlushed } from '../src/index'
@@ -19,11 +19,18 @@ beforeAll(async () => {
 })
 afterAll(() => sim.restore())
 
-/** Deliver everything on the simulated flush queue through the stack's own queue handler. */
+/**
+ * Deliver everything on the simulated flush queue through the stack's own queue handler.
+ * The simulated queue redelivers a retried message at once, where the real one waits
+ * `retryDelaySeconds` (seconds at least); a run retried for `awaiting_log` relies on that
+ * wait for the ledger's drain (its alarm, ~200 ms after a commit). So before a redelivery
+ * the drain of that tenant's ledger is run, as the wait would have let it.
+ */
 async function drainFlushQueue(): Promise<number> {
   let n = 0
   while (sim.flushQueue.length > 0) {
     const batch = take(sim.flushQueue, 10)
+    for (const t of new Set(batch.filter((m) => m.attempts > 1).map((m) => m.body.tenant))) await ledgerStub(t).drain()
     n += batch.length
     await deliver(sim, sim.flushQueue, FLUSH_QUEUE_NAME, batch, 8, (b) => handleQueue(b, sim.env))
   }
@@ -185,7 +192,12 @@ describe('an idle deployment', () => {
     const retentionDue = new Map<string, number>()
     for (const t of sim.tenants) {
       let report = await maintainTenant(sim.env, engine, t.name, settle)
-      for (let i = 0; i < 10 && (report.more || report.compaction.merged > 0 || report.purged.waiting > 0); i++) report = await maintainTenant(sim.env, engine, t.name, settle)
+      // A removal is deletable once it is in the ledger's log, which the ledger writes in the
+      // background (its alarm, ~200 ms after the commit); run that drain before each look.
+      for (let i = 0; i < 10 && (report.more || report.compaction.merged > 0 || report.purged.waiting > 0); i++) {
+        await ledger(t).drain()
+        report = await maintainTenant(sim.env, engine, t.name, settle)
+      }
       const oldest = (await ledger(t).plan({ table: 'metric_samples', minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })).files.map((f) => f.day).sort()[0]!
       retentionDue.set(t.name, Date.parse(`${oldest}T00:00:00Z`) + 31 * DAY_MS) // the default policy keeps 30 days besides today
       expect(await markerOf(t)).toEqual({ v: 1, due: retentionDue.get(t.name), orphansAt: expect.any(Number), sweep: false })

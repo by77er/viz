@@ -909,8 +909,15 @@ export const MAX_POINTS = 11000
 export function queryRange(storage: Storage, query: string, start: number, end: number, step: number) {
   // The real API's wording (query/src/params.ts and its engine), parameter name included.
   if (end < start) throw new PromQLError('invalid parameter "end": end timestamp must not be before start time')
-  if (!(step > 0)) throw new PromQLError('invalid parameter "step": zero or negative query resolution step widths are not accepted. Try a positive integer')
-  if ((end - start) / step > MAX_POINTS)
+  // The real API works in whole milliseconds (query/src/params.ts): the grid is
+  // start + i * step in integer milliseconds, so its timestamps have at most three decimals.
+  const startMs = Math.round(start * 1000)
+  const endMs = Math.round(end * 1000)
+  const stepMs = Math.floor(step * 1000 + 1e-6)
+  if (!(stepMs > 0)) throw new PromQLError('invalid parameter "step": zero or negative query resolution step widths are not accepted. Try a positive integer')
+  // Points, counted as the real engine counts them (engine/query check_range): one more than
+  // whole steps, so 11,000 steps (11,001 points) are refused.
+  if (Math.floor((endMs - startMs) / stepMs) + 1 > MAX_POINTS)
     throw new PromQLError(`exceeded maximum resolution of ${MAX_POINTS} points per timeseries. Try decreasing the query resolution (?step=XX)`)
   const node = parse(query)
   if (node.type === 'string') throw new PromQLError('invalid expression type "string" for range query, must be Scalar or instant Vector')
@@ -918,9 +925,9 @@ export function queryRange(storage: Storage, query: string, start: number, end: 
     throw new PromQLError('invalid expression type "range vector" for range query, must be Scalar or instant Vector')
   const ev = new Evaluator(storage)
   const series = new Map<string, { metric: Labels; values: [number, string][] }>()
-  const n = Math.floor((end - start) / step + 1e-9)
+  const n = Math.floor((endMs - startMs) / stepMs)
   for (let i = 0; i <= n; i++) {
-    const t = start + i * step
+    const t = (startMs + i * stepMs) / 1000
     const v = ev.eval(node, t)
     const samples = v.type === 'scalar' ? [{ labels: {}, value: v.value }] : v.type === 'vector' ? v.samples : []
     const seen = new Set<string>()

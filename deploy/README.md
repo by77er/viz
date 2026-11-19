@@ -294,10 +294,13 @@ All measured here unless it says Cloudflare.
   right token twice, six wrong tokens, expired, body and query string, GET, malformed
   secret, a second token for a provisioned tenant, and storage a newer release holds (a
   `viz_schema` row at version 99: 503 with `Retry-After`, no key, storage unchanged)), then
-  `node --test`, 20 tests (configure
+  `node --test`, 21 tests (configure
   against the real component configs, the migration gate, acknowledgement parsing, the
   Remote Write body decoded by snappyjs and protobufjs, the CI matrix with and without
-  `app/`, `design-system/` and `bench/`).
+  `app/`, `design-system/` and `bench/`, and the health path `workers.json` records for each
+  backend equal to the one the gateway asks, read from `gateway/src/index.ts`; that test
+  fails against the `workers.json` that still named control's OpenAPI document).
+  Re-run 2026-11-19: 55 and 21 pass; `npx tsc --noEmit` clean.
 - `npx tsc --noEmit` in deploy/: clean. It covers the gateway and the stage queue-name
   mapping, not `stage/ingest.ts`: typing that file means type-checking the whole write path
   (stack/, ledger/, …), which is their CI job's business and was mid-edit by others while this
@@ -522,7 +525,7 @@ None of these were made here; 4 was made since, in control/ and the gateway.
 |---|---|
 | viz-ruler | Its `EVALUATOR` and `SINK` service bindings do not exist yet, so every rule would report `health: err` (`ruler/README.md`, "Not implemented") |
 | viz-publisher | Nothing triggers it: no queue consumer, no cron, no nudge from the ledger (`publisher/README.md`) |
-| viz-mcp | Binds viz-ruler, which is not deployed; `mcp/wrangler.jsonc` says it was never deployed, and mcp has no README yet |
+| viz-mcp | Binds viz-ruler, which is not deployed; never deployed (`mcp/README.md`, "Not implemented") |
 
 `configure.mjs` still generates their configs on every run (so a binding they need that the
 deployment lacks is caught early), and `workers.json` records the reasons. Deploying one

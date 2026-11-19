@@ -346,8 +346,10 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       if (!rt) continue
       const read = readStateRows(rows)
       if ('error' in read) {
-        // A newer release's row format: start this rule cold rather than guess (COMPATIBILITY.md §3.2).
-        rt.status = { ...rt.status, message: `stored detector state not readable (${read.error}); starting cold` }
+        // A newer release's row format: refuse the rule and keep the rows (COMPATIBILITY.md §3.2).
+        rt.unreadable = read.error
+        rt.rawRows = rows
+        rt.status = { ...rt.status, status: 'state_unreadable', message: read.error }
         continue
       }
       rt.series = read.series
@@ -938,6 +940,22 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
         errors.push({ path: `groups[${i}]`, message: `group "${g.name}" is ${bytes} bytes when stored; the limit is ${this.cfg.limits.maxGroupBytes}`, fix: 'Split the group.' })
       }
     })
+    // Detector state is kept in memory between ticks: the anomaly rules of one object may reserve
+    // at most this much (each rule its estimate per series × max_series), whichever groups they are in.
+    const budget = anomalyLimits(this.cfg).maxAnomalyStateBytesPerObject
+    const replaced = new Set(parsed.groups.map((g) => g.name))
+    let reserved = 0
+    for (const g of this.groups.values()) if (!replaced.has(g.spec.name)) for (const r of (g.spec.anomalyRules ?? []) as AnomalyRule[]) reserved += r.anomaly.stateBytesPerSeries * r.anomaly.maxSeries
+    for (const g of parsed.groups) {
+      for (const r of (g.anomalyRules ?? []) as AnomalyRule[]) {
+        reserved += r.anomaly.stateBytesPerSeries * r.anomaly.maxSeries
+        if (reserved > budget) {
+          errors.push({ path: `${parsed.anomalyPaths?.get(r) ?? 'groups'}.anomaly.max_series`, message: `this ruler shard's anomaly rules would reserve ${reserved} bytes of detector state (max_series × about ${r.anomaly.stateBytesPerSeries} bytes per series for this rule); the limit per shard is ${budget}`, fix: 'Lower max_series (to the series the expression really returns), aggregate the expression, or put the rule in a group on another shard.' })
+          break
+        }
+      }
+      if (reserved > budget) break
+    }
     if (errors.length > 0) return { result: { status: 'invalid', errors }, groups: [] }
     return {
       groups: parsed.groups,
@@ -1009,9 +1027,10 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
               this.dropRuleAlerts(old, key, alerts, now, updates)
             }
           }
-          // Same key (detector and parameters too): the detector state carries over; otherwise it is deleted.
+          // Same key (detector and parameters too) and the same interval (the detector's step): the
+          // detector state carries over; otherwise it describes another rule and is deleted.
           for (const [key, rt] of old.anomaly) {
-            if (kept.has(key)) g.anomaly.set(key, rt)
+            if (kept.has(key) && old.spec.intervalMs === spec.intervalMs) g.anomaly.set(key, rt)
             else this.exec(`DELETE FROM anomaly_state WHERE tenant = ? AND grp = ? AND rule_key = ?`, t, spec.name, key)
           }
         } else {
@@ -1048,9 +1067,20 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     if (existing && group.name !== DEADMAN_GROUP) {
       doc = ruleFileDocument([existing.spec], { extensions: true }).file.groups[0] as Record<string, unknown>
       const rules = doc.rules as unknown[]
-      const at = typeof id === 'string' ? allRules(existing.spec).findIndex((r) => r.kind !== 'record' && r.monitor?.id === id) : -1
-      ruleIndex = at >= 0 ? at : rules.length
-      rules[ruleIndex] = rule
+      const all = allRules(existing.spec)
+      const at = typeof id === 'string' ? all.findIndex((r) => r.kind !== 'record' && r.monitor?.id === id) : -1
+      // The document lists the ordinary rules, then the anomaly rules, as they are stored. The rule
+      // goes where it will be stored, so that `ruleIndex` names it in the errors and in the result.
+      const isAnomaly = typeof rule === 'object' && rule !== null && (rule as { anomaly?: unknown }).anomaly !== undefined
+      if (at >= 0 && (all[at]!.kind === 'anomaly') === isAnomaly) {
+        ruleIndex = at
+        rules[at] = rule
+      } else {
+        if (at >= 0) rules.splice(at, 1)
+        const ordinary = existing.spec.rules.length - (at >= 0 && at < existing.spec.rules.length ? 1 : 0)
+        ruleIndex = isAnomaly ? rules.length : ordinary
+        rules.splice(ruleIndex, 0, rule)
+      }
       if (group.interval !== undefined && parseDuration(group.interval) !== existing.spec.intervalMs) {
         return { status: 'invalid', errors: [{ path: 'interval', message: `group "${group.name}" is evaluated every ${formatDuration(existing.spec.intervalMs)}`, fix: 'Use that interval, or put the monitor in another group.' }] }
       }
@@ -1246,7 +1276,10 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     }
     if (g.anomaly.size > 0) {
       bundle.anomalyState = {}
-      for (const [key, rt] of g.anomaly) if (rt.json.size > 0) bundle.anomalyState[key] = stateRows(rt.json)
+      for (const [key, rt] of g.anomaly) {
+        if (rt.rawRows !== null) bundle.anomalyState[key] = rt.rawRows
+        else if (rt.json.size > 0) bundle.anomalyState[key] = stateRows(rt.json)
+      }
     }
     return { status: 'ok' as const, bundle }
   }
@@ -1292,7 +1325,14 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
         const rt = g.anomaly.get(key)
         if (!rt || !keys.has(key)) continue
         const read = readStateRows(rows)
-        if ('error' in read) continue // a format this code cannot read: the rule starts cold
+        if ('error' in read) {
+          // A format this code cannot read: stored as it came, and the rule is refused until a release that reads it runs.
+          rows.forEach((body, chunk) => this.exec(`INSERT INTO anomaly_state (tenant, grp, rule_key, chunk, body) VALUES (?, ?, ?, ?, ?)`, t, spec.name, key, chunk, body))
+          rt.unreadable = read.error
+          rt.rawRows = rows
+          rt.status = { ...rt.status, status: 'state_unreadable', message: read.error }
+          continue
+        }
         rt.series = read.series
         rt.json = read.json
         this.writeAnomalyState(spec.name, key, read.json)

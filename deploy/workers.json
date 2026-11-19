@@ -21,7 +21,7 @@
   },
   "workers": [
     { "name": "viz-ingest", "component": "stack", "deploy": true, "health": "/healthz" },
-    { "name": "viz-control", "component": "control", "deploy": true, "health": "/api/v1/control/openapi.json" },
+    { "name": "viz-control", "component": "control", "deploy": true, "health": "/healthz" },
     { "name": "viz-query", "component": "query", "deploy": true, "health": "/healthz" },
     { "name": "viz-gateway", "component": "deploy/gateway", "deploy": true, "public": true, "health": "/healthz" },
     {

@@ -5,22 +5,57 @@
  *
  *   node tools/mutants.mjs            all mutants
  *   node tools/mutants.mjs 3 7        only mutants 3 and 7
+ *   VIZ_MUTANTS_DIR=<dir> node …      where to build the scratch tree (default: a new temp dir)
+ *
+ * NOTHING IN THE SHARED TREE IS EVER WRITTEN (AGENTS.md, "Tests must have teeth": others
+ * commit and snapshot the tree while this runs, and a mutant applied in place once reached
+ * a pull request). The tool builds a scratch tree first: copies of `query/`,
+ * `engine/query` and `engine/wasm-query` (the directories mutants touch and the module a
+ * Rust mutant rebuilds), and symbolic links to everything else (other components,
+ * `query/node_modules`), so relative imports resolve as in the real tree. Mutants are
+ * applied to the copies and the suite runs there. At the end the files a mutant would
+ * touch are hashed in the shared tree and compared with their hashes at the start.
  *
  * For each mutant the test files named in its `tests` run first (the tests written for
  * that property). If they pass, the WHOLE suite runs before the mutant is called a
  * survivor. A mutant that no test catches is printed as SURVIVED and the script exits 1;
  * one that does not type-check is INVALID. `--all` runs the whole suite for every mutant.
- * Mutants in Rust rebuild the WASM module (engine/wasm-query/build.sh) before and after.
- * The source is restored even if the script is interrupted.
+ * Mutants in Rust rebuild the copy's WASM module (its `build.sh`) before and after.
+ * The copy's source is restored even if the script is interrupted.
  */
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+/** The shared tree: read, never written. */
+const repo = join(dirname(fileURLToPath(import.meta.url)), '../..')
+const COPIED = ['query', 'engine/query', 'engine/wasm-query']
+const SKIP = /(^|\/)(node_modules|target|\.wrangler)(\/|$)/
+
+/** A scratch tree: COPIED are copies, everything else is a link into the shared tree. */
+function scratchTree(dir) {
+  mkdirSync(join(dir, 'engine'), { recursive: true })
+  for (const top of readdirSync(repo)) {
+    if (top === '.git' || top === 'query' || top === 'engine') continue
+    symlinkSync(join(repo, top), join(dir, top))
+  }
+  for (const e of readdirSync(join(repo, 'engine'))) {
+    if (!COPIED.includes(`engine/${e}`)) symlinkSync(join(repo, 'engine', e), join(dir, 'engine', e))
+  }
+  for (const c of COPIED) cpSync(join(repo, c), join(dir, c), { recursive: true, filter: (src) => !SKIP.test(src.slice(join(repo, c).length)) })
+  symlinkSync(join(repo, 'query/node_modules'), join(dir, 'query/node_modules'))
+  return join(dir, 'query')
+}
+
+const scratch = process.env.VIZ_MUTANTS_DIR ? (mkdirSync(process.env.VIZ_MUTANTS_DIR, { recursive: true }), mkdtempSync(join(process.env.VIZ_MUTANTS_DIR, 'tree-'))) : mkdtempSync(join(tmpdir(), 'viz-query-mutants-'))
+/** `query/` in the scratch tree: every write below goes here. */
+const root = scratchTree(scratch)
 const rel = (p) => join(root, p)
+const shared = (p) => join(repo, 'query', p)
+console.log(`scratch tree: ${scratch} (copies of ${COPIED.join(', ')}; links to the rest)`)
 
 const MUTANTS = [
   {
@@ -335,6 +370,13 @@ const whole = process.argv.includes('--all')
 const only = process.argv.slice(2).filter((a) => a !== '--all').map(Number)
 const chosen = MUTANTS.map((m, i) => ({ ...m, n: i + 1 })).filter((m) => only.length === 0 || only.includes(m.n))
 
+const fingerprint = () => {
+  const h = createHash('sha256')
+  for (const f of [...new Set(chosen.map((m) => m.file))].sort()) h.update(f).update(existsSync(shared(f)) ? readFileSync(shared(f)) : '')
+  return h.digest('hex').slice(0, 16)
+}
+const before = fingerprint()
+
 // Every mutant must apply to the source as it is, before anything runs.
 for (const m of chosen) apply(readFileSync(rel(m.file), 'utf8'), m)
 
@@ -395,4 +437,6 @@ for (const m of chosen) {
   }
 }
 console.log(`\n${chosen.length - survived} of ${chosen.length} mutants killed`)
+const after = fingerprint()
+console.log(`shared tree, files the mutants touch: ${before} before, ${after} after${before === after ? ' (unchanged)' : ' (CHANGED: by someone else; this tool writes only to the scratch tree)'}`)
 process.exit(survived ? 1 : 0)

@@ -102,10 +102,16 @@ describe('versioned storage: storage written by the pre-versioning release', () 
       notifier: await runInDurableObject(notifier, (_i, s) => look(s)),
       index: await runInDurableObject(index, (_i, s) => look(s)),
     }
+    // Adopted as version 1, then migrated to the latest: every later migration is additive
+    // (`compat` stays 1, so the pre-versioning-era release 1 may still open it) and adds only
+    // empty tables; no row the old release wrote changes.
+    const SPECS = { ruler: RULER_SCHEMA, notifier: NOTIFIER_SCHEMA, index: INDEX_SCHEMA }
     for (const name of ['ruler', 'notifier', 'index'] as const) {
       const after = seen[name]
-      expect(after.row, name).toMatchObject({ version: 1, compat: 1 })
-      expect(canon(after.dump.rows), name).toEqual(canon(V0[name].rows))
+      expect(after.row, name).toMatchObject({ version: SPECS[name].migrations.length, compat: 1 })
+      const added = Object.keys(after.dump.rows).filter((t) => !(t in V0[name].rows))
+      for (const t of added) expect(after.dump.rows[t], `${name}: table ${t} added by a later migration`).toEqual([])
+      expect(canon(Object.fromEntries(Object.entries(after.dump.rows).filter(([t]) => !added.includes(t)))), name).toEqual(canon(V0[name].rows))
     }
 
     // It keeps working: the next tick changes nothing (still down), and the two notifications the old
@@ -133,11 +139,13 @@ describe('versioned storage: newer storage', () => {
     const { tenant, stub } = await setup()
     ok(await stub.saveGroups(tenant, { groups: [{ name: 'g', interval: '1m', rules: [{ alert: 'Down', expr: 'up == 0' }] }] }))
     const before = await runInDurableObject(stub, (_i, s) => {
-      expect(openSchema(s.storage, breaking(RULER_SCHEMA))).toMatchObject({ status: 'ok', version: 2, compat: 2 })
+      const next = RULER_SCHEMA.migrations.length + 1
+      expect(openSchema(s.storage, breaking(RULER_SCHEMA))).toMatchObject({ status: 'ok', version: next, compat: next })
       return dumpOf(s)
     })
     await evictDurableObject(stub)
-    const refused = { status: 'schema_too_new', component: 'ruler.Ruler', found: 2, compat: 2, known: 1, retryAfterMs: 30_000 }
+    const known = RULER_SCHEMA.migrations.length
+    const refused = { status: 'schema_too_new', component: 'ruler.Ruler', found: known + 1, compat: known + 1, known, retryAfterMs: 30_000 }
     expect(await stub.rules(tenant)).toEqual(refused)
     expect(await stub.health(tenant)).toEqual(refused)
     expect(await stub.configure(tenant, { heartbeatMs: 0 })).toEqual(refused)
@@ -205,7 +213,7 @@ describe('versioned storage: newer storage', () => {
     world.now = Math.max(world.now, ok(await stub.health(tenant)).alarmAtMs!)
     expect(await runDurableObjectAlarm(stub)).toBe(true)
     const seen = await runInDurableObject(stub, (_i, s) => ({ row: schemaRow(s), alerts: s.storage.sql.exec('SELECT acked_by FROM alert WHERE tenant = ?', tenant).toArray(), reopen: openSchema(s.storage, next) }))
-    expect(seen.row).toMatchObject({ version: 2, compat: 1 })
+    expect(seen.row).toMatchObject({ version: RULER_SCHEMA.migrations.length + 1, compat: 1 })
     expect(seen.alerts).toEqual([{ acked_by: null }])
     expect(seen.reopen).toMatchObject({ status: 'ok', migrated: [] })
   })

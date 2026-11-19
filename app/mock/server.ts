@@ -14,8 +14,11 @@
  * Failures the real API (or the platform in front of it) answers with, to exercise the error
  * states. Each is the exact response the real stack gives for that case (e2e/contract.cjs):
  *   GET /__mock/fail?kind=<kind>&count=<n>   the next n query and query_range requests fail
- *     busy      503 unavailable "the query service is busy; retry"       (no Retry-After)
+ *     busy      503 unavailable "the query service is busy; retry", Retry-After: 1 (the isolate's byte budget)
  *     storage   503 unavailable "a storage component did not answer; retry", Retry-After: 1
+ *     platform  503, an HTML page, no envelope and no Retry-After (NOT the viz API: what the platform
+ *               in front of a Worker sends when the Worker itself fails; the only busy answer without
+ *               Retry-After, so the app's own 1, 2, 4 s waits are exercised by it)
  *     config    503 unavailable (an unreadable limits record), Retry-After: 30
  *     gateway   502 unavailable "query did not answer; retry", Retry-After: 1 (deploy/gateway)
  *     timeout   503 timeout "query timed out"
@@ -55,13 +58,16 @@ const readlessToken = arg('readless-token', '') || undefined
 const api = createMockApi({ requireToken, readlessToken })
 
 const FAILURES: Record<string, () => MockResponse & { text?: string }> = {
-  busy: () => fail('unavailable', 'the query service is busy; retry', costHeaders(0)),
+  // query/src/index.ts answers every `unavailable` ApiError with Retry-After: 1 (since 2026-11-19; it had none before).
+  busy: () => fail('unavailable', 'the query service is busy; retry', { ...costHeaders(0), 'Retry-After': '1' }),
   storage: () => fail('unavailable', 'a storage component did not answer; retry', { ...costHeaders(0), 'Retry-After': '1' }),
   // Refused before any work: the real API sends no cost headers with it.
   config: () => fail('unavailable', "the tenant's query limits: maxSamples must be a non-negative integer", { 'Retry-After': '30' }),
   gateway: () => ({ status: 502, body: { status: 'error', errorType: 'unavailable', error: 'query did not answer; retry' }, headers: { 'Retry-After': '1', 'x-viz-route': 'query' } }),
   timeout: () => fail('timeout', 'query timed out', costHeaders(TIME_LIMIT_MS)),
   ratelimit: () => ({ status: 429, body: null, text: 'error code: 1015', headers: { 'Retry-After': '10', 'Content-Type': 'text/plain; charset=UTF-8' } }),
+  // Training knowledge, not verified: Cloudflare answers a Worker that exceeded its resource limits with a 503 HTML page (error 1102).
+  platform: () => ({ status: 503, body: null, text: '<!DOCTYPE html><html><head><title>Worker exceeded resource limits</title></head><body>Error 1102</body></html>', headers: { 'Content-Type': 'text/html; charset=UTF-8' } }),
 }
 
 /** The CORS headers of the real API for an origin it allows; the mock allows every origin (it is for development). */
@@ -150,10 +156,11 @@ const server = createServer((req, res) => {
     }
     const payload = out.text ?? JSON.stringify(out.body)
     // Compressed when the client accepts it, as the real API's answers are (workerd and
-    // Cloudflare send gzip): over a slow network a 3.4 MB matrix is about 0.4 MB.
+    // Cloudflare send gzip): over a slow network a 3.4 MB matrix is about 0.4 MB. `Vary` stays
+    // `Origin`, as the real API sends it under wrangler dev (README, "Needed changes in query/").
     const gzip = payload.length > 1024 && /\bgzip\b/.test(String(req.headers['accept-encoding'] ?? ''))
     const send = () => {
-      res.writeHead(out.status, { ...c, 'Content-Type': 'application/json', 'X-Viz-Mock': '1', 'Cache-Control': 'no-store', ...(gzip ? { 'Content-Encoding': 'gzip', Vary: 'Origin, Accept-Encoding' } : {}), ...out.headers })
+      res.writeHead(out.status, { ...c, 'Content-Type': 'application/json', 'X-Viz-Mock': '1', 'Cache-Control': 'no-store', ...(gzip ? { 'Content-Encoding': 'gzip' } : {}), ...out.headers })
       res.end(gzip ? gzipSync(payload) : payload)
     }
     if (after > 0) setTimeout(send, after)

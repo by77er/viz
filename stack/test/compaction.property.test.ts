@@ -1,9 +1,9 @@
 import { afterAll, describe, expect, it } from 'vitest'
 import { compactStep } from '../../compact/src/compact'
-import { read } from '../../flush/test/helpers'
+import { flushSettled, read } from '../../flush/test/helpers'
 import { expireTenant } from '../../janitor/src/janitor'
 import { env } from 'cloudflare:workers'
-import { engine, flushTenant } from '../src/index'
+import { engine } from '../src/index'
 import { DAY_MS, type Sim, type SimTenant, checkTenant, checksum, createSim, ingest, ledger, rng, shard } from './sim'
 
 /**
@@ -22,7 +22,8 @@ afterAll(() => sims.forEach((s) => s.restore()))
 async function flushAll(sim: Sim, t: SimTenant): Promise<void> {
   for (const s of sim.shards) {
     await shard(s).seal(t.name)
-    const r = await flushTenant(sim.env, engine, t.name, s)
+    // Until the shard is told `recorded`: flush, the ledger's drain (its alarm), flush again.
+    const r = await flushSettled(sim.env, engine, t.name, s)
     expect(r).toMatchObject({ status: 'ok', awaitingLog: false, remaining: 0 })
   }
 }

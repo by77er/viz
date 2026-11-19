@@ -40,6 +40,12 @@ export const ANOMALY_LIMIT_DEFAULTS = {
   maxAnomalySeriesPerRule: 1000,
   maxAnomalyStateBytesPerSeries: 65_536,
   maxAnomalyStateBytesPerRule: 1_048_576,
+  /**
+   * State is held in memory between ticks (parsed and as stored JSON, about 3 bytes of heap per
+   * stored byte), and a Durable Object has 128 MB: 16 MiB of stored state keeps the anomaly rules
+   * of one object near 50 MB at most, beside its alerting rules.
+   */
+  maxAnomalyStateBytesPerObject: 16_777_216,
 } as const
 
 export type AnomalyLimits = { -readonly [K in keyof typeof ANOMALY_LIMIT_DEFAULTS]: number }
@@ -50,6 +56,7 @@ export function anomalyLimits(cfg: Pick<RulerConfig, 'limits'>): AnomalyLimits {
     maxAnomalySeriesPerRule: l.maxAnomalySeriesPerRule ?? ANOMALY_LIMIT_DEFAULTS.maxAnomalySeriesPerRule,
     maxAnomalyStateBytesPerSeries: l.maxAnomalyStateBytesPerSeries ?? ANOMALY_LIMIT_DEFAULTS.maxAnomalyStateBytesPerSeries,
     maxAnomalyStateBytesPerRule: l.maxAnomalyStateBytesPerRule ?? ANOMALY_LIMIT_DEFAULTS.maxAnomalyStateBytesPerRule,
+    maxAnomalyStateBytesPerObject: l.maxAnomalyStateBytesPerObject ?? ANOMALY_LIMIT_DEFAULTS.maxAnomalyStateBytesPerObject,
   }
 }
 
@@ -290,25 +297,28 @@ export function parseAnomalySpec(c: ParseContext, v: unknown, path: string, inte
   const FIELDS = ['detector', 'params', 'unit', 'severity', 'max_series', 'given']
   for (const k of Object.keys(v)) if (!FIELDS.includes(k)) err(`${path}.${k}`, `unknown field "${k}"`, `An anomaly block has: ${FIELDS.filter((f) => f !== 'given').join(', ')}.`)
 
-  let severity: AnomalySeverity = DEFAULT_SEVERITY
+  // The severity as given (in the block, or as the rule's severity label); its default depends on the detector.
+  let givenSeverity: AnomalySeverity | null = null
   if (v.severity !== undefined) {
     if (typeof v.severity !== 'string' || !SEVERITIES.includes(v.severity as AnomalySeverity)) err(`${path}.severity`, `severity must be one of ${SEVERITIES.join(', ')}`, 'Use "ticket" unless a person must be woken; "page" only for detectors that may page.')
-    else severity = v.severity as AnomalySeverity
+    else givenSeverity = v.severity as AnomalySeverity
   } else if (typeof labels.severity === 'string' && SEVERITIES.includes(labels.severity as AnomalySeverity)) {
-    severity = labels.severity as AnomalySeverity
-  }
-  if (labels.severity !== undefined && labels.severity !== severity) {
-    err(`${path}.severity`, `the severity label "${labels.severity}" and anomaly.severity "${severity}" differ`, 'Set the severity once, in anomaly.severity.')
+    givenSeverity = labels.severity as AnomalySeverity
   }
 
   let detector: AnomalyDetector
-  if (v.detector === undefined) detector = severity === 'page' ? DEFAULT_PAGE_DETECTOR : DEFAULT_DETECTOR
+  if (v.detector === undefined) detector = givenSeverity === 'page' ? DEFAULT_PAGE_DETECTOR : DEFAULT_DETECTOR
   else if (typeof v.detector !== 'string' || !(ANOMALY_DETECTORS as readonly string[]).includes(v.detector)) {
     const guide = typeof v.detector === 'string' ? DETECTOR_GUIDE[v.detector] : undefined
     err(`${path}.detector`, guide && !guide.inRules ? `"${v.detector}" cannot run in a rule: ${guide.notFor}` : `unknown detector ${JSON.stringify(v.detector)}`, `Use one of ${ANOMALY_DETECTORS.join(', ')}; ewma is the default.`)
     detector = DEFAULT_DETECTOR
   } else detector = v.detector as AnomalyDetector
   const guide = DETECTOR_GUIDE[detector] as DetectorGuide
+  // A detector that explains rather than pages (cusum) defaults to `info`.
+  const severity: AnomalySeverity = givenSeverity ?? guide.defaultSeverity ?? DEFAULT_SEVERITY
+  if (labels.severity !== undefined && labels.severity !== severity) {
+    err(`${path}.severity`, `the severity label "${labels.severity}" and anomaly.severity "${severity}" differ`, 'Set the severity once, in anomaly.severity.')
+  }
 
   if (v.unit !== undefined && (typeof v.unit !== 'string' || v.unit.length > 32)) err(`${path}.unit`, 'unit must be a string of at most 32 characters', 'Use e.g. "ms", "req/s" or "%".')
   const unit = typeof v.unit === 'string' ? v.unit : ''
@@ -445,6 +455,13 @@ export interface AnomalyRt {
   json: Map<string, string>
   status: AnomalyRuleStatus
   pruned: number
+  /**
+   * Set when the stored rows are in a format this release does not read (a newer release wrote
+   * them): the rule is refused (`state_unreadable`) and `rawRows` are kept, unchanged, for a
+   * release that reads them, including when the group moves to another shard.
+   */
+  unreadable: string | null
+  rawRows: string[] | null
 }
 
 export function emptyStatus(maxSeries: number): AnomalyRuleStatus {
@@ -452,7 +469,7 @@ export function emptyStatus(maxSeries: number): AnomalyRuleStatus {
 }
 
 export function newAnomalyRt(rule: AnomalyRuleV2): AnomalyRt {
-  return { series: new Map(), json: new Map(), status: emptyStatus(rule.anomaly.maxSeries), pruned: 0 }
+  return { series: new Map(), json: new Map(), status: emptyStatus(rule.anomaly.maxSeries), pruned: 0, unreadable: null, rawRows: null }
 }
 
 export type AnomalyEval =
@@ -490,11 +507,16 @@ export function detailOf(e: Explanation, score: number, detector: AnomalyDetecto
 export function evalAnomaly(rule: AnomalyRuleV2, prev: AnomalyRt, series: Series[], ts: number, intervalMs: number, limits: AnomalyLimits, ruleAnnotations: Record<string, string>): AnomalyEval {
   const spec = rule.anomaly
   const base: AnomalyRuleStatus = { ...emptyStatus(spec.maxSeries), series: series.length, pruned: prev.pruned }
-  const refuse = (status: 'series_cap_exceeded' | 'state_limit_exceeded', message: string): AnomalyEval => ({
+  const refuse = (status: 'series_cap_exceeded' | 'state_limit_exceeded' | 'state_unreadable', message: string): AnomalyEval => ({
     ok: false,
     error: message,
     status: { ...prev.status, ...base, status, message, stateSeries: prev.series.size, stateBytes: sumBytes(prev.json) },
   })
+  if (prev.unreadable !== null) {
+    // Refuse rather than guess (COMPATIBILITY.md §3.2): starting cold would resolve firing alerts
+    // and overwrite state a newer release will want back.
+    return refuse('state_unreadable', `state_unreadable: ${prev.unreadable}. A newer release wrote this rule's detector state; it is kept unchanged and nothing is scored until a release that reads it runs here.`)
+  }
   if (series.length > spec.maxSeries) {
     return refuse('series_cap_exceeded', `series_cap_exceeded: the expression returned ${series.length} series; this rule scores at most ${spec.maxSeries} (max_series). Nothing was scored and no state or alert changed. Aggregate the expression or raise max_series (limit ${limits.maxAnomalySeriesPerRule}).`)
   }
@@ -613,13 +635,19 @@ export function stateRows(json: Map<string, string>, rowBytes = ANOMALY_ROW_BYTE
 
 /**
  * Rebuild a rule's state from its rows. A row in a version this code does not know is refused
- * (COMPATIBILITY.md §3.2): the rule then starts cold rather than guessing at the state.
+ * (COMPATIBILITY.md §3.2): the caller marks the rule `state_unreadable` and keeps the rows as they
+ * are; it never starts the rule cold over them.
  */
 export function readStateRows(bodies: string[]): { series: Map<string, SeriesState>; json: Map<string, string> } | { error: string } {
   const series = new Map<string, SeriesState>()
   const json = new Map<string, string>()
   for (const body of bodies) {
-    const row = JSON.parse(body) as { v?: unknown; series?: unknown }
+    let row: { v?: unknown; series?: unknown }
+    try {
+      row = JSON.parse(body) as { v?: unknown; series?: unknown }
+    } catch {
+      return { error: 'an anomaly_state row is not JSON' }
+    }
     if (row.v !== ANOMALY_STATE_VERSION || !Array.isArray(row.series)) return { error: `anomaly_state row version ${JSON.stringify(row.v)} is not ${ANOMALY_STATE_VERSION}` }
     for (const e of row.series as { k: string; l: Labels; s: unknown; last: SeriesState['last']; seen: number }[]) {
       const s: SeriesState = { labels: e.l, state: e.s, last: e.last, seenAt: e.seen }

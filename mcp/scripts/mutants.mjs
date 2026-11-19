@@ -15,6 +15,17 @@ import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
+// It edits sources in place: run it in a copy outside any git work tree (AGENTS.md: a mutant
+// caught in a commit ships). The copy needs mcp/ (with node_modules), control/src,
+// dashboard/{src,examples,schema,package.json}, edge/src and contracts/, which the tests import.
+try {
+  execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: root, stdio: 'pipe' })
+  console.error('Refusing to mutate sources inside a git work tree. Copy the tree first (see above).')
+  process.exit(2)
+} catch {
+  // Not a work tree (or no git): a copy. Go on.
+}
+
 /** Each change is [file, exact text (must occur once), replacement]. */
 const MUTANTS = [
   {
@@ -144,23 +155,25 @@ for (const [i, m] of MUTANTS.entries()) {
       /* a failing suite is what we want */
     }
     let r
+    let noResult = false
     try {
       r = JSON.parse(readFileSync(report, 'utf8'))
     } catch {
       // The suite did not finish (it hung or timed out): reported as such, never as killed.
       r = { numFailedTests: 0, testResults: [] }
+      noResult = true
     }
     const failedFiles = r.testResults.filter((f) => f.status === 'failed').map((f) => f.name.replace(/^.*\/test\//, '').replace('.test.ts', ''))
     const failedTests = r.numFailedTests
-    rows.push({ n, name: m.name, killed: failedTests > 0, failedTests, by: failedFiles.join(', ') })
-    console.log(`${n}\t${failedTests > 0 ? 'KILLED' : 'SURVIVED'}\t${failedTests} failing\t${failedFiles.join(', ')}\t${m.name}`)
+    rows.push({ n, name: m.name, killed: failedTests > 0, noResult, failedTests, by: failedFiles.join(', ') })
+    console.log(`${n}\t${failedTests > 0 ? 'KILLED' : noResult ? 'NO RESULT (rerun)' : 'SURVIVED'}\t${failedTests} failing\t${failedFiles.join(', ')}\t${m.name}`)
   } finally {
     for (const [path, text] of originals) writeFileSync(path, text)
   }
 }
 rmSync(out, { recursive: true, force: true })
 console.log('\n| # | Mutant | Caught by (failing tests) |\n|---|---|---|')
-for (const r of rows) console.log(`| ${r.n} | ${r.name} | ${r.killed ? `${r.by} (${r.failedTests})` : '**SURVIVED**'} |`)
+for (const r of rows) console.log(`| ${r.n} | ${r.name} | ${r.killed ? `${r.by} (${r.failedTests})` : r.noResult ? '**NO RESULT**' : '**SURVIVED**'} |`)
 const survived = rows.filter((r) => !r.killed)
 console.log(`\n${rows.length - survived.length} of ${rows.length} killed.`)
 process.exit(survived.length ? 1 : 0)

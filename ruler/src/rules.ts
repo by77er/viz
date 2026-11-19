@@ -37,6 +37,8 @@ export interface ParsedGroups {
   groups: RuleGroup[]
   errors: ValidationError[]
   warnings: ValidationError[]
+  /** Where each anomaly rule was in the document (`groups[i].rules[j]`), for errors found after parsing. */
+  anomalyPaths?: Map<AnomalyRuleV2, string>
 }
 
 class Ctx {
@@ -199,6 +201,7 @@ export function ruleKey(kind: 'alert' | 'record' | 'anomaly', name: string, expr
 export function parseRuleFile(doc: unknown, cfg: RulerConfig): ParsedGroups {
   const c = new Ctx()
   const groups: RuleGroup[] = []
+  const anomalyPaths = new Map<AnomalyRuleV2, string>()
   if (!isObject(doc) || !Array.isArray(doc.groups)) {
     c.err('groups', 'a rule file is an object with a "groups" list', 'Wrap the groups as { "groups": [ { "name": ..., "rules": [...] } ] }.')
     return { groups, errors: c.errors, warnings: c.warnings }
@@ -329,6 +332,7 @@ export function parseRuleFile(doc: unknown, cfg: RulerConfig): ParsedGroups {
           }
           keys.add(rule.key)
           anomalyRules.push(rule)
+          anomalyPaths.set(rule, rp)
           return
         }
         if (!cost) return
@@ -366,7 +370,7 @@ export function parseRuleFile(doc: unknown, cfg: RulerConfig): ParsedGroups {
     if (anomalyRules.length > 0) group.anomalyRules = anomalyRules
     groups.push(group)
   })
-  return { groups, errors: c.errors, warnings: c.warnings }
+  return { groups, errors: c.errors, warnings: c.warnings, anomalyPaths }
 }
 
 /** The built-in always-firing rule (dead-man's switch). */

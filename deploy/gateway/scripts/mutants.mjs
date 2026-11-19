@@ -27,6 +27,17 @@ const MUTANTS = [
   ['a throwing backend crashes the gateway', 'res = await env[BINDING[backend]].fetch(req)\n  } catch (e) {', 'res = await env[BINDING[backend]].fetch(req)\n  } catch (e) {\n    throw e'],
 ]
 
+// It edits gateway/src/index.ts in place: run it in a copy outside any git work tree
+// (AGENTS.md: a mutant caught in a commit ships). The copy needs deploy/ (with node_modules),
+// control/src, edge/src, dashboard/src and contracts/, which the tests import.
+try {
+  execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: DEPLOY_DIR, stdio: 'pipe' })
+  console.error('Refusing to mutate sources inside a git work tree. Copy the tree first (see above).')
+  process.exit(2)
+} catch {
+  // Not a work tree (or no git): a copy. Go on.
+}
+
 const original = readFileSync(SRC, 'utf8')
 const results = []
 try {
@@ -38,15 +49,17 @@ try {
     const dir = mkdtempSync(join(tmpdir(), 'viz-mutant-'))
     const out = join(dir, 'report.json')
     try {
-      execFileSync('npx', ['vitest', 'run', '--reporter=json', `--outputFile=${out}`], { cwd: DEPLOY_DIR, stdio: 'ignore' })
+      execFileSync('npx', ['vitest', 'run', '--reporter=json', `--outputFile=${out}`], { cwd: DEPLOY_DIR, stdio: 'ignore', timeout: 600_000 })
     } catch {
-      killed = true
+      // Only a test that ran and failed kills a mutant. A suite that crashed, hung or wrote no
+      // report gave no result: reported as such and counted as not killed (rerun it).
       try {
         const report = JSON.parse(readFileSync(out, 'utf8'))
         const titles = report.testResults.flatMap((f) => f.assertionResults.filter((a) => a.status === 'failed').map((a) => a.title))
-        failed = `${titles.length} failed, e.g. "${titles[0]}"`
+        killed = titles.length > 0
+        failed = killed ? `${titles.length} failed, e.g. "${titles[0]}"` : '(no test failed: the suite did not load or run)'
       } catch {
-        failed = '(the suite did not run)'
+        failed = '(NO RESULT: the suite did not finish; rerun)'
       }
     } finally {
       rmSync(dir, { recursive: true, force: true })
