@@ -342,6 +342,15 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     return { range: (promql, startMs, endMs, stepMs) => range(this.tenant, promql, startMs, endMs, stepMs) }
   }
 
+  /**
+   * The range evaluator warm-ups read through: the same as backtests' (`rangeEvaluator`). Its own
+   * injection point only so that the test harness can give tenants that script no history an
+   * empty one, as a new metric has.
+   */
+  protected warmupRange(): RangeEvaluator {
+    return this.rangeEvaluator()
+  }
+
   /** The cost of a range read before it is made: the engine's `plan`, else query's `/api/v1/plan`. Without either, history is not read. */
   protected historyPlanner(): HistoryPlanner {
     const binding = this.env.EVALUATOR
@@ -970,7 +979,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       }
       let fetched: Awaited<ReturnType<typeof fetchHistory>>
       try {
-        fetched = await fetchHistory(this.historyPlanner(), this.rangeEvaluator(), reads, budget)
+        fetched = await fetchHistory(this.historyPlanner(), this.warmupRange(), reads, budget)
       } catch (e) {
         const attempts = job.attempts + 1
         const last = attempts >= MAX_WARMUP_ATTEMPTS

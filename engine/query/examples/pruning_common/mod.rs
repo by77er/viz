@@ -190,6 +190,11 @@ pub fn verdict(decomposes: bool, scan: u64, series: u64, bytes: u64, files: usiz
     "one place".into()
 }
 
+/// GETs the Worker issues for a whole object: one, or one per 16 MiB above that (`MAX_PART_BYTES`).
+pub fn whole_gets(size: usize) -> usize {
+    size.div_ceil(16 << 20).max(1)
+}
+
 pub fn ranges_of(sel: Vec<viz_query::SelectorInfo>) -> Vec<FetchRange> {
     sel.into_iter().map(|s| FetchRange { matchers: s.matchers, min_ts: s.min_ts_ms, max_ts: s.max_ts_ms }).collect()
 }

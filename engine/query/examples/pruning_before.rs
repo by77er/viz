@@ -48,6 +48,7 @@ fn main() {
             let est = series_estimate(&files.iter().zip(&s_rows).filter(|(_, r)| r.unwrap() > 0).map(|((_, s), r)| (s.min_ts, s.max_ts, r.unwrap())).collect::<Vec<_>>());
             let bytes: u64 = series.iter().chain(&samples).map(|b| b.len() as u64).sum();
             let n_files = series.len() + samples.len();
+            let n_gets: usize = series.iter().chain(&samples).map(|b| whole_gets(b.len())).sum();
             let v = verdict(decomposes, scan, est, bytes, n_files);
             let input = ScanInput { series_files: series.clone(), sample_files: samples.clone(), tail_batches: vec![] };
             let opts = Options::default();
@@ -66,7 +67,7 @@ fn main() {
                 Err(e) => e.chars().take(70).collect(),
             };
             println!(
-                "| {} | {v} | {n_files} | {n_files} | {:.2} MiB | {scan} | {est} | {wall:.0} / {cpu:.0} ms, {:.1} MiB | {short} |",
+                "| {} | {v} | {n_files} | {n_gets} | {:.2} MiB | {scan} | {est} | {wall:.0} / {cpu:.0} ms, {:.1} MiB | {short} |",
                 shape.name,
                 mib(bytes),
                 mib(peak as u64)

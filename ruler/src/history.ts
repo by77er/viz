@@ -119,6 +119,14 @@ export async function fetchHistory(planner: HistoryPlanner, range: RangeEvaluato
   }
   const matrices: PromMatrix[] = []
   for (const ps of all) {
+    if (ps.length === 1) {
+      // One range query: its matrix as the engine gave it (duplicate label sets included, which the rule's evaluation refuses).
+      const p = ps[0]!
+      const m = await range.range(p.promql, p.fromMs, p.toMs, p.stepMs)
+      if (m.resultType !== 'matrix') throw new Error('the range evaluation did not return a matrix')
+      matrices.push(m)
+      continue
+    }
     const bySeries = new Map<string, { metric: Record<string, string>; values: [number, string][] }>()
     for (const p of ps) {
       const m = await range.range(p.promql, p.fromMs, p.toMs, p.stepMs)

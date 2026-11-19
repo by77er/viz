@@ -138,3 +138,31 @@ fn deep_nesting_is_refused_not_a_stack_overflow() {
     let q = format!(r#"{{a="b"}} | {}x="1"{}"#, "(".repeat(5000), ")".repeat(5000));
     assert!(parse(&q).is_err());
 }
+
+/// A source that ignores the requested range and matchers, as the contract allows: the
+/// engine must re-filter both.
+struct Sloppy(MemSource);
+
+impl LogSource for Sloppy {
+    fn select(&self, _req: &SelectRequest<'_>, visit: &mut dyn FnMut(&[(String, String)], &LogRow)) -> Result<(), Error> {
+        for s in self.0.streams() {
+            for r in &s.rows {
+                visit(&s.labels, r);
+            }
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn extra_rows_from_the_source_are_refiltered() {
+    let s = Sloppy(src());
+    // Log query: [1s, 3s) of app=web only.
+    let r = query_range(&s, r#"{app="web"}"#, S, 3 * S, S, &fwd(10)).unwrap();
+    assert_eq!(r.stats.returned, 2, "{}", r.data_json());
+    let r = query_range(&s, r#"{app="web"} | logfmt"#, S, 3 * S, S, &fwd(10)).unwrap();
+    assert_eq!(r.stats.returned, 2, "{}", r.data_json());
+    // Metric query: the window (1s, 2s] holds one web row.
+    let r = query_instant(&s, r#"count_over_time({app="web"}[1s])"#, 2 * S, &fwd(10)).unwrap();
+    assert_eq!(data(&r), r#"{"resultType":"vector","result":[{"metric":{"app":"web","env":"prod"},"value":[2,"1"]}]}"#);
+}

@@ -29,11 +29,12 @@ fn cut(bytes: &[u8], p: &FilePlan) -> Option<Vec<u8>> {
     }
 }
 
-fn gets(p: &FilePlan) -> usize {
+/// GETs for a plan of a file of `size` bytes (a range or object above 16 MiB is read in pieces).
+fn gets(p: &FilePlan, size: usize) -> usize {
     match &p.read {
         FileRead::Skip => 0,
-        FileRead::Whole => 1,
-        FileRead::Ranges(r) => r.len(),
+        FileRead::Whole => whole_gets(size),
+        FileRead::Ranges(r) => r.iter().map(|x| whole_gets(x.1 as usize)).sum(),
     }
 }
 
@@ -66,7 +67,7 @@ fn main() {
             let mp = file_plan(&m_idx, &ranges, RANGE_GAP);
             let series: Vec<Vec<u8>> = files.iter().zip(&sp).filter_map(|((_, s), p)| cut(&s.bytes, p)).collect();
             let series_bytes: u64 = files.iter().zip(&sp).map(|((_, s), p)| p.bytes(s.bytes.len() as u64)).sum();
-            let series_gets: usize = sp.iter().map(gets).sum();
+            let series_gets: usize = files.iter().zip(&sp).map(|((_, s), p)| gets(p, s.bytes.len())).sum();
             let scan0: u64 = viz_query::scan_rows(&m_idx, &reads).iter().map(|r| r.unwrap()).sum();
             let est0 = series_estimate(&files.iter().zip(viz_query::scan_rows(&s_idx, &reads)).filter(|(_, r)| r.unwrap() > 0).map(|((_, s), r)| (s.min_ts, s.max_ts, r.unwrap())).collect::<Vec<_>>());
             let sample_bytes0: u64 = files.iter().zip(&mp).map(|((m, _), p)| p.bytes(m.bytes.len() as u64)).sum();
@@ -109,7 +110,7 @@ fn main() {
                 let kept = mplans.iter().filter(|p| p.read != FileRead::Skip).count();
                 bytes = series_bytes + sb;
                 v = format!("{}{}", verdict(decomposes, s, e, bytes, series.len() + kept), if resolve { ", series resolved" } else { "" });
-                (n_files, n_gets, rounds, scan, est) = (series.len() + kept, series_gets + mplans.iter().map(gets).sum::<usize>(), if resolve { 2 } else { 1 }, s, e);
+                (n_files, n_gets, rounds, scan, est) = (series.len() + kept, series_gets + files.iter().zip(&mplans).map(|((m, _), p)| gets(p, m.bytes.len())).sum::<usize>(), if resolve { 2 } else { 1 }, s, e);
                 if v.starts_with("split") {
                     split_rows.push((shape.name, ranges.clone(), v.clone(), q.clone(), scan0, est0));
                 }
@@ -148,14 +149,14 @@ fn main() {
             let l_before = 2u64.max(scan0.div_ceil(1_500_000)).max(est0.div_ceil(15_000)).min(32) as u32;
             let l_now: u32 = v.split(", ").next().unwrap().trim_start_matches("split").trim().trim_end_matches(" leaves").parse().unwrap_or(l_before);
             let whole: u64 = files.iter().map(|(m, s)| (m.bytes.len() + s.bytes.len()) as u64).sum();
-            let before_gets = l_before as usize * 2 * files.len();
+            let before_gets = l_before as usize * files.iter().map(|(m, s)| whole_gets(m.bytes.len()) + whole_gets(s.bytes.len())).sum::<usize>();
             let before_bytes = l_before as u64 * whole;
             let sp = file_plan(&s_idx, &ranges, RANGE_GAP);
             let (mut g, mut b) = (0usize, 0u64);
             for part in 0..l_now {
                 let pp = part_plan(&m_idx, &ranges, part, l_now, RANGE_GAP);
                 for (i, (m, s)) in files.iter().enumerate() {
-                    g += gets(&sp[i]) + gets(&pp[i]);
+                    g += gets(&sp[i], s.bytes.len()) + gets(&pp[i], m.bytes.len());
                     b += sp[i].bytes(s.bytes.len() as u64) + pp[i].bytes(m.bytes.len() as u64);
                 }
             }

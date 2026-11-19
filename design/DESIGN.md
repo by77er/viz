@@ -386,6 +386,11 @@ is pinned near the bucket so that hits concentrate.
 - **TraceQL search:** conditions are pushed to sorted and promoted columns. Structural
   operators shuffle candidate spans by trace-id hash to leaves that join per trace. Queries
   are bounded by scanned bytes and return partial results with a cursor.
+- **Tables and engine:** the `spans` and `trace_index` tables are specified in
+  `contracts/TRACES.md` (proposed; storage does not write them yet). The TraceQL engine is
+  `engine/traceql` (clean-room, D35, D40): parser, read plan for pruning, search and metrics
+  evaluation over that table's logical view, Tempo HTTP API JSON. It is not yet wired into
+  storage, ingest or the query Worker (its README, "Integration").
 - **Logs:** sort order and statistics, then the per-file token filter. Scans beyond a byte
   budget return partial results with a cursor.
 
