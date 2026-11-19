@@ -76,6 +76,38 @@
    "budget": 100
   },
   {
+   "name": "Open a menu (Share…)",
+   "type": "toggle",
+   "selector": "#share",
+   "expect": "#share-menu[data-open]",
+   "undo": "#share",
+   "budget": 100
+  },
+  {
+   "name": "Change theme (to dark)",
+   "type": "toggle",
+   "selector": "#theme [data-theme-choice=\"dark\"]",
+   "expect": "html[data-theme=\"dark\"]",
+   "undo": "#theme [data-theme-choice=\"\"]",
+   "budget": 100
+  },
+  {
+   "name": "Run a query: request sent and waiting state shown",
+   "type": "send",
+   "selector": "#run",
+   "expect": "#run[aria-busy=\"true\"]",
+   "url": "data/",
+   "budget": 100
+  },
+  {
+   "name": "Move to a view whose data is not loaded: its shell and waiting state",
+   "type": "toggle",
+   "selector": "#nav-pods",
+   "expect": "#view-pods:not([hidden]) #pods-region[data-waiting]",
+   "undo": "#nav-dashboard",
+   "budget": 100
+  },
+  {
    "name": "Response to paint, 36 series",
    "type": "response",
    "before": "document.querySelector('#panel-pods').removeAttribute('data-drawn')",

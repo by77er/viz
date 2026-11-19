@@ -219,27 +219,31 @@ describe('versioned storage: newer storage', () => {
   })
 })
 
-describe('versioned storage: upgrade to version 2 (anomaly rules)', () => {
-  it('Ruler storage at version 1 with data migrates to version 2 (one empty table, compat 1), keeps every row and alert, serves anomaly rules, survives eviction and is not migrated twice', async () => {
+/** Tables a migration after `version` added: what storage at that version does not have. */
+const ADDED_AFTER: Record<number, string[]> = { 1: ['anomaly_state', 'slo_state', 'warmup'], 2: ['slo_state', 'warmup'] }
+
+describe('versioned storage: upgrade to version 2 (anomaly rules) and 3 (SLO rules, warm-up)', () => {
+  it('Ruler storage at version 1 with data migrates to the latest version (empty new tables, compat 1), keeps every row and alert, serves anomaly rules, survives eviction and is not migrated twice', async () => {
     const { tenant, stub, w } = await setup({ heartbeatMs: 30 * MIN })
     ok(await stub.saveGroups(tenant, { groups: [{ name: 'g', interval: '1m', rules: [{ alert: 'Down', expr: 'up == 0' }] }] }))
     w.evaluate = (q, t) => (q === 'up == 0' ? vec([{ __name__: 'up', instance: 'a' }, 0]) : vec([{ service: 'api' }, 100 + (Math.round(t / MIN) % 5)]))
     world.now = Math.max(world.now, ok(await stub.health(tenant)).alarmAtMs!)
     expect(await runDurableObjectAlarm(stub)).toBe(true)
     // The same storage as release 1 (migration 1 only) would have left it: no anomaly_state, version 1.
+    const added = ADDED_AFTER[1]!
     const v1 = await runInDurableObject(stub, (_i, s) => {
       const d = dumpOf(s)
       return {
-        schema: d.schema.filter((x) => x.tbl_name !== 'anomaly_state'),
-        rows: Object.fromEntries(Object.entries(d.rows).filter(([t]) => t !== 'anomaly_state').map(([t, rs]) => [t, t === 'viz_schema' ? rs.map((r) => ({ ...r, version: 1, compat: 1 })) : rs])),
+        schema: d.schema.filter((x) => !added.includes(x.tbl_name)),
+        rows: Object.fromEntries(Object.entries(d.rows).filter(([t]) => !added.includes(t)).map(([t, rs]) => [t, t === 'viz_schema' ? rs.map((r) => ({ ...r, version: 1, compat: 1 })) : rs])),
       }
     })
     expect(v1.schema.map((x) => x.name)).not.toContain('anomaly_state')
     await install(stub, v1)
     const after = await runInDurableObject(stub, (_i, s) => ({ row: schemaRow(s), dump: withoutVersion(dumpOf(s)) }))
-    expect(after.row).toMatchObject({ version: 2, compat: 1 })
-    expect(after.dump.rows.anomaly_state).toEqual([])
-    expect(canon(Object.fromEntries(Object.entries(after.dump.rows).filter(([t]) => t !== 'anomaly_state')))).toEqual(canon(withoutVersion(v1).rows))
+    expect(after.row).toMatchObject({ version: RULER_SCHEMA.migrations.length, compat: 1 })
+    for (const t of added) expect(after.dump.rows[t], t).toEqual([])
+    expect(canon(Object.fromEntries(Object.entries(after.dump.rows).filter(([t]) => !added.includes(t))))).toEqual(canon(withoutVersion(v1).rows))
     expect((await alertsOf(stub, tenant, 'Down')).map((a) => a.state)).toEqual(['firing'])
 
     // It serves anomaly rules from there on, and their state survives eviction without a second migration.
@@ -266,10 +270,54 @@ describe('versioned storage: upgrade to version 2 (anomaly rules)', () => {
     expect((await latency()).anomaly).toMatchObject({ status: 'ok', stateSeries: 1, scored: 1 })
   })
 
-  it('a release that knows only migration 1 may open version 2 (its compat is 1): the previous release stays a rollback target', () => {
+  it('releases that know only migration 1, or 1 and 2, may open version 3 (its compat is 1): both stay rollback targets', () => {
     const release = schemaRelease(RULER_SCHEMA)
-    expect(release).toMatchObject({ component: 'ruler.Ruler', latest: 2, compat: 1 })
+    expect(release).toMatchObject({ component: 'ruler.Ruler', latest: 3, compat: 1 })
     expect(RULER_SCHEMA.migrations[1]).toMatchObject({ version: 2, readableFrom: 1 })
+    expect(RULER_SCHEMA.migrations[2]).toMatchObject({ version: 3, readableFrom: 1 })
     expect(canOpen(1, { version: release.latest, compat: release.compat })).toBe(true)
+    expect(canOpen(2, { version: release.latest, compat: release.compat })).toBe(true)
+  })
+
+  it('Ruler storage at version 2 with anomaly state migrates to version 3 (two empty tables, compat 1) without a row changing, then serves SLO rules from state that survives eviction, and is not migrated twice', async () => {
+    const { tenant, stub, w } = await setup({ heartbeatMs: 30 * MIN })
+    ok(await stub.saveGroups(tenant, { groups: [{ name: 'a', interval: '1m', rules: [{ alert: 'Latency', expr: 'latency', anomaly: { params: { minPoints: 2, halfLifePoints: 5 } } }] }] }))
+    w.evaluate = (q, t) => (q.includes('viz_slo_part') ? vec([{ viz_slo_part: 'total' }, 100], [{ viz_slo_part: 'bad' }, 1]) : vec([{ service: 'api' }, 100 + (Math.round(t / MIN) % 5)]))
+    for (let i = 0; i < 3; i++) {
+      world.now = Math.max(world.now, ok(await stub.health(tenant)).alarmAtMs!)
+      expect(await runDurableObjectAlarm(stub)).toBe(true)
+    }
+    // What release 2 (migrations 1 and 2) would have left: anomaly state, no slo_state or warmup.
+    const added = ADDED_AFTER[2]!
+    const v2 = await runInDurableObject(stub, (_i, s) => {
+      const d = dumpOf(s)
+      return {
+        schema: d.schema.filter((x) => !added.includes(x.tbl_name)),
+        rows: Object.fromEntries(Object.entries(d.rows).filter(([t]) => !added.includes(t)).map(([t, rs]) => [t, t === 'viz_schema' ? rs.map((r) => ({ ...r, version: 2, compat: 1 })) : rs])),
+      }
+    })
+    expect(v2.rows.anomaly_state).toHaveLength(1)
+    await install(stub, v2)
+    const after = await runInDurableObject(stub, (_i, s) => ({ row: schemaRow(s), dump: withoutVersion(dumpOf(s)) }))
+    expect(after.row).toMatchObject({ version: 3, compat: 1 })
+    for (const t of added) expect(after.dump.rows[t], t).toEqual([])
+    expect(canon(Object.fromEntries(Object.entries(after.dump.rows).filter(([t]) => !added.includes(t))))).toEqual(canon(withoutVersion(v2).rows))
+    // The anomaly rule (saved under release 2, with state) is not warmed again; it keeps scoring.
+    expect(ok(await stub.rules(tenant)).rules[0]!.anomaly!.stateSeries).toBe(1)
+    expect(ok(await stub.rules(tenant)).rules[0]!.anomaly!.warmup).toBeUndefined()
+    // An SLO rule from here on: its state rows survive eviction without a second migration.
+    ok(await stub.saveGroups(tenant, { groups: [{ name: 's', interval: '1m', rules: [{ alert: 'Checkout', slo: { objective: 0.99, sli: { bad: 'sum(increase(errors[$window]))', total: 'sum(increase(requests[$window]))' } } }] }] }))
+    const slo = async () => ok(await stub.rules(tenant)).rules.find((r) => r.name === 'Checkout')!
+    for (let seen = 0, last = (await slo()).lastEvaluationMs; seen < 2; ) {
+      world.now = Math.max(world.now, ok(await stub.health(tenant)).alarmAtMs!)
+      expect(await runDurableObjectAlarm(stub)).toBe(true)
+      const at = (await slo()).lastEvaluationMs
+      if (at !== last) [seen, last] = [seen + 1, at]
+    }
+    const rows = await runInDurableObject(stub, (_i, s) => s.storage.sql.exec('SELECT part, block, body FROM slo_state WHERE tenant = ? ORDER BY part, block', tenant).toArray())
+    expect(rows.map((r) => r.part)).toEqual(['coarse', 'fine', 'head'])
+    await evictDurableObject(stub)
+    expect(await runInDurableObject(stub, (_i, s) => openSchema(s.storage, RULER_SCHEMA))).toMatchObject({ status: 'ok', migrated: [] })
+    expect((await slo()).slo).toMatchObject({ stateSeries: 1, warmup: { status: 'done' } })
   })
 })
