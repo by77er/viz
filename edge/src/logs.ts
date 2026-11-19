@@ -27,6 +27,7 @@ import {
   text,
   utf8,
 } from './otel'
+import { DECODE, Meter, checkJsonTokens } from './meter'
 import { PbReader } from './pb'
 
 /**
@@ -34,6 +35,10 @@ import { PbReader } from './pb'
  * contracts/LOGS.md §1): OTLP/HTTP logs (protobuf, JSON) and Loki push (protobuf with
  * snappy, JSON). A record that breaks a rule is refused on its own and counted with its
  * reason; the rest of the request is stored.
+ *
+ * Memory (edge/README.md, "Memory per request"): what is built for one resource, scope or
+ * record is counted while it is decoded (src/meter.ts); a request's streams and rows are
+ * bytes, at most `maxDecodedBytes` of them; nothing refers to the body after decoding.
  */
 
 export const LOG = {
@@ -69,6 +74,9 @@ export const LogReject = {
   mdTooMany: 'more than 128 structured metadata entries',
   mdTooLarge: 'structured metadata over 64 KiB',
   emptyKey: 'attribute with an empty key',
+  values: 'log record with more than 65,536 values in its body, attributes and metadata (entries and array elements, as received)',
+  resourceValues: 'resource or scope with more than 65,536 attribute values (entries and array elements, as received)',
+  labelPairs: 'stream with more than 65,536 labels as received',
 } as const
 
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
@@ -103,22 +111,12 @@ export function labelName(key: string): string {
   return c0 >= 48 && c0 <= 57 ? `_${out}` : out
 }
 
-/** One accepted record. */
-interface Row {
-  entry: number
-  tsLo: number
-  tsHi: number
-  obsLo: number
-  obsHi: number
-  traceId: Uint8Array
-  spanId: Uint8Array
-  flags: number
-  severity: number
-  /** The line, severity text and metadata lie back to back in the collector's heap from `at`. */
-  at: number
-  lens: [number, number, number]
-  size: number
-}
+/**
+ * A row lies in the collector's heap from its offset: these fixed fields (49 bytes), the
+ * lengths of its three variable-length columns (u32 each), then their bytes. Its size,
+ * `LOG.rowFixedBytes` (61) plus its variable bytes, is what contracts/BATCH.md counts.
+ */
+const F = { entry: 0, ts: 4, observed: 12, traceId: 20, spanId: 36, flags: 44, severity: 48, lens: 49, data: 61 } as const
 
 export interface LogIn {
   /** i64 nanoseconds as halves, or null when the record has no usable timestamp. */
@@ -131,6 +129,8 @@ export interface LogIn {
   severityText: string
   line: string
   metadata: [string, string][]
+  /** Over the decode limit (src/meter.ts): not all of it was built, and it is refused. */
+  over: boolean
 }
 
 const ZERO16 = new Uint8Array(16)
@@ -159,9 +159,18 @@ export class LogCollector {
   readonly routes: string[] = []
   readonly routeOf: number[] = []
   private readonly routeIdx = new Map<string, number>()
-  readonly rows: Row[] = []
-  rowSeries = new Uint32Array(0)
+  /** Every accepted row, as bytes (layout `F`). */
   private readonly heap = new Buf(1 << 16)
+  private rowAt: Uint32Array = new Uint32Array(256)
+  private rowEntry: Uint32Array = new Uint32Array(256)
+  nRows = 0
+  rowSeries: Uint32Array = new Uint32Array(0)
+  /** Bytes of streams and rows so far, against `limits.maxDecodedBytes`. */
+  decoded = 0
+  /** Meters of the resource, the scope and the record being decoded. */
+  readonly resourceMeter = new Meter()
+  readonly scopeMeter = new Meter()
+  readonly recordMeter = new Meter()
 
   received = 0
   rejectedTotal = 0
@@ -174,9 +183,6 @@ export class LogCollector {
     this.maxMs = now + limits.logAcceptAheadMs
   }
 
-  get nRows(): number {
-    return this.rows.length
-  }
   get nSeries(): number {
     return this.streamBytes.length
   }
@@ -195,6 +201,13 @@ export class LogCollector {
     const s = [...this.rejected].map(([r, n]) => `${n} ${r}`).join('; ')
     // Bounded, as the OTLP specification asks of partial-success messages; long enough to name every reason.
     return s.length > 2048 ? `${s.slice(0, 2045)}...` : s
+  }
+
+  private charge(bytes: number): void {
+    if (this.decoded + bytes > this.limits.maxDecodedBytes) {
+      throw tooLarge(`request decodes into more than ${this.limits.maxDecodedBytes} bytes of log records; send smaller requests`)
+    }
+    this.decoded += bytes
   }
 
   /**
@@ -233,11 +246,12 @@ export class LogCollector {
     for (let i = 0; i < bytes.length; i += 4096) key += String.fromCharCode(...bytes.subarray(i, i + 4096))
     const hit = this.streamByKey.get(key)
     if (hit !== undefined) return hit
+    const r = route ?? `job=${job}\u0000instance=${instance}`
+    this.charge(bytes.length + key.length + r.length)
     const idx = this.streamBytes.length
     this.streamBytes.push(bytes)
     this.streamIds.push(id)
     this.streamByKey.set(key, idx)
-    const r = route ?? `job=${job}\u0000instance=${instance}`
     let ri = this.routeIdx.get(r)
     if (ri === undefined) {
       ri = this.routes.length
@@ -257,14 +271,26 @@ export class LogCollector {
     if (!(x.severity >= 0 && x.severity <= 24)) return this.reject(LogReject.severity)
     if (x.traceId.length !== 0 && x.traceId.length !== 16) return this.reject(LogReject.traceId)
     if (x.spanId.length !== 0 && x.spanId.length !== 8) return this.reject(LogReject.spanId)
+    if (x.over) return this.reject(LogReject.values)
+    // Longer than the limit in UTF-16 units is longer in bytes too: refused before it is written.
+    if (x.line.length > LOG.maxLine) return this.reject(LogReject.line)
     const h = this.heap
     const at = h.n
     const undo = (reason: string): void => {
       h.n = at
       this.reject(reason)
     }
+    h.u32(stream)
+    h.i64(x.ts[0], x.ts[1])
+    h.i64(x.observed[0], x.observed[1])
+    h.bytes(x.traceId.length === 0 ? ZERO16 : x.traceId)
+    h.bytes(x.spanId.length === 0 ? ZERO8 : x.spanId)
+    h.u32(x.flags >>> 0)
+    h.u8(x.severity)
+    for (let i = 0; i < 3; i++) h.u32(0)
     const lineLen = h.str(x.line)
     if (lineLen > LOG.maxLine) return undo(LogReject.line)
+    if (x.severityText.length > LOG.maxSeverityText) return undo(LogReject.severityText)
     const stLen = h.str(x.severityText)
     if (stLen > LOG.maxSeverityText) return undo(LogReject.severityText)
     const md = pairs(x.metadata, LogReject.mdName, LogReject.mdValue, LogReject.mdDup)
@@ -275,36 +301,43 @@ export class LogCollector {
     let total = 0
     for (const [n, v] of md) total += h.strU16(n) + h.strU16(v)
     if (total > LOG.maxMetadataBytes) return undo(LogReject.mdTooLarge)
-    if (this.rows.length >= this.limits.maxLogRecords) throw tooLarge(`more than ${this.limits.maxLogRecords} log records in one request`)
+    if (this.nRows >= this.limits.maxLogRecords) throw tooLarge(`more than ${this.limits.maxLogRecords} log records in one request`)
+    const size = h.n - at
+    this.charge(size)
+    h.setU32(at + F.lens, lineLen)
+    h.setU32(at + F.lens + 4, stLen)
+    h.setU32(at + F.lens + 8, h.n - m0)
+    if (this.nRows === this.rowAt.length) {
+      const grow = (a: Uint32Array): Uint32Array => {
+        const g = new Uint32Array(a.length * 2)
+        g.set(a)
+        return g
+      }
+      this.rowAt = grow(this.rowAt)
+      this.rowEntry = grow(this.rowEntry)
+    }
+    this.rowAt[this.nRows] = at
+    this.rowEntry[this.nRows] = stream
+    this.nRows++
     this.received++
-    this.rows.push({
-      entry: stream,
-      tsLo: x.ts[0],
-      tsHi: x.ts[1],
-      obsLo: x.observed[0],
-      obsHi: x.observed[1],
-      traceId: x.traceId.length === 0 ? ZERO16 : x.traceId,
-      spanId: x.spanId.length === 0 ? ZERO8 : x.spanId,
-      flags: x.flags >>> 0,
-      severity: x.severity,
-      at,
-      lens: [lineLen, stLen, h.n - m0],
-      size: LOG.rowFixedBytes + (h.n - at),
-    })
   }
 
   seal(): void {
-    this.rowSeries = Uint32Array.from(this.rows, (r) => r.entry)
+    this.rowSeries = this.rowEntry.slice(0, this.nRows)
+  }
+
+  private sizeOf(i: number): number {
+    return (i + 1 < this.nRows ? this.rowAt[i + 1]! : this.heap.n) - this.rowAt[i]!
   }
 
   /** Batches per slot, rows in arrival order, each batch at most `maxBatchBytes`. */
   build(slotOfStream: ArrayLike<number>, maxBatchBytes: number): Map<number, Batch[]> {
-    const bySlot = new Map<number, Row[]>()
-    for (const r of this.rows) {
-      const slot = slotOfStream[r.entry]!
+    const bySlot = new Map<number, number[]>()
+    for (let i = 0; i < this.nRows; i++) {
+      const slot = slotOfStream[this.rowEntry[i]!]!
       let l = bySlot.get(slot)
       if (!l) bySlot.set(slot, (l = []))
-      l.push(r)
+      l.push(i)
     }
     const out = new Map<number, Batch[]>()
     for (const [slot, rows] of bySlot) {
@@ -316,17 +349,19 @@ export class LogCollector {
         let varBytes = 0
         let to = from
         for (; to < rows.length; to++) {
-          const r = rows[to]!
-          const isNew = !local.has(r.entry)
-          const e = entryBytes + (isNew ? this.streamBytes[r.entry]!.length : 0)
+          const row = rows[to]!
+          const entry = this.rowEntry[row]!
+          const isNew = !local.has(entry)
+          const e = entryBytes + (isNew ? this.streamBytes[entry]!.length : 0)
           const n = to - from + 1
-          const bound = 16 + e + 8 + 49 * n + 12 * (n + 1) + varBytes + (r.size - LOG.rowFixedBytes) + 8 * 12
+          const v = this.sizeOf(row) - LOG.rowFixedBytes
+          const bound = 16 + e + 8 + 49 * n + 12 * (n + 1) + varBytes + v + 8 * 12
           if (n > 1 && bound > maxBatchBytes) break
           if (isNew) {
-            local.set(r.entry, local.size)
+            local.set(entry, local.size)
             entryBytes = e
           }
-          varBytes += r.size - LOG.rowFixedBytes
+          varBytes += v
         }
         batches.push(this.encode(rows.slice(from, to), local))
         from = to
@@ -336,37 +371,43 @@ export class LogCollector {
     return out
   }
 
-  private encode(rows: Row[], local: Map<number, number>): Batch {
+  private encode(rows: number[], local: Map<number, number>): Batch {
     const b = new Buf(1 << 16)
     b.bytes(new Uint8Array([0x56, 0x5a, 0x42, 0x31, 3, 0, 0, 0]))
     b.u32(rows.length)
     b.u32(local.size)
     for (const e of local.keys()) b.bytes(this.streamBytes[e]!)
-    const fixed = (f: (r: Row) => void): void => {
-      b.pad8()
-      for (const r of rows) f(r)
-    }
-    fixed((r) => b.u32(local.get(r.entry)!))
-    fixed((r) => b.i64(r.tsLo, r.tsHi))
-    fixed((r) => b.i64(r.obsLo, r.obsHi))
-    fixed((r) => b.bytes(r.traceId))
-    fixed((r) => b.bytes(r.spanId))
-    fixed((r) => b.u32(r.flags))
-    fixed((r) => b.u8(r.severity))
     const heap = this.heap.b
+    const view = new DataView(heap.buffer, heap.byteOffset, heap.byteLength)
+    const fixed = (off: number, len: number): void => {
+      b.pad8()
+      for (const r of rows) {
+        const at = this.rowAt[r]! + off
+        b.bytes(heap.subarray(at, at + len))
+      }
+    }
+    b.pad8()
+    for (const r of rows) b.u32(local.get(this.rowEntry[r]!)!)
+    fixed(F.ts, 8)
+    fixed(F.observed, 8)
+    fixed(F.traceId, 16)
+    fixed(F.spanId, 8)
+    fixed(F.flags, 4)
+    fixed(F.severity, 1)
     for (let col = 0; col < 3; col++) {
       b.pad8()
       let off = 0
       b.u32(0)
       for (const r of rows) {
-        off += r.lens[col]!
+        off += view.getUint32(this.rowAt[r]! + F.lens + 4 * col, true)
         b.u32(off)
       }
       b.pad8()
       for (const r of rows) {
-        let from = r.at
-        for (let k = 0; k < col; k++) from += r.lens[k]!
-        b.bytes(heap.subarray(from, from + r.lens[col]!))
+        const at = this.rowAt[r]!
+        let from = at + F.data
+        for (let k = 0; k < col; k++) from += view.getUint32(at + F.lens + 4 * k, true)
+        b.bytes(heap.subarray(from, from + view.getUint32(at + F.lens + 4 * col, true)))
       }
     }
     b.pad8()
@@ -432,6 +473,27 @@ interface OtlpRecord {
   flags: number
   traceId: Uint8Array
   spanId: Uint8Array
+  /** Over the decode limit: refused, with what was built of it. */
+  over: boolean
+}
+
+const EMPTY: Uint8Array = new Uint8Array(0)
+const NO_BODY: AnyV = { k: 'n' }
+
+/** Never written to: records are given new arrays for the times they carry. */
+const ZERO2: [number, number] = [0, 0]
+
+const newRecord = (): OtlpRecord => ({ time: ZERO2, observed: ZERO2, severity: 0, severityText: '', body: NO_BODY, attrs: [], flags: 0, traceId: EMPTY, spanId: EMPTY, over: false })
+
+/** Reuse one record object for every record of a request: nothing keeps it after `addOtlp`. */
+function clearRecord(x: OtlpRecord): void {
+  x.time = x.observed = ZERO2
+  x.severity = x.flags = 0
+  x.severityText = ''
+  x.body = NO_BODY
+  x.attrs.length = 0
+  x.traceId = x.spanId = EMPTY
+  x.over = false
 }
 
 function addOtlp(c: LogCollector, stream: number, base: Map<string, string>[], rec: OtlpRecord): void {
@@ -445,21 +507,31 @@ function addOtlp(c: LogCollector, stream: number, base: Map<string, string>[], r
   c.add(stream, {
     ts,
     observed: rec.observed,
-    traceId: rec.traceId.length === 16 && zero(rec.traceId) ? new Uint8Array(0) : rec.traceId,
-    spanId: rec.spanId.length === 8 && zero(rec.spanId) ? new Uint8Array(0) : rec.spanId,
+    traceId: rec.traceId.length === 16 && zero(rec.traceId) ? EMPTY : rec.traceId,
+    spanId: rec.spanId.length === 8 && zero(rec.spanId) ? EMPTY : rec.spanId,
     flags: rec.flags,
     severity: rec.severity,
     severityText: rec.severityText,
-    line: rec.body.k === 'n' ? '' : plainText(rec.body),
-    metadata: mergeLevels(...base, own),
+    // A record over the decode limit is refused before its line or metadata are looked at.
+    line: rec.over || rec.body.k === 'n' ? '' : plainText(rec.body),
+    metadata: rec.over ? [] : mergeLevels(...base, own),
+    over: rec.over,
   })
 }
 
 /** A resource: its stream (or the reason its records are refused) and its metadata level. */
-function otlpResource(c: LogCollector, attrs: KV[]): { stream: number | string; meta: Map<string, string> | string } {
+type Res = { stream: number | string; meta: Map<string, string> | string }
+const OVER_RESOURCE: Res = { stream: LogReject.resourceValues, meta: LogReject.resourceValues }
+
+function otlpResource(c: LogCollector, attrs: KV[]): Res {
   const labels = otlpLabels(attrs)
   if (typeof labels === 'string') return { stream: labels, meta: labels }
   return { stream: c.stream(labels, resourceRoute(attrs)), meta: level(attrs, STREAM_LABEL_KEYS) }
+}
+
+/** Why the records of this resource and scope are refused, or null. */
+function refusal(res: Res, scope: Map<string, string> | string): string | null {
+  return typeof res.stream === 'string' ? res.stream : typeof res.meta === 'string' ? res.meta : typeof scope === 'string' ? scope : null
 }
 
 // ───────────────────────────── OTLP protobuf ─────────────────────────────
@@ -471,76 +543,102 @@ function otlpResource(c: LogCollector, attrs: KV[]): { stream: number | string; 
 //                  string severity_text = 3; AnyValue body = 5; repeated KeyValue attributes = 6;
 //                  uint32 dropped_attributes_count = 7; fixed32 flags = 8; bytes trace_id = 9;
 //                  bytes span_id = 10; fixed64 observed_time_unix_nano = 11; string event_name = 12; }
+//
+// A level is read twice, as for spans (src/spans.ts): first for what its children need and to
+// count them, then for the children in order; nothing is kept per child between the passes.
 
 export function decodeLogsProto(body: Uint8Array, c: LogCollector): void {
   const r = new PbReader(body)
+  const x = newRecord()
   while (r.pos < r.end) {
     const tag = r.uint32()
-    if (tag === 0x0a) resourceLogs(r, c)
+    if (tag === 0x0a) resourceLogs(r, c, x)
     else r.skip(tag & 7)
   }
   c.seal()
 }
 
-function resourceLogs(r: PbReader, c: LogCollector): void {
+function resourceLogs(r: PbReader, c: LogCollector, x: OtlpRecord): void {
   const end = r.len()
-  const scopes: number[] = []
+  const start = r.pos
+  const m = c.resourceMeter.reset()
   const attrs: KV[] = []
+  let scopes = 0
   while (r.pos < end) {
     const tag = r.uint32()
     if (tag === 0x0a) {
       const rend = r.len()
       while (r.pos < rend) {
         const t = r.uint32()
-        if (t === 0x0a) attrs.push(pbKeyValue(r))
-        else r.skip(t & 7)
+        if (t === 0x0a) {
+          const kv = pbKeyValue(r, m)
+          if (kv) attrs.push(kv)
+        } else r.skip(t & 7)
       }
       r.done(rend)
     } else if (tag === 0x12) {
-      scopes.push(r.pos)
+      scopes++
       r.pos = r.len()
     } else r.skip(tag & 7)
   }
   r.done(end)
-  const res = otlpResource(c, attrs)
-  for (const at of scopes) {
-    r.pos = at
+  if (scopes === 0) return
+  let res: Res | null = m.over ? OVER_RESOURCE : null
+  r.pos = start
+  while (r.pos < end) {
+    const tag = r.uint32()
+    if (tag !== 0x12) {
+      r.skip(tag & 7)
+      continue
+    }
     const send = r.len()
-    const records: number[] = []
+    const sstart = r.pos
+    const sm = c.scopeMeter.reset()
     const sattrs: KV[] = []
+    let records = 0
     while (r.pos < send) {
       const t = r.uint32()
       if (t === 0x0a) {
         const scend = r.len()
         while (r.pos < scend) {
           const st = r.uint32()
-          if (st === 0x1a) sattrs.push(pbKeyValue(r))
-          else r.skip(st & 7)
+          if (st === 0x1a) {
+            const kv = pbKeyValue(r, sm)
+            if (kv) sattrs.push(kv)
+          } else r.skip(st & 7)
         }
         r.done(scend)
       } else if (t === 0x12) {
-        records.push(r.pos)
+        records++
         r.pos = r.len()
       } else r.skip(t & 7)
     }
     r.done(send)
-    const scope = level(sattrs)
-    const why = typeof res.stream === 'string' ? res.stream : typeof res.meta === 'string' ? res.meta : typeof scope === 'string' ? scope : null
+    if (records === 0) continue
+    res ??= otlpResource(c, attrs)
+    const scope = sm.over ? LogReject.resourceValues : level(sattrs)
+    const why = refusal(res, scope)
     if (why !== null) {
-      c.reject(why, records.length)
+      c.reject(why, records)
       continue
     }
-    for (const p of records) {
-      r.pos = p
-      addOtlp(c, res.stream as number, [res.meta as Map<string, string>, scope as Map<string, string>], pbRecord(r))
+    const base = [res.meta as Map<string, string>, scope as Map<string, string>]
+    r.pos = sstart
+    while (r.pos < send) {
+      const t = r.uint32()
+      if (t === 0x12) {
+        pbRecord(r, c.recordMeter, x)
+        addOtlp(c, res.stream as number, base, x)
+      } else r.skip(t & 7)
     }
   }
   r.pos = end
 }
 
-function pbRecord(r: PbReader): OtlpRecord {
+function pbRecord(r: PbReader, m: Meter, x: OtlpRecord): void {
   const end = r.len()
-  const x: OtlpRecord = { time: [0, 0], observed: [0, 0], severity: 0, severityText: '', body: { k: 'n' }, attrs: [], flags: 0, traceId: new Uint8Array(0), spanId: new Uint8Array(0) }
+  m.reset()
+  clearRecord(x)
   while (r.pos < end) {
     const tag = r.uint32()
     switch (tag) {
@@ -556,11 +654,13 @@ function pbRecord(r: PbReader): OtlpRecord {
         x.severityText = pbString(r)
         break
       case 0x2a:
-        x.body = pbAnyValue(r, 0)
+        x.body = pbAnyValue(r, 0, m)
         break
-      case 0x32:
-        x.attrs.push(pbKeyValue(r))
+      case 0x32: {
+        const kv = pbKeyValue(r, m)
+        if (kv) x.attrs.push(kv)
         break
+      }
       case 0x45:
         x.flags = pbFixed32(r)
         break
@@ -579,7 +679,7 @@ function pbRecord(r: PbReader): OtlpRecord {
     }
   }
   r.done(end)
-  return x
+  x.over = m.over
 }
 
 // ─────────────────────────────── OTLP JSON ───────────────────────────────
@@ -596,33 +696,43 @@ function jsonTime(v: unknown, what: string): [number, number] {
 }
 
 export function decodeLogsJson(body: Uint8Array, c: LogCollector): void {
+  checkJsonTokens(body, c.limits.maxJsonTokens)
   const root = parseJson(body, 'OTLP JSON')
+  const rec = newRecord()
   for (const rlRaw of list(root.resourceLogs, 'resourceLogs')) {
     const rl = object(rlRaw, 'resourceLogs[]')
-    const res = otlpResource(c, jsonAttrs(object(rl.resource, 'resource').attributes))
+    const m = c.resourceMeter.reset()
+    const attrs = jsonAttrs(object(rl.resource, 'resource').attributes, m)
+    let res: Res | null = m.over ? OVER_RESOURCE : null
     for (const slRaw of list(rl.scopeLogs, 'scopeLogs')) {
       const sl = object(slRaw, 'scopeLogs[]')
-      const scope = level(jsonAttrs(object(sl.scope, 'scope').attributes))
+      const sm = c.scopeMeter.reset()
+      const sattrs = jsonAttrs(object(sl.scope, 'scope').attributes, sm)
       const records = list(sl.logRecords, 'logRecords')
-      const why = typeof res.stream === 'string' ? res.stream : typeof res.meta === 'string' ? res.meta : typeof scope === 'string' ? scope : null
+      if (records.length === 0) continue
+      res ??= otlpResource(c, attrs)
+      const scope = sm.over ? LogReject.resourceValues : level(sattrs)
+      const why = refusal(res, scope)
       if (why !== null) {
         c.reject(why, records.length)
         continue
       }
+      const base = [res.meta as Map<string, string>, scope as Map<string, string>]
       for (const raw of records) {
         const x = object(raw, 'logRecords[]')
+        const rm = c.recordMeter.reset()
         const sev = x.severityNumber
-        addOtlp(c, res.stream as number, [res.meta as Map<string, string>, scope as Map<string, string>], {
-          time: jsonTime(x.timeUnixNano, 'timeUnixNano'),
-          observed: jsonTime(x.observedTimeUnixNano, 'observedTimeUnixNano'),
-          severity: typeof sev === 'string' ? SEVERITIES.indexOf(sev) : sev === undefined || sev === null ? 0 : typeof sev === 'number' && Number.isInteger(sev) ? sev : bad('severityNumber is not an enum'),
-          severityText: text(x.severityText, 'severityText'),
-          body: jsonAny(x.body, 0),
-          attrs: jsonAttrs(x.attributes),
-          flags: jsonU32(x.flags, 'flags'),
-          traceId: jsonId(x.traceId, 'traceId'),
-          spanId: jsonId(x.spanId, 'spanId'),
-        })
+        rec.time = jsonTime(x.timeUnixNano, 'timeUnixNano')
+        rec.observed = jsonTime(x.observedTimeUnixNano, 'observedTimeUnixNano')
+        rec.severity = typeof sev === 'string' ? SEVERITIES.indexOf(sev) : sev === undefined || sev === null ? 0 : typeof sev === 'number' && Number.isInteger(sev) ? sev : bad('severityNumber is not an enum')
+        rec.severityText = text(x.severityText, 'severityText')
+        rec.body = jsonAny(x.body, 0, rm)
+        rec.attrs = jsonAttrs(x.attributes, rm)
+        rec.flags = jsonU32(x.flags, 'flags')
+        rec.traceId = jsonId(x.traceId, 'traceId')
+        rec.spanId = jsonId(x.spanId, 'spanId')
+        rec.over = rm.over
+        addOtlp(c, res.stream as number, base, rec)
       }
     }
   }
@@ -631,11 +741,15 @@ export function decodeLogsJson(body: Uint8Array, c: LogCollector): void {
 
 // ─────────────────────────────── Loki push ───────────────────────────────
 
+/** What `parseLabelSet` returns for a label set with more than its `max` pairs. */
+export const TOO_MANY_PAIRS = 'too many pairs'
+
 /**
  * A Prometheus label set as Loki's protobuf push carries it: `{name="value", ...}`, values
- * in Go's double-quoted string syntax. Returns the pairs, or null if it does not parse.
+ * in Go's double-quoted string syntax. Returns the pairs, or null if it does not parse, or
+ * `TOO_MANY_PAIRS` as soon as it has read more than `max` of them.
  */
-export function parseLabelSet(s: string): [string, string][] | null {
+export function parseLabelSet(s: string, max = Number.POSITIVE_INFINITY): [string, string][] | null | typeof TOO_MANY_PAIRS {
   let i = 0
   const ws = (): void => {
     while (i < s.length && (s[i] === ' ' || s[i] === '\t' || s[i] === '\n' || s[i] === '\r')) i++
@@ -690,6 +804,7 @@ export function parseLabelSet(s: string): [string, string][] | null {
         v += String.fromCharCode(parseInt(o, 8))
       } else return null
     }
+    if (out.length >= max) return TOO_MANY_PAIRS
     out.push([name, v])
     ws()
     if (s[i] === ',') {
@@ -712,8 +827,9 @@ export function parseLabelSet(s: string): [string, string][] | null {
 }
 
 /** Labels of a pushed stream; a repeated name is refused here (the `pairs` check also sees it). */
-function lokiStream(c: LogCollector, labels: [string, string][] | null): number | string {
+function lokiStream(c: LogCollector, labels: [string, string][] | null | typeof TOO_MANY_PAIRS): number | string {
   if (labels === null) return LogReject.labelSyntax
+  if (labels === TOO_MANY_PAIRS) return LogReject.labelPairs
   return c.stream(labels)
 }
 
@@ -726,6 +842,9 @@ function lokiStream(c: LogCollector, labels: [string, string][] | null): number 
 
 export function decodeLokiProto(body: Uint8Array, c: LogCollector): void {
   const r = new PbReader(body)
+  const m = c.recordMeter
+  const md: [string, string][] = []
+  const x: LogIn = { ts: null, observed: ZERO2, traceId: EMPTY, spanId: EMPTY, flags: 0, severity: 0, severityText: '', line: '', metadata: md, over: false }
   while (r.pos < r.end) {
     const tag = r.uint32()
     if (tag !== 0x0a) {
@@ -733,29 +852,37 @@ export function decodeLokiProto(body: Uint8Array, c: LogCollector): void {
       continue
     }
     const end = r.len()
+    const start = r.pos
     let labels = ''
-    const entries: number[] = []
+    let entries = 0
     while (r.pos < end) {
       const t = r.uint32()
       if (t === 0x0a) labels = pbString(r)
       else if (t === 0x12) {
-        entries.push(r.pos)
+        entries++
         r.pos = r.len()
       } else r.skip(t & 7)
     }
     r.done(end)
-    const stream = lokiStream(c, parseLabelSet(labels))
+    if (entries === 0) continue
+    const stream = lokiStream(c, parseLabelSet(labels, DECODE.maxValues))
     if (typeof stream === 'string') {
-      c.reject(stream, entries.length)
+      c.reject(stream, entries)
       r.pos = end
       continue
     }
-    for (const at of entries) {
-      r.pos = at
+    r.pos = start
+    while (r.pos < end) {
+      const t0 = r.uint32()
+      if (t0 !== 0x12) {
+        r.skip(t0 & 7)
+        continue
+      }
       const eend = r.len()
-      let ts: [number, number] | null = [0, 0]
+      m.reset()
+      let ts: [number, number] | null = ZERO2
       let line = ''
-      const md: [string, string][] = []
+      md.length = 0
       while (r.pos < eend) {
         const t = r.uint32()
         if (t === 0x0a) {
@@ -777,16 +904,17 @@ export function decodeLokiProto(body: Uint8Array, c: LogCollector): void {
         } else if (t === 0x12) line = pbString(r)
         else if (t === 0x1a) {
           const mend = r.len()
+          const ok = m.take()
           let n = ''
           let v = ''
           while (r.pos < mend) {
             const mt = r.uint32()
-            if (mt === 0x0a) n = pbString(r)
-            else if (mt === 0x12) v = pbString(r)
+            if (ok && mt === 0x0a) n = pbString(r)
+            else if (ok && mt === 0x12) v = pbString(r)
             else r.skip(mt & 7)
           }
           r.done(mend)
-          md.push([n, v])
+          if (ok) md.push([n, v])
         } else r.skip(t & 7)
       }
       r.done(eend)
@@ -794,7 +922,10 @@ export function decodeLokiProto(body: Uint8Array, c: LogCollector): void {
         c.reject(LogReject.badTime)
         continue
       }
-      c.add(stream, { ts, observed: [0, 0], traceId: new Uint8Array(0), spanId: new Uint8Array(0), flags: 0, severity: 0, severityText: '', line, metadata: md })
+      x.ts = ts
+      x.line = line
+      x.over = m.over
+      c.add(stream, x)
     }
     r.pos = end
   }
@@ -807,22 +938,27 @@ const malformed = (what: string): never => {
 
 /** `{"streams":[{"stream":{...},"values":[["<ns>","<line>"(, {metadata})], ...]}]}` */
 export function decodeLokiJson(body: Uint8Array, c: LogCollector): void {
+  checkJsonTokens(body, c.limits.maxJsonTokens)
   const root = parseJson(body, 'Loki push JSON')
   const streams = root.streams
   if (streams !== undefined && streams !== null && !Array.isArray(streams)) malformed('streams is not an array')
+  const m = c.recordMeter
+  const md: [string, string][] = []
+  const x: LogIn = { ts: null, observed: ZERO2, traceId: EMPTY, spanId: EMPTY, flags: 0, severity: 0, severityText: '', line: '', metadata: md, over: false }
   for (const sRaw of (streams as unknown[] | undefined) ?? []) {
     if (typeof sRaw !== 'object' || sRaw === null || Array.isArray(sRaw)) malformed('a stream is not an object')
     const s = sRaw as Record<string, unknown>
     const labelsRaw = s.stream ?? {}
     if (typeof labelsRaw !== 'object' || labelsRaw === null || Array.isArray(labelsRaw)) malformed('stream is not an object')
     const labels: [string, string][] = []
+    const lm = c.scopeMeter.reset()
     for (const [k, v] of Object.entries(labelsRaw as Record<string, unknown>)) {
       if (typeof v !== 'string') malformed(`label ${JSON.stringify(k)} is not a string`)
-      labels.push([k, v as string])
+      if (lm.take()) labels.push([k, v as string])
     }
     const values = s.values ?? []
     if (!Array.isArray(values)) malformed('values is not an array')
-    const stream = lokiStream(c, labels)
+    const stream = lm.over ? LogReject.labelPairs : lokiStream(c, labels)
     if (typeof stream === 'string') {
       c.reject(stream, (values as unknown[]).length)
       continue
@@ -831,12 +967,13 @@ export function decodeLokiJson(body: Uint8Array, c: LogCollector): void {
       if (!Array.isArray(e) || e.length < 2 || e.length > 3) malformed('an entry is not [timestamp, line] or [timestamp, line, metadata]')
       const [tsRaw, line, mdRaw] = e as unknown[]
       if (typeof line !== 'string') malformed('a line is not a string')
-      const md: [string, string][] = []
+      m.reset()
+      md.length = 0
       if (mdRaw !== undefined && mdRaw !== null) {
         if (typeof mdRaw !== 'object' || Array.isArray(mdRaw)) malformed('structured metadata is not an object')
         for (const [k, v] of Object.entries(mdRaw as Record<string, unknown>)) {
           if (typeof v !== 'string') malformed(`structured metadata ${JSON.stringify(k)} is not a string`)
-          md.push([k, v as string])
+          if (m.take()) md.push([k, v as string])
         }
       }
       const ts = typeof tsRaw === 'string' && /^\d{1,19}$/.test(tsRaw) ? nsHalves(BigInt(tsRaw)) : null
@@ -844,7 +981,10 @@ export function decodeLokiJson(body: Uint8Array, c: LogCollector): void {
         c.reject(LogReject.badTime)
         continue
       }
-      c.add(stream, { ts, observed: [0, 0], traceId: new Uint8Array(0), spanId: new Uint8Array(0), flags: 0, severity: 0, severityText: '', line: line as string, metadata: md })
+      x.ts = ts
+      x.line = line as string
+      x.over = m.over
+      c.add(stream, x)
     }
   }
   c.seal()

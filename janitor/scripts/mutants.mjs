@@ -19,13 +19,19 @@ if (!check && existsSync(`${ROOT}.git`)) {
 }
 
 const F = 'src/janitor.ts'
-const T = { registration: 'npx vitest run --maxWorkers=2 test/registration.test.ts' }
+const T = { registration: 'npx vitest run --maxWorkers=2 test/registration.test.ts', signals: 'npx vitest run --maxWorkers=2 test/signals.test.ts' }
 // [name, file, from, to, tests]
 const mutants = [
   ['D61: the sweep counts a committed incarnation (F15 back)', F, '  const newer = w.loggedIncarnation !== undefined ? w.loggedIncarnation > inc : w.incarnation > inc && w.seq > 0', '  const newer = w.incarnation > inc', T.registration],
   ["D61: the sweep keeps D30's rule (a logged unit of the newer incarnation; F16 back)", F, '  const newer = w.loggedIncarnation !== undefined ? w.loggedIncarnation > inc : w.incarnation > inc && w.seq > 0', '  const newer = w.incarnation > inc && w.seq > 0', T.registration],
   ['D61: the sweep skips ensureStream (F16 back)', F, '  if (env.SHARD) {', '  if (false) {', T.registration],
   ['D61: a shard without ensureStream stops the sweep (m-6)', F, '        out.ensured.push({ shard, error: why })', '        throw e', T.registration],
+  // review m-1 (design/reviews/signals-end-to-end.md): an unreadable trace_days or log_days stops that signal only
+  ['m-1: an unreadable signal field refuses the whole record, metrics included (the fix undone)', F, "  return { status: 'ok', policy, source: 'record', ...(reasons.length ? { unreadable: reasons } : {}) }", "  if (reasons.length) return unreadable(reasons[0]!)\n  return { status: 'ok', policy, source: 'record' }", T.signals],
+  ['m-1: an unreadable signal field falls back to the default (fails open)', F, '    reasons.push(`${k} is ${JSON.stringify(x)}, not a positive integer`)\n    return null', '    return DEFAULT_SIGNAL_DAYS', T.signals],
+  ['m-1: an unreadable signal is expired as if it kept no days', F, '    if (keepDays === null) continue\n', '', T.signals],
+  ['m-1: only trace_days is checked; a bad log_days is taken as a number or the default', F, "log_days: signal('log_days') }", "log_days: typeof (rec as Record<string, unknown>).log_days === 'number' ? ((rec as Record<string, unknown>).log_days as number) : DEFAULT_SIGNAL_DAYS }", T.signals],
+  ['m-1: a partly unreadable record is not reported (no hourly look, no marker)', F, '  if (read.unreadable) {', '  if (false) {', T.signals],
 ]
 
 const only = check ? undefined : process.argv[2]

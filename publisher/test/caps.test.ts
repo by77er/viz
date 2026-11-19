@@ -284,6 +284,33 @@ describe('an invocation cut off in the middle of a re-base (as at the CPU limit)
   })
 })
 
+describe('a capped publish started over after a conflict', () => {
+  it('re-reads the re-bases it admitted, admits no other, and commits them', async () => {
+    const { cell, tenant } = fresh()
+    const [x, y1, y2] = [tenant('x'), tenant('y1'), tenant('y2')]
+    for (const t of [x, y1, y2]) {
+      await addUnit(t, pairUnit(cell, t, 1, 1, T0 + 1000), { drain: true })
+      await mirror(t, cell)
+    }
+    const A = publisher(cell)
+    const B = publisher(`${cell}~b`) // a second writer on the same cell
+    await B.configure({ maxRebasesPerPublish: 1, continueMs: CONTINUE_MS })
+    // B re-bases y1 (y2 waits for the cap) and stops before its first metadata write; A commits x meanwhile.
+    const reached = B.pauseAt('cursors-written', 'metric_samples')
+    const bDone = B.publish([y1, y2])
+    await reached
+    expect((await A.publish([x])).tenants[0]).toMatchObject({ status: 'ok' })
+    await B.resume()
+    const b = await bDone
+    expect(b.conflicts).toBeGreaterThanOrEqual(1)
+    // Started over: y1 (now the most recently started) re-based and committed, y2 still waiting.
+    expect(b.tenants.map((r) => [r.tenant, r.status, !!r.rebase])).toEqual([[y1, 'ok', true], [y2, 'deferred', false]])
+    for (const t of [x, y1]) expect((await icebergLive(cell, 'metric_samples')).filter((k) => k.includes(`/tenant=${t}/`))).toEqual(await liveKeys(t, 'metric_samples'))
+    expect((await icebergLive(cell, 'metric_samples')).filter((k) => k.includes(`/tenant=${y2}/`))).toEqual([])
+    expect(await B.pending()).toEqual([y2])
+  })
+})
+
 describe('paging over tenants', () => {
   it('a publish reads at most maxTenantsPerPublish logs, longest waiting first; a tenant stuck on a hole goes behind the others', async () => {
     const { cell, tenant } = fresh()
