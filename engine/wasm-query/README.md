@@ -148,11 +148,11 @@ node tools/check.mjs          # load proof and size report, in Node
     extent. Spans of tail batches are read for `tqExtent` without being held
     (`batch_span_times`).
   - `max_spans` and `max_rows` count rows held, not decoded.
-  Tests: `src/sigtests.rs` (8, `cargo test -j 2 --lib`): the bound before de-duplication with
+  Tests: `src/sigtests.rs` (9, `cargo test -j 2 --lib`): the bound before de-duplication with
   and without the out-of-bound file, extents across units and the tail, extents charged by trace
   (3,000 fragments in under 1 MiB; `trace_index` rows are not spans), a fat resource held once
   from files and tail and fat attributes refused, trace by ID's answer charged as written, fat
-  log lines and their answer refused, a metric query's series refused by the budget, and the
+  log lines and their answer refused, a LogQL and a TraceQL metric query's series refused by the budget before they are made, and the
   budget's exact boundary.
   - `viz_q_tq_extent` also takes `u64 max_bytes` after the bound: each trace it holds is charged
     192 bytes and each hour 32. Through the Worker: `query/test/completeness.test.ts`,

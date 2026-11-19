@@ -741,7 +741,7 @@ module, and workerd through the whole Worker, `test/memory.test.ts`; load averag
 | 1,000 spans, 180 KB resource | 200, 176.1 MiB | 200, **4.8 MiB** | |
 | 2,000 spans, 180 KB resource | 200, 348.9 MiB | 200, **6.0 MiB** | 200, **6.0 MiB** |
 | 600 spans, each its own 60 KB attribute | (not run) | | 422 `max_decoded_bytes`, **39.4 MiB** (1.8 MB of files fetched) |
-| 400 log lines of 200 KB | 200, 158.5 MiB + 19.1 MiB answer | 422, **46.7 MiB** | 422, **41.5 MiB** |
+| 400 log lines of 200 KB | 200, 158.5 MiB + 19.1 MiB answer | 422, **38.7 MiB** | 422, **41.5 MiB** |
 | 40 of those lines, `limit` 10 | | | 200, **17.8 MiB** |
 
 So the isolate holds at most the budget plus what was fetched plus the engine's few MiB, and a
@@ -761,10 +761,10 @@ instance per run, so the memory is that call's peak):
 | 20,000 spans | 757 | 34.3 MiB | 34 MiB |
 | 40,000 spans | 1,790 | 66.3 MiB | 67.5 MiB |
 | 20,000 log rows | 448 | 29.3 MiB | |
-| 60,000 log rows | 902 | 54.4 MiB | 47.6 MiB (at 48 B an attribute; 46.5 at 48) |
+| 60,000 log rows | 902 | 54.4 MiB | 48.5 MiB |
 
 A realistic span grows memory by 1.64 KiB and is charged 1.72 KiB; a log row grows it by
-0.64 KiB and is charged about 0.8 KiB. 32 MiB holds about 19,000 such spans: `maxSpans` is
+0.64 KiB and is charged 0.83 KiB. 32 MiB holds about 19,000 such spans: `maxSpans` is
 18,000 (was 40,000), so a realistic query meets the cheap refusal before anything is fetched;
 `maxLogRows` is 30,000 (was 60,000), which leaves 8 MiB for an answer of 5,000 lines. The budget
 is 32 MiB because the worst query then holds, in WASM, its inputs (`maxFetchBytes`, 16 MiB, and
@@ -932,8 +932,9 @@ cores):
   answers, pruning on and off (their traces lie within the margin of their windows, so the
   in-memory answers over every batch are unchanged); the engine-cap test now runs on a tenant
   whose data is all in the tail and checks that tail rows outside the query cost nothing.
-- `engine/wasm-query`: `cargo test -j 2 --lib`, 7 of 7 (`src/sigtests.rs`); `./build.sh` and
-  `node tools/check.mjs`, every check passes (4,476,450 bytes, 1,436,641 gzip -9).
+- `engine/wasm-query`: `cargo test -j 2 --lib`, 9 of 9 (`src/sigtests.rs`); `./build.sh` and
+  `node tools/check.mjs`, every check passes (module SHA-256 `b3761a9c0b7e52a5…`, 4,469,834
+  bytes, 1,433,476 gzip -9).
   `engine/traceql`: `cargo test -j 2`, api 14, props 6, limits 6, regex_dialect 1, conformance 1
   (skips upstream), differential 1 ignored, as before; its probe and `engine/storage/readback`
   build.
@@ -1380,6 +1381,43 @@ page states them. The independent consumer is the app's client. **Grafana itself
 run against the Worker**, and no response was compared with a running Prometheus.
 
 ### Mutation check
+
+**The review of spans and logs end to end, M-1, M-2, m-3, m-4 (2026-11-19, 12:41 to 13:14 UTC, load
+average 3 to 10, on scratch trees; `node tools/mutants.mjs 98 … 110`): 13 of 13 killed**, the
+unmutated suite passing first (in both runs, the second on the final code).
+
+| # | Mutant | Killed by |
+|---|---|---|
+| 98 | M-1: the margin dropped (a trace query reads the window only, the code before the fix) | `completeness.test.ts`, 3 tests |
+| 99 | M-1: `trace_index` planned over the window, not the bound | `completeness.test.ts`, 2 tests |
+| 100 | M-1: the engine not told the bound | `completeness.test.ts` › every trace named is whole … (trace `h`) |
+| 101 | M-1: trace by ID with a hint reads the hint only | `completeness.test.ts` › … "every span" |
+| 102 | M-1: the engine keeps spans outside the bound (Rust) | `completeness.test.ts` › every trace named is whole … (trace `h`) |
+| 103 | M-2: the tenant's `maxDecodedBytes` does not reach the engine | `memory.test.ts` › a 180 KB resource … |
+| 104 | M-2: a resource held once per span again (Rust) | `memory.test.ts` › a 180 KB resource … |
+| 105 | M-2: span rows not charged (Rust) | `memory.test.ts`, 2 tests |
+| 106 | M-2: log rows not charged (Rust) | `memory.test.ts` › 400 log lines … |
+| 107 | m-3: log rows counted against `max_rows` before the selectors drop them | `signals.test.ts` › … the ones outside the query do not |
+| 108 | m-4: Loki integers of ten or fewer digits read as nanoseconds | `sigcompat.test.ts` |
+| 109 | m-4: Loki errors in the Prometheus envelope | `sigcompat.test.ts`, `memory.test.ts` |
+| 110 | m-4: `/api/echo` not routed | `sigcompat.test.ts` |
+
+100 and 102 **survived the first run**: the corpus had no found trace with a span beyond the bound
+inside a file the hull reads, so dropping the bound in the engine changed nothing. Trace `h` was
+added (its child at 11:30 shares the hour file of `a`'s child at 11:00); both are killed since.
+The first run also reported the shared tree's mutated files changed during it: that was this
+work's own edits (the extents' byte budget, trace `h`), not a mutant.
+
+**Rust mutants of `engine/wasm-query`**, on a scratch copy of `engine/` with `cargo test -j 2 --lib`
+(the vitest mutants cannot see an efficiency-only or boundary property): **15 of 15 killed**, two
+after a test was strengthened. Killed by `src/sigtests.rs`: fragments outside the bound counted;
+tail spans outside the bound counted; the hull's end not cut to the bound; the hull's start not cut
+(survived, then killed by a fragment that starts before the bound); spans outside the bound kept;
+the budget one byte loose (`> max + 1`); the budget refusing at its limit (`>=`); answers charged
+once; resources not interned; span attributes not charged; a LogQL metric query's series not
+bounded by what is left (survived: the answer's charge refused it later; then killed by asserting
+that the refusal comes before the series are made); a TraceQL metric query's series not bounded;
+trace by ID's answer not charged; extents not charged; a log answer not charged.
 
 **The review's fixes ported onto the development branch, over D62 (2026-11-19, 11:16 to 11:41
 UTC, load average 4.8 to 10.6, on a scratch tree; `node tools/mutants.mjs 53 54 55 57 58 60 71

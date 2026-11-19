@@ -2421,7 +2421,7 @@ attributes unbounded.
 **Measured** (here; Node 22 through the binding, `query/README.md` "Memory"; and workerd through
 the Worker, `query/test/memory.test.ts`). The review's inputs: 1,000 and 2,000 spans with a
 180 KB resource, 176 and 349 MiB of WASM memory before, 4.8 and 6.0 MiB after; 400 log lines of
-200 KB, 158 MiB and a 19 MiB answer before, refused (422) at a 46.7 MiB peak after. Realistic
+200 KB, 158 MiB and a 19 MiB answer before, refused (422) at a 38.7 MiB peak after (the default budget, 32 MiB). Realistic
 rows (an OTel-like resource of about 3 KiB, 12 to 14 attributes: the shape is training
 knowledge): 1.64 KiB of WASM memory held per span and 1.72 KiB charged (40,000 spans: 66.3 MiB);
 log rows of 150 to 400 bytes, 0.64 KiB held and 0.8 KiB charged. The review's M-1 reproduction
