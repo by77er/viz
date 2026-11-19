@@ -62,8 +62,8 @@ impl Mem {
 
 /// Fixed bytes charged per attribute held (key and value headers, allocator overhead), per
 /// span, per log row, per event and per link; the strings' lengths are added to them.
-pub(crate) const ATTR_BYTES: u64 = 48;
-pub(crate) const SPAN_BYTES: u64 = 320;
+pub(crate) const ATTR_BYTES: u64 = 56;
+pub(crate) const SPAN_BYTES: u64 = 512;
 pub(crate) const LOG_ROW_BYTES: u64 = 192;
 const EVENT_BYTES: u64 = 64;
 const LINK_BYTES: u64 = 96;

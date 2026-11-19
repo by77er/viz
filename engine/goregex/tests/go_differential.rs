@@ -52,23 +52,37 @@ impl Rng {
     }
 }
 
+/// Group openers for closed groups: plain, named (names Go accepts, some Rust cannot hold, and
+/// some Go refuses), flag groups and lookbehind.
+const OPENERS: &[&str] =
+    &["(", "(?:", "(?i:", "(?P<n>", "(?<m>", "(?P<1>", "(?<1a>", "(?P<_>", "(?<x9_Z>", "(?P<n>", "(?P<é>", "(?<=", "(?P<", "(?<"];
+
 fn pattern(r: &mut Rng) -> String {
     let mut p = String::new();
     let n = 1 + r.below(7);
     for _ in 0..n {
         // Mostly tokens; sometimes a whole class built from tokens, so that class syntax is
-        // exercised and not only stray brackets.
-        if r.below(5) == 0 {
-            p.push('[');
-            if r.below(3) == 0 {
-                p.push('^');
+        // exercised and not only stray brackets; sometimes a closed group, so that groups (named
+        // ones above all) are accepted often enough to be compared.
+        match r.below(6) {
+            0 => {
+                p.push('[');
+                if r.below(3) == 0 {
+                    p.push('^');
+                }
+                for _ in 0..1 + r.below(4) {
+                    p.push_str(TOKENS[r.below(TOKENS.len())]);
+                }
+                p.push(']');
             }
-            for _ in 0..1 + r.below(4) {
-                p.push_str(TOKENS[r.below(TOKENS.len())]);
+            1 => {
+                p.push_str(OPENERS[r.below(OPENERS.len())]);
+                for _ in 0..r.below(3) {
+                    p.push_str(TOKENS[r.below(TOKENS.len())]);
+                }
+                p.push(')');
             }
-            p.push(']');
-        } else {
-            p.push_str(TOKENS[r.below(TOKENS.len())]);
+            _ => p.push_str(TOKENS[r.below(TOKENS.len())]),
         }
     }
     p
