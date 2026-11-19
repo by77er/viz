@@ -732,13 +732,24 @@ impl EvalHooks for Hooks {
 pub(crate) fn eval_metric(src: &dyn LogSource, e: &MetricExpr, grid: Grid, instant: bool, opts: &Options) -> Result<QueryResult, Error> {
     let mut ranges: Vec<&MetricExpr> = Vec::new();
     collect_ranges(e, &mut ranges);
-    let mut ctx = RangeCtx { src, grid, opts, stats: Stats::default() };
+    let mut ctx = RangeCtx { src, grid, opts, stats: Stats::default(), meter: Meter::new(opts.max_bytes) };
     let mut values = Vec::with_capacity(ranges.len());
     for r in &ranges {
         if let MetricExpr::Range { op, param, range, grouping } = r {
             values.push(eval_range(&mut ctx, *op, *param, range, grouping)?);
         }
     }
+    let mut meter = ctx.meter;
+    // The vector operations run on viz-promql, which this meter cannot see into. Charged before
+    // they run: the range results' points once more (each is handed over as a copy), and for
+    // every operation above them what its inputs hold (an aggregation, a binary operation or
+    // `label_replace` makes at most as many series as its inputs, with at most their labels;
+    // `label_replace` twice, for the label it writes). Released once they are done, and the
+    // answer charged instead.
+    let input: u64 = values.iter().flatten().map(|s| SLOT + labels_bytes(&s.labels) + POINT * s.vals.len() as u64).sum();
+    let copies: u64 = values.iter().flatten().map(|s| POINT * s.vals.len() as u64).sum();
+    let phase = copies.saturating_add(input.saturating_mul(vector_ops(e)));
+    meter.charge(phase, "series of vector operations")?;
     let mut next = 0;
     let text = to_promql(e, &mut next)?;
     let expr = viz_promql::parse_query(&text).map_err(|e| Error::Eval(format!("internal: translated query does not parse: {e}")))?;
@@ -769,7 +780,26 @@ pub(crate) fn eval_metric(src: &dyn LogSource, e: &MetricExpr, grid: Grid, insta
         stats.returned = out.iter().map(|s| s.points.len() as u64).sum();
         Data::Matrix(out)
     };
-    Ok(QueryResult { data, stats })
+    drop(hooks);
+    meter.release(phase.saturating_add(input));
+    let held = match &data {
+        Data::Matrix(v) => v.iter().map(|s| SLOT + labels_bytes(&s.labels) + 16 * s.points.len() as u64).sum(),
+        Data::Vector(v) => v.iter().map(|(l, _, _)| SLOT + labels_bytes(l)).sum(),
+        _ => 0,
+    };
+    meter.charge(held, "series")?;
+    Ok(QueryResult { data, stats, held_bytes: meter.used })
+}
+
+/// The vector operations above a query's range aggregations (each holds a result while its
+/// parent is evaluated); `label_replace` counts twice.
+fn vector_ops(e: &MetricExpr) -> u64 {
+    match e {
+        MetricExpr::Range { .. } | MetricExpr::Literal(_) | MetricExpr::VectorLit(_) => 0,
+        MetricExpr::Vector { inner, .. } => 1 + vector_ops(inner),
+        MetricExpr::LabelReplace { inner, .. } => 2 + vector_ops(inner),
+        MetricExpr::Binary { lhs, rhs, .. } => 1 + vector_ops(lhs) + vector_ops(rhs),
+    }
 }
 
 pub(crate) fn collect_ranges<'a>(e: &'a MetricExpr, out: &mut Vec<&'a MetricExpr>) {

@@ -695,7 +695,9 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
 - **Every statement names the tenant** (a test reads the source and checks; the one
   exception reads which tenant the object is bound to).
 - **Mutation, audit row and outbox rows commit in one transaction.** KV is written only
-  afterwards, from the outbox, in order, by one drain at a time.
+  afterwards, from the outbox, in order, by one drain at a time. (The Worker, outside any object,
+  writes one other kind of record: the list of dead OAuth credentials, `oauth-dead:`, which holds no
+  tenant state, only what an object answered; `src/deadlist.ts`, checked by `test/rules.test.ts`.)
 - **One alarm**, at the earliest of: an open proposal's expiry, a deleted dashboard's purge
   time, and, as a third deadline the task did not list, 30 s after a KV publication failed
   (and the OAuth deadlines above). It is deleted when none applies. The handler is idempotent.
