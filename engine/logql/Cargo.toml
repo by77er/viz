@@ -14,6 +14,8 @@ crate-type = ["rlib"]
 # Vector aggregations, binary operators with vector matching, label_replace and vector()
 # are evaluated by viz-promql's evaluator (see README, "Reuse of viz-promql").
 viz-promql = { path = "../promql" }
+# Go's regular expressions on the regex crate (shared with viz-traceql; README, "Regular expressions").
+viz-goregex = { path = "../goregex" }
 # Same features as viz-promql, so one copy is linked.
 regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-perl", "unicode-case"] }
 

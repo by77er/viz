@@ -1021,7 +1021,7 @@ then `EVALUATOR` is bound, the HTTP path and the service key's `read` scope go, 
 one call. If the platform's connection limit for service-bound callees turns out not to be
 shared (only the self-binding case was measured), the gate can admit more.
 
-## D40. TraceQL: a hand-written parser; where Tempo's documentation is silent, its evaluator's observed behaviour, not its storage shortcuts
+## D40. TraceQL: a hand-written parser bounded at 100 levels; Go's regex dialect, through a crate shared with LogQL; where Tempo's documentation is silent, its evaluator's observed behaviour, not its storage shortcuts
 
 **Decision.** `engine/traceql` parses TraceQL with a hand-written lexer and recursive-descent
 / precedence-climbing parser (no parser crate or generator). Its semantics come from Tempo's
@@ -1032,10 +1032,16 @@ ways depending on its query plan (its storage layer applying a condition itself 
 evaluator), viz follows the evaluator; where Tempo contradicts its documentation (union
 structural operators such as `&>>` returning only some of the left-hand spans), viz follows
 the documentation. Each such difference is a named rule in the crate's differential comparison
-(`engine/traceql/README.md`). Nesting is bounded where the query is parsed: deeper than 200
-levels of parser recursion or of syntax-tree height, a regex nested deeper than 64 levels or
-compiling to more than 1 MiB, or more than 16 regexes, and `parse` refuses the query, so no
-later pass can exhaust a stack (a stack overflow traps a WASM instance; it is not an error).
+(`engine/traceql/README.md`). `=~` and `!~` use Go's `regexp` dialect, as Tempo's
+documentation says and its answers show (ASCII `\w \d \s \b`, `\Q…\E`, octal escapes, Go's
+refusals), fully anchored with `.` matching a newline; patterns are translated for the Rust
+`regex` crate by `engine/goregex`, the translator viz-logql uses too, and Unicode classes
+(`\p{…}`) are Unsupported. Nesting is bounded where the query is parsed: deeper than 100
+levels of parser recursion or of syntax-tree height (the bound viz-logql and `engine/query`'s
+PromQL use), a regex nested deeper than 64 levels or compiling to more than 1 MiB, or more
+than 16 regexes, and `parse` refuses the query, so no later pass can exhaust a stack (a stack
+overflow traps a WASM instance; it is not an error). The bound of 100 replaces an earlier
+200 (2026-11-19), and the regex dialect replaces Rust's own, which this entry left implicit.
 
 **Alternatives.** A permissively licensed parser crate or a parser generator (none exists for
 TraceQL; a generated parser carries grammar tables into the WASM module: `promql-parser` and
@@ -1043,24 +1049,40 @@ what it pulls in, grammar tables included, are about 90% of `viz-promql`'s modul
 `engine/promql/README.md`). Reproducing every observed Tempo answer, plan artefacts included
 (byte-compatible with one Tempo release, but it would copy defects: Tempo returns nothing for
 a lone `{ !(status = error) }`, and `{ v = "1.0" || .b }` drops spans without `b`). Following
-only the documentation (leaves precedence and the metrics grid undefined). For nesting:
-explicit heap stacks in every pass (parser, validation, conversion, planning, evaluation and
-an iterative `Drop`) instead of a limit, which accepts any depth Tempo does but rewrites every
-recursive function.
+only the documentation (leaves precedence and the metrics grid undefined). For regexes: Rust's
+dialect as it is (Unicode-aware `\w \d \s \b`, so `=~ "\w+"` matched `é` and `日本` where Tempo
+does not, and it accepts patterns Go refuses, such as `(?x)`, `x{1001}` or `a)|(b`, which a
+textual `^(?s:…)$` wrapper turned into a differently anchored pattern); a second copy of
+viz-logql's translator inside this crate (two copies drift: the shared one gained a dozen Go
+rules and a fix for a quadratic case that a copy would have left behind); translating Unicode
+classes too (Go and Rust differ in the names they accept and in what a script name means, and
+the tables add to the module). For nesting: explicit heap stacks in every pass (parser,
+validation, conversion, planning, evaluation and an iterative `Drop`) instead of a limit,
+which accepts any depth Tempo does but rewrites every recursive function; or keeping 200.
 
 **Why.** The hand-written parser is small (no grammar tables in the module: the whole engine
-is 1.28 MB raw and 0.44 MB gzipped, measured here), reports positions directly, and keeps the
+is 1.28 MB raw and 0.43 MB gzipped, measured here), reports positions directly, and keeps the
 clean-room record simple (D35). Tempo is the compatibility target, so its evaluator settles
 what the documentation leaves open; answers that depend on Tempo's internal plan cannot be
-specified and are not copied. One bound at `parse` covers every pass. At 200 levels the
-costliest query needs under 128 KiB of V8's stack and of the module's own (measured in Node;
-the defaults are about 1 MiB each), and real queries are far shallower.
+specified and are not copied. On regexes Tempo is Go's `regexp`: of 289 probe patterns on 70
+subjects, viz now gives Tempo's answer for every one but the 11 Unicode classes (before, 98 of
+the other 278 differed: 28 matched differently, 37 were refused and 33 accepted against Tempo),
+and the shared translator agrees with Go's own `regexp` on 100,000
+generated patterns (`engine/goregex/README.md`). One bound at `parse` covers every pass. The
+bound is 100 because nothing legitimate comes near it: measured with `nesting()`, Tempo's own
+284 parseable examples nest at most 10 levels and the 3,600 generated differential queries at
+most 12. At 100 the costliest query needs 144 KiB of native stack (278 KiB at 200), and in Node
+it runs with V8's stack cut to 96 KB and the module's to 128 KiB (at 200 it trapped at 96 KB;
+the defaults are about 1 MiB each); one bound for all three engines is simpler to state to
+users and to the query Worker.
 
 **Would change if.** Tempo documents a different semantics, or fixes the plan-dependent cases
 differently; or clients turn out to depend on a Tempo artefact (then that one rule is copied
-and recorded here). For the limits: clients send longer chains than 197 operators (generated
+and recorded here). For the limits: clients send longer chains than 97 operators (generated
 `||` lists are the likely case; a chain of one associative operator could then be built as a
-balanced tree), or a Workers isolate turns out to have a much smaller stack than Node's.
+balanced tree), or a Workers isolate turns out to have a much smaller stack than Node's. For
+regexes: users need Unicode classes (then Go's names and its Script semantics are translated
+and measured against the module size), or Tempo moves off Go's `regexp`.
 
 ## D42. An SLO is a rule kind evaluated from one query per tick and per-series bucket rings, not compiled to recording rules
 
@@ -1193,7 +1215,8 @@ a metric query as PromQL whose leaves are placeholder selectors, and evaluates i
 supplies the placeholders' values). Vector aggregations, binary operators with vector matching,
 `label_replace` and `vector()` therefore have one implementation for both languages. The
 translation applies the two LogQL rules that differ: a comparison between two scalars returns
-0 or 1 without `bool`, and `label_replace`'s regular expression is translated to the Go dialect.
+0 or 1 without `bool`, and `label_replace`'s regular expression is translated to the Go dialect
+(by `engine/goregex`, the translator every LogQL and TraceQL regex goes through, D40).
 
 **Alternatives.** (a) A LogQL evaluator of its own for the vector layer. (b) One logical plan for
 PromQL, TraceQL and LogQL that all three lower into (§6.1), with one executor.

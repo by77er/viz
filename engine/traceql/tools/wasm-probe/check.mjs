@@ -33,7 +33,8 @@ for (const [kind, q] of [[0, '{ resource.service.name = "db" && span.http.status
 
 const memoryAfterQueries = inst.exports.memory.buffer.byteLength;
 
-// ---- limits: same shapes and boundaries as tests/common/shapes.rs (MAX_DEPTH = 200).
+// ---- limits: same shapes and boundaries as tests/common/shapes.rs.
+const MAX_DEPTH = 100;
 const MAX_QUERY_BYTES = 128 * 1024;
 const rep = (s, n) => s.repeat(n);
 const S = 0, M = 1; // search, metrics
@@ -82,7 +83,7 @@ const deep = out => out.includes('nested deeper than');
 const limits = {};
 for (const [name, kind, make] of NESTED) {
   let max = 0;
-  for (let n = 1; n <= 202; n++) { if (isErr(attempt(kind, make(n)))) break; max = n; }
+  for (let n = 1; n <= MAX_DEPTH + 2; n++) { if (isErr(attempt(kind, make(n)))) break; max = n; }
   const t = performance.now();
   const at = attempt(kind, make(max));
   const ms = +(performance.now() - t).toFixed(2);
@@ -101,12 +102,12 @@ for (const [name, kind, make] of FLAT) {
 const nestRe = n => `{ name =~ "${rep('(', n)}x${rep(')', n)}" }`;
 const regex = {
   nest64: attempt(S, nestRe(64)), nest65: attempt(S, nestRe(65)), nestFar: attempt(S, nestRe(fill(nestRe))),
-  size: attempt(S, '{ name =~ "x{100000}" }'),
+  size: attempt(S, '{ name =~ ".{1000}.{1000}.{1000}.{1000}" }'), sizeFits: attempt(S, '{ name =~ ".{1000}|op.*" }'),
   unicode: attempt(S, '{ name =~ "\\\\w{2}|\\\\w{16}" }'),
   count16: attempt(S, `{ ${Array(16).fill('name =~ "op.*"').join(' && ')} }`),
   count17: attempt(S, `{ ${Array(17).fill('name =~ "op.*"').join(' && ')} }`),
 };
-for (const k of ['nest64', 'unicode', 'count16']) if (isErr(regex[k])) failures.push(`regex ${k} (within the limits): ${regex[k].slice(0, 120)}`);
+for (const k of ['nest64', 'unicode', 'count16', 'sizeFits']) if (isErr(regex[k])) failures.push(`regex ${k} (within the limits): ${regex[k].slice(0, 120)}`);
 for (const k of ['nest65', 'nestFar', 'size', 'count17']) if (!isErr(regex[k])) failures.push(`regex ${k}: ${regex[k].slice(0, 120)}`);
 // Linear memory never shrinks: these are peaks (a trap replaces the instance).
 const memoryAfterLimits = inst.exports.memory.buffer.byteLength;

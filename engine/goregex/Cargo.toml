@@ -1,0 +1,25 @@
+[package]
+name = "viz-goregex"
+version = "0.1.0"
+license = "Apache-2.0"
+edition = "2021"
+description = "Go (RE2) regular expressions on Rust's regex crate: the dialect TraceQL and LogQL use. Pure, no I/O, native and WASM"
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+# Go's \d \w \s \b are translated to ASCII classes, so no Unicode Perl-class tables are
+# needed here; `unicode-case` is, for (?i), which folds as Go does (simple case folding).
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-case"] }
+
+# engine/AGENTS.md: fat LTO, one codegen unit and opt-level 3 measured fastest for WASM.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[workspace]

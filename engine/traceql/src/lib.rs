@@ -20,7 +20,7 @@ use ast::{FieldExpr, Query, RootExpr, Stage, Static};
 pub use data::{AttrValue, Event, Kind, Link, MemSource, ServiceStats, Span, SpanSource, Status, Trace, TraceSummary};
 use eval::{echo_key, field_value, run_pipeline, Spanset, TraceCtx};
 pub use metrics::RangeRequest;
-pub use parser::{MAX_DEPTH, MAX_QUERY_BYTES, MAX_REGEXES, REGEX_DFA_SIZE_LIMIT, REGEX_NEST_LIMIT, REGEX_SIZE_LIMIT};
+pub use parser::{nesting, MAX_DEPTH, MAX_QUERY_BYTES, MAX_REGEXES, REGEX_DFA_SIZE_LIMIT, REGEX_NEST_LIMIT, REGEX_SIZE_LIMIT};
 pub use plan::{Column, Pred, ReadPlan};
 use value::{hex, hex_trimmed, Val};
 

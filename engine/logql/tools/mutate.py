@@ -81,8 +81,9 @@ MUTANTS = [
      'if depth > MAX_DEPTH {\n            return Err(E_MAL);\n        }\n        self.ws();', 'self.ws();'),
     (29, 'json parser object walk not bounded', 'src/jsonwalk.rs',
      'if depth > MAX_DEPTH {\n            return Err(E_MAL);\n        }\n        self.i += 1;', 'self.i += 1;'),
-    (30, 'regex nesting limit lifted', 'src/goregex.rs',
-     '.size_limit(16 << 20)', '.size_limit(16 << 20).nest_limit(u32::MAX)'),
+    # Regexes go through the shared crate engine/goregex, copied next to this crate's copy.
+    (30, 'regex nesting limit lifted', '../goregex/src/lib.rs',
+     '.nest_limit(limits.nest)', '.nest_limit(u32::MAX)'),
     (22, 'equal timestamps in a backward log query tie-broken by descending stream labels', 'src/eval.rs',
      'b.0.cmp(&a.0).then_with(|| keys[a.2].cmp(&keys[b.2])).then(b.1.cmp(&a.1))',
      'b.0.cmp(&a.0).then_with(|| keys[b.2].cmp(&keys[a.2])).then(b.1.cmp(&a.1))'),
@@ -110,6 +111,11 @@ def main():
     promql = os.path.join(work, 'promql')
     if not os.path.exists(promql):
         os.symlink(os.path.join(os.path.dirname(CRATE), 'promql'), promql)
+    # The regex translator is a path dependency that mutants change: copied, never linked.
+    goregex = os.path.join(work, 'goregex')
+    if os.path.exists(goregex):
+        shutil.rmtree(goregex)
+    shutil.copytree(os.path.join(os.path.dirname(CRATE), 'goregex'), goregex, ignore=shutil.ignore_patterns('target', 'target-*'))
     env = {'CARGO_TARGET_DIR': os.path.join(work, 'target'), 'PROPTEST_CASES': '32', 'CARGO_BUILD_JOBS': '2'}
     suites = [('unit', ['cargo', 'test', '-q', '--lib']), ('api', ['cargo', 'test', '-q', '--test', 'api']),
               ('semantics', ['cargo', 'test', '-q', '--test', 'semantics']),

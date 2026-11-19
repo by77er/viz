@@ -18,8 +18,8 @@ use shapes::{fill, FLAT, NESTED};
 use viz_traceql::*;
 
 /// Stack for every query here. Debug frames are 5 to 10 times larger than release ones: at
-/// the limit the costliest shape (a 200-term `rate() + rate() + ...`) needs 2.6 MiB in the
-/// debug build and 280 KiB in the release build, natively.
+/// the limit the costliest shape (a 100-term `rate() + rate() + ...`) needs 1.3 MiB in the
+/// debug build and 144 KiB in the release build, natively (README, Verification, 7).
 /// A query that escaped the limits recurses thousands of levels and overflows either.
 const STACK: usize = if cfg!(debug_assertions) { 4 << 20 } else { 512 << 10 };
 
@@ -166,11 +166,17 @@ fn regexes_are_bounded_in_nesting_size_and_number() {
         let far = nested(fill(nested, MAX_QUERY_BYTES));
         assert!(matches!(run_all(&far), Err(Error::Validation { .. })));
 
-        // Compiled size: refused, not built. `x{100000}` compiles under the regex crate's
-        // default limit (10 MiB) but not under REGEX_SIZE_LIMIT.
-        let err = run_all(r#"{ .s =~ "x{100000}" }"#).unwrap_err();
+        // Compiled size: refused, not built. Four `.{1000}` are valid Go (no count above 1000)
+        // and compile under the regex crate's default limit (10 MiB) but not under
+        // REGEX_SIZE_LIMIT (natively two already exceed it; in wasm32, whose smaller pointers
+        // the size is counted in, two fit and three do not); one fits. (Go's bound refuses
+        // `x{100000}` first.)
+        assert_eq!(run_all(r#"{ name =~ ".{1000}|s.*" }"#).unwrap(), 1);
+        let err = run_all(r#"{ .s =~ ".{1000}.{1000}.{1000}.{1000}" }"#).unwrap_err();
         assert!(matches!(&err, Error::Validation { msg, .. } if msg.contains("invalid regex")), "{err:?}");
-        // Ordinary patterns, Unicode classes included, fit.
+        let err = run_all(r#"{ .s =~ "x{100000}" }"#).unwrap_err();
+        assert!(matches!(&err, Error::Validation { msg, .. } if msg.contains("invalid repeat count")), "{err:?}");
+        // Ordinary patterns fit (Go's classes are ASCII; (?i) folds as Go does).
         assert_eq!(run_all(r#"{ name =~ "(?i)\\w+[-_.]\\d{1,4}|s\\d" }"#).unwrap(), 1);
         assert_eq!(run_all(r#"{ name =~ "\\w{2}|\\w{16}" }"#).unwrap(), 1);
 
@@ -185,9 +191,9 @@ fn regexes_are_bounded_in_nesting_size_and_number() {
 proptest! {
     #![proptest_config(ProptestConfig { cases: cases(), ..ProptestConfig::default() })]
 
-    /// Random stacks of nesting constructs, at random depths up to 15 times the limit, never
+    /// Random stacks of nesting constructs, at random depths up to 30 times the limit, never
     /// crash; whatever is accepted also evaluates on the bounded stack. (In a run of 300
-    /// cases, 126 were accepted and evaluated and 174 refused for depth.)
+    /// cases, 132 were accepted and evaluated and 168 refused for depth.)
     #[test]
     fn random_deep_nesting_never_crashes(
         field in depths(7),
@@ -214,13 +220,13 @@ proptest! {
     }
 }
 
-/// Nesting lengths: up to 25 (the three together then mostly fit within MAX_DEPTH), up to
-/// 70 (around the limit), or up to 3,000 (far past it).
+/// Nesting lengths: up to 12 (the three together then mostly fit within MAX_DEPTH), up to
+/// 35 (around the limit), or up to 3,000 (far past it).
 fn depths(kinds: u8) -> impl proptest::strategy::Strategy<Value = Vec<u8>> {
     use proptest::prelude::Strategy;
     proptest::prop_oneof![
-        2 => proptest::collection::vec(0..kinds, 0..25),
-        1 => proptest::collection::vec(0..kinds, 0..70),
+        2 => proptest::collection::vec(0..kinds, 0..12),
+        1 => proptest::collection::vec(0..kinds, 0..35),
         1 => proptest::collection::vec(0..kinds, 0..3000),
     ]
     .boxed()
