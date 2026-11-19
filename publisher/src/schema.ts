@@ -117,6 +117,45 @@ CREATE TABLE IF NOT EXISTS signal_orphan (path TEXT PRIMARY KEY, since INTEGER N
       readableFrom: 1,
       up: (sql) => void sql.exec(`CREATE TABLE IF NOT EXISTS rebase (tenant TEXT PRIMARY KEY, started INTEGER NOT NULL);`),
     },
+    {
+      // Re-bases and rebuilds kept across invocations (design/DECISIONS.md D55, D67; README, "Re-bases
+      // and rebuilds in steps"), so that a tenant or a table too large for one invocation's CPU still
+      // finishes. `rebase_stage`: what a re-base read, as `stage` held it; a new table because the
+      // releases before this one empty `stage` at every attempt, and a rollback to one of them must not
+      // leave a kept re-base with part of its rows gone. `rebase_step`: per tenant whose re-base spans
+      // invocations, the checkpoint it reads and how far (parts staged, running totals, last keys, in the
+      // same transaction as the rows), the tables it re-bases with their cursors when it began, then the
+      // version its stage was carried to, the snapshot id its commit will have and how far each table's
+      // added files are written into manifests ahead of that commit (`rebase_manifest`, which the sweep
+      // treats as referenced). `rebuild`, `rebuild_manifest`: a table rebuilt from R2 after a lost
+      // storage, a manifest at a time, with the manifests of the version being rebuilt and which are in.
+      // Additive: releases 1 to 6 neither read nor write these tables. The release before this one (and
+      // D64, the rollback floor) re-bases and rebuilds whole as before and leaves these rows alone;
+      // rolled forward, this release continues them, or drops them when they no longer apply.
+      version: 7,
+      name: 'rebase_stage, rebase_step, rebase_manifest, rebuild, rebuild_manifest: re-bases and rebuilds in steps',
+      readableFrom: 1,
+      up: (sql) =>
+        void sql.exec(`
+CREATE TABLE IF NOT EXISTS rebase_stage (
+      tenant TEXT NOT NULL, tbl TEXT NOT NULL, tomb INTEGER NOT NULL, key TEXT NOT NULL,
+      day TEXT NOT NULL, rows INTEGER NOT NULL, bytes INTEGER NOT NULL, min_ts INTEGER NOT NULL, max_ts INTEGER NOT NULL, idx TEXT NOT NULL,
+      stats TEXT,
+      PRIMARY KEY (tenant, tbl, tomb, key));
+CREATE INDEX IF NOT EXISTS rebase_stage_order ON rebase_stage (tenant, tbl, tomb, day, key);
+CREATE TABLE IF NOT EXISTS rebase_step (
+      tenant TEXT PRIMARY KEY, incarnation INTEGER NOT NULL, source TEXT NOT NULL, version INTEGER NOT NULL, object TEXT NOT NULL, attempt TEXT NOT NULL,
+      parts INTEGER NOT NULL, done INTEGER NOT NULL, files INTEGER NOT NULL, tombstones INTEGER NOT NULL, bytes INTEGER NOT NULL,
+      last_file TEXT, last_tomb TEXT, tables TEXT NOT NULL,
+      target INTEGER, status TEXT, detail TEXT, gap_at INTEGER, snapshot_id INTEGER, written TEXT NOT NULL, moved INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS rebase_manifest (
+      tenant TEXT NOT NULL, tbl TEXT NOT NULL, path TEXT NOT NULL, info TEXT NOT NULL,
+      lo_day TEXT NOT NULL, lo_key TEXT NOT NULL, hi_day TEXT NOT NULL, hi_key TEXT NOT NULL,
+      PRIMARY KEY (tenant, tbl, path));
+CREATE TABLE IF NOT EXISTS rebuild (tbl TEXT PRIMARY KEY, version INTEGER NOT NULL, moved INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS rebuild_manifest (tbl TEXT NOT NULL, ord INTEGER NOT NULL, path TEXT NOT NULL, info TEXT NOT NULL, done INTEGER NOT NULL, PRIMARY KEY (tbl, path));
+`),
+    },
   ],
 }
 

@@ -691,15 +691,24 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
   (review of D44, M-1). A code or token carries a tag made with control's key, so a made-up one
   is refused in the Worker before any tenant's object is asked, and a request that changes
   nothing writes nothing (M-2). A code or token also carries its expiry under that tag, so the
-  Worker refuses an expired one the same way (D70, after its review). Rate limits sit in front
+  Worker refuses an expired one the same way (D70, after its review). When the tenant's object
+  says a token is dead (a rotated or revoked refresh token, an access token of an ended grant),
+  the Worker lists it, in the isolate at once and in KV until the credential expires,
+  and refuses it there afterwards before anything else counts it; so a stock of refresh tokens
+  collected while a grant was live is good for a minute or two after its first replay, not for the
+  30 days they would otherwise last (D70, after its second review). Rate limits sit in front
   (D70): Cloudflare's Rate Limiting binding, approximate and per location, counts the presented
   credential and then its tenant, as a fuse near what one object serves, before the tenant's
-  object, so a credential spends only its own allowance; it counts a client's network only at
-  registration and the authorization page, and for requests the Worker refuses by itself, never a
-  genuine credential (every client on Cloudflare Workers shares one address, which is not counted);
-  the object itself bounds refreshes per grant exactly; a refusal is 429 `too_many_requests` with
-  `Retry-After` and spends nothing; a limiter that fails lets requests through within 100 ms and is
-  reported by `/healthz`. These limits assume no Smart Placement for control and mcp. Until a sign-in
+  object, so a credential spends only its own allowance; the tenant's fuse is asked only when the
+  credential's own limit was, so a limiter fault never leaves the fuse alone to count a dead
+  credential; it counts a client's network only at registration and the authorization page, and for
+  requests without a genuine credential, never a genuine one, expired included (every client on
+  Cloudflare Workers shares one address, which is not counted); the object itself bounds refreshes
+  per grant exactly, and the grant view shows how many a grant made in its last day; a refusal is
+  429 `too_many_requests` with `Retry-After` and spends nothing; a limiter or the list that fails
+  lets requests through within 100 ms (each check its own share) and is reported by `/healthz`. The
+  fuses are per location: floods from several locations add up on one object. These limits assume
+  no Smart Placement for control and mcp. Until a sign-in
   exists the consent step is a call to the control API, and only an API key may approve.
   Fourteen tools: search telemetry, describe a metric, validate a query (with the query
   service's own plan: files, bytes, scan bound, refusal), run a query,

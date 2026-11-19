@@ -31,13 +31,62 @@ pub struct Options {
     pub now_ns: Option<i64>,
     /// Maximum number of series a metric query may hold at once. Default 500 000.
     pub max_series: usize,
+    /// Bytes the evaluation may hold beyond its source's rows: the label sets its pipeline
+    /// makes (stream keys of a log query, series of a metric query), the entries a log query
+    /// keeps, a metric query's samples and points, and what the vector operations make, counted
+    /// as each is made ([`Meter`]); past it `Error::Memory`, before the thing is built.
+    /// Default: no limit.
+    pub max_bytes: u64,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { limit: 100, direction: Direction::Backward, max_steps: 11_000, now_ns: None, max_series: 500_000 }
+        Options { limit: 100, direction: Direction::Backward, max_steps: 11_000, now_ns: None, max_series: 500_000, max_bytes: u64::MAX }
     }
 }
+
+/// The bytes an evaluation holds, counted as each structure is made and refused BEFORE the one
+/// that would pass `max` is built (`Options::max_bytes`; design/reviews/signals-end-to-end-r2.md
+/// R2-M2: label sets from `regexp` and `label_format` were held uncounted). The charges are at
+/// or above what the structures take on a 64-bit target; what is let go is released.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Meter {
+    pub max: u64,
+    pub used: u64,
+    pub peak: u64,
+}
+
+impl Meter {
+    pub fn new(max: u64) -> Meter {
+        Meter { max, used: 0, peak: 0 }
+    }
+    pub fn charge(&mut self, n: u64, what: &'static str) -> Result<(), Error> {
+        let next = self.used.saturating_add(n);
+        if next > self.max {
+            return Err(Error::Memory { what, max: self.max, used: next });
+        }
+        self.used = next;
+        self.peak = self.peak.max(next);
+        Ok(())
+    }
+    pub fn release(&mut self, n: u64) {
+        self.used = self.used.saturating_sub(n);
+    }
+}
+
+/// Bytes charged for a label set held (its vector, and per label its two strings and their
+/// headers).
+pub(crate) fn labels_bytes(l: &[(String, String)]) -> u64 {
+    32 + l.iter().map(|(k, v)| 56 + (k.len() + v.len()) as u64).sum::<u64>()
+}
+/// Per entry a log query keeps (its tuple, and room for the vector to double), plus its line.
+const ENTRY: u64 = 96;
+/// Per sample of a metric query's series (`(i64, f64)`, and room to double).
+const SAMPLE: u64 = 32;
+/// Per point of a range aggregation's output (`Option<f64>`).
+const POINT: u64 = 16;
+/// Per series or key (map entry, vector header).
+const SLOT: u64 = 64;
 
 /// What the query read and returned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -80,6 +129,8 @@ pub enum Data {
 pub struct QueryResult {
     pub data: Data,
     pub stats: Stats,
+    /// What `data` is charged by the evaluation's meter (`Options::max_bytes`).
+    pub held_bytes: u64,
 }
 
 /// The evaluation grid: `start + i * step` for `i < n`.
@@ -144,6 +195,9 @@ pub(crate) fn eval_logs(src: &dyn LogSource, e: &LogExpr, start: i64, end: i64, 
     let required = required_clauses(&e.stages);
     let mut stats = Stats { selects: 1, ..Stats::default() };
     let limit = opts.limit as usize;
+    // What is held beyond the source's rows: every distinct label set an entry was made for
+    // (twice: the map's key and the list), and the entries kept (each line a copy).
+    let mut meter = Meter::new(opts.max_bytes);
     // Entries: (ts, seq, stream index, line). Kept bounded to about 2 x limit.
     let mut keys: HashMap<Vec<(String, String)>, usize> = HashMap::new();
     let mut key_list: Vec<Vec<(String, String)>> = Vec::new();
@@ -155,8 +209,8 @@ pub(crate) fn eval_logs(src: &dyn LogSource, e: &LogExpr, start: i64, end: i64, 
     let req = SelectRequest { matchers: &e.matchers, start_ns: start, end_ns: end, required: &required };
     // Entries that share a timestamp are ordered by their stream's labels (ascending in both
     // directions, as observed in Loki), then by arrival (reversed for backward), so that the
-    // limit does not depend on the order streams are read in.
-    let trim = |entries: &mut Vec<(i64, u64, usize, String)>, keys: &Vec<Vec<(String, String)>>| {
+    // limit does not depend on the order streams are read in. Entries cut off are released.
+    let trim = |entries: &mut Vec<(i64, u64, usize, String)>, keys: &Vec<Vec<(String, String)>>, meter: &mut Meter| {
         entries.sort_by(|a, b| {
             if fwd {
                 a.0.cmp(&b.0).then_with(|| keys[a.2].cmp(&keys[b.2])).then(a.1.cmp(&b.1))
@@ -164,7 +218,21 @@ pub(crate) fn eval_logs(src: &dyn LogSource, e: &LogExpr, start: i64, end: i64, 
                 b.0.cmp(&a.0).then_with(|| keys[a.2].cmp(&keys[b.2])).then(b.1.cmp(&a.1))
             }
         });
+        if entries.len() > limit {
+            meter.release(entries[limit..].iter().map(|x| ENTRY + x.3.len() as u64).sum());
+        }
         entries.truncate(limit);
+    };
+    // The slot of a label set, charged when it is first held.
+    let mut slot_of = |key: Vec<(String, String)>, keys: &mut HashMap<Vec<(String, String)>, usize>, key_list: &mut Vec<Vec<(String, String)>>, meter: &mut Meter| -> Result<usize, Error> {
+        if let Some(i) = keys.get(&key) {
+            return Ok(*i);
+        }
+        meter.charge(SLOT + 2 * labels_bytes(&key), "stream label sets")?;
+        let i = key_list.len();
+        keys.insert(key.clone(), i);
+        key_list.push(key);
+        Ok(i)
     };
     let line_only = pipeline.line_only();
     let mut cache: (*const (String, String), usize, bool, Option<usize>) = (std::ptr::null(), 0, false, None);
@@ -180,7 +248,7 @@ pub(crate) fn eval_logs(src: &dyn LogSource, e: &LogExpr, start: i64, end: i64, 
         }
         stats.lines_processed += 1;
         stats.bytes_processed += row.line.len() as u64;
-        if line_only && row.metadata.is_empty() {
+        let (idx, line) = if line_only && row.metadata.is_empty() {
             // Labels pass through unchanged: the stream's slot is computed once.
             if !pipeline.keep_line(&row.line) {
                 return;
@@ -191,66 +259,66 @@ pub(crate) fn eval_logs(src: &dyn LogSource, e: &LogExpr, start: i64, end: i64, 
             }
             let idx = match cache.3 {
                 Some(i) => i,
-                None => {
-                    let key = labels.to_vec();
-                    let i = match keys.get(&key) {
-                        Some(i) => *i,
-                        None => {
-                            let i = key_list.len();
-                            keys.insert(key.clone(), i);
-                            key_list.push(key);
-                            i
-                        }
-                    };
-                    cache.3 = Some(i);
-                    i
-                }
+                None => match slot_of(labels.to_vec(), &mut keys, &mut key_list, &mut meter) {
+                    Ok(i) => {
+                        cache.3 = Some(i);
+                        i
+                    }
+                    Err(e) => {
+                        err = Some(e);
+                        return;
+                    }
+                },
             };
-            seq += 1;
-            entries.push((row.ts_ns, seq, idx, row.line.clone()));
-            if entries.len() >= limit.saturating_mul(2).max(1024) {
-                trim(&mut entries, &key_list);
+            (idx, std::borrow::Cow::Borrowed(row.line.as_str()))
+        } else {
+            let mut ls = LabelSet::new(labels, &row.metadata);
+            let Some(line) = pipeline.process(row.ts_ns, &row.line, &mut ls) else { return };
+            stats.entries_after_pipeline += 1;
+            if limit == 0 {
+                return;
             }
-            return;
-        }
-        let mut ls = LabelSet::new(labels, &row.metadata);
-        let Some(line) = pipeline.process(row.ts_ns, &row.line, &mut ls) else { return };
-        stats.entries_after_pipeline += 1;
-        if limit == 0 {
-            return;
-        }
-        let key = ls.sorted();
-        let idx = match keys.get(&key) {
-            Some(i) => *i,
-            None => {
-                let i = key_list.len();
-                keys.insert(key.clone(), i);
-                key_list.push(key);
-                i
+            match slot_of(ls.sorted(), &mut keys, &mut key_list, &mut meter) {
+                Ok(i) => (i, std::borrow::Cow::Owned(line.into_owned())),
+                Err(e) => {
+                    err = Some(e);
+                    return;
+                }
             }
         };
+        if let Err(e) = meter.charge(ENTRY + line.len() as u64, "entries") {
+            err = Some(e);
+            return;
+        }
         seq += 1;
         entries.push((row.ts_ns, seq, idx, line.into_owned()));
         if entries.len() >= limit.saturating_mul(2).max(1024) {
-            trim(&mut entries, &key_list);
+            trim(&mut entries, &key_list, &mut meter);
         }
     })?;
     if let Some(e) = err.take() {
         return Err(e);
     }
-    trim(&mut entries, &key_list);
+    trim(&mut entries, &key_list, &mut meter);
+    drop(keys);
     let mut streams: Vec<StreamOut> = Vec::new();
     let mut slot: HashMap<usize, usize> = HashMap::new();
     for (ts, _, idx, line) in entries {
-        let s = *slot.entry(idx).or_insert_with(|| {
-            streams.push(StreamOut { labels: key_list[idx].clone(), entries: Vec::new() });
-            streams.len() - 1
-        });
+        let s = match slot.get(&idx) {
+            Some(s) => *s,
+            None => {
+                // An output stream's labels: a copy, charged before it is made.
+                meter.charge(SLOT + labels_bytes(&key_list[idx]), "streams")?;
+                streams.push(StreamOut { labels: key_list[idx].clone(), entries: Vec::new() });
+                slot.insert(idx, streams.len() - 1);
+                streams.len() - 1
+            }
+        };
         streams[s].entries.push((ts, line));
     }
     streams.sort_by(|a, b| a.labels.cmp(&b.labels));
     stats.returned = streams.iter().map(|s| s.entries.len() as u64).sum();
-    Ok(QueryResult { data: Data::Streams(streams), stats })
+    Ok(QueryResult { data: Data::Streams(streams), stats, held_bytes: meter.used })
 }
 
 // ---------- range aggregations ----------
@@ -371,6 +439,7 @@ pub(crate) struct RangeCtx<'a> {
     pub grid: Grid,
     pub opts: &'a Options,
     pub stats: Stats,
+    pub meter: Meter,
 }
 
 pub(crate) fn eval_range(
@@ -390,10 +459,14 @@ pub(crate) fn eval_range(
     let required = required_clauses(&r.log.stages);
     let (lo, hi) = range_bounds(r, &grid);
     let ms = crate::source::compile_matchers(&r.log.matchers)?;
-    // Series by label set; `index` maps a label set to its slot.
+    // Series by label set; `index` maps a label set to its slot. Every label set (the map's
+    // key and the series' copy) and every sample is charged before it is held: a pipeline that
+    // makes a label set per line (`regexp`, `label_format`) is refused as it grows, not after.
     let mut index: HashMap<Vec<(String, String)>, usize> = HashMap::new();
     let mut series: Vec<(Vec<(String, String)>, Vec<(i64, f64)>)> = Vec::new();
     let mut err: Option<Error> = None;
+    let mut meter = ctx.meter;
+    let mut key_bytes = 0u64;
     // Per-stream cache: rows of one stream arrive together, so the stream's match and (for
     // pipelines that leave labels alone) its series slot are computed once.
     let line_only = pipeline.line_only() && r.unwrap.is_none();
@@ -403,13 +476,16 @@ pub(crate) fn eval_range(
     let max_series = ctx.opts.max_series;
     let req = SelectRequest { matchers: &r.log.matchers, start_ns: lo, end_ns: hi, required: &required };
     let unwrapped = r.unwrap.is_some();
-    let mut slot = |key: Vec<(String, String)>, series: &mut Vec<(Vec<(String, String)>, Vec<(i64, f64)>)>| -> Result<usize, Error> {
+    let mut slot = |key: Vec<(String, String)>, series: &mut Vec<(Vec<(String, String)>, Vec<(i64, f64)>)>, meter: &mut Meter| -> Result<usize, Error> {
         if let Some(i) = index.get(&key) {
             return Ok(*i);
         }
         if series.len() >= max_series {
             return Err(Error::Limit(format!("maximum of series ({max_series}) reached for a single query")));
         }
+        let b = labels_bytes(&key);
+        meter.charge(SLOT + 2 * b, "series label sets")?;
+        key_bytes += b;
         index.insert(key.clone(), series.len());
         series.push((key, Vec::new()));
         Ok(series.len() - 1)
@@ -433,7 +509,7 @@ pub(crate) fn eval_range(
             stats.entries_after_pipeline += 1;
             let i = match cache.3 {
                 Some(i) => i,
-                None => match slot(group_labels(labels.to_vec(), grouping), &mut series) {
+                None => match slot(group_labels(labels.to_vec(), grouping), &mut series, &mut meter) {
                     Ok(i) => {
                         cache.3 = Some(i);
                         i
@@ -444,6 +520,10 @@ pub(crate) fn eval_range(
                     }
                 },
             };
+            if let Err(e) = meter.charge(SAMPLE, "samples") {
+                err = Some(e);
+                return;
+            }
             let value = if matches!(op, RangeOp::BytesOverTime | RangeOp::BytesRate) { row.line.len() as f64 } else { 1.0 };
             series[i].1.push((row.ts_ns, value));
             return;
@@ -477,7 +557,7 @@ pub(crate) fn eval_range(
             return;
         }
         stats.entries_after_pipeline += 1;
-        match slot(group_labels(ls.sorted(), grouping), &mut series) {
+        match slot(group_labels(ls.sorted(), grouping), &mut series, &mut meter).and_then(|i| meter.charge(SAMPLE, "samples").map(|_| i)) {
             Ok(i) => series[i].1.push((row.ts_ns, value)),
             Err(e) => err = Some(e),
         }
@@ -486,8 +566,14 @@ pub(crate) fn eval_range(
     if let Some(e) = err {
         return Err(e);
     }
+    // The index's copies of the label sets are let go.
+    drop(index);
+    meter.release(key_bytes);
     let mut out = Vec::new();
     if op == RangeOp::AbsentOverTime {
+        let total: u64 = series.iter().map(|v| v.1.len() as u64).sum();
+        meter.charge(8 * total + POINT * grid.n as u64 + SLOT, "points")?;
+        ctx.meter = meter;
         let mut all: Vec<i64> = series.iter().flat_map(|v| v.1.iter().map(|x| x.0)).collect();
         all.sort_unstable();
         let mut vals = vec![None; grid.n];
@@ -514,6 +600,8 @@ pub(crate) fn eval_range(
     let mut keys = series;
     keys.sort_by(|a, b| a.0.cmp(&b.0));
     for (labels, mut samples) in keys {
+        // The series' points, charged before they are made; its samples are let go after.
+        meter.charge(POINT * grid.n as u64, "points")?;
         // By time; samples that share a timestamp in a fixed order (by value), so that sums
         // and first/last do not depend on the order rows arrive in.
         samples.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
@@ -528,10 +616,14 @@ pub(crate) fn eval_range(
                 any = true;
             }
         }
+        meter.release(SAMPLE * samples.len() as u64);
         if any {
             out.push(SeriesV { labels: Arc::new(labels), drop_name: false, vals });
+        } else {
+            meter.release(POINT * grid.n as u64 + SLOT + labels_bytes(&labels));
         }
     }
+    ctx.meter = meter;
     Ok(out)
 }
 

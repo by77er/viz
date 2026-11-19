@@ -37,6 +37,9 @@ pub enum Error {
     Eval(String),
     /// The span source failed.
     Source(String),
+    /// What a metrics evaluation would hold passes `Limits::max_bytes` (`metrics::Meter`):
+    /// refused before `what` was made, with the bytes it would have held.
+    Memory { what: &'static str, max: u64, used: u64 },
 }
 
 impl Error {
@@ -75,6 +78,7 @@ impl std::fmt::Display for Error {
             Error::Unsupported(m) => write!(f, "{m}"),
             Error::Eval(m) => write!(f, "evaluation error: {m}"),
             Error::Source(m) => write!(f, "span source error: {m}"),
+            Error::Memory { what, max, used } => write!(f, "the query's {what} would hold {used} bytes, more than the {max} it may hold"),
         }
     }
 }
@@ -215,6 +219,10 @@ impl SearchResponse {
     pub fn to_json(&self) -> String {
         json::search_json(self)
     }
+    /// The length in bytes of [`SearchResponse::to_json`], computed without writing it.
+    pub fn json_len(&self) -> u64 {
+        json::search_json_len(self)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -222,12 +230,18 @@ pub struct MetricsResponse {
     pub series: Vec<metrics::Series>,
     pub request: RangeRequest,
     pub stats: Stats,
+    /// What `series` is charged by the evaluation's meter (`Limits::max_bytes`).
+    pub held_bytes: u64,
 }
 
 impl MetricsResponse {
     /// The body of Tempo's `/api/metrics/query_range` (and `/api/metrics/query`).
     pub fn to_json(&self) -> String {
         json::metrics_json(&self.series, &self.request, &self.stats)
+    }
+    /// The length in bytes of [`MetricsResponse::to_json`], computed without writing it.
+    pub fn json_len(&self) -> u64 {
+        json::metrics_json_len(&self.series, &self.request, &self.stats)
     }
 }
 
@@ -236,11 +250,15 @@ impl MetricsResponse {
 pub struct Limits {
     pub max_series: usize,
     pub max_points: u64,
+    /// Bytes the evaluation may hold: its series' accumulators, histogram buckets and output
+    /// series, counted as they are made (`metrics::Meter`); past it `Error::Memory`, before the
+    /// structure is built. Default: no limit.
+    pub max_bytes: u64,
 }
 
 impl Default for Limits {
     fn default() -> Self {
-        Limits { max_series: 10_000, max_points: 11_000 }
+        Limits { max_series: 10_000, max_points: 11_000, max_bytes: u64::MAX }
     }
 }
 
@@ -408,8 +426,9 @@ pub fn query_range_with(src: &dyn SpanSource, query: &str, req: &RangeRequest, l
         return Err(Error::Eval("not a metrics query: add a metrics function such as | rate()".into()));
     };
     let plan = plan_root(&root, req.start_unix_nano, req.end_unix_nano);
-    let (series, stats) = metrics::evaluate(src, m, &plan, req, limits.max_series, limits.max_points)?;
-    Ok(MetricsResponse { series, request: *req, stats })
+    let mut meter = metrics::Meter::new(limits.max_bytes);
+    let (series, stats) = metrics::evaluate_with(src, m, &plan, req, limits.max_series, limits.max_points, &mut meter)?;
+    Ok(MetricsResponse { series, request: *req, stats, held_bytes: meter.used })
 }
 
 /// An instant metrics query: one value over `(start, end]`, at `end`.

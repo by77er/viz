@@ -279,7 +279,7 @@ for (const [name, edits] of mutants) {
     } catch (e) {
       const out = String(e.stdout ?? '') + String(e.stderr ?? '')
       const tests = /Tests\s+(\d+) failed/.exec(out)
-      const files = [...new Set([...out.matchAll(/FAIL\s+(test\/[a-z-]+\.test\.ts)/g)].map((m) => m[1].replace('test/', '').replace('.test.ts', '')))]
+      const files = [...new Set([...out.matchAll(/FAIL\s+(test\/[a-z0-9-]+\.test\.ts)/g)].map((m) => m[1].replace('test/', '').replace('.test.ts', '')))]
       // Only a test that ran and failed kills a mutant. A suite that crashed, hung or was
       // killed gave no result: reported as such and counted as not killed (rerun it).
       if (tests) {

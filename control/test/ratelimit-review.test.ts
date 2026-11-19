@@ -140,6 +140,24 @@ describe('B-1, R2: revocation counts the token itself first', () => {
   })
 })
 
+describe('B-1, R2 since round 2: revocation still counts a token that is not dead against itself first', () => {
+  it('a live token revoked by another client 13 times (nothing changes, so it is never listed): [200 × 3, 429 × 10]; the live client refreshes', async () => {
+    const { admin } = await newTenant('rr2l')
+    const owner = await connect(admin)
+    const other = await connect(admin)
+    const victim = await connect(admin)
+    const l = limited(AFTER_TAG)
+    const statuses: number[] = []
+    for (let i = 0; i < 13; i++) statuses.push((await l.revoke(other.clientId, owner.refresh)).status)
+    expect(statuses).toEqual([200, 200, 200, ...new Array(10).fill(429)])
+    expect(l.gets.length).toBe(3)
+    const rf = await l.refresh(victim.clientId, victim.refresh)
+    expect(rf.status, JSON.stringify(rf.body)).toBe(200)
+    // And the owner's token was not touched.
+    expect((await l.refresh(owner.clientId, owner.refresh)).status).toBe(200)
+  })
+})
+
 describe('B-1, R3: introspection', () => {
   it('the review\'s two dead access tokens (3 + 2 checks): every live token of the tenant is still served', async () => {
     const { admin } = await newTenant('rr3')

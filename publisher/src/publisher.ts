@@ -44,12 +44,14 @@ import {
   holding,
   inBatches,
   isPublished,
+  latestIncarnation,
   listTenants,
   readTenantLog,
   replayAt,
   type BaseInfo,
   type BaseSink,
   type Cursor,
+  type LogChange,
   type LogStatus,
   type Store,
   type StoreObject,
@@ -118,11 +120,20 @@ export interface PublisherConfig {
   maxChangesPerTenant: number
   /**
    * Re-bases one publish may start (review M-6: the upgrade to D67 re-bases every tenant). Each
-   * publish starts at least one, and no further one once this many have started, or once the ones
-   * it started have staged `maxRebaseFilesPerPublish` files and tombstones. The rest wait, least
-   * recently started first (table `rebase`), and the alarm continues after `continueMs`.
+   * publish starts at least one, and no further one once this many have started, or once its work
+   * reaches `maxRebaseFilesPerPublish`. The rest wait, a re-base that made progress in its last step
+   * first, then those never started, then least recently started (tables `rebase`, `rebase_step`),
+   * and the alarm continues after `continueMs`.
    */
   maxRebasesPerPublish: number
+  /**
+   * The budget of one publish's bounded work (README, "Re-bases and rebuilds in steps"): files and
+   * tombstones its re-bases stage, plus added files written into manifests ahead of a re-base's
+   * commit, plus manifest entries a rebuild from R2 reads. A checkpoint in parts stops at the first
+   * part boundary past it, a write ahead at the first manifest past it, a rebuild at the first
+   * manifest past it; each keeps its progress in SQLite and goes on at the next publish. One re-base
+   * read whole within it is committed in the same publish, as before.
+   */
   maxRebaseFilesPerPublish: number
   /** Tenants whose logs one publish reads (R2 calls are subrequests); the others wait, longest waiting first. */
   maxTenantsPerPublish: number
@@ -225,8 +236,25 @@ export interface TenantReport {
   gapAt?: number
   /** A re-base: the state it started from (a checkpoint or the base) and what reading it took. */
   rebase?: BaseInfo
+  /** A re-base kept across publishes (README, "Re-bases and rebuilds in steps"): what this publish did of it, and where it is. */
+  step?: RebaseStepReport
   /** The cursor each table is at after this publish. */
   cursors: Partial<Record<LedgerTable, Cursor>>
+}
+
+/** What one publish did of a re-base that spans publishes. */
+export interface RebaseStepReport {
+  /** Where it is after this publish: staging its checkpoint's parts, writing its added files ahead of its commit, or committed. */
+  phase: 'staging' | 'writing' | 'committed'
+  /** The version of the checkpoint (or base) it started from. */
+  version: number
+  /** Parts staged so far, of how many (a checkpoint in parts). */
+  parts: [number, number]
+  /** The version its stage was carried to (the changes after its start applied), once it was. */
+  target: number | null
+  /** Files and tombstones staged, and added files written into manifests ahead of the commit, by this publish. */
+  staged: number
+  written: number
 }
 
 /**
@@ -332,15 +360,81 @@ interface TablePlan {
 class Conflict extends Error {}
 
 /**
- * The re-bases of one publish (review M-6). Kept across its attempts: an attempt started over after
- * a conflict re-reads the tenants already admitted and admits no new one (`closed`).
+ * The bounded work of one publish (review M-6; README, "Re-bases and rebuilds in steps"). Kept across
+ * its attempts: an attempt started over after a conflict re-reads the tenants already admitted and
+ * admits no new one (`closed`).
  */
 interface RebaseBudget {
   admitted: Set<string>
-  /** Files and tombstones the admitted re-bases staged (their checkpoint or base). */
-  staged: number
+  /** Files and tombstones staged, added files written ahead and manifest entries rebuilt, in this publish (against `maxRebaseFilesPerPublish`). */
+  work: number
   closed: boolean
+  /** Re-bases that continued one kept from an earlier invocation: they go on in steps, whatever their size. */
+  resumed: Set<string>
+  /** The one re-base, written ahead, that this publish commits (its manifests carry its snapshot id: one per commit). */
+  finishing: string | null
+  /** What each re-base kept across publishes did in this publish. */
+  progress: Map<string, RebaseStepReport>
+  /** Writes ahead take turns: one manifest of `manifestTargetEntries` files held at a time. */
+  writing: Slots
+  /** Tenants whose re-base got a turn to read its checkpoint or base in this publish. */
+  turned: Set<string>
 }
+
+/**
+ * A re-base kept across invocations (storage migration 7, `rebase_step`; README, "Re-bases and
+ * rebuilds in steps"). Its files and tombstones are in `rebase_stage`, its manifests written ahead in
+ * `rebase_manifest`. Storage is its only truth: every step reads it back and re-checks it.
+ */
+interface Step {
+  tenant: string
+  incarnation: number
+  /** A checkpoint in parts, staged part by part; or a base or a one-object checkpoint, staged whole (`parts` 1). */
+  source: 'checkpoint' | 'base'
+  /** The ledger version of the state it started from, and its object (a checkpoint's manifest), attempt and parts. */
+  version: number
+  object: string
+  attempt: string
+  parts: number
+  /** Parts staged, and what they held: totals and the last keys, for the checks that span every part. */
+  done: number
+  files: number
+  tombstones: number
+  bytes: number
+  lastFile: string | null
+  lastTombstone: string | null
+  /** The tables it re-bases, each with its cursor when the re-base began (none, or one of an older incarnation). */
+  tables: Partial<Record<LedgerTable, Cursor | null>>
+  /** Once the changes read after `version` are applied to the stage: the version it holds, and how reading them ended. */
+  target: number | null
+  status: LogStatus | null
+  detail: string | null
+  gapAt: number | null
+  /** The snapshot id of the commit that publishes it, which its manifests written ahead carry. */
+  snapshotId: number | null
+  /** How far each table's added files are written ahead (the last `[day, key]`), or all of them. */
+  written: Partial<Record<LedgerTable, [string, string] | 'done'>>
+  /** When a step of it last made progress (the publisher's clock; 0: none yet). */
+  moved: number
+}
+
+/** A manifest written ahead of a re-base's commit: its summary (sequence numbers set at the commit) and the range of the stage it holds. */
+interface AheadManifest {
+  path: string
+  info: ManifestInfo
+  lo: [string, string]
+  hi: [string, string]
+}
+
+/** One table's manifests written ahead for the re-base a commit finishes, and the snapshot id they carry. */
+interface Ahead {
+  tenant: string
+  snapshotId: number
+  manifests: AheadManifest[]
+}
+
+/** A re-base's changes after its start that do not fit what it staged: refused, as `inconsistent`. */
+class Refused extends Error {}
 
 /** An attempt's result, with what the publish needs to settle `pending` and the alarm. */
 interface AttemptResult {
@@ -776,7 +870,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
     let conflicts = 0
     // The tenants being worked on, so that a failure can leave them pending for the alarm.
     let working: string[] = requested ?? []
-    const budget: RebaseBudget = { admitted: new Set(), staged: 0, closed: false }
+    const budget: RebaseBudget = { admitted: new Set(), work: 0, closed: false, resumed: new Set(), finishing: null, progress: new Map(), writing: new Slots(1), turned: new Set() }
     for (;;) {
       try {
         const { tenants, tables, deferred, unread } = await this.attempt(store, cfg, requested, (names) => { working = names }, budget)
@@ -789,9 +883,10 @@ export class Publisher extends DurableObject<PublisherEnv> {
               this.sql.exec(`DELETE FROM pending WHERE tenant = ? AND since <= ?`, t.tenant, t0)
               this.sql.exec(`DELETE FROM rebase WHERE tenant = ?`, t.tenant)
             } else if (t.status === 'invalid') continue
-            // Not read (a cap): it keeps its place. Read and not done: behind those that were not
-            // read, so that tenants stuck on a hole never hold the others back from a publish.
-            else if (unread.has(t.tenant)) this.sql.exec(`INSERT INTO pending (tenant, since) VALUES (?, ?) ON CONFLICT (tenant) DO NOTHING`, t.tenant, now)
+            // Not read (a cap), or a re-base going on in steps: it keeps its place. Read and not done:
+            // behind those that were not read, so that tenants stuck on a hole never hold the others
+            // back from a publish.
+            else if (unread.has(t.tenant) || (t.step && t.step.phase !== 'committed')) this.sql.exec(`INSERT INTO pending (tenant, since) VALUES (?, ?) ON CONFLICT (tenant) DO NOTHING`, t.tenant, now)
             else this.sql.exec(`INSERT INTO pending (tenant, since) VALUES (?, ?) ON CONFLICT (tenant) DO UPDATE SET since = MAX(since, excluded.since)`, t.tenant, now)
           }
         })
@@ -824,15 +919,121 @@ export class Publisher extends DurableObject<PublisherEnv> {
     working: (names: string[]) => void,
     budget: RebaseBudget,
   ): Promise<AttemptResult> {
-    // `stage` holds what one attempt's re-bases read, and nothing else may read it: empty it
-    // before (an evicted attempt may have left rows) and after. What survives an attempt is what
-    // it committed; the per-publish caps bound what one cut off can lose.
-    this.sql.exec(`DELETE FROM stage`)
+    // `rebase_stage` holds what re-bases read. Rows of a re-base kept across invocations (one with a
+    // `rebase_step`) are kept; any other row is one attempt's scratch, which nothing else may read:
+    // emptied before (an attempt cut off may have left rows) and after. `stage` is the releases
+    // before this one's (they empty it themselves); rows one of them left when cut off are dropped.
+    const scratch = () => {
+      this.sql.exec(`DELETE FROM rebase_stage WHERE tenant NOT IN (SELECT tenant FROM rebase_step)`)
+      this.sql.exec(`DELETE FROM stage`)
+    }
+    scratch()
     try {
       return await this.attemptStaged(store, cfg, requested, working, budget)
     } finally {
-      this.sql.exec(`DELETE FROM stage`)
+      scratch()
     }
+  }
+
+  // ───────────────────────────── re-bases kept across invocations ─────────────────────────────
+
+  private stepOf(tenant: string): Step | null {
+    const r = this.sql.exec(`SELECT * FROM rebase_step WHERE tenant = ?`, tenant).toArray()[0]
+    if (!r) return null
+    return {
+      tenant,
+      incarnation: r.incarnation as number,
+      source: r.source as Step['source'],
+      version: r.version as number,
+      object: r.object as string,
+      attempt: r.attempt as string,
+      parts: r.parts as number,
+      done: r.done as number,
+      files: r.files as number,
+      tombstones: r.tombstones as number,
+      bytes: r.bytes as number,
+      lastFile: r.last_file as string | null,
+      lastTombstone: r.last_tomb as string | null,
+      tables: JSON.parse(r.tables as string) as Step['tables'],
+      target: r.target as number | null,
+      status: r.status as LogStatus | null,
+      detail: r.detail as string | null,
+      gapAt: r.gap_at as number | null,
+      snapshotId: r.snapshot_id as number | null,
+      written: JSON.parse(r.written as string) as Step['written'],
+      moved: r.moved as number,
+    }
+  }
+
+  private saveStep(s: Step): void {
+    this.sql.exec(
+      `INSERT OR REPLACE INTO rebase_step (tenant, incarnation, source, version, object, attempt, parts, done, files, tombstones, bytes, last_file, last_tomb, tables, target, status, detail, gap_at, snapshot_id, written, moved)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      s.tenant, s.incarnation, s.source, s.version, s.object, s.attempt, s.parts, s.done, s.files, s.tombstones, s.bytes, s.lastFile, s.lastTombstone,
+      JSON.stringify(s.tables), s.target, s.status, s.detail, s.gapAt, s.snapshotId, JSON.stringify(s.written), s.moved,
+    )
+  }
+
+  /** Forget a kept re-base: its stage, its manifests written ahead (unreferenced now: swept after the grace) and its step. Inside a transaction. */
+  private dropStepRows(tenant: string): void {
+    this.sql.exec(`DELETE FROM rebase_stage WHERE tenant = ?`, tenant)
+    this.sql.exec(`DELETE FROM rebase_manifest WHERE tenant = ?`, tenant)
+    this.sql.exec(`DELETE FROM rebase_step WHERE tenant = ?`, tenant)
+  }
+
+  private dropStep(tenant: string): void {
+    this.ctx.storage.transactionSync(() => this.dropStepRows(tenant))
+  }
+
+  /** The tables a re-base onto `incarnation` publishes: those with no cursor in it, each with the cursor it has (none, or an older incarnation's). */
+  private toRebase(tenant: string, incarnation: number): Step['tables'] {
+    const out: Step['tables'] = {}
+    for (const table of TABLE_NAMES) {
+      const c = this.cursorOf(table, tenant)
+      if (!c || c.ledgerIncarnation < incarnation) out[table] = c
+    }
+    return out
+  }
+
+  /**
+   * A kept re-base, re-checked against SQLite before anything is read: a table whose cursor moved since
+   * it began was published another way (by the release before this one after a rollback, by another
+   * writer, or by this re-base's own commit before the invocation ended) and leaves it, with its
+   * manifests written ahead; with no table left, the re-base is dropped. Returns what is left, or null.
+   */
+  private stillApplies(step: Step): Step | null {
+    return this.ctx.storage.transactionSync(() => {
+      const tables: Step['tables'] = {}
+      let changed = false
+      for (const [table, was] of Object.entries(step.tables) as [LedgerTable, Cursor | null][]) {
+        const now = this.cursorOf(table, step.tenant)
+        if (now === null ? was === null : was !== null && cursorCompare(now, was) === 0) tables[table] = was
+        else {
+          changed = true
+          this.sql.exec(`DELETE FROM rebase_manifest WHERE tenant = ? AND tbl = ?`, step.tenant, table)
+          delete step.written[table]
+        }
+      }
+      if (Object.keys(tables).length === 0) {
+        this.dropStepRows(step.tenant)
+        return null
+      }
+      if (changed) {
+        step.tables = tables
+        this.saveStep(step)
+      }
+      return step
+    })
+  }
+
+  private progressOf(budget: RebaseBudget, step: Step): RebaseStepReport {
+    let p = budget.progress.get(step.tenant)
+    if (!p) budget.progress.set(step.tenant, (p = { phase: 'staging', version: step.version, parts: [step.done, step.parts], target: step.target, staged: 0, written: 0 }))
+    p.version = step.version
+    p.parts = [step.done, step.parts]
+    p.target = step.target
+    p.phase = step.target === null ? 'staging' : 'writing'
+    return p
   }
 
   /** The tables the tenant has no cursor in: a re-base is needed before they can be published. */
@@ -850,7 +1051,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
   private admit(cfg: PublisherConfig, budget: RebaseBudget, tenant: string): boolean {
     if (budget.admitted.has(tenant)) return true
     if (budget.closed) return false
-    if (budget.admitted.size > 0 && (budget.admitted.size >= cfg.maxRebasesPerPublish || budget.staged >= cfg.maxRebaseFilesPerPublish)) return false
+    if (budget.admitted.size > 0 && (budget.admitted.size >= cfg.maxRebasesPerPublish || budget.work >= cfg.maxRebaseFilesPerPublish)) return false
     budget.admitted.add(tenant)
     this.sql.exec(`INSERT INTO rebase (tenant, started) VALUES (?, ?) ON CONFLICT (tenant) DO UPDATE SET started = excluded.started`, tenant, this.now())
     return true
@@ -878,35 +1079,60 @@ export class Publisher extends DurableObject<PublisherEnv> {
     }
     const unchanged = () => Object.fromEntries(TABLE_NAMES.map((table) => [table, emptyReport(this.state(table).version)])) as Record<LedgerTable, TableReport>
 
-    // Paging over tenants: at most `maxTenantsPerPublish` logs read, longest waiting first (a tenant
-    // not pending was asked for now). The others keep their place for the next publish.
+    // Paging over tenants: at most `maxTenantsPerPublish` logs read, a re-base kept from an earlier
+    // invocation first, then longest waiting first (a tenant not pending was asked for now). The
+    // others keep their place for the next publish.
     const since = new Map(this.sql.exec(`SELECT tenant, since FROM pending`).toArray().map((r) => [r.tenant as string, r.since as number]))
+    const stepped = new Set(this.sql.exec(`SELECT tenant FROM rebase_step`).toArray().map((r) => r.tenant as string))
     const now = this.now()
-    const order = [...valid].sort((a, b) => (since.get(a) ?? now) - (since.get(b) ?? now) || (a < b ? -1 : a > b ? 1 : 0))
+    const order = [...valid].sort((a, b) => Number(stepped.has(b)) - Number(stepped.has(a)) || (since.get(a) ?? now) - (since.get(b) ?? now) || (a < b ? -1 : a > b ? 1 : 0))
     const read = order.slice(0, Math.max(1, cfg.maxTenantsPerPublish))
     for (const t of order.slice(read.length)) notRead(t, `not read: this publish read ${read.length} tenants (maxTenantsPerPublish)`)
     const uncursored = new Map(read.map((t) => [t, this.uncursored(t)]))
-    const candidates = read.filter((t) => uncursored.get(t)!.length > 0)
 
     // A tenant with no cursor in a table where R2 has metadata and SQLite has none: the publisher's
     // storage was lost (or another writer committed first). Its cursors are in R2: rebuild the
-    // table from there before re-basing anyone, one table per publish (a rebuild reads every
-    // manifest of its table), and leave every tenant for the next publish. Only in a publish's
-    // first attempt: a retry after a conflict has rebuilt the table it conflicted on already.
-    if (candidates.length > 0 && !budget.closed) {
+    // table from there before re-basing anyone, one table per publish, a manifest at a time within
+    // the budget (`rebuildStep`: a large table takes several publishes), and leave every tenant for
+    // the next publish. Only in a publish's first attempt: a retry after a conflict has rebuilt the
+    // table it conflicted on already.
+    if (read.some((t) => uncursored.get(t)!.length > 0) && !budget.closed) {
       for (const table of TABLE_NAMES) {
-        if (this.state(table).version > 0 || (await this.hint(store, table)) === 0) continue
-        await this.resync(store, cfg, table)
-        for (const t of read) notRead(t, `not read: this publish rebuilt the publisher's state of ${table} from R2 first`)
+        if (this.state(table).version > 0) {
+          // A rebuild this release left, overtaken (the table rebuilt by a release before this one after a rollback): its rows go, the table's stay.
+          this.sql.exec(`DELETE FROM rebuild_manifest WHERE tbl = ?`, table)
+          this.sql.exec(`DELETE FROM rebuild WHERE tbl = ?`, table)
+          continue
+        }
+        if ((await this.hint(store, table)) === 0) continue
+        const whole = await this.rebuildStep(store, cfg, budget, table)
+        const why = whole ? `rebuilt the publisher's state of ${table} from R2 first` : `went on rebuilding the publisher's state of ${table} from R2 first (a manifest at a time, within its budget)`
+        for (const t of read) notRead(t, `not read: this publish ${why}`)
         return { tenants: [...reports.values()], tables: unchanged(), deferred: true, unread }
       }
     }
 
-    // Re-bases first, one tenant at a time, least recently started first, while the budget lasts;
-    // each streams its state into `stage` (D55).
+    // Re-bases kept from earlier invocations, re-checked against SQLite: still needed?
+    const kept = new Map<string, Step>()
+    for (const t of read) {
+      if (!stepped.has(t)) continue
+      const s = this.stillApplies(this.stepOf(t) as Step)
+      if (s) kept.set(t, s)
+    }
+    const candidates = read.filter((t) => uncursored.get(t)!.length > 0 || kept.has(t))
+
+    // Re-bases first, one tenant at a time, while the budget lasts: a kept one whose last step made
+    // progress, then those never started, then least recently started. Each streams its state into
+    // `rebase_stage` (D55), and goes on in steps if it does not fit the budget.
     const started = new Map(this.sql.exec(`SELECT tenant, started FROM rebase`).toArray().map((r) => [r.tenant as string, r.started as number]))
-    candidates.sort((a, b) => (started.get(a) ?? -1) - (started.get(b) ?? -1) || (a < b ? -1 : a > b ? 1 : 0))
+    const rank = (t: string) => {
+      const s = kept.get(t)
+      if (s && s.moved > 0 && s.moved >= (started.get(t) ?? 0)) return 0
+      return started.has(t) ? 2 : 1
+    }
+    candidates.sort((a, b) => rank(a) - rank(b) || (started.get(a) ?? -1) - (started.get(b) ?? -1) || (a < b ? -1 : a > b ? 1 : 0))
     const sink = this.stageSink(cfg, budget)
+    const refused = new Map<string, string>()
     const logs: TenantLog[] = []
     const rebasing = new Set<string>()
     for (const tenant of candidates) {
@@ -914,7 +1140,17 @@ export class Publisher extends DurableObject<PublisherEnv> {
       // now sort last (just started).
       if (!this.admit(cfg, budget, tenant)) continue
       rebasing.add(tenant)
-      logs.push(await readTenantLog(store, this.cell, tenant, null, cfg.maxChangesPerTenant, sink))
+      // A kept re-base past its staging: its manifests are written ahead, then it is committed.
+      const step = this.stepOf(tenant)
+      if (step && step.target !== null) {
+        const log = await this.continueRebase(store, cfg, budget, step, null)
+        if (log) {
+          logs.push(log)
+          continue
+        }
+        // Dropped: the ledger has a newer incarnation. Re-based afresh below.
+      }
+      logs.push(await this.afterRead(store, cfg, budget, await readTenantLog(store, this.cell, tenant, null, cfg.maxChangesPerTenant, sink), refused))
     }
     // Then every other tenant read, from the lowest cursor its tables have: the tables with a cursor
     // are published (a tenant waiting for its re-base is not held back on them), the others wait.
@@ -929,7 +1165,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
           if (c && (!from || cursorCompare(c, from) < 0)) from = c
         }
         if (!from) return null
-        return readTenantLog(store, this.cell, tenant, from, cfg.maxChangesPerTenant, sink)
+        return this.afterRead(store, cfg, budget, await readTenantLog(store, this.cell, tenant, from, cfg.maxChangesPerTenant, sink), refused)
       })).filter((log): log is TenantLog => log !== null),
     )
     for (const t of rest) if (uncursored.get(t)!.length === TABLE_NAMES.length) notRead(t, 'needs a re-base; this publish has started as many as it may (the per-publish cap)')
@@ -940,6 +1176,11 @@ export class Publisher extends DurableObject<PublisherEnv> {
       if (log.detail) r.detail = log.detail
       if (log.gapAt !== undefined) r.gapAt = log.gapAt
       if (log.base) r.rebase = log.base
+      const why = refused.get(log.tenant)
+      if (why) {
+        r.status = 'inconsistent'
+        r.detail = why
+      }
       reports.set(log.tenant, r)
     }
 
@@ -951,10 +1192,20 @@ export class Publisher extends DurableObject<PublisherEnv> {
         r.status = 'inconsistent'
         r.detail = why
       }
-      tables[table] = await this.commit(store, cfg, table, plan)
+      const ahead = budget.finishing !== null && plan.staged.includes(budget.finishing) ? this.aheadOf(budget.finishing, table) : null
+      tables[table] = await this.commit(store, cfg, table, plan, ahead)
       for (const log of logs) {
         const c = this.cursorOf(table, log.tenant)
         if (c) (reports.get(log.tenant) as TenantReport).cursors[table] = c
+      }
+    }
+    // The re-base this publish finished: once every table it re-bases has its cursor, it is gone (its stage with it).
+    if (budget.finishing !== null) {
+      const s = this.stepOf(budget.finishing)
+      if (s && Object.keys(s.tables).every((table) => this.cursorOf(table as LedgerTable, s.tenant)?.ledgerIncarnation === s.incarnation)) {
+        this.dropStep(s.tenant)
+        const p = budget.progress.get(s.tenant)
+        if (p) p.phase = 'committed'
       }
     }
     // Read from its cursors, its re-base left for later: published as far as it could be, still pending.
@@ -964,15 +1215,280 @@ export class Publisher extends DurableObject<PublisherEnv> {
         r.status = 'deferred'
         r.detail = `needs a re-base for ${this.uncursored(log.tenant).join(', ')}; this publish has started as many as it may (the per-publish cap)`
       }
+      const p = budget.progress.get(log.tenant)
+      if (p) r.step = { ...p }
     }
     const tenants = [...reports.values()]
-    return { tenants, tables, deferred: tenants.some((t) => t.status === 'deferred'), unread }
+    // A re-base going on in steps (`deferred`), or just committed by one (its tenant is read from its cursors next), brings the alarm back soon.
+    return { tenants, tables, deferred: tenants.some((t) => t.status === 'deferred' || t.step?.phase === 'committed'), unread }
   }
 
   /**
-   * Where a re-base puts what it reads: `stage`, a batch per transaction. A file's statistics are
-   * computed only if it is added (most of a re-base is usually published already), when its
-   * manifest is written, and kept in its row for the `live` row the commit inserts from it.
+   * A tenant's log once read. A re-base read whole in this publish, within its budget, is committed
+   * in it as before (its stage is the attempt's scratch). One that continued a re-base kept from an
+   * earlier invocation, or that took the publish past its budget, goes on in steps: the changes read
+   * after its start are applied to its stage now (`catchUp`), and its added files are written ahead
+   * of its commit as far as the budget allows (`continueRebase`).
+   */
+  private async afterRead(store: CountingBucket, cfg: PublisherConfig, budget: RebaseBudget, log: TenantLog, refused: Map<string, string>): Promise<TenantLog> {
+    const tenant = log.tenant
+    const step = this.stepOf(tenant)
+    if (log.paused) {
+      if (step) this.progressOf(budget, step)
+      return log
+    }
+    if (log.base === null) {
+      // A kept re-base read in this publish that stopped on its checkpoint or base is of no use any
+      // more: a missing part is listed again next time (from the newest checkpoint), a corrupt or
+      // unknown one is refused until the ledger writes another.
+      const stopped = log.status === 'incomplete' || log.status === 'corrupt' || log.status === 'unsupported' || log.status === 'no_base'
+      if (step && step.target === null && budget.turned.has(tenant) && stopped) this.dropStep(tenant)
+      return log
+    }
+    if (!budget.resumed.has(tenant) && budget.work <= cfg.maxRebaseFilesPerPublish) {
+      // Read whole, within the budget: committed in this publish, as before. Not kept.
+      if (step) this.sql.exec(`DELETE FROM rebase_step WHERE tenant = ?`, tenant)
+      return log
+    }
+    const s = this.catchUp(log, refused)
+    if (!s) return { ...log, status: 'deferred', base: null, changes: [] }
+    return (await this.continueRebase(store, cfg, budget, s, log)) as TenantLog
+  }
+
+  /**
+   * A re-base going on in steps, once all its state is staged: the changes read after its start are
+   * applied to `rebase_stage` for every table, all of them or none (one that does not fit refuses the
+   * tenant, `inconsistent`, and the stage stays at its start for the next try), and the step records
+   * the version reached, how the read ended, the tables it re-bases and the snapshot id of its commit.
+   * A key removed after the start that is staged as no file is staged as a tombstone: released by the
+   * snapshot rule once the re-base is committed.
+   */
+  private catchUp(log: TenantLog, refused: Map<string, string>): Step | null {
+    const tenant = log.tenant
+    const base = log.base as BaseInfo
+    const kept = this.stepOf(tenant)
+    try {
+      return this.ctx.storage.transactionSync(() => {
+        let last = base.version
+        const dropped: { table: LedgerTable; key: string }[] = []
+        for (const c of log.changes) {
+          if (c.version <= base.version) continue
+          for (const table of TABLE_NAMES) {
+            const problem = this.applyToStage(table, tenant, c, dropped)
+            if (problem) throw new Refused(problem)
+          }
+          last = c.version
+        }
+        for (const d of dropped) {
+          if (!this.staged(d.table, tenant, d.key)) this.sql.exec(`INSERT OR IGNORE INTO rebase_stage (tenant, tbl, tomb, key, day, rows, bytes, min_ts, max_ts, idx) VALUES (?, ?, 1, ?, '', 0, 0, 0, 0, '')`, tenant, d.table, d.key)
+        }
+        const s: Step = {
+          ...(kept ?? {
+            tenant, incarnation: log.incarnation, source: base.source, version: base.version, object: '', attempt: '', parts: 1, done: 1,
+            files: base.files, tombstones: base.tombstones, bytes: 0, lastFile: null, lastTombstone: null, tables: this.toRebase(tenant, log.incarnation),
+          }),
+          target: last,
+          status: log.status,
+          detail: log.detail ?? null,
+          gapAt: log.gapAt ?? null,
+          snapshotId: snapshotIdOf(this.random(8)),
+          written: {},
+          moved: this.now(),
+        }
+        this.saveStep(s)
+        return s
+      })
+    } catch (e) {
+      if (!(e instanceof Refused)) throw e
+      refused.set(tenant, e.message)
+      return null
+    }
+  }
+
+  /**
+   * One change applied to a re-base's stage for one table, checked as from a cursor: a removal of a key
+   * of this table that is not live, or of a live key as another table's, or an addition of a live key,
+   * does not fit. Returns why, or null. Keys it removes are added to `dropped`.
+   */
+  private applyToStage(table: LedgerTable, tenant: string, c: LogChange, dropped: { table: LedgerTable; key: string }[]): string | null {
+    const sql = this.sql
+    let problem: string | null = null
+    for (const r of c.removedFiles) {
+      const isLive = this.staged(table, tenant, r.key)
+      if (isLive && (r.table === null || r.table === table)) {
+        sql.exec(`DELETE FROM rebase_stage WHERE tenant = ? AND tbl = ? AND tomb = 0 AND key = ?`, tenant, table, r.key)
+        dropped.push({ table, key: r.key })
+      } else if (isLive) problem = `change ${c.version} removes ${r.key} as a ${r.table} file; it is live in ${table}`
+      else if (r.table === table) problem = `change ${c.version} removes ${r.key}, which is not live at version ${c.version - 1}`
+    }
+    for (const f of c.added) {
+      if (f.table !== table) continue
+      const hour = table === 'spans' ? spanHourProblem(f) : null
+      if (hour) problem = `change ${c.version}: ${hour}`
+      else if (this.staged(table, tenant, f.key)) problem = `change ${c.version} adds ${f.key}, which is already live`
+      else {
+        sql.exec(
+          `INSERT INTO rebase_stage (tenant, tbl, tomb, key, day, rows, bytes, min_ts, max_ts, idx) VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`,
+          // As stageSink: a file without an index fragment is stored with none, never a constraint
+          // error that would fail the whole publish (review of #5).
+          tenant, table, f.key, f.day, f.rows, f.bytes, f.minTs, f.maxTs, typeof f.index === 'string' ? f.index : '',
+        )
+      }
+    }
+    return problem
+  }
+
+  /**
+   * A re-base past its staging: still the newest incarnation's (listed unless `fresh` was just read),
+   * its added files written ahead of its commit as far as the budget allows, and, once all are written
+   * and intact, the log that commits it in this publish (one such per publish: its manifests carry its
+   * snapshot id). Returns null when it was dropped for a newer incarnation.
+   */
+  private async continueRebase(store: CountingBucket, cfg: PublisherConfig, budget: RebaseBudget, step: Step, fresh: TenantLog | null): Promise<TenantLog | null> {
+    const tenant = step.tenant
+    if (!fresh && (await latestIncarnation(store, this.cell, tenant)) !== step.incarnation) {
+      this.dropStep(tenant)
+      return null
+    }
+    const progress = this.progressOf(budget, step)
+    const release = await budget.writing.take()
+    let complete: boolean
+    try {
+      complete = await this.writeAhead(store, cfg, budget, step, progress)
+    } finally {
+      release()
+    }
+    const target = step.target as number
+    const pending = (detail: string): TenantLog => ({ tenant, status: 'deferred', detail, incarnation: step.incarnation, layout: 'segments', base: null, start: target, changes: [] })
+    if (!complete) return pending(`re-base in steps: its added files are being written ahead of its commit (version ${target})`)
+    if (budget.finishing !== null && budget.finishing !== tenant) return pending(`re-base in steps: written ahead, committed at a later publish (one per publish)`)
+    if (!(await this.aheadIntact(store, step))) return pending(`re-base in steps: manifests written ahead were missing or changed; written again`)
+    budget.finishing = tenant
+    // Committed at `target`. When the changes after its start were read by an earlier publish, more
+    // may have been logged since: the tenant stays pending and is read from its cursors next.
+    const read = fresh ?? null
+    const format = step.source === 'checkpoint' ? (step.attempt === '' ? 1 : 2) : null
+    const base: BaseInfo = { ...(read?.base ?? { source: step.source, format, files: step.files, tombstones: step.tombstones, objects: 0, window: 0, passedOver: [] }), version: target }
+    const status: LogStatus = read ? read.status : step.status === 'ok' || step.status === null ? 'more' : step.status
+    const log: TenantLog = { tenant, status, incarnation: step.incarnation, layout: 'segments', base, start: target, changes: [] }
+    const detail = read ? read.detail : status === 'more' ? `re-based in steps to version ${target}; what was logged after it is read from the cursors next` : step.detail
+    if (detail) log.detail = detail
+    const gapAt = read ? read.gapAt : step.gapAt ?? undefined
+    if (gapAt !== undefined) log.gapAt = gapAt
+    return log
+  }
+
+  /**
+   * Added files of a re-base's tables (its stage against `live`), written into manifests ahead of its
+   * commit: a manifest of `manifestTargetEntries` at a time in (day, key) order, as a commit would, each
+   * entry carrying the snapshot id the commit will have (an ADDED entry's sequence numbers are inherited
+   * from the manifest list, so they need not be known). Each manifest is PUT, then recorded with how far
+   * the table got and the files' statistics in one transaction; one cut off between is written again.
+   * At least one manifest, then while the budget lasts. Returns whether every table is written.
+   */
+  private async writeAhead(store: CountingBucket, cfg: PublisherConfig, budget: RebaseBudget, step: Step, progress: RebaseStepReport): Promise<boolean> {
+    const sql = this.sql
+    const tenant = step.tenant
+    const snapshotId = step.snapshotId as number
+    let wrote = false
+    for (const table of TABLE_NAMES) {
+      if (!(table in step.tables) || step.written[table] === 'done') continue
+      for (;;) {
+        if (wrote && budget.work >= cfg.maxRebaseFilesPerPublish) return false
+        const at = step.written[table]
+        let after: [string, string] = Array.isArray(at) ? at : ['', '']
+        const parts: Part[] = []
+        const stats: [string, string][] = []
+        while (parts.length < cfg.manifestTargetEntries) {
+          const page = sql
+            .exec(`SELECT key, day, rows, bytes, min_ts, max_ts, idx FROM rebase_stage s WHERE ${Publisher.STAGED_ADD} AND (s.day, s.key) > (?, ?) ORDER BY s.day, s.key LIMIT ?`, tenant, table, after[0], after[1], Math.min(1000, cfg.manifestTargetEntries - parts.length))
+            .toArray()
+          if (page.length === 0) break
+          for (const r of page) {
+            const entry = { table, day: r.day as string, key: r.key as string, rows: r.rows as number, bytes: r.bytes as number, minTs: r.min_ts as number, maxTs: r.max_ts as number, index: r.idx as string, level: 0 }
+            const f: LiveFile = { key: entry.key, tenant, day: entry.day, rows: entry.rows, bytes: entry.bytes, snapshotId, seq: 0, fileSeq: 0, stats: statsFor(table, entry) }
+            stats.push([f.key, JSON.stringify(f.stats)])
+            parts.push({ file: f, status: STATUS_ADDED })
+            after = [entry.day, entry.key]
+          }
+        }
+        if (parts.length === 0) {
+          step.written[table] = 'done'
+          this.saveStep(step)
+          break
+        }
+        const n = sql.exec(`SELECT COUNT(*) AS n FROM rebase_manifest WHERE tenant = ? AND tbl = ?`, tenant, table).one().n as number
+        const path = `${this.metaDir(table)}${snapshotId}-a${n}-${hex(this.random(4, table))}.avro`
+        const records = (function* (uri: (key: string) => string) {
+          for (const p of parts) yield manifestEntry(table, p.file, p.status, uri(p.file.key), snapshotId)
+        })((key) => this.uri(cfg, key))
+        const bytes = await writeAvro(manifestEntrySchema(table), records, manifestHeader(table), cfg.codec, this.random(16, table))
+        await store.put(path, bytes)
+        const info: ManifestInfo = { ...summarise(parts, 0, snapshotId, table), path, length: bytes.length }
+        const lo: [string, string] = [parts[0]!.file.day, parts[0]!.file.key]
+        this.ctx.storage.transactionSync(() => {
+          for (const [key, json] of stats) sql.exec(`UPDATE rebase_stage SET stats = ? WHERE tenant = ? AND tbl = ? AND tomb = 0 AND key = ?`, json, tenant, table, key)
+          sql.exec(`INSERT INTO rebase_manifest (tenant, tbl, path, info, lo_day, lo_key, hi_day, hi_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, tenant, table, path, JSON.stringify(info), ...lo, ...after)
+          step.written[table] = after
+          step.moved = this.now()
+          this.saveStep(step)
+        })
+        budget.work += parts.length
+        progress.written += parts.length
+        progress.phase = 'writing'
+        wrote = true
+      }
+    }
+    return true
+  }
+
+  /**
+   * Before a commit uses a re-base's manifests written ahead: every table written to its end, the
+   * files they add exactly the ones its stage adds now, and each manifest in R2 at its recorded size
+   * (a release before this one, after a rollback, sweeps them as unreferenced). A table that fails is
+   * written again from its start. Returns whether all held.
+   */
+  private async aheadIntact(store: CountingBucket, step: Step): Promise<boolean> {
+    let ok = true
+    for (const table of Object.keys(step.tables) as LedgerTable[]) {
+      const ahead = this.aheadOf(step.tenant, table)
+      const adds = this.sql.exec(`SELECT COUNT(*) AS n FROM rebase_stage s WHERE ${Publisher.STAGED_ADD}`, step.tenant, table).one().n as number
+      let good = step.written[table] === 'done' && ahead.manifests.reduce((n, m) => n + m.info.addedFiles, 0) === adds
+      for (const m of good ? ahead.manifests : []) {
+        const head = await store.head(m.path)
+        if (!head || head.size !== m.info.length) {
+          good = false
+          break
+        }
+      }
+      if (good) continue
+      ok = false
+      this.ctx.storage.transactionSync(() => {
+        this.sql.exec(`DELETE FROM rebase_manifest WHERE tenant = ? AND tbl = ?`, step.tenant, table)
+        delete step.written[table]
+        this.saveStep(step)
+      })
+    }
+    return ok
+  }
+
+  /** A re-base's manifests written ahead for one table, in the order written. */
+  private aheadOf(tenant: string, table: LedgerTable): Ahead {
+    const s = this.stepOf(tenant)
+    const manifests = this.sql
+      .exec(`SELECT path, info, lo_day, lo_key, hi_day, hi_key FROM rebase_manifest WHERE tenant = ? AND tbl = ? ORDER BY lo_day, lo_key`, tenant, table)
+      .toArray()
+      .map((r): AheadManifest => ({ path: r.path as string, info: JSON.parse(r.info as string) as ManifestInfo, lo: [r.lo_day as string, r.lo_key as string], hi: [r.hi_day as string, r.hi_key as string] }))
+    return { tenant, snapshotId: s?.snapshotId as number, manifests }
+  }
+
+  /**
+   * Where a re-base puts what it reads: `rebase_stage`, a batch per transaction. A file's statistics
+   * are computed only if it is added (most of a re-base is usually published already), when its
+   * manifest is written, and kept in its row for the `live` row the commit inserts from it. A
+   * checkpoint in parts is staged part by part, each with its progress in `rebase_step` in the same
+   * transaction, and stops at the first part boundary past the publish's budget; a re-base kept from
+   * an earlier invocation resumes after the parts it staged (README, "Re-bases and rebuilds in steps").
    */
   private stageSink(cfg: PublisherConfig, budget: RebaseBudget): BaseSink {
     const sql = this.sql
@@ -980,29 +1496,79 @@ export class Publisher extends DurableObject<PublisherEnv> {
     // parts), and each is admitted while it holds the turn, so the budget counts what every re-base
     // before it staged.
     const turns = new Slots(1)
+    const stageFiles = (tenant: string, files: FileEntry[]) => {
+      for (const f of files) {
+        const n = sql.exec(
+          `INSERT OR IGNORE INTO rebase_stage (tenant, tbl, tomb, key, day, rows, bytes, min_ts, max_ts, idx) VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`,
+          tenant, f.table, f.key, f.day, f.rows, f.bytes, f.minTs, f.maxTs, typeof f.index === 'string' ? f.index : '',
+        ).rowsWritten
+        if (n === 0) throw new BaseRefused(`${f.key} is listed twice`)
+      }
+    }
+    const stageTombstones = (tenant: string, tombstones: { key: string; table: LedgerTable }[]) => {
+      for (const t of tombstones) sql.exec(`INSERT OR IGNORE INTO rebase_stage (tenant, tbl, tomb, key, day, rows, bytes, min_ts, max_ts, idx) VALUES (?, ?, 1, ?, '', 0, 0, 0, 0, '')`, tenant, t.table, t.key)
+    }
     return {
-      turn: async (tenant) => {
+      turn: async (tenant, incarnation) => {
         const release = await turns.take()
-        if (this.admit(cfg, budget, tenant)) return release
-        release()
+        if (!this.admit(cfg, budget, tenant)) {
+          release()
+          return null
+        }
+        budget.turned.add(tenant)
+        // A re-base kept for another incarnation is of no use: dropped before anything is read.
+        const kept = this.stepOf(tenant)
+        if (kept && kept.incarnation !== incarnation) this.dropStep(tenant)
+        return release
+      },
+      resumeKey: (tenant, incarnation) => {
+        const kept = this.stepOf(tenant)
+        return kept && kept.source === 'checkpoint' && kept.target === null && kept.incarnation === incarnation ? kept.object : null
+      },
+      begin: (tenant, ck) => {
+        const kept = this.stepOf(tenant)
+        if (kept && kept.source === 'checkpoint' && kept.target === null && kept.incarnation === ck.incarnation && kept.object === ck.key && kept.attempt === ck.attempt && kept.parts === ck.parts) {
+          budget.resumed.add(tenant)
+          this.progressOf(budget, kept)
+          return { part: kept.done, files: kept.files, tombstones: kept.tombstones, bytes: kept.bytes, lastFile: kept.lastFile, lastTombstone: kept.lastTombstone }
+        }
+        // This checkpoint afresh: whatever the tenant held is forgotten, and the re-base is recorded
+        // before any part of it is read, with the tables it re-bases and their cursors now.
+        this.ctx.storage.transactionSync(() => {
+          this.dropStepRows(tenant)
+          this.saveStep({
+            tenant, incarnation: ck.incarnation, source: 'checkpoint', version: ck.version, object: ck.key, attempt: ck.attempt, parts: ck.parts, done: 0,
+            files: 0, tombstones: 0, bytes: 0, lastFile: null, lastTombstone: null, tables: this.toRebase(tenant, ck.incarnation),
+            target: null, status: null, detail: null, gapAt: null, snapshotId: null, written: {}, moved: 0,
+          })
+        })
         return null
       },
-      reset: (tenant) => void sql.exec(`DELETE FROM stage WHERE tenant = ?`, tenant),
+      part: (tenant, p) =>
+        this.ctx.storage.transactionSync(() => {
+          stageFiles(tenant, p.files)
+          stageTombstones(tenant, p.tombstones)
+          const a = p.after
+          sql.exec(
+            `UPDATE rebase_step SET done = ?, files = ?, tombstones = ?, bytes = ?, last_file = ?, last_tomb = ?, moved = ? WHERE tenant = ?`,
+            a.part, a.files, a.tombstones, a.bytes, a.lastFile, a.lastTombstone, this.now(), tenant,
+          )
+          const n = p.files.length + p.tombstones.length
+          budget.work += n
+          const kept = this.stepOf(tenant)
+          if (kept) this.progressOf(budget, kept).staged += n
+          return budget.work < cfg.maxRebaseFilesPerPublish
+        }),
+      reset: (tenant) => void sql.exec(`DELETE FROM rebase_stage WHERE tenant = ?`, tenant),
       files: (tenant, files) =>
         this.ctx.storage.transactionSync(() => {
-          budget.staged += files.length
-          for (const f of files) {
-            const n = sql.exec(
-              `INSERT OR IGNORE INTO stage (tenant, tbl, tomb, key, day, rows, bytes, min_ts, max_ts, idx) VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`,
-              tenant, f.table, f.key, f.day, f.rows, f.bytes, f.minTs, f.maxTs, typeof f.index === 'string' ? f.index : '',
-            ).rowsWritten
-            if (n === 0) throw new BaseRefused(`${f.key} is listed twice`)
-          }
+          budget.work += files.length
+          stageFiles(tenant, files)
         }),
       tombstones: (tenant, tombstones) =>
         this.ctx.storage.transactionSync(() => {
-          budget.staged += tombstones.length
-          for (const t of tombstones) sql.exec(`INSERT OR IGNORE INTO stage (tenant, tbl, tomb, key, day, rows, bytes, min_ts, max_ts, idx) VALUES (?, ?, 1, ?, '', 0, 0, 0, 0, '')`, tenant, t.table, t.key)
+          budget.work += tombstones.length
+          stageTombstones(tenant, tombstones)
         }),
     }
   }
@@ -1050,7 +1616,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
   }
 
   private staged(table: LedgerTable, tenant: string, key: string): boolean {
-    return this.sql.exec(`SELECT 1 FROM stage WHERE tenant = ? AND tbl = ? AND tomb = 0 AND key = ?`, tenant, table, key).toArray().length > 0
+    return this.sql.exec(`SELECT 1 FROM rebase_stage WHERE tenant = ? AND tbl = ? AND tomb = 0 AND key = ?`, tenant, table, key).toArray().length > 0
   }
 
   /**
@@ -1123,7 +1689,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
       // Every staged `spans` file must lie in the hour its key names (the partition value is taken
       // from the key): found in SQL, judged by `spanHourProblem`.
       for (const f of sql.exec(
-        `SELECT key, day, min_ts, max_ts FROM stage WHERE tenant = ? AND tbl = 'spans' AND tomb = 0 AND NOT (
+        `SELECT key, day, min_ts, max_ts FROM rebase_stage WHERE tenant = ? AND tbl = 'spans' AND tomb = 0 AND NOT (
            instr(key, '/day=' || day || '/hour=') > 0 AND min_ts / 3600000 = max_ts / 3600000
            AND min_ts / 3600000 = CAST(strftime('%s', day) AS INTEGER) / 3600 + CAST(substr(key, instr(key, '/hour=') + 6, 2) AS INTEGER))
          LIMIT 10`,
@@ -1134,33 +1700,14 @@ export class Publisher extends DurableObject<PublisherEnv> {
       }
     }
     this.ctx.storage.transactionSync(() => {
+      const removed: { table: LedgerTable; key: string }[] = []
       for (const c of log.changes) {
         if (c.version <= start) continue
-        for (const r of c.removedFiles) {
-          const isLive = this.staged(table, tenant, r.key)
-          if (isLive && (r.table === null || r.table === table)) {
-            sql.exec(`DELETE FROM stage WHERE tenant = ? AND tbl = ? AND tomb = 0 AND key = ?`, tenant, table, r.key)
-            dropped.push(r.key)
-          } else if (isLive) problem = `change ${c.version} removes ${r.key} as a ${r.table} file; it is live in ${table}`
-          else if (r.table === table) problem = `change ${c.version} removes ${r.key}, which is not live at version ${c.version - 1}`
-        }
-        for (const f of c.added) {
-          if (f.table !== table) continue
-          const hour = table === 'spans' ? spanHourProblem(f) : null
-          if (hour) problem = `change ${c.version}: ${hour}`
-          else if (this.staged(table, tenant, f.key)) problem = `change ${c.version} adds ${f.key}, which is already live`
-          else {
-            sql.exec(
-              `INSERT INTO stage (tenant, tbl, tomb, key, day, rows, bytes, min_ts, max_ts, idx) VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`,
-              // As stageSink: a file without an index fragment is stored with none, never a constraint
-              // error that would fail the whole publish (review of #5).
-              tenant, table, f.key, f.day, f.rows, f.bytes, f.minTs, f.maxTs, typeof f.index === 'string' ? f.index : '',
-            )
-          }
-        }
+        problem = this.applyToStage(table, tenant, c, removed)
         if (problem) break
         last = c.version
       }
+      for (const r of removed) dropped.push(r.key)
     })
     if (problem) return { problem }
     return { adds: [], removes: [], transient: dropped.filter((k) => !this.staged(table, tenant, k) && !this.published(table, tenant, k)), last }
@@ -1206,7 +1753,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
 
   // What a re-based tenant adds (staged, not live) and removes (live, not staged), in SQL.
   private static readonly STAGED_ADD = `s.tenant = ? AND s.tbl = ? AND s.tomb = 0 AND NOT EXISTS (SELECT 1 FROM live l WHERE l.tbl = s.tbl AND l.key = s.key)`
-  private static readonly STAGED_REMOVE = `l.tbl = ? AND l.tenant = ? AND NOT EXISTS (SELECT 1 FROM stage s WHERE s.tenant = l.tenant AND s.tbl = l.tbl AND s.tomb = 0 AND s.key = l.key)`
+  private static readonly STAGED_REMOVE = `l.tbl = ? AND l.tenant = ? AND NOT EXISTS (SELECT 1 FROM rebase_stage s WHERE s.tenant = l.tenant AND s.tbl = l.tbl AND s.tomb = 0 AND s.key = l.key)`
 
   /**
    * Files, rows and bytes a re-based tenant adds to and removes from a table, and the partitions
@@ -1214,11 +1761,11 @@ export class Publisher extends DurableObject<PublisherEnv> {
    */
   private stagedChange(table: LedgerTable, tenant: string): { adds: Totals; removes: Totals; days: string[] } {
     const totals = (r: Row): Totals => ({ files: r.n as number, rows: r.r as number, bytes: r.b as number })
-    const adds = totals(this.sql.exec(`SELECT COUNT(*) AS n, COALESCE(SUM(rows), 0) AS r, COALESCE(SUM(bytes), 0) AS b FROM stage s WHERE ${Publisher.STAGED_ADD}`, tenant, table).one())
+    const adds = totals(this.sql.exec(`SELECT COUNT(*) AS n, COALESCE(SUM(rows), 0) AS r, COALESCE(SUM(bytes), 0) AS b FROM rebase_stage s WHERE ${Publisher.STAGED_ADD}`, tenant, table).one())
     const removes = totals(this.sql.exec(`SELECT COUNT(*) AS n, COALESCE(SUM(rows), 0) AS r, COALESCE(SUM(bytes), 0) AS b FROM live l WHERE ${Publisher.STAGED_REMOVE}`, table, tenant).one())
     const days = new Set<string>()
     const part = table === 'spans' ? `day || substr(key, instr(key, '/hour='), 8)` : 'day'
-    for (const r of this.sql.exec(`SELECT DISTINCT ${part} AS p FROM stage s WHERE ${Publisher.STAGED_ADD}`, tenant, table)) days.add(r.p as string)
+    for (const r of this.sql.exec(`SELECT DISTINCT ${part} AS p FROM rebase_stage s WHERE ${Publisher.STAGED_ADD}`, tenant, table)) days.add(r.p as string)
     for (const r of this.sql.exec(`SELECT DISTINCT ${part} AS p FROM live l WHERE ${Publisher.STAGED_REMOVE}`, table, tenant)) days.add(r.p as string)
     return { adds, removes, days: [...days] }
   }
@@ -1232,10 +1779,10 @@ export class Publisher extends DurableObject<PublisherEnv> {
   private recordStagedTombstones(table: LedgerTable, tenant: string, seq: number): void {
     this.sql.exec(
       `INSERT INTO removed (tbl, tenant, key, removed_seq, free_at)
-       SELECT s.tbl, s.tenant, s.key, ?, NULL FROM stage s
+       SELECT s.tbl, s.tenant, s.key, ?, NULL FROM rebase_stage s
        WHERE s.tenant = ? AND s.tbl = ? AND s.tomb = 1
          AND NOT EXISTS (SELECT 1 FROM live l WHERE l.tbl = s.tbl AND l.key = s.key)
-         AND NOT EXISTS (SELECT 1 FROM stage f WHERE f.tenant = s.tenant AND f.tbl = s.tbl AND f.tomb = 0 AND f.key = s.key)
+         AND NOT EXISTS (SELECT 1 FROM rebase_stage f WHERE f.tenant = s.tenant AND f.tbl = s.tbl AND f.tomb = 0 AND f.key = s.key)
        ON CONFLICT (tbl, key) DO NOTHING`,
       seq, tenant, table,
     )
@@ -1244,9 +1791,11 @@ export class Publisher extends DurableObject<PublisherEnv> {
   /**
    * One commit. Memory is a few manifests (`manifestTargetEntries` files each) and what the
    * changes read from cursors touch; the files of a re-based tenant stay in SQLite and are read
-   * a page at a time, so a tenant of any size is published (README, "Memory").
+   * a page at a time, so a tenant of any size is published (README, "Memory"). With `ahead`, the
+   * added files of that re-based tenant are in manifests written ahead by earlier publishes: the
+   * commit takes their snapshot id, lists them, and writes none of their entries again.
    */
-  private async commit(store: CountingBucket, cfg: PublisherConfig, table: LedgerTable, plan: TablePlan): Promise<TableReport> {
+  private async commit(store: CountingBucket, cfg: PublisherConfig, table: LedgerTable, plan: TablePlan, ahead: Ahead | null = null): Promise<TableReport> {
     const t0 = this.now()
     const sql = this.sql
     const staged = plan.staged.map((tenant) => ({ tenant, ...this.stagedChange(table, tenant) }))
@@ -1283,7 +1832,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
     const { state, prev } = await this.currentMetadata(store, cfg, table)
     const now = this.now()
     const base = prev ?? emptyMetadata(table, this.uri(cfg, `${this.cell}/iceberg/${table}`), this.cell, uuidOf(this.random(16, table)), now)
-    const snapshotId = snapshotIdOf(this.random(8, table))
+    const snapshotId = ahead ? ahead.snapshotId : snapshotIdOf(this.random(8, table))
     const seq = base['last-sequence-number'] + 1
     const tag = hex(this.random(4, table))
     const report = emptyReport(state.version + 1)
@@ -1369,7 +1918,8 @@ export class Publisher extends DurableObject<PublisherEnv> {
         mem = []
         return out
       }
-      const tenants = [...new Set([...memAdds.map((f) => f.tenant), ...plan.staged])].sort()
+      // A tenant whose added files were written ahead is not paged here.
+      const tenants = [...new Set([...memAdds.map((f) => f.tenant), ...plan.staged])].filter((t) => t !== ahead?.tenant).sort()
       let i = 0
       for (const tenant of tenants) {
         if (!stagedSet.has(tenant)) {
@@ -1384,7 +1934,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
         let after: [string, string] = ['', '']
         for (;;) {
           const page = sql
-            .exec(`SELECT key, day, rows, bytes, min_ts, max_ts, idx FROM stage s WHERE ${Publisher.STAGED_ADD} AND (s.day, s.key) > (?, ?) ORDER BY s.day, s.key LIMIT 1000`, tenant, table, after[0], after[1])
+            .exec(`SELECT key, day, rows, bytes, min_ts, max_ts, idx FROM rebase_stage s WHERE ${Publisher.STAGED_ADD} AND (s.day, s.key) > (?, ?) ORDER BY s.day, s.key LIMIT 1000`, tenant, table, after[0], after[1])
             .toArray()
           if (page.length === 0) break
           const stats: [string, string][] = []
@@ -1403,7 +1953,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
           }
           // Kept for the `live` row of each: the transaction after the commit point inserts from `stage`.
           this.ctx.storage.transactionSync(() => {
-            for (const [key, json] of stats) sql.exec(`UPDATE stage SET stats = ? WHERE tenant = ? AND tbl = ? AND tomb = 0 AND key = ?`, json, tenant, table, key)
+            for (const [key, json] of stats) sql.exec(`UPDATE rebase_stage SET stats = ? WHERE tenant = ? AND tbl = ? AND tomb = 0 AND key = ?`, json, tenant, table, key)
           })
         }
       }
@@ -1465,6 +2015,11 @@ export class Publisher extends DurableObject<PublisherEnv> {
     }
     await Promise.all(writing)
     report.manifestsWritten = written.length
+    // Manifests written ahead (all ADDED entries carrying this snapshot id): listed with this commit's sequence number.
+    for (const m of ahead?.manifests ?? []) {
+      written.push({ ...m.info, seq, minSeq: seq })
+      stagedRanges.push({ tenant: ahead!.tenant, lo: m.lo, hi: m.hi, path: m.path })
+    }
     await this.step('manifests-written', table)
 
     // ── manifest list ──
@@ -1564,10 +2119,10 @@ export class Publisher extends DurableObject<PublisherEnv> {
       // Added files: a re-based tenant's from `stage`, range by range; the others' from memory.
       for (const r of stagedRanges) {
         const range = `s.tenant = ? AND s.tbl = ? AND s.tomb = 0 AND (s.day, s.key) >= (?, ?) AND (s.day, s.key) <= (?, ?) AND NOT EXISTS (SELECT 1 FROM live l WHERE l.tbl = s.tbl AND l.key = s.key)`
-        sql.exec(`DELETE FROM removed WHERE tbl = ? AND tenant = ? AND key IN (SELECT s.key FROM stage s WHERE ${range})`, table, r.tenant, r.tenant, table, ...r.lo, ...r.hi)
+        sql.exec(`DELETE FROM removed WHERE tbl = ? AND tenant = ? AND key IN (SELECT s.key FROM rebase_stage s WHERE ${range})`, table, r.tenant, r.tenant, table, ...r.lo, ...r.hi)
         sql.exec(
           `INSERT INTO live (tbl, key, tenant, day, rows, bytes, snapshot_id, seq, file_seq, stats, manifest)
-           SELECT s.tbl, s.key, s.tenant, s.day, s.rows, s.bytes, ?, ?, ?, s.stats, ? FROM stage s WHERE ${range}`,
+           SELECT s.tbl, s.key, s.tenant, s.day, s.rows, s.bytes, ?, ?, ?, s.stats, ? FROM rebase_stage s WHERE ${range}`,
           snapshotId, seq, seq, r.path, r.tenant, table, ...r.lo, ...r.hi,
         )
       }
@@ -1576,6 +2131,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
         sql.exec(`DELETE FROM removed WHERE tbl = ? AND tenant = ? AND key = ?`, table, file.tenant, file.key)
       }
       for (const x of staged) this.recordStagedTombstones(table, x.tenant, seq)
+      if (ahead) this.sql.exec(`DELETE FROM rebase_manifest WHERE tenant = ? AND tbl = ?`, ahead.tenant, table)
       for (const p of replaced) sql.exec(`DELETE FROM manifest WHERE tbl = ? AND path = ?`, table, p)
       for (const m of written) sql.exec(`INSERT INTO manifest (tbl, path, info) VALUES (?, ?, ?)`, table, m.path, JSON.stringify(m))
       for (const [tenant, c] of plan.cursors) this.setCursor(table, tenant, c)
@@ -1847,6 +2403,8 @@ export class Publisher extends DurableObject<PublisherEnv> {
       if (!files) return out
       for (const f of files) referenced.add(f)
     }
+    // Manifests written ahead of a re-base's commit: referenced by no snapshot yet, and kept.
+    for (const r of this.sql.exec(`SELECT path FROM rebase_manifest WHERE tbl = ?`, table)) referenced.add(r.path as string)
 
     const now = this.now()
     const prefix = this.metaDir(table)

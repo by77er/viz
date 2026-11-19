@@ -1344,7 +1344,11 @@ URL>/mcp`, RFC 8707). mcp publishes RFC 9728 metadata and answers 401 and 403 wi
   `invoke` with a made-up identity included), and `deploy/configure.mjs` refuses to deploy one.
 - **Every request is checked by control**: audience, expiry, grant and key state. Revocation
   takes effect at `/mcp` on the next request. Codes are single use (a second use revokes the
-  grant); refresh tokens rotate on every use (presenting a used one revokes the grant).
+  grant); refresh tokens rotate on every use (presenting a used one revokes the grant). Since the
+  second review of D70, a token the tenant's object has called dead (unknown, expired, revoked,
+  rotated) is listed by the Worker and refused there before any limit or object; revocation's
+  result says whether the token is dead (`RevokeResult.dead`), and the grant view counts the refresh
+  tokens issued in its last day (`refreshesLastDay`), which shows a client collecting them.
 - **Credentials name their tenant in clear** (`vza1.<tenant>.<secret>`), so the server can find
   the tenant's object; that object holds only the credential's SHA-256, so a credential edited to
   name another tenant matches nothing. Because a forged one can name any string, a `Tenant` object
@@ -1398,7 +1402,10 @@ credential.
 before the object: it stops names nobody provisioned, but not the attack the review measured,
 forged credentials naming a real tenant, and a record published at approval may not have reached
 the location of the code exchange that follows within seconds (KV propagation, and cached misses).
-(i) A negative cache in KV: the same, plus writes driven by unauthenticated requests. (j) A
+(i) A negative cache in KV: the same, plus writes driven by unauthenticated requests. (Since the
+second review of D70 there is a KV list, for another purpose: credentials this deployment made
+whose object has called them dead, written only on that answer, so its writes follow what layer 2
+lets be minted, never what a request asks; D70.) (j) A
 Workers Rate Limiting binding as the check: approximate and per Cloudflare location by its
 documentation ("Requests can exceed your configured limit"; "Other Cloudflare locations maintain
 separate counts"), and keyed by the only identifiers an unauthenticated request has (IP, which the
@@ -1422,7 +1429,10 @@ key becomes a generated secret of its own, or control verifies tags under two ke
 M-2, m-1 to m-3, m-5, m-6): the entrypoint, the tag, no writes on no change, key-only approvers.
 The decision itself stands. Amended again the same day after the review of D70
 (`reviews/d70-rate-limits.md`, B-1): the credential body's layout 2, carrying its expiry under the
-tag; this replaces the text under which the body was 27 random characters. The decision stands.*
+tag; this replaces the text under which the body was 27 random characters. The decision stands.
+Amended again the same day after the second review of D70 (`reviews/d70-rate-limits-r2.md`, R2-M2):
+revocation's result says whether the token is dead, the grant view counts refreshes in its last
+day, and the Worker lists credentials found dead (D70). The decision stands.*
 
 ## D45. The ruler writes recorded samples through a named entrypoint of viz-ingest; the service binding is the credential
 
@@ -3145,16 +3155,26 @@ ref for every workflow file, old ones included (then the environment rule is not
 point 5); or an upload can inherit a secret from a version named by id through wrangler (then m-6 has
 a way out that keeps the key).
 
-## D70. OAuth is rate-limited in two layers: Cloudflare's Rate Limiting binding before any object, counting each presented credential and then its tenant (a fuse near one object's capacity), and a network only where no genuine credential is involved, failing open within 100 ms; codes and tokens carry an expiry the Worker checks under their tag; and an exact per-grant refresh limit in the tenant's object
+## D70. OAuth is rate-limited in two layers: Cloudflare's Rate Limiting binding before any object, counting each presented credential and then its tenant (a fuse near one object's capacity), a wider key only while every narrower one was checked, and a network only where no genuine credential is involved, failing open within 100 ms; codes and tokens carry an expiry the Worker checks under their tag; a credential its object has called dead is listed and refused before any limit; and an exact per-grant refresh limit in the tenant's object
 
 (Written 2026-11-19 for the review of D44, M-2: "a rate limit in front of `/oauth/token`,
 `/oauth/revoke`, `/oauth/register`, `/oauth/authorize` and OAuth bearers before public exposure".
-**Rewritten the same day after its adversarial review**, `reviews/d70-rate-limits.md`, which
-rejected layer 1 as built (B-1, M-1, M-2, m-1 to m-8). **This replaces the first version of D70.**
-That version keyed the token endpoint per presented `client_id` and then per tenant, and
-revocation per tenant only. It set the tenant budgets at 5 and 50 a second, counted every request
-by network, and gave each check 1 s. So one dead credential of a tenant could refuse all of that
-tenant's OAuth in a location. Layer 2, the refusal and the contract status stand as first written.)
+Rewritten the same day after its adversarial review, `reviews/d70-rate-limits.md`, which rejected
+layer 1 as first built (B-1, M-1, M-2, m-1 to m-8). **Rewritten again the same day after its second
+review, `reviews/d70-rate-limits-r2.md` (approve with changes: R2-M1, R2-M2, m-1 to m-4, n-1, n-2).
+This replaces the version written after the first review.** That version:
+- asked the tenant fuse alone whenever the credential's own limiter was absent, failed or skipped,
+  so one dead credential spent the fuse again for as long as the narrow binding was down (R2-M1);
+- kept no record of credentials found dead, so refresh tokens collected at the per-grant limit
+  stayed good for spending the token fuse for 30 days, revocation of their grant included, and it
+  said wrongly that a client "could spend the fuse with live tokens anyway" (R2-M2);
+- gave the whole request one 100 ms budget, so a slow narrow check got a healthy fuse blamed and
+  skipped (m-1), and counted a genuine but expired credential against its sender's network (m-2).
+The first version keyed the token endpoint per presented `client_id` and then per tenant, and
+revocation per tenant only, with tenant budgets of 5 and 50 a second, every request counted by
+network and 1 s per check; one dead credential of a tenant could refuse all of that tenant's OAuth
+in a location. The keys, the fuses, the expiry, layer 2, the refusal and the contract status stand
+as rewritten after the first review.)
 
 **What needs limiting, from the code** (costs measured here, `control/test/oauth-cost.test.ts`:
 local workerd, sequential, three runs; `control/README.md` has the table). Since the tag (D44) a
@@ -3167,11 +3187,12 @@ send them. What reaches a tenant's object is a credential this deployment made:
 - an introspection: 0.9–1.5 ms, no write;
 - a **replay** of a spent, rotated or revoked credential: 0.75–2.1 ms, one object request, no write.
 
-The review showed what the first version missed: a credential's tag never expired. A dead
-credential was therefore as good as a live one for spending any budget keyed after the tag. And
-anyone may hold dead credentials: a former client, a debug log, a code left in shell history. An
-approval (17 rows, 2 alarm writes, 1 KV write) needs a person's admin key and was already bounded
-exactly (20 a tenant an hour).
+A credential's tag never expired, and anyone may hold dead credentials: a former client, a debug
+log, a code left in shell history (first review, B-1). And anyone holding one *live* refresh token
+of a grant can make more: rotating it at the per-grant limit yields 6 a minute, every one of them
+tagged and unexpired for 30 days, whether they are the grant's own client or a thief of an idle
+grant's token (second review, R2-M2). An approval (17 rows, 2 alarm writes, 1 KV write) needs a
+person's admin key and was already bounded exactly (20 a tenant an hour).
 
 **Decision.**
 
@@ -3181,7 +3202,11 @@ exactly (20 a tenant an hour).
   earlier than the expiry the tenant's object stores. The tag covers it, as before.
   - `/oauth/token`, `/oauth/revoke` and introspection refuse a tagged credential once its expiry and
     60 s more have passed. They answer as the object would (`invalid_grant`, 200, `inactive`
-    `expired`), before any limit counts the request and before any object is asked.
+    `expired`), before any limit counts the request and before any object is asked. Such a
+    credential is genuine and its HMAC is already paid, so it is **not counted against its sender's
+    network either** (second review, m-2; before, the token endpoint and revocation counted it
+    there, so a broker presenting users' month-old tokens could be answered 429 instead of
+    `invalid_grant`).
   - Codes die in the Worker 10 minutes after issue and access tokens after an hour. A former
     client's stock of dead credentials shrinks to its refresh tokens (30 days) and to the access
     tokens of its last hour.
@@ -3190,6 +3215,47 @@ exactly (20 a tenant an hour).
   - Layout 1 credentials, issued by the previous release, carry no expiry. They go to the object as
     before until they expire there. Both skews are tested (`test/ratelimit-review.test.ts`). None
     had been issued in production.
+- **A credential its tenant's object has called dead is listed, and refused before any limit**
+  (`control/src/deadlist.ts`; second review, R2-M2; the owner's choice over accepting the
+  residual).
+  - *When.* The object says so, and its contract makes each a promise (`contracts/oauth.ts`
+    `DEAD_INACTIVE_REASONS`): `invalid_grant` on the `refresh_token` grant (unknown, expired,
+    rotated, of a grant that ended or can no longer issue, or presented by another client, which
+    ends the grant); introspection's `inactive` `unknown`, `expired` or `revoked` (never `suspended`
+    or `audience`, which can come back); and revocation's new `dead: true` (an additive field of
+    `RevokeResult`: the token was unknown, expired, rotated or of an ended grant, or this call ended
+    it; false for a live token another client presented). Revocation had to say it: it answers 200
+    either way (RFC 7009), and a stock replayed there would otherwise never be listed.
+  - *Where.* In the isolate at once (a map of hashes to expiries, at most 10,000, oldest dropped
+    first), and in `CONFIG`, the viz KV namespace control already binds, under a prefix of its own:
+    `oauth-dead:<tenant>:<SHA-256 of the credential, hex>` → `{"v":1,"reason":…}` (format
+    `kv.oauth-dead` 1), with KV's absolute `expiration` set to the credential's encoded expiry plus
+    the Worker's 60 s of grace. Nothing outlives what the expiry check refuses anyway. Nothing is
+    written for layout 1 (no expiry to bound it) or with less than KV's 60 s minimum left.
+  - *Check.* At `/oauth/token` (refresh tokens; codes die within 12 minutes and each needs a
+    person's approval), `/oauth/revoke` and introspection, after the tag and the expiry and before
+    any limit: a listed credential is answered as the object answered (`invalid_grant`, 200,
+    `inactive` with the recorded reason) and counts against nothing, its network included.
+  - *Reads.* The isolate's map first, then one KV read; a credential KV does not list is remembered
+    as such for 60 s, so a live token costs at most one read per isolate a minute. A read has 100 ms;
+    a read that throws or overruns is treated as not listed, logged once per isolate, and KV reads
+    are skipped for 10 s in that isolate (its own map still applies). `/healthz` says
+    `OAUTH_DEAD_LIST: bound|absent|skipped`.
+  - *Writes.* One per dead credential per isolate: an isolate that has recorded or read one as dead
+    never asks the object about it again. Every write is of a credential this deployment minted and
+    its object already paid rows for, so writes are bounded by what layer 2 lets be minted, never by
+    unauthenticated requests. The write goes through `waitUntil`, off the response's path; a failed
+    write is logged once and not retried (the next isolate that meets the credential writes it).
+  - *Consistency.* KV is eventually consistent: a write may take about 60 s to be seen in other
+    locations, and a location that read a key as absent may answer from that for up to 60 s
+    (training knowledge; not measured here). Until a location sees it, each of its isolates may ask
+    the object once more, then learns the answer itself. What an attacker gets from that window is
+    below.
+  - *What it shows.* The grant view gains `refreshesLastDay` (contracts/oauth.ts `OAuthGrantView`, an
+    additive field), counted from the refresh-token rows reuse detection already keeps a day: about
+    24 for a client refreshing hourly, up to 8,640 for one rotating at the limit, which is how a
+    stock is collected. A revocation's audit entry keeps the last count. The keys under
+    `oauth-dead:<tenant>:` count the dead credentials a tenant's stocks have replayed.
 - **Layer 1, approximate, before any object: the Workers Rate Limiting binding**
   (developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/, read 2026-11-19, page
   modified 2026-11-12). Six bindings, period 60 s each. The limits are deploy configuration,
@@ -3197,19 +3263,29 @@ exactly (20 a tenant an hour).
 
   | Binding | Key | Proposed limit per 60 s, per Cloudflare location | Where | What it bounds |
   |---|---|---|---|---|
-  | `OAUTH_RL_SOURCE` | client network: IPv4 address or IPv6 /64, from `CF-Connecting-IP` | 120 | `/oauth/register` (POST) and `/oauth/authorize` (GET, HEAD) before the body is read; `/oauth/token` and `/oauth/revoke` only for a request the Worker refuses by itself | one network's Worker CPU: 2 a second |
+  | `OAUTH_RL_SOURCE` | client network: IPv4 address or IPv6 /64, from `CF-Connecting-IP` | 120 | `/oauth/register` (POST) and `/oauth/authorize` (GET, HEAD) before the body is read; `/oauth/token` and `/oauth/revoke` only for a request without a genuine credential (malformed, or no tag) | one network's Worker CPU: 2 a second |
   | `OAUTH_RL_SOURCE_48` | IPv6 /48 | 1,200 | the same, after the /64 | one host's routed /48 (65,536 /64s): ten networks' worth |
-  | `OAUTH_RL_CREDENTIAL` | the presented code, refresh token or access token (SHA-256 prefix), tagged and not expired | 5 | `/oauth/token` and `/oauth/revoke` | one credential's object requests: a code or token is presented once, plus retries |
+  | `OAUTH_RL_CREDENTIAL` | the presented code, refresh token or access token (SHA-256 prefix), tagged, not expired, not listed dead | 5 | `/oauth/token` and `/oauth/revoke` | one credential's object requests: a code or token is presented once, plus retries |
   | `OAUTH_RL_TENANT` | its tenant | 6,000 | the same, after the credential | a fuse: OAuth token traffic on one object, 100 a second |
-  | `OAUTH_RL_BEARER` | the access token (SHA-256 prefix), tagged and not expired | 1,200 | introspection (`OAuthIntrospection`) | one agent's `/mcp` requests: 20 a second |
+  | `OAUTH_RL_BEARER` | the access token (SHA-256 prefix), tagged, not expired, not listed dead | 1,200 | introspection (`OAuthIntrospection`) | one agent's `/mcp` requests: 20 a second |
   | `OAUTH_RL_BEARER_TENANT` | its tenant | 30,000 | introspection, after the token | a fuse: introspection on one object, 500 a second |
 
   - **The narrower key is asked first**, and a refused call does not count. So one credential
     spends its own allowance and at most that much of its tenant's fuse a minute, in each location.
     A request refused by a fuse has still been counted against its credential.
-  - **Spending a fuse takes many distinct credentials that are tagged and unexpired**: the fuse
-    divided by the per-credential limit. That is 1,200 at the token endpoint and 25 at
-    introspection.
+  - **A wider key is asked only while every narrower one was checked** (second review, R2-M1). When
+    the credential's (or bearer's) binding is absent, has failed or is skipped, the request is not
+    counted against the tenant's fuse either: the chain fails open together. **While a narrow limiter
+    is down, its fuse counts nothing** for the requests of that isolate (10 s per failure), and the
+    object takes what it would take without layer 1: dead credentials once each (the list then
+    refuses them), live ones as often as they are sent, and layer 2 still bounds writes exactly.
+    Asking the fuse alone, as the version this replaces did, let one dead credential spend it
+    (reproduced: one hang or one throw of the credential binding, then one dead refresh token 13
+    times, and the tenant's live client got 429). The same holds for the source keys: no /48 count
+    without the /64's.
+  - **Spending a fuse takes many distinct credentials that stay countable**: the fuse divided by the
+    per-credential limit, 1,200 at the token endpoint and 25 at introspection, each of them live or
+    dead but not yet known dead where it is sent.
   - **No per-client key.** The first version's was keyed on text the request chose (R1). A key on
     a `client_id` whose MAC verifies would be no better: client ids are public, so any dead
     credential sent with the victim's id would spend that client's allowance (R1b).
@@ -3220,37 +3296,56 @@ exactly (20 a tenant an hour).
     - The bearer fuse is 10 times 50 grants calling `/mcp` once a second (review m-5). It is 45–75% of
       the 670–1,100 introspections a second one object served here (0.9–1.5 ms each).
     - Per bearer, 20 a second leaves room for an agent's parallel tool calls (m-5).
+    - **Per location, not per object** (second review, m-4; modelled). Each location has its own
+      fuse, so the fuses protect the object against a flood in one location. Two locations at the
+      bearer fuse are 90–150% of one object's introspection rate, which saturates it; five locations
+      at the token fuse are 38–105% of its replay rate, and fourteen exceed it at any of the measured
+      speeds. Who can drive that: at introspection, a client holding 25 live access tokens per
+      location (about 4 minutes of refreshes), while it is approved and for about two minutes after;
+      at the token endpoint, since the list, only a stock of dead credentials in the minutes after
+      its first replay (below), because a tenant's live credentials cannot reach the token fuse (per
+      grant at most 6 refreshes, 5 retries of one refused and 6 access tokens revoked a minute: about
+      850 a minute per location for 50 grants, 14% of it).
     - These ratios are modelled, not measured on traffic.
-  - **Networks.** A genuine credential is never counted by where it comes from (review M-1). Every
-    MCP client hosted on Cloudflare Workers arrives from one address. Brokers concentrate all their
-    users' refreshes behind a few egress addresses.
+  - **Networks.** A genuine credential is never counted by where it comes from (review M-1), expired
+    or listed dead included (m-2). Every MCP client hosted on Cloudflare Workers arrives from one
+    address. Brokers concentrate all their users' refreshes behind a few egress addresses.
   - **The Workers address is not counted at all**, at any endpoint. Every cross-zone Worker
     subrequest arrives from `2a06:98c0:3600::103` (developers.cloudflare.com/fundamentals/reference/
     http-headers/, read 2026-11-19, page modified 2026-11-15; verified there). Counting it would let
-    anyone with a Workers account refuse every Worker-hosted client. Its requests then cost this
-    Worker's CPU only: registration and the authorization page store nothing. Their senders pay for
-    their own Worker requests.
+    anyone with a Workers account refuse every Worker-hosted client. Its requests then cost a billed
+    request of the gateway's and this Worker's CPU, never an object or a row: registration and the
+    authorization page store nothing. (What a sender pays does not bound that: one paid invocation of
+    its Worker can make many subrequests, training knowledge. The source limit never saved the
+    request charge, so what the exemption gives up is CPU: second review, n-1.)
   - **IPv6 is counted by /64 and by /48** (m-6). A tunnel broker hands one host a routed /48, which
     is 65,536 /64s; a /56 home allocation is 256 of them (training knowledge). One host with a /48
     gets 1,200 a minute, not 7.8 million.
 - **Every binding check fails open**, for every endpoint, when the binding is absent, throws, does
   not answer `{ success: boolean }`, or has not answered in time.
-  - **Time**: all of one request's checks share 100 ms. A binding that failed is skipped by that
-    isolate for 10 s.
+  - **Time**: a request's checks have 100 ms, **split evenly between them**: 50 ms for a credential
+    and 50 for its fuse, all of it for an IPv4 source (second review, m-1). A binding that has not
+    answered within its own share has failed, is logged, and is skipped by that isolate for 10 s; a
+    slow check can no longer spend another's time and get a healthy binding blamed (reproduced
+    before: a credential check of 80 ms left the fuse 20, which then "failed"). The share is a timer,
+    not arithmetic on `Date.now()`, which in Workers advances only at I/O (n-2).
   - **Brownout cost** (m-1): the review measured a refresh at 3,035 ms and an introspection at
     2,005 ms with hanging limiters. Now one request per binding, per isolate, every 10 s, waits up to
-    100 ms. Measured here (local workerd, limiters that never answer): the first two refreshes
-    105–129 ms, then 14 ms; introspections 104–105 ms, then 2 ms.
-  - **Logs**: an absent or failing binding is logged once per isolate, never per request (m-2).
-    `/healthz` lists each limiter as `bound`, `absent` or `skipped`, and whether `OAUTH_CLIENT_KEY`
+    its share. Measured here (local workerd, limiters that never answer), with the version this
+    replaces: the first two refreshes 105–129 ms, then 14 ms; introspections 104–105 ms, then 2 ms.
+    With the share and the chain failing open together, the first request waits about 50 ms and the
+    second none (`control/README.md`).
+  - **Logs**: an absent or failing binding is logged once per isolate, never per request (m-2), an
+    absent one whether or not a request came to ask it. `/healthz` lists each limiter as `bound`,
+    `absent` or `skipped`, the list of dead credentials the same way, and whether `OAUTH_CLIENT_KEY`
     is set.
   - **Why open, per endpoint.**
     - Registration and the authorization page store nothing and reach no object. A closed failure
       would refuse onboarding and protect nothing.
-    - At the token endpoint, revocation and introspection, the tag and the expiry still keep
-      made-up and expired credentials from every object, and layer 2 still bounds writes exactly.
-      What an open failure lets through is object requests from holders of unexpired genuine
-      credentials, for as long as the fault lasts.
+    - At the token endpoint, revocation and introspection, the tag, the expiry and the list still
+      keep made-up, expired and known-dead credentials from every object, and layer 2 still bounds
+      writes exactly. What an open failure lets through is object requests from holders of genuine
+      credentials not yet known dead, for as long as the fault lasts.
     - A closed failure would end every agent's access within the hour its access token lasts. It
       would also block revocations, which a client sends to end access.
   - **The exact limits** in layer 2 cannot fail open: they are statements in the request's own
@@ -3262,11 +3357,12 @@ exactly (20 a tenant an hour).
   - It is counted from the `oauth_tokens` rows the object already keeps: no new state, one read.
   - It is checked after reuse detection and before the presented token is spent.
   - With the approvals, clients and live grants D44 bounds, this is what bounds writes, from any
-    number of locations.
+    number of locations, the list's KV writes included.
   - **Worst case per tenant** (m-7; modelled, list prices as training knowledge): 50 grants × 6
     refreshes a minute × about 11 billed rows is 3,300 row writes a minute. That is about 4.75
     million a day, about $4.75 a day per tenant, plus about 432,000 rotated refresh-token rows kept a
-    day. Per grant it is $0.10 a day. Only the tenant's own approved clients can drive it.
+    day. Per grant it is $0.10 a day. Only the tenant's own approved clients, or a thief of one of
+    their live refresh tokens, can drive it.
 - **Refusal**: 429 with `Retry-After`, `Cache-Control: no-store`, the endpoints' CORS headers, and
   `{ "error": "too_many_requests", "error_description": … }`.
   - `Retry-After` is 60 for a binding, which does not say where in its window it is. For the
@@ -3281,8 +3377,9 @@ exactly (20 a tenant an hour).
     authorization, and `invalid_grant` makes it discard its tokens.
   - **The Python SDK** (`mcp` 2.3.0, `_handle_refresh_response`; read by the review and again
     here) discards its tokens on any refresh answer that is not 200. For its clients no refusal code
-    is safe: any refusal of a live refresh means a person approves again. That is why the limits are set so that only the client itself, or someone
-    holding many of the tenant's unexpired credentials, can make the Worker refuse a live refresh.
+    is safe: any refusal of a live refresh means a person approves again. That is why the limits are
+    set so that only the client itself, or someone holding many of the tenant's credentials that
+    stay countable, can make the Worker refuse a live refresh.
   - Introspection answers the status `rate_limited` with `retryAfterMs` (`contracts/oauth.ts`,
     additive within version 1). The agent surface maps it to 429 with `Retry-After`.
 - **Not limited**: the RFC 8414 metadata (static, `max-age=300`), CORS preflights, and requests with
@@ -3292,30 +3389,57 @@ exactly (20 a tenant an hour).
   invocations gather in a few locations, and the per-location budgets become nearly global, the
   fuses with them. A control test checks both Workers' `wrangler.jsonc`. A check in the deploy's
   configure is a needed change.
+- **Rollback floor** (second review, m-3): once OAuth is public, rolling viz-control back to a
+  release before the first rewrite (`3cbabb8` or earlier) would mint credentials without an expiry
+  again and bring the first version's keys, and B-1, back; one before this rewrite would bring back
+  R2-M1 and the 30-day stock. D69's `rollback_floors` should hold viz-control at this release from
+  the release that makes OAuth public (the deploy change is in `control/README.md`, "Needed changes
+  elsewhere").
 
 **What an attacker can still do** (modelled unless marked):
-- **Someone holding unexpired dead credentials** of a tenant gets 5 object requests a minute per
-  credential at the token endpoint, and 1,200 at introspection, in each location they reach.
-  - To trip the tenant's token fuse in one location they need about 1,200 distinct refresh tokens
-    or codes within their lifetime. To trip its bearer fuse they need 25 access tokens less than an
-    hour old.
-  - A client that refreshed hourly for a month holds about 720 refresh tokens. Making 1,200 takes 3
-    hours and 20 minutes at layer 2's maximum, and 25 access tokens take about 4 minutes. Only a
-    client the tenant approved can do that, and while approved it could spend the fuse with live
-    tokens anyway.
-  - The effect, while it lasts, is that tenant's refreshes and revocations (or `/mcp` calls) in that
-    location are refused. TypeScript-SDK clients keep their tokens; Python-SDK clients need a person
-    to approve again. Revoking the client ends it within the hour for `/mcp`; for the token endpoint
-    it lasts until its refresh tokens expire, 30 days.
-- **Layout 1 credentials** (none in production) carry no expiry. Until they expire they still spend
-  their allowance and the fuse, as before.
+- **Someone holding dead credentials of a tenant that have not expired** (a former client's; a
+  stock collected while a grant was live, by its client or by a thief of an idle grant's refresh
+  token, R2-M2) gets each of them to the object **once in each isolate that has not learned it is
+  dead**, and at most the per-credential limit a minute per location (5 at the token endpoint and
+  revocation, 1,200 at introspection). In the isolate that hears the object's answer the
+  credential is refused at once; elsewhere once KV shows it, about a minute (training knowledge),
+  plus up to a minute in an isolate that had read it as not listed before it died.
+  - So a stock of N dead refresh tokens can spend at most 5N of each location's token fuse in the
+    minute it is first replayed, and at worst as much again in the next, **once**. Tripping the token
+    fuse (6,000) takes N ≥ 1,200, which is 3 hours 20 minutes of rotating at layer 2's limit, and
+    lasts one or two minutes in each location replayed at the same time; then the stock is spent.
+    Tripping the bearer fuse takes 25 dead access tokens less than an hour old, for the same one or
+    two minutes, once. (Before the list it lasted 30 days for refresh tokens, revocation included,
+    and repeated every minute: reproduced, N1 and N1b.)
+  - The effect, while it lasts, is that the tenant's refreshes and revocations (or `/mcp` calls) in
+    those locations are refused. TypeScript-SDK clients keep their tokens; Python-SDK clients need a
+    person to approve again.
+  - **The token-fuse lever needs a stock.** The version this replaces said a client "could spend the
+    fuse with live tokens anyway". That holds for the bearer fuse (25 live access tokens, about 4
+    minutes of refreshes, while approved), not for the token fuse: a live client presents each
+    refresh token once and holds one unrotated refresh token per grant, so a tenant's 50 grants
+    present at most about 850 a minute per location (above) against 6,000. The lever existed only
+    through a stock, which outlived revocation by 30 days and which anyone holding one live refresh
+    token of an idle grant could build (second review, R2-M2).
+  - **The tenant's remedy**: a person revokes the grant. `refreshesLastDay` in the grant view shows
+    a grant rotating far faster than its client needs while the stock is being built; after the
+    revocation the stock is good for the one window above. Rotating `OAUTH_CLIENT_KEY` still ends
+    every tenant's credentials at once, and is now never needed for this.
+- **While a narrow limiter is down in an isolate** (a fault, or a limit() call slower than its
+  share), that isolate's requests count against no fuse (R2-M1, above). Dead credentials reach the
+  object once each and are listed; live ones reach it as often as they are sent. **While the list
+  cannot be read as well**, dead credentials not already in the isolate's memory reach the object as
+  often as they are sent, for that isolate's 10 s skips. Both are fail-open residuals: a limiter or
+  KV fault costs protection of the object, never a refusal.
+- **Layout 1 credentials** (none in production) carry no expiry and are not listed. Until they
+  expire they still spend their allowance and the fuse, as before.
 - **A host with many /48s, or many hosts**, gets 1,200 registrations and authorization pages a
   minute per /48 and 120 per IPv4 address. **Worker-hosted senders** are not counted at all. Either
   way this costs the Worker's CPU (0.2–0.5 ms each), never an object or a row.
 - **A Worker in the same zone** (`bitcru.sh` holds unrelated hostnames) sets `CF-Connecting-IP` from
-  its own `x-real-ip` (the headers page; verified there) (m-4). It can therefore evade the source
-  limit, or spend a chosen network's registration and authorization budget, such as a broker's
-  egress.
+  its own `x-real-ip` (the headers page; verified there) (m-4 of the first review). It can therefore
+  evade the source limit, or spend a chosen network's registration and authorization budget, such
+  as a broker's egress.
   - Neither the gateway nor control reads `x-real-ip` (checked in `deploy/gateway/src` and
     `control/src`).
   - Since M-1, genuine credentials are not counted by network, so this cannot refuse a refresh.
@@ -3323,8 +3447,30 @@ exactly (20 a tenant an hour).
     `none`.
 - **A flood spread over N locations** gets N times every per-location limit ("Other Cloudflare
   locations maintain separate counts"; "Requests can exceed your configured limit before those
-  updates arrive"). NAT and carrier-grade NAT share one network's budget at the two endpoints that
-  count networks.
+  updates arrive"), and N fuses on one object (m-4, above). NAT and carrier-grade NAT share one
+  network's budget at the two endpoints that count networks.
+
+**What the list costs** (modelled; Cloudflare list prices as training knowledge, not read here: KV
+$0.50 a million reads, $5.00 a million writes, $0.50 a GB-month stored; settled only by
+Cloudflare's analytics on a stage):
+- **Per tenant, in ordinary use**: one KV read per refresh (about 24 a day per client refreshing
+  hourly) and at most one per isolate a minute per access token in use at `/mcp`: for a client
+  working all day through 1 to 10 isolates, 1,440 to 14,400 reads a day, $0.02 to $0.22 a month; for
+  a tenant of 50 such clients $1 to $11 a month, and a fraction of that for agents used an hour a
+  day. Writes only for revocations by clients and for replays of dead credentials: a few a month,
+  under $0.001. Records are about 170 bytes and live at most 30 days: storage is negligible.
+- **Per attack**: a stock of N dead credentials replayed costs N writes when each location's first
+  replay is the one that lists it, and at worst 5 (refresh tokens) per credential per location
+  before KV shows it: N = 1,200 is $0.006, and at worst $0.30 over 10 locations. Reads: one per
+  credential per isolate that meets it, for example 120,000 ($0.06) for 1,200 credentials over 100
+  isolates.
+- **The ceiling**: every write is of a credential minted under layer 2. A tenant's 50 grants rotating
+  at the limit mint 600 credentials a minute (an access and a refresh token per refresh); if every
+  one were later replayed dead from a fresh isolate, about 864,000 writes a day, $4.32 a day, beside
+  the $4.75 of rows the minting itself costs. Per grant, $0.09 a day beside its $0.10.
+- **Latency** (not measured on Cloudflare): one KV read on each refresh and on the first `/mcp`
+  request per isolate a minute per token. Locally a read from KV took 1.3 ms a request
+  (`oauth-cost.test.ts`); a cold read on Cloudflare is the number to measure.
 
 **Alternatives, with what each costs and what an attacker can still do** (cost per request
 modelled: Cloudflare list prices as training knowledge, Workers $0.30 a million requests, Durable
@@ -3353,21 +3499,19 @@ billed as a request).
   requests a second. Replaced.
 - (g) **Per `client_id` whose MAC verifies**: still spent by any dead credential sent with the
   victim's public client id (R1b). Rejected.
-- (h) **No tenant keys at all** (the review's option (b), first half). An attacker holding many
-  unexpired dead credentials then loads the tenant's object without bound. A month of one client's
-  refresh tokens at 5 a minute each is 60 replays a second, 4.5–13% of the object per location at
-  0.75–2.1 ms each, and all of it from enough locations. That slows the tenant's whole control plane, not
-  only its OAuth. Fuses near capacity refuse only when the object would be loaded anyway.
-- (i) **A per-location cache of credentials found dead** (the review's option (a), second half;
-  Cache API keyed by the credential's hash). It would cut each dead credential to one object request
-  per location per cache lifetime, and so remove the farming residual above. Not built:
-  - the Cache API page (read 2026-11-19) says Workers on custom domains have functional cache
-    operations, and says nothing of a Worker reached only through service bindings, as viz-control
-    is;
-  - it would add a cache lookup to every token request and every `/mcp` introspection;
-  - revocation's RPC result does not say whether the token was known.
-- (j) **Per-isolate memory of dead credentials**: free, but an isolate is a small share of a
-  location. Not built.
+- (h) **No tenant keys at all** (the first review's option (b), first half). An attacker holding
+  many unexpired dead credentials then loads the tenant's object without bound. A month of one
+  client's refresh tokens at 5 a minute each is 60 replays a second, 4.5–13% of the object per
+  location at 0.75–2.1 ms each, and all of it from enough locations. That slows the tenant's whole
+  control plane, not only its OAuth. Fuses near capacity refuse only when the object would be loaded
+  anyway. (Since the list, such a stock is good once; the fuses stay for live floods and for the
+  window.)
+- (i) **A per-location cache of credentials found dead in the Cache API** (the first review's
+  option (a)). Not built: the Cache API page (read 2026-11-19) says nothing of a Worker reached only
+  through service bindings, as viz-control is; and a per-location cache is filled once per
+  location, where KV is filled once. KV was chosen instead (above).
+- (j) **Per-isolate memory alone**: free, but an isolate is a small share of a location, and a new
+  isolate knows nothing. Used as the list's first level, with KV behind it.
 - (k) **A new credential version** (`vza2`, …): a release that reads only version 1 would refuse it.
   On a rollback, or during a gradual deployment, the previous control release and the agent
   surface's `parseCredential` would refuse it, and clients discard tokens refused as `invalid_grant`
@@ -3383,30 +3527,65 @@ billed as a request).
 - (l) **An issue time instead of an expiry**: every reader would need the lifetimes, which a later
   release may change. Rejected.
 - (m) **A 1 s timeout per check** (the first version): a brownout added 3 s to each refresh and 2 s
-  to each `/mcp` request. Replaced by one budget per request and the skip.
+  to each `/mcp` request. Replaced, first by one 100 ms budget a request and the skip, then by an
+  even share of it per check.
+- (n) **One 100 ms budget a request, shared in order** (the version this replaces): a slow narrow
+  check left the next binding the remainder, which then timed out and was blamed, skipped and shown
+  `skipped` though it had answered in 30 ms (second review, m-1, reproduced). The reviewer's other
+  option, keep the shared budget and blame only a binding that overran a fair share, keeps the
+  `Date.now()` arithmetic (n-2) and the remainder logic for no gain over an even split. Replaced.
+- (o) **The fuse asked when a narrower key is unchecked** (the version this replaces): R2-M1.
+  Replaced by the chain failing open together. Cost of the change: while a narrow binding is down,
+  the fuse protects nothing in that isolate (above); it protected the object then only by refusing
+  the whole tenant.
+- (p) **A per-tenant "not before" in KV**, compared with the issue time the encoded expiry implies,
+  set by a person (the second review's option (b)). One key a tenant, no writes driven by any
+  request, and it ends every stock at once, also one never replayed. Not chosen: it needs a person to
+  notice first, and the first sign is the tenant's clients refused, by when Python-SDK clients have
+  discarded their tokens; it ends every live grant of the tenant with the stock, so every client is
+  approved again; and it makes the Worker derive issue times from the lifetimes, which (l) rejected.
+  The list needs no one, ends only dead credentials, and leaves each stock one window. Kept as the
+  emergency switch to build if a stock is ever seen used in a way the list does not stop.
+- (q) **Accept the residual**, with D70's justification corrected (the second review's third
+  option). The owner chose the list instead.
+- (r) **List every refresh token at rotation**, not at its first replay: nothing farmed would ever
+  reach an object, not even once. But every refresh would cost a KV write (about $0.0036 a month
+  per client refreshing hourly), and a client rotating at the limit would drive writes directly, 6 a
+  minute per grant, where listing on the object's answer writes only for credentials someone
+  replays. Not chosen.
+- (s) **Count a genuine expired credential on a key of its own** (the second review's other option
+  for m-2): it keeps a network budget for something that reaches no object and costs one HMAC, the
+  same as a forged one, which the source key already counts when no tag verifies. Not chosen.
 
 **Why.** The properties that matter are exact:
 - no made-up credential reaches an object (the tag);
 - no expired credential does either (the expiry under the tag);
+- a credential its object has called dead does not again, beyond one request per isolate until the
+  list reaches it (the list);
 - what a tenant's object stores is bounded inside it (approvals, clients, grants, refreshes per
   grant).
 
 What remains is cost, which is approximate by nature, and the cheapest approximate counter is the
 binding. Keying the narrow limits on the credential itself means each credential spends only its own
-allowance. So a tenant's OAuth can be refused in a location only by someone holding many of its
-unexpired credentials, which in practice means a client it approved. The fuses then refuse only
-where one object would be loaded anyway. Counting networks only where no genuine credential is
-involved keeps shared egress addresses, Cloudflare's own and brokers', from refusing anyone's
-refresh. The expiry inside version 1 gets the Worker its check without the two releases a new
-version would take.
+allowance, and asking a wider key only after the narrow one keeps that true when a binding is down.
+So a tenant's OAuth can be refused in a location only by someone holding many of its credentials
+that stay countable: at introspection a client it approved, and at the token endpoint a stock of
+dead ones, once. The fuses then refuse only where one object would be loaded anyway. Counting
+networks only where no genuine credential is involved keeps shared egress addresses, Cloudflare's
+own and brokers', from refusing anyone's refresh. The expiry inside version 1 gets the Worker its
+check without the two releases a new version would take. The list closes what the expiry leaves
+open without a person and without touching live credentials, and its writes follow what the
+object answers, never what a request asks.
 
 **Would change if.**
-- **Bindings and the Cache API**:
-  - the Cache API is shown to work, and to be cheap, for a Worker reached only through service
-    bindings (then (i), keyed by the credential's hash, for the token endpoint and revocation first);
-  - the farming residual is seen in practice (then (i) or (j));
-  - `limit()` is measured on Cloudflare above about 50 ms (then a larger budget, or the checks in
-    parallel);
+- **Bindings, KV and the Cache API**:
+  - `limit()` is measured on Cloudflare above about 25 ms, half the share (then a larger budget, or
+    the checks in parallel);
+  - a cold KV read, or KV's propagation between locations, is measured much slower than assumed
+    (then the list's window and per-request cost above are restated; the experiment: put a key in
+    one location and time its first visible read in others, and time absent-key reads from several
+    locations);
+  - a stock is seen used in a way the list does not stop (then (p) as an emergency switch);
   - the binding is billed per call at a price that matters;
   - the per-location counts are measured to let a flood that matters through (then a WAF rule in
     front, or an exact counter for the fuses).
