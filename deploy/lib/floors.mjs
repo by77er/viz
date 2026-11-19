@@ -10,7 +10,11 @@
 //
 // reads: once a version of `writer` whose `var` names anything has existed, the deployment may hold
 // data that only code at or above each listed Worker's floor can handle, so none of them may serve
-// below its floor again. Whether a version is at or above its floor:
+// below its floor again. "Has existed" is read from the versions Cloudflare keeps (the 100 newest):
+// a switch-on version that ages out of them is no longer seen (deploy/README.md, Known risks; review
+// of D69, m-1). The switch is seen as a binding of any type with that name: a plain or JSON var,
+// and a secret, whose value cannot be read (on) (review of D69, m-2). Whether a version is at or
+// above its floor:
 //
 // - `schema` + `at_least`: its storage schema version (VIZ_SCHEMAS, D46), which every version since
 //   D46 carries and every record names, so versions and records from before this check are judged
@@ -27,13 +31,21 @@
 // What is refused (release.mjs; deploy/README.md, "Rollback floors"):
 // - a release whose `writer` sets `var`, unless every listed Worker, in this release and as it
 //   serves now (what an automatic rollback, or phase 2's restore after a failed promotion, puts
-//   back without asking), is at or above its floor. Any older release is reached only through
+//   back without asking), is at or above its floor; a listed Worker this release does not deploy
+//   is judged as it serves (review of D69, m-3). Any older release is reached only through
 //   `release.mjs rollback`, which refuses it from the moment that writer version is uploaded;
-// - a release in which a listed Worker is below its floor while any version of `writer` that
-//   Cloudflare keeps sets `var` (redeploying older code: turning the switch off leaves the data);
+// - a release in which one of its own listed Workers is below its floor while any version of
+//   `writer` that Cloudflare keeps sets `var` (redeploying older code: turning the switch off leaves
+//   the data);
+// - a release while the writer's serving or newest version carries `var` as a secret: every upload
+//   inherits the newest version's secrets, so the switch would be on whatever the release's config
+//   says, and no secret's value can be read (review of D69, m-2);
 // - a rollback, of the whole release or of any Workers its record names (the others keep what
 //   serves), that would leave a listed Worker below its floor while any kept version of `writer`
 //   sets `var`, the restored and the serving ones included.
+//
+// Never rename a rule: every version stamped at the old name would read as below the floor of the
+// new one (deploy/README.md, Known risks). Add a rule instead.
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { REPO_ROOT, stagedName } from './common.mjs'
@@ -119,13 +131,28 @@ export function floorsOfVersion(version) {
 }
 
 /**
- * What a value of the switch names: comma-separated, trimmed, non-empty. Any name counts, also one
- * the writer does not know today (`INGEST_SIGNALS=metrics2`): the check fails closed.
+ * What a value of the switch names: comma-separated, trimmed, non-empty (a JSON var's list joined;
+ * any other JSON value counts as a name). Any name counts, also one the writer does not know today
+ * (`INGEST_SIGNALS=metrics2`): the check fails closed.
  */
-export const namesIn = (value) => String(value ?? '').split(',').map((x) => x.trim()).filter(Boolean)
+export const namesIn = (value) => (Array.isArray(value) ? value.join(',') : value !== null && typeof value === 'object' ? JSON.stringify(value) : String(value ?? '')).split(',').map((x) => x.trim()).filter(Boolean)
 
-const plainVar = (version, name) => (version?.resources?.bindings ?? version?.bindings ?? []).find((b) => b?.type === 'plain_text' && b.name === name)?.text ?? null
 const annotation = (v, key) => v?.annotations?.[key] ?? v?.metadata?.annotations?.[key] ?? null
+const bindingsOf = (version) => version?.resources?.bindings ?? version?.bindings ?? []
+const SECRET_TYPES = new Set(['secret_text', 'secret_key'])
+
+/**
+ * What a version's binding named `name` says of a switch, or null when it has none: a plain var's
+ * text; a JSON var's value as text (a list joined with commas); a secret, whose value the API never
+ * shows, as on (`(a secret)`); any other binding of that name as on too (review of D69, m-2).
+ */
+export function switchValue(version, name) {
+  const b = bindingsOf(version).find((x) => x?.name === name)
+  if (!b) return null
+  if (b.type === 'plain_text') return b.text ?? null
+  if (b.type === 'json') return Array.isArray(b.json) ? b.json.join(',') : typeof b.json === 'string' ? b.json : b.json === null || b.json === undefined ? null : JSON.stringify(b.json)
+  return SECRET_TYPES.has(b.type) ? '(a secret)' : `(a ${b.type ?? 'binding'} binding)`
+}
 
 /**
  * Whether code is at or above one Worker's floor of a rule. `code`: { schemas: { component:
@@ -156,7 +183,7 @@ export function describeFloor(rule, floor, code) {
 export async function switchSeen(rule, api) {
   for (const v of await api.listVersions(rule.writer)) {
     const info = await api.versionInfo(rule.writer, v.id)
-    const value = plainVar(info, rule.var)
+    const value = switchValue(info, rule.var)
     if (namesIn(value).length > 0) return { versionId: v.id, number: v.number ?? info?.number ?? null, release: annotation(info, 'workers/tag'), value }
   }
   return null
@@ -164,24 +191,36 @@ export async function switchSeen(rule, api) {
 
 /**
  * Deploy-time problems of one rule. Pure. `s`: { value (the writer's var in this release, or
- * null), workers: [{ floor, now (code of this release), serving (code serving now, or null when
- * the Worker does not exist yet) }], seen (switchSeen's answer, or undefined when not looked up) }.
+ * null), workers: [{ floor, now (code of this release, or null when this release does not deploy
+ * the Worker), serving (code serving now, or null when the Worker does not exist yet) }], seen
+ * (switchSeen's answer, or undefined when not looked up), secret (a version of the writer that
+ * carries the switch as a secret: { versionId, which }, or null) }.
  */
 export function deployFloorProblems(rule, s) {
   const problems = []
   const label = `${rule.name}: ${rule.why}`
+  if (s.secret) {
+    problems.push(
+      `${rule.writer}: ${rule.var} is a secret on its ${s.secret.which} version ${s.secret.versionId}. Every upload inherits the newest version's secrets, so the switch would be on in this release whatever its config says, and a secret's value cannot be read to judge it (review of D69, m-2). ` +
+        `Remove the secret (wrangler versions secret delete ${rule.var} --name ${rule.writer}, then deploy again), and set ${rule.var} as a var in a release.`,
+    )
+  }
   if (namesIn(s.value).length > 0) {
     for (const w of s.workers) {
-      if (!atFloor(rule, w.floor, w.now)) {
+      if (w.now && !atFloor(rule, w.floor, w.now)) {
         problems.push(`${rule.writer}: this release sets ${rule.var}=${s.value}, and its own ${w.floor.worker} is below its floor (${describeFloor(rule, w.floor, w.now)}; ${w.floor.why}) (${label}). Release ${w.floor.worker} at or above it without the switch first.`)
       }
       if (w.serving && !atFloor(rule, w.floor, w.serving)) {
-        problems.push(`${rule.writer}: this release sets ${rule.var}=${s.value}, and the ${w.floor.worker} serving now is below its floor (${describeFloor(rule, w.floor, w.serving)}; ${w.floor.why}). That is what an automatic rollback of this release would put back. Deploy ${w.floor.worker} at or above its floor without the switch first, let it serve, then set ${rule.var} (design/DECISIONS.md D64, D69).`)
+        problems.push(
+          w.now
+            ? `${rule.writer}: this release sets ${rule.var}=${s.value}, and the ${w.floor.worker} serving now is below its floor (${describeFloor(rule, w.floor, w.serving)}; ${w.floor.why}). That is what an automatic rollback of this release would put back. Deploy ${w.floor.worker} at or above its floor without the switch first, let it serve, then set ${rule.var} (design/DECISIONS.md D64, D69).`
+            : `${rule.writer}: this release sets ${rule.var}=${s.value}, and the ${w.floor.worker} serving now, which this release does not deploy, is below its floor (${describeFloor(rule, w.floor, w.serving)}; ${w.floor.why}): it would read what the switch lets in (review of D69, m-3). Deploy ${w.floor.worker} at or above its floor without the switch first, then set ${rule.var}.`,
+        )
       }
     }
   } else if (s.seen) {
     for (const w of s.workers) {
-      if (atFloor(rule, w.floor, w.now)) continue
+      if (!w.now || atFloor(rule, w.floor, w.now)) continue
       problems.push(`${w.floor.worker}: this release is below its floor (${describeFloor(rule, w.floor, w.now)}; ${w.floor.why}), and ${rule.writer} version ${s.seen.versionId} (release ${s.seen.release ?? 'unknown'}) set ${rule.var}=${s.seen.value}: what it let in stays whatever the switch says now (${label}). Deploy ${w.floor.worker} at or above its floor.`)
     }
   }
@@ -208,25 +247,47 @@ export function rollbackFloorProblems(rule, s) {
 const codeOfManifest = (w) => ({ schemas: Object.fromEntries((w.schemas ?? []).map((s) => [s.component, { latest: s.latest }])), floors: w.floors ?? [] })
 
 /**
+ * A version of the rule's writer that carries its switch as a secret, among the serving ones and
+ * the newest (what the next upload inherits from): { versionId, which } or null. One list call and
+ * at most a read or two per deploy.
+ */
+export async function switchAsSecret(rule, live, api) {
+  const l = live[rule.writer]
+  if (!l?.exists) return null
+  const ids = [...(l.versions ?? []).map((v) => ({ id: v.version_id, which: 'serving' }))]
+  const newest = (await api.listVersions(rule.writer))[0]?.id
+  if (newest && !ids.some((x) => x.id === newest)) ids.push({ id: newest, which: 'newest' })
+  for (const { id, which } of ids) {
+    const b = bindingsOf(await api.versionInfo(rule.writer, id)).find((x) => x?.name === rule.var)
+    if (b && SECRET_TYPES.has(b.type)) return { versionId: id, which }
+  }
+  return null
+}
+
+/**
  * Every rule's deploy-time problems for a manifest against what serves now (`live`, with each
- * Worker's `schemas` and `floors`). `varsOf(worker)` gives a manifest Worker's generated vars. The
- * writer's history is read only when the switch is off here and a Worker of this release is below
- * its floor (never, normally). Returns { problems, seen: [per rule, for the record] }.
+ * Worker's `schemas` and `floors`; it must include every floor Worker, also one this release does
+ * not deploy). `varsOf(worker)` gives a manifest Worker's generated vars. The writer's history is
+ * read only when the switch is off here and a Worker of this release is below its floor (never,
+ * normally); its serving and newest versions are read for a secret switch every time. Returns {
+ * problems, seen: [per rule, for the record] }.
  */
 export async function floorDeployProblems(rules, manifest, live, api, varsOf) {
   const problems = []
   const seen = []
   for (const rule of rules) {
     const workers = rule.floors
-      .filter((f) => manifest.order.includes(f.worker))
       .map((floor) => {
-        const now = manifest.workers.find((w) => w.name === floor.worker)
         const l = live[floor.worker]
-        return { floor, now: codeOfManifest(now), serving: l?.exists ? { schemas: l.schemas, floors: l.floors } : null }
+        const serving = l?.exists ? { schemas: l.schemas, floors: l.floors } : null
+        // A floor Worker this release does not deploy keeps serving: judged as it serves (m-3).
+        if (!manifest.order.includes(floor.worker)) return serving ? { floor, now: null, serving } : null
+        return { floor, now: codeOfManifest(manifest.workers.find((w) => w.name === floor.worker)), serving }
       })
+      .filter(Boolean)
     const value = manifest.order.includes(rule.writer) ? (varsOf(manifest.workers.find((w) => w.name === rule.writer))?.[rule.var] ?? null) : null
-    const s = { value, workers }
-    if (namesIn(value).length === 0 && workers.some((w) => !atFloor(rule, w.floor, w.now))) s.seen = await switchSeen(rule, api)
+    const s = { value, workers, secret: await switchAsSecret(rule, live, api) }
+    if (namesIn(value).length === 0 && workers.some((w) => w.now && !atFloor(rule, w.floor, w.now))) s.seen = await switchSeen(rule, api)
     problems.push(...deployFloorProblems(rule, s))
     seen.push({
       name: rule.name,
@@ -234,7 +295,7 @@ export async function floorDeployProblems(rules, manifest, live, api, varsOf) {
       var: rule.var,
       value,
       on: namesIn(value).length > 0,
-      workers: workers.map((w) => ({ worker: w.floor.worker, atFloor: atFloor(rule, w.floor, w.now), servingAtFloor: w.serving ? atFloor(rule, w.floor, w.serving) : null })),
+      workers: workers.map((w) => ({ worker: w.floor.worker, atFloor: w.now ? atFloor(rule, w.floor, w.now) : null, servingAtFloor: w.serving ? atFloor(rule, w.floor, w.serving) : null })),
     })
   }
   return { problems, seen }
