@@ -227,7 +227,7 @@ the compositions and the fixtures (`--no-render`): 775 of 775 checks, 0 literal 
 
 `npm test`: 173 tests, **131 pass, 0 fail**, 42 skipped: the 20 chart tests, and the corpus's 111 mutants that need no browser
 (96 for `check.mjs`, 15 for the chart rules); the 42 that need a browser (34 audit, 8 rendered check) are skipped there unless
-`VIZ_SLOW=1`, and ran in the corpus run above. 97 s.
+`VIZ_SLOW=1`, and ran in the corpus run above. 85 s (`evidence/npm-test.txt`).
 
 ## Images
 
@@ -310,7 +310,9 @@ fold (the row as the key's target) and rings without a change of markup; their p
 - Tools: `audit.mjs` (header; align; guards in every context; contrast; hit areas with drawn-box sampling; the token trace with scope,
   weights and curves; presses by mouse and finger; hover; reduced motion at both pointers), `lib/lint.mjs` (`token`, custom properties,
   `font-variation-settings`), `lib/structure.mjs` (the fold's touch entry), `check.mjs`, `mutants-corpus.mjs` (W1 to W10, W17, W23, W24;
-  U1 to U9; C1 to C15 for v8), `test/chart-rules.test.mjs` (rewritten for v8: the narrowing, twins, P3).
+  U1 to U9; C1 to C15 for v8), `test/chart-rules.test.mjs` (rewritten for v8: the narrowing, twins, P3), `shots.mjs` (a control
+  whose 44 px reach past the image's edge is counted, not measured), `speed.mjs` (a row is judged only on a strict majority of samples
+  at or below the limit).
 - `reviews/system-v8/`: this file; `compositions/` (v7's, with `vz-right` on Memory and Restarts in `folded-list.html`);
   `shots-compare.json`, `shots.json`; `compare/`; `images/`; `speed/`; `evidence/` (the runs as printed).
 - `README.md` (version 8, the tools, the corpus, history, the flows' status).
