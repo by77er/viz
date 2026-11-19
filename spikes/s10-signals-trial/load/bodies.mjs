@@ -5,7 +5,11 @@
 //    8,200 items: 10 resources x 820), with the same LCG and the same order of random draws, so
 //    that with seed 7 and the same NOW the protobuf bytes and the JSON text are IDENTICAL to what
 //    bodies.mjs builds with protobufjs (checked by ../check-bodies.mjs). The Worker uses a seed per
-//    request, so every request carries new trace and span ids.
+//    request. FOUND IN THIS TRIAL: that LCG multiplies in doubles (`s * 1103515245` passes 2^53
+//    and loses its low bits), so it falls into short cycles and a body of 8,200 spans carries only
+//    267 (seed 7) to 520 distinct trace and span ids; distinct seeds can share cycles. `lcg32` is
+//    the same generator computed exactly (Math.imul, period 2^32): the trial's second heavy run
+//    (`uniq`) uses it, so every span is new.
 // 2. rich*(): the shapes query/README.md "Memory" re-derived the caps from (the query engineer's
 //    mem-signals.mjs): ~3 KiB OTel-like resources (50 distinct), 12 to 14 span attributes, 12
 //    spans a trace; log lines of 150 to 400 bytes in 50 streams with two metadata keys.
@@ -15,10 +19,16 @@
 
 const te = new TextEncoder()
 
-/** The LCG of edge/bench/bodies.mjs (and mem-signals.mjs). */
+/** The LCG of edge/bench/bodies.mjs (and mem-signals.mjs), as written there: in doubles, so it cycles early. */
 export function lcg(seed) {
   let s = seed >>> 0
   return () => ((s = (s * 1103515245 + 12345) >>> 0) / 4294967296)
+}
+
+/** The same LCG computed modulo 2^32 exactly: full period. */
+export function lcg32(seed) {
+  let s = seed >>> 0
+  return () => ((s = (Math.imul(s, 1103515245) + 12345) >>> 0) / 4294967296)
 }
 
 // ───────────────────────────── protobuf writer ─────────────────────────────

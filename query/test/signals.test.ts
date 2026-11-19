@@ -454,7 +454,7 @@ describe('span and log tails under one byte budget over the signal\'s shards (re
       expect([prefix, await check(await call(w.a.key, c), c)]).toEqual([prefix, null])
       hooks.tailCap = tail - 1
       const res = await call(w.a.key, c)
-      expect([prefix, res.status, /max_fetch_bytes: the data files in range plus the unflushed tail is \d+ bytes/.test(await res.text())]).toEqual([prefix, 422, true])
+      expect([prefix, res.status, /max_fetch_bytes: the .* plus the unflushed (span|log) batches .*are \d+ bytes/.test(await res.text())]).toEqual([prefix, 422, true])
       delete hooks.tailCap
     }
   }, 300_000)

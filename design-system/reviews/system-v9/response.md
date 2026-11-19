@@ -35,7 +35,7 @@ under Housekeeping), every server stopped. Each timing gives its load.
 
 | v8 finding | Change | Shown by |
 |---|---|---|
-| **B1** a page reloaded while scrolled to a chart moves (0.18 to 1.69) and lands elsewhere | Every chart reserves what it draws, **in its markup** (the first frame of a load comes before the chart script); the reference chart sets the reservation again whenever it draws its legend; the legend's actions have a row each (two in one row wrapped at 320 px, 44 px past the reservation); the pages `tools/reference.mjs` builds preload the typefaces; `hidden` hides | Reload pass: v8 **68 of 108** loads fail (shift up to 0.88, landing up to 3,975 px away); v9 **0.0000 on every load**, every chart lands in place but one (an intermittent miss, open: below). `check.mjs` and the audit now read every chart. T1 to T3 caught. `compare/v9-b1-*` |
+| **B1** a page reloaded while scrolled to a chart moves (0.18 to 1.69) and lands elsewhere | Every chart reserves what it draws, **in its markup** (the first frame of a load comes before the chart script); the reference chart sets the reservation again whenever it draws its legend; the legend's actions have a row each (two in one row wrapped at 320 px, 44 px past the reservation); the pages `tools/reference.mjs` builds preload the typefaces; `hidden` hides | Reload pass: v8 **68 of 108** loads fail (shift up to 0.88, landing up to 3,975 px away); v9 **0.0000 on every load** in two passes (212 loads), every chart lands in place but one in each pass, on the reference at 400 px coarse with no shift (an intermittent miss, open: below). `check.mjs` and the audit now read every chart. T1 to T3 caught. `compare/v9-b1-*` |
 | **m1** V2b, V3, V4, V10 survive | `check.mjs`: colour longhands of every spelling, no `var()` in a property list, no duration without one, no rule undoing a chart's skipping; the audit: what each element eases as computed (at rest and hovered), colour transitions running when a change of theme is drawn, every chart's `content-visibility`, a ring drawn inside against the ink of its words | **Q2b, Q3, Q4, Q10 caught**, each through every tool that sees it (8 of 8 runs) |
 | **m2** touch crosshair over 36 series at 49.6 ms against 50 | Two costs in the move handler removed: a computed-style read that restyled the page on every move, and a number formatter made on every call | Phone, judged, 20 runs: **v8 51 → v9 44 ms** at p75 (load 1.0 and 1.1); 10 runs: 50 → 44 (load 3.4 to 3.6) |
 | **m3** "Colour the eight largest" offered when it would change nothing | Offered only when one of the eight largest on screen is not coloured (the lead's decision); `review.md`, `project/README.md` and the Chart README say so | P8 in `chart-rules.test.mjs` (failing first on v8: 11 of 21 tests); a fixed case for the review's image 02; C16 caught; `compare/v9-m3-*` |
@@ -47,8 +47,9 @@ under Housekeeping), every server stopped. Each timing gives its load.
 The review's mechanism holds: a chart skipped off screen is as tall as its reservation, and most charts on the system's own pages
 reserved far less than they drew. Reading it on v8 with the new checks found four more things on the same path, each fixed:
 
-1. **A reservation set only by script comes too late.** Traced frame by frame on a reload of the Chart preview (`dist/preview/Chart.html`
-   loads `viz-press.js` before the chart script): the browser draws a first frame before the chart script runs, with the page 4,455 px
+1. **A reservation set only by script comes too late.** My first version of the fix had the chart script set every reservation as it
+   drew. Traced frame by frame on a reload of the Chart preview (`dist/preview/Chart.html` loads `viz-press.js` before the chart script),
+   it still moved: the browser draws a first frame before the chart script runs, with the page 4,455 px
    tall instead of 6,597, restores the scroll position into that short page, then moves everything when the charts draw (shift 0.64).
    So the reservation has to be in the markup, as the README already said for an application ("from its last result"); the reference
    chart also sets it when it draws, so it stays true as the legend changes.
@@ -125,20 +126,28 @@ Over every load:
 |---|---|---|---|---|---|
 | v8 copy | 108 | **68** | 0.8835 (reference, 1500) | 0.8400 (reference, 400 coarse) | 3,975 px (reference, 400 coarse) |
 | v9, the audit's reload pass | 106 | **1** | **0.0000** | **0.0000** | 759 px, once (below) |
+| v9, the final full audit's reload pass | 106 | **1** | **0.0000** | **0.0000** | 6,760 px, once (below) |
 
 My runs of v8 differ from the review's in detail: at 400 px coarse I measure no layout shift but a landing far away (the restored
 position points into a page made shorter by the skipped charts above it), where the review measured both. Both are B1, and both are
 gone in v9.
 
-**Not fixed, open: an intermittent landing miss at 400 px coarse.** Twice in v9, a reload at 400 px coarse came back with the scroll
-position short of where it was, with **no layout shift**: once on the reference (chart 1 of 22, 759 px; the audit's first full pass) and
-once in the image capture (the Chart preview's "Memory by service", 369 px; `evidence/missed-reload-memory-400-coarse-light.png`, the
-image in `compare/` is a retake). Neither came back: 22 more reloads of every reference chart, 44 in a second reload pass, 38 of the
-memory chart and three retakes all landed in place, and it never happened at 1500 px. What I ruled out: the page is the same height
-before and after its scripts (each panel measured with scripts off and on) and with the fallback face or the web face, and every chart
-reserves what it draws, so nothing on the page changes height after its first frame; what is left is when the browser restores the
-position under touch emulation, which I could not trace in the act. The audit now prints the scroll position and page height frame by
-frame with any such failure, so the next occurrence says what happened. Until then this is a reported gap, not a pass.
+**Not fixed, open: an intermittent landing miss at 400 px coarse.** Three times in v9, a reload at 400 px coarse came back with the
+scroll position somewhere other than where it was, with **no layout shift**:
+- the reference, chart 1 of 22: 759 px short (the first reload pass, `evidence/reload-v9.txt`);
+- the Chart preview's "Memory by service": 369 px short (an image capture, `evidence/missed-reload-memory-400-coarse-light.png`; the
+  image in `compare/` is a retake);
+- the reference, chart 22 of 22: **6,760 px past** where it was (the final full audit, `evidence/audit-full.txt`). Its frame-by-frame
+  trace has one entry: the first frame, 278 ms after the reload, was already the whole page (52,387 px tall) and already at 51,350 px.
+
+None came back on a retry: 22 more reloads of every reference chart, 44 in a second reload pass, 38 of the memory chart and three
+retakes all landed in place, and it never happened at 1500 px (about 330 reloads of v9 in all). What I ruled out: the page is the same
+height before and after its scripts (each panel measured with scripts off and on), and with the fallback face or the web face (the
+Chart preview to the pixel; the reference within 30 px per section), and every chart reserves what it draws; the last trace shows a
+complete page restored to a position the person was never at. So the page does not move under the person; the browser restores to the
+wrong place, and I could not find why. It is reported as a gap, not a pass: the audit fails on it (as it did in the final run) and prints
+the trace with every occurrence. Next: run the reload pass with `content-visibility` switched off to see whether skipping is involved,
+and on a real phone.
 
 ### The theme change, with the skipping kept
 
@@ -153,8 +162,8 @@ fixture alternating; p75 (median, worst), all judged:
 | Desktop, 10 runs (full scenario) | 100 | 93 (81, 195) | 3.6 | **72** (68, 91) | 3.5 |
 | Transitions running when it is drawn, every run above | 0 | 0 | any | **0** | any |
 
-Within budget in every judged run. The phone's 10-run figure, 99 ms, has 1 ms of margin; its two 20-run measurements (69, and 79 not
-judged in an A/B below) do not repeat it, and nothing in v9 runs on that path (the reservation is written when a legend is drawn, not on
+Within budget in every judged run. The phone's 10-run figure, 99 ms, has 1 ms of margin; the 20-run measurements (69, judged; 79 in an
+A/B run at a load near 4, not judged: `evidence/speed-phone-rows-nohidden-ab.txt`) do not repeat it, and nothing in v9 runs on that path (the reservation is written when a legend is drawn, not on
 a theme change). I report it as within, with thin margin on one 10-run sample.
 
 ## m1. Four mutants survived every check
@@ -331,7 +340,19 @@ offered the legend is one 25 px row taller than v8's. No regression found.
 
 ## Final runs on the tree as it is now
 
-FINAL_RUNS
+- **`tools/audit.mjs`**, full: 56 pages × 14 configurations, the reduced-motion pass, then the reload pass (13 min at a load of 4.9 to
+  6.2; `evidence/audit-full.txt`). **System pages: 1 finding**, the reload miss above (the reference, 400 px coarse). Every other check,
+  the new `reserve`, `skip`, `font`, eased colours, theme-change transitions and the ring against its words included: none. Flow screens
+  (read only, reported apart): 122 findings, the same kinds as v8's (`press`: they do not load `viz-press.js`; `fold-scroll` on screens
+  1, 8 and 12; screen 1's link in a sentence); the new checks add nothing there.
+- **`tools/check.mjs`** with its rendered audit: 873 of 873 checks, 30 previews in both themes at rest, hover, press and a finger's press
+  with 0 failures; 11 charts reserved = drawn in their markup, once drawn and after "Show 20 more of Other", at 1200, 400 and 320 px;
+  0 literal values. On the previews, the compositions and the fixtures (`--no-render`): 759 of 759, 0 literal values in 45 files
+  (`evidence/check.txt`). `tools/shots.mjs` and `tools/reference.mjs` lint as before (the review frame's 24 literals in `shots.mjs`,
+  unchanged from v8).
+- **`npm test`**: 197 tests, **139 pass, 0 fail**, 58 skipped (they need a browser and ran in the corpus run): the 21 chart tests and
+  the 118 corpus mutants that need none (80 s; `evidence/npm-test.txt`).
+- **`tools/mutants.mjs`**, the whole corpus on copies: CORPUS
 
 ## Migration (for the flows and the app, to be re-imaged on v9)
 
@@ -363,7 +384,8 @@ FINAL_RUNS
 
 ## What did not work, and what was not done
 
-- **The intermittent landing miss at 400 px coarse** (B1, above): two in about 200 reloads, no layout shift, cause not found. Open.
+- **The intermittent landing miss at 400 px coarse** (B1, above): three in about 330 reloads, no layout shift, cause not found; the
+  final full audit fails on it. Open.
 - **The crosshair's remaining time** is the plot's repaint and the legend's layout; moving the crosshair to its own layer is not done.
   Margin 6 ms at a low load; at a load near 4 one measurement reached 50.
 - **The theme change on the phone** came out at 99 ms in one 10-run sample (69 in the 20-run one): within, but thin there.
@@ -403,4 +425,17 @@ FINAL_RUNS
 
 ## Housekeeping
 
-HOUSEKEEPING
+- Every mutant ran on a copy under the session's scratch area, deleted after its run (the runner refuses a directory inside the tree).
+  No edit is half-finished; the final runs above are on the tree as it is now.
+- **Slips, said plainly.** Twice a second browser of mine ran while one was already running: `check.mjs` during my first background
+  reload pass (I stopped that pass; none of its output is used) and `check.mjs` during the first quick audit (superseded by a second run,
+  which is the one used). From then on every browser job ran alone. Also, a first reload pass of v9 was started before the Panel
+  preview's markup was fixed and `dist/` was rebuilt under it; it was stopped and not used.
+- Git: read-only commands only (`git status`, `git log`, `git diff --stat`, `git show --stat`), to see what had changed; the lead's
+  work-in-progress commits in this period took in parts of this work as it stood. Nothing was committed or pushed by me.
+- Servers: the local static servers I started for the images (port 8971), and those the audit, the harness and the probes start, all
+  stopped; no process of this session is left running. Another session's `mutants.mjs` (in another project) was running on the machine;
+  it was not touched.
+- The scratch copies (v8 as handed off, v9 without the `hidden` rule, the mutant copies), the raw captures and the probes were deleted at
+  the end; the probes' results that this file uses are in `evidence/`.
+- No Cloudflare resource was touched; nothing was published.

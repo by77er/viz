@@ -142,8 +142,8 @@ pull request description by commit, so it stays valid after merge:
   and moving the crosshair to its own layer is not done. The application has not been measured against
   the fixture. Behaviour other than the chart and the press (the Waterfall's tree, the Log's tail) ships
   as preview script only (flows G25).
-- A reload at 400 px with a coarse pointer twice came back short of where the page was, with no layout
-  shift, in about 200 reloads (`reviews/system-v9/response.md`, B1): cause not found; the audit prints a
+- A reload at 400 px with a coarse pointer three times came back somewhere other than where the page was,
+  with no layout shift, in about 330 reloads (`reviews/system-v9/response.md`, B1): cause not found; the audit prints a
   frame-by-frame trace with any recurrence.
 - Fonts cover Latin, extended Latin and (mono) Greek and Cyrillic only.
 - Not checked: a screen reader by ear, Safari and Firefox (the table's scroll edge uses a scroll

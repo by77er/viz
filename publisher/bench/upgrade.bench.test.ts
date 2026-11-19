@@ -10,7 +10,9 @@
  * logs 20%), over 30 days, keys of realistic length, index fragments of the contracts' shape.
  *
  * Steps:
- *   first    every tenant published (all five tables), the caps lifted: a first publication
+ *   first    every tenant published (all five tables), the caps lifted: a first publication; with
+ *            BENCH_FIRST_CAPPED=1 at the cap instead, `publish` until no tenant waits (a re-base too
+ *            large for the cap goes on in steps: README, "Re-bases and rebuilds in steps")
  *   upgrade  the span and log tables forgotten (what the D64 release leaves: metrics published and
  *            cursored, the span and log tables never published), then `publish` again until no
  *            tenant waits, with re-bases capped at `cap` staged files: every publish is timed,
@@ -19,6 +21,9 @@
  *            per publish, then the publish from the cursors found there
  *
  *   BENCH_UPGRADE=8x25000@100000,2x100000@100000 npm run bench -- bench/upgrade.bench.test.ts
+ *
+ * Each publish's `staged` counts the files and tombstones its re-bases staged (a re-base going on in
+ * steps: what this publish staged of it), `written` the added files it wrote ahead of a commit.
  */
 import { evictDurableObject, runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
@@ -37,7 +42,7 @@ import {
 import type { PublishResult } from '../src/publisher'
 import type { BenchPublisher } from './worker'
 
-const E = env as unknown as { PUBLISHER: DurableObjectNamespace<BenchPublisher>; BUCKET: R2Bucket; BENCH_UPGRADE?: string }
+const E = env as unknown as { PUBLISHER: DurableObjectNamespace<BenchPublisher>; BUCKET: R2Bucket; BENCH_UPGRADE?: string; BENCH_FIRST_CAPPED?: string }
 const CASES = (E.BENCH_UPGRADE || '4x2000@4000').split(',').map((c) => {
   const m = /^(\d+)x(\d+)@(\d+)$/.exec(c.trim())
   if (!m) throw new Error(`BENCH_UPGRADE: ${c} is not TENANTSxFILES@CAP`)
@@ -160,13 +165,16 @@ async function wipe(prefix: string): Promise<void> {
 }
 
 const summary = (r: PublishResult, start: number, end: number) => {
-  const rebased = r.tenants.filter((t) => t.rebase)
+  const rebased = r.tenants.filter((t) => t.rebase && !t.step)
+  const stepped = r.tenants.filter((t) => t.step)
   return {
     ms: end - start,
     start,
     end,
     rebased: rebased.length,
-    staged: rebased.reduce((n, t) => n + t.rebase!.files + t.rebase!.tombstones, 0),
+    staged: rebased.reduce((n, t) => n + t.rebase!.files + t.rebase!.tombstones, 0) + stepped.reduce((n, t) => n + t.step!.staged, 0),
+    written: stepped.reduce((n, t) => n + t.step!.written, 0),
+    steps: stepped.map((t) => `${t.step!.phase} ${t.step!.parts.done}/${t.step!.parts.of}`),
     deferred: r.tenants.filter((t) => t.status === 'deferred').length,
     added: Object.fromEntries(Object.entries(r.tables).filter(([, x]) => x.added > 0).map(([k, x]) => [k, x.added])),
     ops: r.ops,
@@ -181,12 +189,23 @@ describe('the upgrade to D67, re-bases capped per publish', () => {
       for (const t of ts) await writeLog(t, c.files)
       const p = E.PUBLISHER.get(E.PUBLISHER.idFromName(`${CELL}~${c.tenants}x${c.files}@${c.cap}`))
       const out: Record<string, unknown> = { ...c }
-      await p.configure({ maxRebaseFilesPerPublish: 1e9, maxRebasesPerPublish: 1e6 })
+      const capped = E.BENCH_FIRST_CAPPED === '1'
+      await p.configure(capped ? { maxRebaseFilesPerPublish: c.cap, maxRebasesPerPublish: 100 } : { maxRebaseFilesPerPublish: 1e9, maxRebasesPerPublish: 1e6 })
       let t0 = Date.now()
-      const first = await p.publish(ts)
-      out.first = summary(first, t0, Date.now())
-      console.log(`PUBLISH ${JSON.stringify({ case: `${c.tenants}x${c.files}@${c.cap}`, step: 'first', i: 0, ...(out.first as object) })}`)
-      expect(first.tenants.every((t) => t.status === 'ok')).toBe(true)
+      const firsts: unknown[] = []
+      for (let i = 0; ; i++) {
+        expect(i).toBeLessThan(c.tenants * 10 + 2)
+        t0 = Date.now()
+        const r = await p.publish(ts)
+        const s = summary(r, t0, Date.now())
+        firsts.push(s)
+        console.log(`PUBLISH ${JSON.stringify({ case: `${c.tenants}x${c.files}@${c.cap}`, step: 'first', i, ...s })}`)
+        expect(r.tenants.every((t) => t.status === 'ok' || t.status === 'deferred' || t.status === 'more')).toBe(true)
+        if (s.deferred === 0) break
+      }
+      out.first = firsts
+      // A re-base finished in steps leaves its tenant to be read from its cursors (status `more`): read it.
+      expect((await p.publish(ts)).tenants.every((t) => t.status === 'ok')).toBe(true)
 
       await p.forgetSignalTables(CELL)
       await p.configure({ maxRebaseFilesPerPublish: c.cap, maxRebasesPerPublish: 100 })
@@ -198,10 +217,11 @@ describe('the upgrade to D67, re-bases capped per publish', () => {
         const s = summary(r, t0, Date.now())
         upgrade.push(s)
         console.log(`PUBLISH ${JSON.stringify({ case: `${c.tenants}x${c.files}@${c.cap}`, step: 'upgrade', i, ...s })}`)
-        expect(r.tenants.every((t) => t.status === 'ok' || t.status === 'deferred')).toBe(true)
+        expect(r.tenants.every((t) => t.status === 'ok' || t.status === 'deferred' || t.status === 'more')).toBe(true)
         if (s.deferred === 0) break
       }
       out.upgrade = upgrade
+      expect((await p.publish(ts)).tenants.every((t) => t.status === 'ok')).toBe(true)
       for (const table of ['spans', 'trace_index', 'logs'] as const) expect((await p.status(table)).files, table).toBe((c.files / 200) * SHARE.find(([t]) => t === table)![1] * c.tenants)
 
       await runInDurableObject(p, async (_i, s) => {

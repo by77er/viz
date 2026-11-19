@@ -24,7 +24,7 @@ if (process.argv[2] === '--report') {
     if (!line.startsWith('PUBLISH ')) continue
     const p = JSON.parse(line.slice('PUBLISH '.length))
     const cpu = (at(p.end) - at(p.start)) / 100
-    console.log(`${p.case} ${p.step} ${p.i}: wall ${(p.ms / 1000).toFixed(2)} s, cpu ${cpu.toFixed(2)} s, staged ${p.staged}, rebased ${p.rebased}, added ${JSON.stringify(p.added)}`)
+    console.log(`${p.case} ${p.step} ${p.i}: wall ${(p.ms / 1000).toFixed(2)} s, cpu ${cpu.toFixed(2)} s, staged ${p.staged}, written ahead ${p.written ?? 0}, rebased whole ${p.rebased}, steps ${JSON.stringify(p.steps ?? [])}, added ${JSON.stringify(p.added)}`)
   }
   process.exit(0)
 }

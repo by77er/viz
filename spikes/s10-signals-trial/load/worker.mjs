@@ -121,6 +121,8 @@ export class Client extends DurableObject {
   async body(op, i) {
     const p = op.params ?? {}
     const seed = (op.seed ?? 1) + i
+    // `uniq`: the exact LCG, so every span and record is new (bodies.mjs's own cycles early).
+    const rng = (x) => (op.uniq ? B.lcg32(x) : B.lcg(x))
     const nowNs = BigInt(Date.now()) * 1_000_000n
     const t0Ns = p.t0Ms !== undefined ? BigInt(p.t0Ms) * 1_000_000n : nowNs
     const per = p.per ?? 0
@@ -129,7 +131,7 @@ export class Client extends DurableObject {
     switch (op.gen) {
       case 'traces':
       case 'tracesJson': {
-        const t = B.realisticTraces(B.lcg(seed), nowNs)
+        const t = B.realisticTraces(rng(seed), nowNs)
         const first = t.resource_spans[0].scope_spans[0].spans[0]
         const info = { traceId: [...first.trace_id].map((x) => x.toString(16).padStart(2, '0')).join(''), startNs: String(first.start_time_unix_nano) }
         const json = op.gen === 'tracesJson'
@@ -138,17 +140,17 @@ export class Client extends DurableObject {
       }
       case 'logs':
       case 'logsJson': {
-        const l = B.realisticLogs(B.lcg(seed), nowNs)
+        const l = B.realisticLogs(rng(seed), nowNs)
         const json = op.gen === 'logsJson'
         const { body, ce } = await gz(json ? B.logsJson(l) : B.logsProto(l))
         return { path: '/v1/logs', headers: { 'Content-Type': json ? 'application/json' : 'application/x-protobuf', 'Content-Encoding': ce }, body, items: 8200 }
       }
       case 'loki': {
-        const k = B.realisticLoki(B.lcg(seed), nowNs)
+        const k = B.realisticLoki(rng(seed), nowNs)
         return { path: '/loki/api/v1/push', headers: { 'Content-Type': 'application/x-protobuf', 'Content-Encoding': 'snappy' }, body: snappy.compress(B.lokiProto(k)), items: 8200 }
       }
       case 'lokiJson': {
-        const k = B.realisticLoki(B.lcg(seed), nowNs)
+        const k = B.realisticLoki(rng(seed), nowNs)
         const { body, ce } = await gz(B.lokiJson(k))
         return { path: '/loki/api/v1/push', headers: { 'Content-Type': 'application/json', 'Content-Encoding': ce }, body, items: 8200 }
       }

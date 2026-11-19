@@ -55,7 +55,7 @@ describe('memory is bounded by bytes held (review M-2)', () => {
     await env.CONFIG.put(`limits:${t.name}`, JSON.stringify({ maxDecodedBytes: 1 << 20 }))
     clearLimitsCache()
     const small = await query(t, '/api/search', SEARCH)
-    expect([small.status, /max_decoded_bytes: .* the limit is 1048576/.test(small.text)], small.text.slice(0, 300)).toEqual([422, true])
+    expect([small.status, /max_decoded_bytes: .* the 1048576 bytes one query may hold/.test(small.text)], small.text.slice(0, 300)).toEqual([422, true])
   }, 120_000)
 
   it('600 spans with their own 60 KB attribute each: refused by max_decoded_bytes, under the budget plus what was fetched', async () => {

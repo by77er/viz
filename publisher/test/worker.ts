@@ -166,10 +166,10 @@ export class TestPublisher extends Publisher {
   async cutAtOp(n: number): Promise<void> {
     this.opCut = { left: n, reached: () => {}, seen: [] }
   }
-  /** Resolves with the operations seen when the cut armed by `cutAtOp` is reached. */
-  async cutReached(): Promise<string[]> {
+  /** Resolves with the operations seen when the cut armed by `cutAtOp` is reached; null at once if none is armed (it was reached already). */
+  async cutReached(): Promise<string[] | null> {
     const c = this.opCut
-    if (!c) throw new Error('no cut armed')
+    if (!c) return null
     return new Promise<string[]>((resolve) => {
       c.reached = () => resolve(c.seen)
     })

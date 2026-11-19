@@ -705,3 +705,27 @@ fn ranges_are_merged_and_joined_closest_first_never_losing_cover() {
     traces::merge_for_test(&mut t, 256);
     assert_eq!(t, vec![(0, 9), (20, 30)]);
 }
+
+#[test]
+fn d72_m2_span_local_calls_cut_to_their_window_before_de_duplication() {
+    // A span sent with a start inside the window, then re-sent (same ids) with a start 3 h
+    // later, in a batch of its own (review of D72, m-2): whether the later batch is read (a shard
+    // of the release before, or files planned wider) or skipped (D72), the answer is the same.
+    let (t, s) = (id16(0xab), [0xcd; 8]);
+    let first = spans_of(&[(t, s, None, T0 + 10 * MIN, T0 + 10 * MIN + 1000, vec![("first.copy".to_string(), "v".to_string())])]);
+    let later = spans_of(&[(t, s, None, T0 + 240 * MIN, T0 + 240 * MIN + 1000, vec![("second.copy".to_string(), "v".to_string())])]);
+    let (lo, hi) = (T0, T0 + 60 * MIN);
+    let tags = |tails: &[Vec<u8>]| run(traces::do_tq_tags, W::default().u8(1).item(b"").i64(lo).i64(hi).u32(0).u64(18_000).u64(BUDGET).files(&[]).files(tails)).map(|b| String::from_utf8(b).unwrap());
+    let values = |tails: &[Vec<u8>]| run(traces::do_tq_tag_values, W::default().u8(2).item(b"span.first.copy").item(b"").i64(lo).i64(hi).u32(0).u64(18_000).u64(BUDGET).files(&[]).files(tails)).map(|b| String::from_utf8(b).unwrap());
+    let count = |tails: &[Vec<u8>]| {
+        let w = W::default().u64(18_000).u64(BUDGET).i64(ALL.0).i64(ALL.1).u64(100).u64(1000).u8(1).i64(lo).i64(hi).i64(hi - lo).item(b"{ } | count_over_time()").files(&[]).files(tails);
+        run(traces::do_tq_metrics, w).map(|b| String::from_utf8(b[16..].to_vec()).unwrap())
+    };
+    let both = [first.clone(), later];
+    let only = [first];
+    assert_eq!(tags(&both), tags(&only));
+    assert!(tags(&both).unwrap().contains("first.copy"));
+    assert_eq!(values(&both), values(&only));
+    assert_eq!(count(&both), count(&only));
+    assert!(count(&both).unwrap().contains("\"value\":1"), "{:?}", count(&both));
+}

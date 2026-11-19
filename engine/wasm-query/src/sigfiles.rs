@@ -648,23 +648,15 @@ fn span_from_row(r: &Row, res: &mut Resources, mem: &mut Mem) -> Res<SpanRec> {
 pub(crate) enum Take {
     /// Not part of the call's data (outside the bound, another trace): passed over.
     Skip,
-    /// Part of the data, but not held: only its row key matters (a later copy of a key hides an
-    /// earlier one whether or not it is wanted).
-    Key,
     /// Decoded whole, held and counted.
     Full,
 }
 
-/// A span as a read hands it on: its row key alone, or the whole record.
-pub(crate) enum Seen {
-    Key([u8; 16], [u8; 8]),
-    Span(SpanRec),
-}
 
 /// Every span of the held row groups of a `spans` file, in file order, to `visit`, as `take`
 /// decides from its trace id and start (read before anything else of it). Returns the spans
 /// read (passed over ones included).
-pub(crate) fn read_spans(bytes: &[u8], res: &mut Resources, mem: &mut Mem, take: impl Fn(&[u8; 16], i64) -> Take, mut visit: impl FnMut(Seen, &mut Mem) -> Res<()>) -> Res<u64> {
+pub(crate) fn read_spans(bytes: &[u8], res: &mut Resources, mem: &mut Mem, take: impl Fn(&[u8; 16], i64) -> Take, mut visit: impl FnMut(SpanRec, &mut Mem) -> Res<()>) -> Res<u64> {
     let f = open(bytes, "spans", SPANS_LEAVES)?;
     let mut n = 0u64;
     for g in f.held_groups() {
@@ -673,10 +665,9 @@ pub(crate) fn read_spans(bytes: &[u8], res: &mut Resources, mem: &mut Mem, take:
             let tid = fixed::<16>(get(r, "trace_id")?, "trace_id")?;
             match take(&tid, l(get(r, "start_unix_nano")?, "start")?) {
                 Take::Skip => Ok(()),
-                Take::Key => visit(Seen::Key(tid, fixed::<8>(get(r, "span_id")?, "span_id")?), mem),
                 Take::Full => {
                     let rec = span_from_row(r, res, mem)?;
-                    visit(Seen::Span(rec), mem)
+                    visit(rec, mem)
                 }
             }
         })?;
@@ -686,19 +677,14 @@ pub(crate) fn read_spans(bytes: &[u8], res: &mut Resources, mem: &mut Mem, take:
 
 /// The spans of a `VZB1` signal-2 batch, in row order (`take` as for [`read_spans`]). Returns
 /// the spans read.
-pub(crate) fn batch_spans(bytes: &[u8], res: &mut Resources, mem: &mut Mem, take: impl Fn(&[u8; 16], i64) -> Take, mut visit: impl FnMut(Seen, &mut Mem) -> Res<()>) -> Res<u64> {
+pub(crate) fn batch_spans(bytes: &[u8], res: &mut Resources, mem: &mut Mem, take: impl Fn(&[u8; 16], i64) -> Take, mut visit: impl FnMut(SpanRec, &mut Mem) -> Res<()>) -> Res<u64> {
     let b = viz_storage::otel::decode_spans(bytes).map_err(|e| internal("span batch", e))?;
     // Each entry's resource is interned once, when a row of it is first kept.
     let mut shared: Vec<Option<Rc<Vec<Attr<String>>>>> = vec![None; b.entries.len()];
     for r in &b.rows {
         let e = b.entries.get(r.entry as usize).ok_or_else(|| internal("span batch", "entry out of range"))?;
-        match take(&r.trace_id, r.start) {
-            Take::Skip => continue,
-            Take::Key => {
-                visit(Seen::Key(r.trace_id, r.span_id), mem)?;
-                continue;
-            }
-            Take::Full => {}
+        if take(&r.trace_id, r.start) == Take::Skip {
+            continue;
         }
         let resource = match &shared[r.entry as usize] {
             Some(x) => Rc::clone(x),
@@ -709,7 +695,7 @@ pub(crate) fn batch_spans(bytes: &[u8], res: &mut Resources, mem: &mut Mem, take
             }
         };
         visit(
-            Seen::Span(SpanRec {
+            SpanRec {
                 trace_id: r.trace_id,
                 span_id: r.span_id,
                 parent: r.parent(),
@@ -729,7 +715,7 @@ pub(crate) fn batch_spans(bytes: &[u8], res: &mut Resources, mem: &mut Mem, take
                 events: r.events.iter().map(|x| Event { time_unix_nano: x.time_unix_nano, name: x.name.to_string(), attrs: x.attrs.to_string() }).collect(),
                 links: r.links.iter().map(|x| Link { trace_id: x.trace_id, span_id: x.span_id, trace_state: x.trace_state.to_string(), attrs: x.attrs.to_string() }).collect(),
                 dropped: r.dropped,
-            }),
+            },
             mem,
         )?;
     }

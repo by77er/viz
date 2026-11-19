@@ -29,7 +29,7 @@ const { wrangler } = await import(pathToFileURL(join(TREE, 'deploy', 'lib', 'wra
 const STAGE = 's10'
 const LOAD = `viz-${STAGE}-load-client`
 const GATEWAY = `viz-${STAGE}-gateway`
-export const TENANTS = ['s10-load', 's10-q', 's10-fat', 's10-fatattr', 's10-hostile']
+export const TENANTS = ['s10-load', 's10-q', 's10-fat', 's10-fatattr', 's10-hostile', 's10-load2']
 mkdirSync(join(STATE, 'results'), { recursive: true })
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -177,17 +177,19 @@ async function markers(runs = 3, tenant = 's10-q', label = 'markers') {
 }
 
 /** The realistic 8,200-item bodies through the gateway: `clients` client objects per variant, one variant at a time. */
-async function heavy(variants = ['traces', 'tracesJson', 'logs', 'logsJson', 'loki', 'lokiJson'], clients = 4, requests = 12, gapMs = 70_000) {
+async function heavy(variants = ['traces', 'tracesJson', 'logs', 'logsJson', 'loki', 'lokiJson'], clients = 4, requests = 12, gapMs = 70_000, { tenant = 's10-load', uniq = false, seedBase = 0, pauseMs = 0, label = 'heavy' } = {}) {
   const all = []
   for (const [vi, gen] of variants.entries()) {
     const t0 = Date.now()
-    const res = await parallel(Array.from({ length: clients }, (_, c) => ({ op: 'ingest', client: `heavy-${gen}-${c}`, tenant: 's10-load', gen, requests, seed: 1_000_000 * (vi + 1) + 1000 * c, attempts: 8, retryCapMs: 2000, maxMs: 240_000 })))
+    // Seeds: per variant NAME (not its place in this call's list), per client and per request.
+    const vn = ['traces', 'tracesJson', 'logs', 'logsJson', 'loki', 'lokiJson'].indexOf(gen) + 1
+    const res = await parallel(Array.from({ length: clients }, (_, c) => ({ op: 'ingest', client: `${label}-${gen}-${c}`, tenant, gen, uniq, requests, seed: seedBase + 1_000_000 * vn + 1000 * c, attempts: 8, retryCapMs: 2000, maxMs: 240_000, pauseMs })))
     const t1 = Date.now()
     const sum = summariseIngest(res)
     all.push({ gen, from: iso(t0), to: iso(t1), summary: sum, results: res })
-    mark(`heavy-${gen}`, t0, t1, { tenant: 's10-load', clients, requests })
+    mark(`${label}-${gen}`, t0, t1, { tenant, clients, requests, uniq, pauseMs })
     console.log(`${gen}: ${JSON.stringify(sum)}`)
-    console.log(save('heavy', all))
+    console.log(save(label, all))
     if (vi + 1 < variants.length) await sleep(gapMs)
   }
 }
@@ -431,7 +433,7 @@ else if (cmd === 'load-down') await loadDown()
 else if (cmd === 'ids') await recordIds()
 else if (cmd === 'op') console.log(JSON.stringify(await call(JSON.parse(rest[0])), null, 1))
 else if (cmd === 'markers') await markers(Number(flag('runs') ?? 3), flag('tenant') ?? 's10-q', flag('label') ?? 'markers')
-else if (cmd === 'heavy') await heavy(flag('variants')?.split(',') ?? undefined, Number(flag('clients') ?? 4), Number(flag('requests') ?? 12), Number(flag('gap') ?? 70_000))
+else if (cmd === 'heavy') await heavy(flag('variants')?.split(',') ?? undefined, Number(flag('clients') ?? 4), Number(flag('requests') ?? 12), Number(flag('gap') ?? 70_000), { tenant: flag('tenant') ?? 's10-load', uniq: rest.includes('--uniq'), seedBase: Number(flag('seed-base') ?? 0), pauseMs: Number(flag('pause') ?? 0), label: flag('label') ?? 'heavy' })
 else if (cmd === 'qdata') await qdata()
 else if (cmd === 'fat') await fat()
 else if (cmd === 'queries') await queries(flag('which') ?? 'all')

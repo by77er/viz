@@ -165,6 +165,14 @@ async function readSignalTail(
   rf: ReturnType<typeof refusals>,
   bound: { lo: bigint; hi: bigint },
 ): Promise<Uint8Array[] | null> {
+  // An empty range selects no row: no tail is read. (A Loki `query_range` with `start == end`
+  // has the selector range `[S, S)`, `hi = S - 1`; sent as is, `minTs > maxTs` is `invalid` at the
+  // shard and the query would be 503 on every retry: review of D72, m-3.) Otherwise `lo <= hi`
+  // gives `minTs <= maxTs`: flooring keeps the order.
+  if (bound.lo > bound.hi) {
+    c.cost.shardsAsked = 0
+    return []
+  }
   const shards = await signalShards(c.env, c.tenant, signal, watermarks)
   c.cost.shardsAsked = shards.length
   // The signal (`readTails` adds it) and the bound's milliseconds, each end floored: every batch

@@ -9,7 +9,7 @@
 //! every span of it that was read (`TraceSummary::from_spans`), never from `trace_index`
 //! counts (which over-count spans retried into another unit, `contracts/TRACES.md`): the
 //! index fragments only say which hours and which time hull to read.
-use crate::sigfiles::{self, Mem, Resources, Seen, SpanRec, Take};
+use crate::sigfiles::{self, Mem, Resources, SpanRec, Take};
 use crate::{Fail, Req, Res};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
@@ -175,8 +175,6 @@ pub(crate) struct Budget {
     pub help: &'static str,
 }
 
-const ALL_TIME: (i64, i64) = (i64::MIN, i64::MAX);
-
 impl Budget {
     pub fn new(max_spans: u64, max_bytes: u64, bound: (i64, i64)) -> Budget {
         Budget { max_spans, spans: 0, decoded: 0, bound, only: None, mem: Mem::new(max_bytes), res: Resources::default(), engine_res: EngineResources::default(), help: "Narrow the time range." }
@@ -205,35 +203,27 @@ fn take(max_spans: u64, spans: &mut u64, help: &str) -> Res<()> {
     Ok(())
 }
 
-/// Bytes charged per row key a call keeps without its span (a later copy that hides an earlier
-/// one), with its share of the map that holds it.
-const KEY_BYTES: u64 = 64;
+/// Bytes charged per span a call keeps as a record (trace by ID, tags, tag values), beyond
+/// [`sigfiles::span_bytes`]: its slot and key in [`Latest`] and their growth (measured: 18,000
+/// realistic spans held 0.2 KiB a span more than `span_bytes` as records; README "Memory").
+const RECORD_BYTES: u64 = 256;
 
 /// Every span of the files (in the order given) and then the tail batches that is part of the
-/// call's data (inside the bound, of the trace asked for), to `visit`: whole when `want` says
-/// so (then counted against `max_spans` and charged), else only its row key.
-fn each_span(files: &[&[u8]], tails: &[&[u8]], budget: &mut Budget, want: impl Fn(i64) -> bool, mut visit: impl FnMut(Seen, &mut Mem, &mut EngineResources) -> Res<()>) -> Res<()> {
+/// call's data (inside the bound, of the trace asked for), to `visit`, counted against
+/// `max_spans` and charged. Every other span is passed over before it is decoded: it is not part
+/// of the data, so it neither hides nor is hidden by another copy of its key (D62; and for the
+/// span-local calls, whose bound is their window, design/reviews/d72-shard-bounds.md m-2: what
+/// lies outside the window then cannot change the answer, whichever batches or files were read).
+fn each_span(files: &[&[u8]], tails: &[&[u8]], budget: &mut Budget, mut visit: impl FnMut(SpanRec, &mut Mem, &mut EngineResources) -> Res<()>) -> Res<()> {
     let (lo, hi) = budget.bound;
     let only = budget.only;
-    let classify = move |t: &[u8; 16], start: i64| {
-        if start < lo || start > hi || only.is_some_and(|x| x != *t) {
-            Take::Skip
-        } else if want(start) {
-            Take::Full
-        } else {
-            Take::Key
-        }
-    };
+    let classify = move |t: &[u8; 16], start: i64| if start < lo || start > hi || only.is_some_and(|x| x != *t) { Take::Skip } else { Take::Full };
     let Budget { max_spans, spans, decoded, mem, res, engine_res, help, .. } = budget;
     let (max_spans, help) = (*max_spans, *help);
-    let mut on = |x: Seen, mem: &mut Mem| -> Res<()> {
-        if let Seen::Span(r) = &x {
-            take(max_spans, spans, help)?;
-            mem.charge(sigfiles::span_bytes(r))?;
-        } else {
-            mem.charge(KEY_BYTES)?;
-        }
-        visit(x, mem, engine_res)
+    let mut on = |r: SpanRec, mem: &mut Mem| -> Res<()> {
+        take(max_spans, spans, help)?;
+        mem.charge(sigfiles::span_bytes(&r))?;
+        visit(r, mem, engine_res)
     };
     for f in files {
         *decoded += sigfiles::read_spans(f, res, mem, &classify, &mut on)?;
@@ -244,42 +234,27 @@ fn each_span(files: &[&[u8]], tails: &[&[u8]], budget: &mut Budget, want: impl F
     Ok(())
 }
 
-/// The latest copy of each row key (files in the order given, then the tail), as a map from the
-/// key to its slot; a key whose latest copy is not wanted hides the earlier ones.
+/// The latest copy of each row key (files in the order given, then the tail), with what each is
+/// charged (released when a later copy replaces it).
 struct Latest<T> {
     index: HashMap<Key, u32>,
     kept: Vec<Option<(T, u64)>>,
 }
 
-const HIDDEN: u32 = u32::MAX;
-
 impl<T> Latest<T> {
     fn new() -> Latest<T> {
         Latest { index: HashMap::new(), kept: Vec::new() }
     }
-    /// `v` is the value and what it was charged (released if a later copy replaces it).
-    fn put(&mut self, k: Key, v: Option<(T, u64)>, mem: &mut Mem) {
+    fn put(&mut self, k: Key, v: T, charged: u64, mem: &mut Mem) {
         match self.index.get(&k).copied() {
-            Some(i) if i != HIDDEN => {
-                if let Some((_, c)) = self.kept[i as usize].take() {
+            Some(i) => {
+                if let Some((_, c)) = self.kept[i as usize].replace((v, charged)) {
                     mem.release(c);
                 }
-                match v {
-                    Some(v) => self.kept[i as usize] = Some(v),
-                    None => {
-                        self.index.insert(k, HIDDEN);
-                    }
-                }
             }
-            _ => {
-                let slot = match v {
-                    Some(v) => {
-                        self.kept.push(Some(v));
-                        (self.kept.len() - 1) as u32
-                    }
-                    None => HIDDEN,
-                };
-                self.index.insert(k, slot);
+            None => {
+                self.kept.push(Some((v, charged)));
+                self.index.insert(k, (self.kept.len() - 1) as u32);
             }
         }
     }
@@ -291,40 +266,29 @@ impl<T> Latest<T> {
     }
 }
 
-/// The spans read, de-duplicated (later wins), as records: those `want` keeps by start.
-fn latest_records(files: &[&[u8]], tails: &[&[u8]], budget: &mut Budget, want: impl Fn(i64) -> bool) -> Res<Vec<SpanRec>> {
+/// The spans of the call's data, de-duplicated (later wins), as records.
+fn latest_records(files: &[&[u8]], tails: &[&[u8]], budget: &mut Budget) -> Res<Vec<SpanRec>> {
     let mut by: Latest<SpanRec> = Latest::new();
-    each_span(files, tails, budget, want, |x, mem, _| {
-        match x {
-            Seen::Key(t, s) => by.put((t, s), None, mem),
-            Seen::Span(r) => {
-                let c = sigfiles::span_bytes(&r);
-                by.put((r.trace_id, r.span_id), Some((r, c)), mem)
-            }
-        }
+    each_span(files, tails, budget, |r, mem, _| {
+        mem.charge(RECORD_BYTES)?;
+        let c = sigfiles::span_bytes(&r) + RECORD_BYTES;
+        by.put((r.trace_id, r.span_id), r, c, mem);
         Ok(())
     })?;
     Ok(by.values())
 }
 
 /// Traces of the spans read (later row wins), each with its spans in `(start, span_id)` order
-/// and its summary computed from them; traces in `trace_id` order. With `window`, only spans
-/// whose start lies in `(lo, hi]` are kept (a metrics query whose plan is span-local).
-pub(crate) fn traces(files: &[&[u8]], tails: &[&[u8]], budget: &mut Budget, window: Option<(u64, u64)>) -> Res<Vec<Trace>> {
+/// and its summary computed from them; traces in `trace_id` order.
+pub(crate) fn traces(files: &[&[u8]], tails: &[&[u8]], budget: &mut Budget) -> Res<Vec<Trace>> {
     let mut by: Latest<viz_traceql::Span> = Latest::new();
-    let want = move |start: i64| window.is_none_or(|(lo, hi)| (start as u64) > lo && (start as u64) <= hi);
-    each_span(files, tails, budget, want, |x, mem, engine_res| {
-        match x {
-            Seen::Key(t, s) => by.put((t, s), None, mem),
-            Seen::Span(r) => {
-                let c = sigfiles::span_bytes(&r);
-                let k = (r.trace_id, r.span_id);
-                by.put(k, Some((engine_span(&r, engine_res, mem)?, c)), mem);
-            }
-        }
+    each_span(files, tails, budget, |r, mem, engine_res| {
+        let c = sigfiles::span_bytes(&r);
+        let k = (r.trace_id, r.span_id);
+        by.put(k, engine_span(&r, engine_res, mem)?, c, mem);
         Ok(())
     })?;
-    let mut ids: Vec<([u8; 16], u32)> = by.index.iter().filter(|(_, i)| **i != HIDDEN).map(|((t, _), i)| (*t, *i)).collect();
+    let mut ids: Vec<([u8; 16], u32)> = by.index.iter().map(|((t, _), i)| (*t, *i)).collect();
     ids.sort_unstable();
     let mut slots = by.kept;
     let mut grouped: BTreeMap<[u8; 16], Vec<viz_traceql::Span>> = BTreeMap::new();
@@ -686,7 +650,7 @@ pub(crate) fn do_tq_search(mut r: Req<'_>) -> Res<Vec<u8>> {
     budget.advise(SEARCH_HELP);
     // Refuse a bad query before reading anything.
     viz_traceql::parse(q).map_err(tq_err)?;
-    let ts = traces(&files, &tails, &mut budget, None)?;
+    let ts = traces(&files, &tails, &mut budget)?;
     let n = ts.len();
     let req = SearchRequest { limit, spans_per_spanset: spss, start_unix_nano: start.max(0) as u64, end_unix_nano: end.max(0) as u64 };
     let out = viz_traceql::search(&MemSource::new(ts), q, &req).map_err(tq_err)?;
@@ -726,10 +690,19 @@ pub(crate) fn do_tq_metrics(mut r: Req<'_>) -> Res<Vec<u8>> {
     let p = viz_traceql::plan(q, req.start_unix_nano, req.end_unix_nano).map_err(tq_err)?;
     // A span-local plan is evaluated over the spans that start in the window only (what the
     // engine's own pruning drops, `ReadPlan::span_may_match`), after de-duplication.
+    // Its window is its bound: the spans that start in `(lo, hi]`, cut before de-duplication as a
+    // whole-trace query is cut to its margin (D62; review of D72 m-2: before, a later copy outside
+    // the window hid an earlier one inside it only when the later one's batch or file was read).
     let local = !(p.full_traces || !p.span_local || p.columns.iter().any(trace_level));
     budget.advise(if local { "Narrow the time range." } else { SEARCH_HELP });
-    let window = if local { p.span_window } else { None };
-    let ts = traces(&files, &tails, &mut budget, window)?;
+    if let (true, Some((lo, hi))) = (local, p.span_window) {
+        let (lo, hi) = (i64::try_from(lo).unwrap_or(i64::MAX).saturating_add(1), i64::try_from(hi).unwrap_or(i64::MAX));
+        budget.bound = (budget.bound.0.max(lo), budget.bound.1.min(hi));
+        if budget.bound.0 > budget.bound.1 {
+            budget.bound = (1, 0);
+        }
+    }
+    let ts = traces(&files, &tails, &mut budget)?;
     let n = ts.len();
     let limits = viz_traceql::Limits { max_series, max_points, max_bytes: budget.mem.left() };
     let out = viz_traceql::query_range_with(&MemSource::new(ts), q, &req, &limits).map_err(|e| match e {
@@ -1058,7 +1031,7 @@ pub(crate) fn do_tq_trace(mut r: Req<'_>) -> Res<Vec<u8>> {
     r.end()?;
     budget.only = Some(id);
     budget.advise(TRACE_HELP);
-    let mut spans = latest_records(&files, &tails, &mut budget, |_| true)?;
+    let mut spans = latest_records(&files, &tails, &mut budget)?;
     spans.sort_by(|a, b| (a.start, a.span_id).cmp(&(b.start, b.span_id)));
     let mut out = vec![(!spans.is_empty()) as u8];
     out.extend_from_slice(&budget.decoded.to_le_bytes());
@@ -1090,7 +1063,9 @@ pub(crate) fn do_tq_tags(mut r: Req<'_>) -> Res<Vec<u8>> {
     let scope = r.str("scope")?.to_string();
     let (lo, hi) = (r.i64("lo")?, r.i64("hi")?);
     let limit = r.u32("limit")? as usize;
-    let mut budget = Budget::new(r.u64("max_spans")?, r.u64("max_bytes")?, ALL_TIME);
+    // The window is the bound (D62; review of D72 m-2): a span that starts outside it is not
+    // part of the data, before de-duplication.
+    let mut budget = Budget::new(r.u64("max_spans")?, r.u64("max_bytes")?, if lo <= hi { (lo, hi) } else { (1, 0) });
     let files = r.files("spans file")?;
     let tails = r.files("tail batch")?;
     r.end()?;
@@ -1098,7 +1073,7 @@ pub(crate) fn do_tq_tags(mut r: Req<'_>) -> Res<Vec<u8>> {
         return Err(Fail::Query(QueryError::bad_data(format!("unknown scope {scope:?}: one of resource, span, intrinsic, event, link, instrumentation"))));
     }
     budget.advise("Narrow the time range.");
-    let spans = latest_records(&files, &tails, &mut budget, |start| start >= lo && start <= hi)?;
+    let spans = latest_records(&files, &tails, &mut budget)?;
     // Each name is charged when it is first kept.
     budget.mem.stage = "the tag names it lists";
     let mut names: BTreeMap<&str, BTreeSet<String>> = SCOPES.iter().map(|s| (*s, BTreeSet::new())).collect();
@@ -1243,13 +1218,14 @@ pub(crate) fn do_tq_tag_values(mut r: Req<'_>) -> Res<Vec<u8>> {
     let q = r.str("q")?.to_string();
     let (lo, hi) = (r.i64("lo")?, r.i64("hi")?);
     let limit = r.u32("limit")? as usize;
-    let mut budget = Budget::new(r.u64("max_spans")?, r.u64("max_bytes")?, ALL_TIME);
+    // The window is the bound, as for tag names.
+    let mut budget = Budget::new(r.u64("max_spans")?, r.u64("max_bytes")?, if lo <= hi { (lo, hi) } else { (1, 0) });
     let files = r.files("spans file")?;
     let tails = r.files("tail batch")?;
     r.end()?;
     let filter = (!q.trim().is_empty()).then(|| viz_traceql::parse(&q).ok().filter(|root| matches!(root.query, Query::Search(_))).map(|_| q.clone())).flatten();
     budget.advise("Narrow the time range, or pass a filter (q) that matches fewer spans.");
-    let recs = latest_records(&files, &tails, &mut budget, |start| start >= lo && start <= hi)?;
+    let recs = latest_records(&files, &tails, &mut budget)?;
     let mut grouped: BTreeMap<[u8; 16], Vec<viz_traceql::Span>> = BTreeMap::new();
     // Each record is let go as its engine span is made, so the two are not held whole at once.
     for s in recs {

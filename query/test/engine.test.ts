@@ -48,7 +48,7 @@ describe('the module in workerd', () => {
       'memory', 'viz_alloc', 'viz_free', 'viz_q_abi_version', 'viz_q_card_part', 'viz_q_card_report', 'viz_q_extract', 'viz_q_file_plan', 'viz_q_gather_add', 'viz_q_gather_eval',
       'viz_q_gather_free', 'viz_q_gather_new', 'viz_q_label_names', 'viz_q_label_values', 'viz_q_merge', 'viz_q_meta_part', 'viz_q_parse_selectors', 'viz_q_part_plan', 'viz_q_plan',
       'viz_q_query_instant', 'viz_q_query_range', 'viz_q_sample_plan', 'viz_q_scan_rows', 'viz_q_select', 'viz_q_selectors', 'viz_q_series', 'viz_q_split_plan', 'viz_q_split_tails',
-      // ABI 6: traces and logs (ABI 7 changed their requests, not the list).
+      // ABI 6: traces and logs (ABI 7 and 8 changed their requests, not the list).
       'viz_q_lq_file_plan', 'viz_q_lq_labels', 'viz_q_lq_plan', 'viz_q_lq_query',
       'viz_q_tq_extent', 'viz_q_tq_file_plan', 'viz_q_tq_metrics', 'viz_q_tq_plan', 'viz_q_tq_search', 'viz_q_tq_tag_values', 'viz_q_tq_tags', 'viz_q_tq_trace',
     ].sort())
@@ -56,7 +56,7 @@ describe('the module in workerd', () => {
     const t0 = performance.now()
     for (let i = 0; i < 500; i++) {
       const inst = new WebAssembly.Instance(wasm, {})
-      expect((inst.exports.viz_q_abi_version as () => number)()).toBe(7)
+      expect((inst.exports.viz_q_abi_version as () => number)()).toBe(8)
     }
     console.log(`MEASURE instantiate in workerd (local): ${((performance.now() - t0) / 500).toFixed(3)} ms each (mean of 500, with one call into the module)`)
     const engine = createQueryEngine(wasm)

@@ -54,8 +54,12 @@ import {
 const HOUR = 3_600_000
 const SIGNALS: SignalTable[] = ['spans', 'trace_index', 'logs']
 const ALL: LedgerTable[] = [...TABLES, ...SIGNALS]
-/** Long enough that no alarm fires by itself while a test runs; the tests run each alarm. */
-const CONTINUE_MS = 30_000
+/**
+ * Deadlines no alarm reaches by itself while a test runs (some run for minutes): the tests run each
+ * alarm, which publishes whatever is pending whenever it runs. An alarm firing by itself would take a
+ * cut a test armed for its own run.
+ */
+const QUIET = { continueMs: 1e9, retryMs: 1e9 }
 /** The budget of a capped publish here, and the manifests' size: a re-base of a few dozen files takes several runs. */
 const BUDGET = 5
 const ENTRIES = 3
@@ -156,13 +160,12 @@ async function upgraded(cells: string[], ts: string[]): Promise<PublisherStub[]>
   return out
 }
 
-/** One run of the alarm at its publish deadline: the publish it made. */
+/** One run of the alarm (a publish is due, and the alarm set): the publish it made. */
 async function alarmRun(p: PublisherStub): Promise<PublishResult> {
   await p.publishes()
   const s = await p.schedule()
   expect(s.due.publish, 'a publish is due').toBeDefined()
   expect(s.alarm, 'and the alarm is set').not.toBeNull()
-  await p.advanceClock(Math.max(0, s.due.publish! - s.now))
   expect(await runDurableObjectAlarm(p)).toBe(true)
   const published = await p.publishes()
   expect(published).toHaveLength(1)
@@ -225,7 +228,7 @@ async function twinCells(start: Start, ts: string[]): Promise<{ cell: string; tw
     uncapped = publisher(twin)
     if (start === 'new incarnation') {
       for (const p of [capped, uncapped]) {
-        await p.configure({ manifestTargetEntries: ENTRIES })
+        await p.configure({ manifestTargetEntries: ENTRIES, ...QUIET })
         expect((await p.publish(ts)).tenants.map((x) => x.status)).toEqual(ts.map(() => 'ok'))
       }
       // The first tenant's ledger loses its storage: incarnation 2, rebuilt from its log, with a
@@ -243,8 +246,8 @@ async function twinCells(start: Start, ts: string[]): Promise<{ cell: string; tw
       expect((await partsOf(cell, t, 2)).length).toBeGreaterThan(10)
     }
   }
-  await capped.configure({ maxRebaseFilesPerPublish: BUDGET, manifestTargetEntries: ENTRIES, continueMs: CONTINUE_MS })
-  await uncapped.configure({ manifestTargetEntries: ENTRIES })
+  await capped.configure({ maxRebaseFilesPerPublish: BUDGET, manifestTargetEntries: ENTRIES, ...QUIET })
+  await uncapped.configure({ manifestTargetEntries: ENTRIES, ...QUIET })
   return { cell, twin, capped, uncapped }
 }
 
@@ -311,31 +314,32 @@ describe('an invocation cut off at every R2 operation of a re-base in steps', ()
     expect((await uncapped.publish(ts)).tenants[0]!.status).toBe('ok')
     await capped.notify(ts)
 
+    /** Every metadata version in R2 under the cell's tables, as `table/vN`. */
+    const versions = async () => (await listKeys(`${cell}/iceberg/`)).map((k) => /iceberg\/([^/]+)\/metadata\/v(\d+)\.metadata\.json$/.exec(k)).filter((m) => m !== null).map((m) => `${m![1]}/v${m![2]}`)
     let p = capped
     let k = 1
     let cuts = 0
     let runs = 0
     let last: { done: number; target: number | null; written: Record<string, string[] | string>; tables: string[] } = { done: 0, target: null, written: {}, tables: [] }
-    const committed = new Map<LedgerTable, number[]>()
-    for (const t of ALL) committed.set(t, await metadataVersions(cell, t))
+    let committed = await versions()
     while ((await p.pending()).length > 0) {
-      expect(runs, 'alarm runs').toBeLessThan(400)
+      expect(runs, 'alarm runs').toBeLessThan(600)
       runs++
-      await p.publishes()
       const s = await p.schedule()
       expect(s.due.publish, 'a publish is due, after a cut too').toBeDefined()
       expect(s.alarm, 'and the alarm is set').not.toBeNull()
-      await p.advanceClock(Math.max(0, s.due.publish! - s.now))
       await p.cutAtOp(k)
       const reached = p.cutReached().then(
-        () => 'cut' as const,
+        (seen) => (seen === null ? ('none' as const) : ('cut' as const)),
         () => 'gone' as const,
       )
       const run = runDurableObjectAlarm(p).then(
         () => 'done' as const,
         () => 'failed' as const,
       )
-      if ((await Promise.race([reached, run])) === 'cut') {
+      const first = await Promise.race([reached, run])
+      expect(first, 'the cut was armed for this run').not.toBe('none')
+      if (first === 'cut') {
         expect(await p.abortNow().then(() => 'returned', () => 'reset')).toBe('reset')
         await run
         p = publisher(cell)
@@ -346,12 +350,10 @@ describe('an invocation cut off at every R2 operation of a re-base in steps', ()
         await p.disarmCut()
         k = 1
       }
-      // Nothing committed is lost: every metadata version stays, and each table's newest is readable.
-      for (const t of ALL) {
-        const now = await metadataVersions(cell, t)
-        for (const v of committed.get(t)!) expect(now, `${t} v${v}`).toContain(v)
-        committed.set(t, now)
-      }
+      // Nothing committed is lost: every metadata version stays.
+      const now = await versions()
+      for (const v of committed) expect(now, v).toContain(v)
+      committed = now
       // The kept progress never moves backwards (it is gone once committed).
       const kept = (await p.steps())[ts[0]!]
       if (kept) {
@@ -522,7 +524,7 @@ describe('a table rebuilt from R2 in steps after a lost storage', () => {
     }
     // Published with small manifests, so each table has several.
     const first = publisher(`${cell}~first`)
-    await first.configure({ manifestTargetEntries: 2 })
+    await first.configure({ manifestTargetEntries: 2, ...QUIET })
     expect((await first.publish(ts)).tenants.map((x) => x.status)).toEqual(ts.map(() => 'ok'))
     for (const table of ALL) expect((await first.status(table)).manifests, table).toBeGreaterThanOrEqual(2)
 
@@ -530,10 +532,11 @@ describe('a table rebuilt from R2 in steps after a lost storage', () => {
     // which rebuilds each table whole, and this one, capped.
     const whole = m6(`${cell}~whole`)
     const steps = publisher(`${cell}~steps`)
+    await whole.configure(QUIET)
     const wr = await whole.publish(ts)
     expect(wr.tenants.every((x) => x.status === 'deferred')).toBe(true)
     for (let i = 0; i < 10 && (await whole.publish(ts)).tenants.some((x) => x.status === 'deferred'); i++);
-    await steps.configure({ maxRebaseFilesPerPublish: 2, continueMs: CONTINUE_MS })
+    await steps.configure({ maxRebaseFilesPerPublish: 2, ...QUIET })
 
     // Capped, cut off at every R2 operation of each publish in turn.
     let p = steps
@@ -546,7 +549,7 @@ describe('a table rebuilt from R2 in steps after a lost storage', () => {
       publishes++
       await p.cutAtOp(k)
       const reached = p.cutReached().then(
-        () => 'cut' as const,
+        (seen) => (seen === null ? ('none' as const) : ('cut' as const)),
         () => 'gone' as const,
       )
       const run = p.publish(ts).then(
@@ -554,6 +557,7 @@ describe('a table rebuilt from R2 in steps after a lost storage', () => {
         () => null,
       )
       const first = await Promise.race([reached, run])
+      expect(first, 'the cut was armed for this publish').not.toBe('none')
       if (first === 'cut') {
         expect(await p.abortNow().then(() => 'returned', () => 'reset')).toBe('reset')
         await run
@@ -563,11 +567,11 @@ describe('a table rebuilt from R2 in steps after a lost storage', () => {
       } else {
         await p.disarmCut()
         k = 1
-        const r = first === 'gone' ? await run : first
+        const r = first === 'gone' || first === 'none' ? await run : first
         expect(r).not.toBeNull()
-        if (!r!.tenants.some((x) => x.status === 'deferred')) break
+        if (!r!.tenants.some((x: { status: string }) => x.status === 'deferred')) break
         // Within its budget: a rebuilding publish reads no tenant.
-        expect(r!.tenants.every((x) => x.status === 'deferred')).toBe(true)
+        expect(r!.tenants.every((x: { status: string }) => x.status === 'deferred')).toBe(true)
       }
       // Progress never moves backwards (a table's done manifests), until the table is rebuilt.
       for (const [table, b] of Object.entries(await p.rebuilds())) {
@@ -595,12 +599,13 @@ describe('a table rebuilt from R2 in steps after a lost storage', () => {
       await mirror(t, cell)
     }
     const first = publisher(`${cell}~first`)
-    await first.configure({ manifestTargetEntries: 2 })
+    await first.configure({ manifestTargetEntries: 2, ...QUIET })
     expect((await first.publish(ts)).tenants.map((x) => x.status)).toEqual(ts.map(() => 'ok'))
     const whole = m6(`${cell}~whole`)
+    await whole.configure(QUIET)
     for (let i = 0; i < 10 && (await whole.publish(ts)).tenants.some((x) => x.status === 'deferred'); i++);
     const p = publisher(`${cell}~steps`)
-    await p.configure({ maxRebaseFilesPerPublish: 3 })
+    await p.configure({ maxRebaseFilesPerPublish: 3, ...QUIET })
     const seen: Record<string, number[]> = {}
     for (let i = 0; ; i++) {
       expect(i).toBeLessThan(60)
