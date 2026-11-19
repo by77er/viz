@@ -1,0 +1,28 @@
+{
+  "name": "viz-ruler-test",
+  "main": "test/harness.ts",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "RULER", "class_name": "TestRuler" },
+      { "name": "NOTIFIER", "class_name": "TestNotifier" },
+      { "name": "RULER_INDEX", "class_name": "TestRulerIndex" },
+      // control's real Tenant object (re-exported by the harness): service keys and the default destination.
+      { "name": "TENANT", "class_name": "Tenant" }
+    ]
+  },
+  // Local only (miniflare): the key store edge's `authenticate` reads, and control writes.
+  "kv_namespaces": [{ "binding": "CONFIG", "id": "viz-ruler-test-config" }],
+  // The production wiring's callees, as fakes in this same Worker (test/harness.ts): each checks
+  // the presented API key with edge's real `authenticate` and takes the tenant from it.
+  "services": [
+    { "binding": "QUERY", "service": "viz-ruler-test", "entrypoint": "FakeQuery" },
+    { "binding": "INGEST", "service": "viz-ruler-test", "entrypoint": "FakeIngest" }
+  ],
+  "vars": { "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":8,\"spread\":2,\"epoch\":1}" },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["TestRuler", "TestNotifier"] },
+    { "tag": "v2", "new_sqlite_classes": ["TestRulerIndex"] },
+    { "tag": "v3", "new_sqlite_classes": ["Tenant"] }
+  ]
+}

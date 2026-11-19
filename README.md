@@ -16,9 +16,46 @@ and consumed through composable, agent-first dashboards.
 
 ## Repository layout
 
-| Path        | Contents                                              |
-| ----------- | ----------------------------------------------------- |
-| `research/` | State-of-the-art research notes that inform the design |
-| `design/`   | Architecture and design documents                      |
+Start with `AGENTS.md` (how work is done here), then `design/DESIGN.md` (the architecture)
+and `design/DECISIONS.md` (each decision, its alternatives and what would change it).
 
-Status: research and design phase.
+| Path | Contents |
+| --- | --- |
+| `contracts/` | The interfaces between components: batch format, tables, ledger, engine, rules, compatibility across releases |
+| `design/` | `DESIGN.md`, `DECISIONS.md`, `VERIFICATION.md`, `UPGRADES.md`, `SELF-MONITORING.md` (proposal), `REVIEW.md` and the raw reviews |
+| `research/` | Research notes that inform the design; each claim tagged verified, secondary or training knowledge |
+| **Write path** | |
+| `edge/` | Ingest Worker: authenticates a sender, decodes Prometheus Remote Write and OTLP, routes to shards |
+| `shard/` | Pooled shard Durable Object: the write-ahead log, sealing and the tail of recent data |
+| `flush/` | Turns sealed segments into tenant-pure Parquet files on R2 |
+| `ledger/` | Per-tenant ledger Durable Object: the authority on which files are visible |
+| `compact/` | Merges a tenant's small files into fewer, larger ones |
+| `janitor/` | Retention, expiry and physical deletion |
+| `stack/` | The write path deployed as one script, with its queues, cron and soak test |
+| **Read path and engines** | |
+| `query/` | Prometheus HTTP API Worker, with query leaves as Durable Objects |
+| `engine/` | Rust engine crates compiled to WebAssembly: storage, PromQL, query |
+| `publisher/` | Publishes the ledgers as Iceberg tables that external engines can read |
+| **Control, monitors and agents** | |
+| `control/` | Tenant control plane: keys, dashboards, settings |
+| `ruler/` | Rule evaluation, notification and the monitors API |
+| `anomaly/` | Anomaly detectors for monitors |
+| `dashboard/` | The `viz.dashboard/v1` model, read by the renderer, agents and screen readers |
+| `mcp/` | MCP server and JSON agent API over query, ruler and control |
+| **Evidence and operations** | |
+| `spec/` | Protocol models of the write and read path, checked against the invariants |
+| `bench/` | Rust/WASM versus JavaScript engine benchmark, with results |
+| `spikes/` | Experiments deployed to Cloudflare, each with its result and cleanup state |
+| `deploy/` | How a push to `main` becomes a deployment at `vis.bitcru.sh`, and how to roll back |
+
+Each component has a README with what is implemented, what is not, how it was verified
+and its known risks.
+
+Not on `main` yet, all on the development branch: the web app and its design system (`app/`,
+`design-system/`), which merge after their design reviews approve; and the clean-room TraceQL and
+LogQL engines (`engine/traceql/`, `engine/logql/`), which merge in their own pull requests.
+
+## Licence
+
+Apache-2.0 (`LICENSE`, `NOTICE`). Third-party material in the repository keeps its own licence;
+`THIRD_PARTY.md` lists each piece and how its obligations are met.

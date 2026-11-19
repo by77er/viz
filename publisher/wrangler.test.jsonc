@@ -1,0 +1,19 @@
+{
+  // Test build: the real Ledger ships in the same script, so the tests drive a real ledger
+  // and read the R2 log it writes. `TestPublisher` is `Publisher` plus test seams.
+  "name": "viz-publisher-test",
+  "main": "test/worker.ts",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "PUBLISHER", "class_name": "TestPublisher" },
+      { "name": "LEDGER", "class_name": "Ledger" },
+      // The frozen as-built ledger (ledger/bench/asbuilt/): an independent writer of the
+      // first log layout (base.json + one object per change), which the publisher still reads.
+      { "name": "LEDGER_ASBUILT", "class_name": "LedgerAsBuilt" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TestPublisher", "Ledger", "LedgerAsBuilt"] }],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "viz-lake" }],
+  "vars": { "CELL": "cell-0", "ICEBERG_LOCATION_PREFIX": "s3://viz-lake" }
+}

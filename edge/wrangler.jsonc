@@ -1,0 +1,15 @@
+{
+  "name": "viz-edge",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  // For now the shard ships in the same script as the edge Worker.
+  "durable_objects": { "bindings": [{ "name": "SHARD", "class_name": "Shard" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Shard"] }],
+  // API keys (`key:<keyId>`) and per-tenant pool maps (`pool:<tenant>`).
+  "kv_namespaces": [{ "binding": "CONFIG", "id": "00000000000000000000000000000000" }],
+  "vars": {
+    // The shared pool used by tenants without a `pool:<tenant>` entry.
+    "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":8,\"spread\":2,\"epoch\":1}"
+    // Optional: "INGEST_LIMITS": "{\"acceptBackMs\":3600000}"  (see src/limits.ts)
+  }
+}

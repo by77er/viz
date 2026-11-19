@@ -1,0 +1,3418 @@
+{
+ "openapi": "3.1.0",
+ "info": {
+  "title": "viz ruler API",
+  "version": "1.0.0",
+  "description": "Two faces over a tenant's rules and alerts. `/api/v1/rules` and `/api/v1/alerts` return Prometheus' own response shapes, read-only. `/api/v1/monitors/...` is viz's API. The tenant is always the one the API key belongs to; no path, query, header or body field selects it. Every write accepts `dryRun` (query parameter, or a `dryRun: true` body field): it validates and reports what would happen and changes nothing."
+ },
+ "servers": [
+  {
+   "url": "https://vis.bitcru.sh"
+  }
+ ],
+ "tags": [
+  {
+   "name": "prometheus",
+   "description": "Prometheus-compatible, read-only"
+  },
+  {
+   "name": "monitors"
+  },
+  {
+   "name": "groups"
+  },
+  {
+   "name": "silences"
+  },
+  {
+   "name": "notifier"
+  }
+ ],
+ "paths": {
+  "/api/v1/rules": {
+   "get": {
+    "operationId": "prometheusRules",
+    "summary": "Rule groups with health and active alerts, in Prometheus' /api/v1/rules shape",
+    "tags": [
+     "prometheus"
+    ],
+    "security": [
+     {
+      "apiKey": [
+       "monitors:read"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Prometheus rule discovery",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/PromRulesResponse"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "bad_data",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/PromError"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     }
+    },
+    "parameters": [
+     {
+      "name": "type",
+      "in": "query",
+      "schema": {
+       "type": "string",
+       "enum": [
+        "alert",
+        "record"
+       ]
+      }
+     },
+     {
+      "name": "rule_name[]",
+      "in": "query",
+      "schema": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       }
+      },
+      "explode": true
+     },
+     {
+      "name": "rule_group[]",
+      "in": "query",
+      "schema": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       }
+      },
+      "explode": true
+     },
+     {
+      "name": "file[]",
+      "in": "query",
+      "description": "viz reports a group's file as `shard-<n>`",
+      "schema": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       }
+      },
+      "explode": true
+     },
+     {
+      "name": "exclude_alerts",
+      "in": "query",
+      "schema": {
+       "type": "boolean"
+      }
+     },
+     {
+      "name": "group_limit",
+      "in": "query",
+      "schema": {
+       "type": "integer",
+       "minimum": 1
+      }
+     },
+     {
+      "name": "group_next_token",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "match[]",
+      "in": "query",
+      "description": "Not supported: answered with 400 bad_data rather than ignored.",
+      "schema": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       }
+      },
+      "explode": true
+     }
+    ]
+   }
+  },
+  "/api/v1/alerts": {
+   "get": {
+    "operationId": "prometheusAlerts",
+    "summary": "Active (pending and firing) alerts, in Prometheus' /api/v1/alerts shape",
+    "tags": [
+     "prometheus"
+    ],
+    "security": [
+     {
+      "apiKey": [
+       "monitors:read"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Prometheus alert discovery",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/PromAlertsResponse"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     }
+    }
+   }
+  },
+  "/api/v1/monitors": {
+   "get": {
+    "operationId": "listMonitors",
+    "summary": "List monitors with the fields the Monitors screen shows",
+    "tags": [
+     "monitors"
+    ],
+    "security": [
+     {
+      "apiKey": [
+       "monitors:read"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Monitors",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "monitors",
+          "counts",
+          "total",
+          "nowMs"
+         ],
+         "properties": {
+          "monitors": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/Monitor"
+           }
+          },
+          "counts": {
+           "type": "object",
+           "additionalProperties": {
+            "type": "integer"
+           }
+          },
+          "total": {
+           "type": "integer"
+          },
+          "lastEvaluationMs": {
+           "type": [
+            "integer",
+            "null"
+           ],
+           "description": "Unix milliseconds"
+          },
+          "watchdog": {
+           "type": [
+            "object",
+            "null"
+           ],
+           "properties": {
+            "lastEvaluationMs": {
+             "type": [
+              "integer",
+              "null"
+             ],
+             "description": "Unix milliseconds"
+            },
+            "firing": {
+             "type": "boolean"
+            }
+           }
+          },
+          "nowMs": {
+           "type": "integer",
+           "description": "Unix milliseconds"
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     }
+    },
+    "parameters": [
+     {
+      "name": "filter",
+      "in": "query",
+      "schema": {
+       "type": "string",
+       "enum": [
+        "all",
+        "attention",
+        "silenced"
+       ],
+       "default": "all"
+      }
+     }
+    ]
+   },
+   "post": {
+    "operationId": "createMonitor",
+    "summary": "Create a monitor: one alerting rule plus its presentation",
+    "tags": [
+     "monitors"
+    ],
+    "security": [
+     {
+      "apiKey": [
+       "monitors:write"
+      ]
+     }
+    ],
+    "responses": {
+     "201": {
+      "description": "Created",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/MonitorSaved"
+        }
+       }
+      }
+     },
+     "200": {
+      "description": "Dry run: what would be created; nothing was saved",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/MonitorSaved"
+        }
+       }
+      }
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     }
+    },
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/dryRun"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/MonitorInput"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/monitors/groups": {
+   "get": {
+    "operationId": "listGroups",
+    "summary": "Rule groups as rule-file JSON, with the shard that holds each",
+    "tags": [
+     "groups"
+    ],
+    "security": [
+     {
+      "apiKey": [
+       "monitors:read"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Groups",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "groups": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/RuleGroup"
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     }
+    }
+   }
+  },
+  "/api/v1/monitors/groups/{name}": {
+   "put": {
+    "operationId": "putGroup",
+    "summary": "Create or replace a rule group; alert state follows rules whose name, expression and labels are unchanged",
+    "tags": [
+     "groups"
+    ],
+    "security": [
+     {
+      "apiKey": [
+       "monitors:write"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Saved",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/GroupsSaved"
+        }
+       }
+      }
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     }
+    },
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/groupName"
+     },
+     {
+      "$ref": "#/components/parameters/dryRun"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/RuleGroup"
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "operationId": "deleteGroup",
+    "summary": "Delete a rule group; its firing alerts are resolved",
+    "tags": [
+     "groups"
+    ],
+    "security": [
+     {
+      "apiKey": [
+       "monitors:write"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Deleted",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "dryRun": {
+           "type": "boolean"
+          },
+          "deleted": {
+           "type": "string"
+          },
+          "monitors": {
+           "type": "integer"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     }
+    },
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/groupName"
+     },
+     {
+      "$ref": "#/components/parameters/dryRun"
+     }
+    ]
+   }
+  },
+  "/api/v1/monitors/rulefile": {
+   "get": {
+    "operationId": "exportRuleFile",
+    "summary": "Export every group as a Prometheus rule file (YAML)",
+    "tags": [
+     "groups"
+    ],
+    "security": [
+     {
+      "apiKey": [
+       "monitors:read"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Rule file. With extensions=false viz's own fields are left out and listed in a leading comment.",
+      "headers": {
+       "x-viz-dropped-fields": {
+        "schema": {
+         "type": "integer"
+        }
+       }
+      },
+      "content": {
+       "application/yaml": {
+        "schema": {
+         "type": "string"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     }
+    },
+    "parameters": [
+     {
+      "name": "extensions",
+      "in": "query",
+      "description": "Keep viz's fields (no_data*, monitor). Default true.",
+      "schema": {
+       "type": "boolean",
+       "default": true
+      }
+     }
+    ]
+   },
+   "post": {
+    "operationId": "importRuleFile",
+    "summary": "Import a Prometheus rule file (YAML, or the same document as JSON); groups are created or replaced by name",
+    "tags": [
+     "groups"
+    ],
+    "security": [
+     {
+      "apiKey": [
+       "monitors:write"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Saved",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/GroupsSaved"
+        }
+       }
+      }
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     }
+    },
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/dryRun"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/yaml": {
+       "schema": {
+        "type": "string",
+        "description": "The YAML subset documented in ruler/README.md: no anchors, aliases, merge keys or tags."
+       }
+      },
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "groups"
+        ],
+        "properties": {
+         "groups": {
+          "type": "array",
+          "items": {
+           "$ref": "#/components/schemas/RuleGroup"
+          }
+         },
+         "dryRun": {
+          "type": "boolean"
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/monitors/backtest": {
+   "post": {
+    "operationId": "backtest",
+    "summary": "If this rule had existed: the intervals it would have been pending and firing, and the counts, from one computation",
+    "tags": [
+     "monitors"
+    ],
+    "security": [
+     {
+      "apiKey": [
+       "monitors:read"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Backtest",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Backtest"
+        }
+       }
+      }
+     },
+     "502": {
+      "description": "The range evaluation failed",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/BacktestRequest"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/monitors/detectors": {
+   "get": {
+    "operationId": "listDetectors",
+    "summary": "What each anomaly detector is for, its defaults and the evidence behind them",
+    "description": "Scores are from the Numenta Anomaly Benchmark under a held-out protocol (parameters chosen on one half of the files, scored on the other). Nothing here was measured on viz's own data; a configuration chosen after seeing the results is marked as such and is never a default.",
+    "tags": [
+     "monitors"
+    ],
+    "security": [
+     {
+      "apiKey": [
+       "monitors:read"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Detectors",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Detectors"
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     }
+    }
+   }
+  },
+  "/api/v1/monitors/notifier": {
+   "get": {
+    "operationId": "getNotifierConfig",
+    "summary": "The notifier config (Alertmanager shape) with every secret redacted",
+    "tags": [
+     "notifier"
+    ],
+    "security": [
+     {
+      "apiKey": [
+       "monitors:read"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Config",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "config": {
+           "type": [
+            "object",
+            "null"
+           ]
+          },
+          "receivers": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/Receiver"
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     }
+    }
+   },
+   "put": {
+    "operationId": "putNotifierConfig",
+    "summary": "Replace the notifier config. A webhook `secret` is write-only: omitted, the stored one is kept; empty, it is removed",
+    "tags": [
+     "notifier"
+    ],
+    "security": [
+     {
+      "apiKey": [
+       "monitors:write"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Saved",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "dryRun": {
+           "type": "boolean"
+          },
+          "receivers": {
+           "type": "array",
+           "items": {
+            "oneOf": [
+             {
+              "$ref": "#/components/schemas/Receiver"
+             },
+             {
+              "type": "string"
+             }
+            ]
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     }
+    },
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/dryRun"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "description": "Alertmanager's route / receivers / inhibit_rules, plus delivery"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/monitors/silences": {
+   "get": {
+    "operationId": "listSilences",
+    "summary": "List silences",
+    "tags": [
+     "silences"
+    ],
+    "security": [
+     {
+      "apiKey": [
+       "monitors:read"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Silences",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "silences": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/Silence"
+           }
+          },
+          "nowMs": {
+           "type": "integer",
+           "description": "Unix milliseconds"
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     }
+    }
+   }
+  },
+  "/api/v1/monitors/silences/undo": {
+   "post": {
+    "operationId": "undoSilence",
+    "summary": "Undo a silence call while its undo window is open: the silences are removed as if never made",
+    "tags": [
+     "silences"
+    ],
+    "security": [
+     {
+      "apiKey": [
+       "monitors:ack"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Removed",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "dryRun": {
+           "type": "boolean"
+          },
+          "removed": {
+           "type": "array",
+           "items": {
+            "type": "string"
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "410": {
+      "description": "The undo window has closed",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     }
+    },
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/dryRun"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "undoToken"
+        ],
+        "properties": {
+         "undoToken": {
+          "type": "string"
+         },
+         "dryRun": {
+          "type": "boolean"
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/monitors/silences/{silenceId}": {
+   "delete": {
+    "operationId": "expireSilence",
+    "summary": "End a silence now",
+    "tags": [
+     "silences"
+    ],
+    "security": [
+     {
+      "apiKey": [
+       "monitors:ack"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Expired",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "dryRun": {
+           "type": "boolean"
+          },
+          "expired": {
+           "type": "string"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     }
+    },
+    "parameters": [
+     {
+      "name": "silenceId",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "$ref": "#/components/parameters/dryRun"
+     }
+    ]
+   }
+  },
+  "/api/v1/monitors/{id}": {
+   "get": {
+    "operationId": "getMonitor",
+    "summary": "One monitor with its history: state transitions and notifications, who, what and when",
+    "tags": [
+     "monitors"
+    ],
+    "security": [
+     {
+      "apiKey": [
+       "monitors:read"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Monitor",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "monitor",
+          "history"
+         ],
+         "properties": {
+          "monitor": {
+           "$ref": "#/components/schemas/Monitor"
+          },
+          "history": {
+           "$ref": "#/components/schemas/Timeline"
+          },
+          "nowMs": {
+           "type": "integer",
+           "description": "Unix milliseconds"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     }
+    },
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/monitorId"
+     }
+    ]
+   },
+   "put": {
+    "operationId": "updateMonitor",
+    "summary": "Update a monitor; its id and history are kept",
+    "tags": [
+     "monitors"
+    ],
+    "security": [
+     {
+      "apiKey": [
+       "monitors:write"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Saved",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/MonitorSaved"
+        }
+       }
+      }
+     },
+     "409": {
+      "description": "The rule has no monitor metadata",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     }
+    },
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/monitorId"
+     },
+     {
+      "$ref": "#/components/parameters/dryRun"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/MonitorInput"
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "operationId": "deleteMonitor",
+    "summary": "Delete a monitor; its firing alerts are resolved and its history is dropped",
+    "tags": [
+     "monitors"
+    ],
+    "security": [
+     {
+      "apiKey": [
+       "monitors:write"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Deleted",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "dryRun": {
+           "type": "boolean"
+          },
+          "deleted": {
+           "type": "boolean"
+          },
+          "id": {
+           "type": "string"
+          },
+          "firingAlertsResolved": {
+           "type": "integer"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     }
+    },
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/monitorId"
+     },
+     {
+      "$ref": "#/components/parameters/dryRun"
+     }
+    ]
+   }
+  },
+  "/api/v1/monitors/{id}/acknowledge": {
+   "post": {
+    "operationId": "acknowledgeMonitor",
+    "summary": "Acknowledge the monitor's firing alerts: records who and when, stops repeat notifications until each alert resolves, hides nothing",
+    "tags": [
+     "monitors"
+    ],
+    "security": [
+     {
+      "apiKey": [
+       "monitors:ack"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Acknowledged",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AckResult"
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     }
+    },
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/monitorId"
+     },
+     {
+      "$ref": "#/components/parameters/dryRun"
+     }
+    ],
+    "requestBody": {
+     "required": false,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/AlertAction"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/monitors/{id}/unacknowledge": {
+   "post": {
+    "operationId": "unacknowledgeMonitor",
+    "summary": "Take the acknowledgement back; repeat notifications resume",
+    "tags": [
+     "monitors"
+    ],
+    "security": [
+     {
+      "apiKey": [
+       "monitors:ack"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Unacknowledged",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AckResult"
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     }
+    },
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/monitorId"
+     },
+     {
+      "$ref": "#/components/parameters/dryRun"
+     }
+    ],
+    "requestBody": {
+     "required": false,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/AlertAction"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/monitors/{id}/silence": {
+   "post": {
+    "operationId": "silenceMonitor",
+    "summary": "Silence the monitor's firing alerts for a duration: one Alertmanager-style silence per alert, matching exactly its labels. Returns an undo token, once",
+    "tags": [
+     "monitors"
+    ],
+    "security": [
+     {
+      "apiKey": [
+       "monitors:ack"
+      ]
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Silenced",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SilenceResult"
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/Invalid"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     }
+    },
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/monitorId"
+     },
+     {
+      "$ref": "#/components/parameters/dryRun"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "duration"
+        ],
+        "properties": {
+         "duration": {
+          "type": "string",
+          "description": "Prometheus duration, e.g. 5m, 1h30m",
+          "examples": [
+           "5m"
+          ]
+         },
+         "fingerprint": {
+          "type": "string"
+         },
+         "comment": {
+          "type": "string"
+         },
+         "dryRun": {
+          "type": "boolean"
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ },
+ "components": {
+  "securitySchemes": {
+   "apiKey": {
+    "type": "http",
+    "scheme": "bearer",
+    "description": "A viz API key (`viz_<keyId>_<secret>`), as Bearer or as the password of Basic. Scopes: monitors:read, monitors:write, monitors:ack. The key decides the tenant."
+   }
+  },
+  "parameters": {
+   "dryRun": {
+    "name": "dryRun",
+    "in": "query",
+    "description": "Validate and report what would happen; change nothing.",
+    "schema": {
+     "type": "boolean",
+     "default": false
+    }
+   },
+   "monitorId": {
+    "name": "id",
+    "in": "path",
+    "required": true,
+    "schema": {
+     "type": "string",
+     "pattern": "^(mon|r)_[0-9a-f]{16}$"
+    }
+   },
+   "groupName": {
+    "name": "name",
+    "in": "path",
+    "required": true,
+    "schema": {
+     "type": "string"
+    }
+   }
+  },
+  "responses": {
+   "Unauthorized": {
+    "description": "Missing, malformed, unknown, disabled or wrong API key",
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/Error"
+      }
+     }
+    }
+   },
+   "Forbidden": {
+    "description": "The key lacks the scope this operation needs",
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/Error"
+      }
+     }
+    }
+   },
+   "NotFound": {
+    "description": "No such resource for this tenant",
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/Error"
+      }
+     }
+    }
+   },
+   "Invalid": {
+    "description": "Validation problems; nothing was saved",
+    "content": {
+     "application/json": {
+      "schema": {
+       "type": "object",
+       "required": [
+        "error",
+        "problems"
+       ],
+       "properties": {
+        "error": {
+         "$ref": "#/components/schemas/ErrorBody"
+        },
+        "problems": {
+         "type": "array",
+         "items": {
+          "$ref": "#/components/schemas/Problem"
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "schemas": {
+   "ErrorBody": {
+    "type": "object",
+    "required": [
+     "code",
+     "message"
+    ],
+    "properties": {
+     "code": {
+      "type": "string"
+     },
+     "message": {
+      "type": "string"
+     }
+    }
+   },
+   "Error": {
+    "type": "object",
+    "required": [
+     "error"
+    ],
+    "properties": {
+     "error": {
+      "$ref": "#/components/schemas/ErrorBody"
+     }
+    }
+   },
+   "Problem": {
+    "type": "object",
+    "required": [
+     "path",
+     "message",
+     "fix"
+    ],
+    "properties": {
+     "path": {
+      "type": "string",
+      "description": "The field, e.g. `condition.threshold` or `groups[0].rules[2].for`; `line 12` for a YAML error"
+     },
+     "message": {
+      "type": "string"
+     },
+     "fix": {
+      "type": "string",
+      "description": "What to change"
+     }
+    }
+   },
+   "PromError": {
+    "type": "object",
+    "required": [
+     "status",
+     "errorType",
+     "error"
+    ],
+    "properties": {
+     "status": {
+      "const": "error"
+     },
+     "errorType": {
+      "type": "string"
+     },
+     "error": {
+      "type": "string"
+     }
+    }
+   },
+   "PromAlert": {
+    "type": "object",
+    "required": [
+     "labels",
+     "annotations",
+     "state",
+     "activeAt",
+     "value"
+    ],
+    "properties": {
+     "labels": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "string"
+      }
+     },
+     "annotations": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "string"
+      }
+     },
+     "state": {
+      "enum": [
+       "pending",
+       "firing"
+      ]
+     },
+     "activeAt": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "keepFiringSince": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "value": {
+      "type": "string",
+      "description": "Go's FormatFloat(v, 'e', -1, 64), e.g. 1e+00"
+     }
+    }
+   },
+   "PromAlertingRule": {
+    "type": "object",
+    "required": [
+     "state",
+     "name",
+     "query",
+     "duration",
+     "keepFiringFor",
+     "labels",
+     "annotations",
+     "alerts",
+     "health",
+     "evaluationTime",
+     "lastEvaluation",
+     "type"
+    ],
+    "properties": {
+     "state": {
+      "enum": [
+       "pending",
+       "firing",
+       "inactive"
+      ]
+     },
+     "name": {
+      "type": "string"
+     },
+     "query": {
+      "type": "string"
+     },
+     "duration": {
+      "type": "number",
+      "description": "seconds"
+     },
+     "keepFiringFor": {
+      "type": "number",
+      "description": "seconds"
+     },
+     "labels": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "string"
+      }
+     },
+     "annotations": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "string"
+      }
+     },
+     "alerts": {
+      "type": [
+       "array",
+       "null"
+      ],
+      "items": {
+       "$ref": "#/components/schemas/PromAlert"
+      }
+     },
+     "health": {
+      "enum": [
+       "ok",
+       "err",
+       "unknown"
+      ]
+     },
+     "lastError": {
+      "type": "string"
+     },
+     "evaluationTime": {
+      "type": "number",
+      "description": "seconds"
+     },
+     "lastEvaluation": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "type": {
+      "const": "alerting"
+     }
+    }
+   },
+   "PromRecordingRule": {
+    "type": "object",
+    "required": [
+     "name",
+     "query",
+     "labels",
+     "health",
+     "evaluationTime",
+     "lastEvaluation",
+     "type"
+    ],
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "query": {
+      "type": "string"
+     },
+     "labels": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "string"
+      }
+     },
+     "health": {
+      "enum": [
+       "ok",
+       "err",
+       "unknown"
+      ]
+     },
+     "lastError": {
+      "type": "string"
+     },
+     "evaluationTime": {
+      "type": "number"
+     },
+     "lastEvaluation": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "type": {
+      "const": "recording"
+     }
+    }
+   },
+   "PromRuleGroup": {
+    "type": "object",
+    "required": [
+     "name",
+     "file",
+     "rules",
+     "interval",
+     "limit",
+     "evaluationTime",
+     "lastEvaluation"
+    ],
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "file": {
+      "type": "string"
+     },
+     "rules": {
+      "type": "array",
+      "items": {
+       "oneOf": [
+        {
+         "$ref": "#/components/schemas/PromAlertingRule"
+        },
+        {
+         "$ref": "#/components/schemas/PromRecordingRule"
+        }
+       ]
+      }
+     },
+     "interval": {
+      "type": "number"
+     },
+     "limit": {
+      "type": "integer"
+     },
+     "evaluationTime": {
+      "type": "number"
+     },
+     "lastEvaluation": {
+      "type": "string",
+      "format": "date-time"
+     }
+    }
+   },
+   "PromRulesResponse": {
+    "type": "object",
+    "required": [
+     "status",
+     "data"
+    ],
+    "properties": {
+     "status": {
+      "const": "success"
+     },
+     "data": {
+      "type": "object",
+      "required": [
+       "groups"
+      ],
+      "properties": {
+       "groups": {
+        "type": "array",
+        "items": {
+         "$ref": "#/components/schemas/PromRuleGroup"
+        }
+       },
+       "groupNextToken": {
+        "type": "string"
+       }
+      }
+     }
+    }
+   },
+   "PromAlertsResponse": {
+    "type": "object",
+    "required": [
+     "status",
+     "data"
+    ],
+    "properties": {
+     "status": {
+      "const": "success"
+     },
+     "data": {
+      "type": "object",
+      "required": [
+       "alerts"
+      ],
+      "properties": {
+       "alerts": {
+        "type": "array",
+        "items": {
+         "$ref": "#/components/schemas/PromAlert"
+        }
+       }
+      }
+     }
+    }
+   },
+   "Condition": {
+    "type": "object",
+    "required": [
+     "op",
+     "threshold"
+    ],
+    "properties": {
+     "op": {
+      "enum": [
+       ">",
+       ">=",
+       "<",
+       "<=",
+       "==",
+       "!="
+      ]
+     },
+     "threshold": {
+      "type": "number",
+      "description": "In the unit the query returns: a ratio of 1% is 0.01"
+     },
+     "unit": {
+      "type": "string"
+     }
+    }
+   },
+   "MonitorInput": {
+    "type": "object",
+    "required": [
+     "name"
+    ],
+    "description": "Give either `expr`, or `query` with `condition`, or `query` with `anomaly`.",
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "expr": {
+      "type": "string"
+     },
+     "query": {
+      "type": "string"
+     },
+     "condition": {
+      "$ref": "#/components/schemas/Condition"
+     },
+     "for": {
+      "type": "string",
+      "description": "Prometheus duration, e.g. 5m, 1h30m",
+      "examples": [
+       "5m"
+      ]
+     },
+     "keepFiringFor": {
+      "type": "string",
+      "description": "Prometheus duration, e.g. 5m, 1h30m",
+      "examples": [
+       "5m"
+      ]
+     },
+     "interval": {
+      "type": "string",
+      "description": "Prometheus duration, e.g. 5m, 1h30m",
+      "examples": [
+       "5m"
+      ]
+     },
+     "group": {
+      "type": "string",
+      "description": "Default: monitors/<interval> (anomaly monitors: anomalies/<interval>), shared by monitors with the same interval"
+     },
+     "description": {
+      "type": "string"
+     },
+     "message": {
+      "type": "string",
+      "description": "Template; what the notification says"
+     },
+     "runbookUrl": {
+      "type": "string",
+      "format": "uri"
+     },
+     "owner": {
+      "type": "string"
+     },
+     "notify": {
+      "type": "string",
+      "description": "A receiver name from the notifier config"
+     },
+     "noData": {
+      "enum": [
+       "ok",
+       "alerting",
+       "keep"
+      ],
+      "default": "ok",
+      "description": "When the query returns nothing: resolve (ok), fire after noDataFor (alerting), or keep the last state (keep)"
+     },
+     "noDataFor": {
+      "type": "string",
+      "description": "Prometheus duration, e.g. 5m, 1h30m",
+      "examples": [
+       "5m"
+      ]
+     },
+     "startInvestigation": {
+      "type": "boolean"
+     },
+     "labels": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "string"
+      }
+     },
+     "annotations": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "string"
+      }
+     },
+     "dryRun": {
+      "type": "boolean"
+     },
+     "anomaly": {
+      "$ref": "#/components/schemas/AnomalyInput"
+     }
+    }
+   },
+   "RuleCost": {
+    "type": "object",
+    "required": [
+     "class",
+     "windowMs",
+     "reason"
+    ],
+    "properties": {
+     "class": {
+      "enum": [
+       "tail",
+       "recent",
+       "rollup"
+      ]
+     },
+     "windowMs": {
+      "type": "integer"
+     },
+     "reason": {
+      "type": "string"
+     }
+    }
+   },
+   "MonitorSaved": {
+    "type": "object",
+    "required": [
+     "dryRun",
+     "id",
+     "group",
+     "shard",
+     "warnings"
+    ],
+    "properties": {
+     "dryRun": {
+      "type": "boolean"
+     },
+     "id": {
+      "type": "string"
+     },
+     "group": {
+      "type": "string"
+     },
+     "shard": {
+      "type": "string"
+     },
+     "cost": {
+      "oneOf": [
+       {
+        "$ref": "#/components/schemas/RuleCost"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "expr": {
+      "type": "string"
+     },
+     "warnings": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/Problem"
+      }
+     },
+     "history": {
+      "$ref": "#/components/schemas/AnomalyHistory"
+     }
+    }
+   },
+   "Acknowledgement": {
+    "type": [
+     "object",
+     "null"
+    ],
+    "properties": {
+     "by": {
+      "type": "string"
+     },
+     "at": {
+      "type": "integer",
+      "description": "Unix milliseconds"
+     }
+    }
+   },
+   "Receiver": {
+    "type": "object",
+    "required": [
+     "name",
+     "integrations"
+    ],
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "integrations": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "kind": {
+         "enum": [
+          "webhook",
+          "slack"
+         ]
+        },
+        "channel": {
+         "type": [
+          "string",
+          "null"
+         ]
+        },
+        "signed": {
+         "type": "boolean"
+        }
+       }
+      }
+     }
+    }
+   },
+   "MonitorAlert": {
+    "type": "object",
+    "required": [
+     "fingerprint",
+     "labels",
+     "state",
+     "activeAt",
+     "value"
+    ],
+    "properties": {
+     "fingerprint": {
+      "type": "string"
+     },
+     "labels": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "string"
+      }
+     },
+     "state": {
+      "enum": [
+       "pending",
+       "firing"
+      ]
+     },
+     "activeAt": {
+      "type": "integer",
+      "description": "Above threshold since"
+     },
+     "firingSince": {
+      "type": [
+       "integer",
+       "null"
+      ],
+      "description": "Firing since; null while pending"
+     },
+     "firesAt": {
+      "type": [
+       "integer",
+       "null"
+      ],
+      "description": "Unix milliseconds"
+     },
+     "value": {
+      "type": [
+       "number",
+       "null"
+      ]
+     },
+     "noData": {
+      "type": "boolean"
+     },
+     "acknowledged": {
+      "$ref": "#/components/schemas/Acknowledgement"
+     },
+     "silencedUntil": {
+      "type": [
+       "integer",
+       "null"
+      ],
+      "description": "Unix milliseconds"
+     },
+     "inhibited": {
+      "type": "boolean"
+     },
+     "lastNotifiedAt": {
+      "type": [
+       "integer",
+       "null"
+      ],
+      "description": "Unix milliseconds"
+     },
+     "nextRepeatAt": {
+      "type": [
+       "integer",
+       "null"
+      ],
+      "description": "Unix milliseconds"
+     },
+     "handedOff": {
+      "type": "boolean"
+     }
+    }
+   },
+   "Monitor": {
+    "type": "object",
+    "required": [
+     "id",
+     "name",
+     "group",
+     "state",
+     "expr",
+     "alerts"
+    ],
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "name": {
+      "type": "string"
+     },
+     "group": {
+      "type": "string"
+     },
+     "shard": {
+      "type": "string"
+     },
+     "state": {
+      "enum": [
+       "firing",
+       "pending",
+       "ok",
+       "no_data",
+       "error",
+       "unknown",
+       "warming"
+      ],
+      "description": "warming: an anomaly monitor whose detector has not scored anything yet"
+     },
+     "firingSince": {
+      "type": [
+       "integer",
+       "null"
+      ],
+      "description": "Unix milliseconds"
+     },
+     "activeAt": {
+      "type": [
+       "integer",
+       "null"
+      ],
+      "description": "Unix milliseconds"
+     },
+     "value": {
+      "type": [
+       "number",
+       "null"
+      ]
+     },
+     "thresholdText": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "examples": [
+       "> 500 ms for 5m"
+      ]
+     },
+     "expr": {
+      "type": "string"
+     },
+     "query": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "condition": {
+      "oneOf": [
+       {
+        "$ref": "#/components/schemas/Condition"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "forMs": {
+      "type": "integer"
+     },
+     "keepFiringForMs": {
+      "type": "integer"
+     },
+     "intervalMs": {
+      "type": "integer"
+     },
+     "description": {
+      "type": "string"
+     },
+     "message": {
+      "type": "string"
+     },
+     "runbookUrl": {
+      "type": "string"
+     },
+     "owner": {
+      "type": "string"
+     },
+     "notify": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "notifies": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/Receiver"
+      }
+     },
+     "noData": {
+      "enum": [
+       "ok",
+       "alerting",
+       "keep"
+      ]
+     },
+     "noDataForMs": {
+      "type": "integer"
+     },
+     "startInvestigation": {
+      "type": "boolean"
+     },
+     "labels": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "string"
+      }
+     },
+     "annotations": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "string"
+      }
+     },
+     "cost": {
+      "$ref": "#/components/schemas/RuleCost"
+     },
+     "health": {
+      "enum": [
+       "ok",
+       "err",
+       "unknown"
+      ]
+     },
+     "lastError": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "lastEvaluationMs": {
+      "type": [
+       "integer",
+       "null"
+      ],
+      "description": "Unix milliseconds"
+     },
+     "acknowledged": {
+      "$ref": "#/components/schemas/Acknowledgement"
+     },
+     "silencedUntil": {
+      "type": [
+       "integer",
+       "null"
+      ],
+      "description": "Unix milliseconds"
+     },
+     "alerts": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/MonitorAlert"
+      }
+     },
+     "historyRecorded": {
+      "type": "boolean"
+     },
+     "anomaly": {
+      "oneOf": [
+       {
+        "$ref": "#/components/schemas/MonitorAnomaly"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "Set for an anomaly monitor"
+     }
+    }
+   },
+   "TimelineEntry": {
+    "type": "object",
+    "required": [
+     "at",
+     "source",
+     "kind"
+    ],
+    "description": "`source: ruler` entries are state transitions; `source: notifier` entries are notifications and what people did.",
+    "properties": {
+     "at": {
+      "type": "integer",
+      "description": "Unix milliseconds"
+     },
+     "source": {
+      "enum": [
+       "ruler",
+       "notifier"
+      ]
+     },
+     "kind": {
+      "enum": [
+       "created",
+       "edited",
+       "pending",
+       "firing",
+       "resolved",
+       "cleared",
+       "notified",
+       "acknowledged",
+       "unacknowledged",
+       "silenced",
+       "silence_undone",
+       "silence_expired"
+      ]
+     },
+     "by": {
+      "type": "string"
+     },
+     "fingerprint": {
+      "type": "string"
+     },
+     "fingerprints": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "labels": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "string"
+      }
+     },
+     "value": {
+      "type": [
+       "number",
+       "null"
+      ]
+     },
+     "noData": {
+      "type": "boolean"
+     },
+     "receiver": {
+      "type": "string"
+     },
+     "integration": {
+      "type": "string"
+     },
+     "channel": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "status": {
+      "enum": [
+       "firing",
+       "resolved"
+      ]
+     },
+     "repeat": {
+      "type": "boolean"
+     },
+     "idempotencyKey": {
+      "type": "string"
+     },
+     "deliveredAt": {
+      "type": [
+       "integer",
+       "null"
+      ],
+      "description": "Unix milliseconds"
+     },
+     "failed": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "until": {
+      "type": "integer",
+      "description": "Unix milliseconds"
+     },
+     "silenceIds": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    }
+   },
+   "Timeline": {
+    "type": "object",
+    "required": [
+     "entries",
+     "dropped"
+    ],
+    "properties": {
+     "entries": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/TimelineEntry"
+      }
+     },
+     "dropped": {
+      "type": "integer",
+      "description": "Entries dropped because the log is bounded; 0 means the history is complete"
+     }
+    }
+   },
+   "AlertAction": {
+    "type": "object",
+    "properties": {
+     "fingerprint": {
+      "type": "string",
+      "description": "One alert; default: every firing alert of the monitor"
+     },
+     "dryRun": {
+      "type": "boolean"
+     }
+    }
+   },
+   "AckResult": {
+    "type": "object",
+    "properties": {
+     "dryRun": {
+      "type": "boolean"
+     },
+     "id": {
+      "type": "string"
+     },
+     "acknowledged": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "unacknowledged": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "notYetHandedOff": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "by": {
+      "type": "string"
+     },
+     "at": {
+      "type": "integer",
+      "description": "Unix milliseconds"
+     }
+    }
+   },
+   "Silence": {
+    "type": "object",
+    "required": [
+     "id",
+     "matchers",
+     "startsAt",
+     "endsAt",
+     "state"
+    ],
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "matchers": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "name": {
+         "type": "string"
+        },
+        "value": {
+         "type": "string"
+        },
+        "isRegex": {
+         "type": "boolean"
+        },
+        "isEqual": {
+         "type": "boolean"
+        }
+       }
+      }
+     },
+     "startsAt": {
+      "type": "integer",
+      "description": "Unix milliseconds"
+     },
+     "endsAt": {
+      "type": "integer",
+      "description": "Unix milliseconds"
+     },
+     "createdBy": {
+      "type": "string"
+     },
+     "comment": {
+      "type": "string"
+     },
+     "updatedAt": {
+      "type": "integer",
+      "description": "Unix milliseconds"
+     },
+     "state": {
+      "enum": [
+       "pending",
+       "active",
+       "expired"
+      ]
+     }
+    }
+   },
+   "SilenceResult": {
+    "type": "object",
+    "properties": {
+     "dryRun": {
+      "type": "boolean"
+     },
+     "id": {
+      "type": "string"
+     },
+     "silences": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/Silence"
+      }
+     },
+     "silenced": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "notYetHandedOff": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "undoToken": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "description": "Returned once; never listed"
+     },
+     "undoUntil": {
+      "type": [
+       "integer",
+       "null"
+      ],
+      "description": "Unix milliseconds"
+     }
+    }
+   },
+   "Rule": {
+    "type": "object",
+    "required": [
+     "expr"
+    ],
+    "description": "A Prometheus rule: `alert` or `record`. viz adds no_data, no_data_for, no_data_expr and monitor to alerting rules, and `anomaly` (an anomaly rule: `expr` is the series to watch and a detector decides which series alert).",
+    "properties": {
+     "alert": {
+      "type": "string"
+     },
+     "record": {
+      "type": "string"
+     },
+     "expr": {
+      "type": "string"
+     },
+     "for": {
+      "type": "string",
+      "description": "Prometheus duration, e.g. 5m, 1h30m",
+      "examples": [
+       "5m"
+      ]
+     },
+     "keep_firing_for": {
+      "type": "string",
+      "description": "Prometheus duration, e.g. 5m, 1h30m",
+      "examples": [
+       "5m"
+      ]
+     },
+     "labels": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "string"
+      }
+     },
+     "annotations": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "string"
+      }
+     },
+     "no_data": {
+      "enum": [
+       "ok",
+       "alerting",
+       "keep"
+      ]
+     },
+     "no_data_for": {
+      "type": "string",
+      "description": "Prometheus duration, e.g. 5m, 1h30m",
+      "examples": [
+       "5m"
+      ]
+     },
+     "no_data_expr": {
+      "type": "string"
+     },
+     "monitor": {
+      "type": "object"
+     },
+     "anomaly": {
+      "type": "object",
+      "description": "detector, params, unit, severity, max_series (and given, written by the export). An export with extensions=false leaves anomaly rules out.",
+      "properties": {
+       "detector": {
+        "enum": [
+         "ewma",
+         "threshold",
+         "robust_z",
+         "seasonal",
+         "cusum"
+        ]
+       },
+       "params": {
+        "type": "object",
+        "additionalProperties": {
+         "type": [
+          "number",
+          "string",
+          "boolean",
+          "null"
+         ]
+        }
+       },
+       "unit": {
+        "type": "string"
+       },
+       "severity": {
+        "enum": [
+         "page",
+         "ticket",
+         "info"
+        ]
+       },
+       "max_series": {
+        "type": "integer"
+       },
+       "given": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    }
+   },
+   "RuleGroup": {
+    "type": "object",
+    "required": [
+     "rules"
+    ],
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "interval": {
+      "type": "string",
+      "description": "Prometheus duration, e.g. 5m, 1h30m",
+      "examples": [
+       "5m"
+      ]
+     },
+     "query_offset": {
+      "type": "string",
+      "description": "Prometheus duration, e.g. 5m, 1h30m",
+      "examples": [
+       "5m"
+      ]
+     },
+     "limit": {
+      "type": "integer"
+     },
+     "labels": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "string"
+      }
+     },
+     "rules": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/Rule"
+      }
+     },
+     "shard": {
+      "type": "string",
+      "readOnly": true
+     },
+     "dryRun": {
+      "type": "boolean"
+     }
+    }
+   },
+   "GroupsSaved": {
+    "type": "object",
+    "required": [
+     "dryRun",
+     "groups",
+     "warnings"
+    ],
+    "properties": {
+     "dryRun": {
+      "type": "boolean"
+     },
+     "groups": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "name": {
+         "type": "string"
+        },
+        "shard": {
+         "type": "string"
+        },
+        "intervalMs": {
+         "type": "integer"
+        },
+        "offsetMs": {
+         "type": "integer"
+        },
+        "nextEvaluationMs": {
+         "type": "integer",
+         "description": "Unix milliseconds"
+        },
+        "rules": {
+         "type": "array",
+         "items": {
+          "type": "object",
+          "properties": {
+           "name": {
+            "type": "string"
+           },
+           "kind": {
+            "enum": [
+             "alert",
+             "record"
+            ]
+           },
+           "key": {
+            "type": "string"
+           },
+           "cost": {
+            "$ref": "#/components/schemas/RuleCost"
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "warnings": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/Problem"
+      }
+     }
+    }
+   },
+   "BacktestRequest": {
+    "type": "object",
+    "required": [
+     "fromMs",
+     "toMs",
+     "step"
+    ],
+    "description": "Give `monitor` (the document you are about to save) or `rule` (an alerting rule).",
+    "properties": {
+     "monitor": {
+      "$ref": "#/components/schemas/MonitorInput"
+     },
+     "rule": {
+      "$ref": "#/components/schemas/Rule"
+     },
+     "fromMs": {
+      "type": "integer",
+      "description": "Unix milliseconds"
+     },
+     "toMs": {
+      "type": "integer",
+      "description": "Unix milliseconds"
+     },
+     "step": {
+      "type": "string",
+      "description": "Prometheus duration, e.g. 5m, 1h30m",
+      "examples": [
+       "5m"
+      ]
+     },
+     "interval": {
+      "type": "string",
+      "description": "Prometheus duration, e.g. 5m, 1h30m",
+      "examples": [
+       "5m"
+      ]
+     }
+    }
+   },
+   "BacktestInterval": {
+    "type": "object",
+    "required": [
+     "fingerprint",
+     "labels",
+     "state",
+     "startMs",
+     "endMs",
+     "open"
+    ],
+    "properties": {
+     "fingerprint": {
+      "type": "string"
+     },
+     "labels": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "string"
+      }
+     },
+     "state": {
+      "enum": [
+       "pending",
+       "firing"
+      ]
+     },
+     "startMs": {
+      "type": "integer",
+      "description": "Unix milliseconds"
+     },
+     "endMs": {
+      "type": "integer",
+      "description": "Unix milliseconds"
+     },
+     "open": {
+      "type": "boolean",
+      "description": "Still in this state at the end of the range"
+     },
+     "noData": {
+      "type": "boolean"
+     }
+    }
+   },
+   "Backtest": {
+    "type": "object",
+    "required": [
+     "fromMs",
+     "toMs",
+     "stepMs",
+     "steps",
+     "intervals",
+     "summary",
+     "resolution"
+    ],
+    "properties": {
+     "fromMs": {
+      "type": "integer",
+      "description": "Unix milliseconds"
+     },
+     "toMs": {
+      "type": "integer",
+      "description": "Unix milliseconds"
+     },
+     "stepMs": {
+      "type": "integer"
+     },
+     "steps": {
+      "type": "integer"
+     },
+     "intervals": {
+      "type": "array",
+      "description": "Shade these on the chart",
+      "items": {
+       "$ref": "#/components/schemas/BacktestInterval"
+      }
+     },
+     "summary": {
+      "type": "object",
+      "description": "Computed from `intervals`",
+      "properties": {
+       "firingCount": {
+        "type": "integer"
+       },
+       "pendingCount": {
+        "type": "integer"
+       },
+       "firingMs": {
+        "type": "integer"
+       },
+       "longestFiringMs": {
+        "type": "integer"
+       },
+       "clearedCount": {
+        "type": "integer"
+       },
+       "firingAtEnd": {
+        "type": "boolean"
+       },
+       "series": {
+        "type": "integer"
+       }
+      }
+     },
+     "resolution": {
+      "type": "object",
+      "properties": {
+       "stepMs": {
+        "type": "integer"
+       },
+       "liveIntervalMs": {
+        "type": "integer"
+       },
+       "edgeErrorMs": {
+        "type": "integer"
+       },
+       "note": {
+        "type": "string",
+        "description": "What this step can and cannot show"
+       }
+      }
+     }
+    }
+   },
+   "AnomalyInput": {
+    "type": "object",
+    "description": "An anomaly monitor: `query` is the series to watch (a gauge, or rate() of a counter) and a detector, not a condition, decides when it alerts. Defaults follow held-out evidence (GET /api/v1/monitors/detectors): detector ewma with halfLifePoints 100 and k 8, or threshold when severity is page; severity ticket (info for cusum); for 0s and keepFiringFor 10m; maxSeries 100.",
+    "properties": {
+     "detector": {
+      "enum": [
+       "ewma",
+       "threshold",
+       "robust_z",
+       "seasonal",
+       "cusum"
+      ],
+      "description": "Default ewma; threshold when severity is page (then params.above or params.below is required). stl, pelt and burn_rate are refused: they explain, they do not page."
+     },
+     "params": {
+      "type": "object",
+      "additionalProperties": {
+       "type": [
+        "number",
+        "string",
+        "boolean",
+        "null"
+       ]
+      },
+      "description": "The detector's parameters by name (anomaly/src/detectors). Not stepMs (the interval) or unit (use unit). Unknown names and wrong types are refused."
+     },
+     "unit": {
+      "type": "string",
+      "maxLength": 32,
+      "description": "Printed after numbers in the explanation, e.g. ms"
+     },
+     "severity": {
+      "enum": [
+       "page",
+       "ticket",
+       "info"
+      ]
+     },
+     "maxSeries": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Most series the query may return. Above it the evaluation is refused (state error, status series_cap_exceeded): nothing is scored and no alert changes; series are never dropped. Default 100."
+     }
+    }
+   },
+   "AnomalyHistory": {
+    "type": "object",
+    "required": [
+     "tick",
+     "coldStart",
+     "lookbackMs",
+     "tickLookbackMs",
+     "resolutionMs",
+     "minPoints",
+     "incremental",
+     "reason"
+    ],
+    "description": "What the detector reads, classified like a rule's query (design \u00a77).",
+    "properties": {
+     "tick": {
+      "enum": [
+       "tail",
+       "recent",
+       "rollup"
+      ]
+     },
+     "coldStart": {
+      "enum": [
+       "tail",
+       "recent",
+       "rollup"
+      ]
+     },
+     "lookbackMs": {
+      "type": "integer"
+     },
+     "tickLookbackMs": {
+      "type": "integer"
+     },
+     "resolutionMs": {
+      "type": "integer"
+     },
+     "minPoints": {
+      "type": "integer",
+      "description": "Valid points before anything is scored; until then the monitor is warming"
+     },
+     "incremental": {
+      "type": "boolean"
+     },
+     "reason": {
+      "type": "string"
+     }
+    }
+   },
+   "AnomalyStatus": {
+    "type": "object",
+    "required": [
+     "status",
+     "message",
+     "series",
+     "maxSeries",
+     "scored",
+     "warming",
+     "missing",
+     "anomalous",
+     "stateSeries",
+     "stateBytes",
+     "pruned"
+    ],
+    "properties": {
+     "status": {
+      "enum": [
+       "ok",
+       "warming",
+       "series_cap_exceeded",
+       "state_limit_exceeded",
+       "state_unreadable",
+       "unknown"
+      ],
+      "description": "A refused evaluation (series_cap_exceeded, state_limit_exceeded, state_unreadable) changes no state and no alert"
+     },
+     "message": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "series": {
+      "type": "integer",
+      "description": "Series the query returned at the last evaluation"
+     },
+     "maxSeries": {
+      "type": "integer"
+     },
+     "scored": {
+      "type": "integer"
+     },
+     "warming": {
+      "type": "integer"
+     },
+     "missing": {
+      "type": "integer",
+      "description": "NaN or infinite points: not scored, the previous flag kept"
+     },
+     "anomalous": {
+      "type": "integer"
+     },
+     "stateSeries": {
+      "type": "integer"
+     },
+     "stateBytes": {
+      "type": "integer"
+     },
+     "pruned": {
+      "type": "integer"
+     }
+    }
+   },
+   "DetectorGuide": {
+    "type": "object",
+    "required": [
+     "name",
+     "inRules",
+     "goodFor",
+     "notFor",
+     "pageAllowed",
+     "defaultSeverity",
+     "defaults",
+     "required",
+     "evidence"
+    ],
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "inRules": {
+      "type": "boolean",
+      "description": "Usable in a monitor; false: a library function for scheduled jobs and explanations"
+     },
+     "goodFor": {
+      "type": "string"
+     },
+     "notFor": {
+      "type": "string"
+     },
+     "pageAllowed": {
+      "type": "boolean"
+     },
+     "defaultSeverity": {
+      "enum": [
+       "page",
+       "ticket",
+       "info",
+       null
+      ]
+     },
+     "defaults": {
+      "type": "object",
+      "additionalProperties": {
+       "type": [
+        "number",
+        "string",
+        "boolean",
+        "null"
+       ]
+      },
+      "description": "Parameters the ruler fills in beyond the library's own"
+     },
+     "required": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "evidence": {
+      "type": "object",
+      "required": [
+       "kind",
+       "defaultsValidated",
+       "nab",
+       "note"
+      ],
+      "properties": {
+       "kind": {
+        "enum": [
+         "held_out",
+         "post_hoc",
+         "none",
+         "not_scorable"
+        ]
+       },
+       "defaultsValidated": {
+        "type": "boolean",
+        "description": "True only when the defaults are the configuration scored on held-out data"
+       },
+       "nab": {
+        "oneOf": [
+         {
+          "type": "object",
+          "required": [
+           "standard",
+           "lowFp",
+           "lowFn"
+          ],
+          "properties": {
+           "standard": {
+            "type": "number"
+           },
+           "lowFp": {
+            "type": "number"
+           },
+           "lowFn": {
+            "type": "number"
+           }
+          }
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "note": {
+        "type": "string"
+       }
+      }
+     }
+    }
+   },
+   "MonitorAnomaly": {
+    "type": "object",
+    "required": [
+     "detector",
+     "params",
+     "given",
+     "unit",
+     "severity",
+     "maxSeries",
+     "history",
+     "status",
+     "guide"
+    ],
+    "properties": {
+     "detector": {
+      "enum": [
+       "ewma",
+       "threshold",
+       "robust_z",
+       "seasonal",
+       "cusum"
+      ]
+     },
+     "params": {
+      "type": "object",
+      "additionalProperties": {
+       "type": [
+        "number",
+        "string",
+        "boolean",
+        "null"
+       ]
+      },
+      "description": "Every parameter, defaults written out when saved"
+     },
+     "given": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "The parameters the author gave"
+     },
+     "unit": {
+      "type": "string"
+     },
+     "severity": {
+      "enum": [
+       "page",
+       "ticket",
+       "info"
+      ]
+     },
+     "maxSeries": {
+      "type": "integer"
+     },
+     "history": {
+      "$ref": "#/components/schemas/AnomalyHistory"
+     },
+     "status": {
+      "oneOf": [
+       {
+        "$ref": "#/components/schemas/AnomalyStatus"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "guide": {
+      "$ref": "#/components/schemas/DetectorGuide"
+     }
+    }
+   },
+   "Detectors": {
+    "type": "object",
+    "required": [
+     "default",
+     "defaultForPage",
+     "monitorDefaults",
+     "detectors",
+     "source"
+    ],
+    "properties": {
+     "default": {
+      "enum": [
+       "ewma",
+       "threshold",
+       "robust_z",
+       "seasonal",
+       "cusum"
+      ]
+     },
+     "defaultForPage": {
+      "enum": [
+       "ewma",
+       "threshold",
+       "robust_z",
+       "seasonal",
+       "cusum"
+      ]
+     },
+     "monitorDefaults": {
+      "type": "object",
+      "properties": {
+       "for": {
+        "type": "string"
+       },
+       "keepFiringFor": {
+        "type": "string"
+       },
+       "severity": {
+        "enum": [
+         "page",
+         "ticket",
+         "info"
+        ]
+       }
+      }
+     },
+     "detectors": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/DetectorGuide"
+      }
+     },
+     "source": {
+      "type": "string"
+     }
+    }
+   }
+  }
+ }
+}

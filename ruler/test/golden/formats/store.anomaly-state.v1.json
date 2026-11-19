@@ -1,0 +1,12 @@
+{
+ "format": "store.anomaly-state",
+ "version": 1,
+ "seriesKey": "c0426a59f01532c0",
+ "rows": [
+  {
+   "rule_key": "0282a686f6fce67a",
+   "chunk": 0,
+   "body": "{\"v\":1,\"series\":[{\"k\":\"c0426a59f01532c0\",\"l\":{\"service\":\"checkout\"},\"s\":{\"v\":1,\"n\":10,\"mean\":100.38931965416674,\"var\":2.345571147158082,\"run\":1,\"lastTs\":4102445342247,\"stepMs\":60000},\"last\":{\"ts\":4102445342247,\"status\":\"ok\",\"flag\":true,\"value\":160,\"score\":64.16073073231486,\"explanation\":{\"text\":\"160 ms is 64.2 standard deviations above the exponentially weighted mean (half-life 5 minutes) (99.9 ms)\",\"detector\":\"ewma\",\"kind\":\"deviation\",\"direction\":\"above\",\"value\":160,\"reference\":99.90432824158925,\"referenceLabel\":\"the exponentially weighted mean (half-life 5 minutes)\",\"deviations\":64.16073073231486,\"spread\":0.9366425705021353,\"spreadLabel\":\"exponentially weighted standard deviation\",\"at\":4102445342247,\"facts\":{\"halfLifePoints\":5,\"k\":4,\"pointsSeen\":9}}},\"seen\":4102445342247}]}"
+  }
+ ]
+}

@@ -1,0 +1,6 @@
+{
+ "format": "file.rules-yaml",
+ "version": 1,
+ "prometheus": "groups:\n  - name: payments\n    interval: 1m\n    rules:\n      - alert: HighErrorRate\n        expr: rate(errors_total[5m]) > 0.5\n        labels:\n          team: pay\n          severity: page\n        annotations:\n          summary: \"{{ $labels.instance }} errors at {{ $value }}\"\n      - record: job:errors:rate5m\n        expr: sum by (job) (rate(errors_total[5m]))\n        labels:\n          team: pay\n",
+ "extended": "groups:\n  - name: payments\n    interval: 1m\n    rules:\n      - alert: HighErrorRate\n        expr: rate(errors_total[5m]) > 0.5\n        labels:\n          team: pay\n          severity: page\n        annotations:\n          summary: \"{{ $labels.instance }} errors at {{ $value }}\"\n      - record: job:errors:rate5m\n        expr: sum by (job) (rate(errors_total[5m]))\n        labels:\n          team: pay\n"
+}

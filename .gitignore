@@ -5,4 +5,12 @@ dist/
 .env
 *.log
 target/
+target-*/
 .DS_Store
+_apalache-out/
+.gomodcache/
+gocache/
+deploy/generated/
+engine/traceql/tools/godiff/.work/
+app/dist-new/
+__pycache__/

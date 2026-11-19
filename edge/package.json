@@ -1,0 +1,22 @@
+{
+  "name": "@viz/edge",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "fixtures": "node scripts/gen-fixtures.mjs",
+    "mutants": "node scripts/mutants.mjs",
+    "bench": "node bench/decode.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.8.4",
+    "@cloudflare/workers-types": "^5.20261117.1",
+    "protobufjs": "^8.8.1",
+    "snappyjs": "^0.7.0",
+    "typescript": "^5.9.0",
+    "vitest": "^5.1.1",
+    "wrangler": "^4.164.0"
+  }
+}

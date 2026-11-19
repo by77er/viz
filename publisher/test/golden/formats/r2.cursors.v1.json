@@ -1,0 +1,5 @@
+{
+ "format": "r2.cursors",
+ "version": 1,
+ "body": "{\"v\":1,\"table\":\"metric_samples\",\"cell\":\"<cell>\",\"snapshotId\":\"<id>\",\"cursors\":{\"<tenant>\":{\"ledgerIncarnation\":\"<inc>\",\"version\":2}}}"
+}

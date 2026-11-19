@@ -1,0 +1,18 @@
+{
+ "format": "store.anomaly-rule",
+ "version": 1,
+ "stored": "{\"name\":\"anomalies/1m\",\"intervalMs\":60000,\"queryOffsetMs\":0,\"limit\":0,\"rules\":[],\"anomalyRules\":[{\"kind\":\"anomaly\",\"name\":\"LatencyAnomaly\",\"expr\":\"sum by (service) (rate(latency_ms_sum[5m]))\",\"anomaly\":{\"detector\":\"ewma\",\"params\":{\"minDeviation\":0,\"direction\":\"both\",\"minSpread\":0,\"halfLifePoints\":5,\"k\":4,\"minPoints\":5,\"clip\":true,\"acceptAfter\":5,\"staleAfterMs\":1.7976931348623157e+308},\"given\":[\"halfLifePoints\",\"k\",\"minPoints\"],\"unit\":\"ms\",\"severity\":\"ticket\",\"maxSeries\":100,\"history\":{\"tick\":\"tail\",\"coldStart\":\"recent\",\"lookbackMs\":600000,\"tickLookbackMs\":0,\"resolutionMs\":0,\"minPoints\":5,\"incremental\":true,\"reason\":\"Reads 1 minute per tick from persisted state (tail); a cold start reads 10 minutes (recent). Five numbers of state; a cold start needs about 10 points (10 minutes) to settle.\"},\"stateBytesPerSeries\":1400},\"forMs\":0,\"keepFiringForMs\":0,\"labels\":{\"severity\":\"ticket\"},\"annotations\":{\"summary\":\"{{ $labels.service }} latency\"},\"key\":\"0282a686f6fce67a\",\"cost\":{\"class\":\"tail\",\"windowMs\":300000,\"reason\":\"reads back 300000 ms, within the 600000 ms shards hold; the detector: Reads 1 minute per tick from persisted state (tail); a cold start reads 10 minutes (recent). Five numbers of state; a cold start needs about 10 points (10 minutes) to settle.\"}}]}",
+ "key": "0282a686f6fce67a",
+ "bareId": "r_637b857019387159",
+ "history": {
+  "tick": "tail",
+  "coldStart": "recent",
+  "lookbackMs": 600000,
+  "tickLookbackMs": 0,
+  "resolutionMs": 0,
+  "minPoints": 5,
+  "incremental": true,
+  "reason": "Reads 1 minute per tick from persisted state (tail); a cold start reads 10 minutes (recent). Five numbers of state; a cold start needs about 10 points (10 minutes) to settle."
+ },
+ "extended": "groups:\n  - name: anomalies/1m\n    interval: 1m\n    rules:\n      - alert: LatencyAnomaly\n        expr: sum by (service) (rate(latency_ms_sum[5m]))\n        annotations:\n          summary: \"{{ $labels.service }} latency\"\n        anomaly:\n          detector: ewma\n          params:\n            minDeviation: 0\n            direction: both\n            minSpread: 0\n            halfLifePoints: 5\n            k: 4\n            minPoints: 5\n            clip: true\n            acceptAfter: 5\n            staleAfterMs: 1.7976931348623157e+308\n          given:\n            - halfLifePoints\n            - k\n            - minPoints\n          severity: ticket\n          max_series: 100\n          unit: ms\n"
+}

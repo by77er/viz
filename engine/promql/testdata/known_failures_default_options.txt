@@ -1,0 +1,10 @@
+# Upstream cases that fail when the corpus is run with delayed name removal OFF (the engine default).
+# The corpus expectations assume the `promql-delayed-name-removal` feature; stock Prometheus without
+# that flag returns the same "vector cannot contain metrics with the same labelset" error for the
+# five name_label_dropping cases, so these are differences in configuration, not engine bugs.
+functions.test:523 same parser limitation as in known_failures.txt
+name_label_dropping.test:55 rate() over two metric names with equal labels collides once the name is dropped eagerly
+name_label_dropping.test:60 as above
+name_label_dropping.test:65 as above
+name_label_dropping.test:70 as above
+name_label_dropping.test:85 as above

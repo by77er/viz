@@ -1,0 +1,5 @@
+{
+ "format": "kv.pool",
+ "version": 1,
+ "pool": "{\"pool\":\"tenant/<tenant>\",\"slots\":4,\"spread\":2,\"epoch\":2}"
+}

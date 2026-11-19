@@ -1,0 +1,80 @@
+{
+  "name": "viz-spike-s0-do-billing",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "observability": {
+    "enabled": false
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "A1",
+        "class_name": "A1"
+      },
+      {
+        "name": "A5",
+        "class_name": "A5"
+      },
+      {
+        "name": "A15",
+        "class_name": "A15"
+      },
+      {
+        "name": "A60",
+        "class_name": "A60"
+      },
+      {
+        "name": "P1",
+        "class_name": "P1"
+      },
+      {
+        "name": "P5",
+        "class_name": "P5"
+      },
+      {
+        "name": "P15",
+        "class_name": "P15"
+      },
+      {
+        "name": "P60",
+        "class_name": "P60"
+      },
+      {
+        "name": "B1",
+        "class_name": "B1"
+      },
+      {
+        "name": "B5",
+        "class_name": "B5"
+      },
+      {
+        "name": "B15",
+        "class_name": "B15"
+      },
+      {
+        "name": "B60",
+        "class_name": "B60"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "A1",
+        "A5",
+        "A15",
+        "A60",
+        "P1",
+        "P5",
+        "P15",
+        "P60",
+        "B1",
+        "B5",
+        "B15",
+        "B60"
+      ]
+    }
+  ]
+}

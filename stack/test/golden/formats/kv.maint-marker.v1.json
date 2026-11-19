@@ -1,0 +1,6 @@
+{
+ "format": "kv.maint-marker",
+ "version": 1,
+ "afterFlush": "{\"v\":1,\"due\":\"<ms>\",\"orphansAt\":\"<ms>\",\"sweep\":true}",
+ "afterRefusal": "{\"v\":1,\"due\":\"<ms>\",\"orphansAt\":\"<ms>\",\"sweep\":false,\"retention\":\"not JSON\"}"
+}

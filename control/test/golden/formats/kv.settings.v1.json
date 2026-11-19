@@ -1,0 +1,6 @@
+{
+ "format": "kv.settings",
+ "version": 1,
+ "retention": "{\"metric_samples_days\":60,\"metric_5m_days\":90}",
+ "limits": "{\"active_series\":50000,\"query_max_series\":10000}"
+}

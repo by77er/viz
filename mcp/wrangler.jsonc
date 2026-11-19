@@ -1,0 +1,23 @@
+{
+  // The production shape; deploy/configure.mjs generates the deployed config from it (deploy/workers.json:
+  // after viz-query, viz-control and viz-ruler, before viz-gateway, which routes /mcp and /api/v1/agent/* here).
+  "name": "viz-mcp",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  // edge's key store: `key:<keyId>` → { tenant, secretSha256, scopes, disabled }. Read only.
+  // The id is a placeholder; never deploy with it.
+  "kv_namespaces": [{ "binding": "CONFIG", "id": "00000000000000000000000000000000" }],
+  // Every call to these carries the caller's own credential; each service enforces tenancy.
+  "services": [
+    { "binding": "QUERY", "service": "viz-query" },
+    { "binding": "CONTROL", "service": "viz-control" },
+    { "binding": "RULER", "service": "viz-ruler" }
+  ],
+  "vars": {
+    // Base of deep links (the app's Explore view).
+    "APP_URL": "https://vis.bitcru.sh",
+    // Comma-separated browser origins allowed to call. Empty: none (agents are not browsers).
+    "ALLOWED_ORIGINS": ""
+    // Optional: "MCP_LIMITS": "{\"maxSeries\":2000,\"maxPanels\":40,\"maxParallel\":6,\"deadlineMs\":10000}"
+  }
+}

@@ -1,0 +1,40 @@
+{
+  // Production shape; deploy/configure.mjs generates the deployed config from it (Worker and
+  // resource names, the KV id, a stage's prefix and deadline).
+  //
+  // The engine: viz-query's Prometheus HTTP API over the QUERY service binding, one call in
+  // flight per Ruler object (src/engine.ts: a service-bound callee spends from its caller's six
+  // connections). Recording rules: viz-ingest's Remote Write over INGEST. Both authenticate with
+  // the shard's service key, issued by the tenant's control plane through TENANT (control's
+  // `Tenant` object by script_name; contracts/control.ts), which also gives the notifier the
+  // tenant's default webhook. An `EVALUATOR` / `SINK` RPC binding, when one exists, is used
+  // instead (README, "Needed changes").
+  //
+  // CONFIG is edge's API-key store: the SAME namespace edge binds, by id. The id below is
+  // edge's placeholder; never bind the unrelated account namespace that is also called CONFIG.
+  "name": "viz-ruler",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  // The notifier's webhooks always go out over the public internet, never to a Worker of this
+  // account's zones by a shortcut (and a workers.dev receiver on the same account is reachable).
+  "compatibility_flags": ["global_fetch_strictly_public"],
+  "durable_objects": {
+    "bindings": [
+      { "name": "RULER", "class_name": "Ruler" },
+      { "name": "NOTIFIER", "class_name": "Notifier" },
+      { "name": "RULER_INDEX", "class_name": "RulerIndex" },
+      { "name": "TENANT", "class_name": "Tenant", "script_name": "viz-control" }
+    ]
+  },
+  "services": [
+    { "binding": "QUERY", "service": "viz-query" },
+    { "binding": "INGEST", "service": "viz-ingest" }
+  ],
+  "kv_namespaces": [{ "binding": "CONFIG", "id": "00000000000000000000000000000000" }],
+  // The sweeper. Each run costs 16 index-object requests plus one per registered ruler shard.
+  "triggers": { "crons": ["*/15 * * * *"] },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Ruler", "Notifier"] },
+    { "tag": "v2", "new_sqlite_classes": ["RulerIndex"] }
+  ]
+}

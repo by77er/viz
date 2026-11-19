@@ -1,0 +1,1085 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://viz.dev/schema/dashboard/v1.json",
+  "title": "viz.dashboard/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "metadata",
+    "panels",
+    "layout"
+  ],
+  "properties": {
+    "apiVersion": {
+      "const": "viz.dashboard/v1"
+    },
+    "metadata": {
+      "$ref": "#/$defs/Metadata"
+    },
+    "time": {
+      "$ref": "#/$defs/TimeRange"
+    },
+    "variables": {
+      "type": "object",
+      "description": "Dashboard variables, referenced in query expressions as $name or ${name}.",
+      "propertyNames": {
+        "$ref": "#/$defs/Id"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/Variable"
+      },
+      "maxProperties": 32
+    },
+    "queries": {
+      "type": "object",
+      "description": "Named queries. Panels reference them by id.",
+      "propertyNames": {
+        "$ref": "#/$defs/Id"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/Query"
+      },
+      "maxProperties": 200
+    },
+    "panels": {
+      "type": "object",
+      "description": "Panels keyed by stable id. Position lives in `layout`, not here.",
+      "propertyNames": {
+        "$ref": "#/$defs/Id"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/Panel"
+      },
+      "maxProperties": 100
+    },
+    "layout": {
+      "$ref": "#/$defs/Layout"
+    },
+    "fragments": {
+      "type": "object",
+      "description": "Reusable groups of queries + panels + layout with parameters.",
+      "propertyNames": {
+        "$ref": "#/$defs/Id"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/Fragment"
+      },
+      "maxProperties": 32
+    }
+  },
+  "$defs": {
+    "Id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,47}$",
+      "description": "Lowercase letter, then lowercase letters, digits or _. Max 48 chars."
+    },
+    "Unit": {
+      "enum": [
+        "none",
+        "count",
+        "percent",
+        "ratio",
+        "s",
+        "ms",
+        "us",
+        "ns",
+        "bytes",
+        "bits",
+        "bytes/s",
+        "bits/s",
+        "req/s",
+        "ops/s",
+        "events/s",
+        "rows/s",
+        "errors/s",
+        "cores",
+        "celsius",
+        "usd"
+      ]
+    },
+    "Duration": {
+      "type": "string",
+      "pattern": "^([0-9]+(ms|s|m|h|d|w|y))+$",
+      "description": "Prometheus duration, e.g. 30s, 5m, 1h30m."
+    },
+    "Metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "intent"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "intent": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600,
+          "description": "What question this dashboard answers, and for whom."
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9_.:-]{0,39}$"
+          },
+          "maxItems": 16,
+          "uniqueItems": true
+        }
+      }
+    },
+    "TimeRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to"
+      ],
+      "properties": {
+        "from": {
+          "type": "string",
+          "pattern": "^(now(-([0-9]+(ms|s|m|h|d|w|y))+)?|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2}))$",
+          "description": "now, now-6h, or an RFC 3339 timestamp."
+        },
+        "to": {
+          "type": "string",
+          "pattern": "^(now(-([0-9]+(ms|s|m|h|d|w|y))+)?|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2}))$"
+        },
+        "refresh": {
+          "$ref": "#/$defs/Duration"
+        }
+      }
+    },
+    "Variable": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/EnumVariable"
+        },
+        {
+          "$ref": "#/$defs/QueryVariable"
+        },
+        {
+          "$ref": "#/$defs/TextVariable"
+        },
+        {
+          "$ref": "#/$defs/IntervalVariable"
+        }
+      ]
+    },
+    "EnumVariable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "values"
+      ],
+      "properties": {
+        "kind": {
+          "const": "enum"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "minItems": 1,
+          "maxItems": 200,
+          "uniqueItems": true
+        },
+        "multi": {
+          "type": "boolean",
+          "description": "Several values may be selected; use with =~ matchers only."
+        },
+        "includeAll": {
+          "type": "boolean",
+          "description": "Offer \"*\" (all), which resolves to the regex .*"
+        },
+        "default": {
+          "$ref": "#/$defs/VariableDefault"
+        }
+      }
+    },
+    "QueryVariable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "query"
+      ],
+      "properties": {
+        "kind": {
+          "const": "query"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "query": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "lang",
+            "expr"
+          ],
+          "properties": {
+            "lang": {
+              "enum": [
+                "promql",
+                "traceql",
+                "logql"
+              ]
+            },
+            "expr": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            }
+          }
+        },
+        "multi": {
+          "type": "boolean"
+        },
+        "includeAll": {
+          "type": "boolean"
+        },
+        "default": {
+          "$ref": "#/$defs/VariableDefault"
+        }
+      }
+    },
+    "TextVariable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "const": "text"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "default": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 200
+        }
+      }
+    },
+    "IntervalVariable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "values"
+      ],
+      "properties": {
+        "kind": {
+          "const": "interval"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Duration"
+          },
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true
+        },
+        "default": {
+          "$ref": "#/$defs/Duration"
+        }
+      }
+    },
+    "VariableDefault": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 200
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "minItems": 1,
+          "maxItems": 200,
+          "uniqueItems": true
+        }
+      ]
+    },
+    "Query": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lang",
+        "expr"
+      ],
+      "properties": {
+        "lang": {
+          "enum": [
+            "promql",
+            "traceql",
+            "logql"
+          ]
+        },
+        "expr": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000,
+          "description": "Query text. Variables: $name or ${name}; built-ins $__rate, $__interval, $__range."
+        },
+        "legend": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Series name template, e.g. {{route}}."
+        },
+        "instant": {
+          "type": "boolean"
+        }
+      }
+    },
+    "Threshold": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ThresholdAbove"
+        },
+        {
+          "$ref": "#/$defs/ThresholdBelow"
+        }
+      ]
+    },
+    "ThresholdAbove": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "above",
+        "level"
+      ],
+      "properties": {
+        "above": {
+          "type": "number"
+        },
+        "level": {
+          "enum": [
+            "info",
+            "warn",
+            "crit"
+          ]
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        }
+      }
+    },
+    "ThresholdBelow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "below",
+        "level"
+      ],
+      "properties": {
+        "below": {
+          "type": "number"
+        },
+        "level": {
+          "enum": [
+            "info",
+            "warn",
+            "crit"
+          ]
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        }
+      }
+    },
+    "Panel": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/TimeseriesPanel"
+        },
+        {
+          "$ref": "#/$defs/StatPanel"
+        },
+        {
+          "$ref": "#/$defs/TablePanel"
+        },
+        {
+          "$ref": "#/$defs/HeatmapPanel"
+        },
+        {
+          "$ref": "#/$defs/TextPanel"
+        }
+      ]
+    },
+    "TimeseriesPanel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "title",
+        "description",
+        "unit",
+        "queries"
+      ],
+      "properties": {
+        "kind": {
+          "const": "timeseries"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Short human title. Not the query text."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600,
+          "description": "What the panel shows, how to read it, and what bad looks like."
+        },
+        "unit": {
+          "$ref": "#/$defs/Unit"
+        },
+        "queries": {
+          "type": "array",
+          "description": "Ids of named queries (keys of `queries`).",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true
+        },
+        "options": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "style": {
+              "enum": [
+                "line",
+                "area",
+                "bars"
+              ]
+            },
+            "stack": {
+              "type": "boolean"
+            },
+            "yScale": {
+              "enum": [
+                "linear",
+                "log"
+              ]
+            },
+            "yMin": {
+              "type": "number"
+            },
+            "yMax": {
+              "type": "number"
+            },
+            "maxSeries": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            },
+            "legend": {
+              "enum": [
+                "list",
+                "table",
+                "hidden"
+              ]
+            }
+          }
+        },
+        "thresholds": {
+          "type": "array",
+          "description": "Value thresholds. The worst breached level is the panel state.",
+          "items": {
+            "$ref": "#/$defs/Threshold"
+          },
+          "maxItems": 8
+        }
+      }
+    },
+    "StatPanel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "title",
+        "description",
+        "unit",
+        "queries"
+      ],
+      "properties": {
+        "kind": {
+          "const": "stat"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Short human title. Not the query text."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600,
+          "description": "What the panel shows, how to read it, and what bad looks like."
+        },
+        "unit": {
+          "$ref": "#/$defs/Unit"
+        },
+        "queries": {
+          "type": "array",
+          "description": "Ids of named queries (keys of `queries`).",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true
+        },
+        "options": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "reduce": {
+              "enum": [
+                "last",
+                "mean",
+                "min",
+                "max",
+                "sum"
+              ]
+            },
+            "sparkline": {
+              "type": "boolean"
+            },
+            "decimals": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 6
+            }
+          }
+        },
+        "thresholds": {
+          "type": "array",
+          "description": "Value thresholds. The worst breached level is the panel state.",
+          "items": {
+            "$ref": "#/$defs/Threshold"
+          },
+          "maxItems": 8
+        }
+      }
+    },
+    "TablePanel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "title",
+        "description",
+        "queries"
+      ],
+      "properties": {
+        "kind": {
+          "const": "table"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Short human title. Not the query text."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600,
+          "description": "What the panel shows, how to read it, and what bad looks like."
+        },
+        "unit": {
+          "$ref": "#/$defs/Unit"
+        },
+        "queries": {
+          "type": "array",
+          "description": "Ids of named queries (keys of `queries`).",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 1,
+          "maxItems": 12,
+          "uniqueItems": true
+        },
+        "options": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "reduce": {
+              "enum": [
+                "last",
+                "mean",
+                "min",
+                "max",
+                "sum"
+              ]
+            },
+            "columns": {
+              "type": "array",
+              "maxItems": 12,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "query"
+                ],
+                "properties": {
+                  "query": {
+                    "$ref": "#/$defs/Id"
+                  },
+                  "title": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 60
+                  },
+                  "unit": {
+                    "$ref": "#/$defs/Unit"
+                  }
+                }
+              }
+            },
+            "sortBy": {
+              "$ref": "#/$defs/Id"
+            },
+            "sortDir": {
+              "enum": [
+                "asc",
+                "desc"
+              ]
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            }
+          }
+        },
+        "thresholds": {
+          "type": "array",
+          "description": "Value thresholds. The worst breached level is the panel state.",
+          "items": {
+            "$ref": "#/$defs/Threshold"
+          },
+          "maxItems": 8
+        }
+      }
+    },
+    "HeatmapPanel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "title",
+        "description",
+        "unit",
+        "queries"
+      ],
+      "properties": {
+        "kind": {
+          "const": "heatmap"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Short human title. Not the query text."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600,
+          "description": "What the panel shows, how to read it, and what bad looks like."
+        },
+        "unit": {
+          "$ref": "#/$defs/Unit"
+        },
+        "queries": {
+          "type": "array",
+          "description": "Ids of named queries (keys of `queries`).",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 1,
+          "maxItems": 1,
+          "uniqueItems": true
+        },
+        "options": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "yScale": {
+              "enum": [
+                "linear",
+                "log"
+              ]
+            },
+            "colorScale": {
+              "enum": [
+                "linear",
+                "sqrt",
+                "log"
+              ]
+            },
+            "exemplars": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "TextPanel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "title",
+        "content"
+      ],
+      "properties": {
+        "kind": {
+          "const": "text"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Short human title. Not the query text."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600,
+          "description": "What the panel shows, how to read it, and what bad looks like."
+        },
+        "content": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000,
+          "description": "Markdown."
+        }
+      }
+    },
+    "Layout": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/RowsLayout"
+        },
+        {
+          "$ref": "#/$defs/GridLayout"
+        }
+      ]
+    },
+    "RowsLayout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "rows"
+      ],
+      "properties": {
+        "kind": {
+          "const": "rows"
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Row"
+          },
+          "maxItems": 50
+        }
+      }
+    },
+    "Row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "items"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 40,
+          "maximum": 2000
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RowItem"
+          },
+          "minItems": 1,
+          "maxItems": 24
+        }
+      }
+    },
+    "RowItem": {
+      "description": "A panel id, a panel with a span, a fragment instance, or a nested layout.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Id"
+        },
+        {
+          "$ref": "#/$defs/PanelItem"
+        },
+        {
+          "$ref": "#/$defs/FragmentUse"
+        },
+        {
+          "$ref": "#/$defs/RowsLayout"
+        },
+        {
+          "$ref": "#/$defs/GridLayout"
+        }
+      ]
+    },
+    "PanelItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "panel"
+      ],
+      "properties": {
+        "panel": {
+          "$ref": "#/$defs/Id"
+        },
+        "span": {
+          "$ref": "#/$defs/Span"
+        }
+      }
+    },
+    "Span": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 12,
+      "description": "Width in twelfths of the row. Default: equal split."
+    },
+    "FragmentUse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fragment",
+        "as"
+      ],
+      "properties": {
+        "fragment": {
+          "$ref": "#/$defs/Id"
+        },
+        "as": {
+          "$ref": "#/$defs/Id"
+        },
+        "with": {
+          "type": "object",
+          "description": "Arguments by parameter name: a literal string, or exactly one variable reference ($env).",
+          "propertyNames": {
+            "$ref": "#/$defs/Id"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 200
+          },
+          "maxProperties": 16
+        },
+        "span": {
+          "$ref": "#/$defs/Span"
+        }
+      }
+    },
+    "GridLayout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "items"
+      ],
+      "properties": {
+        "kind": {
+          "const": "grid"
+        },
+        "columns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 48,
+          "description": "Default 24."
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GridItem"
+          },
+          "maxItems": 100
+        }
+      }
+    },
+    "GridItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "panel",
+        "x",
+        "y",
+        "w",
+        "h"
+      ],
+      "properties": {
+        "panel": {
+          "$ref": "#/$defs/Id"
+        },
+        "x": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 47
+        },
+        "y": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "w": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 48
+        },
+        "h": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        }
+      }
+    },
+    "Fragment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "description",
+        "panels",
+        "layout"
+      ],
+      "properties": {
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600,
+          "description": "What the fragment is for and when to reuse it."
+        },
+        "params": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/Id"
+          },
+          "maxProperties": 16,
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "description": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 300
+              },
+              "default": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 200
+              }
+            }
+          }
+        },
+        "queries": {
+          "type": "object",
+          "description": "Queries local to the fragment. They may use only the fragment parameters and built-ins.",
+          "propertyNames": {
+            "$ref": "#/$defs/Id"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/Query"
+          },
+          "maxProperties": 50
+        },
+        "panels": {
+          "type": "object",
+          "description": "Panels local to the fragment; they reference the fragment queries.",
+          "propertyNames": {
+            "$ref": "#/$defs/Id"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/Panel"
+          },
+          "maxProperties": 50
+        },
+        "layout": {
+          "$ref": "#/$defs/Layout"
+        }
+      }
+    }
+  }
+}

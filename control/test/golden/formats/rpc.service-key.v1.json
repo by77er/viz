@@ -1,0 +1,13 @@
+{
+  "format": "rpc.service-key",
+  "version": 1,
+  "result": {
+    "v": 1,
+    "status": "ok",
+    "key": "viz_<keyId>_<secret>",
+    "keyId": "<keyId>",
+    "name": "service:viz-ruler/0",
+    "scopes": ["read", "write"],
+    "issuedAt": "<ms>"
+  }
+}

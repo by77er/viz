@@ -1,0 +1,15 @@
+{
+  // The in-workerd benchmark (bench/): the shard, the frozen as-built shard, and clients that
+  // are each their own Durable Object. Not deployed.
+  "name": "viz-shard-bench",
+  "main": "bench/worker.ts",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "SHARD", "class_name": "Shard" },
+      { "name": "SHARD_ASBUILT", "class_name": "ShardAsBuilt" },
+      { "name": "CLIENT", "class_name": "Client" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Shard", "ShardAsBuilt", "Client"] }]
+}

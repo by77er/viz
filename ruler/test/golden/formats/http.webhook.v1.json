@@ -1,0 +1,6 @@
+{
+ "format": "http.webhook",
+ "version": 1,
+ "body": "{\"version\":\"4\",\"groupKey\":\"{}:{alertname=\\\"HighErrorRate\\\"}\",\"truncatedAlerts\":0,\"status\":\"firing\",\"receiver\":\"hook\",\"groupLabels\":{\"alertname\":\"HighErrorRate\"},\"commonLabels\":{\"instance\":\"api-1\",\"job\":\"api\",\"team\":\"pay\",\"severity\":\"page\",\"alertname\":\"HighErrorRate\"},\"commonAnnotations\":{\"summary\":\"api-1 errors at 0.75\"},\"externalURL\":\"https://vis.bitcru.sh\",\"alerts\":[{\"status\":\"firing\",\"labels\":{\"instance\":\"api-1\",\"job\":\"api\",\"team\":\"pay\",\"severity\":\"page\",\"alertname\":\"HighErrorRate\"},\"annotations\":{\"summary\":\"api-1 errors at 0.75\"},\"startsAt\":\"2100-01-01T00:00:57.632Z\",\"endsAt\":\"0001-01-01T00:00:00Z\",\"generatorURL\":\"\",\"fingerprint\":\"578a9786a3362fe0\"}]}",
+ "signature": "t=4102444859,v1=160d2a5e762c1afee23f64972bf8b00174a102da7f981dbd12e7968a32a3598b"
+}

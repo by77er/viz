@@ -1,0 +1,630 @@
+//! # viz-engine-wasm-query
+//!
+//! A plain C ABI over `viz-query` for `wasm32-unknown-unknown`: the read path's module.
+//! The TypeScript binding in `js/` is the only intended caller; together they implement
+//! the query half of `contracts/engine.ts` (`selectors`/plan, `queryRange`,
+//! `queryInstant`, `select`), the metadata calls and file pruning.
+//!
+//! No I/O, no clock, no imports: the module instantiates with an empty import object.
+//! Malformed input comes back as an error result, never as a trap: every byte of a
+//! request is bounds-checked before use.
+//!
+//! ## Calling convention (the same as `engine/wasm`)
+//!
+//! All integers little-endian. The caller owns request memory, the callee owns results.
+//!
+//! * `viz_alloc(len) -> ptr`, `viz_free(ptr, len)`: the module's allocator.
+//! * Every operation takes `(ptr, len)` of one request buffer and returns a pointer to a
+//!   **result**: `u32 total_len, u32 status, payload`. `total_len` counts the 8 header
+//!   bytes. The caller frees it with `viz_free(ptr, total_len)`.
+//! * `status` 0 is success. Any other status is an error and the payload is
+//!   `u32 limit_len, limit name, u64 limit_max, u64 limit_reached, message (UTF-8, the rest)`;
+//!   `limit_len` is 0 unless a limit was exceeded. Statuses:
+//!   1 `bad_data`, 2 `execution`, 3 `unsupported`, 4 `internal`, 5 a malformed request
+//!   buffer (a bug in the binding, not in the query).
+//!
+//! Building blocks of requests:
+//!
+//! * `str`: `u32 len, bytes`.
+//! * `limits`: seven `u64`: `max_samples, max_series, max_output_points,
+//!   max_step_points, max_query_bytes, max_depth, max_steps`. Passed with every call
+//!   that evaluates or parses; nothing is read from module state.
+//! * `scan`: `u32 n_series_files, u32 n_sample_files, u32 n_tail_batches`, then each
+//!   series file, sample file and tail batch as `str`.
+//! * `matcher`: `u8 op (0 '=', 1 '!=', 2 '=~', 3 '!~'), str name, str value`.
+//!
+//! Times are `i64` Unix milliseconds. Sample values never cross as numbers: query
+//! results carry them as Prometheus-formatted strings inside JSON, `viz_q_select`
+//! as raw `f64` bits.
+//!
+//! | Operation | Request | Ok payload |
+//! |---|---|---|
+//! | `viz_q_plan` | `limits, i64 start, i64 end, i64 step, str query` | JSON `[{"matchers":[{"name","op","value"}],"minTs","maxTs"}]`: merged, clamped fetch ranges |
+//! | `viz_q_selectors` | the same | JSON, one entry per selector (`contracts/engine.ts` `selectors`) |
+//! | `viz_q_query_range` | `limits, i64 start, i64 end, i64 step, str query, scan` | `u64 selects, u64 series, u64 samples, u64 output_points`, then the JSON `data` object |
+//! | `viz_q_query_instant` | `limits, i64 time, str query, scan` | the same |
+//! | `viz_q_select` | `i64 min_ts, i64 max_ts, u32 n_matchers, matcher*, scan` | as `viz_select` of `engine/wasm`: `u32 n_series`, per series `u32 n_labels, (str name, str value)*, u32 n_samples`, zero padding to a multiple of 8 from the payload start, `f64 ts[n]`, `f64 value[n]` |
+//! | `viz_q_parse_selectors` | `u32 n, str*` (`match[]` strings) | JSON `[[matcher,…],…]` |
+//! | `viz_q_label_names` | `limits, i64 min_ts, i64 max_ts, u32 n, str* (match[]; none = every series), scan` | JSON `["name",…]`, sorted, unique |
+//! | `viz_q_label_values` | `limits, i64 min_ts, i64 max_ts, str label, u32 n, str*, scan` | JSON `["value",…]` |
+//! | `viz_q_series` | `limits, i64 min_ts, i64 max_ts, u32 n, str*, scan` | JSON `[{"label":"value",…},…]` |
+//! | `viz_q_scan_rows` | `u32 n_files, str index*, u32 n_ranges, (i64 min_ts, i64 max_ts, u32 n_matchers, matcher*)*` | `u64[n_files]`: an upper bound on the rows the ranges decode from each file. 0 = the file provably holds nothing the ranges read (skip it); `u64::MAX` = the fragment does not parse (unknown: read the file) |
+//! | `viz_q_split_plan` | `limits, str query` | JSON `{"split":true,"fragments":n,"without":[…]}` or `{"split":false,"reason":"…"}` (`viz_query::split_plan`) |
+//! | `viz_q_extract` | `key, u32 part, u32 parts, ranges, u32 n, str* (series files), u32 m, str* (sample files, precedence order)` | `u64 rows, u64 series`, then a `VZB1` batch (empty: no rows) |
+//! | `viz_q_split_tails` | `key, u32 parts, ranges, u32 n, str* (tail batches, in order)` | per part: `u32 n`, then `str*` (its batches, in order) |
+//! | `viz_q_gather_new` | `u64 samples, u64 series, u64 step_points (the leaf's budget), ranges` | `u32 handle` of a gathering session kept in the module |
+//! | `viz_q_gather_add` | `u32 handle, u32 rank, str batch` | `u8 aborted, u64 samples, u64 series` held so far |
+//! | `viz_q_gather_eval` | `u32 handle, limits, u8 kind (0 range, 1 instant), i64 start, i64 end, i64 step, u32 fragments, str query` | the leaf's answer (`viz_query::split::LeafOutput`); the session is freed |
+//! | `viz_q_gather_free` | `u32 handle` | empty; frees an abandoned session (no error if it is gone) |
+//! | `viz_q_merge` | `limits, u8 kind, i64 start, i64 end, i64 step, str query, u32 n, str* (leaf answers)` | as `viz_q_query_range` |
+//! | `viz_q_card_part` | `i64 start, i64 end, u32 part, u32 parts, u64 max_series, u64 max_pairs, u32 n, str* (series files), u32 m, str* (tail batches)` | a cardinality summary (`viz_query::cardinality::Summary`) |
+//! | `viz_q_card_report` | `u64 max_series, u64 max_pairs, u32 limit, i64 start, i64 end, i64 lookback_start, u32 n, str* (summaries)` | `u32 n`, the `/status/tsdb` JSON (n bytes), then the `/status/cardinality` JSON |
+//! | `viz_q_abi_version` | (no request) | returns 2 |
+//!
+//! `key` is `u32 n, str*`: the labels left out of the split key (`viz_query::SplitKey`).
+//! `ranges` is `u32 n, (i64 min_ts, i64 max_ts, u32 n_matchers, matcher*)*`.
+
+use std::cell::RefCell;
+use std::collections::{BTreeSet, HashMap};
+use viz_query::split::{self, Gathered, Grid, LeafBudget, LeafOutput};
+use viz_query::{EvalOptions, FetchRange, Limits, MatchOp, Matcher, Options, QueryError, ScanInput, SplitKey, SplitPlan, Stats};
+
+pub const ABI_VERSION: u32 = 2;
+const OK: u32 = 0;
+const MALFORMED: u32 = 5;
+
+#[no_mangle]
+pub extern "C" fn viz_q_abi_version() -> u32 {
+    ABI_VERSION
+}
+
+/// Allocate `len` bytes (alignment 8). Traps only when memory is exhausted.
+#[no_mangle]
+pub extern "C" fn viz_alloc(len: usize) -> *mut u8 {
+    let Ok(layout) = std::alloc::Layout::from_size_align(len.max(1), 8) else { return std::ptr::null_mut() };
+    // SAFETY: the layout has a non-zero size.
+    let p = unsafe { std::alloc::alloc(layout) };
+    if p.is_null() {
+        std::alloc::handle_alloc_error(layout);
+    }
+    p
+}
+
+/// Free a buffer from `viz_alloc` or a result buffer. `len` must be the allocated length.
+///
+/// # Safety
+/// `ptr` must come from this module with exactly this `len`, and not be freed twice.
+#[no_mangle]
+pub unsafe extern "C" fn viz_free(ptr: *mut u8, len: usize) {
+    if ptr.is_null() {
+        return;
+    }
+    if let Ok(layout) = std::alloc::Layout::from_size_align(len.max(1), 8) {
+        std::alloc::dealloc(ptr, layout);
+    }
+}
+
+/// What can go wrong in a call: the query's own error, or a request buffer that does not
+/// follow the layout above.
+enum Fail {
+    Query(QueryError),
+    Malformed(String),
+}
+
+impl From<QueryError> for Fail {
+    fn from(e: QueryError) -> Fail {
+        Fail::Query(e)
+    }
+}
+
+type Res<T> = Result<T, Fail>;
+
+/// Bounds-checked reader over a request buffer.
+struct Req<'a> {
+    b: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Req<'a> {
+    fn take(&mut self, n: usize, what: &str) -> Res<&'a [u8]> {
+        match self.at.checked_add(n).filter(|e| *e <= self.b.len()) {
+            Some(end) => {
+                let s = &self.b[self.at..end];
+                self.at = end;
+                Ok(s)
+            }
+            None => Err(Fail::Malformed(format!("request truncated: {what} needs {n} bytes at offset {}, request has {}", self.at, self.b.len()))),
+        }
+    }
+    fn u8(&mut self, what: &str) -> Res<u8> {
+        Ok(self.take(1, what)?[0])
+    }
+    fn u32(&mut self, what: &str) -> Res<u32> {
+        let b = self.take(4, what)?;
+        Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+    fn u64(&mut self, what: &str) -> Res<u64> {
+        let b = self.take(8, what)?;
+        Ok(u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+    }
+    fn i64(&mut self, what: &str) -> Res<i64> {
+        Ok(self.u64(what)? as i64)
+    }
+    fn item(&mut self, what: &str) -> Res<&'a [u8]> {
+        let n = self.u32(what)? as usize;
+        self.take(n, what)
+    }
+    fn str(&mut self, what: &str) -> Res<&'a str> {
+        // Text that is not UTF-8 is the request's fault (a query, a label name).
+        std::str::from_utf8(self.item(what)?).map_err(|_| Fail::Query(QueryError::bad_data(format!("{what} is not valid UTF-8"))))
+    }
+    /// `count` items, without trusting `count` for the allocation size.
+    fn items(&mut self, count: u32, what: &str) -> Res<Vec<&'a [u8]>> {
+        let mut v = Vec::with_capacity((count as usize).min(self.b.len() / 4));
+        for _ in 0..count {
+            v.push(self.item(what)?);
+        }
+        Ok(v)
+    }
+    fn strs(&mut self, what: &str) -> Res<Vec<&'a str>> {
+        let n = self.u32(what)?;
+        let mut v = Vec::with_capacity((n as usize).min(self.b.len() / 4));
+        for _ in 0..n {
+            v.push(self.str(what)?);
+        }
+        Ok(v)
+    }
+    fn limits(&mut self) -> Res<Options> {
+        let limits = Limits {
+            max_samples: self.u64("max_samples")?,
+            max_series: self.u64("max_series")?,
+            max_output_points: self.u64("max_output_points")?,
+            max_step_points: self.u64("max_step_points")?,
+            max_query_bytes: self.u64("max_query_bytes")?,
+            max_depth: self.u64("max_depth")?,
+        };
+        let max_steps = usize::try_from(self.u64("max_steps")?).unwrap_or(usize::MAX);
+        Ok(Options { limits, eval: EvalOptions { max_steps, ..EvalOptions::default() } })
+    }
+    fn scan(&mut self) -> Res<ScanInput<'a>> {
+        let (a, b, c) = (self.u32("n_series_files")?, self.u32("n_sample_files")?, self.u32("n_tail_batches")?);
+        Ok(ScanInput { series_files: self.items(a, "series file")?, sample_files: self.items(b, "sample file")?, tail_batches: self.items(c, "tail batch")? })
+    }
+    fn matchers(&mut self) -> Res<Vec<Matcher>> {
+        let n = self.u32("n_matchers")?;
+        let mut v = Vec::with_capacity((n as usize).min(self.b.len() / 9));
+        for _ in 0..n {
+            let op = match self.u8("matcher op")? {
+                0 => MatchOp::Eq,
+                1 => MatchOp::Ne,
+                2 => MatchOp::Re,
+                3 => MatchOp::Nre,
+                other => return Err(Fail::Malformed(format!("unknown matcher operator {other}"))),
+            };
+            v.push(Matcher::new(self.str("matcher name")?, op, self.str("matcher value")?));
+        }
+        Ok(v)
+    }
+    fn ranges(&mut self) -> Res<Vec<FetchRange>> {
+        let n = self.u32("n_ranges")?;
+        let mut out = Vec::with_capacity((n as usize).min(self.b.len() / 20));
+        for _ in 0..n {
+            let (min_ts, max_ts) = (self.i64("min_ts")?, self.i64("max_ts")?);
+            out.push(FetchRange { matchers: self.matchers()?, min_ts, max_ts });
+        }
+        Ok(out)
+    }
+    fn key(&mut self) -> Res<SplitKey> {
+        let mut without: Vec<String> = self.strs("split key label")?.into_iter().map(String::from).collect();
+        without.sort();
+        without.dedup();
+        Ok(SplitKey { without })
+    }
+    fn files(&mut self, what: &str) -> Res<Vec<&'a [u8]>> {
+        let n = self.u32(what)?;
+        self.items(n, what)
+    }
+    fn grid(&mut self) -> Res<Grid> {
+        let kind = self.u8("kind")?;
+        let (start, end, step) = (self.i64("start")?, self.i64("end")?, self.i64("step")?);
+        match kind {
+            0 => Ok(Grid::Range { start, end, step }),
+            1 => Ok(Grid::Instant { time: start }),
+            k => Err(Fail::Malformed(format!("unknown query kind {k}"))),
+        }
+    }
+    fn end(&self) -> Res<()> {
+        if self.at == self.b.len() {
+            Ok(())
+        } else {
+            Err(Fail::Malformed(format!("request has {} trailing bytes", self.b.len() - self.at)))
+        }
+    }
+}
+
+/// Hand a result to the caller: `u32 total_len, u32 status, payload`.
+fn result(status: u32, payload: &[u8]) -> *mut u8 {
+    let (status, payload) = if payload.len() > u32::MAX as usize - 8 { (4, &b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0result larger than 4 GiB"[..]) } else { (status, payload) };
+    let total = 8 + payload.len();
+    let p = viz_alloc(total);
+    // SAFETY: `p` is a fresh allocation of `total` bytes.
+    unsafe {
+        std::ptr::copy_nonoverlapping((total as u32).to_le_bytes().as_ptr(), p, 4);
+        std::ptr::copy_nonoverlapping(status.to_le_bytes().as_ptr(), p.add(4), 4);
+        std::ptr::copy_nonoverlapping(payload.as_ptr(), p.add(8), payload.len());
+    }
+    p
+}
+
+fn finish(r: Res<Vec<u8>>) -> *mut u8 {
+    match r {
+        Ok(payload) => result(OK, &payload),
+        Err(f) => {
+            let (status, message, limit) = match f {
+                Fail::Malformed(m) => (MALFORMED, m, None),
+                Fail::Query(e) => {
+                    let status = match e.error_type {
+                        viz_query::ErrorType::BadData => 1,
+                        viz_query::ErrorType::Execution => 2,
+                        viz_query::ErrorType::Unsupported => 3,
+                        viz_query::ErrorType::Internal => 4,
+                    };
+                    (status, e.message, e.limit)
+                }
+            };
+            let mut out = Vec::with_capacity(20 + message.len());
+            let (name, max, reached) = limit.map_or(("", 0, 0), |(l, max, reached)| (l.as_str(), max, reached));
+            out.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(&max.to_le_bytes());
+            out.extend_from_slice(&reached.to_le_bytes());
+            out.extend_from_slice(message.as_bytes());
+            result(status, &out)
+        }
+    }
+}
+
+/// # Safety
+/// `ptr..ptr+len` must be readable (or `len` 0).
+unsafe fn request<'a>(ptr: *const u8, len: usize) -> Req<'a> {
+    Req { b: if len == 0 || ptr.is_null() { &[] } else { std::slice::from_raw_parts(ptr, len) }, at: 0 }
+}
+
+fn with_stats(stats: Stats, json: String) -> Vec<u8> {
+    let mut out = Vec::with_capacity(32 + json.len());
+    for v in [stats.selects, stats.series, stats.samples, stats.output_points] {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out.extend_from_slice(json.as_bytes());
+    out
+}
+
+fn do_plan(mut r: Req<'_>, merged: bool) -> Res<Vec<u8>> {
+    let opts = r.limits()?;
+    let (start, end, step) = (r.i64("start")?, r.i64("end")?, r.i64("step")?);
+    let q = r.str("query")?;
+    r.end()?;
+    let json = if merged {
+        viz_query::to_json(&viz_query::plan_with(q, start, end, step, &opts)?)?
+    } else {
+        // The contract's shape: {matchers, minTs, maxTs} per selector, unmerged.
+        let raw: Vec<FetchRange> = viz_query::selectors_with(q, start, end, step, &opts)?
+            .into_iter()
+            .map(|s| FetchRange { matchers: s.matchers, min_ts: s.min_ts_ms, max_ts: s.max_ts_ms })
+            .collect();
+        viz_query::to_json(&raw)?
+    };
+    Ok(json.into_bytes())
+}
+
+fn do_query_range(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let opts = r.limits()?;
+    let (start, end, step) = (r.i64("start")?, r.i64("end")?, r.i64("step")?);
+    let q = r.str("query")?;
+    let input = r.scan()?;
+    r.end()?;
+    let out = viz_query::query_range_with(&input, q, start, end, step, &opts)?;
+    Ok(with_stats(out.stats, viz_query::to_json(&out.matrix)?))
+}
+
+fn do_query_instant(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let opts = r.limits()?;
+    let time = r.i64("time")?;
+    let q = r.str("query")?;
+    let input = r.scan()?;
+    r.end()?;
+    let out = viz_query::query_instant_with(&input, q, time, &opts)?;
+    Ok(with_stats(out.stats, viz_query::to_json(&out.value)?))
+}
+
+fn do_select(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let (min_ts, max_ts) = (r.i64("min_ts")?, r.i64("max_ts")?);
+    let matchers: Vec<viz_storage::Matcher> = r.matchers()?.iter().map(viz_query::to_storage_matcher).collect();
+    let input = r.scan()?;
+    r.end()?;
+    let series = viz_storage::select(&input, &matchers, min_ts, max_ts).map_err(|e| match e {
+        viz_storage::Error::Matcher { name, message } => QueryError::bad_data(format!("invalid regular expression in matcher on {name:?}: {message}")),
+        other => QueryError::internal(format!("storage: {other}")),
+    })?;
+    let mut out = Vec::new();
+    out.extend_from_slice(&(series.len() as u32).to_le_bytes());
+    for s in &series {
+        out.extend_from_slice(&(s.labels.len() as u32).to_le_bytes());
+        for (n, v) in &s.labels {
+            for t in [n, v] {
+                out.extend_from_slice(&(t.len() as u32).to_le_bytes());
+                out.extend_from_slice(t.as_bytes());
+            }
+        }
+        out.extend_from_slice(&(s.ts.len() as u32).to_le_bytes());
+        out.resize(out.len().next_multiple_of(8), 0);
+        for t in &s.ts {
+            // Exact: every storable timestamp is far below 2^53.
+            out.extend_from_slice(&(*t as f64).to_le_bytes());
+        }
+        for v in &s.values {
+            // The bits, not the number: NaN payloads (staleness markers) survive.
+            out.extend_from_slice(&v.to_bits().to_le_bytes());
+        }
+    }
+    Ok(out)
+}
+
+fn parse_sets(selectors: &[&str]) -> Res<Vec<Vec<Matcher>>> {
+    Ok(selectors.iter().map(|s| viz_query::parse_selector(s)).collect::<Result<_, _>>()?)
+}
+
+fn do_parse_selectors(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let sels = r.strs("selector")?;
+    r.end()?;
+    Ok(viz_query::to_json(&parse_sets(&sels)?)?.into_bytes())
+}
+
+/// The union over the `match[]` sets (no sets: every series), as Prometheus does.
+fn union(sets: Vec<Vec<Matcher>>, mut one: impl FnMut(&[Matcher]) -> Result<Vec<String>, QueryError>) -> Res<Vec<u8>> {
+    let sets = if sets.is_empty() { vec![Vec::new()] } else { sets };
+    let mut all = BTreeSet::new();
+    for set in &sets {
+        all.extend(one(set)?);
+    }
+    Ok(viz_query::to_json(&all.into_iter().collect::<Vec<String>>())?.into_bytes())
+}
+
+fn do_label_names(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let opts = r.limits()?;
+    let (min_ts, max_ts) = (r.i64("min_ts")?, r.i64("max_ts")?);
+    let sets = parse_sets(&r.strs("selector")?)?;
+    let input = r.scan()?;
+    r.end()?;
+    union(sets, |m| viz_query::label_names_with(&input, m, min_ts, max_ts, &opts.limits))
+}
+
+fn do_label_values(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let opts = r.limits()?;
+    let (min_ts, max_ts) = (r.i64("min_ts")?, r.i64("max_ts")?);
+    let name = r.str("label name")?;
+    let sets = parse_sets(&r.strs("selector")?)?;
+    let input = r.scan()?;
+    r.end()?;
+    union(sets, |m| viz_query::label_values_with(&input, name, m, min_ts, max_ts, &opts.limits))
+}
+
+fn do_series(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let opts = r.limits()?;
+    let (min_ts, max_ts) = (r.i64("min_ts")?, r.i64("max_ts")?);
+    let sets = parse_sets(&r.strs("selector")?)?;
+    let input = r.scan()?;
+    r.end()?;
+    Ok(viz_query::labels_to_json(&viz_query::series_with(&input, &sets, min_ts, max_ts, &opts.limits)?).into_bytes())
+}
+
+fn do_scan_rows(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let n = r.u32("n_files")?;
+    let raw = r.items(n, "index fragment")?;
+    // A fragment that is not UTF-8 cannot be parsed either: "" keeps the file.
+    let indexes: Vec<&str> = raw.iter().map(|b| std::str::from_utf8(b).unwrap_or("")).collect();
+    let n_ranges = r.u32("n_ranges")?;
+    let mut ranges = Vec::with_capacity((n_ranges as usize).min(r.b.len() / 20));
+    for _ in 0..n_ranges {
+        let (min_ts, max_ts) = (r.i64("min_ts")?, r.i64("max_ts")?);
+        ranges.push(FetchRange { matchers: r.matchers()?, min_ts, max_ts });
+    }
+    r.end()?;
+    Ok(viz_query::scan_rows(&indexes, &ranges).into_iter().flat_map(|r| r.unwrap_or(u64::MAX).to_le_bytes()).collect())
+}
+
+fn do_split_plan(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let opts = r.limits()?;
+    let q = r.str("query")?;
+    r.end()?;
+    let v = match viz_query::split_plan(q, &opts) {
+        SplitPlan::Split { fragments, key } => serde_json::json!({"split": true, "fragments": fragments, "without": key.without}),
+        SplitPlan::Single { reason } => serde_json::json!({"split": false, "reason": reason}),
+    };
+    Ok(v.to_string().into_bytes())
+}
+
+fn do_extract(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let key = r.key()?;
+    let (part, parts) = (r.u32("part")?, r.u32("parts")?);
+    let ranges = r.ranges()?;
+    let series = r.files("series file")?;
+    let samples = r.files("sample file")?;
+    r.end()?;
+    if parts == 0 || part >= parts {
+        return Err(Fail::Malformed(format!("part {part} of {parts}")));
+    }
+    let ex = split::extract(&series, &samples, &key, part, parts, &ranges)?;
+    let mut out = Vec::with_capacity(16 + ex.batch.len());
+    out.extend_from_slice(&ex.rows.to_le_bytes());
+    out.extend_from_slice(&ex.series.to_le_bytes());
+    out.extend_from_slice(&ex.batch);
+    Ok(out)
+}
+
+fn do_split_tails(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let key = r.key()?;
+    let parts = r.u32("parts")?;
+    let ranges = r.ranges()?;
+    let batches = r.files("tail batch")?;
+    r.end()?;
+    if parts == 0 {
+        return Err(Fail::Malformed("zero parts".into()));
+    }
+    let cut = split::split_tails(&batches, &key, parts, &ranges)?;
+    let mut out = Vec::new();
+    for list in cut {
+        out.extend_from_slice(&(list.len() as u32).to_le_bytes());
+        for b in list {
+            out.extend_from_slice(&(b.len() as u32).to_le_bytes());
+            out.extend_from_slice(&b);
+        }
+    }
+    Ok(out)
+}
+
+thread_local! {
+    /// Gathering sessions of leaves in flight in this instance: a leaf adds batches as
+    /// they arrive and evaluates once all are in. Dropping the instance drops them.
+    static SESSIONS: RefCell<(u32, HashMap<u32, Gathered>)> = RefCell::new((0, HashMap::new()));
+}
+
+fn do_gather_new(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let budget = LeafBudget { samples: r.u64("samples")?, series: r.u64("series")?, step_points: r.u64("step_points")? };
+    let ranges = r.ranges()?;
+    r.end()?;
+    let g = Gathered::new(&ranges, budget)?;
+    let h = SESSIONS.with(|s| {
+        let mut s = s.borrow_mut();
+        s.0 = s.0.wrapping_add(1).max(1);
+        let h = s.0;
+        s.1.insert(h, g);
+        h
+    });
+    Ok(h.to_le_bytes().to_vec())
+}
+
+fn do_gather_add(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let h = r.u32("handle")?;
+    let rank = r.u32("rank")?;
+    let b = r.item("batch")?;
+    r.end()?;
+    SESSIONS.with(|s| {
+        let mut s = s.borrow_mut();
+        let g = s.1.get_mut(&h).ok_or_else(|| Fail::Malformed(format!("no gathering session {h}")))?;
+        g.add(b, rank)?;
+        let (samples, series) = g.counts();
+        let mut out = vec![g.aborted.is_some() as u8];
+        out.extend_from_slice(&samples.to_le_bytes());
+        out.extend_from_slice(&series.to_le_bytes());
+        Ok(out)
+    })
+}
+
+fn do_gather_eval(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let h = r.u32("handle")?;
+    let opts = r.limits()?;
+    let grid = r.grid()?;
+    let fragments = r.u32("fragments")? as usize;
+    let q = r.str("query")?;
+    r.end()?;
+    let g = SESSIONS.with(|s| s.borrow_mut().1.remove(&h)).ok_or_else(|| Fail::Malformed(format!("no gathering session {h}")))?;
+    Ok(split::leaf_evaluate(&g, q, grid, &opts, fragments).encode())
+}
+
+fn do_gather_free(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let h = r.u32("handle")?;
+    r.end()?;
+    SESSIONS.with(|s| s.borrow_mut().1.remove(&h));
+    Ok(Vec::new())
+}
+
+fn do_merge(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let opts = r.limits()?;
+    let grid = r.grid()?;
+    let q = r.str("query")?;
+    let raw = r.files("leaf answer")?;
+    r.end()?;
+    let outputs = raw.iter().map(|b| LeafOutput::decode(b)).collect::<Result<Vec<_>, _>>()?;
+    match grid {
+        Grid::Range { start, end, step } => {
+            let out = split::merge_range(q, start, end, step, &opts, &outputs)?;
+            Ok(with_stats(out.stats, viz_query::to_json(&out.matrix)?))
+        }
+        Grid::Instant { time } => {
+            let out = split::merge_instant(q, time, &opts, &outputs)?;
+            Ok(with_stats(out.stats, viz_query::to_json(&out.value)?))
+        }
+    }
+}
+
+fn do_card_part(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let (start, end) = (r.i64("start")?, r.i64("end")?);
+    let (part, parts) = (r.u32("part")?, r.u32("parts")?);
+    let caps = viz_query::cardinality::Caps { max_series: r.u64("max_series")?, max_pairs: r.u64("max_pairs")? };
+    let series = r.files("series file")?;
+    let tails = r.files("tail batch")?;
+    r.end()?;
+    if parts == 0 || part >= parts {
+        return Err(Fail::Malformed(format!("part {part} of {parts}")));
+    }
+    let mut st = viz_query::cardinality::State::new(start, end, part, parts, caps);
+    for (i, f) in series.iter().enumerate() {
+        st.add_series_file(f, i)?;
+    }
+    for (i, b) in tails.iter().enumerate() {
+        st.add_tail_batch(b, i)?;
+    }
+    Ok(st.summary().encode())
+}
+
+fn do_card_report(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let caps = viz_query::cardinality::Caps { max_series: r.u64("max_series")?, max_pairs: r.u64("max_pairs")? };
+    let limit = r.u32("limit")? as usize;
+    let (start, end, lookback) = (r.i64("start")?, r.i64("end")?, r.i64("lookback_start")?);
+    let parts = r.files("summary")?;
+    r.end()?;
+    let mut all = viz_query::cardinality::Summary::default();
+    for p in parts {
+        all.merge(&viz_query::cardinality::Summary::decode(p)?, caps)?;
+    }
+    let (tsdb, viz) = all.report(limit, start, end, lookback, caps);
+    let mut out = Vec::with_capacity(4 + tsdb.len() + viz.len());
+    out.extend_from_slice(&(tsdb.len() as u32).to_le_bytes());
+    out.extend_from_slice(tsdb.as_bytes());
+    out.extend_from_slice(viz.as_bytes());
+    Ok(out)
+}
+
+macro_rules! export {
+    ($name:ident, $body:expr) => {
+        /// # Safety
+        /// `ptr..ptr+len` must be readable (or `len` 0).
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(ptr: *const u8, len: usize) -> *mut u8 {
+            #[allow(clippy::redundant_closure_call)]
+            finish($body(request(ptr, len)))
+        }
+    };
+}
+
+export!(viz_q_plan, |r| do_plan(r, true));
+export!(viz_q_selectors, |r| do_plan(r, false));
+export!(viz_q_query_range, do_query_range);
+export!(viz_q_query_instant, do_query_instant);
+export!(viz_q_select, do_select);
+export!(viz_q_parse_selectors, do_parse_selectors);
+export!(viz_q_label_names, do_label_names);
+export!(viz_q_label_values, do_label_values);
+export!(viz_q_series, do_series);
+export!(viz_q_scan_rows, do_scan_rows);
+export!(viz_q_split_plan, do_split_plan);
+export!(viz_q_extract, do_extract);
+export!(viz_q_split_tails, do_split_tails);
+export!(viz_q_gather_new, do_gather_new);
+export!(viz_q_gather_add, do_gather_add);
+export!(viz_q_gather_eval, do_gather_eval);
+export!(viz_q_gather_free, do_gather_free);
+export!(viz_q_merge, do_merge);
+export!(viz_q_card_part, do_card_part);
+export!(viz_q_card_report, do_card_report);

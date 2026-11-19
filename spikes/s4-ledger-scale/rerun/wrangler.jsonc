@@ -1,0 +1,18 @@
+{
+  // Spike S4 re-run (see ../README.md). Deployed only for the measurement, then deleted.
+  "name": "viz-spike-s4-rerun",
+  "main": "worker.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "observability": { "enabled": false },
+  "durable_objects": {
+    "bindings": [
+      { "name": "LEDGER", "class_name": "Ledger" },
+      { "name": "LEDGER_ASBUILT", "class_name": "LedgerAsBuilt" },
+      { "name": "WRITER", "class_name": "Writer" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Ledger", "LedgerAsBuilt", "Writer"] }],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "viz-spike-s4-rerun" }],
+  "vars": { "CELL": "cell-0" }
+}

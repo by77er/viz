@@ -1,0 +1,36 @@
+# Size probe and load proof: links the WHOLE engine (viz-storage + viz-promql + viz-query)
+# into one .wasm behind a small C ABI. It is not the product binding (that is
+# engine/wasm); it exists to measure the module and to prove it loads with no imports.
+# (A separate package because proptest, a dev-dependency of viz-query, does not build for
+# wasm32-unknown-unknown.)
+[package]
+name = "viz-query-wasm-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "viz_whole_engine"
+crate-type = ["cdylib"]
+
+[dependencies]
+viz-query = { path = ".." }
+viz-storage = { path = "../../storage" }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[workspace]
+
+# Replace the JavaScript bindings two dependencies of promql-parser link on wasm32, so
+# that the module has no imports (see ../patches/README.md). Every crate that links
+# viz-promql into a .wasm needs these lines: `[patch]` only takes effect in the package
+# being built.
+[patch.crates-io]
+web-time = { path = "../patches/web-time" }
+js-sys = { path = "../patches/js-sys" }
+wasm-bindgen = { path = "../patches/wasm-bindgen" }

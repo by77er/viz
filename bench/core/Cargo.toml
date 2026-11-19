@@ -1,0 +1,24 @@
+[package]
+name = "vizcore"
+version = "0.0.0"
+license = "Apache-2.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+parquet = { version = "60", default-features = false, features = ["snap"] }
+bytes = "1"
+arrow-array = { version = "60", optional = true }
+arrow-schema = { version = "60", optional = true }
+
+[features]
+arrow = ["parquet/arrow", "dep:arrow-array", "dep:arrow-schema"]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

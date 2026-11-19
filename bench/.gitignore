@@ -1,0 +1,6 @@
+node_modules/
+data/
+results/*.wasm
+core/target*/
+worker/vizcore.wasm
+worker/.wrangler/

@@ -1,0 +1,180 @@
+# Checks for every component in the checkout. Runs on pull requests to main, on pushes to
+# claude/** branches, and is called by deploy.yml before every production deploy.
+#
+# The component list and what each needs live in deploy/ci/matrix.mjs; a component that is
+# not in the checkout (app/ and design-system/ on main, for now) is skipped with a notice.
+# The two WASM engines are built once and shared with the jobs that import them.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: ['claude/**']
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  # A newer push to the same pull request or branch makes the older run pointless. Runs called
+  # by the deploy workflow are never cancelled from here (the event is not pull_request).
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  RUST_TOOLCHAIN: '1.97.0'
+  NODE_VERSION: '22'
+  CARGO_BUILD_JOBS: '2'
+  CARGO_INCREMENTAL: '0'
+  CARGO_TERM_COLOR: always
+
+jobs:
+  discover:
+    name: Discover components
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      ts: ${{ steps.m.outputs.ts }}
+      rust: ${{ steps.m.outputs.rust }}
+      wasm: ${{ steps.m.outputs.wasm }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - id: m
+        run: |
+          node deploy/ci/matrix.mjs | tee -a "$GITHUB_OUTPUT"
+          node deploy/ci/matrix.mjs --annotations
+
+  wasm:
+    name: WASM engines
+    needs: discover
+    if: needs.discover.outputs.wasm != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target wasm32-unknown-unknown
+          rustup default "$RUST_TOOLCHAIN"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            engine/wasm/target
+            engine/wasm-query/target
+          key: wasm-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('engine/wasm/Cargo.lock', 'engine/wasm-query/Cargo.lock', 'engine/storage/**/*.rs', 'engine/query/**/*.rs', 'engine/promql/**/*.rs', 'engine/wasm/src/**', 'engine/wasm-query/src/**') }}
+          restore-keys: wasm-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-
+      - name: Build
+        run: |
+          engine/wasm/build.sh
+          engine/wasm-query/build.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wasm-engines
+          path: |
+            engine/wasm/js/viz_engine.wasm
+            engine/wasm-query/js/viz_query.wasm
+          if-no-files-found: error
+          retention-days: 30
+
+  rust:
+    name: cargo test ${{ matrix.crate }}
+    needs: discover
+    if: needs.discover.outputs.rust != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: ${{ fromJSON(needs.discover.outputs.rust) }}
+    env:
+      # No debug info in test builds: far smaller target directories to cache.
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            ${{ matrix.crate }}/target
+          key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ matrix.crate }}-${{ hashFiles(format('{0}/Cargo.lock', matrix.crate), format('{0}/Cargo.toml', matrix.crate)) }}
+          restore-keys: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ matrix.crate }}-
+      - name: cargo test -j 2
+        working-directory: ${{ matrix.crate }}
+        env:
+          CARGO_TARGET_DIR: target
+        run: cargo test -j 2
+
+  typescript:
+    name: ${{ matrix.dir }}
+    needs: [discover, wasm]
+    # Runs whenever discovery worked: components that need no WASM are checked even when the
+    # WASM build failed; those that need it then fail at the download step, which says why.
+    if: ${{ !cancelled() && needs.discover.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.discover.outputs.ts) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: ${{ matrix.lockfiles }}
+      - name: WASM engines (from the wasm job)
+        if: matrix.wasm
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: wasm-engines
+          path: engine
+      - name: npm ci
+        if: matrix.npm
+        working-directory: ${{ matrix.dir }}
+        run: npm ci --no-audit --no-fund
+      - name: npm ci (directories the tests import from)
+        if: matrix.install != ''
+        env:
+          DIRS: ${{ matrix.install }}
+        run: for d in $DIRS; do (cd "$d" && npm ci --no-audit --no-fund); done
+      - name: Typecheck
+        if: matrix.npm
+        working-directory: ${{ matrix.dir }}
+        env:
+          EXCLUDE: ${{ matrix.exclude }}
+        run: |
+          if [ -z "$EXCLUDE" ]; then npx tsc --noEmit; exit; fi
+          # Test files that import from a directory missing in this checkout (see deploy/ci/matrix.mjs).
+          node -e 'const ex=process.env.EXCLUDE.split(" ");require("fs").writeFileSync("tsconfig.ci.json",JSON.stringify({extends:"./tsconfig.json",exclude:["node_modules",...ex]}))'
+          echo "::warning title=${{ matrix.dir }}::tsc and vitest exclude: $EXCLUDE"
+          npx tsc --noEmit -p tsconfig.ci.json
+      - name: Test
+        if: matrix.npm
+        working-directory: ${{ matrix.dir }}
+        env:
+          EXCLUDE: ${{ matrix.exclude }}
+        run: |
+          if [ -z "$EXCLUDE" ]; then npm test; exit; fi
+          args=(); for f in $EXCLUDE; do args+=(--exclude "$f"); done
+          npx vitest run "${args[@]}"
+      - name: Checks
+        if: matrix.commands != ''
+        working-directory: ${{ matrix.dir }}
+        env:
+          COMMANDS: ${{ matrix.commands }}
+        run: bash -c "$COMMANDS"

@@ -1,0 +1,7 @@
+{
+ "format": "key.compaction-output",
+ "version": 1,
+ "inputs16": "85ac33aa8e50f298",
+ "level1": "cell-0/data/metric_samples/tenant=golden-tenant/day=2026-11-18/L1-h07-85ac33aa8e50f298-fedcba98.parquet",
+ "level2": "cell-0/data/metric_series/tenant=golden-tenant/day=2026-11-18/L2-d-85ac33aa8e50f298-fedcba98.parquet"
+}

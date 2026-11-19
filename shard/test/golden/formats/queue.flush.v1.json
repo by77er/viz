@@ -1,0 +1,5 @@
+{
+ "format": "queue.flush",
+ "version": 1,
+ "onSeal": "{\"v\":1,\"tenant\":\"a\",\"shard\":\"<shard>\"}"
+}

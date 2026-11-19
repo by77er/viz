@@ -1,0 +1,26 @@
+{
+  "name": "@viz/anomaly",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "description": "Pure TypeScript anomaly detectors for the viz ruler (design §7). No I/O, no clocks, no randomness.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "fetch:nab": "node bench/fetch-nab.mjs",
+    "bench:nab": "node --experimental-strip-types bench/nab-run.ts",
+    "bench:cpu": "node --experimental-strip-types bench/cpu.ts",
+    "bench:burn": "node --experimental-strip-types bench/burn-table.ts",
+    "mutants": "node scripts/mutants.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "fast-check": "^4.3.0",
+    "rolldown": "1.2.19",
+    "typescript": "^5.9.0",
+    "vitest": "^5.1.1"
+  }
+}

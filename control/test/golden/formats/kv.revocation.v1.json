@@ -1,0 +1,5 @@
+{
+ "format": "kv.revocation",
+ "version": 1,
+ "afterDisable": "{\"generation\":1,\"revokedBefore\":\"<ms>\"}"
+}

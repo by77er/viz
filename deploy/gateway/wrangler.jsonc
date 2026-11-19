@@ -1,0 +1,19 @@
+{
+  // The gateway's own configuration, in the shape every component has. deploy/configure.mjs
+  // turns it into the production (or staged) config: Worker names, script_name and service
+  // names, observability, the custom domain. Never deployed from this file directly.
+  "name": "viz-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  // The backends, by service binding. A callee reached this way spends from the gateway's
+  // six-connection budget (spikes/s1-fanout-r2); see deploy/README.md for why that is fine.
+  "services": [
+    { "binding": "INGEST", "service": "viz-ingest" },
+    { "binding": "QUERY", "service": "viz-query" },
+    { "binding": "CONTROL", "service": "viz-control" },
+    { "binding": "RULER", "service": "viz-ruler" },
+    { "binding": "MCP", "service": "viz-mcp" }
+  ],
+  // control's Tenant object, for POST /api/v1/bootstrap only (Tenant.provision).
+  "durable_objects": { "bindings": [{ "name": "TENANT", "class_name": "Tenant", "script_name": "viz-control" }] }
+}

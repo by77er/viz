@@ -1,0 +1,6 @@
+{
+  "format": "http.webhook-json",
+  "version": 1,
+  "body": "{\"version\":\"viz.notification/v1\",\"idempotencyKey\":\"02ef9e40c6012cddc019531076d0d204\",\"status\":\"firing\",\"receiver\":\"hook\",\"groupKey\":\"{}:{alertname=\\\"HighErrorRate\\\"}\",\"groupLabels\":{\"alertname\":\"HighErrorRate\"},\"externalURL\":\"https://vis.bitcru.sh\",\"truncatedAlerts\":0,\"alerts\":[{\"status\":\"firing\",\"name\":\"HighErrorRate\",\"labels\":{\"instance\":\"api-1\",\"job\":\"api\",\"team\":\"pay\",\"severity\":\"page\",\"alertname\":\"HighErrorRate\"},\"annotations\":{\"summary\":\"api-1 errors at 0.75\"},\"startsAt\":\"2100-01-01T00:00:57.632Z\",\"endsAt\":null,\"value\":0.75,\"fingerprint\":\"578a9786a3362fe0\"}]}",
+  "signature": "t=4102444859,v1=3b90b1073bfdd66070256d5bc4551be6c6a9e9676fd403719575346f9a7384b7"
+}

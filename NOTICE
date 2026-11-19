@@ -1,0 +1,9 @@
+viz
+Copyright 2026 The viz Authors
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This repository also contains third-party material under its own licence, listed with
+its obligations in THIRD_PARTY.md. In particular it includes test data from Prometheus
+(Copyright The Prometheus Authors, Apache-2.0), whose NOTICE is reproduced in
+engine/promql/testdata/upstream/NOTICE.

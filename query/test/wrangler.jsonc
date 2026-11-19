@@ -1,0 +1,28 @@
+{
+  // The read path and the write path as ONE script, for testing (the way stack/ does it):
+  // test/stack.ts routes ingest paths to edge and everything else to the query Worker, and
+  // exports Shard, Ledger, Flush and Leaf.
+  "name": "viz-query-test",
+  "main": "stack.ts",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "SHARD", "class_name": "Shard" },
+      { "name": "LEDGER", "class_name": "Ledger" },
+      { "name": "LEAF", "class_name": "Leaf" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Shard", "Ledger", "Leaf"] }],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "viz-lake" }],
+  "kv_namespaces": [{ "binding": "CONFIG", "id": "00000000000000000000000000000000" }],
+  "vars": {
+    "CELL": "cell-0",
+    "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":2,\"spread\":2,\"epoch\":1}",
+    "LEAF_POOL_SIZE": "8",
+    "CORS_ORIGINS": "https://app.viz.test,https://vis.bitcru.sh",
+    "FILE_CACHE_TTL_S": "3600",
+    // The workload has fixed timestamps (so expected results can be computed once): let
+    // edge accept them whatever the wall clock says.
+    "INGEST_LIMITS": "{\"acceptBackMs\":9000000000000000,\"acceptAheadMs\":9000000000000000,\"maxSamples\":5000000,\"maxBodyBytes\":67108864,\"maxDecompressedBytes\":268435456}"
+  }
+}

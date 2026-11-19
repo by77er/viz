@@ -1,0 +1,8 @@
+{
+  "compilerOptions": {
+    "target": "es2022", "module": "es2022", "moduleResolution": "bundler", "strict": true,
+    "noUncheckedIndexedAccess": true, "skipLibCheck": true, "noEmit": true, "resolveJsonModule": true,
+    "types": ["@cloudflare/workers-types", "@cloudflare/vitest-plugin/types"]
+  },
+  "include": ["src", "test", "../engine/wasm-query/js/wasm.d.ts"]
+}

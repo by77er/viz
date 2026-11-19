@@ -1,0 +1,21 @@
+{
+  // Tests only (vitest.config.ts). The real control Tenant object is bound locally; the three
+  // backends are fake entrypoints of this same Worker (test/worker.ts).
+  "name": "viz-gateway-test",
+  "main": "test/worker.ts",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": { "bindings": [{ "name": "TENANT", "class_name": "Tenant" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Tenant"] }],
+  "kv_namespaces": [{ "binding": "CONFIG", "id": "viz-gateway-test-config" }],
+  "services": [
+    { "binding": "INGEST", "service": "viz-gateway-test", "entrypoint": "FakeIngest" },
+    { "binding": "QUERY", "service": "viz-gateway-test", "entrypoint": "FakeQuery" },
+    { "binding": "CONTROL", "service": "viz-gateway-test", "entrypoint": "FakeControl" },
+    { "binding": "RULER", "service": "viz-gateway-test", "entrypoint": "FakeRuler" },
+    { "binding": "MCP", "service": "viz-gateway-test", "entrypoint": "FakeMcp" }
+  ],
+  "vars": {
+    "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":8,\"spread\":2,\"epoch\":1}",
+    "VIZ_RELEASE": "test"
+  }
+}

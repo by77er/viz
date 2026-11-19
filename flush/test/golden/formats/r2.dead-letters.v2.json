@@ -1,0 +1,6 @@
+{
+ "format": "r2.dead-letters",
+ "version": 2,
+ "key": "cell-0/dead-letters/viz-flush-dlq/<iso time>-m-1.json",
+ "body": "{\"v\":2,\"letters\":[{\"queue\":\"viz-flush-dlq\",\"id\":\"m-1\",\"attempts\":9,\"at\":\"<ms>\",\"reason\":\"retries exhausted\",\"body\":{\"v\":1,\"tenant\":\"t1\",\"shard\":\"p/0\"}},{\"queue\":\"viz-flush-dlq\",\"id\":\"m-2\",\"attempts\":9,\"at\":\"<ms>\",\"reason\":\"retries exhausted\",\"body\":\"garbage\"}]}"
+}

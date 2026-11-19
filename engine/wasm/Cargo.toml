@@ -1,0 +1,24 @@
+[package]
+name = "viz-engine-wasm"
+version = "0.1.0"
+license = "Apache-2.0"
+edition = "2021"
+description = "viz engine for WebAssembly: a C ABI over viz-storage (encode_segment, select). No I/O."
+publish = false
+
+[lib]
+name = "viz_engine"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+viz-storage = { path = "../storage" }
+bytes = "1"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[workspace]

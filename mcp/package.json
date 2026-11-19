@@ -1,0 +1,29 @@
+{
+  "name": "@viz/mcp",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "mutants": "node scripts/mutants.mjs",
+    "measure": "vitest run test/examples.test.ts -t measurements --reporter=verbose",
+    "conformance": "node scripts/conformance.mjs",
+    "spike:libs": "vitest run --config test/spike/vitest.config.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.4.0"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.8.4",
+    "@cloudflare/workers-types": "^5.20261117.1",
+    "@modelcontextprotocol/client": "2.4.0",
+    "@modelcontextprotocol/conformance": "0.1.16",
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "agents": "0.33.0",
+    "fast-check": "^4.3.0",
+    "typescript": "^5.9.0",
+    "vitest": "^5.1.1",
+    "wrangler": "^4.164.0"
+  }
+}
