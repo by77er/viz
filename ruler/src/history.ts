@@ -137,7 +137,9 @@ export const CPU = {
   parse: 1.5,
   alert: 2.1,
   presence: 2.1,
-  slo: 3.1,
+  /** An SLO rule's point added to its buckets (warm-up, the coarse read), and one evaluated: burn windows, budget, alerts. */
+  sloWarm: 1.5,
+  sloEvaluated: 6.2,
   anomaly: {
     ewma: { fixed: 8.5, perStateByte: 0 },
     threshold: { fixed: 6.5, perStateByte: 0 },
@@ -178,6 +180,8 @@ export interface Stream {
   seriesBound: number
   /** µs of CPU per point fed (`CPU`). */
   cpuPerPoint: number
+  /** Points at or after `fromMs` cost `cpuPerPoint` here instead: a backtest's evaluated part, after its warm-up part. */
+  evaluated?: { fromMs: number; cpuPerPoint: number }
   companions?: { read: Read; seriesBound: number }[]
   /** Every step of `read`, in time order. Returns an error to stop. */
   feed(ts: number, series: Series[], companions: (Series[] | null)[]): string | null
@@ -247,6 +251,17 @@ export type Streamed =
   /** A window could not be evaluated (or held more than the model allows); what came before it was. */
   | { ok: false; failed: string }
 
+/** µs per point of `s` over the steps of [fromMs, toMs]: the evaluated part's price for the steps it covers. */
+function pricePerPoint(s: Stream, fromMs: number, toMs: number): number {
+  const e = s.evaluated
+  const step = s.read.stepMs
+  const steps = Math.floor((toMs - fromMs) / step) + 1
+  if (!e || steps <= 0 || toMs < e.fromMs) return s.cpuPerPoint
+  const first = Math.max(fromMs, fromMs + Math.ceil((e.fromMs - fromMs) / step) * step)
+  const f = (Math.floor((toMs - first) / step) + 1) / steps
+  return (1 - f) * s.cpuPerPoint + f * e.cpuPerPoint
+}
+
 /** A companion read clipped to one window of its stream's read, or null when it has no step there. */
 function clip(c: Read, w: Read): Read | null {
   const from = Math.max(c.fromMs, w.fromMs)
@@ -306,14 +321,16 @@ export async function streamHistory(planner: HistoryPlanner, range: RangeEvaluat
       const allowed = stepsOf(w) * (s.seriesBound + (s.companions ?? []).reduce((n, c) => n + c.seriesBound, 0))
       if (held > allowed) return { ok: false, failed: `the engine returned ${held} points for a window the memory model sized for ${allowed} (${s.seriesBound} series a step): more series than the rule allows` }
       const mainPts = pointsOf(main)
-      const thisUs = mainPts * s.cpuPerPoint + (held - mainPts) * (CPU.parse + CPU.presence) + CPU.perWindow
+      const thisUs = mainPts * pricePerPoint(s, w.fromMs, w.toMs) + (held - mainPts) * (CPU.parse + CPU.presence) + CPU.perWindow
       series = Math.max(series, main.result.length + comps.reduce((n, m) => n + (m?.result.length ?? 0), 0))
       // What is left after this window, every series at every step, at each stream's cost.
       let restUs = 0
       for (let j = i; j < streams.length; j++) {
         const sj = streams[j]!
-        const left = j === i ? Math.max(0, (sj.read.toMs - w.toMs) / sj.read.stepMs) : stepsOf(sj.read)
-        restUs += left * series * Math.max(sj.cpuPerPoint, CPU.parse + CPU.presence) + Math.ceil(left / sizing.windowSteps[j]!) * CPU.perWindow
+        const from = j === i ? w.toMs + sj.read.stepMs : sj.read.fromMs
+        const left = Math.max(0, Math.floor((sj.read.toMs - from) / sj.read.stepMs) + 1)
+        if (left === 0) continue
+        restUs += left * series * Math.max(pricePerPoint(sj, from, sj.read.toMs), CPU.parse + CPU.presence) + Math.ceil(left / sizing.windowSteps[j]!) * CPU.perWindow
       }
       const projected = spentUs + thisUs + restUs
       if (projected > budgetUs) {
@@ -495,10 +512,11 @@ export function sloCoarseStep(rule: SloRuleV2, intervalMs: number, rt: SloRt, co
 }
 
 /** The streams of an SLO run: the coarse read, then the fine read, each through `onFine` for its steps. */
-function sloStreams(rule: SloRuleV2, intervalMs: number, rt: SloRt, fine: Read, coarse: Read | null, onFine: Stream['feed'], companions?: Stream['companions']): Stream[] {
+function sloStreams(rule: SloRuleV2, intervalMs: number, rt: SloRt, fine: Read, coarse: Read | null, onFine: Stream['feed'], companions?: Stream['companions'], evaluatedFromMs?: number): Stream[] {
   const out: Stream[] = []
-  if (coarse) out.push({ read: coarse, seriesBound: 2 * rule.slo.maxSeries, cpuPerPoint: CPU.parse + CPU.slo, feed: (ts, series) => sloCoarseStep(rule, intervalMs, rt, coarse.stepMs, ts, series) })
-  out.push({ read: fine, seriesBound: 2 * rule.slo.maxSeries, cpuPerPoint: CPU.parse + CPU.slo, companions, feed: onFine })
+  if (coarse) out.push({ read: coarse, seriesBound: 2 * rule.slo.maxSeries, cpuPerPoint: CPU.parse + CPU.sloWarm, feed: (ts, series) => sloCoarseStep(rule, intervalMs, rt, coarse.stepMs, ts, series) })
+  const evaluated = evaluatedFromMs === undefined ? {} : { evaluated: { fromMs: evaluatedFromMs, cpuPerPoint: CPU.parse + CPU.sloEvaluated } }
+  out.push({ read: fine, seriesBound: 2 * rule.slo.maxSeries, cpuPerPoint: CPU.parse + CPU.sloWarm, ...evaluated, companions, feed: onFine })
   return out
 }
 
@@ -596,7 +614,7 @@ export async function backtestSlo(rule: SloRuleV2, fine: Read, coarse: Read | nu
     const ev = evalSlo(rule, rt, series, ts, I, true)
     return tracker.step(ts, ev.ok ? { series: ev.flagged, presence: c[0] ?? ev.present } : { error: ev.error })
   }
-  const streams = sloStreams(rule, I, rt, fine, coarse, onFine, presenceCompanion(input, rule.slo.maxSeries))
+  const streams = sloStreams(rule, I, rt, fine, coarse, onFine, presenceCompanion(input, rule.slo.maxSeries), input.fromMs)
   if (coarse) {
     // Coarse points are warm-up points too.
     const f = streams[0]!.feed
