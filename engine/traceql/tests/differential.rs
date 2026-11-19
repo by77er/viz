@@ -139,6 +139,7 @@ fn export_differential_cases() {
             odd_shapes: d % 3 == 1,
             mixed: quirks && d % 4 == 0,
             zero_ids: quirks && d % 4 == 2,
+            extremes: quirks,
         };
         let data = dataset(seed * 1000 + d, &o);
         datasets.push(dataset_json(&data));

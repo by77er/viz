@@ -245,16 +245,6 @@ fn eval<'a, 't: 'a>(e: &'a FieldExpr, ctx: &mut TraceCtx<'t>, i: usize, b: Bindi
     }
 }
 
-fn flip(op: BinOp) -> BinOp {
-    match op {
-        BinOp::Lt => BinOp::Gt,
-        BinOp::Lte => BinOp::Gte,
-        BinOp::Gt => BinOp::Lt,
-        BinOp::Gte => BinOp::Lte,
-        o => o,
-    }
-}
-
 fn intrinsic<'a, 't: 'a>(intr: Intrinsic, ctx: &mut TraceCtx<'t>, i: usize, b: Binding<'t>) -> Val<'a> {
     let trace: &'t Trace = ctx.trace;
     let span = &trace.spans[i];

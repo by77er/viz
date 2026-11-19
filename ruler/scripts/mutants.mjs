@@ -1,7 +1,8 @@
 // Mutation checks (AGENTS.md, "Tests must have teeth").
 //
 // Each mutant breaks one property in the source, on purpose. The script copies the component
-// (and the sibling sources it imports: contracts/, edge/src/, anomaly/src/) to a fresh scratch
+// (and the sibling sources it imports: contracts/, edge/src/, anomaly/src/, control/src/,
+// dashboard/src/) to a fresh scratch
 // directory, applies the mutant to the COPY, runs the named test files there, requires at least
 // one test to fail, and deletes the copy at the end. The shared tree is only read: others commit
 // and snapshot it while this runs (AGENTS.md, Evidence), and the script checks at the end that
@@ -491,6 +492,74 @@ export const MUTANTS = [
     edits: one('src/anomaly.ts', 'if (!(ANOMALY_DETECTORS as readonly string[]).includes(spec.detector)) {', 'if (false) {'),
     tests: ['test/anomaly.test.ts'],
   },
+
+  // ───────────── production wiring (82–93): query and ingest over HTTP with a service key, control's destination ─────────────
+  {
+    name: 'wiring, tenant isolation: one service credential shared by every Ruler object of the isolate (tenant B evaluates with tenant A\'s key)',
+    edits: [
+      { file: 'src/ruler.ts', find: 'const ABORT_GRACE_MS = 25\n', replace: 'const ABORT_GRACE_MS = 25\nlet sharedCredential: ServiceCredential | null = null\n' },
+      { file: 'src/ruler.ts', find: 'this.credentialRt ??= new ServiceCredential({', replace: 'this.credentialRt = sharedCredential ??= new ServiceCredential({' },
+    ],
+    tests: ['test/wiring.test.ts'],
+  },
+  {
+    name: 'wiring, tenant isolation: the notifier keeps one control destination for the isolate (tenant B\'s alerts go to tenant A\'s webhook)',
+    edits: [
+      { file: 'src/notifier.ts', find: 'export const CONTROL_REFRESH_MS = 60_000\n', replace: 'export const CONTROL_REFRESH_MS = 60_000\nlet lastTarget: NotificationTargetResult | null = null\n' },
+      { file: 'src/notifier.ts', find: '      r = await this.controlTarget()\n', replace: '      r = lastTarget ??= await this.controlTarget()\n' },
+    ],
+    tests: ['test/wiring.test.ts'],
+  },
+  {
+    name: 'wiring, no secret in bodies: the plain JSON body carries the receiver URL (as externalURL)',
+    edits: one('src/notifier.ts', ": d.integration.format === 'json' ? jsonPayload(group, alerts, idem, cap)", ": d.integration.format === 'json' ? jsonPayload({ ...group, externalUrl: d.integration.url }, alerts, idem, cap)"),
+    tests: ['test/wiring.test.ts'],
+  },
+  {
+    name: 'wiring, no secret in what is stored and shown: a delivery error keeps the URL it quotes',
+    edits: one('src/notifier.ts', ".replace(/[a-z][a-z0-9+.-]*:\\/\\/[^\\s\"'<>]*/gi, '<url>')", ''),
+    tests: ['test/wiring.test.ts'],
+  },
+  {
+    name: 'wiring, no secret in logs: each delivery is logged with its URL',
+    edits: one('src/notifier.ts', '        const res = await this.fetcher()(row.url, {', "        console.log('notifier: delivering', row.receiver, row.integration, row.url)\n        const res = await this.fetcher()(row.url, {"),
+    tests: ['test/wiring.test.ts'],
+  },
+  {
+    name: 'wiring, no secret in logs: the service key is logged when issued',
+    edits: one('src/credential.ts', "      case 'ok':\n", "      case 'ok':\n        console.info('ruler: service key issued', r.name, r.key)\n"),
+    tests: ['test/wiring.test.ts'],
+  },
+  {
+    name: 'wiring, retries: the JSON body is rebuilt for each attempt (an attempt counter in it), so a retry is not the same notification',
+    edits: one('src/notifier.ts', '          body: row.body,\n', "          body: row.body.replace('{\"version\"', `{\"attempt\":${row.attempts},\"version\"`),\n"),
+    tests: ['test/wiring.test.ts'],
+  },
+  {
+    name: 'wiring, retries: the JSON body names another key than the Idempotency-Key header',
+    edits: one('src/notifier.ts', "jsonPayload(group, alerts, idem, cap)", "jsonPayload(group, alerts, hash64(`${idem}#body`), cap)"),
+    tests: ['test/wiring.test.ts', 'test/golden.test.ts'],
+  },
+  {
+    name: 'wiring, six connections: four engine calls in flight per Ruler object',
+    edits: one('src/engine.ts', 'export const ENGINE_CALLS_IN_FLIGHT = 1', 'export const ENGINE_CALLS_IN_FLIGHT = 4'),
+    tests: ['test/wiring.test.ts'],
+  },
+  {
+    name: 'wiring, six connections: a gate per evaluator instead of one per object',
+    edits: one('src/ruler.ts', 'return q ? httpEngine(q, this.credential(), this.engineGate) : null', 'return q ? httpEngine(q, this.credential(), new Gate(ENGINE_CALLS_IN_FLIGHT)) : null'),
+    tests: ['test/wiring.test.ts'],
+  },
+  {
+    name: 'wiring, credential: a refused key is replaced at once (a rotation, and an audit entry, per 401 while KV propagates)',
+    edits: one('src/credential.ts', 'now - stored.issuedAt >= PROPAGATION_GRACE_MS', 'now - stored.issuedAt >= 0'),
+    tests: ['test/wiring.test.ts'],
+  },
+  {
+    name: 'wiring, control destination: a tenant config may define viz:default itself (shadowing the control plane\'s destination)',
+    edits: one('src/amconfig.ts', '      if (r.name === CONTROL_RECEIVER) return c.err(', '      if (r.name === CONTROL_RECEIVER && false) return c.err('),
+    tests: ['test/wiring.test.ts'],
+  },
 ]
 
 const hasGo = spawnSync('go', ['version'], { encoding: 'utf8' }).status === 0
@@ -503,7 +572,8 @@ function makeCopy() {
   const base = process.env.VIZ_SCRATCH ?? tmpdir()
   mkdirSync(base, { recursive: true })
   const dir = mkdtempSync(join(base, 'ruler-mutants-'))
-  for (const d of ['contracts', 'edge/src', 'anomaly/src']) cpSync(join(repo, d), join(dir, d), { recursive: true })
+  // control/src and dashboard/src: the tests bind control's real Tenant object (test/harness.ts), which imports the dashboard package.
+  for (const d of ['contracts', 'edge/src', 'anomaly/src', 'control/src', 'control/openapi.json', 'dashboard/src']) cpSync(join(repo, d), join(dir, d), { recursive: true })
   const skip = new Set(['node_modules', '.capture', '.wrangler'].map((d) => join(source, d)))
   cpSync(source, join(dir, 'ruler'), { recursive: true, filter: (p) => ![...skip].some((s) => p === s || p.startsWith(`${s}/`)) })
   symlinkSync(join(source, 'node_modules'), join(dir, 'ruler', 'node_modules'), 'dir')

@@ -83,6 +83,9 @@ pub struct Opts {
     pub mixed: bool,
     /// Span ids may begin with a zero nibble.
     pub zero_ids: bool,
+    /// Integers at the i64 limits and floats near f64::MAX, where Tempo's int64 aggregates
+    /// wrap and float sums depend on order.
+    pub extremes: bool,
 }
 
 fn id8(r: &mut Rng, zero_ok: bool) -> [u8; 8] {
@@ -109,7 +112,7 @@ fn id16(r: &mut Rng) -> [u8; 16] {
     }
 }
 
-fn float_value(r: &mut Rng) -> f64 {
+fn float_value(r: &mut Rng, extremes: bool) -> f64 {
     match r.below(40) {
         0 => return f64::NAN,
         1 => return f64::INFINITY,
@@ -122,7 +125,7 @@ fn float_value(r: &mut Rng) -> f64 {
         2 => 0.5,
         3 => 1.5,
         4 => -2.25,
-        5 => 1e300,
+        5 => if extremes { 1e300 } else { 1e-300 },
         6 => f64::MIN_POSITIVE,
         7 => (r.below(1000) as f64) / 8.0,
         8 => 100.0,
@@ -131,12 +134,12 @@ fn float_value(r: &mut Rng) -> f64 {
     }
 }
 
-fn int_value(r: &mut Rng) -> i64 {
+fn int_value(r: &mut Rng, extremes: bool) -> i64 {
     match r.below(12) {
         0 => 0,
         1 => -1,
-        2 => i64::MAX,
-        3 => i64::MIN,
+        2 => if extremes { i64::MAX } else { 9_007_199_254_740_993 },
+        3 => if extremes { i64::MIN } else { -1_000_000 },
         4 => 200,
         5 => 404,
         6 => 500,
@@ -144,14 +147,14 @@ fn int_value(r: &mut Rng) -> i64 {
     }
 }
 
-fn value(r: &mut Rng, t: T) -> AttrValue {
+fn value(r: &mut Rng, t: T, x: bool) -> AttrValue {
     match t {
         T::Str => AttrValue::Str(r.pick(&STR_VALUES).to_string()),
-        T::Int => AttrValue::Int(int_value(r)),
-        T::Float => AttrValue::Float(float_value(r)),
+        T::Int => AttrValue::Int(int_value(r, x)),
+        T::Float => AttrValue::Float(float_value(r, x)),
         T::Bool => AttrValue::Bool(r.chance(0.5)),
         T::StrArr => AttrValue::StrArray((0..r.below(4)).map(|_| r.pick(&STR_VALUES).to_string()).collect()),
-        T::IntArr => AttrValue::IntArray((0..r.below(4)).map(|_| int_value(r)).collect()),
+        T::IntArr => AttrValue::IntArray((0..r.below(4)).map(|_| int_value(r, x)).collect()),
     }
 }
 
@@ -167,13 +170,13 @@ fn duration(r: &mut Rng) -> u64 {
 }
 
 /// A resource: its attributes. Index 0 has no `service.name`.
-pub fn resources(r: &mut Rng) -> Vec<Vec<(String, AttrValue)>> {
+pub fn resources(r: &mut Rng, x: bool) -> Vec<Vec<(String, AttrValue)>> {
     let mut out = vec![vec![("env".to_string(), AttrValue::Str("prod".into()))]];
     for s in SERVICES {
         let mut a = vec![("service.name".to_string(), AttrValue::Str(s.to_string()))];
         for (k, t) in RES_KEYS {
             if r.chance(0.6) {
-                a.push((k.to_string(), value(r, t)));
+                a.push((k.to_string(), value(r, t, x)));
             }
         }
         out.push(a);
@@ -185,7 +188,7 @@ pub const SCOPES: [(&str, &str); 3] = [("lib.http", "1.2.0"), ("lib.db", "0.9"),
 
 pub fn dataset(seed: u64, o: &Opts) -> Vec<Trace> {
     let mut r = Rng::new(seed);
-    let res = resources(&mut r);
+    let res = resources(&mut r, o.extremes);
     let keys = span_keys(o.mixed);
     let mut traces = Vec::with_capacity(o.traces);
     let mut all_ids: Vec<([u8; 16], [u8; 8])> = Vec::new();
@@ -233,7 +236,7 @@ pub fn dataset(seed: u64, o: &Opts) -> Vec<Trace> {
             for (k, t) in &keys {
                 if r.chance(0.45) {
                     let t = if *k == "mix" && r.chance(0.5) { T::Float } else { *t };
-                    attrs.push((k.to_string(), value(&mut r, t)));
+                    attrs.push((k.to_string(), value(&mut r, t, o.extremes)));
                 }
             }
             let start = t0 + r.below(2_000_000_000);

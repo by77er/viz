@@ -98,7 +98,8 @@ fn elements(v: &AttrValue) -> Vec<Val<'_>> {
     }
 }
 
-/// Regex match of an attribute (strings only; arrays as in [`typed_match`]).
+/// Regex match of a value (strings only; for arrays, `=~` holds if an element matches and
+/// `!~` if none does).
 pub fn regex_match(v: &Val, re: &regex::Regex, negated: bool) -> bool {
     match v {
         Val::Str(s) => re.is_match(s) != negated,
