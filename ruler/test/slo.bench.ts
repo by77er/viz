@@ -74,7 +74,8 @@ function latencyMatrix(series: number, start: number, end: number, step: number)
     const values: [number, string][] = []
     for (let t = start; t <= end; t += step) {
       const m = Math.round(t / MIN)
-      values.push([t / 1000, String((m + k * 13) % 1009 === 0 ? 400 : 100 + ((m * 37 + k) % 7) - 3)])
+      // A spike every 4,001 minutes per series (about twice a week): the alerts stay within the 4 MiB the intervals may hold.
+      values.push([t / 1000, String((m + k * 13) % 4001 === 0 ? 400 : 100 + ((m * 37 + k) % 7) - 3)])
     }
     result.push({ metric: { svc: svc(k) }, values })
   }

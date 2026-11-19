@@ -721,8 +721,10 @@ data names the tenant.
   group's tick, so that tick's batch waits for it (one engine call at a time per object), and big
   warm-ups are not spread over several ticks.
 - **Backtests (part 12):** anomaly and SLO rules at a step other than their interval; recording
-  rules; a CPU budget (only the plan's samples and bytes are bounded: see the measured cost of a
-  7-day backtest below); asynchronous backtests (the request holds the object for its duration).
+  rules; a CPU budget (the plan's samples and bytes, and memory, are bounded; see the measured cost
+  of 7-day backtests below); asynchronous backtests (the request holds the object for its duration);
+  windows sized by the series a read really returns (they are sized by the rule's bound, part 13);
+  a plan per window (plans price each whole read).
 - **Notifier:** mute / active time intervals, notification templates, receivers other than
   webhook and Slack, `/api/v2/alerts` ingestion, editing a silence, updating a Slack message.
 - **Metrics about itself** (`viz_rule_evaluations_total`…): `health()` only.
@@ -1307,6 +1309,12 @@ declaration ADDED, CHANGED or EXTENDED, so the diff to apply is that file.
     `.warmup` / `.cost`, the `over_budget` answer, `MonitorInput.slo`, `MonitorSloView`.
 17. **`EVALUATOR.plan(tenant, promql, start, end, step)`** is what the ruler would call on an RPC
     engine binding (`RulerEnv`); viz-query's HTTP `/api/v1/plan` stands in for it.
+18. **The memory budgets of part 13 are proposed, not in `contracts/rules.ts`**: `RulerLimitsV2`
+    (`rules.v2.ts`) adds `maxWarmupMemoryBytes` and `maxBacktestMemoryBytes`, which `configure`
+    accepts; they belong in `RulerLimits` as a contract version 5 (additive), not made here because
+    this change was confined to `ruler/`. A memory refusal of a warm-up is reported in its status's
+    `message` (with the model's numbers), not in a field, so the stored format `store.warmup` v1 is
+    unchanged; a backtest's answer carries `cost.memory` and `over_budget.memory` (`rules.v2.ts`).
 13. **Design text to update** (not done: outside `ruler/`): DESIGN §7 should say
     "one batch per group per tick, split only before a rule reading a series recorded
     earlier in the same tick", name the `RulerIndex` registry as the sweeper's source,
@@ -1351,11 +1359,13 @@ declaration ADDED, CHANGED or EXTENDED, so the diff to apply is that file.
 - **A warm-up holds its group's tick** (and, through the one-call gate, every engine call of the
   object) while it reads; a rule whose history is large but within the budget delays the first
   evaluation of the group's other rules by the read's duration (not measured on Cloudflare).
-- **Backtests run in the request, and the budget bounds what is read, not what is held.** A 7-day
-  SLO backtest over 100 series cost 9.7 s of CPU and held about 0.6 GB in workerd here; on
-  Cloudflare the engine's 500,000-output-point limit refuses such a read first (`failed`, 502), and
-  the object's 128 MB would not hold it. There is no ruler-side bound on points held; a plan
-  cannot say how many series a query returns.
+- **Backtests run in the request.** Memory is bounded by the model (part 13), CPU is not: a 7-day
+  backtest over 1,000 series costs seconds of CPU in the object (measured below). The model is
+  calibrated on local workerd's resident memory, not on Cloudflare's accounting.
+- **An alerting rule's backtest is sized for its alert limit** (1,000 series a step), however few
+  series it returns: a week at 1 minute is 326 range queries, sequential through the one-call gate
+  (D39). A coarser step, or a lower `maxAlertsPerRule`, means fewer. The windows' queries may read
+  boundary files twice, so a run can cost somewhat more than its plans said.
 - **Anomaly state is written every tick**: at least one row per anomaly rule per tick (43,200 a
   month for a 1-minute rule, about $0.04 at $1 per million rows, modelled), more for large
   states (6 rows a tick for 100 daily seasonal series). A rule whose state changes every tick
