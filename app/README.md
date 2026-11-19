@@ -506,8 +506,9 @@ no longer: `query/` now sends `Retry-After: 1` with it, and the item was dropped
 ## Verification
 
 Run on 2026-11-19, Node 22.23, on a machine shared with other builders (load average 9 to
-26 on 4 cores), the real stack under `wrangler dev --local` on port 8851. The unit tests,
-typecheck, build and the four mock suites ran last at 03:20 to 03:27 UTC on the final source.
+26 on 4 cores), the real stack under `wrangler dev --local` on port 8851. The four mock suites
+ran last at 03:24 to 03:28 UTC, and the unit tests, typecheck and build at 03:30 to 03:32,
+on the final source.
 Two edits came after the 01:43 run of the two real-API suites: the grid's point count in
 `src/lib/series.ts` (found by the mutation run, below) and the stack's readiness check in
 `e2e/lib.cjs` and `real/stack.mjs`; their re-run could not be counted (the table says why).

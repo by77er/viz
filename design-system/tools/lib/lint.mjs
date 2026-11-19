@@ -161,5 +161,15 @@ export function lintHtml(text, { file, report, tokens, breakpoints }) {
     n.childNodes?.forEach(walk); if (n.content) walk(n.content)
   }
   walk(doc)
+  // The main path of a flow is never a link inside a sentence: in a timeline line the link stands under its sentence (the li's own child),
+  // in a banner after it (the banner's own child, or in its row of controls). A link moved into the sentence is text, exempt from the touch
+  // height, and so cannot be the main path (v4 review, M3; v5 review, X28).
+  const cls = (n) => ((n.attrs ?? []).find((a) => a.name === 'class')?.value ?? '').split(/\s+/)
+  const check = (n, inside) => { const c = cls(n)
+    if (n.nodeName === 'a' && inside) { const p = n.parentNode, ok = inside === 'timeline' ? p.nodeName === 'li' && cls(p.parentNode).includes('vz-timeline') : cls(p).includes('vz-banner') || cls(p).includes('vz-controls')
+      if (!ok) report('main-path', file, n.sourceCodeLocation?.startLine ?? 1, [`a link in a ${inside} is inside <${p.nodeName}${cls(p)[0] ? '.' + cls(p).join('.') : ''}>: it must stand alone, the ${inside === 'timeline' ? "line's own child" : "banner's own child"}`]) }
+    const next = c.includes('vz-timeline') ? 'timeline' : c.includes('vz-banner') ? 'banner' : inside
+    n.childNodes?.forEach((k) => check(k, next)) }
+  check(doc, null)
   return rules
 }
