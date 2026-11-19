@@ -13,6 +13,9 @@ import { threshold, ewma, robustZ, seasonal, cusum, burnRate, stl, peltDetector,
 import type { DetectResult, Point, Series } from '../src/index.ts'
 import { chunked, MIN, numeric, T0 } from './helpers.ts'
 
+// FC_SEED=<n> npx vitest run test/properties.test.ts  reruns with a chosen seed (e.g. one CI printed)
+if (process.env.FC_SEED) fc.configureGlobal({ seed: Number(process.env.FC_SEED) })
+
 type Run = (s: Series, st: unknown) => DetectResult<unknown>
 
 const STEP = MIN

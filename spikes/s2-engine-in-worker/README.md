@@ -10,6 +10,13 @@ SIMD) and its JavaScript counterpart, each running the benchmark's two queries o
 Parquet file sent as the request body. Endpoints need the `x-key` header (a Worker secret).
 Nothing runs on a timer. Remove with `npx wrangler delete --name viz-spike-s2-engine`.
 
+`src/vizcore.wasm` (3.6 MB) is the exact binary that was measured, kept so a rerun measures
+the same code: the benchmark core built in `bench/core` with
+`RUSTFLAGS="-C target-feature=+simd128,+bulk-memory" cargo build --release --target
+wasm32-unknown-unknown --features arrow` (`bench/README.md`, "Reproduce") and copied here
+unchanged. Rebuilding gives an equivalent module; a byte-identical one needs the same Rust
+toolchain.
+
 ## Result
 
 Measured on Cloudflare on 2026-11-18. CPU time is the per-request figure from Cloudflare's

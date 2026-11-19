@@ -17,7 +17,7 @@
 import type { Point, Series } from '../types.ts'
 import { COMMON_DEFAULTS, type CommonParams, length, merge, sideOk, val } from '../base.ts'
 import { deviation } from '../explain.ts'
-import { finiteScore, robust, spreadFloor } from '../stats.ts'
+import { finiteScore, okTs, robust, spreadFloor } from '../stats.ts'
 
 export interface GroupParams extends CommonParams {
   /** Cut-off in robust standard deviations. */
@@ -111,7 +111,7 @@ export function detectGroupWindow(group: { id: string; series: Series }[], param
     const n = length(g.series)
     for (let i = 0; i < n; i++) {
       const t = g.series.ts[i]!
-      if (!Number.isFinite(t)) continue
+      if (!okTs(t)) continue
       let row = byTs.get(t)
       if (!row) byTs.set(t, (row = []))
       row.push({ id: String(g.id), value: g.series.values[i]! })

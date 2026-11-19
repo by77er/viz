@@ -195,10 +195,11 @@ the *logged* watermark). Under §3.3 that takes three releases:
 3. **Cleanup.** Release C may drop the per-change reader once every live incarnation's log
    starts with a segment `base`.
 
-As built (`LEDGER-LOG.md`, "Rollout"), steps 1 and 2 ship together, because no ledger had
-reached production: that release is forward-only, and any deployment that ran the first
-layout cannot be rolled back below it (stuck, not lost, §9). Once a ledger is in production,
-the next log format change takes the three steps.
+Planned (`LEDGER-LOG.md`): because no ledger has reached production yet, steps 1 and 2 may
+ship together; that release is forward-only, and any deployment that ran the first layout
+cannot be rolled back below it (stuck, not lost, §9). The ledger in this release still writes
+one object per change. Once a ledger is in production, the next log format change takes the
+three steps.
 
 Within the segment format: `LedgerChange.removed` stays `string[]`. The `{ key, table }`
 pairs the plan wants are a **new** field beside it (for example `removedFiles`), not a new

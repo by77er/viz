@@ -96,7 +96,7 @@ export function medianInPlace(a: Float64Array, n: number): number {
   // the largest of the lower half
   let lo = -Infinity
   for (let i = 0; i < h; i++) if (a[i]! > lo) lo = a[i]!
-  return (lo + hi) / 2
+  return lo + (hi - lo) / 2 // not (lo + hi) / 2, which overflows near ±MAX_VALUE
 }
 
 export interface Robust {
@@ -164,13 +164,21 @@ export function weightedMedian(values: number[], weights: number[]): number {
   return values[idx[idx.length - 1]!]!
 }
 
-/** Median of the positive differences of increasing timestamps; 0 if fewer than two. */
+/**
+ * Largest |timestamp| accepted, in ms: the ECMAScript Date range (±100,000,000 days). Beyond it
+ * a timestamp is refused (the point is missing), so differences of accepted timestamps are at
+ * most 1.7e16 and can never overflow, and nothing derived from them reaches state as ±Infinity.
+ */
+export const MAX_TS = 8.64e15
+export const okTs = (t: number): boolean => Math.abs(t) <= MAX_TS
+
+/** Median of the positive differences of increasing accepted timestamps; 0 if fewer than two. */
 export function inferStep(ts: ArrayLike<number>): number {
   const d: number[] = []
   let prev = NaN
   for (let i = 0; i < ts.length; i++) {
     const t = ts[i]!
-    if (!Number.isFinite(t)) continue
+    if (!okTs(t)) continue
     if (Number.isFinite(prev) && t > prev) d.push(t - prev)
     if (!Number.isFinite(prev) || t > prev) prev = t
   }
