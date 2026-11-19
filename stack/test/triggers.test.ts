@@ -29,7 +29,7 @@ async function drainFlushQueue(): Promise<number> {
   }
   return n
 }
-const markerOf = async (t: SimTenant) => (await env.CONFIG.getWithMetadata<{ due: number; orphansAt: number; sweep: boolean }>(maintMarkerKey(t.name))).metadata
+const markerOf = async (t: SimTenant) => (await env.CONFIG.getWithMetadata<{ v: number; due: number; orphansAt: number; sweep: boolean }>(maintMarkerKey(t.name))).metadata
 
 /** `env` whose Durable Object namespaces and queues count every use. */
 function counting(base: StackEnv) {
@@ -105,7 +105,7 @@ describe('what happens without anyone calling it', () => {
       run: async (e, eng, tenant, o) => ({ ...(await maintainTenant(e, eng, tenant, o)), more: true }),
     })
     expect(more[0]!.action).toBe('done')
-    expect(sim.maintQueue.map((m) => m.body)).toEqual([{ tenant: b!.name }])
+    expect(sim.maintQueue.map((m) => m.body)).toEqual([{ v: 1, tenant: b!.name }])
     sim.maintQueue.length = 0
   })
 
@@ -174,7 +174,8 @@ describe('an idle deployment', () => {
     // (nothing is pending), and the shards remove their markers.
     const first = counting(sim.env)
     const swept = await handleScheduled(first.env)
-    expect(swept.flush).toEqual({ markers: 2, shardsAsked: 2, enqueued: [] })
+    expect(swept.flush).toEqual({ markers: 2, shardsAsked: 2, deferred: 0, enqueued: [], failed: [], unsent: 0 })
+    expect(swept.errors).toEqual([])
     expect(first.calls).toEqual({ shard: 2, ledger: 0, flushMessages: 0, maintMessages: 0 })
 
     // The time-driven work that is left runs once: hours go quiet, today closes (a policy
@@ -187,7 +188,7 @@ describe('an idle deployment', () => {
       for (let i = 0; i < 10 && (report.more || report.compaction.merged > 0 || report.purged.waiting > 0); i++) report = await maintainTenant(sim.env, engine, t.name, settle)
       const oldest = (await ledger(t).plan({ table: 'metric_samples', minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })).files.map((f) => f.day).sort()[0]!
       retentionDue.set(t.name, Date.parse(`${oldest}T00:00:00Z`) + 31 * DAY_MS) // the default policy keeps 30 days besides today
-      expect(await markerOf(t)).toEqual({ due: retentionDue.get(t.name), orphansAt: expect.any(Number), sweep: false })
+      expect(await markerOf(t)).toEqual({ v: 1, due: retentionDue.get(t.name), orphansAt: expect.any(Number), sweep: false })
     }
 
     // From here the deployment is idle: tenants have data (so they have maintenance markers,
@@ -198,9 +199,9 @@ describe('an idle deployment', () => {
     const start = Date.now()
     for (let hour = 1; hour <= 7 * 24; hour++) {
       const x = await handleScheduled(idle.env, start + hour * 3_600_000)
-      expect(x.flush).toEqual({ markers: 0, shardsAsked: 0, enqueued: [] })
-      expect(x.maintenance.enqueued).toEqual([])
-      expect(x.maintenance.markers).toBeGreaterThanOrEqual(3)
+      expect(x.flush).toEqual({ markers: 0, shardsAsked: 0, deferred: 0, enqueued: [], failed: [], unsent: 0 })
+      expect(x.maintenance!.enqueued).toEqual([])
+      expect(x.maintenance!.markers).toBeGreaterThanOrEqual(3)
     }
     expect(idle.calls).toEqual({ shard: 0, ledger: 0, flushMessages: 0, maintMessages: 0 })
     expect(sim.flushQueue.length).toBe(announced)
@@ -212,7 +213,7 @@ describe('an idle deployment', () => {
     // It is not asleep for good: the cron at the first expiry date enqueues exactly the tenants due then.
     const expiresFirst = Math.min(...retentionDue.values())
     const woken = await handleScheduled(idle.env, expiresFirst)
-    expect(woken.maintenance.enqueued.sort()).toEqual(sim.tenants.filter((t) => retentionDue.get(t.name) === expiresFirst).map((t) => t.name).sort())
+    expect(woken.maintenance!.enqueued.sort()).toEqual(sim.tenants.filter((t) => retentionDue.get(t.name) === expiresFirst).map((t) => t.name).sort())
     expect(idle.calls).toMatchObject({ shard: 0, ledger: 0, flushMessages: 0 })
     // And the data is all still there.
     for (const t of sim.tenants) await checkTenant(sim, t, 0, 'idle')
@@ -265,7 +266,7 @@ describe('an idle deployment', () => {
     sim.maintQueue.length = 0
     const broken = { ...sim.env, CONFIG: new Proxy(env.CONFIG, { get: (t, p) => (p === 'put' ? async () => { throw new Error('KV 429') } : Reflect.get(t, p).bind(t)) }) } as StackEnv
     await noteFlushed(broken, { tenant: a!.name })
-    expect(sim.maintQueue.map((m) => m.body)).toEqual([{ tenant: a!.name, wrote: true }])
+    expect(sim.maintQueue.map((m) => m.body)).toEqual([{ v: 1, tenant: a!.name, wrote: true }])
     expect((await markerOf(a!))!.sweep).toBe(false) // the marker could not say so; the message does
     const d = await deliver(sim, sim.maintQueue, MAINT_QUEUE_NAME, take(sim.maintQueue, 10), 5, (x) => consumeMaintBatch(x, sim.env, engine, opts))
     expect(d.outcomes[0]!.report!.orphans).not.toBeNull()

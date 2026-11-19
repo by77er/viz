@@ -1,7 +1,7 @@
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { afterAll, describe, expect, it } from 'vitest'
-import { compactStep } from '../../compact/src/compact'
+import { COMPACTION_INPUTS_META, compactStep, decodeCompactionInputs } from '../../compact/src/compact'
 import type { Watermark } from '../../contracts/ledger'
 import { breakLedgerLog, dataKeys, healLedgerLog } from '../../flush/test/helpers'
 import { canonOf } from '../../flush/test/read'
@@ -85,8 +85,12 @@ describe('soak', () => {
     /** Sweep orphans, and check each deletion: unreferenced, old enough, and never admissible. */
     const orphans = async (t: SimTenant, where: string): Promise<void> => {
       const listed = new Map<string, number>()
+      const inputsOf = new Map<string, string | undefined>()
       for (const table of ['metric_samples', 'metric_series']) {
-        for (const o of (await env.BUCKET.list({ prefix: `${env.CELL}/data/${table}/tenant=${t.name}/` })).objects) listed.set(o.key, o.uploaded.getTime())
+        for (const o of (await env.BUCKET.list({ prefix: `${env.CELL}/data/${table}/tenant=${t.name}/`, include: ['customMetadata'] })).objects) {
+          listed.set(o.key, o.uploaded.getTime())
+          inputsOf.set(o.key, o.customMetadata?.[COMPACTION_INPUTS_META])
+        }
       }
       const logged: Watermark[] = await ledger(t).loggedWatermarks()
       const o = await sweepOrphans(sim.env, t.name, { graceMs: ORPHAN_GRACE, maxCompactStepMs: STEP })
@@ -104,7 +108,14 @@ describe('soak', () => {
           const dead = w !== undefined && (w.incarnation > Number(m[2]) || (w.incarnation === Number(m[2]) && w.seq >= Number(m[4])))
           expect(dead, `${where}: ${key} deleted while its unit could still be admitted (logged ${JSON.stringify(w)})`).toBe(true)
         } else {
-          expect(age, `${where}: compaction output ${key} deleted while a step could still list it`).toBeGreaterThanOrEqual(2 * STEP)
+          // A compaction output may go only once an input of it is gone for good: its object
+          // was already deleted before this sweep listed, and the ledger does not list it.
+          expect(age, `${where}: compaction output ${key} deleted young`).toBeGreaterThanOrEqual(2 * STEP)
+          const d = await decodeCompactionInputs(key, inputsOf.get(key))
+          expect('inputs' in d, `${where}: compaction output ${key} deleted although its inputs cannot be read`).toBe(true)
+          const gone = 'inputs' in d ? d.inputs.filter((k) => !listed.has(k)) : []
+          const live = new Set((await ledger(t).orphanCheck(gone)).live)
+          expect(gone.some((k) => !live.has(k)), `${where}: compaction output ${key} deleted while all its inputs remain`).toBe(true)
         }
       }
       did('orphans deleted', o.deleted.length)
@@ -168,7 +179,7 @@ describe('soak', () => {
               // follow that only if nothing of those days is still in a tail: flush first.
               await quiesce(tt)
               const report = await (await import('../src/maintain')).maintainTenant(e, eng, tenant, o)
-              tt.model.expire(report.expired.beforeDay)
+              if (report.expired.beforeDay !== null) tt.model.expire(report.expired.beforeDay)
               did('files expired', report.expired.removed.length)
               did('merges', report.compaction.merged)
               did('objects purged', report.purged.deleted.length)
@@ -189,8 +200,8 @@ describe('soak', () => {
       } else if (op < 82) {
         // Retention, with a compaction step running across it.
         await quiesce(t)
-        const x = await compactStep(sim.env, engine, t.name, { now: clock(), policy: compaction(), hooks: { afterPut: async () => { t.model.expire((await expireTenant(sim.env, t.name)).beforeDay) } } })
-        t.model.expire((await expireTenant(sim.env, t.name)).beforeDay)
+        const x = await compactStep(sim.env, engine, t.name, { now: clock(), policy: compaction(), hooks: { afterPut: async () => { t.model.expire((await expireTenant(sim.env, t.name)).beforeDay!) } } })
+        t.model.expire((await expireTenant(sim.env, t.name)).beforeDay!)
         did(`retention (compaction ${x.status})`)
       } else if (op < 87) {
         await purge(t, where)
@@ -242,7 +253,7 @@ describe('soak', () => {
     for (const t of sim.tenants) expect(await ingest(sim, t, r, 5, 3, 0)).toBe(204)
     for (const t of sim.tenants) {
       await quiesce(t)
-      t.model.expire((await expireTenant(sim.env, t.name)).beforeDay)
+      t.model.expire((await expireTenant(sim.env, t.name)).beforeDay!)
       for (let i = 0; i < 200; i++) {
         const x = await compactStep(sim.env, engine, t.name, { now: Date.now() + 3 * DAY_MS, policy: { maxInputPairs: 4, maxStepMs: STEP } })
         if (x.status === 'idle') break

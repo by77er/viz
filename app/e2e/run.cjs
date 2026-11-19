@@ -237,7 +237,9 @@ async function main() {
     await page.waitForSelector('[data-testid=error-message]')
     const err = await page.textContent('[data-testid=error-message]')
     const errType = await page.textContent('[data-testid=error-type]')
-    check('error state shows the Prometheus error text', /parse error: unexpected end of input/.test(err) && /bad_data/.test(errType), `${errType.trim()}: ${err.trim()}`)
+    // The mock now words this error as the real API does ("unclosed left parenthesis"; it was
+    // "unexpected end of input"), and like the real API it gives no position (e2e/contract.cjs).
+    check('error state shows the Prometheus error text', /parse error: unclosed left parenthesis/.test(err) && /bad_data/.test(errType), `${errType.trim()}: ${err.trim()}`)
     await page.screenshot({ path: path.join(SHOTS, 'explore-error-light.png') })
     await page.waitForTimeout(150)
     expectHttpError = false
