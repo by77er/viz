@@ -23,7 +23,9 @@ import { readStateRows } from '../src/anomaly'
 import { apiKey, call } from './api'
 import { Crash, T0, world } from './harness'
 import { MIN, ok, setup, vec } from './helpers'
-import { SLI, sloEntry } from './slo.test'
+
+const SLI = { bad: 'sum(increase(errors_total[$window]))', total: 'sum(increase(requests_total[$window]))' }
+const sloEntry = () => ({ alert: 'CheckoutSLO', slo: { objective: 0.999, sli: SLI } })
 
 const HOUR = 60 * MIN
 const DAY = 24 * HOUR
@@ -288,9 +290,10 @@ describe('backtests: the rule\'s own evaluation over history, in time order', ()
   })
 
   it('an SLO rule: over data it paged and ticketed on live, the backtest gives the same alerts at the same times with the same sentences', async () => {
+    // History: a trickle of errors (half the budget rate); live: two six-minute outages.
     const outage = (t: number) => {
       const m = Math.round(t / MIN)
-      return m % 97 >= 10 && m % 97 < 16 ? 1000 : m % 3
+      return t >= T0 && m % 97 >= 10 && m % 97 < 16 ? 1000 : m % 2
     }
     const r = await rig([sloEntry()], undefined, { group: 'slos/1m', slo: outage })
     const ticks: { ts: number; alerts: Alert[] }[] = []
@@ -313,7 +316,7 @@ describe('backtests: the rule\'s own evaluation over history, in time order', ()
 
   it('every backtest is planned first and refused whole past the budget, for every kind; a step other than the interval is refused for detectors', async () => {
     const r = await rig([ewma()])
-    r.plan({ scanSamples: 15_000_000, bytesToRead: 1 << 20, seriesEstimate: 3, refusal: null })
+    r.plan({ scanSamples: 25_000_000, bytesToRead: 1 << 20, seriesEstimate: 3, refusal: null })
     const T = T0 - DAY
     for (const rule of [{ alert: 'Hot', expr: 'latency_ms > 300' }, ewma(), sloEntry()]) {
       const res = await r.stub.backtest(r.tenant, rule, T, T + DAY, MIN)
