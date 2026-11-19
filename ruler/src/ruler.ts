@@ -989,10 +989,12 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
 
   /**
    * Warm the group's pending anomaly and SLO rules so that their state at `endTs` (the query time
-   * before this tick's) is what it would be had they run all along. Per rule: the reads are planned
-   * (nothing fetched); over the budget, or refused by the engine's plan, the warm-up is refused and
-   * the rule starts cold; otherwise the reads are fetched whole and fed, in time order, through the
-   * rule's own evaluation; the state rows and the status commit in one transaction. An engine
+   * before this tick's) is what it would be had they run all along. Per rule: every query of the
+   * reads is planned first (nothing fetched); over the budget, or refused by the engine's plan, the
+   * warm-up is refused and the rule starts cold; otherwise the reads are streamed in time windows
+   * sized to the memory budget, one at a time and in order (`streamHistory`, D43), each fed through
+   * the rule's own evaluation with only its state carried between windows; the state rows and the
+   * status commit in one transaction. An engine
    * failure leaves the job pending (the rule waits this tick out) until `MAX_WARMUP_ATTEMPTS`, then
    * the rule starts cold. A warm-up the CPU model prices over `maxWarmupCpuMs` is refused (the rule
    * starts cold); one that fits that but not what this alarm's warm-ups have left waits for the
@@ -1291,7 +1293,8 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
   }
 
   private validate(file: unknown, now: number, promqlErrors: ValidationError[] = []): { result: SaveGroupsResult; groups: RuleGroup[] } {
-    const parsed = parseRuleFile(file, this.cfg)
+    // A rule saved over a stored one keeps the defaults it was stored with (contracts/rules.ts `AnomalySpecInput`).
+    const parsed = parseRuleFile(file, this.cfg, (group) => this.groups.get(group)?.spec.anomalyRules)
     const errors = [...parsed.errors, ...promqlErrors]
     const names = new Set([...this.groups.keys()].filter((n) => n !== DEADMAN_GROUP))
     for (const g of parsed.groups) names.add(g.name)
