@@ -15,6 +15,13 @@
  *   pages and cursors    D48 unchanged: the same batches whatever the page size, cursors bound to
  *                        the hull, `page_limit` only for a batch the read keeps, the scan budget,
  *                        the discard fence, eviction
+ *   deciding a skip      (review of D72, M-1) from the partial index `batch_time`, which holds the
+ *                        bounds of exactly the batches that have them; the read's plan uses it and
+ *                        its WHERE never names the payload; one call considers at most
+ *                        `tailScanMaxBatches` batches, skipped ones included; `page_limit` says
+ *                        whether its batch is the last the read keeps (n-1)
+ *   layouts not walked   (m-1) flags, reserved bytes or padding not zero, or no entries: no bounds,
+ *                        kept by every range
  *   rollback             storage this release wrote is served by the release before it (frozen,
  *                        bench/prebounds/) on the same storage, and every batch that release
  *                        wrote is kept by every hull after the roll-forward; storage at schema 2
@@ -32,7 +39,7 @@ import wasm from '../../engine/wasm/js/viz_engine.wasm'
 import { type Attrs, type LogRow, type LogStream, type SpanRow, encodeLogBatch, encodeSpanBatch } from '../../engine/wasm/test/signal'
 import { bitsFromBytes, bitsOf, encodeBatch } from '../../engine/wasm/test/vzb1'
 import { Shard as ShardPrebounds } from '../bench/prebounds/shard'
-import { SHARD_SCHEMA, type Shard, type TailBatch, type TailReadOptions, type TailResult } from '../src/shard'
+import { SHARD_SCHEMA, type Shard, TAIL_SCAN_MAX_BATCHES, TIMED_TAIL_SQL, type TailBatch, type TailReadOptions, type TailResult } from '../src/shard'
 import { batchTimeBounds } from '../src/tail'
 
 type Stub = DurableObjectStub<Shard>
@@ -229,6 +236,45 @@ describe('bounds recorded at append', () => {
     // Unbounded: kept by a hull that holds none of their times.
     expect(seqs((await readAll(s, tenant, inc, { signals: [2, 3], minTs: 0, maxTs: 0 })).batches)).toEqual([1, 2, 3, 4])
   })
+
+  it('a batch of a layout the walk does not know (flags, reserved or padding not zero, no entries) gets no bounds and every range keeps it (review of D72, m-1)', async () => {
+    // Spans: the header's flags (5) and reserved bytes (6, 7). A later layout signals itself there (BATCH.md).
+    const span = spanBatch([NS0, NS0 + MINUTE, NS0 + 2n * MINUTE], 9)
+    expect(batchTimeBounds(span)).toEqual(flushBounds(span))
+    const odd: Uint8Array[] = []
+    for (const at of [5, 6, 7]) {
+      const x = span.slice()
+      x[at] = at === 5 ? 1 : 0x80
+      odd.push(x)
+    }
+    // Logs: one stream {a: b} (an 18-byte entry: the table ends at 34, the `entry` column starts at
+    // 40), three rows (12 bytes of `entry`, then 4 of padding before `ts` at 56).
+    const ts = [NS0, NS0 + 7n, NS0 + 2n * MINUTE]
+    const log = encodeLogBatch([{ labels: { a: 'b' } }], ts.map((t, i) => ({ entry: 0, ts: t, line: `l${i}` })))
+    const dv = new DataView(log.buffer, log.byteOffset, log.byteLength)
+    expect(dv.getBigInt64(56, true)).toBe(ts[0])
+    expect([...log.subarray(34, 40), ...log.subarray(52, 56)]).toEqual(new Array(10).fill(0))
+    expect(batchTimeBounds(log)).toEqual(flushBounds(log))
+    for (const at of [34, 39, 52, 55]) {
+      const x = log.slice()
+      x[at] = 1
+      odd.push(x)
+    }
+    const none = log.slice()
+    new DataView(none.buffer).setUint32(12, 0, true) // rows, and no entry for them to name
+    odd.push(none)
+    for (const [i, x] of odd.entries()) {
+      expect(batchTimeBounds(x), `case ${i}`).toBeNull()
+      // The engine's strict decoder refuses each one too: none is a batch of this layout.
+      expect(() => (x[4] === 2 ? engine.encodeSpans([x]) : engine.encodeLogs([x])), `case ${i}`).toThrow()
+    }
+    const s = env.SHARD.get(env.SHARD.idFromName(`b-${uid()}/logs/0`))
+    const tenant = 't'
+    for (const x of odd) await put(s, tenant, x)
+    expect(await stored(s, tenant)).toEqual(odd.map((_, i) => ({ seq: i + 1, min: null, max: null })))
+    const inc = (await s.describe(tenant))!.incarnation
+    expect(seqs((await readAll(s, tenant, inc, { signals: [2, 3], minTs: 0, maxTs: 0 })).batches)).toEqual(odd.map((_, i) => i + 1))
+  })
 })
 
 /**
@@ -406,7 +452,7 @@ describe('pages, cursors and refusals with a hull (D48 unchanged)', () => {
       expect(paged.pages.length).toBeGreaterThan(1)
       expect(new Set(paged.pages.map((p) => p.through))).toEqual(new Set([one.pages[0]!.through]))
     }
-    // The scan budget: one examined batch per call; skipped ones cost nothing.
+    // The scan budget: one examined batch per call; skipped ones are not examined (deciding reads the index, not the payload).
     await s.configure({ tailScanMaxBytes: 1 })
     const slow = await readAll(s, tenant, inc, hull)
     expect(seqs(slow.batches)).toEqual(want)
@@ -451,6 +497,73 @@ describe('pages, cursors and refusals with a hull (D48 unchanged)', () => {
     expect(await s.tailRead(tenant, inc, 0, hull)).toMatchObject({ status: 'stale_watermark' })
     expect(await s.tailRead(tenant, inc + 1, 4, hull)).toMatchObject({ status: 'incarnation_mismatch', incarnation: inc })
     expect(await s.tailRead(tenant, inc, 4, hull)).toMatchObject({ status: 'ok', batches: [] })
+  })
+})
+
+describe('deciding a skip, and what one call reads (review of D72, M-1, n-1)', () => {
+  it('the decision is made from the partial index batch_time, which holds the bounds of exactly the batches that have them; the read uses it, and never names the payload in its WHERE', async () => {
+    const { s, tenant, bounds } = await sixHours(71)
+    // A metric batch and a batch the walk does not accept, in the same stream: no entry.
+    await put(s, tenant, encodeBatch([{ __name__: 'up', job: 'a' }], [{ series: 0, ts: T0, bits: bitsOf(1) }]))
+    const flagged = spanBatch([NS0], 5).slice()
+    flagged[5] = 1
+    await put(s, tenant, flagged)
+    const got = await runInDurableObject(s, (_i: Shard, st) => ({
+      entries: st.storage.sql.exec(`SELECT seq, min_ts, max_ts FROM batch INDEXED BY batch_time WHERE tenant = ? AND min_ts IS NOT NULL AND max_ts IS NOT NULL ORDER BY seq`, tenant).toArray(),
+      rows: st.storage.sql.exec(`SELECT count(*) AS n FROM batch WHERE tenant = ?`, tenant).one().n,
+      index: st.storage.sql.exec(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'batch_time'`).one().sql,
+      plan: st.storage.sql.exec(`EXPLAIN QUERY PLAN ${TIMED_TAIL_SQL}`, tenant, 1, 100, tenant, T0, T0 + 1).toArray().map((r) => String(r.detail)),
+    }))
+    expect(got.entries).toEqual([...bounds].filter(([, b]) => b !== null).map(([seq, b]) => ({ seq, min_ts: b!.min, max_ts: b!.max })))
+    expect(got.rows).toBe(bounds.size + 2)
+    expect(got.index).toMatch(/ON batch \(tenant, seq, min_ts, max_ts\) WHERE min_ts IS NOT NULL AND max_ts IS NOT NULL$/)
+    expect(got.plan.join(' / ')).toMatch(/USING COVERING INDEX batch_time/)
+    // The payload is only a column the statement returns: in its WHERE it would read every row's record, skipped ones too.
+    expect(TIMED_TAIL_SQL.slice(TIMED_TAIL_SQL.indexOf('WHERE'))).not.toMatch(/payload/)
+  })
+
+  it('one call considers at most tailScanMaxBatches batches, skipped ones included: a page may hold none and still move on; the batches are the same', async () => {
+    const { s, tenant, inc, bounds } = await sixHours(72)
+    const hull = { signals: [2], minTs: T0 + 5 * 3_600_000, maxTs: T0 + 6 * 3_600_000 }
+    const want = [...bounds].filter(([, b]) => b === null || (b.max >= hull.minTs && b.min <= hull.maxTs)).map(([seq]) => seq)
+    const one = await readAll(s, tenant, inc, hull)
+    expect(seqs(one.batches)).toEqual(want)
+    expect(one.pages).toHaveLength(1)
+    await s.configure({ tailScanMaxBatches: 3 })
+    for (const opts of [hull, { signals: [2] }]) {
+      const paged = await readAll(s, tenant, inc, opts)
+      expect(seqs(paged.batches), JSON.stringify(opts)).toEqual(opts === hull ? want : [...bounds.keys()])
+      // Page i considered the batches 3i+1 … 3i+3 and nothing else.
+      expect(paged.pages).toHaveLength(Math.ceil(bounds.size / 3))
+      paged.pages.forEach((p, i) => {
+        for (const b of p.batches) expect(Math.floor((b.seq - 1) / 3), `page ${i}`).toBe(i)
+        expect(p.page!.scannedBatches).toBeLessThanOrEqual(3)
+      })
+      if (opts === hull) expect(paged.pages.some((p) => p.batches.length === 0 && p.page!.next !== null)).toBe(true)
+    }
+    await s.configure({ tailScanMaxBatches: TAIL_SCAN_MAX_BATCHES })
+    expect(seqs((await readAll(s, tenant, inc, hull)).batches)).toEqual(want)
+  })
+
+  it('page_limit says whether its batch is the last the read keeps: then its bytes complete the read (n-1)', async () => {
+    const s = env.SHARD.get(env.SHARD.idFromName(`b-${uid()}/traces/0`))
+    const tenant = `t-${uid()}`
+    await put(s, tenant, spanBatch(Array.from({ length: 400 }, (_, i) => NS0 + BigInt(i) * MS), 1)) // 1: large, 06:00:00.000 to .399
+    await put(s, tenant, spanBatch([NS0 + 5n * HOUR], 2)) // 2, 3: five hours later
+    await put(s, tenant, spanBatch([NS0 + 5n * HOUR + MINUTE], 3))
+    await put(s, tenant, spanBatch([NS0 + 10n * MINUTE], 4)) // 4: 06:10
+    const inc = (await s.describe(tenant))!.incarnation
+    const hour = { signals: [2], minTs: T0, maxTs: T0 + 3_600_000 } // keeps 1 and 4
+    const first = { signals: [2], minTs: T0, maxTs: T0 + 1 } // keeps 1 only
+    expect(await s.tailRead(tenant, inc, 0, { ...hour, maxBytes: 100 })).toMatchObject({ status: 'page_limit', seq: 1, last: false })
+    expect(await s.tailRead(tenant, inc, 0, { ...first, maxBytes: 100 })).toMatchObject({ status: 'page_limit', seq: 1, last: true })
+    // Without a time range every later batch may hold kept rows: last only at `through`.
+    expect(await s.tailRead(tenant, inc, 0, { signals: [2], maxBytes: 100 })).toMatchObject({ status: 'page_limit', seq: 1, last: false })
+    expect(await s.tailRead(tenant, inc, 3, { signals: [2], maxBytes: 10 })).toMatchObject({ status: 'page_limit', seq: 4, last: true })
+    // A look that stops before `through` does not know: false.
+    await s.configure({ tailScanMaxBatches: 2 })
+    expect(await s.tailRead(tenant, inc, 0, { ...first, maxBytes: 100 })).toMatchObject({ status: 'page_limit', seq: 1, last: false })
+    await s.configure({ tailScanMaxBatches: TAIL_SCAN_MAX_BATCHES })
   })
 })
 
