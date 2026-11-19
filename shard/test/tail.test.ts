@@ -219,7 +219,7 @@ describe('pages', () => {
     expect((await s.tailRead('t', inc, 0, { metrics: ['m1'], cursor })).status).toBe('ok') // its own read
   })
 
-  it('a discard between pages: refused if it took rows the read still needs, not if it took rows already returned', async () => {
+  it('a discard above the read\'s watermark between pages refuses the rest of the read (stale_watermark), never a page with a hole', async () => {
     const s = fresh()
     await s.configure({ retainRecordedMs: 0 })
     const inc = await writeTail(s, 't', 6, 8)

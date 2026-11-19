@@ -142,7 +142,8 @@ test('every service a Worker binds is deployed before it, and resolves to a depl
   const ruler = m.workers.find((w) => w.canonical === 'viz-ruler')
   assert.deepEqual(ruler.crossScript.sort(), ['INGEST → viz-citest-ingest', 'QUERY → viz-citest-query', 'TENANT → viz-citest-control:Tenant'])
   const mcp = m.workers.find((w) => w.canonical === 'viz-mcp')
-  assert.deepEqual(mcp.crossScript.sort(), ['CONTROL → viz-citest-control', 'QUERY → viz-citest-query', 'RULER → viz-citest-ruler'])
+  // mcp/ may bind more (its OAuth work binds control's Tenant too); the order check above covers every binding.
+  for (const b of ['CONTROL → viz-citest-control', 'QUERY → viz-citest-query', 'RULER → viz-citest-ruler']) assert.ok(mcp.crossScript.includes(b), `${b} in ${mcp.crossScript.join(', ')}`)
   const gateway = m.workers.find((w) => w.canonical === 'viz-gateway')
   assert.ok(gateway.crossScript.includes('RULER → viz-citest-ruler') && gateway.crossScript.includes('MCP → viz-citest-mcp'))
 })

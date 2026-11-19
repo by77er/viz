@@ -3289,6 +3289,18 @@
           "description": "Range queries the windows took"
          }
         }
+       },
+       "cpu": {
+        "type": "object",
+        "description": "The CPU model's cost of the run (modelled, not measured) and maxBacktestCpuMs",
+        "properties": {
+         "modelledMs": {
+          "type": "integer"
+         },
+         "budgetMs": {
+          "type": "integer"
+         }
+        }
        }
       }
      }
@@ -4120,7 +4132,7 @@
      "plan",
      "budget"
     ],
-    "description": "Refused before anything was fetched: the modelled peak memory is over the backtest's memory budget (windows cannot be small enough to hold the rule's state and one step), the engine's plan of the read is over the backtest budget, the engine's own limits would refuse it, or its cost could not be asked (plan null)",
+    "description": "Refused, whole, nothing kept: the modelled peak memory is over the backtest's memory budget (windows cannot be small enough to hold the rule's state and one step), the engine's plan of the read is over the backtest budget, the engine's own limits would refuse it, or its cost could not be asked (plan null); or the CPU model's projection of the whole run is over maxBacktestCpuMs (cpu set), found after reading the first window, whose series it counts, or a later one with more series",
     "properties": {
      "error": {
       "$ref": "#/components/schemas/ErrorBody"
@@ -4176,6 +4188,26 @@
        }
       ],
       "description": "The memory model; null when the engine's plan refused before sizing"
+     },
+     "cpu": {
+      "oneOf": [
+       {
+        "type": "object",
+        "properties": {
+         "modelledMs": {
+          "type": "integer",
+          "description": "The CPU model's projection of the whole run (modelled, not measured)"
+         },
+         "budgetMs": {
+          "type": "integer"
+         }
+        }
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "The CPU model; null when another budget refused the run"
      }
     }
    }

@@ -144,7 +144,12 @@ query and ruler suites running on the machine): 3,000 steps, **every invariant h
 step**; 325 s; peak memory 991 MB for the process tree and 564 MB for the largest process
 (sampled every 3 s, threads not counted). The soak runs without a publisher (its env has none),
 so it checks that the wiring changed nothing for a deployment that has none; the gate's own
-behaviour is in the tests above. SOAK_STATS
+behaviour is in the tests above. Run again with `--reporter=verbose` for the counts: again **every invariant held** (282 s;
+1,036 MB tree, 570 MB largest process): 893 acknowledged requests (188 repeats), 655 segments
+admitted through 1,459 delivered flush messages (621 retried), 390 merges, 3 conflicts and 21
+more under a concurrent retention, 25 crashed steps, 1,368 files expired, 4,964 objects purged,
+76 orphans deleted, 105 evictions, 74 ledger-log outages, 72 old-plan readers verified, 0 dead
+letters.
 
 ## Not implemented
 

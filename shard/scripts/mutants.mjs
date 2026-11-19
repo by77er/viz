@@ -61,7 +61,7 @@ const mutants = [
   ['tail: a page may pass its budget', F, '      if (bytes + kept.bytes.byteLength > limit) {', '      if (false) {', T.tail],
   ['tail: a batch that does not fit an empty page is dropped (truncation), not refused', F, "        if (batches.length === 0) return { status: 'page_limit', seq, bytes: kept.bytes.byteLength, maxBytes: limit }", '        if (batches.length === 0) break', T.tail],
   ['tail: a cursor is not bound to its filter', F, ' || c.f !== binding.f || ', ' || ', T.tail],
-  ['tail: a later page does not check the discard fence', F, "      if (s.discardedThrough >= from) return { status: 'stale_watermark', incarnation: s.incarnation, discardedThrough: s.discardedThrough }\n", '', T.tail],
+  ['tail: a paged read does not check the discard fence', F, "    if (aboveSeq < s.discardedThrough) return { status: 'stale_watermark', incarnation, discardedThrough: s.discardedThrough }", "    if (opts === undefined && aboveSeq < s.discardedThrough) return { status: 'stale_watermark', incarnation, discardedThrough: s.discardedThrough }", T.tail],
   ['tail: a later page reads to the current end, not the first page\'s through', F, '      through = c.through\n', '', T.tail],
   ['tail: the scan budget is ignored', F, '      if (scannedBytes >= this.cfg.tailScanMaxBytes) {', '      if (false) {', T.tail],
   // ── names, versions ──

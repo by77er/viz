@@ -30,13 +30,20 @@ Read the times as rough; the counts, bytes and memory figures are exact for the 
      was refused** (422) until a flush, whatever its range or metric. In steady state the
      tail is about the tenant's shards times up to one 4 MiB seal each (modelled), so a
      tenant spread over more than four to eight shards is refused all the time.
-   - **Single-series reads.** Files are pruned by metric name and time only. One series of
-     a 100,000-series metric over an hour has a scan bound of 6.6 M samples (every row of
-     the metric), above `maxScanSamples` (3 M): `rate(m{instance="x"}[5m])` is refused.
-     Wrapped in `sum(…)` it splits and answers, by reading every file seven times to
-     return 65 samples.
-   - **Label values and series lookups** (Grafana's variables) go through the same scan
-     bound and are refused at 100,000 series over an hour.
+   - **Single-series reads.** Files were pruned by metric name and time only. One series of
+     a 100,000-series metric over an hour had a scan bound of 6.6 M samples (every row of
+     the metric), above `maxScanSamples` (3 M): `rate(m{instance="x"}[5m])` was refused.
+     **Fixed by series-level pruning (item 2, D41):** the matchers are resolved against the
+     series files first and only the row groups holding the series are counted and read;
+     the same query now answers in one place from 15 MiB of reads (13.4 MiB of them series
+     files) instead of being refused (local stack, below).
+   - **Label values and series lookups** (Grafana's variables) went through the same scan
+     bound and were refused at 100,000 series over an hour. **Fixed by the series-only read
+     (item 3):** they read series files and the tail only, bounded by `maxMetadataSeries`
+     (200,000 series listed) and `maxFetchBytes`; at 100,000 series over an hour they answer
+     from 13.4 MiB of series files. At about 120,000 series over an hour (one ten-minute unit
+     of 1,000,000) the series files pass 16 MiB and they are refused again: they are not
+     counted over leaves.
    - **Aggregations were refused by `max_series`** because leaves were counted by samples
      only. **Fixed here (D31):** leaves are now counted by series too, from the series
      files, before any fetch. `sum by (job)` over 100,000 series now answers on 7 leaves
@@ -62,11 +69,11 @@ Read the times as rough; the counts, bytes and memory figures are exact for the 
 | Ingest (edge) | at most 100,000 series and 500,000 samples per request | limit (edge) |
 | Admission (shard) | the active-series limit: an even share per shard, exact up to 4,096 series per half-hour bucket, HyperLogLog (1.6 % standard error) and a Bloom filter above (D21) | sketch |
 | Identity | `series_id` is a 64-bit hash of the labels; collisions are a probability (D19) | |
-| Storage | `metric_series`: one row per series per file, 22 to 23 bytes a series (measured here, native); `metric_samples`: 3.7 to 3.8 bytes a sample; row groups of at most 100,000 rows sorted by (metric, `series_id`); index fragments with time and name ranges | measured here |
-| Planning | files pruned by time and `__name__` only; `maxScanSamples` 3 M (one place), `maxQueryScanSamples` 100 M (split), from the ledger's row counts before any fetch; the series estimate from the series files (new) | limit |
+| Storage | `metric_series`: one row per series per file, 22 to 23 bytes a series (measured here, native); `metric_samples`: 3.7 to 3.8 bytes a sample; row groups of at most 100,000 rows sorted by (metric, `series_id`); index fragments with time and name ranges, each row group's first and last `series_id` and the footer's place (new, D41) | measured here |
+| Planning | files and row groups pruned by time and `__name__` from the fragments, read as byte ranges; when that does not fit one place and a matcher selects by more than the name, matchers resolved against the series files first and only row groups holding a selected series read (new, D41); `maxScanSamples` 3 M (one place), `maxQueryScanSamples` 100 M (split); the series estimate from the series files, exact once resolved | limit |
 | One place | `maxSeries` 20,000, `maxSamples` 2 M, `maxStepPoints` 1 M, `maxFetchBytes` 16 MiB (files and the whole tail) | limit |
 | Split | leaves by samples and by series, at most 32; `maxQuerySeries` 640,000, `maxQuerySamples` 64 M | limit |
-| Label endpoints | load samples (no series-only read yet): bounded like a query | limit |
+| Label endpoints | a series-only read of series files and tail series tables, "in the range" per file (new); `maxMetadataSeries` 200,000 series listed, `maxFetchBytes` over the series files | limit |
 | Cardinality report | exact, from series files and tail series tables; `maxCardinalitySeries` 1 M, `maxCardinalityPairs` 400,000 (was 2 M); over leaves above 50,000 series (new) | exact, capped |
 
 ## What it costs: 10,000, 100,000 and 1,000,000 series
@@ -151,6 +158,9 @@ object's reader calls queue behind six connections.
 
 ### One series of a high-cardinality metric, and the label endpoints
 
+As measured before series-level pruning and the series-only read; what they do now is in
+"Series-level pruning and the series-only read: before and after" below.
+
 | | 10,000 | 100,000 | 1,000,000 |
 |---|---|---|---|
 | `rate(m{instance="x"}[5m])`, 1 h (local stack) | 200: 65 samples loaded, all 24 to 28 files (2.6 to 3.0 MiB) read, 24 to 72 ms engine | **422 `max_scan_samples`** (6.6 M > 3 M) | refused (modelled: 60 M) |
@@ -186,6 +196,74 @@ calls through `engine/wasm-query` in a Worker on Cloudflare, one call per reques
 - **The cardinality report** is counted over leaves above `cardinalitySplitAboveSeries`
   (50,000) and its pair cap is 400,000 (was 2,000,000) (D32).
 
+## Series-level pruning and the series-only read: before and after (items 2 and 3)
+
+Built on 2026-11-19 (`contracts/TABLES.md` "The index fragment" and "Reading part of a
+file", D41; `engine/storage`, `engine/query`, `engine/wasm-query` ABI 3, `query/`). The layout
+was chosen from `engine/storage/examples/layout.rs` (D41: row groups and pages stay as they
+were; the fragment gains series bounds and the footer's place). Two counterfactuals, each
+run both ways on the same data and required to give identical answers.
+
+**Native** (measured here, native, one thread; `engine/query/examples/pruning_before.rs`
+built against a copy of the tree as of 2026-11-18, `examples/pruning.rs` against this one;
+the Worker's plan as each release makes it, the reads it would issue (one GET per object or
+byte range, an object above 16 MiB in pieces), and the engine's one-place work (median of 3);
+every answer, computed with the limits lifted, byte-identical between the two). Workload
+`x{job, namespace, pod}`, counters every 60 s, an hour plus lookback in seven ten-minute
+units; 1,000,000 series scaled down to one unit (a four-minute window) to stay under 1.5 GB.
+Before at a load average of 5 to 9 (04:03 to 04:06 UTC), after at 6 to 7 (04:11 to 04:14):
+
+| 100,000 series | before: plan, GETs, bytes, engine CPU | after: plan, GETs, rounds, bytes, engine CPU |
+|---|---|---|
+| one series, `rate(x{pod}[5m])` | refused (`max_scan_samples`: 7,000,000); 14 GETs, 27.2 MiB; 96 ms if allowed | **one place**, series resolved, scan bound 700,000, series 1; 21 GETs, 2 rounds, **15.3 MiB** (14.0 of them series files); 138 ms |
+| selective, `sum by (pod)(rate(x{namespace="ns-03"}[5m]))` | split over 7 leaves (estimate 100,000 series); 14 GETs, 27.2 MiB at one place | split over **5** leaves (exact: 5,005 series; scan bound unchanged, 7,000,000: the series are spread over every row group); 14 GETs, 2 rounds, 27.2 MiB |
+| full metric, `sum by (job)(rate(x[5m]))` | split over 7 | split over 7: unchanged (nothing to resolve) |
+| `/label/pod/values?match[]=x` | refused (`max_scan_samples`); would load 100,000 series (refused by `max_series` in one place after 536 ms) | **one place, series files only**: 7 GETs, **14.0 MiB**, 213 ms, 1.4 MB answer |
+| `/series?match[]=x{pod}` | refused (`max_scan_samples`) | one place, series files only: 7 GETs, 14.0 MiB, 128 ms |
+
+| split readers, 100,000 series | before | after |
+|---|---|---|
+| selective (7 parts before, 5 after) | every part reads every file whole: 98 GETs, 190 MiB, 1,310 ms CPU | each part: series files by name and time, its id range of each sample file: 105 GETs, **89.8 MiB**, 975 ms |
+| full metric (7 parts) | 98 GETs, 190 MiB, 2,688 ms | 140 GETs, **120.5 MiB**, 2,252 ms |
+| full metric, 1,000,000 series (32 parts, one unit) | 128 GETs, 1,222 MiB, 34.1 s | 127 GETs, 667 MiB, 34.4 s |
+
+At 10,000 series nothing changes for queries (a ten-minute file is one row group, read whole
+as before; same reads, same CPU within noise); the label calls read the series files only
+(7 GETs and 1.4 MiB instead of 14 and 2.7; 15 ms instead of 42). At 1,000,000 series (one unit)
+a one-series query is still refused (the series file of one unit, 20 MiB, is over
+`maxFetchBytes`, so it cannot be resolved in one place), and so are the label calls.
+
+**Local stack** (measured here, local stack: `test/pruning.bench.ts` in this tree and,
+unchanged, in a copy of the tree as of 2026-11-18 with its own WASM modules; workerd, R2 and
+Durable Objects simulated, so times say how much work, not what Cloudflare takes; every
+answer's SHA-256 is printed and equal where both answer). 100,000 series, 1 h 5 min through
+edge, flushed in ten-minute units on 2 shards, everything flushed; back to back at a load
+average of 8 to 10 (04:23 to 04:28 UTC). The two trees' shard code differed (another
+engineer's tail paging is in progress in `shard/`), and the same writes were flushed into 47
+file pairs in this tree and 40 in the copy, so reads per file are the comparable figure.
+
+| 100,000 series, an hour | before | after |
+|---|---|---|
+| one series | **422** `max_scan_samples` (6,600,000) | **200** in 1.6 s (0.6 s warm), one place: 54 reads, 15.1 MiB, scan bound 610,149, 26 MiB of coordinator WASM |
+| selective | 200 over 7 leaves: 560 reads, 223 MiB, 9.9 s (7.6 s warm) | 200 over 5 leaves: 517 reads, **150 MiB**, 7.3 s (6.8 s warm); same answer |
+| full metric | 200 over 7 leaves: 560 reads (7 a file), 223 MiB (2.8 MiB a file), 13.5 s (11.4 s warm) | 200 over 7 leaves: 658 reads (7 a file), 205 MiB (2.2 MiB a file), 16.5 s (11.9 s warm); same answer. **No faster**: the readers' engine time is the same within noise (in the same run, readers reading whole files took 16.1 s and 11.7 s); what is saved is bytes, and they are cache hits here |
+| `/label/pod/values?match[]=x` | **422** `max_scan_samples` | **200** in 0.8 s (0.4 s warm): 47 reads, 13.4 MiB, 35 MiB of WASM |
+| `/series?match[]=x{pod}` | **422** | **200** in 0.45 s (0.33 s warm) |
+
+At 10,000 series (same run) every answer is identical and the queries read as before; the
+label calls read 14 objects and 1.3 MiB instead of 28 and 3.2 MiB, 65 to 84 ms of engine time
+instead of 249.
+
+**What it costs.** A resolved query reads in two rounds (series files, then sample row
+groups): one more round trip of 55 to 203 ms on Cloudflare (modelled from S1); and it parses
+every label set of the metric in the window (138 ms natively for 100,000 series against 96
+ms for the whole-file read that was refused). Every split part still reads every series file
+whole, which is most of what a split reads now. A selection spread over the id space reads
+every row group (D19). The fragment grows by about 50 bytes a row group in the ledger's 16 MiB
+of state. **Experiment that settles the Cloudflare figures:** the one-series query and the
+label values call over an hour of a 100,000-series tenant on a staged deployment, cold and
+warm, recording reads, bytes and CPU from the analytics API.
+
 ## What is left, in order of what it unblocks
 
 1. **The tail** (`shard/`): a filtered, paged `tailRead` (time range, metric names, series
@@ -199,15 +277,20 @@ calls through `engine/wasm-query` in a Worker on Cloudflare, one call per reques
    higher tail cap for split queries and the
    report (the coordinator holds only the tail there); not done, because 20 MB is already
    most of what one RPC message may carry (32 MiB).
-2. **Series-level pruning** (`engine/storage`, `compact/`): resolve matchers against
-   `metric_series` first, then read only the sample row groups (or pages) whose
-   `series_id` range holds a match. Row groups are already sorted by (metric, `series_id`);
-   they need page indexes or smaller row groups per metric. This unblocks single-series
-   reads and makes split parts read only their key range (the `L`-fold read above).
-3. **A series-only read for the label endpoints** (`engine/query`: `catalog` already reads
-   `metric_series` for the report): label names, values and series from series files and
-   tail series tables, never samples. "In the range" would then be decided per file, as
-   Prometheus decides it per block.
+2. **Series-level pruning: built, in part (2026-11-19; above, D41).** Matchers are resolved
+   against `metric_series` first and only the sample row groups (byte ranges, with the
+   footer) whose `(metric, series_id)` range holds a match are read; split parts read their
+   id range of each sample file. The layout is unchanged; the fragment gained the bounds
+   (written by flush and by compaction). Single-series reads at 100,000 series answer. Left:
+   the coordinator resolves only when the series files of the window fit `maxFetchBytes`
+   (about 120,000 series over an hour); split parts still read every series file whole
+   (most of their bytes now); a selection spread over the id space reads every row group
+   until the sort key clusters a label (D19); pages are skipped in memory, not fetched.
+3. **A series-only read for the label endpoints: built, in one place (2026-11-19).** Label
+   names, values and series come from series files and tail series tables, never samples;
+   "in the range" is decided per file. Left: counting them over leaves when the series files
+   pass `maxFetchBytes` (one ten-minute unit of 1,000,000 series does), as the cardinality
+   report is; the `limit` parameter.
 4. **A streaming merge for the cardinality report**: parts send pairs sorted by (label,
    value); the coordinator merges them in one pass. Then the pair cap can rise to millions.
 5. **Sketches, labelled approximate**, only for windows beyond the caps.
@@ -217,6 +300,10 @@ calls through `engine/wasm-query` in a Worker on Cloudflare, one call per reques
 ```
 cd engine/query && CARGO_TARGET_DIR=$PWD/target cargo run --release --example cardinality -- 10000 100000 1000000
 cd query && npm run measure -- test/cardinality.bench.ts
+# series-level pruning, both ways: the "before" example in a copy of the tree as of 2026-11-18
+cd engine/query && cargo run -j 2 --release --example pruning_before -- OUT 10000 100000 1000000   # (in the copy)
+cd engine/query && cargo run -j 2 --release --example pruning -- OUT 10000 100000 1000000          # compares with OUT
+cd query && npm run measure -- test/pruning.bench.ts                                                 # here, then in the copy
 ```
 
 The native run peaks at about 1.0 GB of RSS (1,000,000 series; one place with the limits

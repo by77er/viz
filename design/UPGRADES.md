@@ -81,7 +81,7 @@ first, or a rollback put the reader back); "newer reader" the opposite. Status c
 | `Ledger` (viz-ingest) | `ledger/src/ledger.ts` `schema()`: `meta` (incarnation, version), `file` (incl. `prec`, `prec_lo`), `stream`, `outbox` (body = `LedgerChange` JSON), `tombstone` | none | the ledger | **dangerous**: `init()` treats "no `meta.incarnation`" as new or lost storage and rebuilds from R2 into a NEW incarnation; a newer layout of `meta` read by older code would re-base every reader and the publisher | an object created before D22 lacks `prec`/`prec_lo`; `IF NOT EXISTS` never adds them, and `plan` fails |
 | `Tenant` (viz-control) | `control/src/schema.ts` | **versioned** (v1) | Tenant | refused unless `compat` allows | migrated in the constructor |
 | `Ruler`, `Notifier`, `RulerIndex` (viz-ruler, not deployed) | `ruler/src/schema.ts`; stored JSON: `rule_group.spec`, `alert.body`, `handoff.updates` (`AlertUpdate[]`), `timeline.body`, `meta.v` (config, cursor), notifier bodies | **versioned** (v1 each) | the objects | refused unless `compat` allows | migrated |
-| `Publisher` (viz-publisher, not deployed) | `publisher/src/schema.ts` | **versioned** (v2; v2 adds the `due` table, additive) | the publisher | refused unless `compat` allows | migrated |
+| `Publisher` (viz-publisher, deployed first since 2026-11-19) | `publisher/src/schema.ts` | **versioned** (v2; v2 adds the `due` table, additive) | the publisher | refused unless `compat` allows | migrated |
 | `Leaf` (viz-query) | `query/src/leaf.ts` | stateless: no storage | — | — | — |
 | janitor, compact, flush | functions in viz-ingest | no Durable Object | — | — | — |
 
@@ -185,8 +185,10 @@ COMPATIBILITY §6 states them; here is how they apply today.
 
 - Release records should carry, per Durable Object class, `schemaRelease(spec)` =
   `{component, latest, compat}` (exported by each `src/schema.ts`), and per format the version
-  written and the versions read (`FORMATS` in each `src/schema.ts`). The deploy tool today
-  checks only the Cloudflare migration tag (`deploy/README.md`, "Rollback").
+  written and the versions read (`FORMATS` in each `src/schema.ts`). Since 2026-11-19 the
+  deploy records the first (every class's `{latest, compat}`, also on every Worker version as
+  `VIZ_SCHEMAS`), marks a release forward-only by it, and refuses a rollback across it (D46,
+  `deploy/README.md`, "Release record"); format versions are not recorded yet.
 - **Forward-only** for a class when `canOpen(target.latest, newest)` fails, when a format
   version is written that the target does not read, or across a class lifecycle change (F6).
 - Today every versioned class is at version 1 with `compat` 1, so every release since this
@@ -263,6 +265,7 @@ N under load, with I1, I2 and I4 checked; that exercises `compat` on Cloudflare.
    run (the queue retries it).
 9. **deploy** (the release engineer). Put `schemaRelease` and `FORMATS` of each component in
    the release record and extend the rollback check from migration tags to COMPATIBILITY §6.
+   *Schemas done 2026-11-19 (D46); `FORMATS` not yet.*
    The gateway's bootstrap should answer 503 (not 500) when `provision` throws
    `schema_too_new`.
 10. **dashboard, app, mcp** (risk: users' edits refused). The closed `viz.dashboard/v1`

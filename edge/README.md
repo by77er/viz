@@ -383,6 +383,11 @@ Most of it is the series id: FNV-1a is one multiply per byte in a serial chain, 
 
 ## Known risks
 
+- **A refused recorded-sample write is an `exception` in viz-ingest's metrics** (Trial 3 on
+  Cloudflare, `deploy/README.md`): the caller received each refusal in 2–4 ms and nothing was
+  written, but the callee's invocation ended "canceled … hung". Not understood; not seen in
+  workerd here. Successful writes end `ok`.
+
 - **A retry is idempotent only if it produces the same batch bytes.** The same body, map
   and limits always do. A sample that leaves the accept window between the first attempt
   and the retry changes the batch, so the rows that had already been appended are stored

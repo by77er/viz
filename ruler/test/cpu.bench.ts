@@ -41,6 +41,20 @@ function latency(start: number, end: number, step: number): PromMatrix {
   return { resultType: 'matrix', result }
 }
 
+/** Level noise without a pattern (CUSUM learns σ from first differences; the sine and the 7-cycle above give it none). */
+function noise(start: number, end: number, step: number): PromMatrix {
+  const result: PromMatrix['result'] = []
+  for (let k = 0; k < SERIES; k++) {
+    const values: [number, string][] = []
+    for (let t = start; t <= end; t += step) {
+      const x = Math.sin((t / MIN) * 12.9898 + k * 78.233) * 43758.5453
+      values.push([t / 1000, String(100 + 10 * (x - Math.floor(x)))])
+    }
+    result.push({ metric: { svc: svc(k) }, values })
+  }
+  return { resultType: 'matrix', result }
+}
+
 function slo(start: number, end: number, step: number): PromMatrix {
   const result: PromMatrix['result'] = []
   for (let k = 0; k < SERIES; k++) {
@@ -60,8 +74,11 @@ const CASES: Record<string, { interval: string; rule: Record<string, unknown> }>
   'anomaly ewma': { interval: '1m', rule: { alert: 'A', expr: 'latency_ms', anomaly: { detector: 'ewma', params: { halfLifePoints: 10, minPoints: 5 }, max_series: SERIES } } },
   'anomaly threshold': { interval: '1m', rule: { alert: 'A', expr: 'latency_ms', anomaly: { detector: 'threshold', params: { above: 300 }, max_series: SERIES } } },
   'anomaly robust_z': { interval: '1m', rule: { alert: 'A', expr: 'latency_ms', anomaly: { detector: 'robust_z', max_series: SERIES } } },
-  'anomaly cusum': { interval: '1m', rule: { alert: 'A', expr: 'latency_ms', anomaly: { detector: 'cusum', max_series: SERIES } } },
+  'anomaly cusum': { interval: '1m', rule: { alert: 'A', expr: 'latency_ms', anomaly: { detector: 'cusum', params: { h: 10 }, max_series: SERIES } } },
   'anomaly seasonal': { interval: '5m', rule: { alert: 'A', expr: 'latency_ms', anomaly: { detector: 'seasonal', params: { periodMs: DAY }, max_series: SERIES } } },
+  // A second size of each window-scanning detector, to check that their cost grows with their state (`CPU.anomalyPerStateByte`).
+  'anomaly robust_z w72': { interval: '1m', rule: { alert: 'A', expr: 'latency_ms', anomaly: { detector: 'robust_z', params: { windowPoints: 72 }, max_series: SERIES } } },
+  'anomaly seasonal 6h': { interval: '5m', rule: { alert: 'A', expr: 'latency_ms', anomaly: { detector: 'seasonal', params: { periodMs: 6 * HOUR }, max_series: SERIES } } },
   slo: { interval: '1m', rule: { alert: 'S', slo: { objective: 0.999, sli: SLI, max_series: SERIES } } },
 }
 
@@ -73,7 +90,7 @@ describe('CPU model calibration', () => {
       const step = c.interval === '5m' ? 5 * MIN : MIN
       const to = Math.floor(Date.UTC(2099, 11, 31) / step) * step
       const from = to - 2 * DAY + step
-      const make = (q: string, s: number, e: number, st: number) => (q.includes('viz_slo_part') ? slo(s, e, st) : latency(s, e, st))
+      const make = (q: string, s: number, e: number, st: number) => (q.includes('viz_slo_part') ? slo(s, e, st) : name === 'anomaly cusum' ? noise(s, e, st) : latency(s, e, st))
       w.range = make
       let res: { status: string; intervals?: unknown[] } | null = null
       const total = await cpu(async () => {

@@ -268,7 +268,7 @@ async function rig(opts: { slo?: Record<string, unknown>; extra?: unknown[]; bad
       const fine = { promql: rule.expr, ...status.reads.find((x) => x.stepMs === MIN)! }
       const c = status.reads.find((x) => x.stepMs !== MIN)
       const coarse = c ? { promql: coarseExpr(rule, c.stepMs), ...c } : null
-      const io = { planner: { plan: async () => FREE_PLAN }, range: { range: async (q: string, s0: number, e: number, st: number) => w.range!(q, s0, e, st) as PromMatrix }, budget: { scanSamples: Infinity, bytesToRead: Infinity }, memoryBytes: 1 << 30 }
+      const io = { planner: { plan: async () => FREE_PLAN }, range: { range: async (q: string, s0: number, e: number, st: number) => w.range!(q, s0, e, st) as PromMatrix }, budget: { scanSamples: Infinity, bytesToRead: Infinity }, memoryBytes: 1 << 30, cpu: { budgetMs: Infinity } }
       const warm = await warmSlo(rule, MIN, fine, coarse, io)
       if (!warm.ok) throw new Error(JSON.stringify(warm))
       for (const t of times) {

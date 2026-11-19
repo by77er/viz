@@ -272,6 +272,14 @@ incarnation (phase `stuck`), never replays one layout and skips the other (revie
   rule (`ledger/README.md`).
 - A fresh object with empty storage reconstructs exactly the state of a live one:
   `ledger/test/segments.test.ts`. Shown, also from checkpoints and past an unreadable one.
+- A checkpoint in parts is exactly the state at its version whatever commits while it is
+  written; a crash, a lost answer or a storage loss at every await of its path loses nothing
+  logged; superseded checkpoints go only once a newer one is complete; a rebuild streams into
+  SQLite; the release before reads this one's log and this one reads the format-1 checkpoints
+  of the release before: `ledger/test/checkpoint.test.ts`. Shown, with mutants of each rule
+  (`ledger/README.md`). The counterfactual against the release before, on the same data, at
+  8,000 to 100,000 files (and this release at 300,000): `ledger/bench/checkpoint.bench.test.ts`,
+  measured in workerd, not on Cloudflare.
 - The publisher and an independent reader see the same table before and after the change
   of log format: not shown here. The publisher now reads both layouts
   (`publisher/README.md`, "Reading the log"); the comparison is the publisher's to show.

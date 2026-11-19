@@ -30,7 +30,7 @@ try {
 const MUTANTS = [
   {
     name: 'Tenant taken from a request header (X-Viz-Tenant) instead of the credential',
-    changes: [['src/index.ts', `const id = await identify(req, env, control ? (a: string) => make.control(env, a)! : null)`, `const id = { ...(await identify(req, env, control ? (a: string) => make.control(env, a)! : null)), ...(req.headers.get('X-Viz-Tenant') ? { tenant: req.headers.get('X-Viz-Tenant')! } : {}) }`]],
+    changes: [['src/index.ts', `caller = { id: await identify(req, env, probe ? (a: string) => make.control(env, a)! : null), downstream: authorization }`, `caller = { id: { ...(await identify(req, env, probe ? (a: string) => make.control(env, a)! : null)), ...(req.headers.get('X-Viz-Tenant') ? { tenant: req.headers.get('X-Viz-Tenant')! } : {}) }, downstream: authorization }`]],
   },
   {
     name: 'Agent apply allowed: whoami\'s mayApply is not consulted before writing',
@@ -139,7 +139,40 @@ const MUTANTS = [
   },
   {
     name: '`/healthz` says ok whatever is bound',
-    changes: [['src/index.ts', "const missing = (['CONFIG', 'QUERY', 'CONTROL', 'RULER'] as const).filter((b) => !env[b])", 'const missing: string[] = []']],
+    changes: [['src/index.ts', "const missing = (['CONFIG', 'QUERY', 'CONTROL', 'RULER', 'TENANT'] as const).filter((b) => !env[b])", 'const missing: string[] = []']],
+  },
+  // 27–33: OAuth at the resource (D44, contracts/oauth.ts)
+  {
+    name: 'OAuth: token passthrough (downstream calls carry the client\'s access token, not the grant\'s key)',
+    changes: [['src/auth.ts', 'downstream: `Bearer ${r.credential}`,', 'downstream: `Bearer ${presented.token}`,']],
+  },
+  {
+    name: 'OAuth: audience not this resource (introspection asked about the token\'s own resource, whatever this server is configured as)',
+    changes: [['src/index.ts', 'caller = await identifyOAuth(oauth, env, cfg.resource)', "caller = await identifyOAuth(oauth, env, 'https://vis.bitcru.sh/mcp')"]],
+  },
+  {
+    name: 'OAuth: the JSON agent API accepts access tokens (audience widened)',
+    changes: [['src/index.ts', "          if (!isMcp) throw new AuthError(401, 'wrong-audience',", "          if (false) throw new AuthError(401, 'wrong-audience',"]],
+  },
+  {
+    name: 'OAuth: no 403 insufficient_scope (step-up never signalled)',
+    changes: [['src/index.ts', 'const denied = await stepUp(req, session.id, cfg)', 'const denied = null as Response | null']],
+  },
+  {
+    name: 'OAuth: the 401 challenge does not name the protected resource metadata',
+    changes: [['src/oauth.ts', 'const parts = [`realm="viz"`, `resource_metadata=${q(cfg.metadataUrl)}`,', 'const parts = [`realm="viz"`,']],
+  },
+  {
+    name: 'OAuth: the tenant object asked is the one a request header names, not the token\'s',
+    changes: [
+      ['src/auth.ts', 'export async function identifyOAuth(presented: { token: string; kind: string; tenant: string }, env: AuthEnv, resource: string): Promise<Caller> {', 'export async function identifyOAuth(presented: { token: string; kind: string; tenant: string }, env: AuthEnv, resource: string, header: string | null = null): Promise<Caller> {'],
+      ['src/auth.ts', 'env.TENANT.get(env.TENANT.idFromName(presented.tenant))', 'env.TENANT.get(env.TENANT.idFromName(header ?? presented.tenant))'],
+      ['src/index.ts', 'caller = await identifyOAuth(oauth, env, cfg.resource)', "caller = await identifyOAuth(oauth, env, cfg.resource, req.headers.get('X-Viz-Tenant'))"],
+    ],
+  },
+  {
+    name: 'OAuth: protected resource metadata names no authorization server',
+    changes: [['src/oauth.ts', '    authorization_servers: [cfg.issuer],', '    authorization_servers: [],']],
   },
 ]
 

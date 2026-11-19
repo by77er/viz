@@ -13,7 +13,8 @@ new.
 | File | Contents |
 |---|---|
 | `src/index.ts` | The Worker: routing, Origin check, tenant-in-request refusal, identity, the per-request session |
-| `src/auth.ts` | `identify()`: edge's API-key verifier, then the control plane's `whoami`. The OAuth seam |
+| `src/auth.ts` | `identify()`: edge's API-key verifier, then the control plane's `whoami`; `identifyOAuth()`: an OAuth access token, checked by control's `Tenant` object for this resource |
+| `src/oauth.ts` | This Worker as an OAuth protected resource: RFC 9728 metadata, the 401 and 403 `WWW-Authenticate` challenges |
 | `src/mcp.ts` | The MCP surface: `@modelcontextprotocol/server` 2.4.0 `createMcpHandler`, a server per request |
 | `src/rest.ts` | The JSON surface, `/api/v1/agent/…` |
 | `src/dispatch.ts` | The one path every tool call takes: tool, scopes, arguments, budget hook, run, counters |
@@ -27,12 +28,13 @@ new.
 | `src/session.ts` | Limits, returned counters, the budget hook, the per-tenant names cache, bounded parallelism with a deadline |
 | `test/fake/` | The fake query service and ruler (credential-checked, per tenant) and synthetic telemetry; `promql.ts`, `storage.ts` copied from `app/mock/` |
 | `test/conformance/` | A local-only Worker for the official MCP conformance suite |
-| `scripts/mutants.mjs`, `scripts/conformance.mjs` | Mutation checks; conformance run |
+| `test/oauth-dev/` | A local-only Worker for the scripted OAuth client: routes as the gateway does to the real control plane and this Worker |
+| `scripts/mutants.mjs`, `scripts/conformance.mjs`, `scripts/oauth-client.mjs` | Mutation checks; conformance run; the whole OAuth flow with the official SDK client against `wrangler dev` |
 
 Runtime dependency: `@modelcontextprotocol/server` 2.4.0 (it brings `@modelcontextprotocol/core`
 and `zod`). It imports `../edge/src/auth` (key verification), `../dashboard/src` (the
 `viz.dashboard/v1` model and digests) and `../contracts` (`TENANT_ID`, Prometheus result
-shapes). Tests import `../control/src` (the real control plane).
+shapes, `oauth.ts`). Tests import `../control/src` (the real control plane).
 
 ## Library and protocol revision
 
@@ -337,7 +339,10 @@ Fix: Record the note in a proposal (write_dashboard mode "propose", in "message"
 ### Connecting
 
 MCP: `POST https://<host>/mcp` with `Authorization: Bearer viz_<keyId>_<secret>`; any
-Streamable HTTP client (2026-07-28 or 2025-era). JSON: `GET /api/v1/agent` (index: tools
+Streamable HTTP client (2026-07-28 or 2025-era). Or with OAuth: add `https://<host>/mcp` to an
+MCP client that does the specification's authorization (Claude, IDE agents); it is told where to
+go by the 401, registers itself, and opens a page that says how a person with an admin key of the
+tenant approves it (control/README.md, "OAuth for agents"). OAuth tokens are for `/mcp` only. JSON: `GET /api/v1/agent` (index: tools
 with input schemas, resources, prompts), `POST /api/v1/agent/tools/{name}` (arguments as a
 JSON object; the answer is the structured result plus `text`; a tool error carries its HTTP
 status: 400 bad arguments, 403 scope or refusal, 404 unknown, 409/422 from the control plane,
@@ -367,11 +372,35 @@ status: 400 bad arguments, 403 scope or refusal, 404 unknown, 409/422 from the c
 - **Scopes.** `read` (telemetry), `dashboards:read`, `dashboards:write`, `dashboards:apply`,
   `monitors:read`. A tool needs all of its scopes. `admin` is not honoured (control's README
   notes that `admin` is total; an agent should not inherit that).
-- **OAuth seam, not built.** An OAuth branch in `identify()` (Client ID Metadata Documents,
-  `@cloudflare/workers-oauth-provider` wrapping this Worker's `fetch`) would map a grant to
-  the same `Identity { tenant, subject, kind, scopes }`; nothing downstream changes. 401
-  answers carry `WWW-Authenticate: Bearer realm="viz"`; there is no protected-resource
-  metadata document until there is an authorization server to name.
+- **OAuth 2.1 (decision D44; MCP 2026-07-28, "Authorization").** This Worker is the protected
+  resource `<PUBLIC_URL>/mcp`; the control plane is its authorization server.
+  - **Metadata** (RFC 9728) at `/.well-known/oauth-protected-resource/mcp` and, the MCP fallback,
+    `/.well-known/oauth-protected-resource`: `resource`, `authorization_servers: [<PUBLIC_URL>]`,
+    `scopes_supported` = the read-only set (`read dashboards:read monitors:read`; more by step-up),
+    `bearer_methods_supported: ["header"]`. Public, CORS `*`, no Origin check.
+  - **401 from `/mcp`**: `WWW-Authenticate: Bearer realm="viz", resource_metadata="…", scope="read
+    dashboards:read monitors:read"`, plus `error="invalid_token"` and a description when a
+    credential was sent (none when nothing was, RFC 6750 §3.1). The JSON surface's 401 is as before.
+  - **A token** (`Bearer vza1.<tenant>.<secret>`) is checked on every request by the `Tenant`
+    object of the tenant it names (binding `TENANT`, by `script_name` viz-control;
+    `introspectAccessToken`): not expired, its grant live and not suspended, and **issued for this
+    resource** (audience: the `resource` this Worker is configured as). That object holds only the
+    token's hash, so a token edited to name another tenant is unknown there. A refresh token or a
+    code sent as a bearer is refused. A result version this release does not know, a newer
+    release holding the storage, or a missing binding: 503, never accepted.
+  - **The identity** is the grant's: kind `agent`, the grant's scopes, `mayApply` as `whoami`
+    gives it, subject and name of the grant's key (`oauth:<grantId>`). **Scopes are enforced per
+    tool exactly as for keys** (the same `hasScopes` in the dispatcher, the same tool list); for
+    OAuth a `tools/call` of a tool the token lacks scopes for is also answered **403** with
+    `WWW-Authenticate: Bearer error="insufficient_scope", scope="<every scope the tool needs>",
+    resource_metadata="…"`, before the server sees it, so a client can step up.
+  - **No token passthrough.** Downstream calls (query service, control plane, ruler) carry the
+    grant's own agent key, which introspection returns (control keeps it sealed under the
+    tokens), never the client's token. Those services check that key as any other: tenancy,
+    scopes, liveness. The token works nowhere else: the JSON agent API refuses it (401
+    `wrong-audience`), and the control API and the query service do not know it.
+  - Revocation (by a person, by the client, by reuse detection, by expiry) takes effect at the
+    next request: there is no cache here.
 - **Origin.** Requests with a browser `Origin` are refused unless listed in
   `ALLOWED_ORIGINS` (DNS-rebinding protection); a server reached on a localhost Host also
   accepts localhost Origins (local development only).
@@ -438,12 +467,16 @@ becomes `budget-exhausted` (429), tested.
 
 Everything above: 13 tools, 3 resources and a resource template, 3 prompts, on MCP
 (2026-07-28 and 2025 revisions) and JSON; API-key identity through edge and the control
-plane; the cleaning and fencing of untrusted text; budgets, paging and cursors; limits
+plane; OAuth 2.1 at `/mcp` (protected resource metadata, the 401 and 403 challenges, tokens
+checked by control on every request, the grant's key downstream); the cleaning and fencing of untrusted text; budgets, paging and cursors; limits
 with a deadline and partial results; the budget hook.
 
 ## Not implemented
 
-- **OAuth** (CIMD, workers-oauth-provider): a seam in `identify()`, not built.
+- **OAuth beyond what control/README.md lists as built**: Client ID Metadata Documents, a
+  consent page (a person approves through the control API), OAuth on the JSON agent API (the
+  token's audience is `/mcp`; the JSON surface takes API keys), DPoP. Production use needs
+  `deploy/` to set control's `OAUTH_CLIENT_KEY` (control/README.md, "Needed changes" 9).
 - **`annotate`**: no annotation store exists; the tool refuses (501) and writes nothing.
 - **TraceQL and LogQL**: refused as "not available yet" by `validate_query` and `query`;
   dashboard panels using them say so in `read_dashboard`. `search_telemetry` searches metrics only.
@@ -465,21 +498,23 @@ with a deadline and partial results; the budget hook.
 
 ```
 npm install
-npm test               # 182 tests in 9 files, in workerd (npx vitest run --maxWorkers=2)
+npm test               # 191 tests in 10 files, in workerd (npx vitest run --maxWorkers=2)
 npx tsc --noEmit       # clean
-npm run mutants        # 26 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md); vitest with at most 2 workers
+npm run mutants        # 33 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md); vitest with at most 2 workers
 npm run conformance    # the official conformance suite against wrangler dev on 127.0.0.1:8921
+npm run oauth-client   # the whole OAuth flow with the official SDK v2 client, against wrangler dev on 127.0.0.1:8922
 npm run measure        # read_dashboard tokens and wall time per example and budget
 npm run spike:libs     # the library check above (3 tests)
 ```
 
 Measured here: vitest 5.1.1 in workerd, TypeScript 5.9, Node 22.23, wrangler 4. The suite
-takes about 25–75 s on a shared machine. Last run 2026-11-19: 182 of 182 pass, `tsc` clean.
+takes about 25–75 s on a shared machine. Last run 2026-11-19: 191 of 191 pass, `tsc` clean.
 
 | File | Tests | What |
 |---|---|---|
 | `protocol.test.ts` | 20 | Raw JSON-RPC on the 2025 path (initialize for three revisions, an unknown revision, initialized, ping, tools/list byte-stable and scope-filtered, tools/call, tool errors as `isError`, argument errors with did-you-mean, resources incl. the template, prompts, -32601, -32700, -32600, 405 for GET/DELETE, 401 for missing/wrong/altered keys, Origin); the official SDK v1 client (2025) and v2 client (2026-07-28) doing everything |
-| `tools.test.ts` | 35 | Every tool's paths against the fake query service and ruler and the REAL control plane imported from `control/`: matches, entities, near names, not-available-yet, positions and carets, suggestions, rate-on-gauge, histogram without `le`, digest/instant/scalar/table/series, no data, service errors with positions, the series limit, the deadline, dashboards in three views, paging across the control plane's pages, revisions, schema pages that reassemble exactly, monitors with and without scope and binding, annotate, the REST surface, MCP and REST giving identical results; `validate_query`'s plan (one `/api/v1/plan` call with the caller's tenant, its numbers in text and structure, nothing run; a refusal the plan foresees is the warning `would-be-refused`; a query service without the endpoint leaves the series estimate with a note); `/healthz` (200 with the four bindings, 503 naming missing ones, 405) |
+| `tools.test.ts` | 35 | Every tool's paths against the fake query service and ruler and the REAL control plane imported from `control/`: matches, entities, near names, not-available-yet, positions and carets, suggestions, rate-on-gauge, histogram without `le`, digest/instant/scalar/table/series, no data, service errors with positions, the series limit, the deadline, dashboards in three views, paging across the control plane's pages, revisions, schema pages that reassemble exactly, monitors with and without scope and binding, annotate, the REST surface, MCP and REST giving identical results; `validate_query`'s plan (one `/api/v1/plan` call with the caller's tenant, its numbers in text and structure, nothing run; a refusal the plan foresees is the warning `would-be-refused`; a query service without the endpoint leaves the series estimate with a note); `/healthz` (200 with the five bindings, `TENANT` included, 503 naming missing ones, 405) |
+| `oauth.test.ts` | 9 | Below |
 | `examples.test.ts` | 10 | The three `dashboard/examples` dashboards via `read_dashboard`: each fits 2,000 tokens, breaching panels first in text and structure; CRIT/failed/not-available panels; narrowing by panels and variables; deadline (returns in under 2 s with 3 s queries); ≤ 3 in flight with the limit at 3 and every query run once; the panel limit; the measurements below |
 | `write.test.ts` | 15 | Dry runs write nothing for agent, agent-with-apply and person keys (control-plane snapshot unchanged); preview with data; the wrong metric caught with its near name; schema errors with suggestions; stale base; new specs; sanitized copies; proposals with named changes; base required; invalid refused unwritten; a new dashboard proposed (held by the control plane, nothing created, a retry returns the same proposal with nothing stored, an invalid spec refused unwritten, an agent with the apply scope refused by the control plane, a person applies, `list_revisions` names both); agents refused for apply and create with nothing written and no proposal made behind their back; apply sends no dry run: a refusal sends no write and a person's apply exactly one `PATCH`; a person applies; `agentsMayApply` lets an agent apply; no apply tool exists |
 | `e2e.test.ts` | 1 | The scripted agent task over MCP (below) |
@@ -516,6 +551,121 @@ disabled key stops at once. A key that is in KV but not held by the control plan
 `monitors:read`, which the control plane issues) is refused on every tool. With a control
 release that answers `whoami` 403 `no-scopes`, a person's key with every scope reads
 monitors with edge's scopes, and its `apply` is refused with nothing written.
+
+**OAuth at the resource** (`oauth.test.ts`), against the real control plane as authorization
+server, routed as the gateway routes. *The official SDK v2 client* (`auth()`, its transport with
+an `OAuthClientProvider`) does the whole flow: discovery, registration, an authorization URL with
+`S256` and `resource`, a person's approval through the control API, the `state` and `iss` checks,
+the exchange; a mixed-up issuer is refused by the client before the code is spent; it lists the
+tools the scopes allow and reads the tenant's telemetry; when the access token expires it gets
+401, refreshes (the refresh token rotates) and the call succeeds; a tool the grant lacks raises
+its `InsufficientScopeError` with `requiredScope "dashboards:write read"` and our metadata URL.
+*Metadata and 401*: both well-known URIs, exact content, CORS, `OPTIONS`; the 401 challenge
+exactly, with `invalid_token` for three bad credentials and no echo of them. *Scopes as for keys*:
+for four scope sets the tool list of a grant equals that of an agent key with the same scopes;
+a missing scope is 403 `insufficient_scope` with the exact challenge for OAuth, and the same
+dispatcher refusal for the key. *No passthrough*: every `Authorization` the query service, the
+control plane and the ruler saw during OAuth calls is a `viz_` key that is not the token, every
+call they served resolved to the token's tenant, and `whoami` for that key is the grant's
+identity. *Tenancy*: A's token edited to name B is 401; a tenant argument or header changes
+nothing. *Audience*: refused by a resource configured at another URL, by the JSON agent API
+(`wrong-audience`), by the control API and by the query service; a refresh token as bearer is
+401. *Expired and revoked*: expiry, a person's revocation and the client's RFC 7009 revocation
+each give 401 on the next request; without the `TENANT` binding, 503. *No credential in a log line
+or error body*: across five failure paths, with a probe showing the object's own log lines reach
+the spy, no token, its secret part, a refresh token's secret or the grant key's secret appears.
+
+**The OAuth flow, scripted** (`npm run oauth-client`, `scripts/oauth-client.mjs`). The official
+SDK v2 client as an MCP host would run it, against `wrangler dev` (local; `test/oauth-dev/`, the
+real control plane and agent surface, fake query service and ruler); the person's part through
+the control API; the browser's part by fetching the approval's redirect, which the script's own
+listener on the callback port receives. The signing key is generated per run and passed in an
+env file; wrangler runs in its own process group and is stopped with it. Run 2026-11-19 (the
+second run; the first also passed 16 of 16 but left wrangler running, since fixed), every
+credential redacted by the script, which also checks that none of the 7 it knows appears:
+
+````
+viz OAuth flow, scripted: 2026-11-19T04:36:27.108Z, wrangler dev on http://127.0.0.1:8922 (local), client @modelcontextprotocol/client 2.4.0
+
+0. setup (local only): tenant oauth-local-b8f16f66 with telemetry; a person's key "Dana" (admin and the five grantable scopes)
+
+1. the client connects with no token: 401, then discovery, registration and the authorization URL
+  POST /mcp -> 401   WWW-Authenticate: Bearer realm="viz", resource_metadata="http://127.0.0.1:8922/.well-known/oauth-protected-resource/mcp", scope="read dashboards:read monitors:read"
+  GET /.well-known/oauth-protected-resource/mcp -> 200
+  GET /.well-known/oauth-authorization-server -> 200
+  POST /oauth/register -> 201
+  ok   connect without a token ends in UnauthorizedError after redirectToAuthorization
+  ok   registered as a public client (vzk1 client id, no secret)
+  ok   authorization URL: S256 challenge, resource = the MCP endpoint, scope from the 401 challenge
+
+2. the person opens the authorization URL (a plain-text page; no sign-in page exists yet)
+  GET /oauth/authorize?response_type&client_id&code_challenge&code_challenge_method&redirect_uri&state&scope&resource -> 200
+  | viz: an application asks to act on your tenant
+  | 
+  | Application:  viz scripted client
+  |               (the application's own description of itself; viz has not verified it)
+  | Returns to:   127.0.0.1:33418
+  |               http://127.0.0.1:33418/callback
+  |               WARNING: a program on the computer that opens the approval link. Any program listening
+  |               there can receive the code. Approve only a connection you started yourself.
+  | Asks for:
+  |               read             query and search your telemetry (metrics)
+  |               dashboards:read  read dashboards and their history
+  |               monitors:read    read monitors and their alerts
+  ok   the page shows the client name, the redirect host and the approval command
+
+3. the person previews (dryRun), then approves with their key
+  POST /api/v1/control/oauth/approve -> 201
+  preview: scopes read dashboards:read monitors:read; returns to 127.0.0.1:33418; redirect null
+  warning: The application's name ("viz scripted client") is what it says about itself; viz has not verified it.
+  warning: The code goes to a program on the computer that opens the link (127.0.0.1:33418). Any program listening there can receive it: approve only a connection you started yourself.
+  POST /api/v1/control/oauth/approve -> 201
+  ok   approved: 201, grant live with the asked scopes, a redirect carrying code, state and iss
+
+4. the browser opens the redirect; the client's listener gets the code; the SDK checks iss and exchanges it
+  ok   state is the one the client sent
+  POST /oauth/token -> 200
+  ok   tokens: Bearer, 3600 s, the granted scopes, a refresh token
+
+5. connected: tools for the granted scopes, and the tenant's data
+  POST /mcp -> 200
+  POST /mcp -> 202
+  GET /mcp -> 405
+  POST /mcp -> 200
+  tools: search_telemetry, describe_metric, validate_query, query, search_dashboards, get_dashboard, list_revisions, read_dashboard, get_schema, list_monitors, get_monitor
+  ok   read tools offered, write_dashboard not (no dashboards:write)
+  POST /mcp -> 200
+  search_telemetry: search_telemetry: 1 matching metric(s); 1 matching entity value(s).
+  ok   search_telemetry answers from the tenant's telemetry
+
+6. a tool the grant lacks: 403 insufficient_scope; the SDK reports the scopes to ask for (step-up)
+  POST /mcp -> 403   WWW-Authenticate: Bearer error="insufficient_scope", scope="dashboards:write read", resource_metadata="http://127.0.0.1:8922/.well-known/oauth-protected-resource/mcp", error_description="write_dashboard needs dashboards:write read"
+  ok   InsufficientScopeError, required scope "dashboards:write read"
+
+7. refresh: the SDK refreshes; the refresh token rotates
+  POST /oauth/token -> 200
+  ok   refreshed (AUTHORIZED), with a new refresh token
+  POST /mcp -> 200
+  ok   the new access token works
+
+8. the old refresh token comes back (someone kept a copy): refused, and the whole grant is revoked
+  POST /oauth/token -> 400
+  answer: {"error":"invalid_grant","error_description":"The refresh token is unknown, expired, used or revoked."}
+  ok   400 invalid_grant
+  POST /mcp -> 401   WWW-Authenticate: Bearer realm="viz", resource_metadata="http://127.0.0.1:8922/.well-known/oauth-protected-resource/mcp", scope="read dashboards:read monitors:read", error="invalid_token", error_description="The access token is unknown, revoked or replaced."
+  ok   the current access token is refused at once: 401 invalid_token
+  GET /api/v1/control/oauth/grants?status -> 200
+  grant g_Awrady430qTdxCf0k7PK19: status revoked, reason refresh-reuse, revoked by system:oauth, key null
+  ok   the person sees the grant revoked for refresh-reuse, its key gone
+  ok   no credential in this transcript (7 checked)
+
+16 of 16 checks passed
+````
+(`GET /mcp -> 405`: the 2026-07-28 client probes for a stream; this server is stateless, D26.)
+
+The **conformance suite**'s authorization scenarios (`auth/*` in 0.1.16) test MCP *clients*
+against a mock server; it has no scenarios for an authorization server or a protected
+resource, so it was not run for this change. The MCP Inspector was not run (it needs a browser).
 
 **Injection corpus** (`injection.test.ts`, `test/corpus.ts`): 27 strings plus two
 identifier-shaped ones — instruction overrides, fake `</tool_result><system>` and
@@ -659,7 +809,14 @@ suite ran on the same machine.
   ruler), and it may not apply.
 - **SDK v2 is new** (2.4.0, October 2026). Its legacy path answers in SSE framing; its
   JSON-RPC error messages quote caller input (cleaned here).
-- **Not run on Cloudflare.**
+- **Run on Cloudflare once**, in a staged trial since destroyed (`deploy/README.md`, "Trial 2",
+  2026-11-19): `tools/list` and five tools over `/mcp` with an agent key, 279–915 ms per call
+  from outside. OAuth has not run on Cloudflare.
+- **OAuth: one more Durable Object call per request** (introspection), where an API key costs a
+  KV read and `whoami`. Not measured.
+- **OAuth: a grant's key may not have reached KV everywhere** when its first token is used: the
+  downstream call is then refused (401 from that service), shown to the agent as that service's
+  error; it works once KV has the record. Modelled, not measured (control/README.md, "Known risks").
 
 ## Needed changes
 
@@ -682,6 +839,12 @@ the package's footer; `design/DECISIONS.md` D25–D29 and DESIGN §8. Still open
    `ruler/contracts-proposal/rules.v2.ts`, so `src/clients.ts` declares the subset it uses.
 4. **`stack/`**: mount this Worker with `QUERY`, `CONTROL`, `RULER` and `CONFIG`; **`app/`**:
    a dashboard route, so deep links can open a dashboard rather than one query.
+5. **`deploy/`** (OAuth, D44): viz-mcp now binds control's `Tenant` class by `script_name`
+   (`TENANT`, in `wrangler.jsonc`), which `deploy/configure.mjs` resolves like the gateway's and
+   the ruler's; viz-mcp already deploys after viz-control. `PUBLIC_URL` must be the same for
+   viz-mcp and viz-control (the resource and the issuer are built from it), and viz-control needs
+   its `OAUTH_CLIENT_KEY` secret (control/README.md, "Needed changes" 9). The gateway routes the
+   OAuth paths (`deploy/gateway`, done); `deploy/README.md`'s route table does not list them yet.
 
 ## Contract issues
 

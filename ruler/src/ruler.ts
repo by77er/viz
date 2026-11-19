@@ -41,7 +41,7 @@ import type {
 } from '../contracts-proposal/rules.v2'
 import { ANOMALY_LIMIT_DEFAULTS, anomalyLimits, emptyStatus, evalAnomaly, historyOf, maxClass, newAnomalyRt, readStateRows, stateRows, type AnomalyEval, type AnomalyRt } from './anomaly'
 import { MAX_BACKTEST_STEPS, resolutionNote } from './backtest'
-import { anomalyWarmPoints, anomalyWarmReads, backtestAlert, backtestAnomaly, backtestSlo, HISTORY_LIMIT_DEFAULTS, historyBudgets, MAX_WARMUP_ATTEMPTS, readWarmup, sloWarmReads, warmAnomaly, warmSlo, warmupBody, warmupStatus, type HistoryIo, type Read } from './history'
+import { anomalyWarmPoints, anomalyWarmReads, backtestAlert, backtestAnomaly, backtestSlo, CPU, HISTORY_LIMIT_DEFAULTS, historyBudgets, MAX_WARMUP_ATTEMPTS, readWarmup, sloWarmReads, warmAnomaly, warmSlo, warmupBody, warmupStatus, type HistoryIo, type Read } from './history'
 import { allRows, cloneSloRt, emptySloStatus, evalSlo, newSloRt, readSloRows, SLO_LIMIT_DEFAULTS, sliExpressions, sloHistory, tickRows, type SloEval, type SloRow, type SloRt } from './slo'
 import { classify } from './classify'
 import type { ServiceKeyResult, TenantServiceRpc } from '../../contracts/control'
@@ -242,6 +242,12 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
   private samplesDropped = 0
   private ticking = false
   private tickFailures = 0
+  /**
+   * Modelled CPU (ms) this alarm's warm-ups may still use (`maxWarmupCpuMs`), set at the start of
+   * each tick. Each warm-up reserves its share before it runs, so groups evaluated concurrently
+   * cannot both spend it, and gives back what it did not use.
+   */
+  private warmupCpuLeftMs = 0
   private genCounter = 0
   /** Whether the registry lists this object (`registry.ts`); persisted, so it is asked once. */
   private registered = false
@@ -619,6 +625,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     if (this.ticking) return
     this.ticking = true
     const now = this.now()
+    this.warmupCpuLeftMs = historyBudgets(this.cfg.limits).warmupCpuMs
     try {
       this.counters.ticks++
       const due: { g: GroupRt; ts: number }[] = []
@@ -959,7 +966,9 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
    * the rule starts cold; otherwise the reads are fetched whole and fed, in time order, through the
    * rule's own evaluation; the state rows and the status commit in one transaction. An engine
    * failure leaves the job pending (the rule waits this tick out) until `MAX_WARMUP_ATTEMPTS`, then
-   * the rule starts cold. Returns the keys of rules that wait.
+   * the rule starts cold. A warm-up the CPU model prices over `maxWarmupCpuMs` is refused (the rule
+   * starts cold); one that fits that but not what this alarm's warm-ups have left waits for the
+   * next alarm, without counting an attempt. Returns the keys of rules that wait.
    */
   private async warmUp(g: GroupRt, endTs: number, current: () => boolean): Promise<Set<string>> {
     const waiting = new Set<string>()
@@ -999,23 +1008,45 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
         finish({ ...base, status: 'not_needed', finishedAt: this.now() })
         continue
       }
+      // This alarm's CPU for warm-ups: reserve what is left (at most one warm-up's budget) first.
+      const room = Math.min(budgets.warmupCpuMs, this.warmupCpuLeftMs)
+      const deferred = (why: string) => {
+        finish({ ...base, status: 'pending', attempts: job.attempts, message: `waiting for the next alarm: ${why}`, finishedAt: null })
+        waiting.add(rule.key)
+      }
+      // (With nothing spent yet a warm-up always runs, so a budget below `CPU.base` refuses rather than waits forever.)
+      if (room < budgets.warmupCpuMs && room < CPU.base / 1000) {
+        deferred(`this alarm's warm-ups have used their ${budgets.warmupCpuMs} ms of CPU (modelled)`)
+        continue
+      }
+      this.warmupCpuLeftMs -= room
+      let used = room
       // Read in windows sized to the memory budget, planned first, fed in time order.
-      const io: HistoryIo = { planner: this.historyPlanner(), range: this.warmupRange(), budget, memoryBytes: budgets.warmupMemory }
+      const io: HistoryIo = { planner: this.historyPlanner(), range: this.warmupRange(), budget, memoryBytes: budgets.warmupMemory, cpu: { budgetMs: room, deferBelowMs: budgets.warmupCpuMs } }
       let run: Awaited<ReturnType<typeof warmAnomaly>> | Awaited<ReturnType<typeof warmSlo>>
       try {
         run = rule.kind === 'anomaly' ? await warmAnomaly(rule, reads[0]!, aLimits, io) : await warmSlo(rule, I, (slo as NonNullable<typeof slo>).fine, (slo as NonNullable<typeof slo>).coarse, io)
+        // Give back what the model says the run did not use; an engine failure keeps the reservation.
+        used = run.ok ? run.cpu.modelledMs : 'refused' in run ? (run.cpu?.spentMs ?? Math.ceil(CPU.base / 1000)) : room
       } catch (e) {
         const attempts = job.attempts + 1
         const last = attempts >= MAX_WARMUP_ATTEMPTS
         finish({ ...base, status: last ? 'failed' : 'pending', attempts, message: `the engine failed the read (${errorText(e)}); ${last ? 'the rule started cold' : 'tried again at the next tick'}`, finishedAt: last ? this.now() : null })
         if (!last) waiting.add(rule.key)
         continue
+      } finally {
+        this.warmupCpuLeftMs += room - Math.min(room, used)
       }
       if (!current()) return waiting
+      if (!run.ok && 'refused' in run && run.defer) {
+        // It fits one warm-up's budget, not what this alarm has left: it runs from the start next alarm.
+        deferred(`${run.refused}; it fits a warm-up's ${budgets.warmupCpuMs} ms but not the ${room} ms this alarm had left`)
+        continue
+      }
       if (!run.ok) {
-        // Refused before anything was fetched (budget, memory, the engine's plan), or stopped in a
-        // window (the rule's own refusal: a series cap, a state limit): nothing is kept.
-        if ('refused' in run) finish({ ...base, status: 'refused', attempts: job.attempts + 1, plan: run.plan, message: `${run.refused}; nothing was fetched and the rule started cold`, finishedAt: this.now() })
+        // Refused before anything was evaluated (budget, memory, the engine's plan, the CPU model), or
+        // stopped in a window (the rule's own refusal: a series cap, a state limit): nothing is kept.
+        if ('refused' in run) finish({ ...base, status: 'refused', attempts: job.attempts + 1, plan: run.plan, message: `${run.refused}; ${run.cpu ? 'nothing was kept' : 'nothing was fetched'} and the rule started cold`, finishedAt: this.now() })
         else finish({ ...base, status: 'refused', attempts: job.attempts + 1, message: `${run.failed}; nothing was kept and the rule started cold`, finishedAt: this.now() })
         continue
       }
@@ -1611,7 +1642,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     const budgets = historyBudgets(this.cfg.limits)
     const budget = budgets.backtest
     const opts = { resolvedRetentionMs: this.cfg.resolvedRetentionMs, limit: this.cfg.limits.maxAlertsPerRule, maxAnnotationBytes: this.cfg.limits.maxAnnotationBytes, externalLabels: this.cfg.externalLabels }
-    const io: HistoryIo = { planner: this.historyPlanner(), range: this.rangeEvaluator(), budget, memoryBytes: budgets.backtestMemory }
+    const io: HistoryIo = { planner: this.historyPlanner(), range: this.rangeEvaluator(), budget, memoryBytes: budgets.backtestMemory, cpu: { budgetMs: budgets.backtestCpuMs } }
     const input = { compiled: compileAlertRule(asAlerting(parsedRule as AnomalyRule)), fromMs, toMs, stepMs, opts, presence: parsedRule.noData?.expr ?? null, alertLimit: this.cfg.limits.maxAlertsPerRule }
     const warmReads: { fromMs: number; toMs: number; stepMs: number }[] = []
     let run: Awaited<ReturnType<typeof backtestAlert>>
@@ -1633,9 +1664,14 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     }
     if (!run.ok) {
       if ('failed' in run) return { status: 'failed', error: run.failed }
-      return { status: 'over_budget', message: `${run.refused}. Nothing was fetched: shorten the range, lengthen the step (alerting rules only), or narrow the expression.`, plan: run.plan, budget, memory: run.sizing ? { peakBytes: run.sizing.peakBytes, budgetBytes: run.sizing.budgetBytes } : null }
+      const memory = run.sizing ? { peakBytes: run.sizing.peakBytes, budgetBytes: run.sizing.budgetBytes } : null
+      if (run.cpu) {
+        const { modelledMs, budgetMs } = run.cpu
+        return { status: 'over_budget', message: `${run.refused}. Shorten the range, lengthen the step (alerting rules only), or narrow the expression; an operator can raise maxBacktestCpuMs up to the Durable Object's CPU limit (README, "CPU").`, plan: run.plan, budget, memory, cpu: { modelledMs, budgetMs } }
+      }
+      return { status: 'over_budget', message: `${run.refused}. Nothing was fetched: shorten the range, lengthen the step (alerting rules only), or narrow the expression.`, plan: run.plan, budget, memory, cpu: null }
     }
-    const cost = { ...run.plan, budget, memory: { peakBytes: run.sizing.peakBytes, budgetBytes: run.sizing.budgetBytes, windowSteps: run.sizing.windowSteps, queries: run.sizing.queries } }
+    const cost = { ...run.plan, budget, memory: { peakBytes: run.sizing.peakBytes, budgetBytes: run.sizing.budgetBytes, windowSteps: run.sizing.windowSteps, queries: run.sizing.queries }, cpu: run.cpu }
     if (parsedRule.kind === 'alert') {
       const result = { ...run.value.result, resolution: { stepMs, liveIntervalMs: live, edgeErrorMs: Math.max(stepMs, live), note: resolutionNote(parsedRule, stepMs, live) } }
       return { status: 'ok', ...result, kind: 'alert', warmup: null, cost }

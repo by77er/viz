@@ -184,6 +184,18 @@ value bits, NaN count, total name bytes, first row, sort order and uniqueness, a
 the series file the `series_id` sum, label bytes, and that `labels` parses as canonical
 JSON agreeing with `metric_name`.
 
+**Series-level pruning (2026-11-19): PyArrow 26.0.1 and DuckDB 2.0.0** (a scratch venv), via
+`examples/independent.rs` (two overlapping flush files of 5 metrics x 2,000 series, three row
+groups each, NaN payloads and staleness markers, and their merge, both tables) and
+`tools/independent_check.py`: **194 of 194 checks pass**. Both read every file and return
+exactly the expected rows computed from the input batches (PyArrow bit for bit, DuckDB as
+numbers with NaN as NaN); every fragment agrees with the file (row groups, rows, offsets,
+lengths, names, times, `sid` = the first and last row's `series_id`, `foot` = from the end of
+the last row group to the end of the file) and every column chunk has an offset index; and for
+25 series of each samples file, a buffer holding only the footer region and the row groups the
+contract's rule (re-implemented in Python) keeps gives PyArrow exactly that series' rows, while
+no row group left out holds one of them.
+
 One finding from that run: of 3,431 staleness markers written, JavaScript saw only 1,401
 bit-exact; the rest arrived as `0x7ff8000000000002`. The file is correct (the Rust reader
 returns all of them bit-exact). The marker is a signalling NaN, and JavaScript engines
@@ -200,6 +212,25 @@ select(lake + tail, regex matcher) selects the same 69,127 samples the native te
 counted. A `+simd128,+bulk-memory` build also compiles and passes (2.76 MB).
 
 ### Mutation checks
+
+**Series-level pruning (2026-11-19).** `tools/mutants.py` now copies the crate to a scratch
+directory and mutates only the copy (it edited the shared tree in place before; AGENTS.md). Run
+with `pruning` (2026-11-19, 04:28 to 04:45 UTC, load average 8 to 9): **18 of 18 killed**, the
+shared tree untouched. The 15 new ones, with the tests that caught them: `may_hold`'s lower
+series bound off by one (`may_hold_follows_the_sort_order_exactly`,
+`reading_part_of_a_file_changes_nothing`); its upper bound ignored, and statistics that
+contradict the sort order trusted (`may_hold_follows…`); an interval ending exactly at the bound
+missed, and the name range ignored (`may_hold_follows…`, `files_and_fragments_of_the_previous_writer_read_as_before`);
+the index writer recording the first `series_id` as the last, the footer offset one byte late,
+its length one byte short (`the_fragment_carries_series_bounds…`, `reading_part…`); byte ranges
+leaving out the footer, or joining ranges one byte too far apart
+(`byte_ranges_join_close_ranges_and_always_hold_the_footer`, `reading_part…`); `select` mapping
+a later span's rows to the wrong place, reading a row group that was not fetched, skipping one
+that was, and the run reader skipping one row too few (`reading_part…`); a sparse segment held
+one byte longer than it is (`the_sparse_container_is_checked`). The three older pruning mutants
+(ts, name and `series_id` statistics) are still killed, now also by `reading_part…`. Two of the
+older mutants' patterns were updated for the new `select` code (the time filters on lake and
+tail rows); the other older mutants were not re-run this time.
 
 `tools/mutants.py` applies one source change at a time, runs the suite, and restores the
 file. It first confirms the unmutated suite passes, and distinguishes a failing test from
@@ -268,6 +299,14 @@ unchanged: below the 3× bar as the engine reads, and 40 remaining bits collide)
 `design/DECISIONS.md` D19. Nothing in the crate uses it.
 
 ## Known risks
+
+- **Partial reads trust the planner.** A row group whose `series_id` chunk is not in a sparse
+  file is skipped as "left out on purpose": if a caller left out one that holds a selected
+  row, the answer would miss it without an error. The rule (`may_hold`) is tested exactly and
+  through every read path (I14 property tests here and in `engine/query`, PyArrow above, the
+  mutants below); every other missing byte fails the read.
+- **Fragments are larger** by about 50 bytes a row group and 20 a file (the ledger's state is
+  capped at 16 MiB).
 
 - **Memory in flush.** `encode_segment` holds all decoded rows (20 bytes each) plus the
   output. Fine for the few-MB segments the design specifies; not for arbitrary input.

@@ -15,7 +15,7 @@ and physical deletes wait. Nothing else.
 | `src/iceberg.ts` | Table schemas, Avro schemas of v2 manifests and manifest lists, `metadata.json`, per-file statistics |
 | `src/avro.ts` | Avro object container reader and writer (about 300 lines, no dependency) |
 | `src/schema.ts` | The publisher's storage as versioned migrations (`PUBLISHER_SCHEMA`), and `FORMATS`: the versions of what it writes and reads |
-| `test/` | 77 tests in workerd with a simulated R2, against the real `Ledger` class (and the frozen as-built one for the first layout) |
+| `test/` | 78 tests in workerd with a simulated R2, against the real `Ledger` class (and the frozen as-built one for the first layout) |
 | `tools/fixtures/` | Rust: real Parquet files made with `viz_storage::encode_segment` and `merge_files` |
 | `tools/verify_readers.py` | PyIceberg and DuckDB read the published tables and are compared with the ledgers |
 | `tools/mutants.mjs` | Mutation checks |
@@ -536,8 +536,10 @@ about 290 kB per commit (modelled from that slope, not measured).
   affected). A nudge that is not recorded is retried through the maintenance marker (an hour);
   one that is recorded but whose changes were not yet logged when the publish read the log is
   caught by the next run of that tenant, which the purge of the change's tombstones brings
-  (by the delete grace, 1 h). Measured only in workerd, with the maintenance run simulated by
-  a direct `nudge`; the wiring in `stack/` is not built.
+  (by the delete grace, 1 h). Wired in `stack/` since 2026-11-19 and run on Cloudflare in
+  Trial 3 (`deploy/README.md`): every maintenance run nudged (`notify` and `safeToDelete` the
+  only calls the publisher saw), and its alarm committed both tables 2 minutes after the first
+  nudges, and again after each later round, with nobody calling `publish`.
 - **A stuck tenant costs a wake a minute.** A hole, a corrupt or unsupported segment, or an
   inconsistent change keeps the tenant pending and the alarm retrying every `retryMs`, not
   backed off: about 1,440 wakes and a few thousand R2 operations a day for as long as it lasts

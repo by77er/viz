@@ -56,8 +56,8 @@ dedicated tenants run the same code.
   (bound to tenant, incarnation, watermark and filter; versioned `v1.` token) through the
   `through` of its first page, so later appends are not in it. A page never holds part of a
   batch's kept rows: if they alone pass `maxBytes` the answer is `page_limit` (nothing
-  returned, never truncated). A later page whose rows were discarded meanwhile is
-  `stale_watermark`; one call examines at most `tailScanMaxBytes` (32 MiB) and continues from
+  returned, never truncated). Any page after rows above the read's watermark were discarded
+  is `stale_watermark` (the caller re-plans); one call examines at most `tailScanMaxBytes` (32 MiB) and continues from
   there. Bad options or a cursor of another read are `invalid`; an unknown `v` is
   `unsupported_version`. **Without options the answer is exactly as before** (no `page`), and
   an older shard ignores the options, so a caller knows the filter was applied only by `page`.
@@ -262,6 +262,22 @@ now, `groupcommit.test.ts` "the tenant cap counts what waits in the open group")
 re-run on the final code and **killed** by those tests: 19 of 20 in all. **Survived, equivalent:** "R-12: fingerprint expiry names no
 tenant": every tenant has the same fingerprint TTL, so deleting other tenants' expired rows
 changes nothing observable; the rule (every statement names its tenant) is met by reading.
+
+**Run of 2026-11-19, filtered and paged tail reads** (the 12 `tail:` mutants with the 20 above,
+on a copy of `contracts/`, `shard/` and `engine/wasm/{js,test}`): of the 20, the same 19 killed
+and R-12 survived (equivalent, above; R-10's pattern was updated for the new code). Of the tail
+mutants, killed by `test/tail.test.ts`: the time range ignored; series keys compared as signed;
+a label with another value, and a wanted label the series lacks, not excluding it; a page
+passing its budget; a batch that does not fit an empty page dropped instead of refused; a cursor
+not bound to its filter; a later page reading to the current end instead of the first page's
+`through`; the scan budget ignored; the metric names ignored and a paged read not checking
+the discard fence (both re-run after their first patterns proved wrong: one changed only an
+initial value the loop overwrites, the other targeted a check that can never fire, because the
+fence is checked against the read's watermark on every page first; that dead check was removed).
+**Survived (1): "values copied as numbers"** (`getFloat64`/`setFloat64` instead of a byte
+copy): V8 keeps a NaN's bits through that path, signalling NaNs included, so the test of the
+staleness marker cannot tell; the byte copy is what BATCH.md asks for and is right by reading.
+In all: **30 of 32 killed**, R-12 and this one surviving.
 
 ## Not implemented yet
 

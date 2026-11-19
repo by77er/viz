@@ -68,7 +68,9 @@ import { type SchemaSpec, type SchemaTooNew, SchemaTooNewError, columnsOf, openS
  *
  *   ledger/tenant={t}/{incarnation}/seg-{first:012}-{last:012}.jsonl   the changes, first..last;
  *                                                                      the first segment starts with the base
- *   ledger/tenant={t}/{incarnation}/ckpt-{version:012}.jsonl           the whole state at a version
+ *   ledger/tenant={t}/{incarnation}/ckpt-{version:012}.jsonl           a checkpoint: the whole state at a version
+ *                                                                      (format 1), or the manifest of its parts (format 2)
+ *   ledger/tenant={t}/{incarnation}/ckpt-{version:012}-{attempt}/{part:06}.jsonl   a part of a format-2 checkpoint
  *
  * The first layout (`base.json` and `{version}.json`) is still READ, by a rebuild of an
  * incarnation that used it. A ledger whose storage still runs such an incarnation starts a
@@ -80,9 +82,13 @@ import { type SchemaSpec, type SchemaTooNew, SchemaTooNewError, columnsOf, openS
  * `START_WAIT_MS` and is then refused with a retryable `LedgerUnavailableError`. Nothing is
  * served or committed before the base is in R2.
  *
+ * A checkpoint larger than one part is written in parts by later drain steps (D47); its
+ * progress and the pre-images that keep it at its version are rows of `ckpt` and `ckpt_pre`.
+ * A rebuild streams checkpoints and bases into SQLite; nothing holds the whole state.
+ *
  * In-memory state is a cache or a hint only: the schema state and whether an incarnation is
  * being started (re-derived from SQLite in the constructor), the alarm time this object set,
- * the drain's backoff, and the last fault (for `logStatus`).
+ * the drain's and the checkpoint's backoffs, and the last fault (for `logStatus`).
  */
 
 export interface LedgerEnv {

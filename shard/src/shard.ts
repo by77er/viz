@@ -237,7 +237,7 @@ export type TailResult =
    * unfiltered and unpaged, as before (COMPATIBILITY.md §3.3: callee first).
    */
   | { status: 'ok'; incarnation: number; through: number; batches: TailBatch[]; page?: TailPage }
-  /** The shard has discarded rows above the watermark it was asked about (or, for a later page, rows the read still needs). Re-read the ledger. */
+  /** The shard has discarded rows above the watermark it was asked about (for a paged read: on any page). Re-read the ledger. */
   | { status: 'stale_watermark'; incarnation: number; discardedThrough: number }
   /**
    * The stream was recreated (storage loss), or the shard holds no stream for this tenant
@@ -836,7 +836,9 @@ export class Shard extends DurableObject<ShardEnv> {
    * label values, a range of series keys), in pages of at most `maxBytes`, each with `page`;
    * `page.next` continues the read where it stopped, through the same `through`. A page never
    * holds part of a batch's kept rows: if they alone exceed `maxBytes` the answer is
-   * `page_limit`. Later pages check the discard fence against what they still have to read.
+   * `page_limit`. Every page checks the discard fence against the read's watermark: rows
+   * above it discarded since the first page refuse the rest (`stale_watermark`), even rows
+   * already returned (stricter than needed, and simple).
    */
   async tailRead(tenant: string, incarnation: number, aboveSeq: number, opts?: TailReadOptions): Promise<TailResult> {
     if (this.refusal) this.refused()
@@ -880,8 +882,7 @@ export class Shard extends DurableObject<ShardEnv> {
       }
       through = c.through
       from = c.seq
-      // Rows this read still needs were discarded since its first page: re-read the ledger.
-      if (s.discardedThrough >= from) return { status: 'stale_watermark', incarnation: s.incarnation, discardedThrough: s.discardedThrough }
+      // (A discard above the read's watermark since its first page was refused by `tailRead`.)
     }
     const batches: TailBatch[] = []
     let bytes = 0

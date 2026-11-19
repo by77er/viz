@@ -600,7 +600,27 @@ NAB's 750-row probation can be too short to detect a period; SMD's history is 2�
   every machine both are compared with the plain adapter over the whole series; any difference
   aborts the run.
 
-<!-- SMD-RESULTS -->
+### Results on SMD
+
+`bash bench/fetch-smd.sh && node --experimental-strip-types bench/smd-run.ts` (two passes of two
+processes, `--only` and `--machines`, about 3 h on 4 shared cores at load 10–17; then `--score`,
+90 s). 28 machines, 889 series (175 constant ones excluded), 44.9 million points, 492
+machine-days of test data, 2,329 labelled segments in 2,189 windows; seasonality found on the
+history: daily 394, weekly 84, hourly 34, none 377. The grouped robust z runs matched the plain
+adapter on every machine's first series. Tables: `bench/out/smd-results.md`.
+
+NAB's scorer, alarms as onsets, each profile with its frozen configuration; next to NAB's
+held-out numbers from the table above. Intervals: 95 %, machine bootstrap.
+
+<!-- SMD-TABLE-1 -->
+
+Event metric (standard configuration, ±15 minutes), the NAB-window view, and the machine view:
+
+<!-- SMD-TABLE-2 -->
+
+### What held and what did not
+
+<!-- SMD-HYPOTHESES -->
 
 ## Costs (measured here, Node 22.23; CPU time, `bench/cpu.ts`)
 

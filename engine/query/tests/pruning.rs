@@ -362,3 +362,18 @@ fn the_label_calls_never_open_a_sample_file() {
     assert_eq!(e.limit, Some((viz_query::Limit::MaxSeries, 3999, 4000)));
     assert_eq!(viz_query::label_values_with(&i, "pod", &[], MID, MID, &Limits { max_series: 4000, ..Limits::default() }).unwrap().len(), 4000);
 }
+
+#[test]
+fn the_window_is_inclusive_at_both_ends_in_files_and_in_the_tail() {
+    // `a` only in a file, one sample at T; `b` only in the tail, one sample at T.
+    let a = History::from_rows(&[(&[("__name__", "a")], MID, 1.0)]).encoded();
+    let b = History::from_rows(&[(&[("__name__", "b")], MID, 1.0)]).encoded();
+    let files = encode_segment_with(&[&a[0]], &WriteOptions::default()).unwrap();
+    let s = Stored { series_files: vec![files[1].bytes.clone()], sample_files: vec![files[0].bytes.clone()], tail: b.clone(), ..Stored::default() };
+    let names = |lo: i64, hi: i64| viz_query::label_values(&s.input(), "__name__", &[], lo, hi).unwrap();
+    assert_eq!(names(MID, MID + 5), ["a", "b"], "a window starting at the sample");
+    assert_eq!(names(MID - 5, MID), ["a", "b"], "a window ending at the sample");
+    assert_eq!(names(MID, MID), ["a", "b"], "a window of one millisecond");
+    assert!(names(MID + 1, MID + 5).is_empty(), "a window starting after it");
+    assert!(names(MID - 5, MID - 1).is_empty(), "a window ending before it");
+}

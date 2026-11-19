@@ -479,8 +479,25 @@ every series file) when the series files are over `maxFetchBytes`. No sample is 
 ## How it was verified
 
 All measured here, locally (Linux x86-64, 4 cores shared with other builds, Node 22.23,
-workerd through `@cloudflare/vitest-plugin` 1.8), on 2026-11-18 and 19. Nothing ran on
-Cloudflare.
+workerd through `@cloudflare/vitest-plugin` 1.8), on 2026-11-18 and 19. Nothing in this
+section ran on Cloudflare (the Worker itself did, in two staged trials: `deploy/README.md`).
+
+**After series-level pruning and the series-only read (2026-11-19, ABI 3):** see
+"FINAL-RUN" below for the full suite. New: `test/pruning.test.ts` (4 tests over 25,000 series
+whose samples file has eight row groups, one shard, the seal size raised so the unit is one
+segment): a one-series query refused by the fragments' scan bound answers once resolved
+(`X-Viz-Pruning: series`, series estimate 1, fewer bytes, the same body and samples loaded as
+the unpruned answer); a selection over the id space gets an exact series estimate and splits
+with the same body; split readers over 2 and 5 leaves give the one-place body for a full-metric
+aggregate (reading less than every part reading every file, at 5 leaves) and for a relabelled
+one whose split key leaves out `job` (the readers read what their series need after the series
+files); the label calls read one series file and no sample file, ignore every sample and query
+limit, are refused by `maxMetadataSeries` naming `max_series`, agree with `/series` and
+`/labels`, and keep tenants apart. Changed: `engine.test.ts` (27 exports, ABI 3; the label
+calls bound by series, not samples), `limits.test.ts` (`maxMetadataSeries` in the defaults; the
+label endpoints refused by it), `http.test.ts` (the timeout names its limit; `Vary` includes
+`Accept-Encoding`). The counterfactual (`test/pruning.bench.ts`, both ways) is in
+CARDINALITY.md.
 
 **After the series rule, `/api/v1/plan` and the cardinality limits (2026-11-19, 01:12 to
 01:16 UTC, load average 11 to 13):** `npx vitest run --maxWorkers=2`: **82 tests, all

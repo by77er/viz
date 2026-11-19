@@ -230,12 +230,17 @@ export type AnyRuleV2 = RuleV2 | AnomalyRuleV2 | SloRuleV2
 
 /**
  * EXTENDED (`RulerLimits`). The modelled peak memory one warm-up and one backtest may hold (bytes):
- * history is read and evaluated in time windows sized to it. Proposed for `contracts/rules.ts`
- * (README, contract issue 18); defaults 16 MiB and 32 MiB.
+ * history is read and evaluated in time windows sized to it; defaults 16 MiB and 32 MiB. The
+ * modelled CPU one backtest may use, and the warm-ups of one alarm together (ms): over it a
+ * backtest is refused, a warm-up refused (over the whole) or left for the next alarm (over what the
+ * alarm has left); defaults 10,000 and 5,000, under a Durable Object invocation's 30 s default
+ * CPU limit. Proposed for `contracts/rules.ts` (README, contract issue 18).
  */
 export interface RulerLimitsV2 extends RulerLimits {
   maxWarmupMemoryBytes?: number
   maxBacktestMemoryBytes?: number
+  maxWarmupCpuMs?: number
+  maxBacktestCpuMs?: number
 }
 
 /** EXTENDED (`RulerConfig`). */
@@ -393,7 +398,7 @@ export interface BacktestResult {
    * EXTENDED (with contract version 4). What the engine's plan said before the fetch, summed over the
    * range queries; and the memory model: the modelled peak, the budget, the steps per window of each
    * read (fetched and evaluated one window at a time, only the rule's state carried between them)
-   * and the range queries the windows took.
+   * and the range queries the windows took; and the CPU model's cost of the run and its budget.
    */
   cost?: {
     scanSamples: number
@@ -401,6 +406,7 @@ export interface BacktestResult {
     queries: number
     budget: { scanSamples: number; bytesToRead: number }
     memory?: { peakBytes: number; budgetBytes: number; windowSteps: number[]; queries: number }
+    cpu?: { modelledMs: number; budgetMs: number }
   }
 }
 
@@ -411,7 +417,9 @@ export type BacktestResponse =
   /**
    * EXTENDED (with contract version 4). Refused before anything was fetched: the engine's plan of the
    * read is over the backtest budget (`RulerLimits.maxBacktest*`), the engine's own limits would
-   * refuse it, or its cost could not be asked. Never answered with a part of the range.
+   * refuse it, or its cost could not be asked. Or refused by the CPU model, after reading the first
+   * window (to count the series) or a later one whose series take the run over its budget: nothing
+   * kept. Never answered with a part of the range.
    */
   | {
       status: 'over_budget'
@@ -420,6 +428,8 @@ export type BacktestResponse =
       budget: { scanSamples: number; bytesToRead: number }
       /** The memory model's peak and budget; null when the refusal came from the engine's plan before sizing. */
       memory?: { peakBytes: number; budgetBytes: number } | null
+      /** The CPU model's projection of the whole run and the budget; null when another budget refused it. */
+      cpu?: { modelledMs: number; budgetMs: number } | null
     }
   | Refused
 

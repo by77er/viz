@@ -52,7 +52,9 @@ export interface Cfg {
   maxRB: number // review S-1: release rollbacks to the first-layout ledger while storage is in segments, each later rolled forward (per ledger)
   rbFix: 'none' | 'heal' // S-1 as built / fix (b): on roll-forward, an outbox that does not continue the segment log starts a new incarnation from SQLite
   goal: 'query' | 'clean' | 'cleanComp' // liveness goal: the query completes / every object in R2 is live (no object leaks: I11's no-leak half)
-  reg: 'design' | 'logged' | 'impl' // stream registration: before writes (committed) / before writes (logged) + repeat / lazily by flush (as built)
+  // stream registration: before writes (committed) / before writes (logged) + repeat / lazily by flush (as built) /
+  // variant R1: before writes (committed, the first append waits for it), flush.ts's lazy paths kept, no repeat
+  reg: 'design' | 'logged' | 'impl' | 'committed'
   query: 'design' | 'impl' // ask only streams in the plan / also every pool shard, unregistered streams from 0 (coordinator.ts)
   unknownStream: 'empty' | 'refuse' // tailRead for a stream the shard does not hold: ok+empty (shard.ts) / incarnation_mismatch
   f6Register: boolean // with 'refuse' and lazy registration: the refusing shard also recreates and registers the stream
@@ -69,6 +71,31 @@ export interface Cfg {
   noRetryAcrossLoss: boolean // assumption: no client retry of a batch whose fingerprint a shard storage loss destroyed
   retain: boolean // timing: a recorded segment outlives every query attempt planned before it was recorded
   liveness: boolean // no refusal counter in the state; check.ts then checks AG EF (query done)
+
+  // ---------------------------------------------------------------- proposed fixes (README "Proposed fixes")
+  // Optional, so that every configuration recorded before them is unchanged.
+  /**
+   * With reg 'logged' / 'committed': what makes a shard that holds no stream for a tenant create
+   * one and register it, besides a write. 'any' (the default, as recorded before): any tail read
+   * of that tenant while a query is in flight; 'named': only a tail read naming an incarnation
+   * (the plan's, or one the coordinator learned): what `tailRead` would do in variant R2;
+   * 'none': only a write (and the janitor, with `regOnSweep`).
+   */
+  regOnRead?: 'any' | 'named' | 'none'
+  /**
+   * F16 fix: the janitor, finding an unlisted, untombstoned flush file of the incarnation the
+   * ledger names for a stream, above that stream's logged watermark, asks the shard; a shard
+   * that holds no stream for the tenant creates one and registers it (`ensureStream`).
+   */
+  regOnSweep?: boolean
+  /** F16 fix: with sweep 'inputs', a newer incarnation makes old flush files dead once its REGISTRATION is logged (orphanCheck reports the stream's logged incarnation), not only once it has a logged unit. */
+  sweepNewerReg?: boolean
+  /**
+   * Variant R3: the coordinator remembers, across the re-plans of one query, the newest
+   * incarnation a shard said it does not hold (it answered `incarnation_mismatch(0)` to a read
+   * naming one); a later plan that names no newer one gets an empty tail from that shard.
+   */
+  lostEmpty?: boolean
 }
 
 // ------------------------------------------------------------------ interning (global, deterministic)
@@ -180,7 +207,7 @@ export interface Sw {
   ph: number // 0 listed; 1 ledger read done, deleting
   ls: number[][] // the listing: [key, file (bytes), 1 if old enough when listed]
   dm: number[] // doomed files (by their listed bytes), still to delete
-  rd: Pick<Led, 'fi' | 'tb' | 'wm' | 'lg'> | null // sweepOrder 'readFirst': the ledger read, taken before the listing
+  rd: (Pick<Led, 'fi' | 'tb' | 'wm' | 'lg'> & { lgi?: number[] }) | null // sweepOrder 'readFirst': the ledger read, taken before the listing
 }
 
 export interface Job {
@@ -212,6 +239,7 @@ export interface Q {
   mu: number[] // ghost: batches acknowledged before the (last) plan
   ex: number[] // ghost: batches retention had removed at the planned version
   ln: number[] // coordinator `known`: incarnation learned per shard (0 = none)
+  lo?: number[] // lostEmpty: per shard, the newest incarnation it said it does not hold (0 = none)
   rs: number // refusals so far
   dup: number
   miss: number
@@ -297,7 +325,7 @@ function cp(s: St): St {
       dr: L.dr, pl: L.pl, b: L.b, tb: L.tb, nC: L.nC, nE: L.nE, nL: L.nL, ru: L.ru, st: L.st, mx: L.mx,
       ...(L.pc ? { rb: L.rb, pc: L.pc, lt: L.lt, ft: L.ft, nRB: L.nRB } : {}),
     })),
-    q: { st: s.q.st, t: s.q.t, fi: s.q.fi, wm: s.q.wm, nd: s.q.nd, tl: s.q.tl, mu: s.q.mu, ex: s.q.ex, ln: s.q.ln.slice(), rs: s.q.rs, dup: s.q.dup, miss: s.q.miss, leak: s.q.leak },
+    q: { st: s.q.st, t: s.q.t, fi: s.q.fi, wm: s.q.wm, nd: s.q.nd, tl: s.q.tl, mu: s.q.mu, ex: s.q.ex, ln: s.q.ln.slice(), ...(s.q.lo ? { lo: s.q.lo.slice() } : {}), rs: s.q.rs, dup: s.q.dup, miss: s.q.miss, leak: s.q.leak },
     nSL: s.nSL, nQ: s.nQ, cN: s.cN,
     sw: s.sw ? { t: s.sw.t, ph: s.sw.ph, ls: s.sw.ls, dm: s.sw.dm, rd: s.sw.rd } : null,
     nSw: s.nSw,
@@ -440,6 +468,7 @@ function plan(c: Cfg, s: St, t: number, keep: Q | null): Q {
     mu: range(c.nb).filter((b) => T(c, b) === t && s.acked[b]),
     ex: sortU([...batchesOfRows(L.ex), ...range(c.nb).filter((b) => s.lost[b])]),
     ln: keep ? keep.ln : range(c.ns).map(() => 0),
+    ...(c.lostEmpty ? { lo: keep?.lo ? keep.lo : range(c.ns).map(() => 0) } : {}),
     rs: keep ? (c.liveness ? 0 : keep.rs + 1) : 0, dup: 0, miss: 0, leak: 0,
   }
 }
@@ -501,16 +530,20 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
       const tag = `s${sh}${c.nt > 1 ? ` t${t}` : ''}`
       // ------------------------------------------ design handshake: registerStream before writes
       // the shard registers when a write for the stream arrives, or (fix F6) when a query asks for it
-      const wanted = range(c.nb).some((b) => T(c, b) === t && R(c, b) === sh && s.sent[b]! < c.maxSend) ||
-        (c.unknownStream === 'refuse' && s.q.st === 1 && s.q.t === t && has(s.q.nd, sh))
-      if (c.reg !== 'impl' && x.i === 0 && !off(L) && wanted) {
+      const onRead = c.regOnRead ?? 'any'
+      const byWrite = range(c.nb).some((b) => T(c, b) === t && R(c, b) === sh && s.sent[b]! < c.maxSend)
+      const byRead = c.unknownStream === 'refuse' && s.q.st === 1 && s.q.t === t && has(s.q.nd, sh) &&
+        (onRead === 'any' || (onRead === 'named' && (s.q.wm[sh]![0] !== 0 || s.q.ln[sh]! !== 0)))
+      // F16 fix: the janitor asks the shard about a stream whose named incarnation has an unlisted flush file it keeps
+      const bySweep = c.regOnSweep === true && pendingOfNamed(s, L, sh, t)
+      if (c.reg !== 'impl' && x.i === 0 && !off(L) && (byWrite || byRead || bySweep)) {
         const ns = cp(s)
         const y = ns.sh[sh]![t]!
         ns.incN[sh]![t]! += 1
         y.i = ns.incN[sh]![t]!
         regCommit(ns.L[t]!, sh, y.i)
-        if (c.reg === 'design') y.rg = 1 // answered after the commit
-        emit(`registerStream(${tag}, inc ${y.i})`, ns)
+        if (c.reg === 'design' || c.reg === 'committed') y.rg = 1 // answered after the commit
+        emit(`registerStream(${tag}, inc ${y.i})${bySweep && !byWrite && !byRead ? ' [janitor: ensureStream]' : ''}`, ns)
       }
       if (c.reg === 'logged' && x.i > 0 && !x.rg && !off(L) && durableWm(L)[sh]![0] === x.i) {
         const ns = cp(s)
@@ -659,7 +692,7 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
           label = `addUnit(${tag}) admitted (registers the stream)`
         } else label = `addUnit(${tag}) = not_contiguous`
       } else if (known !== j.i) {
-        if (known < j.i && j.ph === 2 && c.reg === 'impl') {
+        if (known < j.i && j.ph === 2 && (c.reg === 'impl' || c.reg === 'committed')) {
           done = false
           ns.jobs[ji]!.ph = 3
           label = `addUnit(${tag}) = incarnation_mismatch(${known})`
@@ -928,7 +961,7 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
     // the age flag matters only to a rule with an age floor; elsewhere it is not state
     const aged = c.sweep === 'impl' || c.sweepAge
     const listing = (t: number) => s.obj.filter((o) => FILES[o[1]!]!.t === t).map((o) => [o[0]!, o[1]!, !aged || o[2] === -1 ? 1 : 0])
-    const judge = (L: Pick<Led, 'fi' | 'tb' | 'wm' | 'lg'>, ls: number[][]) =>
+    const judge = (L: Pick<Led, 'fi' | 'tb' | 'wm' | 'lg'> & { lgi?: number[] }, ls: number[][]) =>
       ls.filter((x) => doomed(c, L as Led, x[0]!, x[1]!, x[2] === 1, (key) => ls.some((y) => y[0] === key))).map((x) => x[1]!)
     if (!w && s.nSw < c.maxSweeps) {
       for (let t = 0; t < c.nt; t++) {
@@ -937,7 +970,7 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
           const L = s.L[t]!
           if (off(L) || !s.obj.some((o) => FILES[o[1]!]!.t === t)) continue
           const ns = cp(s)
-          ns.sw = { t, ph: 2, ls: [], dm: [], rd: { fi: L.fi, tb: L.tb, wm: L.wm.map((x) => [...x]), lg: L.lg.slice() } }
+          ns.sw = { t, ph: 2, ls: [], dm: [], rd: { fi: L.fi, tb: L.tb, wm: L.wm.map((x) => [...x]), lg: L.lg.slice(), ...(c.sweepNewerReg ? { lgi: loggedIncs(L) } : {}) } }
           if (c.maxSweeps < 99) ns.nSw++ // 99 = unbounded: not counted, so not state
           emit(`orphan sweep${c.nt > 1 ? ` t${t}` : ''}: orphanCheck first`, ns)
           continue
@@ -1005,6 +1038,10 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
         const ns = cp(s)
         const keep = { ...ns.q, ln: [...ns.q.ln] }
         if (r.learn) keep.ln[sh] = r.learn
+        if (r.kind === 'refused' && r.lost) {
+          keep.lo = [...keep.lo!]
+          keep.lo[sh] = Math.max(keep.lo[sh]!, r.lost)
+        }
         ns.q = plan(c, ns, q.t, keep)
         emit(`query: tailRead(s${sh}, ${r.what}) = ${r.why} -> re-plan`, ns)
       }
@@ -1064,7 +1101,10 @@ function doomed(c: Cfg, L: Led, k: number, f: number, old: boolean, present: (ke
       })
     }
     const w = L.wm[sh!]!
-    return (w[0]! > inc! && (!c.sweepNewerLogged || L.lg[sh!]! > 0)) || (w[0] === inc && L.lg[sh!]! >= hi)
+    // F16 fix (`sweepNewerReg`): a newer incarnation counts once its registration is logged
+    // (orphanCheck reports the stream's logged incarnation); as built, once it has a logged unit
+    const newer = c.sweepNewerReg ? loggedIncOf(L, sh!) > inc! : w[0]! > inc! && (!c.sweepNewerLogged || L.lg[sh!]! > 0)
+    return newer || (w[0] === inc && L.lg[sh!]! >= hi)
   }
   // 'impl', janitor.ts before D30: flush file dead by the LOGGED watermark (or a newer
   // incarnation); compaction output by age. Age is untimed here: the object's uploader is no
@@ -1077,7 +1117,7 @@ function doomed(c: Cfg, L: Led, k: number, f: number, old: boolean, present: (ke
   return newer || (L.wm[sh!]![0] === inc && L.lg[sh!]! >= hi)
 }
 
-type TailR = { kind: 'ok'; rows: number[]; what: string; learn: number } | { kind: 'refused'; why: string; what: string; learn: number }
+type TailR = { kind: 'ok'; rows: number[]; what: string; learn: number } | { kind: 'refused'; why: string; what: string; learn: number; lost?: number }
 
 /** coordinator.ts readTail + shard.ts tailRead, as one step per shard. */
 function tailRead(c: Cfg, s: St, q: Q, sh: number): TailR {
@@ -1089,6 +1129,10 @@ function tailRead(c: Cfg, s: St, q: Q, sh: number): TailR {
     inc = q.ln[sh]!
     above = 0
   }
+  // variant R3: this shard said, after an earlier plan of this query, that it holds no stream,
+  // and this plan names nothing newer: everything of that stream the ledger has is in this
+  // plan's files, the rest was lost with the shard's storage (a declared loss)
+  if (c.lostEmpty && inc !== 0 && inc <= q.lo![sh]!) return { kind: 'ok', rows: [], what: `inc ${inc}, lost before this plan`, learn: 0 }
   for (let call = 0; call < 2; call++) {
     const what = `inc ${inc}, above ${above}`
     const x = s.sh[sh]![q.t]!
@@ -1097,7 +1141,7 @@ function tailRead(c: Cfg, s: St, q: Q, sh: number): TailR {
     if (r.kind === 'stale') return { kind: 'refused', why: `stale_watermark(${x.di})`, what, learn: 0 }
     // incarnation_mismatch
     if (c.query === 'design') return { kind: 'refused', why: `incarnation_mismatch(${r.inc})`, what, learn: 0 }
-    if (r.inc < inc) return { kind: 'refused', why: `incarnation_mismatch(${r.inc}) behind`, what, learn: 0 }
+    if (r.inc < inc) return { kind: 'refused', why: `incarnation_mismatch(${r.inc}) behind`, what, learn: 0, ...(c.lostEmpty && r.inc === 0 ? { lost: inc } : {}) }
     if (registered) return { kind: 'refused', why: `incarnation_mismatch(${r.inc})`, what, learn: r.inc }
     inc = r.inc
     above = 0
@@ -1128,6 +1172,37 @@ function regCommit(L: Led, sh: number, inc: number): void {
   L.wm[sh] = [inc, 0]
   L.lg[sh] = 0
   commit(L, [[], [], [sh, inc, 0], []])
+}
+/**
+ * Per shard, the stream's incarnation as of the LOGGED prefix (what `segmentWritten` would keep
+ * in a `logged_inc` column: the incarnation of the last drained change naming the stream, or the
+ * base's). A registration counts here only once the drain that wrote it has committed.
+ */
+export function loggedIncs(L: Led): number[] {
+  const r = L.b.wm.map((w) => w[0]!)
+  for (let k = 0; k < L.o0; k++) {
+    const w = L.h[k]![2]
+    if (w) r[w[0]!] = Math.max(r[w[0]!]!, w[1]!)
+  }
+  return r
+}
+function loggedIncOf(L: Pick<Led, 'wm'> & { lgi?: number[] }, sh: number): number {
+  return L.lgi ? L.lgi[sh]! : loggedIncs(L as Led)[sh]!
+}
+/**
+ * The janitor's trigger for the F16 fix: tenant t has an unlisted, untombstoned flush file in R2
+ * of the incarnation the ledger names for shard sh, above that stream's logged watermark (the
+ * sweep keeps it as `pending_unit`).
+ */
+function pendingOfNamed(s: St, L: Led, sh: number, t: number): boolean {
+  const named = L.wm[sh]![0]!
+  if (named === 0 || off(L)) return false
+  return s.obj.some(([k, f]) => {
+    const F = FILES[f!]!
+    if (F.t !== t || F.comp || liveKey(L, k!) || L.tb.some((x) => FILES[x[0]!]!.key === k)) return false
+    const [fs, , inc] = ROWS[F.rows[0]!]!
+    return fs === sh && inc === named && Math.max(...F.rows.map((r) => ROWS[r]![3]!)) > L.lg[sh]!
+  })
 }
 function regCommitNoEntry(L: Led, sh: number, inc: number): void {
   // addUnit for an unknown stream registers it in the same transaction (ledger.ts register + record)

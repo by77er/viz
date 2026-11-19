@@ -561,8 +561,8 @@ async function backtest(c: Call): Promise<Response> {
 function backtestAnswer(r: Exclude<Awaited<ReturnType<RulerStub['backtest']>>, { status: 'wrong_tenant' } | { status: 'schema_too_new' }>): Response {
   if (r.status === 'invalid') throw invalid(r.errors)
   if (r.status === 'failed') throw new ApiError(502, 'evaluation_failed', r.error)
-  // Refused before anything was fetched: the read is over the backtest budget (or its cost is unknown).
-  if (r.status === 'over_budget') return json(422, { error: { code: 'over_budget', message: r.message }, plan: r.plan, budget: r.budget, memory: r.memory ?? null })
+  // Refused, whole: the read is over the backtest budget (or its cost is unknown), or the CPU model's projection is over its budget.
+  if (r.status === 'over_budget') return json(422, { error: { code: 'over_budget', message: r.message }, plan: r.plan, budget: r.budget, memory: r.memory ?? null, cpu: r.cpu ?? null })
   const { status: _s, ...result } = r
   return json(200, result)
 }

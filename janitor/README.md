@@ -164,7 +164,10 @@ Not measured on Cloudflare; the experiment is a deployed purge of 10,000 keys
   tombstones of that log; removals logged only in an older incarnation are found by the
   orphan sweep instead (their flush files are below the logged watermark).
 - **Deleting the ledger's own log objects**, and shard-side data.
-- Not run on Cloudflare; R2's `uploaded` time and list consistency are miniflare's here.
+- On Cloudflare only inside staged trials of viz-ingest (`deploy/README.md`). In Trial 3 the
+  deletion gate held back 8 objects the ledger offered after its (shortened) grace, with the
+  removal published and the snapshot naming them retained; their release was not waited for.
+  R2's `uploaded` time and list consistency in the tests here are miniflare's.
 
 ## How it was verified
 

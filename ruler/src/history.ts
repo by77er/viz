@@ -44,18 +44,28 @@ export const HISTORY_LIMIT_DEFAULTS = {
    */
   maxWarmupMemoryBytes: 16 * 1024 * 1024,
   maxBacktestMemoryBytes: 32 * 1024 * 1024,
+  /**
+   * Modelled CPU one backtest, and the warm-ups of one alarm together, may use (`CPU`). A Durable
+   * Object request or alarm may use 30 s of CPU by default and 5 minutes at most (`limits.cpu_ms`;
+   * README, "CPU"): a backtest a third of the default, the warm-ups a sixth, leaving the alarm's
+   * live ticks and the model's own error room.
+   */
+  maxBacktestCpuMs: 10_000,
+  maxWarmupCpuMs: 5_000,
 } as const
 
 /** A warm-up the engine failed is tried at this many ticks before the rule starts cold. */
 export const MAX_WARMUP_ATTEMPTS = 3
 
 /** The two budgets from a ruler's limits. */
-export function historyBudgets(limits: Partial<Record<keyof typeof HISTORY_LIMIT_DEFAULTS, number>>): { warmup: Budget; backtest: Budget; warmupMemory: number; backtestMemory: number } {
+export function historyBudgets(limits: Partial<Record<keyof typeof HISTORY_LIMIT_DEFAULTS, number>>): { warmup: Budget; backtest: Budget; warmupMemory: number; backtestMemory: number; warmupCpuMs: number; backtestCpuMs: number } {
   return {
     warmup: { scanSamples: limits.maxWarmupScanSamples ?? HISTORY_LIMIT_DEFAULTS.maxWarmupScanSamples, bytesToRead: limits.maxWarmupBytes ?? HISTORY_LIMIT_DEFAULTS.maxWarmupBytes },
     backtest: { scanSamples: limits.maxBacktestScanSamples ?? HISTORY_LIMIT_DEFAULTS.maxBacktestScanSamples, bytesToRead: limits.maxBacktestBytes ?? HISTORY_LIMIT_DEFAULTS.maxBacktestBytes },
     warmupMemory: limits.maxWarmupMemoryBytes ?? HISTORY_LIMIT_DEFAULTS.maxWarmupMemoryBytes,
     backtestMemory: limits.maxBacktestMemoryBytes ?? HISTORY_LIMIT_DEFAULTS.maxBacktestMemoryBytes,
+    warmupCpuMs: limits.maxWarmupCpuMs ?? HISTORY_LIMIT_DEFAULTS.maxWarmupCpuMs,
+    backtestCpuMs: limits.maxBacktestCpuMs ?? HISTORY_LIMIT_DEFAULTS.maxBacktestCpuMs,
   }
 }
 
@@ -113,6 +123,38 @@ export const MEMORY = {
   intervals: INTERVALS_MAX_BYTES,
 } as const
 
+/**
+ * The CPU model, in microseconds: every point of a window costs the engine's JSON parsed and indexed
+ * by step (`parse`) plus what the rule's evaluation does with it, by kind; robust_z and seasonal
+ * scan their window at every point, so theirs grows with the state they keep per series
+ * (`stateBytesPerSeries`). Every window and every run add an allowance. Calibrated against
+ * workerd's CPU time in `test/cpu.bench.ts` (README, "CPU"): each per-point figure is 1.5 times the
+ * largest measurement; `perWindow` and `base` are allowances, not measured. CPU time is the active
+ * processing a Durable Object invocation is limited by; time waiting on the engine is not counted.
+ */
+export const CPU = {
+  parse: 1.5,
+  alert: 2.1,
+  presence: 2.1,
+  slo: 3.1,
+  anomaly: {
+    ewma: { fixed: 8.5, perStateByte: 0 },
+    threshold: { fixed: 6.5, perStateByte: 0 },
+    cusum: { fixed: 9.6, perStateByte: 0 },
+    robust_z: { fixed: 3, perStateByte: 0.0063 },
+    seasonal: { fixed: 18, perStateByte: 0.0027 },
+  } as Record<string, { fixed: number; perStateByte: number }>,
+  perWindow: 500,
+  base: 5_000,
+} as const
+
+/** µs of CPU per point an anomaly rule's evaluation costs; a detector this release does not price costs as the dearest would at its size. */
+export function anomalyCpu(rule: AnomalyRuleV2): number {
+  const c = CPU.anomaly[rule.anomaly.detector]
+  const cost = (k: { fixed: number; perStateByte: number }) => k.fixed + k.perStateByte * rule.anomaly.stateBytesPerSeries
+  return CPU.parse + (c ? cost(c) : Math.max(...Object.values(CPU.anomaly).map(cost)))
+}
+
 const stepsOf = (r: Read) => Math.floor((r.toMs - r.fromMs) / r.stepMs) + 1
 
 /** A read cut into range queries of at most `steps` steps (default the engine's limit), on the same grid, in order. */
@@ -133,6 +175,8 @@ export function pieces(r: Read, steps = MAX_STEPS_PER_QUERY): Read[] {
 export interface Stream {
   read: Read
   seriesBound: number
+  /** µs of CPU per point fed (`CPU`). */
+  cpuPerPoint: number
   companions?: { read: Read; seriesBound: number }[]
   /** Every step of `read`, in time order. Returns an error to stop. */
   feed(ts: number, series: Series[], companions: (Series[] | null)[]): string | null
@@ -176,11 +220,29 @@ export function sizeWindows(streams: Stream[], fixedBytes: number, budgetBytes: 
 }
 
 const mb = (b: number) => `${(b / 1048576).toFixed(1)} MiB`
+const cpuText = (us: number) => (us >= 1e6 ? `${(us / 1e6).toFixed(1)} s` : `${Math.round(us / 1000)} ms`)
+
+/** The CPU model's account of a run: what it spent (or, refused, would have spent) and its budget. */
+export interface CpuAccount {
+  modelledMs: number
+  budgetMs: number
+}
+
+/** The CPU budget of a run: refuse above `budgetMs`; between it and `deferBelowMs`, say that a later run with more room could take it. */
+export interface CpuBudget {
+  budgetMs: number
+  deferBelowMs?: number
+}
 
 export type Streamed =
-  | { ok: true; plan: PlanSum; sizing: Sizing; points: number }
-  /** Nothing was fetched. `plan` is null when the refusal came before any plan was summed. */
-  | { ok: false; refused: string; plan: PlanSum | null; sizing: { peakBytes: number; budgetBytes: number } | null }
+  | { ok: true; plan: PlanSum; sizing: Sizing; points: number; cpu: CpuAccount }
+  /**
+   * Refused: nothing kept. Before the first window's evaluation for a budget or a plan (then
+   * nothing was fetched, unless the CPU model needed one window to count the series), or before a
+   * later window whose series would take the run over its CPU budget. `defer`: it would fit a run
+   * with the whole of `deferBelowMs`.
+   */
+  | { ok: false; refused: string; plan: PlanSum | null; sizing: { peakBytes: number; budgetBytes: number } | null; cpu?: CpuAccount & { spentMs: number }; defer?: boolean }
   /** A window could not be evaluated (or held more than the model allows); what came before it was. */
   | { ok: false; failed: string }
 
@@ -197,7 +259,7 @@ function clip(c: Read, w: Read): Read | null {
  * retry); a read over a budget, or one the engine's plan refuses, is refused before any window is
  * fetched; a window holding more points than the model sized it for stops the run (`failed`).
  */
-export async function streamHistory(planner: HistoryPlanner, range: RangeEvaluator, streams: Stream[], budget: Budget, memoryBudget: number, fixedBytes: number): Promise<Streamed> {
+export async function streamHistory(planner: HistoryPlanner, range: RangeEvaluator, streams: Stream[], budget: Budget, memoryBudget: number, fixedBytes: number, cpuBudget: CpuBudget = { budgetMs: Infinity }): Promise<Streamed> {
   const sizing = sizeWindows(streams, fixedBytes, memoryBudget)
   if (!sizing.ok) return { ok: false, refused: sizing.refused, plan: null, sizing: { peakBytes: sizing.peakBytes, budgetBytes: sizing.budgetBytes } }
   const sum: PlanSum = { scanSamples: 0, bytesToRead: 0, queries: 0 }
@@ -222,6 +284,12 @@ export async function streamHistory(planner: HistoryPlanner, range: RangeEvaluat
     }
   }
   let points = 0
+  // The CPU model, checked before each window is evaluated, with the series the run has shown so far.
+  let spentUs = CPU.base
+  let rate = 0
+  let fed = 0
+  const totalWindows = streams.reduce((n, s, i) => n + Math.ceil(stepsOf(s.read) / sizing.windowSteps[i]!), 0)
+  const budgetUs = cpuBudget.budgetMs * 1000
   for (const [i, s] of streams.entries()) {
     const W = sizing.windowSteps[i]!
     for (const w of pieces(s.read, W)) {
@@ -236,6 +304,33 @@ export async function streamHistory(planner: HistoryPlanner, range: RangeEvaluat
       const held = pointsOf(main) + comps.reduce((n, m) => n + pointsOf(m), 0)
       const allowed = stepsOf(w) * (s.seriesBound + (s.companions ?? []).reduce((n, c) => n + c.seriesBound, 0))
       if (held > allowed) return { ok: false, failed: `the engine returned ${held} points for a window the memory model sized for ${allowed} (${s.seriesBound} series a step): more series than the rule allows` }
+      const mainPts = pointsOf(main)
+      const thisUs = mainPts * s.cpuPerPoint + (held - mainPts) * (CPU.parse + CPU.presence) + CPU.perWindow
+      rate = Math.max(rate, held / stepsOf(w))
+      // What is left after this window, at the most points a step seen so far, at each stream's cost.
+      let restUs = 0
+      for (let j = i; j < streams.length; j++) {
+        const sj = streams[j]!
+        const left = j === i ? Math.max(0, (sj.read.toMs - w.toMs) / sj.read.stepMs) : stepsOf(sj.read)
+        restUs += left * rate * Math.max(sj.cpuPerPoint, CPU.parse + CPU.presence) + Math.ceil(left / sizing.windowSteps[j]!) * CPU.perWindow
+      }
+      const projected = spentUs + thisUs + restUs
+      if (projected > budgetUs) {
+        // `spentMs`: what this run used before it stopped (the window it read was parsed), for an alarm's account.
+        const cpu = { modelledMs: Math.round(projected / 1000), budgetMs: cpuBudget.budgetMs, spentMs: Math.ceil((spentUs + held * CPU.parse) / 1000) }
+        const where = fed === 0 ? `the first window shows ${Math.round(rate)} points a step` : `after ${fed} of ${totalWindows} windows the run shows ${Math.round(rate)} points a step`
+        return {
+          ok: false,
+          refused: `over the CPU budget: ${where}; the whole run would take about ${cpuText(projected)} of CPU (modelled), the budget is ${cpuText(budgetUs)}. ${fed === 0 ? 'Nothing was evaluated' : 'Stopped before evaluating more; nothing is kept'}`,
+          plan: sum,
+          sizing,
+          cpu,
+          // A run started again from the beginning would cost the whole projection again.
+          defer: cpuBudget.deferBelowMs !== undefined && projected <= cpuBudget.deferBelowMs * 1000,
+        }
+      }
+      spentUs += thisUs
+      fed++
       points += held
       const steps = byStep(main)
       const cSteps = comps.map((m) => (m ? byStep(m) : null))
@@ -245,7 +340,7 @@ export async function streamHistory(planner: HistoryPlanner, range: RangeEvaluat
       }
     }
   }
-  return { ok: true, plan: sum, sizing, points }
+  return { ok: true, plan: sum, sizing, points, cpu: { modelledMs: Math.round(spentUs / 1000), budgetMs: cpuBudget.budgetMs } }
 }
 
 /** A matrix by step time: ts (ms) → the series at that step. */
@@ -271,8 +366,8 @@ export function warmupStatus(reads: Read[], budget: Budget): WarmupStatus {
 
 /** What a warm-up or a backtest ends with. `points` were read and fed. */
 export type HistoryRun<T> =
-  | { ok: true; value: T; plan: PlanSum; sizing: Sizing; points: number }
-  | { ok: false; refused: string; plan: PlanSum | null; sizing: { peakBytes: number; budgetBytes: number } | null }
+  | { ok: true; value: T; plan: PlanSum; sizing: Sizing; points: number; cpu: CpuAccount }
+  | { ok: false; refused: string; plan: PlanSum | null; sizing: { peakBytes: number; budgetBytes: number } | null; cpu?: CpuAccount & { spentMs: number }; defer?: boolean }
   | { ok: false; failed: string }
 
 /** The engine and the budgets a run reads with. */
@@ -281,6 +376,7 @@ export interface HistoryIo {
   range: RangeEvaluator
   budget: Budget
   memoryBytes: number
+  cpu: CpuBudget
 }
 
 // ───────────────────────────── anomaly rules ─────────────────────────────
@@ -318,7 +414,7 @@ class AnomalyFeed {
 /** A new anomaly rule's state from its history, read in windows: what it would hold had it run over `read`. The state's memory is the rule's own (the per-object budget), not the run's. */
 export async function warmAnomaly(rule: AnomalyRuleV2, read: Read, limits: AnomalyLimits, io: HistoryIo): Promise<HistoryRun<AnomalyRt>> {
   const feed = new AnomalyFeed(rule, read.stepMs, limits)
-  const run = await streamHistory(io.planner, io.range, [{ read, seriesBound: rule.anomaly.maxSeries, feed: (ts, series) => { const r = feed.step(ts, series); return r.ok ? null : r.error } }], io.budget, io.memoryBytes, MEMORY.base)
+  const run = await streamHistory(io.planner, io.range, [{ read, seriesBound: rule.anomaly.maxSeries, cpuPerPoint: anomalyCpu(rule), feed: (ts, series) => { const r = feed.step(ts, series); return r.ok ? null : r.error } }], io.budget, io.memoryBytes, MEMORY.base, io.cpu)
   if (!run.ok) return run
   const ser = serializeAnomaly(feed.rt.series, limits)
   if (!ser.ok) return { ok: false, failed: ser.error }
@@ -400,8 +496,8 @@ export function sloCoarseStep(rule: SloRuleV2, intervalMs: number, rt: SloRt, co
 /** The streams of an SLO run: the coarse read, then the fine read, each through `onFine` for its steps. */
 function sloStreams(rule: SloRuleV2, intervalMs: number, rt: SloRt, fine: Read, coarse: Read | null, onFine: Stream['feed'], companions?: Stream['companions']): Stream[] {
   const out: Stream[] = []
-  if (coarse) out.push({ read: coarse, seriesBound: 2 * rule.slo.maxSeries, feed: (ts, series) => sloCoarseStep(rule, intervalMs, rt, coarse.stepMs, ts, series) })
-  out.push({ read: fine, seriesBound: 2 * rule.slo.maxSeries, companions, feed: onFine })
+  if (coarse) out.push({ read: coarse, seriesBound: 2 * rule.slo.maxSeries, cpuPerPoint: CPU.parse + CPU.slo, feed: (ts, series) => sloCoarseStep(rule, intervalMs, rt, coarse.stepMs, ts, series) })
+  out.push({ read: fine, seriesBound: 2 * rule.slo.maxSeries, cpuPerPoint: CPU.parse + CPU.slo, companions, feed: onFine })
   return out
 }
 
@@ -412,7 +508,7 @@ export async function warmSlo(rule: SloRuleV2, intervalMs: number, fine: Read, c
     const ev = evalSlo(rule, rt, series, ts, intervalMs, ts >= fine.toMs)
     return ev.ok ? null : ev.error
   }
-  const run = await streamHistory(io.planner, io.range, sloStreams(rule, intervalMs, rt, fine, coarse, onFine), io.budget, io.memoryBytes, MEMORY.base)
+  const run = await streamHistory(io.planner, io.range, sloStreams(rule, intervalMs, rt, fine, coarse, onFine), io.budget, io.memoryBytes, MEMORY.base, io.cpu)
   return run.ok ? { ...run, value: rt } : run
 }
 
@@ -455,7 +551,7 @@ const backtestFixed = (alerts: number) => MEMORY.base + alerts * MEMORY.perAlert
 export async function backtestAlert(rule: AlertingRuleV2, input: RuleBacktestInput, io: HistoryIo): Promise<HistoryRun<BacktestRun>> {
   const tracker = new IntervalTracker(rule, input.compiled, input.opts, input.toMs)
   const read: Read = { promql: rule.expr, fromMs: input.fromMs, toMs: input.toMs, stepMs: input.stepMs }
-  const run = await streamHistory(io.planner, io.range, [{ read, seriesBound: input.alertLimit, companions: presenceCompanion(input, input.alertLimit), feed: (ts, series, c) => tracker.step(ts, { series, presence: c[0] ?? null }) }], io.budget, io.memoryBytes, backtestFixed(input.alertLimit))
+  const run = await streamHistory(io.planner, io.range, [{ read, seriesBound: input.alertLimit, cpuPerPoint: CPU.parse + CPU.alert, companions: presenceCompanion(input, input.alertLimit), feed: (ts, series, c) => tracker.step(ts, { series, presence: c[0] ?? null }) }], io.budget, io.memoryBytes, backtestFixed(input.alertLimit), io.cpu)
   if (!run.ok) return run
   return { ...run, value: { result: resultOf(tracker.result(), input.fromMs, input.toMs, input.stepMs, { stepMs: 0, liveIntervalMs: 0, edgeErrorMs: 0, note: '' }), warmPoints: 0 } }
 }
@@ -477,7 +573,7 @@ export async function backtestAnomaly(rule: AnomalyRuleV2, warmFromMs: number, l
     return tracker.step(ts, ev.ok ? { series: ev.flagged, presence: c[0] ?? ev.present } : { error: ev.error })
   }
   const fixed = backtestFixed(rule.anomaly.maxSeries) + anomalyStateBytes(rule)
-  const run = await streamHistory(io.planner, io.range, [{ read, seriesBound: rule.anomaly.maxSeries, companions: presenceCompanion(input, rule.anomaly.maxSeries), feed: step }], io.budget, io.memoryBytes, fixed)
+  const run = await streamHistory(io.planner, io.range, [{ read, seriesBound: rule.anomaly.maxSeries, cpuPerPoint: anomalyCpu(rule), companions: presenceCompanion(input, rule.anomaly.maxSeries), feed: step }], io.budget, io.memoryBytes, fixed, io.cpu)
   if (!run.ok) return run
   const result = resultOf(tracker.result(), input.fromMs, input.toMs, I, { stepMs: I, liveIntervalMs: I, edgeErrorMs: I, note: resolutionNote('anomaly', I, input.fromMs - warmFromMs) })
   return { ...run, value: { result, warmPoints } }
@@ -509,7 +605,7 @@ export async function backtestSlo(rule: SloRuleV2, fine: Read, coarse: Read | nu
     }
   }
   const fixed = backtestFixed(2 * rule.slo.maxSeries) + sloStateBytes(rule, I)
-  const run = await streamHistory(io.planner, io.range, streams, io.budget, io.memoryBytes, fixed)
+  const run = await streamHistory(io.planner, io.range, streams, io.budget, io.memoryBytes, fixed, io.cpu)
   if (!run.ok) return run
   const result = resultOf(tracker.result(), input.fromMs, input.toMs, I, { stepMs: I, liveIntervalMs: I, edgeErrorMs: I, note: resolutionNote('slo', I, input.fromMs - fine.fromMs) })
   return { ...run, value: { result, warmPoints } }

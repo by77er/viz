@@ -447,7 +447,10 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
   expressions to viz-query's Prometheus HTTP API one at a time (one engine call in flight per
   `Ruler` object: a service-bound callee shares its caller's six connections), recording rules
   write through Remote Write, and both authenticate with a service key the tenant's control
-  plane issues (`service:viz-ruler/<shard>`, visible and revocable there).
+  plane issues (`service:viz-ruler/<shard>`, visible and revocable there). viz-ingest now
+  also exports `RecordedSamples` (`contracts/ingest.ts`, D45): an RPC entrypoint the ruler can
+  bind as `SINK`, authenticated by the binding itself (no key), with the tenant an explicit,
+  validated argument; the ruler's binding is not added yet (`edge/README.md`, "Needed changes").
 - **Anomaly detection** is statistics first. An *anomaly rule* is a rule kind
   (`contracts/rules.ts`, version 2): each tick the ruler feeds every series of one PromQL
   expression to that series' detector, through the same batch call as other rules, and the
@@ -493,7 +496,13 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
   outliers, threshold state per panel) instead of raw series or screenshots; the digest is
   also the accessible view.
 - **Agent tools.** A stateless MCP endpoint (its own Worker, `mcp/`; D25, D26) with
-  scoped, tenant-bound credentials: API keys today, with OAuth a seam not yet built.
+  scoped, tenant-bound credentials: API keys, or OAuth 2.1 access tokens (D44) that MCP
+  clients get as the specification describes (protected resource metadata, registration,
+  PKCE S256, resource indicators), from the control plane as authorization server. A person
+  approves each client with a key that holds `admin`; the grant never holds a scope that key
+  lacks, and is backed by an agent key the MCP server acts with downstream, so the client's
+  token never leaves `/mcp`. Control checks the token on every request, so revocation is
+  immediate there. Until a sign-in exists the consent step is a call to the control API.
   Thirteen tools: search telemetry, describe a metric, validate a query (with the query
   service's own plan: files, bytes, scan bound, refusal), run a query,
   search / get / read dashboards, the dashboard schema, write a dashboard, list revisions,
@@ -517,7 +526,9 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
 - **Machines:** opaque prefixed API keys, hashed at rest, scoped, cached at the edge,
   revocable at the shard.
 - **People and agents:** OAuth and OIDC single sign-on; roles plus label-matcher policies
-  applied in the planner.
+  applied in the planner. Built so far: OAuth for agents (MCP clients), with the control
+  plane as authorization server and grants that a person with an admin key approves (D44);
+  sign-in for people, roles and policies are not built.
 - **Isolation:** tenant id comes only from the credential; files are tenant-pure; the ledger
   is per tenant. Cross-tenant reads are an invariant with its own fuzz suite.
 - **Quotas:** enforced in the shard, per tenant; rejection reasons are visible. Byte budgets
@@ -578,7 +589,11 @@ forward-only. `design/UPGRADES.md` has the inventory of formats, the verified pl
 facts, the rollback rules and what each component still has to change. As built, control,
 the ruler, the publisher, and on the write path the ledger, the shard and edge follow it,
 as do the flush and maintenance messages; `UPGRADES.md` §7 lists what the others still
-have to change.
+have to change. The deploy records each class's schema version in every release record and
+on every Worker version, marks a release forward-only when a class's `readableFrom` is above
+what the release before it knew, and refuses a rollback when any version that ran since the
+target wrote storage the target cannot open (D46; `deploy/README.md`). Format versions are not
+in that check yet.
 
 ## 12. Launch scope
 

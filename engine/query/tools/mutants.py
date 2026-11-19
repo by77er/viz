@@ -144,7 +144,7 @@ MUTANTS = [
      "let carries = |json: &[u8]| needles.iter().any(|n| json.windows(n.len()).any(|w| w == &n[..]));",
      "let carries = |json: &[u8]| needles.is_empty() && json.is_empty();", PRUNING),
     ("pruning: a read without a name keeps a row group only if it may hold every wanted name", "prune.rs",
-     "w.iter().any(|(n, iv)| g.may_hold(n, iv))).count() as u64", "w.iter().all(|(n, iv)| g.may_hold(n, iv))).count() as u64", PRUNING),
+     "g.overlaps(r.min_ts, r.max_ts) && w.iter().any(|(n, iv)| g.may_hold(n, iv))", "g.overlaps(r.min_ts, r.max_ts) && w.iter().all(|(n, iv)| g.may_hold(n, iv))", PRUNING),
     ("pruning: part_sids' upper end runs into the next part", "prune.rs",
      "let hi = (first(part + 1) - 1) as u64;", "let hi = first(part + 1) as u64;", PRUNING),
     ("pruning: a part's id-range plan reads the next part's range", "prune.rs",
