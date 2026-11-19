@@ -22,7 +22,7 @@
  * The tenant is `c.tenant` (from the API key) and nothing else: every ledger, shard and file
  * read below is addressed by it.
  */
-import type { FileEntry, LiveFile, Plan, Table, Watermark } from '../../contracts/ledger'
+import type { FileEntry, LiveFile, Plan, Watermark } from '../../contracts/ledger'
 import type { SignalFilePlan } from '../../contracts/engine'
 import { ApiError, type Context, MAX_REFUSALS, MAX_VERSION_RETRIES, MissingFile, type Planned, checkDeadline, fetchFiles, hooks, inPrecedenceOrder, plannedBytes, readTails, reserveBytes, tooMuch } from './coordinator'
 import { signalByte, signalShards } from './shards'
@@ -32,15 +32,15 @@ import { msRange } from './sigparams'
 export type SignalTable = 'spans' | 'trace_index' | 'logs'
 
 /**
- * The ledger's `plan` for a span or log table. The contract's `Table` names the metric tables
- * only, and the ledger refuses any other (`ledger: unknown table`): until it accepts these
- * (README, "Needed changes elsewhere"), the query is answered 503 with that reason.
+ * The ledger's `plan` for a span or log table (contracts/ledger.ts `Table` names them since
+ * 2026-11-19). A ledger that does not list them yet throws `ledger: unknown table`: the query
+ * is then answered 503 with that reason (README, "Needed changes elsewhere").
  */
 async function planTable(c: Context, table: SignalTable, minTs: number, maxTs: number): Promise<Plan> {
   const ledger = c.env.LEDGER.get(c.env.LEDGER.idFromName(c.tenant))
   c.cost.planAttempts++
   try {
-    return await ledger.plan({ table: table as unknown as Table, minTs, maxTs })
+    return await ledger.plan({ table, minTs, maxTs })
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e)
     if (m.includes('unknown table')) throw new ApiError('unavailable', `the ledger does not list ${table} files yet (it knows the metric tables only); traces and logs need stage 2 of the write side`)

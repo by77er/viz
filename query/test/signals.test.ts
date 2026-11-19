@@ -14,7 +14,7 @@
  */
 import { env, exports } from 'cloudflare:workers'
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
-import type { FileEntry, Table } from '../../contracts/ledger'
+import type { FileEntry } from '../../contracts/ledger'
 import { clearLimitsCache } from '../src/config'
 import { hooks } from '../src/coordinator'
 import query from '../src/index'
@@ -59,7 +59,7 @@ const SEEDS = [seed1, seed2, seed3] as unknown as Fixture[]
 
 const unb64 = (s: string): Uint8Array => Uint8Array.from(atob(s), (c) => c.charCodeAt(0))
 const hexOf = (b: ArrayBuffer): string => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, '0')).join('')
-const sha = async (b: Uint8Array): Promise<string> => hexOf(await crypto.subtle.digest('SHA-256', b))
+const sha = async (b: Uint8Array): Promise<string> => hexOf(await crypto.subtle.digest('SHA-256', b as Uint8Array<ArrayBuffer>))
 const NS_PER_MS = 1_000_000n
 
 /** Every batch of a signal appended to the tenant's shard of that signal (slot 0), in order; each unit's files to R2 and the ledger. */
@@ -83,7 +83,7 @@ async function loadSignal(w: World, t: Tenant, signal: 'traces' | 'logs', fx: Si
       const hour = f.hour === null ? '' : `hour=${String(f.hour).padStart(2, '0')}/`
       const key = `${env.CELL}/data/${f.table}/tenant=${t.name}/day=${f.day}/${hour}L0-${shard.replaceAll('/', '_')}-${inc}-${u.seqLo}-${u.seqHi}-${(await sha(bytes)).slice(0, 8)}.parquet`
       await env.BUCKET.put(key, bytes)
-      entries.push({ table: f.table as unknown as Table, day: f.day, key, bytes: bytes.byteLength, rows: f.rows, minTs: Number(BigInt(f.minNs) / NS_PER_MS), maxTs: Number(BigInt(f.maxNs) / NS_PER_MS), level: 0, index: f.index })
+      entries.push({ table: f.table, day: f.day, key, bytes: bytes.byteLength, rows: f.rows, minTs: Number(BigInt(f.minNs) / NS_PER_MS), maxTs: Number(BigInt(f.maxNs) / NS_PER_MS), level: 0, index: f.index })
       files++
     }
     const r = await ledgerOf(t).addUnit({ shard, incarnation: inc, seqLo: u.seqLo, seqHi: u.seqHi, files: entries })
@@ -222,7 +222,7 @@ describe('tenancy', () => {
     await load(w, w.b, SEEDS[0]!)
     const sample = fx.cases.filter((_, k) => k % 7 === 0)
     for (const c of sample) {
-      for (const extra of [{ 'X-Scope-OrgID': w.b.name }, { 'X-Viz-Tenant': w.b.name }]) {
+      for (const extra of [{ 'X-Scope-OrgID': w.b.name }, { 'X-Viz-Tenant': w.b.name }] as Record<string, string>[]) {
         expect(await check(await call(w.a.key, c, extra), c)).toBeNull()
       }
       const withParam: Case = { ...c, params: [...c.params, ['tenant', w.b.name], ['orgId', w.b.name]] }

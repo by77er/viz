@@ -62,6 +62,21 @@ export function checkSignal(shard: string, payload: Uint8Array, want: 1 | 2 | 3)
 export const signalByte = (s: Signal): 1 | 2 | 3 => SIGNAL_BYTE[s]
 
 /**
+ * The shard's own signal filter (stage 2, being added to `shard/src/shard.ts` by the write
+ * side's engineer; not in the tree when this was written). The shape this release sends once
+ * it is on: `signals: [n]` in `TailReadOptions`, the `VZB1` signal numbers to keep; a batch of
+ * another signal is passed over (never an error). Off until the shard's contract text lands
+ * (README, "Needed changes elsewhere"): a shard that validated a field of another shape would
+ * refuse every read. Today's shards ignore the field (`compileFilter` reads named fields only).
+ */
+export const shardSignalFilter = { enabled: false }
+
+/** `filter` with the signal field when the shard's filter has it. */
+export function withSignal<F extends object>(filter: F, signal: 1 | 2 | 3): F {
+  return shardSignalFilter.enabled ? { ...filter, signals: [signal] } : filter
+}
+
+/**
  * The shards a span or log read asks: the signal's pool slots the tenant may write to now
  * (`{pool}/{signal}/{slot}`), and every shard of that signal the ledger has a watermark for
  * (a stream on a shard that left the map is still read). In name order.

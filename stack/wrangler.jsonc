@@ -40,9 +40,13 @@
   "triggers": { "crons": ["7 * * * *"] },
   "vars": {
     "CELL": "cell-0",
-    "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":2,\"spread\":2,\"epoch\":1}"
-    // No LEDGER_STATE_MAX_BYTES: the ledger's own limit, 300 MiB (D47), applies. The 16 MiB pin
-    // that stood here until the publisher re-based streaming is gone (D55; publisher/README.md,
-    // "Re-base in bounded memory": 300,000 files re-based under a capped heap).
+    "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":2,\"spread\":2,\"epoch\":1}",
+    // The ledger's state cap, pinned at 16 MiB although the ledger (D47) and the publisher's
+    // re-base (D55) handle 300 MiB here (review of D47/D48/D55, P-2 and P-3): a rollback to the
+    // release before D47 cannot hold or checkpoint a larger state, and a rebuild and a first
+    // publication above 16 MiB have not been measured within a Durable Object's CPU limit on
+    // Cloudflare. Lift it only in a release whose rollback floor has D47 and D55, after those
+    // measurements. Keep this line equal in wrangler.jsonc and wrangler.test.jsonc.
+    "LEDGER_STATE_MAX_BYTES": "16777216"
   }
 }

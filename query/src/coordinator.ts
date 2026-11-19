@@ -20,7 +20,7 @@
 import type { ScanInput } from '../../contracts/engine'
 import type { FileEntry, LiveFile, Plan, Watermark } from '../../contracts/ledger'
 import { poolMap } from '../../edge/src/route'
-import { checkSignal, signalOfShard } from './shards'
+import { checkSignal, signalOfShard, withSignal } from './shards'
 import { ENGINE_LOAD_PREFIX, type FetchRange, type FilePlan, type FileRead, type Grid, type LeafSummary, QueryError, type QueryEngine, type QueryLimits, type QueryStats, leafSummary, planBytes, sparseFile } from '../../engine/wasm-query/js/index'
 import { hash32, shardName, tenantSlots } from '../../shard/src/pool'
 import { type Env, type TenantLimits, fileCacheTtl, leafPoolSize } from './config'
@@ -486,7 +486,8 @@ type Tails = { again: true } | { again: false; reads: TailRead[]; bytes: number;
 export async function readTails(c: Context, shards: string[], watermarks: Watermark[], known: Map<string, number>, refused: (who: string, why: string) => void, filter: TailFilter, cap: number, signal: 1 | 2 | 3 = 1): Promise<Tails> {
   const limit = Math.max(0, hooks.tailCap ?? cap)
   const budget = { cap: limit }
-  const tails = await Promise.all(shards.map((s) => readTail(c, s, watermarks.find((w) => w.shard === s), known, filter, { cap: limit, used: 0 })))
+  const asked = withSignal(filter, signal)
+  const tails = await Promise.all(shards.map((s) => readTail(c, s, watermarks.find((w) => w.shard === s), known, asked, { cap: limit, used: 0 })))
   let again = false
   shards.forEach((s, i) => {
     const t = tails[i]!
