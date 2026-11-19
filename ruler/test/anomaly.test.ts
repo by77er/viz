@@ -434,7 +434,10 @@ describe('the monitors API', () => {
     // Not given, max_series is what fits the per-rule state limit, and the save says so.
     const fitted = await post({ anomaly: { detector: 'cusum' }, dryRun: true })
     expect(fitted.status).toBe(200)
-    expect(fitted.json.warnings).toMatchObject([{ path: 'anomaly.maxSeries', message: expect.stringMatching(/^max_series defaults to 49 here, not 100: cusum/) }])
+    expect(fitted.json.warnings).toMatchObject([
+      { path: 'anomaly.maxSeries', message: expect.stringMatching(/^max_series defaults to 49 here, not 100: cusum/) },
+      { path: 'anomaly.detector', message: expect.stringMatching(/cusum as configured scored below a static threshold on held-out NAB \(15.1 vs 21.8\)/) },
+    ])
     expect(quantile.json.warnings).toMatchObject([{ path: 'anomaly.params.spread', message: expect.stringMatching(/not validated: it was chosen after seeing the NAB results/) }])
   })
 
