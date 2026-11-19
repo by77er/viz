@@ -302,9 +302,10 @@ fold (the row as the key's target) and rings without a change of markup; their p
 ## Files
 
 - `src/components.css` (v8: rings inside where clipped, the fold's row target and stacked spacing, strong words, `--mark-size`,
-  segmented rows), `project/tokens.json` (version 8), `project/README.md` (colour, focus ring, a token defined once, numbers
+  segmented rows, the navigation's side padding, "Other" never cut), `project/tokens.json` (version 8), `project/README.md` (colour, focus ring, a token defined once, numbers
   right-aligned, the segmented exception removed), `project/review.md` (the Many series row), `project/method.md`.
-- Components: Chart (`preview.html`: the v8 algorithm, `legendActions`, the "node-b only" segment, the picked panel; `README.md`:
+- Components: Chart (`preview.html`: the v8 algorithm, `legendActions`, the "node-b only" segment, the picked panel, the
+  narrowed panel, Other's figures and cells; `README.md`:
   rules 3 to 7 and "Why this rule"), Table (`preview.html`: `vz-right` on Memory; `README.md`: the row as the key's target, alignment
   guarded).
 - Tools: `audit.mjs` (header; align; guards in every context; contrast; hit areas with drawn-box sampling; the token trace with scope,
