@@ -142,6 +142,8 @@ export const loseStorage = async (l: Stub) => {
  * (its number, and the log bookkeeping of `meta`): what "the same state" means.
  */
 export async function dumpState(l: Stub) {
+  // Through the gate first: an object that is still starting answers only once it has.
+  await everything(l)
   return runInDurableObject(l, (_i: Ledger, state) => {
     const sql = state.storage.sql
     const rows = (q: string) => sql.exec(q).toArray()

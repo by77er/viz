@@ -4,8 +4,13 @@
  * from it, and `test/openapi.test.ts` holds it equal to `openapi.json`.
  *
  * No path, query or body ever carries a tenant. The tenant is the credential's.
+ *
+ * `SCOPES` is every scope a key can be created with, not only the ones this API checks:
+ * `write` and `read` are edge's and the query service's, and `monitors:read`,
+ * `monitors:write`, `monitors:ack` are the ruler's (ruler/src/http.ts `Scope`). Each service
+ * checks its own scopes literally; here they only reach `whoami`.
  */
-export const SCOPES = ['admin', 'dashboards:read', 'dashboards:write', 'dashboards:apply', 'write', 'read'] as const
+export const SCOPES = ['admin', 'dashboards:read', 'dashboards:write', 'dashboards:apply', 'write', 'read', 'monitors:read', 'monitors:write', 'monitors:ack'] as const
 export type Scope = (typeof SCOPES)[number]
 
 export const PREFIX = '/api/v1/control'
@@ -55,6 +60,7 @@ export const ROUTES = [
   r('POST', '/dashboards/{dashboard}/proposals', 'proposals.create', D_WRITE),
 
   r('GET', '/proposals', 'proposals.list', D_READ),
+  r('POST', '/proposals', 'proposals.createDashboard', D_WRITE),
   r('GET', '/proposals/{proposal}', 'proposals.get', D_READ),
   r('PUT', '/proposals/{proposal}', 'proposals.edit', D_WRITE),
   r('POST', '/proposals/{proposal}/apply', 'proposals.apply', D_APPLY),
