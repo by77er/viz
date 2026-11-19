@@ -77,3 +77,32 @@ and the response.
 
 Sustained load over minutes; throughput with flush running; billed rows written; more than
 one shard per tenant; pooled shards with several tenants; OTLP; where the 60 ms goes.
+
+## Re-run after early refusal and group commit (2026-11-19)
+
+`rerun/` measures the edge Worker as built now in front of two shards, deployed as two
+scripts on the same day and driven by the same load generator: `viz-spike-s3-new` (the
+shard as built now: early refusal before anything is read or written, group commit) and
+`viz-spike-s3-asbuilt` (the frozen shard of `dc2a1c3`, `shard/bench/asbuilt/`). The edge
+code is the same in both, so the comparison isolates the shard. Each client is its own
+Durable Object in `viz-spike-s3-loadgen`, calling a target through a service binding (the
+original method; a single Worker fanning out measures the client). A refused client waits
+for the response's `Retry-After`, capped at 1 s, as a sender would. Every run uses a fresh
+tenant (its own API key) with a pool of its own, so every run starts on a fresh shard and no
+run inherits another's buffer; flush is not running, as in the first run.
+
+**Deployed for the measurement only:** Workers `viz-spike-s3-new`, `viz-spike-s3-asbuilt`
+(no public route; reached only through the service bindings) and `viz-spike-s3-loadgen`
+(workers.dev, every route needs the `x-key` header, a secret generated at deploy time); KV
+namespace `viz-spike-s3-kv` holding the runs' API key records (SHA-256 of secrets generated
+at deploy time) and pool maps. Nothing runs on a timer; the shards' alarms (age seal,
+discard) stop when their data is gone.
+
+**Worst-case cost, stated before deploying** (modelled from list prices as I know them,
+training knowledge, ignoring included allowances): 34 runs of 10 s; at most about 1,500
+requests a second per run = 510,000 Worker requests ≈ $0.15, as many Durable Object
+requests to the shards plus the load generator's ≈ $0.15; at most 5 SQLite rows written per
+append (batch row, its fingerprint index entry, stream row, segment and notification rows
+at a seal) = 2.6 M rows ≈ $2.60; Durable Object duration for up to 200 clients and one
+shard per run, under 10,000 GB-s ≈ $0.15; KV: 70 writes, reads cached per isolate, nil;
+SQLite storage of at most 64 MB per run's shard for an hour, nil. **Under $4 in total.**

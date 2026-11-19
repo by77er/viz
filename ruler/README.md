@@ -5,7 +5,8 @@ viz (design §7, decision D7). Three Durable Object classes and one Worker:
 
 - **`Ruler`**, one per tenant rule shard, named `<tenant>/<n>`. Holds rule groups, evaluates
   each group with one batch call to the engine per tick, owns alert state, hands alert
-  transitions to the notifier, keeps each monitor's transition history.
+  transitions to the notifier, keeps each monitor's transition history. Evaluates anomaly
+  rules (part 8) with the detectors of `anomaly/` and keeps their state per (rule, series).
 - **`Notifier`**, one per tenant, named `<tenant>`. Routing tree, grouping timers,
   inhibition, silences, acknowledgements, a transactional outbox to webhook and Slack
   receivers with HMAC-signed requests, and each monitor's notification history.
@@ -30,7 +31,8 @@ Cloudflare; nothing touched the Cloudflare account.
 | `src/notifier.ts` | `Notifier`: grouping, flush decisions, acknowledge, silences with undo, outbox, signing, delivery, notification log |
 | `src/amconfig.ts` | Notifier config validation, routing, matchers, inhibition, silence matching, secret redaction (pure) |
 | `src/http.ts` | The HTTP API: routes, auth through edge's verifier, Prometheus-compatible reads, monitors, groups, rule files, backtest, placement and shard moves |
-| `src/monitors.ts` | Monitor document → alerting rule, error paths in the monitor's own field names, views, history merge (pure) |
+| `src/monitors.ts` | Monitor document → alerting or anomaly rule, error paths in the monitor's own field names, views, history merge (pure) |
+| `src/anomaly.ts` | Anomaly rules (part 8): the `anomaly` block, defaults and the detector guide, one evaluation (pure), the stored form of detector state |
 | `src/registry.ts` | `RulerIndex` and `sweep()` |
 | `src/schema.ts` | The three classes' storage as versioned migrations, and `FORMATS`: the version of everything the ruler writes for other releases |
 | `src/placement.ts` | Jump-hash assignment of groups to shards (pure) |
@@ -40,7 +42,8 @@ Cloudflare; nothing touched the Cloudflare account.
 | `openapi.json` | OpenAPI 3.1 description of every route (checked against `ROUTES` by `test/http.test.ts`) |
 | `tools/promcheck/` | Go: Prometheus' own code reading what the ruler writes (see parts 2 and 5) |
 | `test/harness.ts` | The test worker: the classes with clock, evaluators, sink, receiver and crash points overridden |
-| `scripts/mutants.mjs` | Mutation checks |
+| `test/anomaly.bench.ts`, `vitest.measure.config.ts` | Anomaly rule measurements in workerd (`npm run bench:anomaly`); the config adds `HOST`, which reads workerd's CPU time and the load average in Node |
+| `scripts/mutants.mjs` | Mutation checks, applied to a scratch copy |
 
 `wrangler.jsonc` is the production shape (not deployed): bindings `RULER`, `NOTIFIER`,
 `RULER_INDEX`, `CONFIG` (edge's API-key KV namespace, by edge's placeholder id; never the
@@ -49,7 +52,7 @@ against `wrangler.test.jsonc`, which binds the subclasses in `test/harness.ts`.
 
 ## What is implemented
 
-The seven parts of this task, in order, then what was there before.
+The seven parts of the earlier task, in order, then anomaly rules (part 8), then what was there before.
 
 ### 1. Batch evaluation
 
@@ -140,6 +143,7 @@ last changed it) is the rule's `monitor` block.
 | `GET /monitors/groups`, `PUT\|DELETE /monitors/groups/{name}` | read / write | Rule groups as rule-file JSON, placed on shards |
 | `GET\|POST /monitors/rulefile` | read / write | Prometheus rule-file YAML (or JSON) import; YAML export, `?extensions=false` for a file Prometheus loads |
 | `POST /monitors/backtest` | read | Part 4, for the monitor about to be saved |
+| `GET /monitors/detectors` | read | Part 8: what each anomaly detector is for, its defaults and the held-out evidence, each line labelled held out, post hoc or not scorable |
 | `GET\|PUT /monitors/notifier` | read / write | Alertmanager-shaped config; secrets and secret-bearing URLs redacted on the way out |
 
 **`dryRun` on every write** (query parameter or body field): the answer says what would
@@ -240,6 +244,87 @@ evaluation: re-verified that it becomes `health: err` with the engine's message 
 `/api/v1/rules` as `lastError`), keeps its state, stays `err` across eviction, and
 recovers when the query works.
 
+### 8. Anomaly rules (contract version 2)
+
+An **anomaly rule** watches every series of one PromQL expression with a detector from
+`anomaly/` (imported from `../../anomaly/src/index.ts`, not copied). The contract is
+`contracts/rules.ts`, "anomaly rules (contract version 2)": additive, so every rule file and
+stored group valid before means the same. Code: `src/anomaly.ts` (parsing, defaults, the guide,
+one evaluation, the stored form), `src/rules.ts` (the `anomaly` block of a rule-file entry),
+`src/ruler.ts` (tick, commit, load, moves), `src/monitors.ts` and `src/http.ts` (the API).
+
+**Writing one.** In a rule file, an alerting entry with an `anomaly` block:
+
+```yaml
+- alert: CheckoutLatencyAnomaly
+  expr: sum by (service) (rate(http_request_duration_ms_sum{service="checkout"}[5m]))
+  keep_firing_for: 10m
+  anomaly: { detector: ewma, unit: ms, max_series: 20 }   # all optional
+```
+
+Through the monitors API, `query` plus `anomaly: { detector?, params?, unit?, severity?,
+maxSeries? }` instead of `condition`; such monitors go in their own default groups,
+`anomalies/<interval>`, so that a rollback to a release without anomaly rules never rewrites a
+group holding them when a threshold monitor is edited. The detector and every parameter are
+resolved at save and written out (`given` lists what the author chose), so a later change of a
+default changes no stored rule; a new detector or parameter is a new rule key, with fresh state.
+Unknown parameters, wrong types, `stepMs` (the interval is the step) and impossible values are
+refused with a path and a fix. The save answers the expression's cost class and the detector's
+`history` (tick class, cold-start class, look-back, points before scoring).
+
+**Defaults follow the evidence** (decision D33; the guide is `DETECTOR_GUIDE` in
+`src/anomaly.ts`, served at `GET /api/v1/monitors/detectors`; numbers from
+`anomaly/README.md`, held-out NAB, standard profile, nothing measured on viz's own data):
+
+| Detector | In rules | Default | Held-out NAB | What the guide says |
+|---|---|---|---|---|
+| `ewma` | yes | **the default**: half-life 100, k 8 (chosen on held-out folds; the library's own 30 / 4 scored 0.0), severity `ticket` | 30.1 (threshold 21.8) | validated on NAB only; below the threshold in the low-FP profile, so `ticket` |
+| `threshold` | yes | **with `severity: page` and no detector** (the author gives `above` / `below`) | 21.8; low-FP 5.5 vs EWMA 3.9 | the baseline; best where false alarms cost most |
+| `robust_z` | yes, with a warning | none (MAD spread) | −105.9 | below a static threshold; the quantile spread (44.8) is post hoc, warned as unvalidated, never a default |
+| `seasonal` | yes, with a warning | none; needs `periodMs` | −76.4 | below a static threshold in aggregate; the only one that sees phase-wrong values |
+| `cusum` | yes, with a warning; **may not page** | severity `info` | 15.1 | an explanation ("mean shifted from A to B at T"), not a pager |
+| `stl`, `pelt` | **refused** | | −352.2, −123.5 | explanations for scheduled jobs, not pagers |
+| `burn_rate` | **refused** | | not scorable on NAB | SLOs are to compile to recording rules (not built) |
+
+**Each tick.** The anomaly rules of a group are evaluated in the group's batch call, after its
+other rules (`RuleGroup.anomalyRules`, kept out of `rules` so that an older release never runs one
+as a plain alerting rule). For each series of the result: the detector's `detect` on that one
+point from the series' in-memory state. A flagged series becomes the rule's result with the
+detector's sentence in the `anomaly` annotation, its numbers as `AnomalyDetail` JSON in
+`anomaly_detail` (format `annotation.anomaly-detail` v1), and the sentence as `description` when
+the author wrote none; the rule's `severity` label comes from `anomaly.severity`, for routing.
+From there `for`, `keep_firing_for` (the monitors API defaults to `0s` and `10m`: alarms are
+onsets), no-data policies, alert state, the hand-off outbox and the notifier are the alerting
+rule's, unchanged. A `warming` point is not returned and the rule says what it needs; a NaN point
+is not scored and keeps the series' previous flag (a gap is not a recovery); a series absent
+longer than the detector's look-back has its state dropped and counted (`pruned`). Monitors show
+state `warming` until the detector scores.
+
+**State.** Per (rule, series) in the table `anomaly_state` (migration 2: additive, `readableFrom`
+1, so the previous release stays a rollback target): one row per (rule, chunk), each row a batch
+of series as `{"v":1,"series":[…]}` (format `store.anomaly-state` v1) of at most 512 KiB. It is
+written **in the transaction that commits the tick's alerts**, so a replay finds both or neither,
+and only when something changed; the constructor rebuilds memory from these rows alone. Each
+series remembers how its last point was scored, so a tick replayed after an eviction (the
+heartbeat cursor is behind) reproduces its alerts and status and advances no detector twice. An
+edit that keeps the detector, its parameters and the interval keeps the state; otherwise it is
+deleted. A shard move carries the rows in `GroupBundle.anomalyState`. Rows in a version this
+release does not read (a newer release wrote them) are **refused**: the rule is
+`state_unreadable`, nothing is scored, the rows are kept as they are (also through a move), and
+no alert changes; it never starts cold over them.
+
+**Bounds, each an explicit refusal.**
+
+| Bound | Default (`RulerLimits`) | Beyond it |
+|---|---|---|
+| Series per rule (`max_series`) | 100, or fewer when 100 series' estimated state would not fit the per-rule limit (the save warns: CUSUM 49, robust z 89); at most `maxAnomalySeriesPerRule` 1,000 | the evaluation is refused, `series_cap_exceeded` with the count; nothing is scored, no state row or alert changes; never a silent drop |
+| State of one series | 65,536 B | at save from the estimate (e.g. a weekly season at a 10 s interval); at run time `state_limit_exceeded`, nothing changes |
+| State of one rule | 1,048,576 B | the same |
+| State of one ruler object | 16 MiB, summed at save as estimate × `max_series` over all its anomaly rules | the save is refused with the rule's path: state is held in memory between ticks (parsed and as JSON, about 3 bytes of heap per stored byte) |
+
+Measured (below): one row written per tick for a 100-series EWMA, threshold or CUSUM rule, 2 for
+robust z, 4–6 for seasonal; the same one row at 2 series as at 200.
+
 ### Versioned storage and formats (`contracts/COMPATIBILITY.md`)
 
 - **Storage.** `Ruler`, `Notifier` and `RulerIndex` open SQLite in the constructor, inside
@@ -263,6 +348,15 @@ recovers when the query works.
   keys, alert fingerprints, `hash64`), the notification idempotency key, the registry
   partition and group placement, the webhook body with its `X-Viz-Signature`, and the rule-file
   export. A change to any of them is caught by a golden test (mutants 57–59).
+- **Anomaly rules** add, additively: `Ruler` migration 2 (the table `anomaly_state`,
+  `readableFrom` 1: `compat` stays 1, so the previous release can open the storage and stays a
+  rollback target; golden `test/golden/schema/ruler.v2.json`; storage at version 1 with data
+  upgrades without a row changing, `compat.test.ts`), the optional `anomalyRules` field of a
+  stored group (absent when a group has none, so such groups are stored byte for byte as
+  before), and three formats: `store.anomaly-rule` (the stored rule, its key and its export),
+  `store.anomaly-state` and `annotation.anomaly-detail`, each v1 with a golden file. During a
+  rollback to a release without them, anomaly rules are not evaluated (that release reads
+  `rules` only) and their state rows wait untouched.
 
 ### Kept from before (unchanged in behaviour)
 
@@ -313,12 +407,20 @@ data names the tenant.
 - **A background reconciler for interrupted shard moves**: the next write finishes them.
   Shard count never shrinks; there is no merge of under-used shards.
 - **`ALERTS` / `ALERTS_FOR_STATE`** are defined (`syntheticSeries`) but not written;
-  **staleness markers**; **LogQL / TraceQL rules**, SLO and anomaly rules.
+  **staleness markers**; **LogQL / TraceQL rules**, SLO rules.
+- **Anomaly rules (part 8):** warming from history (a new rule, or one whose state was reset,
+  warms live for the detector's `minPoints` evaluations; the ruler's `RangeEvaluator` could read
+  the look-back at a cold start, not done); burn-rate SLO rules (to compile to recording rules)
+  and the cross-series detector; STL refits and PELT as scheduled jobs; backtesting an anomaly
+  monitor (`POST /monitors/backtest` takes threshold monitors only); a placement that knows the
+  per-object state budget (a save over it is refused, not moved to another shard); state written
+  less often than every tick (each tick costs at least one row per rule, measured below).
 - **Notifier:** mute / active time intervals, notification templates, receivers other than
   webhook and Slack, `/api/v2/alerts` ingestion, editing a silence, updating a Slack message.
 - **Metrics about itself** (`viz_rule_evaluations_total`…): `health()` only.
-- **`DESIGN.md` / `DECISIONS.md`** were not edited (this task was limited to `ruler/`);
-  what they should gain is listed under "Contract issues".
+- **`DESIGN.md` / `DECISIONS.md`**: the earlier tasks' items under "Contract issues" (13) are
+  still not made. Anomaly rules are in DESIGN §7 and D33; the published design page
+  (`design/artifact/viz-design.html`) was not regenerated for them.
 - **Deployment.** Nothing was deployed; there is no number "measured on Cloudflare".
 
 ## Verification
@@ -606,6 +708,20 @@ declaration ADDED, CHANGED or EXTENDED, so the diff to apply is that file.
     (`Sink` → engine); `Sink` has no staleness marker; `hotWindowMs` is a copy of the
     shard's `sealAgeMs`; LogQL / TraceQL results have no shape in `contracts/engine.ts`;
     who authenticates the ruler to the engine is not written anywhere.
+14. **Anomaly rules are contract version 2 of `contracts/rules.ts`** ("anomaly rules"; the
+    proposal copy here is identical apart from import paths). Additive: `RuleGroup.anomalyRules`,
+    `AnomalyRuleInput` / `AnomalyRule` / `AnomalySpec` / `AnomalyHistory` / `AnomalyDetail` /
+    `AnomalyRuleStatus`, `ANOMALY_DETECTORS`, the two annotation names, three optional
+    `RulerLimits`, and the enum value `'anomaly'` in `RuleStatus.kind` and `SavedRule.kind`
+    (callers fail closed on a kind they do not know). This change added `state_unreadable`,
+    `maxAnomalyStateBytesPerObject`, `given` and the default rules for `detector`, `severity`
+    and `max_series` to it. The first part of the contract change went into the
+    work-in-progress commit 30f3ab9 together with component code, not in a commit of its own as
+    AGENTS.md asks; whoever commits this should split the contract hunk out first. The
+    monitors API's own additions (`MonitorInput.anomaly`, `MonitorAnomalyView`, `DetectorGuide`,
+    `MonitorState` `warming`, `GroupBundle.anomalyState`) are in `rules.v2.ts`.
+15. **`RuleCost` has one class**; an anomaly rule's is the larger of its expression's and its
+    detector's tick class, and the cold-start class is only in `AnomalyHistory` (shown at save).
 13. **Design text to update** (not done: outside `ruler/`): DESIGN §7 should say
     "one batch per group per tick, split only before a rule reading a series recorded
     earlier in the same tick", name the `RulerIndex` registry as the sweeper's source,
@@ -614,6 +730,24 @@ declaration ADDED, CHANGED or EXTENDED, so the diff to apply is that file.
     single global object)" and "jump-hash placement of whole groups (vs. a stored map)".
 
 ## Risks
+
+- **Anomaly rules during a rollback** to a release without them are not evaluated at all (that
+  release reads `RuleGroup.rules` only): no alerts, no error, until the newer release is back.
+  Their state rows wait untouched. A threshold monitor edited during the rollback into a group
+  holding anomaly rules would drop them on save; default groups keep the two kinds apart, an
+  explicit `group` does not.
+- **Anomaly state is written every tick**: at least one row per anomaly rule per tick (43,200 a
+  month for a 1-minute rule, about $0.04 at $1 per million rows, modelled), more for large
+  states (6 rows a tick for 100 daily seasonal series). A rule whose state changes every tick
+  cannot be cheaper without giving up "rebuilt from SQLite alone".
+- **The per-object state budget is an estimate** (`estimateStateBytes`, from sizes measured in
+  `anomaly/`), not a measurement of the heap; labels much longer than the 1,200-byte envelope it
+  assumes are caught only by the run-time per-series limit.
+- **The detector guide's numbers are copies** of `anomaly/README.md`'s held-out table; a re-run
+  of the benchmark must update both. They are NAB numbers, not viz's.
+- **EWMA widens its band after clipped anomalies**: a slow climb stops being flagged after a few
+  points (`anomaly.test.ts` shows it); with `keep_firing_for` 0 the alert then resolves while the
+  value is still high. The monitors API defaults to `keepFiringFor: 10m` for that reason.
 
 - **A refusal is an outage** for the refused tenant's rules and notifications until the newer
   release serves the objects again; transitions wait in the ruler's outbox, nothing is lost.

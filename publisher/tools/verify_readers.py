@@ -21,13 +21,16 @@ opening that stage's own vN.metadata.json), each reader:
      (samples: sum(ts), sum(value); series: sum(min_ts), sum(max_ts));
   4. `tenant = X` returns only X's rows, all of them, and the reader's scan touches only
      X's files (PyIceberg: plan_files; DuckDB: the files named by EXPLAIN ANALYZE);
-  5. `day = D` likewise.
+  5. `day = D` likewise;
+  6. a content hash over every row (all columns, sorted) is identical from PyIceberg, from
+     DuckDB, and from the ledgers' live Parquet files read directly with pyarrow (no Iceberg).
 
 Usage: verify_readers.py <export dir> [--fixture path]
 Exit status 0 only if every check passed.
 """
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -37,11 +40,48 @@ from collections import defaultdict
 import duckdb
 import pyarrow
 import pyarrow.compute as pc
+import pyarrow.parquet as pq
 import pyiceberg
 from pyiceberg.expressions import EqualTo
 from pyiceberg.table import StaticTable
 
 SUMS = {"metric_samples": ("ts", "value"), "metric_series": ("min_ts", "max_ts")}
+DATA_COLUMNS = {"metric_samples": ["metric_name", "series_id", "ts", "value"], "metric_series": ["metric_name", "series_id", "labels", "min_ts", "max_ts"]}
+hashes = []
+
+
+def content_hash(rows):
+    """SHA-256 over every row, all columns, sorted: (tenant, day, data columns...). Floats by repr."""
+    canon = sorted(json.dumps([v.isoformat() if isinstance(v, datetime.date) else (repr(v) if isinstance(v, float) else v) for v in r]) for r in rows)
+    h = hashlib.sha256()
+    for line in canon:
+        h.update(line.encode())
+        h.update(b"\n")
+    return h.hexdigest(), len(canon)
+
+
+def hash_pyiceberg(metadata_path, snapshot_id, table):
+    arrow = StaticTable.from_metadata("file://" + metadata_path).scan(snapshot_id=snapshot_id).to_arrow()
+    cols = ["tenant", "day"] + DATA_COLUMNS[table]
+    return content_hash(zip(*[arrow.column(c).to_pylist() for c in cols]))
+
+
+def hash_duckdb(con, source, snapshot_id, table):
+    snap = f", snapshot_from_id = {snapshot_id}" if snapshot_id is not None else ""
+    cols = ", ".join(["tenant", "day"] + DATA_COLUMNS[table])
+    return content_hash(con.execute(f"SELECT {cols} FROM iceberg_scan('{source}'{snap})").fetchall())
+
+
+def hash_direct(root, fixture, keys, table):
+    """The ledgers' live files read as plain Parquet; tenant and day from the ledger's entry (they are not in the files)."""
+    rows = []
+    for k in keys:
+        f = fixture["files"][k]
+        t = pq.read_table(os.path.join(root, k))
+        day = datetime.date.fromisoformat(f["entry"]["day"])
+        for r in zip(*[t.column(c).to_pylist() for c in DATA_COLUMNS[table]]):
+            rows.append((f["tenant"], day, *r))
+    return content_hash(rows)
 
 failures = []
 checks = defaultdict(int)
@@ -187,6 +227,12 @@ def main():
             nf, nr = pyiceberg_checks(label, final, c["snapshotId"], table, keys, groups, prefix, expected["tenants"], expected["days"])
             df, dr = duckdb_checks(con, label, final, None if current else c["snapshotId"], table, keys, groups, prefix, expected["tenants"], expected["days"])
             print(f"{label}: {nf} files, {nr} rows (pyiceberg); {df} files (duckdb)")
+            # (6) every row, all columns: the two readers and the Parquet files themselves agree.
+            hp = hash_pyiceberg(final, c["snapshotId"], table)
+            hd = hash_duckdb(con, final, None if current else c["snapshotId"], table)
+            hf = hash_direct(root, fixture, keys, table)
+            check("content", "row hash: pyiceberg == duckdb == the live Parquet files", hp == hd == hf, f"{label}: {hp[0][:12]}/{hp[1]} {hd[0][:12]}/{hd[1]} {hf[0][:12]}/{hf[1]}")
+            hashes.append((table, cp["name"], hp[1], hp[0], hd[0] == hp[0], hf[0] == hp[0]))
             # (b) the metadata file of that stage, opened on its own
             label = f"{table} @{cp['name']} (v{c['metadataVersion']}.metadata.json)"
             pyiceberg_checks(label, own, None, table, keys, groups, prefix, expected["tenants"], expected["days"])
@@ -216,6 +262,9 @@ def main():
     except Exception as e:  # noqa: BLE001
         print("duckdb: iceberg_scan(..., filename = true) FAILS on these tables (the virtual column `filename`, without the option, works): " + str(e).splitlines()[0])
 
+    print("content hashes (sha256 over every row, all columns, sorted), per table and stage:")
+    for table, stage, n, h, duck_same, files_same in hashes:
+        print(f"  {table:15} {stage:10} {n:5} rows  {h}  duckdb {'same' if duck_same else 'DIFFERENT'}  parquet {'same' if files_same else 'DIFFERENT'}")
     total = sum(checks.values())
     by_reader = defaultdict(int)
     for (reader, _), n in checks.items():
