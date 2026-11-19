@@ -39,7 +39,7 @@ mkdirSync(OUT, { recursive: true })
 
 const files = loadCorpus()
 const profiles = loadProfiles()
-const rows = files.map(sweepRows)
+const rows = files.map((f) => sweepRows(f)) // not map(sweepRows): the index would become the probation length
 const ctxs = files.map(context)
 const manifestPath = new URL('./nab-manifest.json', import.meta.url).pathname
 const manifest: Record<string, string> = {}

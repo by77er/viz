@@ -15,7 +15,7 @@ import {
 const files = loadCorpus()
 const profiles = loadProfiles()
 const published = publishedFinalResults()
-const rows = files.map(sweepRows)
+const rows = files.map((f) => sweepRows(f)) // not map(sweepRows): the index would become the probation length
 const nWindows = files.reduce((a, f) => a + f.windows.length, 0)
 
 // Null baseline exactly as NAB computes it: the null detector's outputs, optimised and scored.
