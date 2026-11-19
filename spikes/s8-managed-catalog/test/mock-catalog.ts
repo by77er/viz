@@ -47,7 +47,7 @@ export class MockCatalog {
     const body = init.body ? JSON.parse(init.body as string) : undefined
     const signal = init.signal ?? undefined
     if (this.jitterMs) await new Promise((r) => setTimeout(r, Math.random() * this.jitterMs))
-    const path = url.pathname.replace(/^\/v1\//, '')
+    const path = url.pathname.replace(/^.*?\/v1\//, '')
     const json = (status: number, v: Json) => new Response(JSON.stringify(v), { status, headers: { 'content-type': 'application/json' } })
     if (path === 'config') return json(200, { defaults: {}, overrides: { prefix: 'wh' }, endpoints: [] })
     const m = /^wh\/namespaces(?:\/([^/]+)(?:\/tables(?:\/([^/]+))?)?)?$/.exec(path)

@@ -220,12 +220,18 @@ describe('unknown outcomes: a commit whose answer is lost is decided from the ca
 
   it('refuses a plan that changes the snapshot id between attempts (rule 1)', async () => {
     const mock = lenient()
-    mock.faults = ['lose-before']
     const c = await table(rest(mock), 'u_rule1')
     const id = newSnapshotId()
     const inner = appendPlan(c, [file('g')], id, {})
     let n = 0
-    await expect(commitWithRetry(c, id, async (t) => (n++ === 0 ? inner(t) : { snapshot: { ...(await inner(t)).snapshot, 'snapshot-id': newSnapshotId() } }))).rejects.toThrow(/rule 1/)
+    // The first plan is overtaken by another writer, so the commit is rebuilt; the rebuilt plan changes the id.
+    const plan = async (t: Parameters<typeof inner>[0]) => {
+      if (n++ > 0) return { snapshot: { ...(await inner(t)).snapshot, 'snapshot-id': newSnapshotId() } }
+      const body = await inner(t)
+      await append(await table(rest(mock), 'u_rule1'), 'g-other')
+      return body
+    }
+    await expect(commitWithRetry(c, id, plan)).rejects.toThrow(/rule 1/)
   })
 })
 
