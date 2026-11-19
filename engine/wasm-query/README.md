@@ -400,7 +400,7 @@ because this binding is where they become visible to TypeScript.
 5. **`Engine` cannot be implemented by one module any more.** The write half lives in
    `engine/wasm` and the query half here; `QueryEngine` in `js/index.ts` is the interface
    this binding satisfies. The contract should be split the same way.
-7. **`SignalEngine` has no budget or bound** (ABI 7). The binding adds the optional last
+7. **Closed 2026-11-19: `contracts/engine.ts` now has `SignalBudget` and the budget argument; the binding imports it.** (Was: `SignalEngine` has no budget or bound, ABI 7.) The binding adds the optional last
    argument `SignalBudget` and redeclares the seven operations in `QueryEngine`; the exact text
    the contract needs is in `query/README.md`, "Contract issues", 11 (another builder held
    `contracts/engine.ts` when this was built).

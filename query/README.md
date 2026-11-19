@@ -2134,7 +2134,7 @@ signal field is in `shard/src/tail.ts`, with the rest of the shard's RPC (item 5
 10. **The cardinality report reads `metric_series` directly** (`engine/query`
     `catalog.rs`), as `contracts/TABLES.md` defines the table; storage has no
     series-only read.
-11. **`SignalEngine` has no budget or bound** (2026-11-19, D62, the review's M-1 and M-2).
+11. **Closed 2026-11-19: `contracts/engine.ts` has `SignalBudget` and the budget argument** (the text below was applied as written). Was: **`SignalEngine` has no budget or bound** (2026-11-19, D62, the review's M-1 and M-2).
     `contracts/engine.ts` was being edited by another builder, so it was not changed here; the
     binding (`engine/wasm-query/js/index.ts`) adds an optional last argument, `SignalBudget`, to
     the span and log operations, and its `QueryEngine` declares them with it. The change the

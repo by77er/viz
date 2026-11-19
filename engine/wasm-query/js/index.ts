@@ -19,7 +19,7 @@
  * A trap (the Rust side is built with panic=abort) leaves an instance in an unknown state.
  * The binding then drops the instance and creates a fresh one for the next call.
  */
-import type { LogReadPlan, Matcher, PromMatrix, PromScalar, PromString, PromVector, ScanInput, SeriesData, SignalEngine, SignalFilePlan, TraceReadPlan } from '../../../contracts/engine'
+import type { LogReadPlan, Matcher, PromMatrix, PromScalar, PromString, PromVector, ScanInput, SeriesData, SignalBudget, SignalEngine, SignalFilePlan, TraceReadPlan } from '../../../contracts/engine'
 
 export const ABI_VERSION = 7
 
@@ -214,28 +214,8 @@ export function sparseFile(size: number, segments: { offset: number; bytes: Uint
   return out
 }
 
-/**
- * What a span or log call may hold, and (traces) which spans are its data. ABI 7, not yet in
- * `contracts/engine.ts` `SignalEngine` (README, "Contract issues"): an optional last argument of
- * the span and log operations, so a caller of the contract's shape still works.
- */
-export interface SignalBudget {
-  /**
-   * Bytes of decoded rows (and of the answer) the call may hold; past it, an `execution` error
-   * whose limit is `max_decoded_bytes`. Counted by the engine as it decodes: per row a fixed
-   * overhead and the length of every string it holds, a span's resource once per distinct
-   * resource of the call (`../src/sigfiles.rs` `Mem`). Default `DEFAULT_SIGNAL_BYTES`.
-   */
-  maxBytes?: number
-  /**
-   * Traces: a span whose start lies outside `[lo, hi]` (nanoseconds, inclusive) is not part of
-   * the call's data; it is dropped as it is read, before de-duplication, so what the call sees
-   * does not depend on what else outside the bound was read. `tqExtent` cuts fragments, tail
-   * spans, the hull and the hours to it (and holds its traces' extents under `maxBytes`).
-   * Default: all time.
-   */
-  bound?: { lo: bigint; hi: bigint }
-}
+/** What a span or log call may hold (`contracts/engine.ts` `SignalBudget`, ABI 7). Counted by the engine as it decodes: per row a fixed overhead and the length of every string it holds, a span's resource once per distinct resource of the call (`../src/sigfiles.rs` `Mem`). */
+export type { SignalBudget }
 
 /** The default of `SignalBudget.maxBytes` (query/src/config.ts `maxDecodedBytes` sets the Worker's). */
 export const DEFAULT_SIGNAL_BYTES = 32 << 20
