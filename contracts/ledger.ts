@@ -731,7 +731,11 @@ export class JsonObjectStream {
   done = false
   readonly scalars: Record<string, unknown> = {}
 
-  constructor(private readonly onElement: (member: string, element: unknown) => void) {}
+  private readonly onElement: (member: string, element: unknown) => void
+
+  constructor(onElement: (member: string, element: unknown) => void) {
+    this.onElement = onElement
+  }
 
   push(s: string): void {
     let from = 0
