@@ -371,7 +371,7 @@ async function writeMonitor(c: Call, existing: Found | null): Promise<Response> 
     ok(await c.ruler(existing.shard).removeRule(c.tenant, existing.group.name, meta.id))
   }
   const savedRule = saved.groups[0]?.rules[saved.ruleIndex ?? 0]
-  const body: Record<string, unknown> = {
+  const out: Record<string, unknown> = {
     dryRun,
     id: meta.id,
     group,
@@ -381,8 +381,8 @@ async function writeMonitor(c: Call, existing: Found | null): Promise<Response> 
     warnings: monitorPaths(saved.warnings, saved.ruleIndex ?? 0, viaCondition),
   }
   // An anomaly monitor: what its detector reads per tick and to warm up (design §7 classes).
-  if (savedRule?.history) body.history = savedRule.history
-  return json(existing || dryRun ? 200 : 201, body)
+  if (savedRule?.history) out.history = savedRule.history
+  return json(existing || dryRun ? 200 : 201, out)
 }
 
 async function deleteMonitor(c: Call): Promise<Response> {

@@ -1,8 +1,21 @@
 // Mutation check: break one behaviour at a time, run the suite, expect it to FAIL, restore.
 //   node scripts/mutants.mjs [substring of a mutant's name]
 // A mutant is [name, [[file, from, to], ...]]; every replacement must apply or the mutant counts as not killed.
+//
+// It edits the sources in place (here and in ../contracts), so run it from control/ in a COPY
+// of the repository outside any git work tree (AGENTS.md: a mutant caught in a commit ships).
+// The copy needs control/ (with node_modules), contracts/, edge/src, shard/src, ruler/src,
+// mcp/src and dashboard/{src,examples,schema,package.json}. It refuses to run in a work tree.
 import { execSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
+
+try {
+  execSync('git rev-parse --is-inside-work-tree', { stdio: 'pipe' })
+  console.error('Refusing to mutate sources inside a git work tree. Copy the tree first (see the header of this file).')
+  process.exit(2)
+} catch {
+  // Not a work tree (or no git): a copy. Go on.
+}
 
 const INVOKE_TENANT_CHECK = "if (this.tenant === '' || id.tenant !== this.tenant) throw new Problem(401, 'unauthenticated', 'The credential is not usable.', 'Use a key of a provisioned tenant.')"
 const FROM_QUERY = [
@@ -110,24 +123,32 @@ for (const [name, edits] of mutants) {
     writeFileSync(file, current.replace(from, to))
   }
   let failed = false
+  let noResult = false
   let detail = ''
   if (applied) {
     try {
       // The generated document must follow its source, as it would in a real change.
       if (edits.some(([file]) => file === 'src/openapi.ts')) execSync('node scripts/gen-openapi.mjs', { stdio: 'pipe' })
-      execSync('npx vitest run --maxWorkers=2', { stdio: 'pipe', env: { ...process.env, NO_COLOR: '1' } })
+      execSync('npx vitest run --maxWorkers=2', { stdio: 'pipe', timeout: 900_000, env: { ...process.env, NO_COLOR: '1' } })
     } catch (e) {
-      failed = true
       const out = String(e.stdout ?? '') + String(e.stderr ?? '')
       const tests = /Tests\s+(\d+) failed/.exec(out)
       const files = [...new Set([...out.matchAll(/FAIL\s+(test\/[a-z]+\.test\.ts)/g)].map((m) => m[1].replace('test/', '').replace('.test.ts', '')))]
-      detail = tests ? `${tests[1]} failed: ${files.join(', ')}` : 'suite did not run'
+      // Only a test that ran and failed kills a mutant. A suite that crashed, hung or was
+      // killed gave no result: reported as such and counted as not killed (rerun it).
+      if (tests) {
+        failed = true
+        detail = `${tests[1]} failed: ${files.join(', ')}`
+      } else noResult = true
     }
   }
   for (const [file, text] of originals) writeFileSync(file, text)
   if (edits.some(([file]) => file === 'src/openapi.ts')) execSync('node scripts/gen-openapi.mjs', { stdio: 'pipe' })
   if (!applied) {
     console.log(`NOT APPLIED  ${name}`)
+    survived++
+  } else if (noResult) {
+    console.log(`NO RESULT    ${name}  (the suite did not finish; rerun)`)
     survived++
   } else if (failed) console.log(`killed       ${name}  [${detail}]`)
   else {

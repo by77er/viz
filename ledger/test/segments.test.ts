@@ -359,10 +359,12 @@ describe('starting an incarnation (review R-3: never across R2 inside blockConcu
       expect(refused).toMatch(/^ledger_unavailable: it is starting a ledger incarnation/)
       expect(waited).toBeGreaterThanOrEqual(1_900)
       expect(waited).toBeLessThan(10_000)
-      // Not blocked: another call is answered at once while the rebuild is still waiting on R2.
+      // Not blocked: another call is answered while the rebuild is still waiting on R2. The
+      // rebuild is held until `release()` below, so an object blocked by it would never answer
+      // here (the test would time out); the bound only has to stay under the 2 s wait.
       const t1 = Date.now()
       expect(await l.logStatus()).toMatchObject({ phase: 'starting' })
-      expect(Date.now() - t1).toBeLessThan(500)
+      expect(Date.now() - t1).toBeLessThan(1_500)
       expect(await l.addUnit(pair(4, 4)).then(() => 'served', (e: Error) => e.message)).toMatch(/ledger_unavailable/)
     } finally {
       release()

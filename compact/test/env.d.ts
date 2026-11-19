@@ -9,6 +9,8 @@ declare namespace Cloudflare {
     BUCKET: R2Bucket
     COMPACT: Workflow<import('../src/index').CompactParams>
     CELL: string
+    /** Set by vitest.config.ts: the ledger drains when a test asks. */
+    LEDGER_DRAIN_DELAY_MS: string
   }
 }
 

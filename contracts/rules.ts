@@ -192,7 +192,10 @@ export type AnomalyParamValue = number | string | boolean | null
 
 /** The `anomaly` block of a rule-file entry. */
 export interface AnomalySpecInput {
-  /** Default `ewma`. */
+  /**
+   * Default `ewma` (with the parameters chosen on held-out data, not the library's); `threshold`
+   * when `severity` is `page`, which then needs `params.above` or `params.below` (design D31).
+   */
   detector?: AnomalyDetector
   /**
    * The detector's parameters (`anomaly/src/detectors/<name>.ts`, `<Name>Params`) by name. Not
@@ -201,7 +204,7 @@ export interface AnomalySpecInput {
   params?: Record<string, AnomalyParamValue>
   /** Printed after numbers in explanations, e.g. "ms". */
   unit?: string
-  /** Default `ticket`. */
+  /** Default `ticket` (`info` for `cusum`). `page` is refused for `cusum`: it explains, it does not page. */
   severity?: AnomalySeverity
   /**
    * Most series the expression may return. Above it the evaluation is refused (the rule is
@@ -209,6 +212,8 @@ export interface AnomalySpecInput {
    * changes; series are never dropped to fit. Default 100; at most `RulerLimits.maxAnomalySeriesPerRule`.
    */
   max_series?: number
+  /** Written by the ruler's own export: which `params` the author gave (the rest are written-out defaults). */
+  given?: string[]
 }
 
 /**
@@ -301,10 +306,12 @@ export interface AnomalyDetail {
  *   warming                too little history for some or all series; not scored yet (`message` says what is needed)
  *   series_cap_exceeded    refused: the expression returned more than `maxSeries` series
  *   state_limit_exceeded   refused: the detector state would exceed a `RulerLimits` state limit
+ *   state_unreadable       refused: the stored state is in a format this release does not read (a newer
+ *                          release wrote it); it is kept as it is for a release that does
  *   unknown                not evaluated yet
  * A refused evaluation changes no state and no alert.
  */
-export type AnomalyEvalStatus = 'ok' | 'warming' | 'series_cap_exceeded' | 'state_limit_exceeded' | 'unknown'
+export type AnomalyEvalStatus = 'ok' | 'warming' | 'series_cap_exceeded' | 'state_limit_exceeded' | 'state_unreadable' | 'unknown'
 
 export interface AnomalyRuleStatus {
   status: AnomalyEvalStatus
@@ -383,6 +390,12 @@ export interface RulerLimits {
   maxAnomalyStateBytesPerSeries?: number
   /** EXTENDED (contract version 2). Detector state of all series of one rule. Default 1,048,576. */
   maxAnomalyStateBytesPerRule?: number
+  /**
+   * EXTENDED (contract version 2). Detector state one ruler object may have to hold, summed over its
+   * anomaly rules as `stateBytesPerSeries × maxSeries` and checked when rules are saved: it bounds
+   * the object's memory (state is kept in memory between ticks). Default 16,777,216.
+   */
+  maxAnomalyStateBytesPerObject?: number
 }
 
 export interface RulerConfig {

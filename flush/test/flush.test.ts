@@ -1,17 +1,23 @@
 import { evictDurableObject, runInDurableObject } from 'cloudflare:test'
 import { env, exports } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
-import { ledgerLogKey, type LedgerChange } from '../../contracts/ledger'
+import type { LedgerChange } from '../../contracts/ledger'
 import type { Segment } from '../../shard/src/shard'
 import { STALE_NAN } from '../../engine/wasm/test/vzb1'
 import { type FlushOptions, type FlushResult, dataFileKey, engine, flushTenant } from '../src/index'
 import {
-  DAY_MS, Sent, T0, append, breakLedgerLog, dataKeys, discardRecorded, flushSettled, healLedgerLog, ledgerStub, listKeys, liveKeys, loseLedgerStorage, read, sha256Hex,
+  DAY_MS, Sent, T0, append, breakLedgerLog, dataKeys, discardRecorded, flushSettled, healLedgerLog, ledgerStub, listKeys, liveKeys, loggedChanges, loseLedgerStorage, read, sha256Hex,
   shardStub, someSamples, stream,
 } from './helpers'
 import { StaleTail } from './read'
 
 const flush = (tenant: string, shardName: string, opts?: FlushOptions): Promise<FlushResult> => flushTenant(env, engine, tenant, shardName, opts)
+/**
+ * Flush until the shard has been told what the ledger LOGGED: one run, then the ledger's drain
+ * (its alarm, run here at once) and further runs. Segments as the run that first handled them
+ * saw them. The ledger drains only when asked in this suite (vitest.config.ts).
+ */
+const settled = (tenant: string, shardName: string, opts?: FlushOptions): Promise<FlushResult> => flushSettled(env, engine, tenant, shardName, opts)
 const dayOf = (ts: number) => new Date(ts).toISOString().slice(0, 10)
 
 /** The key contracts/TABLES.md prescribes, built here from the object's own bytes. */
@@ -24,17 +30,8 @@ async function expectedKey(key: string, tenant: string, shardName: string, seg: 
   return `${env.CELL}/data/${table}/tenant=${tenant}/day=${day}/L0-${shardName.replaceAll('/', '_')}-${seg.incarnation}-${seg.seqLo}-${seg.seqHi}-${hash8}.parquet`
 }
 
-/** Every add_unit change in the tenant's ledger log. */
-async function loggedUnits(tenant: string): Promise<LedgerChange[]> {
-  const out: LedgerChange[] = []
-  for (const key of await listKeys(`${env.CELL}/ledger/tenant=${tenant}/`)) {
-    if (key.endsWith('base.json')) continue
-    const c = await (await env.BUCKET.get(key))!.json<LedgerChange>()
-    expect(key).toBe(`${env.CELL}/${ledgerLogKey(tenant, c.ledgerIncarnation, c.version)}`)
-    if (c.kind === 'add_unit') out.push(c)
-  }
-  return out
-}
+/** Every add_unit change in the tenant's ledger log in R2 (what is logged, not what is committed). */
+const loggedUnits = async (tenant: string): Promise<LedgerChange[]> => (await loggedChanges(tenant)).filter((c) => c.kind === 'add_unit')
 
 const versions = async (keys: string[]) => Promise.all(keys.map(async (k) => (await env.BUCKET.head(k))!.version))
 
