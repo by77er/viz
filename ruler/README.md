@@ -356,7 +356,9 @@ otherwise keep EWMA.
   `tools/anomaly-default/out/`.
 - *Verdict.* 1,500 beats EWMA and the threshold held out on NAB in every profile and on SMD in the
   standard profile (and in the other two, point estimates): it is the default. Its SMD score is
-  post hoc: only the 4,000-point window was pre-registered.
+  post hoc: only the 4,000-point window was pre-registered. (All of this sized the window for state
+  stored as JSON. Since D60 it is stored as Float64 ring blocks, where up to 5,641 points fit and
+  the 4,000-point window does; the default was not re-decided, below.)
 
 **What it costs.** Since state is stored as Float64 ring blocks (`store.anomaly-state` v2, below and
 D60: the version gate is on), about 18.8 KB a series (estimate; **17.8 KB measured here**, the
@@ -1443,6 +1445,23 @@ the new "dryRun on every write" test.
 | 171 | `exceeded`: the HTTP answer leaves it out (null whatever the run said) | history: "POST /monitors/backtest takes an SLO or anomaly monitor …" (+3 more: memory, CPU, queries over HTTP) |
 | 172 | `exceeded`: a refused warm-up does not say which budget | history: "over the budget nothing is fetched …" (+3 more: the engine's refusal as null, memory, CPU) |
 | 173 | the queries refusal says nothing was fetched though the series counts were read | history: "windows that would take more than 1,000 range queries …" |
+| 174 | ring blocks: values stored at the wrong float width (Float32 precision) | KILLED_174 |
+| 175 | ring blocks: the block boundary off by one (a block's last slot taken for the next block's) | KILLED_175 |
+| 176 | ring blocks: every block written at every tick (not only the head and the current block) | KILLED_176 |
+| 177 | ring blocks: the reader keeps points the window evicted since their block was written | KILLED_177 |
+| 178 | ring blocks: a block rewritten only for a pruned series (one series gone quiet keeps every other series' old entries) | KILLED_178 |
+| 179 | version gate ignored: version 2 written whatever the gate says | KILLED_179 |
+| 180 | conversion: version 1 rows left beside version 2 ones | KILLED_180 |
+| 181 | rows renumbered by a release without version 2 not rewritten under their own chunks | KILLED_181 |
+| 182 | CPU model: robust z priced by its stored (ring block) size, not by the points it scans | KILLED_182 |
+| 183 | save-time estimate: the blocks a window spans counted one short | KILLED_183 |
+
+**Windowed state as ring blocks: mutants 174–183, and the anomaly mutants re-run** (`VIZ_SCRATCH=<scratch>
+node scripts/mutants.mjs 174 … 183 60 … 81 104 … 130 146 … 157`, on a scratch copy, deleted after):
+MUT3_RESULT. The three asked for are 174 (float width), 175 (block boundary) and 176 (every block
+every tick). Four earlier patterns had gone stale with this change and were brought up to date to
+the same property (61, 62, 73: the state's write and read are planned in `anomaly.ts`; 108: the
+warm-up's write); all 183 patterns match the source exactly once.
 
 **`over_budget` names its budget: mutants 169–173** (`VIZ_SCRATCH=<scratch> node scripts/mutants.mjs
 104 105 106 120 122 123 124 125 158 163 164 169 … 173`, on a scratch copy, deleted after): **16 of 16
