@@ -201,7 +201,7 @@ next alarm, and could be cut off again, so publication could stop for the whole 
 - **Nothing starves behind the queue.** A tenant waiting for its re-base is read from the cursors it
   has: after the upgrade its metric tables keep being committed in every publish, only its span and
   log tables wait (report status `deferred`; it stays pending). Tenants already re-based, and those
-  that never needed one, are read in every publish. Why this order: a re-base costs in proportion to
+  that never needed one, are read in every publish while they are pending. Why this order: a re-base costs in proportion to
   the tenant's whole state, a read from a cursor in proportion to its new changes, so the cap goes on
   re-bases alone and the metric commits of the cell never wait for the queue to drain.
 - **The alarm comes back.** A publish that left a tenant `deferred` sets the next publish
@@ -218,7 +218,7 @@ next alarm, and could be cut off again, so publication could stop for the whole 
 - **After a lost storage.** A tenant with no cursor in a table that R2 has metadata for while SQLite
   has none (the table's `version-hint.text`, one GET per such table, only in a publish with a tenant
   to re-base): the publisher's state was lost. The publish rebuilds one such table from R2 first
-  (`resync`, in one transaction) and reads no tenant; the next publish (`continueMs` later) the next
+  (`resync`: swapped into SQLite in one transaction) and reads no tenant; the next publish (`continueMs` later) the next
   table; then the cursors found there make the re-bases unnecessary. Before, the first publish
   re-based every tenant, conflicted on each table in turn, and re-based them all again after each
   rebuild: up to six times over in one invocation. A cell whose span and log tables were never
@@ -556,7 +556,23 @@ BENCH_UPGRADE=8x25000@100000,2x100000@100000,1x300000@100000 CPU_LOG=<scratch>/c
 node bench/cpu.mjs --report <scratch>/up.out <scratch>/cpu.log
 ```
 
-**Last run (2026-11-19, the span and log tables published, D67): 120 passed, 0 failed** (14
+**Last run (2026-11-19, bounded work per publish, review M-6): 127 passed, 0 failed** (15 files,
+`npx vitest run --maxWorkers=2`, 67 s at load average 6.5–7.8); `tsc --noEmit` clean. New:
+`test/caps.test.ts` (5), one test in `test/checkpoints.test.ts` (re-bases found while reading from a
+cursor take turns: the old six-tenant test no longer shows it, since the re-bases a publish knows of
+now run one after another), one in `test/signals.test.ts` (a lost storage with its hints gone: the
+conflict path, which the rebuild-first path no longer reaches), the schema golden of version 6;
+changed: the three tests of a lost storage publish until no tenant waits (`publishSettled`: a table
+rebuilt per publish, then the tenants) instead of once, and the one in `signals.test.ts` now also
+requires that no tenant is re-based; the version expected after the D64 upgrade and rollback is 6;
+the adoption test expects `rebase` empty; `segments.test.ts` allows five more GETs on a cell's first
+publish (each table's hint, read once before re-basing anyone). The readers on that run's
+`export/`: **504 checks, 0 failed** and **1,542 checks, 0 failed**, all 8 and 12 content hashes as in
+the tables (the published bytes did not change); `tools/signals-check` not run (it reads what the
+Python readers write, which did not change). The upgrade bench (Measurements, "Capped re-bases"),
+three cells. Not run: the re-base bench, the components that import this one.
+
+Before (2026-11-19, the span and log tables published, D67): **120 passed, 0 failed** (14
 files, `npx vitest run --maxWorkers=2`, 122 s with load average 9–13.6 from other builds and this
 component's mutation run; earlier runs of the same code before the last tests were added: 117 and
 119 passed); `tsc --noEmit` clean; `wrangler deploy --dry-run` bundles the production entry (173 KiB, nothing
@@ -819,6 +835,41 @@ reader treat a null and an empty `events` or `links` alike.
 to the copy, runs the suites it names with at most 2 workers, and restores the copy's file.
 The shared tree is only read (AGENTS.md). `DRY=1` only checks that every mutant's text occurs
 exactly once in the source.
+
+**Run on 2026-11-19 on bounded work per publish (review M-6): every mutant, 74, all killed, 0
+survived** (`node tools/mutants.mjs` on a fresh copy under the session's scratch directory, 11:55 to
+12:16, load average 7.6–9.8; an earlier pass of the R mutants and C4 alone, before R7 and the test
+that kills it existed, killed all 12). The three asked for: **the cap removed** (R1, and R1b with
+only the files left uncounted), **progress not persisted** (R2: no started mark, so a re-base cut
+off is tried first again; R2b: the marks ignored), **the alarm not re-armed when work remains** (R3:
+a deferred tenant dropped from `pending`; R3b: re-armed at `retryMs` instead of `continueMs`; R3c:
+no lease, so an invocation cut off leaves no deadline). C4 was retargeted (the turn now also
+admits, so the mutant gives turns without waiting instead of removing them), and needed a new test:
+the old one passes with it, since the re-bases a publish knows of run one after another. V8 (the
+conflict limit) is now killed by a lost storage whose hints are gone too: with the rebuild first,
+the old test no longer reaches six conflicts.
+
+| # | Mutation | Result (tests failing) | A test that fails |
+|---|---|---|---|
+| R1 | the cap removed: a publish starts every re-base it needs | killed (4) | every tenant re-based over several alarm runs, each within the cap on staged files; the tables end exactly as one uncapped publish leaves them |
+| R1b | the files a re-base staged are not counted: only the cap on tenants is left | killed (1) | the same |
+| R2 | progress not persisted: a re-base is not recorded as started, so one cut off is tried first again | killed (1) | loses nothing committed before it, leaves the alarm a deadline, and the re-bases it had started go to the back of the queue |
+| R2b | progress not used: re-bases taken by name, whenever they last started | killed (1) | the same |
+| R3 | the alarm not re-armed when work remains: a tenant left by the cap is dropped from pending | killed (5) | every tenant re-based over several alarm runs, … |
+| R3b | the alarm re-armed for a retry, not to continue: a capped backlog moves a step a minute | killed (1) | the cap on tenants: one re-base per run; the tenants still waiting keep their metrics published from the cursors they have, as do those re-based already |
+| R3c | no lease: the alarm clears its publish deadline before publishing, so an invocation cut off leaves none | killed (1) | loses nothing committed before it, leaves the alarm a deadline, … |
+| R4 | a lost storage re-based, not rebuilt from R2 first | killed (1) | SQLite rebuilt from R2 alone after the publisher lost its storage: … |
+| R5 | paging: a tenant read and not done keeps its place, so stuck tenants are read first every time | killed (1) | a publish reads at most maxTenantsPerPublish logs, longest waiting first; a tenant stuck on a hole goes behind the others |
+| R5b | no paging: every pending tenant read in one publish | killed (1) | the same |
+| R6 | starvation: a tenant waiting for its re-base is not read from the cursors it has (its metrics wait too) | killed (2) | every tenant re-based over several alarm runs, … |
+| R7 | an attempt started over after a conflict stops at the first tenant it may not admit, and skips those it admitted | killed (1) | re-reads the re-bases it admitted, admits no other, and commits them |
+| C4 | re-bases of one publish read their checkpoints all at once (turns given without waiting) | killed (1) | six tenants whose ledgers started new incarnations, read from their cursors at once: still one tenant's parts at a time, … |
+| V8 | the conflict limit of two tables kept for five | killed (1) | a lost storage with every version hint gone too: each table is found behind R2 at its own commit and rebuilt there, one conflict each, in one publish |
+
+R7 is a bug of the first version of this change, found by reading it over after the first tests
+passed, not by a test or a mutant: an attempt started over after a conflict sorted the tenants it
+had admitted last (they had just started) and stopped at the first one it could not admit, so it
+never re-read them and their reports were missing. Fixed (`continue`), with the test R7 now fails.
 
 **Run on 2026-11-19 on publishing the span and log tables (D67): 12 new mutants and 2 retargeted,
 14 killed, 0 survived** (`node tools/mutants.mjs M9 U2 U2b V1 V1b V2 V3 V3b V3c V4 V4b V5 V6 V7` on a

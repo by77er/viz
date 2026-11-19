@@ -402,8 +402,10 @@ each as its own Iceberg v2 table with its own cursor per tenant (D67): the metri
 (by `identity(tenant)` and `identity(day)`), whose nested columns (attribute maps, events and
 links, a fragment's services and hours, structured metadata) carry a field id for every key,
 value and element and are found in the files through a nested name mapping. The metric tables
-commit first and are byte for byte what they were before. The first publish after the upgrade
-from D64's release re-bases every tenant once (the new tables have no cursor). A table no
+commit first and are byte for byte what they were before. After the upgrade from D64's
+release every tenant is re-based once (the new tables have no cursor), a few per publish: at most
+100 tenants and 100,000 staged files, least recently started first, while waiting tenants keep
+their metric tables published from their cursors (D67, after review M-6). A table no
 release knows still stops a tenant. A removed
 file is physically deleted only after the removal is published and every snapshot that
 referenced it has expired (the janitor asks the publisher before each purge). Each snapshot
