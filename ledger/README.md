@@ -89,6 +89,10 @@ optional `LEDGER_DRAIN_DELAY_MS` (default 200) and `LEDGER_CHECKPOINT_EVERY` (de
   limitBytes }`, nothing changed, retryable) once it would pass 300 MiB (`STATE_MAX_BYTES`,
   `LEDGER_STATE_MAX_BYTES`), about 300,000 S4-shaped files, the largest state measured.
   Memory no longer sets it (nothing holds the state); a rebuild's duration does (below).
+  **Production sets 16 MiB for this release** (`LEDGER_STATE_MAX_BYTES=16777216` in
+  `stack/wrangler.jsonc`; review of D47, D48 and D55, P-2 and P-3): the release before cannot
+  hold or checkpoint a larger state, so a rollback must not meet one, and a rebuild above
+  16 MiB has not been measured within a Durable Object's CPU limit on Cloudflare (Known risks).
   `replace` and `expire` are never refused, so compaction and retention make room.
 - **`loggedWatermarks`.** Per stream, the watermark as of the last change in a written
   segment. Shards may discard only up to it.
@@ -222,14 +226,21 @@ files is modelled at 20–60 s on Cloudflare (20 s here; R2 reads of 272 parts f
 
 ```
 npm install
-npx vitest run --maxWorkers=2     # 101 tests in workerd, 6 files
+npx vitest run --maxWorkers=2     # 110 tests in workerd, 7 files
 npx tsc --noEmit                  # clean
 node scripts/mutants.mjs          # on a copy outside the git checkout (see the script)
 npm run bench                     # the workerd counterfactuals (bench/)
 BENCH=checkpoint BENCH_SIZES=100000 BENCH_VARIANTS=after node bench/rss.mjs -- npm run bench
 ```
 
-Last run, 2026-11-19 on the shared machine (load average 6 to 10): **100 passed, 0 failed**;
+Last run, 2026-11-19, with the review's test for P-4 (`test/review-inflight.test.ts`, 9 tests;
+one type guard rewritten from the reviewer's copy): **110 passed, 0 failed**; `tsc --noEmit`
+clean. The test pauses the first, second or third part PUT of a checkpoint inside the object,
+commits a `replace`, an `addUnit` and an `expire` while it is paused, then lets the PUT fail,
+lose its answer, or succeed; the parts must hold exactly the files at the checkpoint's version,
+and a rebuild from them must equal the live ledger.
+
+Before that, 2026-11-19 on the shared machine (load average 6 to 10): **100 passed, 0 failed**;
 `tsc --noEmit` clean. `publisher/`'s suite, which pins the bytes of every log object a small
 scenario writes through this `Ledger`, passed against it (78 passed); `tsc --noEmit` is clean in
 edge, flush, query, stack, compact, janitor and publisher, which import this code. `stack/`'s
@@ -359,6 +370,12 @@ manifests": a rebuild always reads the newest complete checkpoint first, so the 
 only if that one later becomes unreadable; it is defensive, right by reading, and no test can
 tell.
 
+**The review's mutant** (2026-11-19, review of D47, D48 and D55, P-4; run by the reviewer on a
+scratch copy, not through `scripts/mutants.mjs`): "no pre-images while a part PUT is in flight"
+(an in-memory busy flag that makes `tracking()` false around the PUT) **survived** all 13 tests
+of `checkpoint.test.ts`, which mutate only between parts. `test/review-inflight.test.ts`, now in
+the tree, kills it: 9 of 9 fail on the mutant.
+
 ## Not implemented
 
 - **A state larger than 300 MiB** (about 300,000 files). Nothing in the ledger holds the
@@ -372,6 +389,12 @@ tell.
   base in parts is not needed for memory, only, perhaps, for time.
 - **Pruning the log.** No segment or old incarnation is ever deleted from R2; superseded
   checkpoints are (LEDGER-LOG.md, "Truncation").
+- **Sweeping a checkpoint left unfinished by an older incarnation** (review of D47, D48 and D55,
+  P-6). `startIncarnation` deletes the `ckpt` row, and `deleteSuperseded` sweeps only the current
+  incarnation's prefix. A storage loss or a `restartFromSqlite` in the middle of a format-2
+  checkpoint therefore leaves its parts, up to the whole state, in the old incarnation's prefix
+  for good. The fix would sweep `ckpt-*-*/` of older incarnations once a newer incarnation's first
+  checkpoint is complete. LEDGER-LOG.md's "Truncation" does not mention this yet.
 - **Keeping rebuild progress.** A reset during a rebuild starts it again from the newest
   checkpoint (the rows it streamed into SQLite are emptied first).
 - **Faster rebuilds.** Half of a rebuild is writing the new base in two passes; a rebuild could
@@ -400,19 +423,58 @@ tell.
   measured. A tenant that reaches the limit gets `full` until compaction or retention make
   room; flush treats `full` as an answer it does not know and retries (fail closed), so its
   shards fill and its senders get 429. Nothing alerts on it except the error log and
-  `logStatus`.
+  `logStatus`. **Production keeps 16 MiB for this release** (above; review P-2 and P-3) until two
+  experiments are run on Cloudflare: S4's ledger at 300,000 files, a storage loss and a rebuild
+  with CPU time read from the analytics API, and the publisher's first publication of the same
+  tenant (or `limits.cpu_ms` set and then measured). A rebuild keeps no progress, so one that
+  exceeds the CPU limit would be refused for good after a storage loss.
 - **A publisher re-base at the limit is slow, not large** (since 2026-11-19; until then the
-  publisher read a new incarnation's base whole and production pinned `LEDGER_STATE_MAX_BYTES`
-  at 16 MiB). The publisher now re-bases from the newest checkpoint (parts read in order, a few
-  at a time) or the base, streamed into SQLite: at 300,000 files it completed with V8's heap
-  capped below the isolate's 128 MB, measured in workerd (`publisher/README.md`, "Re-base in
-  bounded memory"), and the pin is gone from `stack/wrangler.jsonc`. What is left is time: a
+  publisher read a new incarnation's base whole, which is why production first set
+  `LEDGER_STATE_MAX_BYTES` to 16 MiB). The publisher now re-bases from the newest checkpoint
+  (parts read in order, a few at a time) or the base, streamed into SQLite: at 300,000 files it
+  completed with V8's heap capped below the isolate's 128 MB, measured in workerd
+  (`publisher/README.md`, "Re-base in bounded memory"). Production still keeps 16 MiB for this
+  release, for the rollback and CPU reasons above. What is left is time: a
   re-base of 300,000 files took 8–17 s here and a first publication of them 27–38 s; on
   Cloudflare neither is measured, and the CPU an invocation may use there is the bound to check.
   `verify` (the scrubber, not on the publish path) still replays a tenant into memory.
-- **A rollback below this release with a state above 16 MiB** opens (the schema change is
-  additive) but its rebuild holds the state in memory; such a tenant is stuck, not lost, after a
-  storage loss in the rollback window.
+- **A rollback below this release with a state above 16 MiB** (review P-2). Production keeps
+  16 MiB in this release, so a rollback to the release before does not meet such a state. In
+  tests and benchmarks, and in the later release that lifts the limit, a rollback to the release
+  before meets more than the rebuild. It opens the storage (the schema change is additive), and:
+  - every `addUnit` of the tenant answers `full`, against its own 16 MiB default;
+  - its drain builds the whole state in memory at its next checkpoint (about 1.2 GB at 300 MiB,
+    extrapolated), so the log stops; shards keep their rows, so nothing is lost;
+  - its rebuild after a storage loss holds the state in memory, so the tenant is stuck, not lost.
+
+  `contracts/LEDGER-LOG.md` ("Versions") mentions only the rebuild. The release that lifts the
+  limit must have this release as its rollback floor, and its record must say what a rollback
+  below it does (Needed changes elsewhere, deploy).
+- **A format-2 checkpoint's tombstones are as of when each part is built, not at its version**
+  (review P-5). Pre-images cover `file` only. Meanwhile `forget` (the janitor) deletes tombstone
+  rows, and `bury` (`INSERT OR REPLACE`) can move a re-removed key above the version, which needs
+  a caller bug. So a checkpoint can lack tombstones that existed at its version. It is harmless
+  today: a forgotten tombstone's object was already deleted with the publisher's consent. But
+  `contracts/LEDGER-LOG.md` and `checkpoint.test.ts` claim exactly the state at its version, and
+  the test passes only because no janitor runs during it. The fix is either contract text
+  ("tombstones as of when the part was written") or a pre-image in `forget` while a checkpoint
+  runs; neither is made.
+- **A rebuild passes over the newest checkpoint on any error** (review P-7). `replaySegments`
+  catches every exception from `loadCheckpoint`, including a transient failed GET of one part,
+  and falls back to an older checkpoint or the base. At 300 MiB that turns a rebuild from parts
+  into one from a 250 MB base line, the slow path, while the tenant is refused. Only a contract
+  violation (`LogFault`) should pass over; a failed read should retry the start, as the start's
+  5 s retry already does. After such a failure the parts read ahead keep their connections while
+  the base's GET starts, briefly more than six in flight; the runtime queues the excess
+  (training knowledge), so it is not a correctness issue.
+- **Checkpoints come later than the policy says after a format-2 checkpoint** (review N-1).
+  Completing one resets `segs_since_ckpt` and `log_bytes_since_ckpt` to 0, forgetting the
+  segments written after its version while its parts were written. The cost bound still holds.
+- **Part budgets count UTF-16 code units, not bytes** (review N-2). The contract says parts of
+  at most 1 MiB; a part of non-ASCII keys or fragments can be up to three times that.
+- **The `drain()` admin RPC writes a whole checkpoint in one call** (review N-5): it passes
+  unbounded part counts, about 272 PUTs at 300 MiB (46–109 s, modelled). No production caller
+  uses it.
 - **Pre-images cost row writes.** While a checkpoint in parts reads files (seconds to minutes),
   each file a mutation adds or removes ahead of its cursor writes a `ckpt_pre` row, deleted
   when the checkpoint completes: about two more row writes per such file. Not measured on
@@ -447,10 +509,17 @@ tell.
   for incarnation 0 answered `ok` and empty under lazy registration) is open, documented.
 - **deploy**: put `schemaRelease(LEDGER_SCHEMA)` (now latest 3, compat 2) in the release
   record and refuse a rollback below compat (COMPATIBILITY.md §6; `deploy/` "Needed changes"
-  7). The 16 MiB pin of `LEDGER_STATE_MAX_BYTES` on `viz-ingest`'s ledger is removed (item
-  below): viz-publisher must be deployed with the streaming re-base before, or with, the
-  viz-ingest that no longer pins it (the reader first; the deploy order already puts
-  viz-publisher before viz-ingest).
+  7). `LEDGER_STATE_MAX_BYTES` on `viz-ingest`'s ledger stays at 16 MiB in this release
+  (`stack/wrangler.jsonc`; review of D47, D48 and D55, P-2 and P-3). The release that lifts it:
+  - must have this release as its rollback floor;
+  - comes once a rebuild and a first publication above 16 MiB are measured within the CPU limit
+    on Cloudflare (Known risks);
+  - needs a release record that says what a rollback below it does to a tenant above 16 MiB.
+    Either the record marks it forward-only for such tenants (COMPATIBILITY.md §6), or it carries
+    the state limit and the rollback check compares it.
+
+  viz-publisher with the streaming re-base must be deployed before, or with, that viz-ingest
+  (the reader first; the deploy order already puts viz-publisher before viz-ingest).
 - **publisher**: re-base from a new incarnation's base without holding it. **Done** (2026-11-19,
   `publisher/src/log.ts`, `publisher/README.md` "Re-base in bounded memory"): the base is read
   with `readLedgerLogStream`, and where the incarnation has a checkpoint the re-base starts

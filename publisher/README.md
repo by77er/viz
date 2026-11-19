@@ -110,9 +110,15 @@ segment. When nothing is new, one more list looks for the first layout. A cursor
 newest segment (this reader never leaves one; another release might) waits until the ledger
 writes the next segment, which the "starts above `version + 1`" rule then catches.
 
-**Re-base in bounded memory** (design/DECISIONS.md D55, since 2026-11-19; it lifted production's
-16 MiB pin of the ledger's state, `stack/wrangler.jsonc`). A tenant with no cursor in the newest
-ledger incarnation is re-based, and nothing in it grows with the tenant's size:
+**Re-base in bounded memory** (design/DECISIONS.md D55, since 2026-11-19). A tenant with no
+cursor in the newest ledger incarnation is re-based, and nothing in it grows with the tenant's
+size. This is what lets the ledger's own 300 MiB limit apply, but production keeps
+`LEDGER_STATE_MAX_BYTES` at 16 MiB for this release (`stack/wrangler.jsonc`; review of D47, D48
+and D55, P-2 and P-3, `design/reviews/d47-d48-d55.md`). The ledger release before cannot hold or
+checkpoint a larger state, so a rollback must not meet one. And a rebuild and a first
+publication above 16 MiB have not been measured within a Durable Object's CPU limit on
+Cloudflare. The limit is lifted in a later release whose rollback floor is this one, once those
+are measured.
 
 - **Where it starts.** The incarnation's newest checkpoint whose format this code reads: format 1
   (`ckpt-{version}.jsonl`, one `base` line) or format 2 (that key is a manifest naming parts
@@ -157,6 +163,16 @@ ledger incarnation is re-based, and nothing in it grows with the tenant's size:
   transaction inserts and deletes `live` rows by key range, in SQL. A tenant read from its cursor
   is planned as before, but with a point lookup in `live` per key the changes touch instead of
   loading its published keys; merges of small manifests read `live` a page at a time.
+- **Tables whose cursors differ** (review of D47, D48 and D55, P-1). A tenant's log is read
+  once per publish, from the lower of its two tables' cursors; when either table has no cursor
+  in the newest incarnation, from the newest checkpoint or base instead. A table whose cursor is
+  below the version the log was read from (`log.start`, when it was read from a base or
+  checkpoint) is then re-based as well, never planned from its cursor: the changes between its
+  cursor and that version are not in what was read. Before this rule such a table skipped them,
+  its cursor moved past them and the publish said `ok` (one table committed, the other's commit
+  cut off, then a checkpoint above the first table's cursor; `test/review-skip.test.ts`).
+  `planFromCursor` also refuses a log that starts above its cursor, so the tenant stops instead
+  of skipping. With the first rule that refusal cannot be reached; it is defence in depth.
 - **Tombstones.** A checkpoint or base carries the tombstones of removed files whose objects may
   remain. Those neither published nor live in the new state are recorded as removed by the
   commit's snapshot, and released once no older snapshot is retained (the conservative rule,
@@ -325,6 +341,10 @@ contract change; see "Contract issues").
   starts again from its checkpoint or base at the next attempt; what it staged is thrown away.
 - **A fall-back to the base when a checkpoint is corrupt** (D55, alternative (e)): the tenant
   stops instead.
+- **A status or alert for a stopped re-base** (review of D47, D48 and D55, P-8). A tenant whose
+  re-base is `corrupt` or `incomplete` shows only in that publish's tenant report; nothing in
+  the publisher's status counts it and nothing alerts. `incomplete` can recur if the ledger
+  completes checkpoints faster than a re-base reads one (unlikely at the current cadence).
 
 - **No backoff for a stuck tenant.** A tenant stopped by a hole, a corrupt or unsupported
   segment or an inconsistent change is retried every `retryMs` (1 min) for as long as it lasts.
@@ -357,7 +377,7 @@ contract change; see "Contract issues").
 ```
 npm install
 npm run fixtures     # Rust: writes test/fixtures/fixture.json (already committed)
-npm test             # 99 tests in workerd, 10 files, at most 2 workers; fills export/
+npm test             # 101 tests in workerd, 11 files, at most 2 workers; fills export/
 npm run typecheck
 # the re-base at scale (Measurements); one size and variant per process for clean memory figures:
 MINIFLARE_WORKERD_V8_FLAGS="--max-old-space-size=32 --max-semi-space-size=4" \
@@ -371,13 +391,20 @@ python3 -m venv <scratch>/readers-venv
 MUTANT_DIR=<scratch>/mutants npm run mutants   # on a copy under MUTANT_DIR; see "Mutation checks"
 ```
 
-**Last run (2026-11-19, the streaming re-base): 99 passed, 0 failed** (10 files, `npx vitest run
+**Last run (2026-11-19, with the fix for review P-1): 101 passed, 0 failed** (11 files, `npx
+vitest run --maxWorkers=2`). The review's test, `test/review-skip.test.ts`, was added unchanged;
+it failed 2 of 2 before the fix (three samples files missing from Iceberg, the report `ok`) and
+passes after. `tsc --noEmit` and the readers script are not recorded for this run.
+
+Before that (2026-11-19, the streaming re-base): **99 passed, 0 failed** (10 files, `npx vitest run
 --maxWorkers=2`); `tsc --noEmit` clean; the readers script on the export of the run before the last test was
 added (the end-to-end test unchanged since): **504 checks, 0 failed**, every content hash as in the table under "Independent readers" (the re-based stage
 included). Against `ledger/src/ledger.ts` as on disk that day (checkpoints in parts, D47) and
 the frozen release before it (`ledger/bench/before/`). `deploy/`'s `node --test
 test/configure.test.mjs` (which requires `stack/wrangler.jsonc` and `wrangler.test.jsonc` to
-differ only as it allows) passed 20 of 20 after the pin was removed from both. `stack/`'s own
+differ only as it allows) passed 20 of 20 with the 16 MiB limit removed from both; the limit is
+back in both since (review P-2, P-3), the same in each, and no run with it restored is recorded
+here. `stack/`'s own
 suite was not run for this change (its tenants are small; it imports nothing changed here).
 
 What changed in the tests besides the new file: `TestPublisher` gained a probe under the store
@@ -486,7 +513,7 @@ the partition columns present in its data files, so it is a fault of that extens
 with identity-partitioned tables and not of how these tables are written. Everything else
 attempted was readable.
 
-### Workerd tests (99)
+### Workerd tests (101)
 
 | Area | Tests |
 |---|---|
@@ -510,6 +537,7 @@ attempted was readable.
 | Segments (`segments.test.ts`, 9) | golden: the current ledger writes the checked-in segment bytes (only `at` differs); those bytes published stage by stage (two units in one segment; a compaction with a checkpoint beside it; retention and a unit in one segment; a new incarnation re-based from its base segment) and all at once; the first layout (as-built ledger) read, a hole in it stops the tenant, and the segment incarnation a current ledger starts on taking it over is followed; both layouts in one incarnation refused; whole segments only, and a cursor inside a segment (left by publishing through a `[5, 5]` holding the ledger's own line) finished from the holding segment once a later one exists, without re-applying the change at the cursor; overlapping segments refused before both; unreadable checkpoints ignored; `removedFiles` naming another table, or not matching `removed`, refused |
 | Triggers (`triggers.test.ts`, 3) | `notify` writes nothing to R2 and publishes nothing, later nudges never push the deadline back; a nudge returns false within its bound from a publisher that is slow (5 s) or refuses, and with none bound; a tenant's day of flushes and a compaction, each nudged, then the alarm settles in 5 runs (sweep, two expiries, mark, delete) to no alarm and no deadline, every remaining metadata object referenced, and 48 idle hours run no alarm and write nothing |
 | Golden formats (`golden.test.ts`, 5) | every format has a file for its version; `metadata.json` of both new tables; field ids permanent across versions; Avro schemas; the cursors object and an `add_unit` change (now read from its segment) |
+| Review of D55 (`review-skip.test.ts`, 2) | the reviewer's: a tenant's `metric_samples` commits and `metric_series` fails after writing its manifests; the ledger admits more units and writes a checkpoint (format 2, then format 1) above the first table's cursor; the next publish must leave no ledger file out of Iceberg in either table |
 | Re-base from checkpoints (`checkpoints.test.ts`, 22) | the real ledger writing parts (format 2): re-based from them, in part order, at most 4 requested ahead, at most 6 R2 operations in flight, no segment at or before the checkpoint read, verified; the same state from parts, from a format-1 checkpoint and from the base: **byte-identical Iceberg objects** (fixed ids and clock); a published tenant re-based on a new incarnation's parts, removing and adding by difference; a staged re-base across many tiny manifests with merges, and SQLite rebuilt from R2 alone equal row for row; a part deleted while the checkpoint is read (`incomplete`, nothing published, retried, published once back); a record changed with its size (bytes), a record dropped with the size made up (files), two parts swapped, a part of another attempt, records out of key order across parts, a manifest that is not one: `corrupt`, nothing published; a newer checkpoint format passed over for the base; the object reset (`ctx.abort()`) while paused at a GET mid-stream, and an R2 failure at a part then `evictDurableObject`: nothing committed, staged rows never used, the next publish complete; six tenants re-basing at once: at most six in flight, each tenant's parts in order and in one run (re-bases take turns); six tenants each with eight segments to read from their cursors: at most six in flight (36 without the slots); a checkpoint's tombstones released; the ledger release before parts (N-1) read from its format-1 checkpoint and then across its storage loss; a base segment that is not alone; golden: the ledger still writes the checked-in checkpoint bytes, which are published, and the segment golden's format-1 checkpoint is re-based from |
 
 ### Mutation checks
@@ -550,6 +578,13 @@ tenants read from their cursors at once, each fetching up to six segments. A tes
 was added (36 GETs in flight without the slots); C2 was run again on its own and killed. The
 concurrency tests compare with literal 6 and 4, not the constants they test, so a mutant that
 raises a constant raises nothing in the test.
+
+**The fix for review P-1** (2026-11-19; not run through `tools/mutants.mjs`):
+
+| # | Mutation | Result (tests failing) | A test that fails |
+|---|---|---|---|
+| P1 | both halves of the fix removed (the code before it): a table with a cursor below the checkpoint read is planned from its cursor, and nothing refuses | killed (2) | review D55: a table with a cursor below the newest checkpoint (parts, one) does not skip the changes in between |
+| P2 | the refusal in `planFromCursor` removed, the `plan()` rule kept | **equivalent** | none can: with the `plan()` rule, a log read from a base or checkpoint re-bases every table below `log.start`, and a log read from a cursor starts at the lower of the two cursors, so `planFromCursor` never gets a log that starts above its cursor. Kept as defence in depth |
 
 Earlier, on the segment reader: **34 mutants, 34 killed, 0 survived** (2026-11-19, 01:39 to
 01:48). The three properties asked for with the segment reader: **stop at an unknown version** (S1,
@@ -816,7 +851,8 @@ load 7–8; at 300,000 the capped runs, the range over two or three runs, load 5
 - **A corrupt checkpoint stops that tenant's re-base** (explicitly: `corrupt`, retried every
   `retryMs`) until the ledger writes a newer one, which supersedes and deletes it, or an
   operator removes it. The ledger's own rebuild passes over such a checkpoint for the base; this
-  publisher refuses rather than read around it (D55, "would change if").
+  publisher refuses rather than read around it (D55, "would change if"). Only the tenant report
+  shows it (Not implemented).
 - **Row writes of a re-base.** Every file of a re-based tenant is written to `stage` and deleted
   after (about two row writes per file; a first publication also updates each added row with
   its statistics): about 600,000 at the limit, modelled at $0.60 per re-base at $1 per million
@@ -832,8 +868,10 @@ load 7–8; at 300,000 the capped runs, the range over two or three runs, load 5
   the ones that rebuild state select by table and manifest, not by tenant. Statements about
   one file or one tenant's files do name the tenant. Its callers are internal; a tenant id
   passed to it is not a credential check.
-- No adversarial review of the commit protocol, the segment reader, the trigger or the
-  streaming re-base (D55: reading checkpoints, the staged diff, the six slots) has been done
+- **Reviews.** The streaming re-base (D55: reading checkpoints, the staged diff, the six slots)
+  was reviewed adversarially on 2026-11-19 (`design/reviews/d47-d48-d55.md`). It found one
+  blocker, P-1, fixed above with the review's test; P-8 is open (Not implemented). No
+  adversarial review of the commit protocol, the segment reader or the trigger has been done
   (AGENTS.md asks for one before building on it), and the publisher is not in the protocol model
   (spec/README.md, "Not modelled").
 
@@ -877,12 +915,14 @@ In components others own; not edited from here. **1, 2 and 3 are done** (2026-11
    `ledger/src/ledger.ts` instead. (Since done by the ledger's engineer.)
 6. **contracts/LEDGER-LOG.md** (the ledger's owner): the publisher now reads checkpoints, and no
    longer reads a base whole (Contract issues 12–14). Not edited from here.
-7. **deploy**: viz-publisher with the streaming re-base must run before, or together with, a
-   viz-ingest whose ledger is no longer pinned at 16 MiB (`stack/wrangler.jsonc` no longer pins
-   it): readers first. The deploy already deploys viz-publisher before viz-ingest. Rolling
-   viz-publisher back below this release while a tenant is above about 16 MiB brings back the
-   old risk (a re-base that does not fit), for that tenant's re-bases only; its storage
-   (migration 3, additive) is readable by the release before.
+7. **deploy**: viz-publisher with the streaming re-base must run before, or together with, any
+   viz-ingest whose ledger allows more than 16 MiB: readers first. This release keeps
+   `LEDGER_STATE_MAX_BYTES` at 16 MiB (`stack/wrangler.jsonc`; review P-2 and P-3); the limit is
+   lifted in a later release whose rollback floor is this one. The deploy already deploys
+   viz-publisher before viz-ingest. Once the limit is lifted, rolling viz-publisher back below
+   this release while a tenant is above about 16 MiB brings back the old risk (a re-base that
+   does not fit), for that tenant's re-bases only; its storage (migration 3, additive) is
+   readable by the release before.
 
 ## Contract issues
 
@@ -949,7 +989,10 @@ Recorded here because this work could not change `contracts/`, `ledger/`, `engin
     against its key and these totals, `bytes` included (the ledger writes it from each PUT's
     stored size, so it is exact), but a change inside one record that keeps its length is not
     detectable, and a part can only be judged once all have been read. Proposal: the manifest
-    lists each part's size and SHA-256 (format 3); readers check each part as it arrives.
+    lists each part's size and SHA-256 (format 3); readers check each part as it arrives. Also
+    (review of D47, D48 and D55, N-3): `contracts/ledger.ts` calls `bytes` informational, yet this
+    reader refuses a mismatch as `corrupt` (`src/log.ts`). One of the two should change: the
+    contract making `bytes` binding, or the reader ignoring it.
 14. **A base's `added` has no promised order.** Checkpoint parts are in key order (stated); a
     base's elements are written from SQLite in key order but the contract does not say so. With
     it stated, a re-base could merge a base against what is published without staging it (D55,

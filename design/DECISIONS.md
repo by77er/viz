@@ -1368,13 +1368,25 @@ rebuild took 20 s, memory flat. Not measured on Cloudflare.
 **Cost of it.** About two row writes per file changed during a checkpoint window; a few hundred
 PUTs per checkpoint instead of one (about $0.01 a day for a busy tenant, modelled); slower
 rebuilds; one more table pair and a `tracked` write per mutation while a checkpoint runs. The
-publisher still reads a new incarnation's base whole, so deployments keep the old limit until it
-streams it.
+publisher re-bases in bounded memory since D55, but production keeps the 16 MiB limit
+(`LEDGER_STATE_MAX_BYTES` in `stack/wrangler.jsonc`) for this release, for two reasons from the
+review of D47, D48 and D55 (P-2, P-3; `design/reviews/d47-d48-d55.md`):
+- the release before cannot hold or checkpoint a larger state: it answers `full` to every unit
+  and its drain builds the whole state in memory, so a rollback or gradual deployment to it must
+  never meet one;
+- a rebuild above 16 MiB (20 s here at 300 MiB) and a first publication (27–38 s here) have not
+  been measured within a Durable Object's CPU limit on Cloudflare, and neither keeps progress.
 
 **Would change if.** A rebuild of the largest tenants takes too long on Cloudflare (then keep
 rebuild progress, or start a new incarnation from the old checkpoint); R2 offered conditional
 multipart completion (then (d) is simpler); or row writes during checkpoints show on the bill
-(then (c), forward-only).
+(then (c), forward-only). **Production's 16 MiB is lifted** in a later release whose rollback
+floor is this one, once a rebuild and a first publication above it are measured within the CPU
+limit on Cloudflare (S4's ledger at 300,000 files with a storage loss, CPU from the analytics
+API; the publisher's first publication of that tenant), or `limits.cpu_ms` is set and then
+measured. That release's record must say what a rollback below it does to a tenant above
+16 MiB: forward-only for such tenants, or the record carries the state limit and the rollback
+check compares it.
 
 ## D48. A shard filters and pages its tail reads itself, by reading the batches it stores; the unpaged form stays
 
@@ -1385,7 +1397,11 @@ series and rows the filter keeps, and returns them as new `VZB1` batches (series
 values copied as bytes), at most `maxBytes` a page, with `page.next` bound to the tenant,
 incarnation, watermark and filter, through the end fixed by the first page. A batch whose kept
 rows do not fit a page is refused (`page_limit`), never cut. Without options the answer is as
-before; an older shard ignores options, so `page` in the answer is how a caller knows.
+before; an older shard ignores options, so `page` in the answer is how a caller knows. An
+answer without `page` in the middle of a paged read is the whole tail: the caller drops the
+pages it has and uses that answer alone. A new filter field comes with `v` 2, because a `v` 1
+shard ignores fields it does not know and still pages (review of D47, D48 and D55, P-9;
+`shard/README.md`, "Needed changes elsewhere").
 
 **Alternatives.** (a) Filter at the coordinator (as `engine.splitTails` does now). (b) Per-batch
 metadata (time bounds, metric names) written at append and used to skip whole batches. (c) A
@@ -1535,8 +1551,15 @@ and bytes. Any disagreement stops the tenant (`corrupt`), and so does a part tha
 checkpoint of a format this code does not read is passed over for the base. The tombstones a
 checkpoint or base carries are recorded as removed by the commit's snapshot, so files a
 checkpoint skipped are released, and only once no snapshot that could reference them is
-retained. With this, production lifts the 16 MiB state pin (`stack/wrangler.jsonc`) to the
-ledger's 300 MiB.
+retained. A tenant's log is read once per publish, from the lower of its two tables' cursors,
+or from the newest checkpoint or base when either table has no cursor in the newest
+incarnation. A table whose cursor is below the version a log read from a checkpoint or base
+starts at (`log.start`) is re-based too, never planned from its cursor. Planning from the cursor
+would skip the changes between, and they are not in what was read. That skip was the blocker
+P-1 of the review of D47, D48 and D55 (`design/reviews/d47-d48-d55.md`), fixed with its test.
+`planFromCursor` also refuses a log that starts above its cursor, as defence in depth: it is not
+reachable with the first rule. This lets the ledger's 300 MiB apply, but production keeps the
+16 MiB limit (`stack/wrangler.jsonc`) for this release (D47, "Cost of it"; review P-2, P-3).
 
 **Alternatives.** (a) Keep reading the base whole, with the 16 MiB pin (D47's interim). (b) Stream
 the base only and never read checkpoints (the change `ledger/README.md` asked for). (c) A new
@@ -1584,6 +1607,7 @@ is passed over, so the ledger still needs no readers-first release to change it.
 
 **Would change if.** A re-base or first publication of the largest tenants exceeds the
 publisher's CPU limit on Cloudflare (then progress kept across invocations, or a higher
-`limits.cpu_ms`); corrupt checkpoints appear in practice (then (e)); the contract orders a base's
+`limits.cpu_ms`; until that is measured, production stays at 16 MiB, and it is lifted as D47's
+"Would change if" says); corrupt checkpoints appear in practice (then (e)); the contract orders a base's
 files by key (then (d), no staging); or the manifest gains per-part sizes or digests (then each
 part is checked on its own as it arrives, not only the totals at the end).

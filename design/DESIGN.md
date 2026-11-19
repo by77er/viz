@@ -217,7 +217,11 @@ checkpoints and bases into SQLite, so nothing holds the whole state (D47). The b
 time: a rebuild reads and writes the whole state while the tenant is refused, so the state is
 bounded at the largest measured (300 MiB, about 300,000 files; 20 s locally): above it
 `addUnit` answers `full`, retryably, until compaction or retention makes room
-(`contracts/LEDGER-LOG.md`, "Size").
+(`contracts/LEDGER-LOG.md`, "Size"). Production keeps the bound at 16 MiB for this release
+(`stack/wrangler.jsonc`): the release before cannot hold or checkpoint a larger state, so a
+rollback must not meet one, and a rebuild and a first publication above 16 MiB have not been
+measured within a Durable Object's CPU limit on Cloudflare. A later release, whose rollback
+floor is this one, lifts it once they are (D47; `design/reviews/d47-d48-d55.md`, P-2 and P-3).
 Measured on Cloudflare: 234–422 units per second with eight writers, and a rebuild of
 5,008 changes in 5.4 s (`spikes/s4-ledger-scale/`). The orphan sweeper deletes an object only if the
 ledger neither lists nor tombstones it and it can never be listed: a flush file once its
@@ -313,7 +317,9 @@ version order per tenant, read from the ledger's R2 log (segments, in whole segm
 or a segment it cannot read stops that tenant there, never skipped). A tenant it has no cursor
 for in the newest ledger incarnation is re-based from that incarnation's newest checkpoint, or
 its base, streamed into SQLite and diffed against what is published there, so the publisher's
-memory does not grow with a tenant's size (D55). A removed
+memory does not grow with a tenant's size (D55). A table whose cursor is below the checkpoint or
+base its tenant was read from is re-based with it, never planned from its cursor, so no change
+between the two is skipped (`design/reviews/d47-d48-d55.md`, P-1). A removed
 file is physically deleted only after the removal is published and every snapshot that
 referenced it has expired (the janitor asks the publisher before each purge). Each snapshot
 points at an object
@@ -611,6 +617,6 @@ in that check yet.
 | ~~The ledger admits about one flush unit per second~~ (measured, `spikes/s4-ledger-scale/`) | **Fixed** (D36): it answers after the SQLite commit and logs in batched background segments; 234–422 units per second with eight writers, measured on Cloudflare 2026-11-19 |
 | A shard that lost its storage and gets no new writes is never registered in its new incarnation, so queries naming the old one are refused indefinitely (spec F6) | Not fixed. Register a new incarnation with the ledger before the shard accepts its first write (spec F1), across shard, ledger, flush and query |
 | Plans grow with file count: 276 ms and 5.8 MB at 7,000 files | Not yet fixed. Index fragments inline only for small plans; consolidated partition indexes; paging |
-| A tenant's ledger holds at most 300 MiB of state, about 300,000 live files: memory no longer bounds it (checkpoints in parts, a rebuild that streams; D47), the time a rebuild takes does (20 s here at that size, modelled 20–60 s on Cloudflare, the tenant refused meanwhile) | `addUnit` answers `full`, retryably, above it; compaction and retention make room. The publisher re-bases such a tenant streaming, from its newest checkpoint or its base, in bounded memory (measured at 300,000 files under a capped heap, `publisher/README.md`), so production runs at the full limit since 2026-11-19 (before, 16 MiB) |
+| A tenant's ledger holds at most 300 MiB of state, about 300,000 live files: memory no longer bounds it (checkpoints in parts, a rebuild that streams; D47), the time a rebuild takes does (20 s here at that size, modelled 20–60 s on Cloudflare, the tenant refused meanwhile) | `addUnit` answers `full`, retryably, above it; compaction and retention make room. The publisher re-bases such a tenant streaming, from its newest checkpoint or its base, in bounded memory (measured at 300,000 files under a capped heap, `publisher/README.md`), but production keeps 16 MiB for this release: a rollback to the release before must not meet a larger state, and a rebuild and a first publication above 16 MiB are not yet measured within the CPU limit on Cloudflare. It is lifted in a release whose rollback floor is this one, once they are (D47; `design/reviews/d47-d48-d55.md`, P-2, P-3) |
 | Cloudflare ships an overlapping product | Open formats, PromQL/TraceQL, external sources, agent surface |
 | Platform-wide outage | Accepted for a Cloudflare-only product; data remains plain Parquet and Iceberg |

@@ -197,6 +197,13 @@ COMPATIBILITY §6 states them; here is how they apply today.
 - A rollback across a forward-only release is refused by the tool; a person who forces one
   (or lowers a gradual deployment) gets objects that answer 503 until it is undone. Safe,
   not available.
+- **A limit can make a release forward-only for some tenants, as a schema can.** The ledger
+  release before checkpoints in parts (D47) cannot hold, checkpoint or rebuild a state above
+  16 MiB. So production keeps `LEDGER_STATE_MAX_BYTES` at 16 MiB in the release that adds them
+  (`stack/wrangler.jsonc`), and lifts it only in a later release whose rollback floor is that
+  one. The lifting release's record must say what a rollback below it does to a tenant above
+  16 MiB: forward-only for such tenants, or the record carries the state limit and the rollback
+  check compares it. Today the record carries neither (`design/reviews/d47-d48-d55.md`, P-2).
 
 ## 6. The upgrade-under-load trial and the invariants
 

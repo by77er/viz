@@ -305,6 +305,17 @@ In all: **30 of 32 killed**, R-12 and this one surviving.
 - **A filtered read costs the shard CPU in proportion to its whole tail** (above), once per
   query per shard, on the object that acknowledges appends. 22 MB took 30–140 ms here. A tenant
   with many concurrent queries over a large tail adds that much to its shard's thread each.
+- **Concurrent paged reads have no memory bound together** (review of D47, D48 and D55, P-10).
+  A page holds up to `maxBytes` (default and at most `TAIL_PAGE_MAX_BYTES`, 16 MiB) until the
+  RPC result is serialized. `tailPage` is synchronous, but answers to concurrent reads (eight
+  split leaves per query, several queries) can be alive at once: the default is an eighth of the
+  isolate per read. It is still better than before D48, when every read returned the whole
+  unpaged tail. Not changed: a smaller default (the measured selective read was 0.7 MB) or a
+  per-shard budget across reads in flight would bound it.
+- **A cursor can be refused for a filter given in another order** (review N-4). The cursor's
+  filter binding sorts label pairs with the default `sort()`, which compares `"name,value"`
+  strings (`src/tail.ts`). With commas in names or values, two orders of the same filter give
+  different canonical texts, and a valid cursor is answered `invalid`. It fails closed.
 
 - **A sealing group's acknowledgement waits for the queue send**, and once per marker
   period for a KV write (`deliver` runs before the answers go out). Neither is R2; the S3
@@ -335,7 +346,15 @@ the tail it needs, and split leaves fetch only their key range:
    comes from a shard that predates this; its batches are the whole tail, unfiltered and
    unpaged, and the coordinator uses them as it does today (the engine applies the matchers and
    ranges anyway; for a split, `engine.splitTails` still cuts them). Do not rely on `page`
-   until every `viz-ingest` version running sends it.
+   until every `viz-ingest` version running sends it. **An answer without `page` in the middle
+   of a paged read** (a rollback or a gradual deployment between two pages; review of D47, D48
+   and D55, P-9): it is still the whole tail, so drop the pages already read and use that
+   answer alone. Appending it would count every row twice against `maxFetchBytes` and the
+   sample budgets. The engine's de-duplication by `(series_id, ts)` would keep the result
+   right, but the query could be refused. **A new filter field** comes with `v` 2. A `v` 1 shard
+   ignores fields it does not know (COMPATIBILITY.md §3.2) and still answers with `page`, so
+   only a new `v` makes it answer `unsupported_version` instead of a superset that looks
+   filtered.
 2. **Split leaves** (`query/src/leaf.ts`, `runSplit`). When the split key has no `without`
    labels, each leaf reads the tail itself: the coordinator passes each shard's
    `(shard, incarnation, above)` it planned (including what `known` learned) to the leaf, and
