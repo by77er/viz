@@ -127,10 +127,12 @@ if (!window.vzChart) (function () {
     for (let v = 0; v <= top + step / 2; v += step) ticks.push(+v.toPrecision(12))
     return { top, step, ticks }
   }
-  /* One number format per chart: ticks at the tick step's precision; legend and readout one decimal finer (at most 3). A value that is not
-     zero but would print as zero prints as "< 0.1" at that precision, never "0.0". */
+  /* One number format per chart. Ticks carry exactly the decimals their step needs (a 2.5 step prints 2.5 and 7.5, a 0.25 step 0.25); legend and
+     readout carry one significant digit finer than the step (step 250: whole numbers; step 1: one decimal), at most 3 and never fewer than the
+     ticks. A value that is not zero but would print as zero prints as "< 0.1" at that precision, never "0.0". */
   function numberFormat(step, suffix, div = 1) {
-    const tickDec = Math.max(0, Math.min(3, -Math.floor(Math.log10(step) + 1e-9))), dec = Math.min(3, tickDec + 1)
+    let tickDec = 0; while (tickDec < 3 && Math.abs(step * 10 ** tickDec - Math.round(step * 10 ** tickDec)) > 1e-9) tickDec++
+    const dec = Math.min(3, Math.max(tickDec, -Math.floor(Math.log10(step / 10) + 1e-9)))
     const f = (v, d) => v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }) + suffix
     // tick: a value already in the display unit; value: a raw value from the data (divided here), empty when there is none
     return { tick: (v) => f(v, tickDec), value: (raw) => { if (raw == null) return ''; const v = raw / div; return v !== 0 && Math.abs(v) < 0.5 * 10 ** -dec ? '< ' + f(10 ** -dec, dec) : f(v, dec) } }
@@ -240,7 +242,7 @@ if (!window.vzChart) (function () {
     /* Full draw: geometry, data, range or filter changed. */
     function draw() {
       const W = svg.clientWidth, HT = svg.clientHeight; if (!W) return; lastW = W; lastH = HT; tok = null; sizes.legendW = tbody.parentElement.clientWidth || W; sizes.readW = readout.clientWidth || W // every size is read before anything is written
-      root.querySelector(':scope > .vz-empty')?.remove(); svg.hidden = false
+      root.querySelector(':scope > .vz-empty')?.remove(); svg.hidden = false; root.querySelector('.vz-chart-foot > .vz-controls').style.visibility = ''
       if (st.error) return showError()
       const m = model(); g = layout(m, visibleSet(m)); drawPlot(g); legend(); legendState(); cursor(); describe()
       const r = root.closest('.vz-panel')?.querySelector('[data-range]'); if (r) r.textContent = stamp(st.t0, g.long) + ' to ' + stamp(st.t1, g.long)
@@ -362,7 +364,7 @@ if (!window.vzChart) (function () {
       el.innerHTML = '<ul>' + lines.map((l) => `<li>${esc(l)}</li>`).join('') + '</ul>'
     }
     function showError() {
-      svg.hidden = true; g = null; let e = root.querySelector(':scope > .vz-empty'); if (!e) { e = document.createElement('div'); e.className = 'vz-empty'; root.prepend(e) }
+      svg.hidden = true; root.querySelector('.vz-chart-foot > .vz-controls').style.visibility = 'hidden'; g = null; let e = root.querySelector(':scope > .vz-empty'); if (!e) { e = document.createElement('div'); e.className = 'vz-empty'; root.prepend(e) }
       e.setAttribute('role', 'alert'); e.innerHTML = `<p class="vz-empty-title"><span class="vz-mark" data-state="critical"></span>${esc(st.error.title)}</p><p>${esc(st.error.text)}</p>` + (st.error.action ? `<div class="vz-controls"><button class="vz-button" data-size="sm">${esc(st.error.action)}</button></div>` : '')
       readout.innerHTML = ''; tbody.innerHTML = ''; thead.innerHTML = ''; note.innerHTML = ''
     }

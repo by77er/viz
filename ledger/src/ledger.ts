@@ -3,6 +3,7 @@ import {
   LEDGER_CHECKPOINT_KIND,
   LEDGER_SEGMENT_MAX_BYTES,
   TENANT_ID,
+  unsupportedLedgerChange,
   decodeLedgerSegment,
   encodeLedgerSegment,
   ledgerBaseKey,
@@ -31,7 +32,7 @@ import {
   type Table,
   type Watermark,
 } from '../../contracts/ledger'
-import { type SchemaSpec, type SchemaTooNew, SchemaTooNewError, openSchema, refusalOf } from '../../contracts/schema'
+import { type SchemaSpec, type SchemaTooNew, SchemaTooNewError, columnsOf, openSchema, refusalOf } from '../../contracts/schema'
 
 /**
  * The tenant ledger: one Durable Object per tenant; the tenant is the object's name.
@@ -117,7 +118,7 @@ export interface RebuildResult {
 }
 
 export interface LogStatus {
-  phase: 'ready' | 'starting' | 'refused'
+  phase: 'ready' | 'starting' | 'refused' | 'corrupt'
   ledgerIncarnation: number | null
   version: number
   /** Highest version in a written segment of this incarnation. */
@@ -167,10 +168,12 @@ const START_RETRY_MS = 5_000
 /**
  * The ledger's storage, versioned (contracts/COMPATIBILITY.md §2). Version 1 is the schema
  * exactly as the code before versioning created it, with IF NOT EXISTS, so it adopts such
- * storage without changing a row. The segment log needed no new table: its state is rows of
- * `meta` (`log_format`, `seg_first`, `seg_last`, `logged_through`, `segs_since_ckpt`), absent
- * in older storage, which this code reads as "an incarnation in the first layout" and
- * replaces with a new incarnation. See ledger/README.md, "Versioned storage".
+ * storage without changing a row; an object created before file precedence (D22) also gets
+ * `prec`/`prec_lo` (0: those files keep ranking by key among themselves, as they did). The
+ * segment log needed no new table: its state is rows of `meta` (`log_format`, `seg_first`,
+ * `seg_last`, `logged_through`, `segs_since_ckpt`, `starting`), absent in older storage,
+ * which this code reads as "an incarnation in the first layout" and replaces with a new
+ * incarnation. See ledger/README.md, "Versioned storage".
  */
 const V1 = [
   `CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v INTEGER NOT NULL)`,
@@ -191,17 +194,30 @@ const V1 = [
 
 export const LEDGER_SCHEMA: SchemaSpec = {
   component: 'ledger.Ledger',
-  migrations: [{ version: 1, name: 'the schema as it stood when versioning began', readableFrom: 1, up: (sql) => { for (const s of V1) sql.exec(s) } }],
+  migrations: [{
+    version: 1,
+    name: 'the schema as it stood when versioning began (prec/prec_lo added to objects from before D22)',
+    readableFrom: 1,
+    up: (sql) => {
+      for (const s of V1) sql.exec(s)
+      const cols = columnsOf(sql, 'file')
+      if (!cols.has('prec')) sql.exec(`ALTER TABLE file ADD COLUMN prec INTEGER NOT NULL DEFAULT 0`)
+      if (!cols.has('prec_lo')) sql.exec(`ALTER TABLE file ADD COLUMN prec_lo INTEGER NOT NULL DEFAULT 0`)
+    },
+  }],
 }
 
-/** `meta` keys. `log_format` 2 = this incarnation logs segments. */
-type MetaKey = 'incarnation' | 'version' | 'log_format' | 'seg_first' | 'seg_last' | 'logged_through' | 'segs_since_ckpt'
+/**
+ * `meta` keys. `log_format` 2 = this incarnation logs segments. `starting` 1 = this storage
+ * was created empty and its first incarnation is still being started from R2 (the only way
+ * to have a schema version row and no incarnation that is not corruption).
+ */
+type MetaKey = 'incarnation' | 'version' | 'log_format' | 'seg_first' | 'seg_last' | 'logged_through' | 'segs_since_ckpt' | 'starting'
 const LOG_FORMAT_SEGMENTS = 2
 
 type Row = Record<string, SqlStorageValue>
 
 const isCount = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
 /** Why a file entry is unacceptable, or null. `prefix(f)` is where its key must lie. */
 function fileProblem(f: FileEntry, prefix: (f: FileEntry) => string): string | null {
@@ -303,6 +319,8 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
   /** Single-flight guard: drains run one after another, never interleaved. */
   private draining: Promise<unknown> = Promise.resolve()
   private refusal: SchemaTooNew | null = null
+  /** Storage this code will not serve or repair (a version row and no incarnation). */
+  private corrupt: string | null = null
   /** Set while storage has no usable incarnation; the promise of the start in progress. */
   private needsStart: 'r2' | 'sqlite' | null = null
   private starting: Promise<RebuildResult> | null = null
@@ -340,14 +358,32 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       if (this.alarmAt === null) this.setAlarmAt(Date.now() + this.refusal.retryAfterMs)
       return
     }
-    if (this.meta('incarnation') === null) this.needsStart = 'r2'
-    else if (this.meta('log_format') !== LOG_FORMAT_SEGMENTS) this.needsStart = 'sqlite'
+    // Storage is NEW only when this open created every table (design/UPGRADES.md §7): a new
+    // tenant, or storage that was lost. Only then does the ledger rebuild from R2. The mark is
+    // committed with the schema (no await in between), so a start interrupted by eviction
+    // resumes instead of looking like corruption.
+    const created = state.status === 'ok' && state.migrated.includes(1) && (!state.adopted || this.isEmpty())
+    if (created && this.meta('incarnation') === null) this.ctx.storage.transactionSync(() => this.setMeta('starting', 1))
+    if (this.meta('incarnation') === null) {
+      if (this.meta('starting') !== 1) {
+        // A version row and no incarnation: not new, not ours to guess about. Refuse.
+        this.corrupt = 'storage has a schema version but no ledger incarnation; refusing to rebuild over it'
+        console.error(`ledger ${this.tenant}: ${this.corrupt}`)
+        return
+      }
+      this.needsStart = 'r2'
+    } else if (this.meta('log_format') !== LOG_FORMAT_SEGMENTS) this.needsStart = 'sqlite'
     if (this.needsStart) {
       // Started now, outside `blockConcurrencyWhile`; requests wait for it or are refused.
       this.beginStart()
       return
     }
     if (this.hasPending() && this.alarmAt === null) this.setAlarmAt(Date.now())
+  }
+
+  private isEmpty(): boolean {
+    const n = (t: string) => this.ctx.storage.sql.exec(`SELECT COUNT(*) AS n FROM ${t}`).one().n as number
+    return n('file') === 0 && n('stream') === 0 && n('outbox') === 0 && n('meta') === 0
   }
 
   private meta(k: MetaKey): number | null {
@@ -473,6 +509,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
    */
   private gate(): Promise<void> | null {
     if (this.refusal) return Promise.reject(new SchemaTooNewError(this.refusal))
+    if (this.corrupt) return Promise.reject(new LedgerUnavailableError(this.corrupt, DRAIN_RETRY_MAX_MS))
     if (!this.needsStart) return null
     return this.waitStarted()
   }
@@ -480,7 +517,13 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
   private async waitStarted(): Promise<void> {
     if (!this.starting && Date.now() - this.startFailedAt >= START_RETRY_MS) this.beginStart()
     const run = this.starting
-    if (run) await Promise.race([run.then(() => undefined, () => undefined), sleep(START_WAIT_MS)])
+    if (run) {
+      // Wait for the start, but at most START_WAIT_MS; the timer is cleared either way, so
+      // no dangling timer keeps the object awake (and billed) after the answer.
+      let timer: ReturnType<typeof setTimeout> | undefined
+      await Promise.race([run.then(() => undefined, () => undefined), new Promise<void>((r) => { timer = setTimeout(r, START_WAIT_MS) })])
+      clearTimeout(timer)
+    }
     if (this.needsStart) {
       const why = this.lastError && !this.starting ? `its log could not be read (${this.lastError})` : 'it is starting a ledger incarnation (rebuilding from R2 or writing its base)'
       throw new LedgerUnavailableError(why, this.starting ? START_WAIT_MS : START_RETRY_MS)
@@ -931,6 +974,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       this.setAlarmAt(Date.now() + this.refusal.retryAfterMs)
       return
     }
+    if (this.corrupt) return
     if (this.needsStart) {
       // A start that failed (or never ran): try it here, outside any request.
       if (!this.starting) this.beginStart()
@@ -970,11 +1014,11 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
   /** Operator view of the log. Answers while starting, too. */
   async logStatus(): Promise<LogStatus> {
     const sql = this.ctx.storage.sql
-    const ready = !this.refusal && !this.needsStart
+    const ready = !this.refusal && !this.needsStart && !this.corrupt
     const first = ready ? this.meta('seg_first') : null
     const last = ready ? this.meta('seg_last') : null
     return {
-      phase: this.refusal ? 'refused' : this.needsStart ? 'starting' : 'ready',
+      phase: this.refusal ? 'refused' : this.corrupt ? 'corrupt' : this.needsStart ? 'starting' : 'ready',
       ledgerIncarnation: ready ? this.meta('incarnation') : null,
       version: ready ? this.version() : 0,
       loggedThrough: ready ? this.meta('logged_through') : null,
@@ -982,7 +1026,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       inFlight: first !== null && last !== null ? { first, last } : null,
       segmentsSinceCheckpoint: ready ? (this.meta('segs_since_ckpt') ?? 0) : 0,
       alarmAt: this.alarmAt,
-      lastError: this.lastError,
+      lastError: this.corrupt ?? this.lastError,
     }
   }
 
@@ -1004,7 +1048,11 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     const sql = this.ctx.storage.sql
     const n = (t: string) => sql.exec(`SELECT COUNT(*) AS n FROM ${t}`).one().n as number
     if (n('file') > 0 || n('stream') > 0 || n('outbox') > 0) throw new Error('ledger: rebuildFromLog requires an empty ledger')
-    sql.exec(`DELETE FROM meta`)
+    this.ctx.storage.transactionSync(() => {
+      sql.exec(`DELETE FROM meta`)
+      this.setMeta('starting', 1)
+    })
+    this.corrupt = null
     this.needsStart = 'r2'
     this.beginStart()
     return this.starting!
@@ -1101,6 +1149,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       this.setMeta('segs_since_ckpt', 0)
       this.dropMeta('seg_first')
       this.dropMeta('seg_last')
+      this.dropMeta('starting')
     })
     return { ledgerIncarnation: incarnation, version: state.version, source: mode === 'sqlite' ? null : latest, ...replay, files: state.files.size, streams: state.streams.size, ms: Date.now() - t0 }
   }
@@ -1242,6 +1291,8 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     const baseObject = await this.bucket.get(this.objectKey(ledgerBaseKey(this.tenant, source)))
     if (!baseObject) throw new Error(`ledger: incarnation ${source} has log objects but no base`)
     const base = await baseObject.json<LedgerBase>()
+    const why = unsupportedLedgerChange(base)
+    if (why) throw new Error(`ledger: base of incarnation ${source} is unsupported: ${why}`)
     if (base.kind !== 'base' || base.ledgerIncarnation !== source || !Array.isArray(base.added) || !Array.isArray(base.watermarks)) {
       throw new Error(`ledger: base of incarnation ${source} is not a base change`)
     }
@@ -1264,6 +1315,9 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
         }),
       )
       for (const c of changes) {
+        // COMPATIBILITY.md §3.2: a version or kind this code does not know stops the replay.
+        const why = unsupportedLedgerChange(c)
+        if (why) throw new Error(`ledger: change ${c.version} of incarnation ${source} is unsupported: ${why}`)
         if (c.ledgerIncarnation !== source || c.version !== state.version + 1) {
           throw new Error(`ledger: log of incarnation ${source} is not contiguous at version ${state.version + 1}`)
         }
@@ -1289,6 +1343,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     let unit: UnitRef | null = null
     const w = c.watermark
     if (c.kind === 'base') throw bad('a base entry inside the version sequence')
+    if (c.kind !== 'register_stream' && c.kind !== 'add_unit' && c.kind !== 'replace' && c.kind !== 'expire') throw bad(`unknown kind ${JSON.stringify(c.kind)}`)
     if (c.kind === 'register_stream') {
       if (!w) throw bad('no stream')
       const old = s.streams.get(w.shard)

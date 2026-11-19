@@ -28,22 +28,24 @@ npm run test:quint     # the Quint scenario tests
 Requirements: Node 22 (it runs `bfs/*.ts` directly) and Java 17. The first `quint verify`
 downloads Apalache 0.62.4 (which bundles TLC) into `~/.quint`; that needs network access once.
 Every run is capped for a shared machine: the explicit-state checker keeps its frontier on
-disk (`build/`), runs under `--max-old-space-size=1024` and stops at 19 million states
-(it says so in its result; none of the runs below hit that bound); TLC gets `-Xmx900m` and a
-400 MB off-heap fingerprint set, and two workers. Run TLC and the explicit-state checker one
-after the other, not together.
+disk (`build/`, compressed), runs under `--max-old-space-size=1024` and stops at 19 million
+states, or at a lower bound a row names; a run that stops says so and reports the depth up to
+which every state was checked. TLC gets `-Xmx900m`, a 400 MB off-heap fingerprint set and two
+workers. Run TLC and the explicit-state checker one after the other, not together.
 
 ## Which protocol is checked
 
-- **The ledger's change log.** Both models check the PLANNED log of `contracts/LEDGER-LOG.md`:
+- **The ledger's change log.** Both models check the batched log of `contracts/LEDGER-LOG.md`:
   a mutation answers after its SQLite commit, changes reach R2 later, and shards discard only
   up to the LOGGED watermark. `viz.qnt` abstracts the log as an outbox written to R2 a prefix
-  at a time. `bfs/model.ts` models it literally: a drain PUTs one segment holding every pending
-  change, then deletes those outbox rows and advances `logged` in one transaction, and can die
-  between the two; the rebuild lists the segments in key order and replays them. The as-built
-  log (one object per change, `ledger.ts` `drainNow`) is the `log: 'perChange'` setting of
-  `bfs/model.ts` and is used for the "as built" runs. Both are checked; the README says which
-  for every run.
+  at a time. `bfs/model.ts` models it literally: a drain PUTs one segment holding the pending
+  changes, then deletes those outbox rows and advances `logged` in one transaction, and can die
+  between the two; the rebuild lists the segments in key order and replays them strictly.
+  When this work started the segment log was PLANNED and `ledger.ts` wrote one object per
+  change (`log: 'perChange'` in the model). The "as written" runs check the plan as it stood
+  then, which is where F10 and F11 come from. During this work LEDGER-LOG.md adopted both fixes
+  and `ledger.ts` was rebuilt on segments; the "as built" runs follow the new code
+  (`drainRetrySame`, `baseFirst`, `baseTombstones`).
 - **Design text vs. code.** "As written" runs take `design/DESIGN.md` (draft 3.1) and
   `contracts/LEDGER-LOG.md` literally. "As built" runs (explicit-state checker only) follow
   the code read on 2026-11-18: lazy stream registration by `flush.ts`, the coordinator asking
@@ -436,7 +438,7 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new.
   stream, the ledger keeps naming the lost incarnation); with registration the refusing shard
   re-registers and the next plan names the new incarnation (`LIVE_impl_F6_fixed`).
 
-### F10 (major, planned contract: `contracts/LEDGER-LOG.md`) — A retried drain writes an overlapping segment; a strict rebuild then refuses the log
+### F10 (major in the plan as it stood; fixed during this work: `contracts/LEDGER-LOG.md`, `ledger.ts`) — A retried drain writes an overlapping segment; a strict rebuild then refuses the log
 
 - **Text.** "Segments of one incarnation never overlap and never leave a gap" and "A failed
   write leaves the rows in place … Because the key is derived from the versions it holds and
@@ -453,8 +455,9 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new.
   reader that skipped versions it already has would be right; the contract says it need not.)
 - **Fix (one sentence).** *Before its PUT a drain records the segment's `[first, last]` in
   SQLite; a retry writes exactly that segment again before taking newer rows* (modelled as
-  `drainRetrySame`; passes). Or: readers skip versions already applied after checking the
-  bodies agree, and the contract says segments may overlap.
+  `drainRetrySame`; passes). **Status:** LEDGER-LOG.md now says exactly this, and `ledger.ts`
+  `nextSegment`/`drainNow` implement it (bounds in `meta`, `storage.sync()` before the PUT,
+  a record whose rows are gone stops the drain). Checked by reading; the as-built runs model it.
 
 ### F13 (major, code: `compact.ts` + `janitor.ts`) — A compaction step adopts an old output that the sweeper deletes by its old upload time
 
@@ -538,7 +541,7 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new.
   `flush.ts` correctly uses `loggedWatermarks()`. Rename it `committedWatermark` or drop it, and
   say on `Shard.recorded` that its only legitimate source is `loggedWatermarks()`.
 
-### F11 (minor, planned contract) — Without `base.json` a ledger incarnation number can be reused
+### F11 (minor in the plan as it stood; fixed during this work) — Without `base.json` a ledger incarnation number can be reused
 
 - LEDGER-LOG.md: "The first change of an incarnation is its base. There is no separate
   `base.json`." The base then reaches R2 only with the first drain. Trace
@@ -546,8 +549,9 @@ the second checker (F4, F5, F7 by TLC only); F10–F15 are new.
   drain → R2 holds nothing of that incarnation, so the restarted ledger takes the same number
   and re-issues the same versions with other content. DESIGN §4.3's "versions are never reused"
   fails. Only in-memory comparisons are affected (the coordinator's two-plan check, plan
-  caches); the publisher reads only R2. **Fix:** keep "the base is in R2 before the incarnation
-  commits anything" (as built).
+  caches); the publisher reads only R2. **Fix:** "the base is in R2 before the incarnation
+  commits anything". **Status:** LEDGER-LOG.md now requires the base segment to be written
+  alone before the incarnation commits or serves anything, and `ledger.ts` does so.
 
 ### F9 (minor) — A ledger rebuild can undo retention
 
@@ -582,13 +586,13 @@ code's choice for every row marked *modelled*.
 
 | # | Code | Model / design | Consequence |
 |---|---|---|---|
-| L1 | Change log: one R2 object per change, drained lowest version first, outbox row deleted and `logged` advanced (incarnation-checked) only after its PUT. The mutation awaits one drain attempt, but answers `ok` even if R2 failed. | `log: 'perChange'` (as built). The PLANNED segments of LEDGER-LOG.md are `log: 'segments'`. | As built, "logged" is the version prefix (F7 satisfied) and a retried PUT rewrites the same key, so F10 cannot happen; it appears with the planned segments. |
+| L1 | Change log: at the start of this work one R2 object per change; now segments (`nextSegment`, `drainNow`, `segmentWritten`): bounds recorded and synced before the PUT, a retry writes exactly them, `logged` advanced (incarnation-checked) and rows deleted in one transaction after the PUT; mutations answer after the commit. | `log: 'segments'`, `drainRetrySame`. | Matches. "Logged" is the version prefix (F7 satisfied); F10 fixed. A record whose rows are gone stops the drain for good (fails closed; `loggedWatermarks` stops, shards keep rows): not modelled. |
 | L2 | `addUnit` for an unknown shard registers it in the same transaction when `seqLo = 1`; different incarnation → `incarnation_mismatch`; `seqHi ≤ watermark` → `ok` replay; `seqLo ≠ watermark + 1` → `not_contiguous`; a live key → `invalid`. | Same. | Matches. `AddUnitResult.watermark` is the committed one (F8). |
 | L3 | `registerStream`: same incarnation is a no-op, a lower one throws, a higher one resets watermark and `logged` to 0 and keeps `prev_incarnation`. | Same. | Matches. DESIGN §4.3 "the ledger records the boundary and raises an alert" is only `prev_incarnation`: no loss interval, no alert (not modelled). |
 | L4 | `replace`: replay rule, `conflict` on a missing input, `invalid` on a live output; since this evening also `conflict` with `blocking` on overlapping precedence ranges. | Same except `blocking` (not modelled). | A `blocking` conflict sends `compact.ts` down the same delete-on-conflict path as F14. |
 | L5 | Tombstones written in the removing transaction; `deletable` = removing version below the first unlogged version, older than `minAgeMs` by the ledger's clock, key not live; `forget` after the delete. | `purge` with `delLogged` + `delGrace` + not live. | Matches. Grace is time; the model assumes it exceeds every query (DESIGN 1 h vs 30 s query timeout). |
 | L6 | `orphanCheck`: live keys, tombstoned keys and `logged` watermarks in one synchronous read; the incarnation it reports per stream is the *committed* one. | `sweep: 'impl'` (`sweepIncLogged: false`). | Fixes F2 in code (DESIGN §4.3's sentence was not updated); the committed incarnation is **F15**. |
-| L7 | Rebuild replays only the NEWEST ledger incarnation (`base.json` + its changes), strictly (`version + 1` or throw); tombstones are rebuilt only from that incarnation's changes; `base.json` is PUT before the SQLite commit. | Same (`rebuild: 'strict'`, `baseFirst`). | Tombstones of removals made before the last rebuild are dropped: those objects are left to the orphan sweeper (flush files by logged watermark, compaction outputs by age). With strict replay and the planned segments, F10 makes the rebuild throw, and `init()` then leaves the object serving nothing. |
+| L7 | Rebuild replays only the NEWEST ledger incarnation (checkpoint or base segment, then the segments), strictly (each must start at the previous end + 1, or the rebuild refuses); the base now carries tombstones, previous incarnations and unit refs; the base segment is PUT before the SQLite commit. | `rebuild: 'strict'`, `baseFirst`, `baseTombstones` (as built). | Matches. Before this evening tombstones were rebuilt only from the newest incarnation's changes (the plan configs still model that: those objects are left to the sweeper). Checkpoints are not modelled. |
 | L8 | Versions continue across incarnations (`base.version`); `plan` returns every registered stream and the files of a time range. | Relative versions; whole live set. | No effect on the properties checked. |
 
 ### Other code the model follows

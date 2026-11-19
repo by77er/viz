@@ -8,10 +8,13 @@
   "durable_objects": {
     "bindings": [
       { "name": "LEDGER", "class_name": "Ledger" },
-      { "name": "LEDGER_ASBUILT", "class_name": "LedgerAsBuilt" }
+      { "name": "LEDGER_ASBUILT", "class_name": "LedgerAsBuilt" },
+      // The same class under another namespace: a second object of the same tenant with its
+      // own (empty) storage, reading the same R2 log.
+      { "name": "LEDGER_REPLICA", "class_name": "LedgerReplica" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Ledger", "LedgerAsBuilt"] }],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Ledger", "LedgerAsBuilt", "LedgerReplica"] }],
   "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "viz-lake" }],
   "vars": { "CELL": "cell-0" }
 }

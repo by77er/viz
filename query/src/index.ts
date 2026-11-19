@@ -16,7 +16,7 @@
  */
 import { authenticate } from '../../edge/src/auth'
 import { HttpError } from '../../edge/src/errors'
-import { type Grid, QueryError, type SplitPlan, createQueryEngine } from '../../engine/wasm-query/js/index'
+import { EngineLoadError, type Grid, QueryError, type SplitPlan, createQueryEngine } from '../../engine/wasm-query/js/index'
 import wasm from '../../engine/wasm-query/js/viz_query.wasm'
 import { ConfigError, type Env, tenantLimits } from './config'
 import { ApiError, type Context, type Cost, MAX_TS, MIN_TS, type SplitSpec, addStats, cardinality, gather, newCost } from './coordinator'
@@ -284,6 +284,15 @@ async function api(req: Request, env: Env, path: string, corsHeaders: Record<str
     }
     return success(data, headers)
   } catch (e) {
+    // The engine could not be loaded: retrying cannot help, so 500, not a retryable 503.
+    if (e instanceof EngineLoadError) {
+      console.error('query: the engine did not load', e.message)
+      return failure('internal', 'the query engine could not be loaded', headers)
+    }
+    // A component whose storage is newer than this release reads (contracts/COMPATIBILITY.md
+    // §2.4): retryable, nothing happened.
+    if (e instanceof Error && e.message.startsWith('schema_too_new')) return failure('unavailable', 'a storage component runs a newer schema than this release reads; retry', { ...headers, 'Retry-After': '5' })
+    if (e instanceof ApiError && e.errorType === 'unavailable') return failure(e.errorType, e.message, { ...headers, 'Retry-After': '1' })
     if (e instanceof ApiError) return failure(e.errorType, e.message, headers)
     if (e instanceof QueryError) return failure(e.errorType, e.message, headers)
     if (e instanceof ConfigError) return failure('unavailable', e.message, { ...headers, 'Retry-After': '30' })

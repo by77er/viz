@@ -64,6 +64,13 @@ async function main() {
   const stopReal = await lib.ensureRealStack()
   stops.push(stopReal)
   const keys = lib.realKeys()
+  // A limits record from an earlier run stays in the query Worker's cache for 30 s after it is deleted.
+  for (let i = 0; i < 50; i++) {
+    const r = await fetch(`${lib.REAL}/api/v1/query_range`, { method: 'POST', headers: { Authorization: `Bearer ${keys.read}`, 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ query: Q_RATE, start: T0 / 1000, end: T1 / 1000, step: 60 }).toString() })
+    await r.arrayBuffer()
+    if (r.status === 200) break
+    await new Promise((res) => setTimeout(res, 1000))
+  }
   stops.push(await lib.startMock(MOCK_PORT))
   stops.push(await lib.startPreview(APP_PORT, lib.REAL))
   stops.push(await lib.startPreview(APP_PORT + 1, `http://127.0.0.1:${MOCK_PORT}`))
@@ -93,6 +100,8 @@ async function main() {
     await page.waitForSelector('.cm-tooltip-autocomplete', { timeout: 15000 })
     let options = await page.$$eval('.cm-tooltip-autocomplete li', (els) => els.map((e) => e.textContent))
     check('real API: autocomplete offers metric names', options.some((o) => o.includes('http_requests_total')), options.slice(0, 4).join(' | '))
+    // CodeMirror ignores Enter for 75 ms after a list arrives (interactionDelay); a person is slower than that.
+    await page.waitForTimeout(200)
     await page.keyboard.press('Enter')
     await page.keyboard.type('{')
     await page.waitForFunction(() => [...document.querySelectorAll('.cm-tooltip-autocomplete li')].some((e) => e.textContent.includes('service')), null, { timeout: 15000 })
@@ -211,7 +220,7 @@ async function main() {
     // The PromQL linter of @prometheus-io/codemirror-promql recurses once per operator: the
     // 5,000-term query overflows its stack (a page error; the query still runs). Known issue.
     const unexpected = pageErrors.filter((m) => !/Maximum call stack size exceeded/.test(m))
-    check('no page errors but the linter\'s on the 5,000-term query', unexpected.length === 0, `${pageErrors.length - unexpected.length} from the linter; ${unexpected.join(' | ')}`)
+    check('no page errors but the linter\'s on the 5,000-term query', unexpected.length === 0, `all page errors: ${pageErrors.join(' | ') || 'none'}`)
     await ctx.close()
   } finally {
     await browser.close()
