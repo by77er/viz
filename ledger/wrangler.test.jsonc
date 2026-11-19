@@ -14,7 +14,7 @@
       { "name": "LEDGER_REPLICA", "class_name": "LedgerReplica" },
       // The release before checkpoints in parts, reading the same R2 log.
       { "name": "LEDGER_BEFORE", "class_name": "LedgerBefore" },
-      // The release before registration before writes (D57). Its tests run it on the Ledger's
+      // The release before registration before writes (D61). Its tests run it on the Ledger's
       // own storage (a rollback); the binding only puts the class in the script.
       { "name": "LEDGER_PREREG", "class_name": "LedgerPrereg" }
     ]

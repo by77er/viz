@@ -9,7 +9,7 @@
       { "name": "SHARD", "class_name": "Shard" },
       { "name": "SHARD_ASBUILT", "class_name": "ShardAsBuilt" },
       { "name": "CLIENT", "class_name": "Client" },
-      // Registration before writes (D57): the release before it, and the tenants' ledgers.
+      // Registration before writes (D61): the release before it, and the tenants' ledgers.
       { "name": "SHARD_PREREG", "class_name": "ShardPrereg" },
       { "name": "LEDGER", "class_name": "Ledger" }
     ]

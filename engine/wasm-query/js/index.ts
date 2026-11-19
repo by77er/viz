@@ -19,9 +19,9 @@
  * A trap (the Rust side is built with panic=abort) leaves an instance in an unknown state.
  * The binding then drops the instance and creates a fresh one for the next call.
  */
-import type { Matcher, PromMatrix, PromScalar, PromString, PromVector, ScanInput, SeriesData } from '../../../contracts/engine'
+import type { LogReadPlan, Matcher, PromMatrix, PromScalar, PromString, PromVector, ScanInput, SeriesData, SignalEngine, SignalFilePlan, TraceReadPlan } from '../../../contracts/engine'
 
-export const ABI_VERSION = 5
+export const ABI_VERSION = 6
 
 /** Bounds on one query (`engine/query` `Limits`, plus the step cap of `viz-promql`). */
 export interface QueryLimits {
@@ -214,7 +214,8 @@ export function sparseFile(size: number, segments: { offset: number; bytes: Uint
   return out
 }
 
-export interface QueryEngine {
+/** The PromQL operations and, since ABI 6, the span and log ones (`contracts/engine.ts` `SignalEngine`). */
+export interface QueryEngine extends SignalEngine {
   /** What to fetch before evaluating: merged, clamped ranges. `startMs === endMs` plans an instant query. */
   plan(promql: string, startMs: number, endMs: number, stepMs: number, limits?: QueryLimits): FetchRange[]
   /** `contracts/engine.ts` `selectors`: one entry per selector, unmerged. */
@@ -336,6 +337,18 @@ type Op =
   | 'viz_q_sample_plan'
   | 'viz_q_part_plan'
   | 'viz_q_meta_part'
+  | 'viz_q_tq_plan'
+  | 'viz_q_tq_file_plan'
+  | 'viz_q_tq_extent'
+  | 'viz_q_tq_search'
+  | 'viz_q_tq_metrics'
+  | 'viz_q_tq_trace'
+  | 'viz_q_tq_tags'
+  | 'viz_q_tq_tag_values'
+  | 'viz_q_lq_plan'
+  | 'viz_q_lq_file_plan'
+  | 'viz_q_lq_query'
+  | 'viz_q_lq_labels'
 type Module = Exports & Record<Op, (ptr: number, len: number) => number>
 
 const OPS: Record<Matcher['op'], number> = { '=': 0, '!=': 1, '=~': 2, '!~': 3 }
@@ -351,6 +364,12 @@ function time(name: string, v: number): bigint {
   if (v === -Infinity) return I64_MIN
   if (typeof v !== 'number' || !Number.isInteger(v)) throw new RangeError(`engine: ${name} must be an integer number of milliseconds, got ${v}`)
   return BigInt(v)
+}
+
+/** A nanosecond time: a bigint within i64. */
+function nanos(name: string, v: bigint): bigint {
+  if (typeof v !== 'bigint' || v < I64_MIN || v > I64_MAX) throw new RangeError(`engine: ${name} must be a bigint of nanoseconds within i64, got ${String(v)}`)
+  return v
 }
 
 function limit(name: string, v: number): bigint {
@@ -382,6 +401,10 @@ class Request {
   }
   u64(v: bigint): this {
     return this.push(8, (_m, dv, at) => dv.setBigUint64(at, v, true))
+  }
+  /** Bytes with no length in front (a trace id). */
+  raw(b: Uint8Array): this {
+    return this.push(b.byteLength, (mem, _dv, at) => mem.set(b, at))
   }
   bytes(b: Uint8Array): this {
     this.u32(b.byteLength)
@@ -601,7 +624,66 @@ export function createQueryEngine(module: WebAssembly.Module): QueryEngine {
     })
   }
 
+  const traceId = (req: Request, id: Uint8Array | undefined): Request => {
+    if (id === undefined) return req.u8(0)
+    if (!(id instanceof Uint8Array) || id.byteLength !== 16) throw new RangeError('engine: a trace id is 16 bytes')
+    return req.u8(1).raw(id)
+  }
+  const counted = (payload: Uint8Array): { json: string; spans: number; traces: number } => {
+    const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
+    return { spans: u64At(dv, 0), traces: u64At(dv, 8), json: text.decode(payload.subarray(16)) }
+  }
+  const textOf = (payload: Uint8Array): string => text.decode(payload)
+  const sels = (req: Request, list: LogReadPlan['selectors']): Request => {
+    req.u32(list.length)
+    for (const s of list) req.i64(nanos('start', BigInt(s.start))).i64(nanos('end', BigInt(s.end))).matchers(s.matchers)
+    return req
+  }
+
+  const signals: SignalEngine = {
+    tqPlan: (kind, query, startNs, endNs, stepNs) => {
+      const k = kind === 'search' ? 0 : kind === 'range' ? 1 : 2
+      return call('viz_q_tq_plan', new Request().u8(k).i64(nanos('start', startNs)).i64(nanos('end', endNs)).i64(nanos('step', stepNs)).str(query), json<TraceReadPlan>)
+    },
+    tqFilePlan: (table, indexes, lo, hi, id) =>
+      call('viz_q_tq_file_plan', traceId(new Request().u64(BigInt(RANGE_GAP)).u8(table === 'spans' ? 0 : 1).i64(nanos('lo', lo)).i64(nanos('hi', hi)), id).strs(indexes), json<SignalFilePlan[]>),
+    tqExtent: (indexFiles, tailBatches, lo, hi, id) => call('viz_q_tq_extent', traceId(new Request().i64(nanos('lo', lo)).i64(nanos('hi', hi)), id).files(indexFiles).files(tailBatches), json),
+    tqSearch: (files, tails, query, q) =>
+      call('viz_q_tq_search', new Request().u64(limit('maxSpans', q.maxSpans)).count('limit', q.limit).count('spss', q.spss).i64(nanos('start', q.startNs)).i64(nanos('end', q.endNs)).str(query).files(files).files(tails), counted),
+    tqMetrics: (files, tails, query, q) =>
+      call(
+        'viz_q_tq_metrics',
+        new Request().u64(limit('maxSpans', q.maxSpans)).u64(limit('maxSeries', q.maxSeries)).u64(limit('maxPoints', q.maxPoints)).u8(q.instant ? 1 : 0)
+          .i64(nanos('start', q.startNs)).i64(nanos('end', q.endNs)).i64(nanos('step', q.stepNs)).str(query).files(files).files(tails),
+        counted,
+      ),
+    tqTrace: (files, tails, id, version, maxSpans) => {
+      if (!(id instanceof Uint8Array) || id.byteLength !== 16) throw new RangeError('engine: a trace id is 16 bytes')
+      return call('viz_q_tq_trace', new Request().u8(version).raw(id).u64(limit('maxSpans', maxSpans)).files(files).files(tails), (payload) => {
+        const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
+        return { spans: Number(dv.getBigUint64(1, true)), json: payload[0] === 1 ? text.decode(payload.subarray(9)) : null }
+      })
+    },
+    tqTags: (files, tails, version, scope, lo, hi, n, maxSpans) =>
+      call('viz_q_tq_tags', new Request().u8(version).str(scope).i64(nanos('lo', lo)).i64(nanos('hi', hi)).count('limit', n).u64(limit('maxSpans', maxSpans)).files(files).files(tails), textOf),
+    tqTagValues: (files, tails, version, tag, q, lo, hi, n, maxSpans) =>
+      call('viz_q_tq_tag_values', new Request().u8(version).str(tag).str(q).i64(nanos('lo', lo)).i64(nanos('hi', hi)).count('limit', n).u64(limit('maxSpans', maxSpans)).files(files).files(tails), textOf),
+    lqPlan: (kind, query, startNs, endNs, stepNs) =>
+      call('viz_q_lq_plan', new Request().u8(kind === 'range' ? 0 : 1).i64(nanos('start', startNs)).i64(nanos('end', endNs)).i64(nanos('step', stepNs)).str(query), json<LogReadPlan>),
+    lqFilePlan: (indexes, selectors) => call('viz_q_lq_file_plan', sels(new Request().u64(BigInt(RANGE_GAP)), selectors).strs(indexes), json<SignalFilePlan[]>),
+    lqQuery: (files, tails, query, q) =>
+      call(
+        'viz_q_lq_query',
+        new Request().u64(limit('maxRows', q.maxRows)).u64(limit('maxSeries', q.maxSeries)).u64(limit('maxSteps', q.maxSteps)).count('limit', q.limit).u8(q.direction === 'forward' ? 1 : 0).u8(q.kind === 'range' ? 0 : 1)
+          .i64(nanos('start', q.startNs)).i64(nanos('end', q.endNs)).i64(nanos('step', q.stepNs)).str(query).files(files).files(tails),
+        (payload) => ({ rows: u64At(new DataView(payload.buffer, payload.byteOffset, payload.byteLength), 0), json: text.decode(payload.subarray(8)) }),
+      ),
+    lqLabels: (kind, name, selectors, startNs, endNs, fragments, files, tails) =>
+      call('viz_q_lq_labels', new Request().u8(kind === 'names' ? 0 : kind === 'values' ? 1 : 2).str(name).i64(nanos('start', startNs)).i64(nanos('end', endNs)).strs(selectors).strs(fragments).files(files).files(tails), textOf),
+  }
+
   return {
+    ...signals,
     splitPlan: (promql, limits = DEFAULT_LIMITS) => call('viz_q_split_plan', new Request().limits(limits).str(promql), json<SplitPlan>),
     extract: (seriesFiles, sampleFiles, without, part, parts, ranges) => {
       const req = new Request().strs(without).count('part', part).count('parts', parts).ranges(ranges).files(seriesFiles).files(sampleFiles)

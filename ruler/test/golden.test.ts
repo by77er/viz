@@ -11,7 +11,7 @@ import { readAnomalyRows } from '../src/anomaly'
 import { indexPartition } from '../src/registry'
 import { exportRuleFile } from '../src/rulefile'
 import { bareRuleId } from '../src/ruler'
-import { FORMATS } from '../src/schema'
+import { ANOMALY_STATE_READS, FORMATS } from '../src/schema'
 import { jumpHash, shardOf } from '../src/placement'
 import { verifySignature } from '../src/signature'
 import { fingerprint, hash64 } from '../src/util'
@@ -72,7 +72,8 @@ describe('golden formats', () => {
     for (const [name, g] of Object.entries(files)) {
       const { format, version } = g as { format: Format; version: number }
       expect(name).toBe(`${format}.v${version}.json`)
-      expect(version).toBeLessThanOrEqual(FORMATS[format])
+      // A version this release reads but does not write yet (readers first): store.anomaly-state v2.
+      expect(version).toBeLessThanOrEqual(format === 'store.anomaly-state' ? Math.max(FORMATS[format], ...ANOMALY_STATE_READS) : FORMATS[format])
     }
   })
 
@@ -159,8 +160,9 @@ describe('golden formats', () => {
     })
   })
 
-  it('robust z state as Float64 ring blocks (store.anomaly-state v2): the head, an implicit block and an explicit one, and the decoder reads them back', async () => {
+  it('robust z state as Float64 ring blocks (store.anomaly-state v2, written with the gate on, as the next release will; this one reads it): the head, an implicit block and an explicit one, and the decoder reads them back', async () => {
     const { tenant, stub, w } = await setup({ heartbeatMs: 30 * MIN }, 'goldenring')
+    w.anomalyStateWrite = 2
     ok(await stub.saveGroups(tenant, {
       groups: [{ name: 'anomalies/1m', interval: '1m', rules: [{ alert: 'LatencyRing', expr: 'latency_ms', anomaly: { detector: 'robust_z', params: { windowPoints: 30, minPoints: 5 }, max_series: 4 } }] }],
     }))
@@ -181,9 +183,9 @@ describe('golden formats', () => {
     const bodies = rows.map((r) => JSON.parse(r.body as string) as { v: number; part: string; series: Record<string, unknown>[] })
     expect(bodies.map((b) => [b.v, b.part])).toEqual([[2, 'head'], ...bodies.slice(1).map(() => [2, 'block'])])
     expect(bodies.slice(1).flatMap((b) => b.series.map((e) => ('x' in e ? 'x' : 'e')))).toEqual(expect.arrayContaining(['x', 'e']))
-    expectGolden(file('store.anomaly-state'), {
+    expectGolden('formats/store.anomaly-state.v2.json', {
       format: 'store.anomaly-state',
-      version: FORMATS['store.anomaly-state'],
+      version: 2,
       seriesKeys: { a: fingerprint({ service: 'a' }), b: fingerprint({ service: 'b' }) },
       rows: rows.map((r) => ({ chunk: r.chunk, body: r.body })),
     })

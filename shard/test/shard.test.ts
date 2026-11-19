@@ -43,7 +43,7 @@ describe('streams are per tenant', () => {
     }
     // A tenant that has never written here sees nothing, not someone else's data: asked
     // with no incarnation, an empty tail; asked about one the shard does not hold, a refusal
-    // that makes the loss visible (review R-10), never an empty `ok`. Since D57 the refusal
+    // that makes the loss visible (review R-10), never an empty `ok`. Since D61 the refusal
     // names a fresh stream the shard started (and registered) for it, which holds nothing.
     expect(await s.tailRead('c', 0, 0)).toMatchObject({ status: 'ok', batches: [] })
     const lost = await s.tailRead('c', 1, 0)

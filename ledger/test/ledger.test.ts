@@ -204,13 +204,13 @@ describe('stream incarnations', () => {
 
     const v = (await everything(l)).version
     const reg = await l.registerStream({ shard: S, incarnation: NEW })
-    // Committed, not logged (D57): its change is still in the outbox.
+    // Committed, not logged (D61): its change is still in the outbox.
     expect(reg).toEqual({ version: v + 1, previousIncarnation: INC, logged: false })
     expect(await l.registerStream({ shard: S, incarnation: NEW })).toEqual(reg) // retry gets the same answer
 
     const p = await everything(l)
     expect(p.watermarks).toEqual([{ shard: S, incarnation: NEW, seq: 0 }])
-    // The logged prefix still names the old incarnation (D57: `loggedIncarnation`).
+    // The logged prefix still names the old incarnation (D61: `loggedIncarnation`).
     expect(await l.loggedWatermarks()).toEqual([{ shard: S, incarnation: NEW, seq: 0, loggedIncarnation: INC }])
     expect(p.files).toHaveLength(2) // rows already in files stay visible
 

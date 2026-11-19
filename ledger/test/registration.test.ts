@@ -1,5 +1,5 @@
 /**
- * Registration before writes (D57; spec/README.md "Proposed fixes", R2), the ledger's half:
+ * Registration before writes (D61; spec/README.md "Proposed fixes", R2), the ledger's half:
  * `registerStream` answers whether the registration is LOGGED, and `loggedWatermarks` /
  * `orphanCheck` report each stream's logged incarnation, both derived from the outbox at call
  * time and never stored (design/reviews/registration-before-writes.md B-1).
@@ -7,7 +7,7 @@
  *   spec test 4   `logged` is false until the segment holding the registration is written, then
  *                 true; `loggedIncarnation` moves only there, never at the commit; after a
  *                 rebuild it equals the incarnation; every answer survives eviction
- *   review B-1    a rollback to the release before D57 and a roll-forward, on the same storage:
+ *   review B-1    a rollback to the release before D61 and a roll-forward, on the same storage:
  *                 what that release committed and drained answers `logged: true`, so no stream
  *                 is refused for ever
  */
@@ -22,7 +22,7 @@ const S2 = 'pool/1'
 const S3 = 'pool/2'
 const logged = async (l: Stub, shard = S) => (await l.loggedWatermarks()).find((w) => w.shard === shard)
 
-/** Run the release before D57 on this object's storage, as a rollback would, and hand it to `body`. */
+/** Run the release before D61 on this object's storage, as a rollback would, and hand it to `body`. */
 async function asPrevious<R>(l: Stub, body: (old: LedgerPrereg) => Promise<R>): Promise<R> {
   await everything(l) // the object has started; the old code then opens the same storage
   return runInDurableObject(l, async (_i: Ledger, state) => {
@@ -115,7 +115,7 @@ describe('spec test 4: `logged` and `loggedIncarnation` move only when the regis
   })
 })
 
-describe('review B-1: rollback to the release before D57 and roll-forward, on the same storage', () => {
+describe('review B-1: rollback to the release before D61 and roll-forward, on the same storage', () => {
   it('streams that release registered (by registerStream, by a first unit, by a rebuild) answer logged once it drained: none is refused for ever', async () => {
     const { tenant, l } = open()
     // Release N+1 (this one) runs: a stream registered and logged.
@@ -124,7 +124,7 @@ describe('review B-1: rollback to the release before D57 and roll-forward, on th
     expect(await l.registerStream({ shard: S, incarnation: INC })).toMatchObject({ logged: true })
     // Rollback to N on the same storage. N takes a new stream lazily (its first unit registers
     // it), registers another, re-registers S after a shard storage loss, and drains: N's drain
-    // knows nothing of D57.
+    // knows nothing of D61.
     await asPrevious(l, async (old) => {
       expect(await old.addUnit(pair(1, 3, T0, S2, 77))).toMatchObject({ status: 'ok' })
       expect(await old.registerStream({ shard: S3, incarnation: 88 })).toEqual({ version: expect.any(Number), previousIncarnation: null }) // no `logged`: N

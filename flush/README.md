@@ -188,7 +188,7 @@ segments of one run go in sequence, because each unit must extend the watermark.
 ```
 (cd ../engine/wasm && ./build.sh)       # the tests import ../engine/wasm/js/viz_engine.wasm
 npm install
-npx vitest run --maxWorkers=2   # 45 tests in workerd, 4 files: flush 21, consumer 18, golden 5, measure 1
+npx vitest run --maxWorkers=2   # 49 tests in workerd, 5 files: flush 21, consumer 18, golden 5, measure 1, registration 4
 npx tsc --noEmit                # clean
 # mutants, from a COPY of the tree (the scripts refuse a git checkout):
 node scripts/mutants.mjs            # 20 mutants against test/flush.test.ts
@@ -202,6 +202,36 @@ runs flush, the drain and flush again until `awaitingLog` is false, as the queue
 so what one run sees of the logged watermark never depends on when an alarm runs. Tests that
 mean "a run as one delivery sees it" assert `awaitingLog: true` and `recordedThrough: 0`
 after one run, and the recording after the drain.
+
+**Registration before writes (D61), 2026-11-19: 49 of 49, tsc clean.** No code here changed:
+flush keeps its lazy registration (`addUnit` of a stream's first unit; `registerStream` after
+`incarnation_mismatch`) for shards in mode `lazy` and of earlier releases; a shard in mode
+`logged` registers before it accepts, so flush meets those paths only for streams it never
+held. `test/registration.test.ts` (4) replays the protocol model's traces against the real
+shard (mode `logged`), ledger, flush and engine, with a reader that follows the query
+coordinator's protocol statement for statement (`test/coordinator.ts`: which shards it asks,
+with which incarnation, what it learns from a refusal, its cap of three refusals):
+
+- **spec R1** (`R1_safety`, 15 steps): with the drain held back a new stream's append is
+  refused twice, nothing stored (the shard and the ledger evicted); once logged it is
+  accepted; then a flush Worker PUTs, the ledger loses its storage, a query plans (the rebuilt
+  ledger names the stream, `inc @ 0`, no file), the unit is admitted and logged, the shard loses
+  its storage, the query's tail read is refused and its re-plan returns b0 from the file.
+- **spec F6(b)** (`F6b_impl_now` with the registration first): the query plans before the
+  stream's first unit is admitted and names the stream; after the shard's storage loss the read
+  is refused, never `ok` and empty; the second attempt returns b0 and reads the fresh stream from
+  0. **The same steps in mode `lazy`** (the release before D61) answer **without** b0 in one
+  attempt: F6(b) reproduced against the code, the test's built-in counterfactual.
+- **spec F6 liveness** (`LIVE_R2_teeth_no_read_trigger`, 6 steps): registered and logged, two
+  appends, the shard loses its storage, nothing more is written: the first attempt is refused,
+  the shard holds a fresh incarnation that the ledger already names, the second attempt
+  completes (without the two batches: the declared loss), later queries in one attempt, and the
+  fresh stream takes writes once logged.
+
+Mutants of the shard and the ledger that these tests kill are listed in `shard/README.md` and
+`ledger/README.md` ("acknowledge before logged", "a read naming a lost stream does not start
+and register a fresh one"). The same traces against the real coordinator are for query/ to add
+(`shard/README.md`, "Needed changes elsewhere" 2).
 
 What the tests establish (each on a fresh tenant and shard):
 

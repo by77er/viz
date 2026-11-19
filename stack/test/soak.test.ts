@@ -20,7 +20,7 @@ import { DAY_MS, type Sim, type SimTenant, checkTenant, createSim, deliver, inge
  * Graces are real time, scaled down: a removed file may be deleted after DELETE_GRACE, an
  * unreferenced flush file after ORPHAN_GRACE, and a compaction step gives up after STEP.
  *
- * The shards run in registration mode `logged` (D57): a new stream takes no write until its
+ * The shards run in registration mode `logged` (D61): a new stream takes no write until its
  * registration is in its ledger's log. Every stream is new at the start, so the run begins by
  * registering them the way senders do (the same request, retried while it is refused), with
  * evictions between attempts; each such request names one slot, so a refusal stores nothing

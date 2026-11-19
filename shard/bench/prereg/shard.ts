@@ -1,4 +1,4 @@
-// FROZEN: shard/src/shard.ts as it stood before registration before writes (D57; spec "Proposed fixes" R2), the release before it.
+// FROZEN: shard/src/shard.ts as it stood before registration before writes (D61; spec "Proposed fixes" R2), the release before it.
 // Used as the previous release on the SAME storage (test/registration.test.ts: rollback and roll-forward) and as the
 // "before" side of bench/registration.bench.test.ts. Not maintained: do not edit.
 import { DurableObject } from 'cloudflare:workers'

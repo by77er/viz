@@ -28,6 +28,7 @@ const T = {
   compat: `npx vitest run ${W} test/compat.test.ts`,
   tail: `npx vitest run ${W} test/tail.test.ts`,
   pool: `npx vitest run ${W} test/pool.test.ts`,
+  registration: `npx vitest run ${W} test/registration.test.ts`,
   all: `npx vitest run ${W}`,
 }
 // [name, file, from, to, tests]
@@ -45,7 +46,7 @@ const mutants = [
   ['group commit: the tenant cap ignores bytes waiting in the group', F, '    const held = (known?.bufferedBytes ?? 0) + waiting', '    const held = known?.bufferedBytes ?? 0', T.all],
   // ── review fixes ──
   ['R-6: the marker is believed present while it is deleted', F, '      this.setMarked(false)\n      await this.env.CONFIG.delete(key)', '      await this.env.CONFIG.delete(key)', T.trigger],
-  ['R-10: a tail read of a stream the shard does not hold answers an empty ok', F, "      if (incarnation !== 0) return { status: 'incarnation_mismatch', incarnation: 0 }\n", '', T.shard],
+  ['R-10: a tail read of a stream the shard does not hold answers an empty ok', F, '      if (incarnation !== 0) {\n        if (!this.ledgerNs)', '      if (false) {\n        if (!this.ledgerNs)', T.shard],
   ['R-11(a): every metered append marks the window dirty', F, '      if (metered.w.add(req.seriesIds, req.seriesLimit ?? 0)) metered.dirtySince ??= now', '      metered.w.add(req.seriesIds, req.seriesLimit ?? 0)\n      metered.dirtySince ??= now', T.group],
   ['R-12: fingerprint expiry names no tenant', F, '        sql.exec(`DELETE FROM batch WHERE tenant = ? AND payload IS NULL AND at + ? <= ?`, tenant, this.cfg.fingerprintTtlMs, now)', '        sql.exec(`DELETE FROM batch WHERE payload IS NULL AND at + ? <= ?`, this.cfg.fingerprintTtlMs, now)', T.all],
   // ── spec F12: a segment read is bound to what was listed ──
@@ -64,6 +65,19 @@ const mutants = [
   ['tail: a paged read does not check the discard fence', F, "    if (aboveSeq < s.discardedThrough) return { status: 'stale_watermark', incarnation, discardedThrough: s.discardedThrough }", "    if (opts === undefined && aboveSeq < s.discardedThrough) return { status: 'stale_watermark', incarnation, discardedThrough: s.discardedThrough }", T.tail],
   ['tail: a later page reads to the current end, not the first page\'s through', F, '      through = c.through\n', '', T.tail],
   ['tail: the scan budget is ignored', F, '      if (scannedBytes >= this.cfg.tailScanMaxBytes) {', '      if (false) {', T.tail],
+  // ── registration before writes (D61). The same mutants with the integration traces of flush/
+  //    and janitor/ as well: shard/README.md, "Mutation checks" (run over a copy of the tree). ──
+  ['D61: acknowledge before logged (a committed registration is taken as logged)', F, '        logged = answer.logged === true', '        logged = true', T.registration],
+  ['D61: acknowledge before logged (a new stream is accepted unregistered)', F, "    return this.mode() === 'lazy' || s.registered || s.nextSeq > 1", '    return true', T.registration],
+  ['D61: an append parks on the registration instead of being refused', F, '        if (!this.accepts(s)) return this.registeringRefusal()', '        if (!this.accepts(s)) { await this.register(req.tenant); if (!this.accepts(s)) return this.registeringRefusal() }', T.registration],
+  ['D61: 429 instead of a retryable scope (refused as `tenant`)', F, "    return { status: 'backpressure', scope: 'registering', retryAfterMs: ms + Math.floor(Math.random() * ms) }", "    return { status: 'backpressure', scope: 'tenant', retryAfterMs: ms + Math.floor(Math.random() * ms) }", T.registration],
+  ['D61: a read naming a lost stream does not start and register a fresh one', F, '        const fresh = this.createStream(tenant, 0, incarnation)', "        if (Date.now() > 0) return { status: 'incarnation_mismatch', incarnation: 0 }\n        const fresh = this.createStream(tenant, 0, incarnation)", T.registration],
+  ['D61: an answer without `logged` (an older ledger) is taken as logged', F, '        logged = answer.logged === true', '        logged = answer.logged !== false', T.registration],
+  ['D61: no single-flight', F, '    if (r.inFlight) return r.inFlight\n', '', T.registration],
+  ['D61: no cap on registration calls in flight (m-5)', F, '    if (this.regSlots < Math.max(1, this.cfg.maxRegistrations)) {', '    if (true) {', T.registration],
+  ['D61: S5 is not healed (m-7)', F, '    if (!s || s.registered || s.incarnation !== r.incarnation || s.nextSeq !== 1) return', '    return', T.registration],
+  ['D61: the alarm does not retry registrations', F, '    const due = [...this.regs].filter(([, r]) => r.inFlight === null && r.at <= now)', '    const due = [...this.regs].filter(() => false)', T.registration],
+  ["D61: a new stream's registration is not rebuilt from storage", F, '        if (!s.registered && s.nextSeq === 1 && !this.regs.has(tenant)) this.regs.set(tenant, this.newRegistration(s.incarnation, at))', '', T.registration],
   // ── names, versions ──
   ['names: a shard addressed outside SHARD_NAME serves', F, '    if (ctx.id.name !== undefined && !SHARD_NAME.test(ctx.id.name)) throw', '    if (false) throw', T.pool],
   ['names: a pool name with `_` is valid', 'src/pool.ts', "export const validPoolName = (pool: unknown): pool is string => typeof pool === 'string' && POOL_NAME.test(pool)", "export const validPoolName = (pool: unknown): pool is string => typeof pool === 'string' && pool !== ''", T.pool],

@@ -739,9 +739,9 @@ adapt robust); `spread: "mad"` gets the library's own defaults, with a warning t
 benchmarks. EWMA stays nameable, warned with both numbers. CUSUM defaults to `info` and may not
 page; STL and PELT are not rule detectors; burn rate is the SLO rule kind (D42). The window is the
 largest whose stored state fitted the per-series limit (64 KiB) for any values while state was
-stored as JSON; the configuration frozen with a 4,000-point window can be named (it was refused at
-save over that limit; since D60 stores the window as Float64 ring blocks it fits, and is still not
-the default). Defaults are resolved and written out when a rule is saved, so every rule stored
+stored as JSON; the configuration frozen with a 4,000-point window can be named and is refused at
+save over that limit, with what it is and what fits (once D60's ring blocks are written, in a later
+release, it fits, and is still not the default). Defaults are resolved and written out when a rule is saved, so every rule stored
 before keeps what it was saved with; a rule saved again over a stored one (the same group, and the
 same monitor id, or the same name and expression) keeps, for each field it leaves out, the stored
 value that was the default when it was stored, and the save says so. The guide, served at
@@ -779,29 +779,28 @@ an unchanged rule file. (h): on SMD the quantile spread's low-FP lead over the t
 significant (+7.5 [−8.8, 19.7] at 4,000 points, +5.7 [−12.4, 19.0] at 1,500) and it raised about
 eight times the threshold's unmatched alarms per machine-day (12.2 against 1.5).
 
-**Cost.** State: about 55 KB a series as JSON (estimate; 1.4 KB for EWMA), so a default rule kept
-at most 18 series (1 MiB a rule; it was 100). Since D60 (Float64 ring blocks, 2026-11-19) it is
-about 18.8 KB a series (estimate; 17.8 KB measured here, whatever the values), so a default rule
-keeps at most 55 series, and a shard holds about 16 such rules at their cap (16 MiB).
+**Cost.** State: about 55 KB a series as JSON (estimate; 1.4 KB for EWMA), so a default rule keeps
+at most 18 series (1 MiB a rule; it was 100), and a shard holds about 16 such rules at their cap
+(16 MiB). The release that turns on D60's writer (Float64 ring blocks) brings about 18.8 KB a series
+(estimate; 17.8 KB measured here, whatever the values): 55 series a rule.
 CPU, by the D51 model (extrapolated: its robust z prices were calibrated at 3,992 and 11,768 bytes of
 state, here 55,400): 0.35 ms a point, so a warm-up costs 0.53 s a series and the 5 s budget warms
 about 9 series; a rule with more starts cold and warms live (it scores after 20 points; its window is
 full after 25 h at a 1-minute interval). In Node here the per-point cost grew 4.4–5.6 times from 288
 to 1,500 points, the model 4.5 times; it is not measured in workerd at this size. Each tick
-serialised and wrote each series' state (whole batches per row: 2 rows and 879 KB a tick at 18
-series, measured); since D60 a tick writes the head and the current block (2 rows, 13 KB). With more
-series a rule, more of them start cold: the warm-up budget still warms about 9.
+serialises and writes each series' state (whole batches per row: 2 rows and 879 KB a tick at 18
+series, measured); with D60's writer on, the head and the current block (2 rows, 13 KB).
 The 4,000-point configuration: 0.92 ms a point by the same model (3.7 s
-to warm one series); at most 7 series a rule as JSON with its limit raised, 22 as ring blocks within
-the default limits (D60; 46.1 KB a series measured here). A rule saved again may keep EWMA indefinitely; each
+to warm one series), at most 7 series a rule, where its limit is raised; 22 within the default
+limits once D60's ring blocks are written (46.1 KB a series measured here). A rule saved again may keep EWMA indefinitely; each
 such save warns. The evidence is two public benchmarks, nothing measured on viz's own data, and the
 chosen window's SMD score is post hoc.
 
 **Would change if.** viz's own labelled incidents rank the detectors differently; a third benchmark
 contradicts SMD; the window's state can be stored incrementally (then the frozen 4,000 points, or a
-window in time on rollups: D60 has done this, and the 4,000-point window now fits; the default stays
-1,500 until this decision is taken again, with the warm-up of a 4,000-point rule measured in
-workerd); the CPU model, measured in workerd at 1,500 points, prices warm-ups
+window in time on rollups: D60 does this, read now and written from a later release, where the
+4,000-point window fits; the default stays 1,500 until this decision is taken again, with the
+warm-up of a 4,000-point rule measured in workerd); the CPU model, measured in workerd at 1,500 points, prices warm-ups
 higher (then a smaller window or a larger budget); or a detector gains a calibrated false-alarm rate
 fit to page.
 
@@ -2033,62 +2032,142 @@ range, then whole). Readers parse the labels of the series they see either way.
 **Would change if.** The split key stops leaving out `__type__`/`__unit__` (then nothing is
 foreign), or series files are written per part (then the check is moot).
 
-## D60. Robust z and seasonal keep their windows as Float64 values in ring blocks on the interval grid, a tick writing a head and the current block; version 2 of the stored format ships behind a version gate that is on
+## D60. Robust z and seasonal windows are stored as Float64 values in ring blocks on the interval grid; readers first: this release reads the format and writes the old one, and writing it turns on in the release after one with this reader has been deployed to production
 
-**Decision.** The state of a robust z or seasonal anomaly rule is stored as `store.anomaly-state`
-version 2 (`ruler/src/anomalystore.ts`): in the same `anomaly_state` rows, a head (every series'
-labels, last outcome and the detector's scalars) and blocks of 60 slots on the rule's interval grid
-holding every series' values there as little-endian Float64 in base64, NaN where a slot holds no
-point. Timestamps are implicit (slot n is the grid's phase + n · interval); a robust z point off the
-grid, and a series with less than half a block of points, are written as explicit (time, value)
-pairs. A tick writes the head and the block its points fall in; a block no series needs any more is
-deleted, or rewritten without the series that left it. The CPU and memory models of warm-ups and
-backtests keep pricing the window by its JSON size, which they were calibrated against. The release
-reads versions 1 and 2 and writes version 2 for these two detectors behind `ANOMALY_STATE_WRITE`
-(`ruler/src/schema.ts`), which is on; EWMA, threshold and CUSUM keep version 1. A rule's rows are
-rewritten in the gate's version at its next tick. Caps follow from the size: a default robust z
-rule keeps 55 series (it was 18).
+(Written 2026-11-19. **This replaces the first version of D60** of the same day, which shipped the
+format's writer on together with its reader; the owner chose readers first, as
+contracts/COMPATIBILITY.md §3.3 asks.)
+
+**Decision.** `store.anomaly-state` version 2 (`ruler/src/anomalystore.ts`) keeps the state of a
+robust z or seasonal anomaly rule, in the same `anomaly_state` rows, as a head (every series' labels,
+last outcome and the detector's scalars) and blocks of 60 slots on the rule's interval grid holding
+every series' values there as little-endian Float64 in base64, NaN where a slot holds no point.
+Timestamps are implicit (slot n is the grid's phase + n · interval); a robust z point off the grid,
+and a series with less than half a block of points, are written as explicit (time, value) pairs. A
+tick writes the head and the block its points fall in; a block no series needs any more is deleted,
+or rewritten without the series that left it. **Readers first**: this release reads versions 1 and 2
+(`ANOMALY_STATE_READS`) and writes version 1; the version gate `ANOMALY_STATE_WRITE` in
+`ruler/src/schema.ts` is 1, and `FORMATS['store.anomaly-state']` follows it. **Writing version 2
+turns on in the release after one with this reader has been deployed to production**, by setting
+that constant to 2 (a code change, so it goes out as a release, never mid-release). That release
+rewrites a rule's version 1 rows as version 2 at its next tick; its save-time estimates, and so the
+series caps, follow the gate (a default robust z rule: 18 series now, 55 then). EWMA, threshold and
+CUSUM stay version 1. The CPU and memory models of warm-ups and backtests price the window by its
+JSON size, against which they were calibrated, whatever is written.
 
 **Alternatives.** (a) Keep JSON (version 1). (b) Float32 values: half the bytes, but scores and
 explanations change. (c) Raw Float64 in a BLOB column or a new table: 8 bytes a slot instead of
 10.7, but a schema change older releases cannot follow without a forward-only migration, and the
 shard-move bundle (`GroupBundle.anomalyState`, strings) would change type. (d) One row per series and
 block: row writes are billed, 100 a tick at 100 series. (e) Explicit timestamps always: 16 bytes a
-point. (f) Compressed JSON: sizes that depend on the values (the limits then still guess), and CPU
-at every tick. (g) The whole state in binary, rewritten every tick: smaller, but every row every
-tick. (h) Forward-only with a schema migration (`readableFrom` its own version) instead of a gate.
-(i) The gate shipped off (this release the reader), turned on in the next.
+point. (f) Compressed JSON: sizes that depend on the values, and CPU at every tick. (g) The whole
+state in binary, rewritten every tick. (h) Forward-only with a schema migration (`readableFrom` its
+own version). (i) Reader and writer in one release, the gate on (the first version of this
+decision). (j) The gate as a Worker var rather than a constant.
 
 **Why.** The window was the cost: about 37 bytes a point as JSON, 39.7 at the longest number
-encoding, so the window was set by the storage (1,500 points, D33) and a default rule held 18
-series; every tick serialised and rewrote all of it. Float64 keeps the scores bit for bit, which
-(b) does not; with base64 the size is 10.7 bytes a slot whatever the values, so the save-time
-estimate is the stored size up to labels and explanations, which JSON's never was. Blocks on the
-interval grid make the timestamps free and the per-tick write one block for every series, the SLO
-rings' layout (D42), which (d) and (g) are not. (c) would save a quarter of the bytes for a
-migration and a contract change; base64 inside the existing JSON body keeps the table, the column,
-the bundle and an older release's refusal (it reads `"v":2` and refuses the rule, keeping the rows)
-as they are. (h) raises the rollback floor of the whole ruler for one format. (i) is what
-contracts/COMPATIBILITY.md §3.3 asks where a release that reads only version 1 can be rolled back
-to; the gate makes it one constant, and it ships on because the caps are the point of the change
-and the ruler has not run in production. Measured here (workerd, 1,500 points, `ruler/README.md`
-part 8): 48.8 KB a series as JSON against 17.8 KB as blocks; bytes written a tick 879 KB → 12.7 KB
-at 18 series, 4.9 MB → 70 KB at 100; rows a tick 2 → 2 at 18 series, 10 → 2 at 100; CPU a tick
-15 → 9 ms at 18 series, 92 → 43 ms at 100. Scores, alerts and stored state are the same as with
-JSON over the anomaly fixtures and a long random sequence with gaps, evictions and replays (tested).
+encoding, so the window was set by the storage (1,500 points, D33) and a default rule holds 18
+series; every tick serialises and rewrites all of it. Float64 keeps the scores bit for bit, which (b)
+does not; with base64 the size is 10.7 bytes a slot whatever the values, so the save-time estimate is
+the stored size up to labels and explanations. Blocks on the interval grid make timestamps free and
+the per-tick write one block for every series, the SLO rings' layout (D42), which (d) and (g) are
+not. (c) would save a quarter of the bytes for a migration and a contract change; base64 inside the
+existing JSON body keeps the table, the column and the bundle. (h) raises the rollback floor of the
+whole ruler for one format. (i) breaks §3.3: the release before reads only version 1, so a rollback
+to it would leave rewritten rules unscored until rolled forward, and the release record, which does
+not carry format versions (D46), would not refuse that rollback. Readers first costs one release,
+and nothing is deployed to production yet. (j) would let one deployment flip it without a release,
+which is exactly the step §3.3 orders; a constant ships in a release, with the release's tests. Measured
+here (workerd, 1,500 points, `ruler/README.md` part 8), what the writer brings: 48.8 KB a series as
+JSON against 17.8 KB as blocks; bytes written a tick 879 KB → 12.7 KB at 18 series, 4.9 MB → 70 KB at
+100; rows a tick 2 → 2 at 18 series, 10 → 2 at 100; CPU a tick 15 → 9 ms at 18 series, 92 → 43 ms at
+100. Scores, alerts and state are the same as with JSON over the anomaly fixtures and a long random
+sequence with gaps, evictions and replays, and the ruler's whole suite passes with the gate in either
+position (tested).
 
-**Cost.** A rollback to the release before this one leaves rules already rewritten as version 2
-refused there (`state_unreadable`) until this release returns: stuck, not lost, and the release
-record does not stop that rollback (format versions are not in it, D46). The head (labels and last
-outcomes of every series) is still rewritten every tick, 13 KB at 18 series and 70 KB at 100; a
-third row about once an hour when a block leaves the window. Base64 costs a third more than raw
-Float64. A series with few points in a block costs a full block for seasonal (robust z writes them
-explicitly). Points a window has evicted stay in their block until it is rewritten or deleted, and
-are dropped when read. More series a rule means more of them start cold: the warm-up CPU budget
-still warms about 9 series at the default window (D51, unchanged).
+**Cost.** One release in which the reader is shipped and unused but for a rollback, and the caps stay
+JSON's (18 series a default rule). Version 2's reader is tested against rows this code writes with
+the gate on, not against a deployed next release. Once the gate is on: a rollback below this release
+(to one without the reader) leaves rewritten rules `state_unreadable` until rolled forward, and
+nothing in the release tooling refuses it; the head (labels and last outcomes of every series) is
+still rewritten every tick, 13 KB at 18 series and 70 KB at 100; a third row about once an hour when
+a block leaves the window; base64 costs a third more than raw Float64; a seasonal series with few
+points in a block costs a full block; more series a rule means more of them start cold (the warm-up
+budget still warms about 9 at the default window, D51).
 
-**Would change if.** A production release that reads only version 1 can be rolled back to (then the
-next change of this kind ships the reader first, the gate at 1); the release record carries format
-versions (then the rollback tool can refuse a rollback below the reader); heads grow large enough
-to matter (then labels move to a row of their own, written when the series set changes); or a
-detector's state stops being a window of values on the grid.
+**Would change if.** The release record carries format versions (then the rollback tool can refuse a
+rollback below the reader, and the gate can be checked by it); heads grow large enough to matter
+(then labels move to a row of their own, written when the series set changes); or a detector's state
+stops being a window of values on the grid.
+
+## D61. Registration before writes: a shard accepts a new stream only once its registration is LOGGED, derived by the ledger from its outbox; registration runs in the background; reads and the janitor re-register a lost stream
+
+**Decision.** Variant R2 of spec/README.md "Proposed fixes", with the F16 fix and the changes
+of the adversarial review (`design/reviews/registration-before-writes.md`, verdict "build R2
+with changes"). A shard in registration mode `logged` accepts no write to a NEW stream (first
+use, or after it lost its storage) until the tenant's ledger answers its registration as
+logged (`RegisterResult.logged`); a stream that already holds acknowledged rows keeps
+accepting while it is confirmed. The ledger DERIVES `logged`, and each stream's
+`loggedIncarnation`, at call time from its outbox (a committed registration is logged exactly
+when no pending `register_stream` change names it), never from a stored flag (B-1). An append
+to an unconfirmed new stream is refused at once, `backpressure` scope `registering` with
+`Retry-After` 0.5–1 s, nothing stored or held; the registration runs in the background, one
+call per stream at a time, at most four per shard, retried with backoff from the shard's one
+alarm (M-1). Edge answers `registering` 503 with `Retry-After`, never 429 (M-2; edge's
+change is its owner's, `shard/README.md` "Needed changes elsewhere"). A tail read naming an
+incarnation the shard lost starts a fresh, newer stream, registers it and names it, so a query
+can finish (F6 liveness). The janitor asks a stream's shard (`ensureStream`) when its flush
+files wait for a unit, and counts a newer incarnation's files dead only once its registration
+is logged (F16, F15 kept). Mode `lazy` (the default) is the append path as before; production
+turns `logged` on with the Worker var `SHARD_REGISTRATION` in a second release, once every
+edge maps the new scope.
+
+**Alternatives.** R1: the registration committed (not logged) before the first write. R3:
+logged before writes, and the coordinator settles a lost incarnation by taking its tail as
+empty. R4: committed before writes, and the coordinator re-reads the ledger after its tail
+reads when it read a shard the plan did not name. Within R2: a `logged_inc` column the ledger
+maintains (the plan before the review); an append that awaits the ledger before refusing (the
+plan before the review); turning `logged` on in the same release as edge's mapping.
+
+**Why.** R1 fails: a ledger rebuild rolls a committed registration back and F6(b) returns
+(the model's `R1_safety`, I4 in 15 steps; reproduced against the code in
+`flush/test/registration.test.ts` by its own mutant). R3 changes the coordinator (another
+component, being edited), leaves every query of a tenant refused once per plan while the
+ledger names a lost incarnation, and still needs `ensureStream` for F16. R4 re-reads only
+shards it read without a watermark, so a shard that has left the pool after a map change is
+never read and a rolled-back registration hides its rows; closing that is a ledger round trip
+on every query. R2 pays only when a stream is new, and one mechanism (the shard registering a
+fresh incarnation) serves appends, reads and the janitor. A stored `logged_inc` is maintained
+only by the new release, so a rollback and roll-forward leaves streams refused for ever (B-1;
+its mutant is killed by the rollback test in `ledger/test/registration.test.ts`); deriving it
+costs one outbox read, which holds a drain cycle of rows. Awaiting the ledger on the append
+path holds payloads outside D37's bound or fills it, so one tenant's slow ledger blocks the
+shard's other tenants (M-1; its mutant is killed by `shard/test/registration.test.ts`). All
+five components are one Worker whose Durable Objects take new code up to 30 s late, so the
+shard may send the new scope only once every edge that can run maps it: two releases
+(COMPATIBILITY.md §3.3).
+
+**Measured** (here, local workerd, load average 2.6–3.4; `shard/bench/results/registration.log`):
+a new stream's first acknowledgement, the ledger draining on its own, 519–1007 ms (median 702)
+with the shard's `Retry-After` and 1006–1013 ms with it rounded up to whole seconds as edge
+writes it, one refusal each (n = 30 each; local R2 PUTs take milliseconds, so a lower bound);
+appends per second of established streams unchanged against the release before (1, 16 and 64
+clients, three runs each, within the run-to-run spread). **Modelled** for Cloudflare: 1–2 s to
+the first acknowledgement (180–494 ms segment PUT, edge's whole-second `Retry-After`), against
+the proposal's 0.5–1.5 s; the shard→ledger round trip is not measured. The model's results
+(spec/README.md) and the review's runs are bounded-depth for safety, whole-graph for liveness
+and leaks.
+
+**Cost of it.** About a second before a new stream's first acknowledgement (a new tenant, a
+new slot, a shard that lost its storage), 1–3 ledger calls per stream lifetime, one row write
+per confirmed stream, one outbox read per registration call and per `loggedWatermarks` while
+some stream has no logged unit. While a tenant's ledger cannot log, its new streams take no
+writes (fails closed, retryable, reported after 60 s by the shard and in `logStatus`).
+Streams are never retired (review m-3) and a forgotten registration is not re-registered
+(m-2); both are recorded as open in `shard/README.md`.
+
+**Would change if.** The first refused append is measured to matter on Cloudflare (then R4's
+committed registration with its re-check, or registration ahead of map changes and at tenant
+creation, which `ensureStream` allows, m-4); the outbox read shows in the ledger's CPU (then a
+nullable `kind` column older code leaves NULL); or pool retirement or tenant deletion is built
+(then a stream-retirement change in the ledger, and both creating paths fenced).

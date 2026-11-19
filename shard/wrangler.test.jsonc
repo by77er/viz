@@ -1,7 +1,7 @@
 {
   // Tests only: the shard with its tenants' ledgers in the same script, as in viz-ingest
-  // (stack/wrangler.jsonc), so registration before writes (D57) runs against the real ledger.
-  // Also the releases before D57 of both, for rollback and skew tests. Not deployed.
+  // (stack/wrangler.jsonc), so registration before writes (D61) runs against the real ledger.
+  // Also the releases before D61 of both, for rollback and skew tests. Not deployed.
   "name": "viz-shard-test",
   "main": "test/worker.ts",
   "compatibility_date": "2026-10-01",

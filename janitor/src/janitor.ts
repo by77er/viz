@@ -23,7 +23,7 @@ import type { EnsureStreamResult } from '../../shard/src/shard'
  *                  of its inputs is gone for good. A flush file of the incarnation the ledger
  *                  names that waits past the grace makes it ask that stream's shard
  *                  (`ensureStream`): a shard that lost the stream starts and registers a fresh
- *                  one, after which the file is dead (spec F16; D57).
+ *                  one, after which the file is dead (spec F16; D61).
  *
  * No job writes an object, and deletes go to R2 as one request per thousand keys.
  */
@@ -40,7 +40,7 @@ export interface JanitorEnv {
    */
   PUBLISHER?: PublisherGateNamespace
   /**
-   * The shards (D57). The orphan sweep asks a shard about a stream whose flush files wait for a
+   * The shards (D61). The orphan sweep asks a shard about a stream whose flush files wait for a
    * unit that may never come (`ensureStream`). Absent: it does not ask, and those files wait
    * for the tenant's next write to that shard (spec F16, the leak this closes).
    */
@@ -294,9 +294,9 @@ export interface OrphanResult {
    */
   kept: { key: string; why: 'young' | 'pending_unit' | 'unknown_stream' | 'unknown_name' | 'inputs_remain' | 'unknown_inputs'; detail?: string }[]
   /**
-   * Shards asked about a stream whose flush files wait past the grace for a unit (D57; spec F16),
+   * Shards asked about a stream whose flush files wait past the grace for a unit (D61; spec F16),
    * once per stream per run: what each answered, or why it could not (a shard of a release
-   * before D57 has no `ensureStream`: review m-6). Their files are judged again by a later run.
+   * before D61 has no `ensureStream`: review m-6). Their files are judged again by a later run.
    */
   ensured: { shard: string; incarnation?: number; registered?: boolean; error?: string }[]
   /**
@@ -315,10 +315,10 @@ export interface OrphanResult {
  * about to be reported. (contracts/ledger.ts `orphanCheck`.)
  *
  * `orphanCheck` reports each stream's COMMITTED incarnation, the logged watermark of that
- * incarnation and (D57) `loggedIncarnation`, the newest incarnation whose registration is in
+ * incarnation and (D61) `loggedIncarnation`, the newest incarnation whose registration is in
  * the logged prefix. Only the logged one counts: a registration that is committed but not
  * logged can be rolled back by a rebuild, after which a late `addUnit` of the older
- * incarnation is admitted again (spec/README.md F15). A ledger before D57 sends no
+ * incarnation is admitted again (spec/README.md F15). A ledger before D61 sends no
  * `loggedIncarnation`; then a newer incarnation counts only once its logged watermark is above
  * 0 (the log is a prefix of versions and a unit's version is above its stream's registration,
  * so that proves the registration is logged), as D30 built it.
@@ -425,7 +425,7 @@ export async function sweepOrphans(env: JanitorEnv, tenant: string, opts: { grac
   // 3. Ask each such stream's shard to hold a registered stream: one holding the stream changes
   //    nothing; one that lost it starts a fresh incarnation and registers it, which makes the
   //    old incarnation's files dead once that registration is logged, at a later run. Failures
-  //    keep the files and go on (a shard of a release before D57 has no `ensureStream`).
+  //    keep the files and go on (a shard of a release before D61 has no `ensureStream`).
   if (env.SHARD) {
     for (const shard of [...ask].sort()) {
       try {

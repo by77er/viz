@@ -9,9 +9,9 @@ import type { AppendResult } from '../src/shard'
 import { Shard } from '../src/shard'
 export { Shard }
 export { Shard as ShardAsBuilt } from './asbuilt/shard'
-/** The release before registration before writes (D57), for bench/registration.bench.test.ts. */
+/** The release before registration before writes (D61), for bench/registration.bench.test.ts. */
 export { Shard as ShardPrereg } from './prereg/shard'
-/** The tenants' ledgers, in the same script as in viz-ingest (D57). */
+/** The tenants' ledgers, in the same script as in viz-ingest (D61). */
 export { Ledger } from '../../ledger/src/ledger'
 
 interface Env { SHARD: DurableObjectNamespace<Shard>; SHARD_ASBUILT: DurableObjectNamespace<Shard>; SHARD_PREREG: DurableObjectNamespace<Shard> }
@@ -40,7 +40,7 @@ async function sha(bytes: Uint8Array): Promise<string> {
 
 export class Client extends DurableObject<Env> {
   /**
-   * A sender's first request to a new stream (D57): sent, and sent again after each refusal's
+   * A sender's first request to a new stream (D61): sent, and sent again after each refusal's
    * `Retry-After` (`roundUp`: rounded up to whole seconds, as edge writes the header) until it
    * is acknowledged. Returns the time from the first send to the acknowledgement.
    */

@@ -4,7 +4,7 @@ import { defineConfig } from 'vitest/config'
 export default defineConfig({
   plugins: [
     cloudflareTest({
-      // The shard with its tenants' ledgers in one script, as in viz-ingest (D57).
+      // The shard with its tenants' ledgers in one script, as in viz-ingest (D61).
       wrangler: { configPath: './wrangler.test.jsonc' },
       // The ledger logs a change 200 ms after it commits (contracts/LEDGER-LOG.md). Here it
       // logs only when a test asks (`drain()`), so a test decides when a registration becomes

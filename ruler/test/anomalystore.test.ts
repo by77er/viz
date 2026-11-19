@@ -18,6 +18,7 @@
  *   version 2 are read by what they say and rewritten whole.
  */
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test'
+import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
 import { DETECTORS } from '../../anomaly/src/index.ts'
 import type { AnomalyRuleV2, RuleGroup } from '../contracts-proposal/rules.v2'
@@ -432,6 +433,15 @@ describe('compatibility: read both, write the gate\'s version; refuse what a new
     const values = (st: Record<string, unknown>) => Object.values(Object.values(st)[0] as Record<string, { labels: { service: string }; state: { x: number[] } }>).map((s) => [s.labels.service, s.state.x]).sort()
     expect(values(await states(cv.stub, cv.tenant))).toEqual(values(await states(ref.stub, ref.tenant)))
   }, 300_000)
+
+  it('the suite runs its Ruler objects with the gate it was started with (TEST_ANOMALY_STATE_WRITE=2: the next release\'s writer; unset: this release\'s, version 1)', async () => {
+    const T = await setup({ heartbeatMs: 30 * MIN })
+    ok(await T.stub.saveGroups(T.tenant, { groups: [{ name: 'anomalies/1m', interval: '1m', rules: [rule] }] }))
+    T.w.evaluate = (q) => (q === LAT ? vec([{ service: 'a' }, 100]) : vec())
+    for (let k = 0; k < 3; k++) await tick(T.stub, T.tenant)
+    const forced = (env as unknown as { TEST_ANOMALY_STATE_WRITE?: string }).TEST_ANOMALY_STATE_WRITE
+    expect(vOf(await rowsOf(T.stub, T.tenant))).toEqual([forced === '2' ? 2 : forced === '1' ? 1 : ANOMALY_STATE_WRITE])
+  })
 
   it('rows a newer release wrote (version 3) are refused: state_unreadable, kept, and carried by a shard move as they are', async () => {
     const T = await one(2)

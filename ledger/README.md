@@ -16,6 +16,8 @@ authority on what is visible. It implements `LedgerRpc`, `LedgerAdminRpc` and
 | `test/checkpoint.test.ts` | 13 tests of checkpoints in parts (format 2) and the streaming rebuild: the state at the checkpoint's version whatever commits meanwhile, part boundaries, key order, a crash, lost answer or storage loss at every await of the checkpoint path, superseded checkpoints, tampered checkpoints, streaming, an untracked checkpoint, the release before reading this one's log and back, the format-2 golden |
 | `test/compat.test.ts` | 9 tests of versioned storage and the log formats (`contracts/COMPATIBILITY.md` §8), including that the release before opens this storage |
 | `test/tombstone.test.ts`, `test/precedence.test.ts` | 8 and 5 tests |
+| `test/registration.test.ts` | 5 tests of registration before writes (D61): `logged` and `loggedIncarnation`, and a rollback to the release before and back on the same storage (review B-1) |
+| `bench/prereg/` | The release before D61, frozen: run on the ledger's own storage by `test/registration.test.ts` (a rollback), and as the older ledger of `shard/`'s skew tests |
 | `bench/` | In workerd: the admission counterfactual against the frozen as-built ledger (`bench/asbuilt/`, `dc2a1c3`); checkpoints and rebuilds against the frozen release before checkpoints in parts (`bench/before/`, `44649de`; `checkpoint.bench.test.ts`, results in `bench/results/checkpoint.txt`); `rss.mjs` samples the processes' memory |
 
 Bindings: Durable Object `LEDGER`, R2 bucket `BUCKET`, variable `CELL` (default `cell-0`);
@@ -38,6 +40,24 @@ optional `LEDGER_DRAIN_DELAY_MS` (default 200) and `LEDGER_CHECKPOINT_EVERY` (de
 - **`registerStream`.** Idempotent for the same incarnation; a higher one replaces it,
   resets watermark and logged mark to 0 and returns the old one; a lower one is refused
   (an exception: the contract's return type has no refusal). A bad shard name throws.
+  **Answers `logged`** (D61; `RegisterResult`): true iff the committed incarnation is the one
+  asked about and its registration is in the logged prefix. Derived at call time, never
+  stored (review B-1): a logged unit of that incarnation proves it at once; otherwise the
+  outbox is read for a pending `register_stream` change naming it (`pendingRegistrations`:
+  one pass over the outbox, parsing only rows whose body holds `"kind":"register_stream"`).
+  Outbox rows leave only with the segment that holds them or with a new incarnation whose
+  base is in R2 first, and every release writes and drains the same outbox, so no rollback,
+  roll-forward or rebuild by any release can leave the answer stale. A fresh registration
+  answers `false`.
+- **`loggedWatermarks()` and `orphanCheck()` report `loggedIncarnation`** (D61;
+  `LoggedWatermark`): the committed incarnation if its registration is logged; else the one
+  registered before it if that registration is logged; else 0. Derived the same way, in the
+  same synchronous read; the outbox is read only when some stream's logged watermark is 0.
+  It is never above what the log holds, so the orphan sweep can count an older incarnation's
+  files dead on it (spec F16) without bringing F15 back.
+- **`logStatus()`** reports `registrationsPending` (registrations committed, not logged) and
+  `pendingSince` (when the oldest change still in the outbox was committed): the signal for a
+  ledger that cannot log while shards refuse its tenant's new streams (review m-1).
 - **`plan`.** Files of one table overlapping the range, in ascending precedence, with every
   watermark, the ledger incarnation and the version, read with no `await` in between.
 - **`replace`.** Swaps iff every input is live; otherwise `conflict` with the missing keys
@@ -222,15 +242,44 @@ files is modelled at 20–60 s on Cloudflare (20 s here; R2 reads of 272 parts f
 
 ```
 npm install
-npx vitest run --maxWorkers=2     # 101 tests in workerd, 6 files
+npx vitest run --maxWorkers=2     # 106 tests in workerd, 7 files
 npx tsc --noEmit                  # clean
 node scripts/mutants.mjs          # on a copy outside the git checkout (see the script)
 npm run bench                     # the workerd counterfactuals (bench/)
 BENCH=checkpoint BENCH_SIZES=100000 BENCH_VARIANTS=after node bench/rss.mjs -- npm run bench
 ```
 
-Last run, 2026-11-19 on the shared machine (load average 6 to 10): **100 passed, 0 failed**;
-`tsc --noEmit` clean. `publisher/`'s suite, which pins the bytes of every log object a small
+Last run, 2026-11-19 (D61) on the shared machine (load average about 6): **106 passed, 0
+failed**; `tsc --noEmit` clean. `test/registration.test.ts` (5):
+
+- **spec test 4**: `registerStream` answers `logged: false` at the commit, still false while the
+  segment's PUT fails and while its answer is lost after the write (the segment is in R2, its
+  rows still in the outbox: low is the safe side), true once a drain removes the rows; the same
+  after every eviction; `loggedIncarnation` moves only there (0 for a stream with no earlier
+  incarnation, the previous incarnation while a new one is pending, 0 when two are pending, the
+  new one once logged, without any unit of it); the lazy path (a first unit registers its
+  stream) likewise; after a rebuild every stream left is logged and a registration that was only
+  committed is gone.
+- **review B-1**: release N+1 registers and logs a stream; **rollback** to the release before
+  D61 (`bench/prereg/ledger.ts`, constructed on the SAME storage inside the object) which takes
+  a new stream lazily by its first unit, registers another, re-registers one, and drains;
+  **roll-forward**: each answers `logged: true` and `loggedIncarnation` equals its incarnation.
+  One the old release committed but did not drain is pending, then logged by this release's
+  drain. The old release then rebuilds the ledger from R2 (this release kept from starting):
+  every stream answers `logged: true` afterwards. Mutant "logged from a stored flag" (a flag
+  this release sets in its drain and its rebuild, the plan before the review): killed by this
+  test.
+
+The test count before D61 was 101 (the two answers that gained a field were updated:
+`ledger.test.ts` "performs the storage-loss handshake", `tombstone.test.ts` "orphanCheck …").
+
+**The outbox read's cost, by reading** (not measured): one pass over the outbox per
+`registerStream` of a stream with no logged unit, and per `loggedWatermarks`/`orphanCheck`
+when some stream has none. The outbox holds one drain cycle of rows (about 0.2–1 s of
+changes); only while the drain is stuck does it grow, and then every flush's
+`loggedWatermarks` reads it. A nullable `kind` column that older code leaves NULL would index
+it; not added, because nothing showed the cost and a new column was what the review warned
+about. `publisher/`'s suite, which pins the bytes of every log object a small
 scenario writes through this `Ledger`, passed against it (78 passed); `tsc --noEmit` is clean in
 edge, flush, query, stack, compact, janitor and publisher, which import this code. `stack/`'s
 soak on this code (`SOAK_STEPS=3000 npx vitest run --maxWorkers=1 test/soak.test.ts`, seed
@@ -307,6 +356,20 @@ because the rebuilt ledger lists that file again. `test/tombstone.test.ts` (7 te
 (the script refuses to run in the git checkout: AGENTS.md); each mutant against the test files
 named in the script, the source restored after each.
 
+**Run of 2026-11-19, registration before writes (D61)**, on a copy of `contracts/`, `ledger/`,
+`shard/`, `flush/`, `janitor/`, `compact/`, `publisher/` and `engine/wasm/` (the first three
+are also in `scripts/mutants.mjs` as `D61:`), **4 of 4 killed**:
+
+| Mutant | Killed by |
+|---|---|
+| logged from a stored flag (set by this release's drain and rebuild only: the plan before review B-1) | `registration.test.ts` "review B-1" |
+| logged at the commit | `registration.test.ts` spec test 4 (two tests); `shard/` spec test 1, m-1 |
+| `loggedIncarnation` is the committed incarnation | `registration.test.ts` spec test 4; `janitor/` "spec F16", "spec F15, adapted" |
+| the outbox is not read (a pending registration reads as logged) | `registration.test.ts` spec test 4 (two tests) |
+
+Re-checked with them: "loggedWatermarks returns the committed watermark" (its pattern updated
+for the new read), killed.
+
 **Run 1** (2026-11-19, the code before the segment-log review's fixes): **32 of 33 killed.**
 The sixteen contracts-v2 mutants (patterns updated for the code as it now reads), and the
 segment log's: F11 (a start commits without waiting for its base: killed only by the test
@@ -380,19 +443,19 @@ tell.
   recorded as a `register_stream` change with `previousIncarnation`; nothing is raised).
 - **Paging `plan`**, and plans that reference consolidated partition indexes instead of
   carrying every index fragment (S4: 5.8 MB at 7,000 files).
-- **Registration before the first write** (spec F1); see the F6 risk below.
+- **Registration before writes** is built (D61); see `shard/README.md`. Not built here: the
+  stream retirement change the review asks for (m-3: a ledger never drops a stream; a new
+  `LedgerChange` kind is a log format change, readers first), and the long-poll it suggests
+  (a `registerStream` that answers once logged; the shard's backoff makes it unnecessary).
 
 ## Known risks
 
-- **F6, liveness after a shard's storage loss.** A shard that lost its storage starts a
-  new incarnation, but the ledger hears of it only when flush registers it at that
-  incarnation's first flush. Until then a query names the old incarnation and the shard
-  answers `incarnation_mismatch`; a shard that gets no new writes is never flushed, so the
-  refusal lasts indefinitely. Closing it needs registration before writes (spec F1): the
-  shard registers its new incarnation with each tenant's ledger before acknowledging the
-  first append of the stream, the ledger records it, flush stops being the registrar, and
-  query treats a registered incarnation with watermark 0 as empty. That touches shard,
-  ledger, flush and query; it is described here, not built.
+- **F6, liveness after a shard's storage loss: closed by D61** (`shard/README.md`): a read
+  naming the lost incarnation makes the shard start and register a fresh one, which the next
+  plan names. F6(b) is closed only where shards run in mode `logged` (release B).
+- **A ledger that cannot log refuses its tenant's new streams** (D61, shards in mode
+  `logged`): until the drain works again, plus its backoff (up to 60 s). `logStatus` shows
+  `registrationsPending` and `pendingSince`; nothing pages on them yet.
 - **The state limit is set by time measured here, not on Cloudflare.** 300 MiB of estimated
   state (about 300,000 files) is the largest measured: memory stayed flat, a rebuild took
   20 s. On Cloudflare a rebuild of that size is modelled at 20–60 s, during which every
@@ -443,8 +506,11 @@ tell.
   flush's engineer (`flush/src/flush.ts` `writeSegment`); the shard side is in `shard/`.
 - **publisher**: read segments and the first layout. Done by the publisher's engineer
   (`publisher/src/log.ts`, `design/UPGRADES.md` §7 item 2).
-- **shard, flush, query**: registration before writes, for F6 (above). F6(b) (a tail read
-  for incarnation 0 answered `ok` and empty under lazy registration) is open, documented.
+- **Registration before writes** (D61): edge's mapping of `registering` to 503 and the release
+  that turns the shards' mode to `logged`: `shard/README.md`, "Needed changes elsewhere".
+  Nothing else in this component needs another release: `logged` and `loggedIncarnation` are
+  additive answers, and the schema did not change (the release before opens this storage and
+  may be rolled back to).
 - **deploy**: put `schemaRelease(LEDGER_SCHEMA)` (now latest 3, compat 2) in the release
   record and refuse a rollback below compat (COMPATIBILITY.md §6; `deploy/` "Needed changes"
   7). The 16 MiB pin of `LEDGER_STATE_MAX_BYTES` on `viz-ingest`'s ledger is removed (item

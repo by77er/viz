@@ -1,5 +1,5 @@
 /**
- * Registration before writes (D57; spec/README.md "Proposed fixes", R2, with the changes of
+ * Registration before writes (D61; spec/README.md "Proposed fixes", R2, with the changes of
  * design/reviews/registration-before-writes.md), the shard's half, against the real ledger:
  *
  *   spec test 1 (R1_safety, shard half)   a new stream's appends are refused `registering`, with
@@ -14,8 +14,8 @@
  *   spec test 3 (LIVE_R2, shard half)      a tail read naming a lost stream starts and registers a
  *                                          fresh one and names it
  *   review m-1, m-5, m-7                   the alert, the cap on calls in flight, S5 healing
- *   skew and rollback                      a ledger of the release before D57 (no `logged`); the
- *                                          shard release before D57 on the same storage, and back
+ *   skew and rollback                      a ledger of the release before D61 (no `logged`); the
+ *                                          shard release before D61 on the same storage, and back
  */
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
@@ -171,6 +171,18 @@ describe('review M-1: the registration is off the append path', () => {
     expect(await stored(s, slow)).toEqual([])
   })
 
+  it('concurrent reads after a loss and concurrent ensureStream calls of one stream share one ledger call', async () => {
+    const { s, tenant } = await setup({ registerTimeoutMs: 4_000 })
+    let calls = 0
+    await useLedgers(s, wrappedLedgers((_t, real) => ({ registerStream: async (ref) => { calls++; await sleep(300); return real.registerStream(ref) } })))
+    const reads = await Promise.all(Array.from({ length: 5 }, () => s.tailRead(tenant, 42, 0)))
+    expect(new Set(reads.map((r) => JSON.stringify(r))).size).toBe(1)
+    expect(calls).toBe(1)
+    const ensured = await Promise.all(Array.from({ length: 5 }, () => s.ensureStream(tenant)))
+    expect(new Set(ensured.map((r) => r.incarnation)).size).toBe(1)
+    expect(calls).toBe(2)
+  })
+
   it('with the default backoff, a sender that hammers a new stream makes one or two ledger calls, not one per append', async () => {
     const { s, tenant } = await setup({ registerBackoffMs: 250, registerBackoffMaxMs: 30_000 })
     let calls = 0
@@ -277,7 +289,7 @@ describe('review m-1, m-5, m-7', () => {
     expect(errors.mock.calls.some((c) => String(c[0]).includes('spec S5'))).toBe(true)
   })
 
-  it('m-7: a stream that holds acknowledged rows (from before D57) is never renumbered: the ledger keeps refusing it, as before', async () => {
+  it('m-7: a stream that holds acknowledged rows (from before D61) is never renumbered: the ledger keeps refusing it, as before', async () => {
     const { s, name, tenant, l } = await setup({ registration: 'lazy' })
     expect(await put(s, tenant, 'x')).toMatchObject({ status: 'ok' }) // lazy: rows, never registered
     const mine = (await s.describe(tenant))!.incarnation
@@ -289,9 +301,9 @@ describe('review m-1, m-5, m-7', () => {
 })
 
 describe('skew and rollback (contracts/COMPATIBILITY.md; shard/README.md "Rollout")', () => {
-  it('a ledger of the release before D57 answers without `logged`: never taken as logged; once the ledger runs this release, the stream is accepted', async () => {
+  it('a ledger of the release before D61 answers without `logged`: never taken as logged; once the ledger runs this release, the stream is accepted', async () => {
     const { s, name, tenant } = await setup()
-    // The tenant's ledger runs the release before D57 (on its own namespace here).
+    // The tenant's ledger runs the release before D61 (on its own namespace here).
     await useLedgers(s, env.LEDGER_PREREG)
     const old = env.LEDGER_PREREG.get(env.LEDGER_PREREG.idFromName(tenant))
     expect(await put(s, tenant, 'x')).toMatchObject({ scope: 'registering' })
@@ -308,7 +320,7 @@ describe('skew and rollback (contracts/COMPATIBILITY.md; shard/README.md "Rollou
     expect(await put(s, tenant, 'x')).toMatchObject({ status: 'ok' })
   })
 
-  it('rollback to the shard release before D57 on the same storage, and roll-forward: every stream accepts afterwards; a confirmed registration stays confirmed', async () => {
+  it('rollback to the shard release before D61 on the same storage, and roll-forward: every stream accepts afterwards; a confirmed registration stays confirmed', async () => {
     const { s, tenant, l } = await setup()
     const t2 = `${tenant}-b`
     const t3 = `${tenant}-c`
@@ -319,7 +331,7 @@ describe('skew and rollback (contracts/COMPATIBILITY.md; shard/README.md "Rollou
     await registered(s, tenant)
     expect(await put(s, tenant, 'a0')).toMatchObject({ status: 'ok' })
     expect(await put(s, t3, 'c0')).toMatchObject({ scope: 'registering' })
-    // ROLLBACK: the release before D57 opens the same storage (schema 2, compat 1: it may) and
+    // ROLLBACK: the release before D61 opens the same storage (schema 2, compat 1: it may) and
     // takes writes lazily: into `tenant`, into a stream it creates for `t2`, and into `t3`'s
     // unregistered stream.
     await runInDurableObject(s, async (_i: Shard, st) => {
@@ -346,7 +358,7 @@ describe('skew and rollback (contracts/COMPATIBILITY.md; shard/README.md "Rollou
     }
   })
 
-  it('without a LEDGER binding: lazy whatever the mode, and a read naming a lost stream is answered 0, as before D57', async () => {
+  it('without a LEDGER binding: lazy whatever the mode, and a read naming a lost stream is answered 0, as before D61', async () => {
     const { s, tenant } = await setup()
     await useLedgers(s, undefined)
     expect(await s.tailRead(tenant, 5, 0)).toEqual({ status: 'incarnation_mismatch', incarnation: 0 })

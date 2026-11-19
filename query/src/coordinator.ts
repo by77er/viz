@@ -20,6 +20,7 @@
 import type { ScanInput } from '../../contracts/engine'
 import type { FileEntry, LiveFile, Plan, Watermark } from '../../contracts/ledger'
 import { poolMap } from '../../edge/src/route'
+import { checkSignal, signalOfShard } from './shards'
 import { ENGINE_LOAD_PREFIX, type FetchRange, type FilePlan, type FileRead, type Grid, type LeafSummary, QueryError, type QueryEngine, type QueryLimits, type QueryStats, leafSummary, planBytes, sparseFile } from '../../engine/wasm-query/js/index'
 import { hash32, shardName, tenantSlots } from '../../shard/src/pool'
 import { type Env, type TenantLimits, fileCacheTtl, leafPoolSize } from './config'
@@ -308,7 +309,7 @@ export function pieces(files: (Pick<FileEntry, 'key' | 'bytes'> | Planned)[], ma
   return out
 }
 
-class MissingFile extends Error {
+export class MissingFile extends Error {
   constructor(readonly key: string) {
     super(`data file ${key} is listed by the ledger but is not in R2`)
   }
@@ -351,7 +352,7 @@ const planKey = (p: Planned): string => (p.read === 'whole' ? p.f.key : `${p.f.k
  * ranges), or rejects: with `MissingFile` if R2 does not have an object, with `ApiError`
  * if a leaf failed twice. There is no partial result.
  */
-async function fetchFiles(c: Context, entries: (FileEntry | Planned)[], have: Map<string, Uint8Array>): Promise<Uint8Array[]> {
+export async function fetchFiles(c: Context, entries: (FileEntry | Planned)[], have: Map<string, Uint8Array>): Promise<Uint8Array[]> {
   const files: Planned[] = entries.map((x) => ('read' in x ? x : whole(x)))
   const todo = files.filter((f) => !have.has(planKey(f)))
   const pool = leafPoolSize(c.env)
@@ -475,7 +476,7 @@ type Tails = { again: true } | { again: false; reads: TailRead[]; bytes: number;
  * stopped at the cap, or together they passed it); `atLeast` is then a lower bound of its
  * bytes. Refusals are counted with `refused` (which throws past the bound).
  */
-async function readTails(c: Context, shards: string[], watermarks: Watermark[], known: Map<string, number>, refused: (who: string, why: string) => void, filter: TailFilter, cap: number): Promise<Tails> {
+export async function readTails(c: Context, shards: string[], watermarks: Watermark[], known: Map<string, number>, refused: (who: string, why: string) => void, filter: TailFilter, cap: number, signal: 1 | 2 | 3 = 1): Promise<Tails> {
   const limit = Math.max(0, hooks.tailCap ?? cap)
   const budget = { cap: limit }
   const tails = await Promise.all(shards.map((s) => readTail(c, s, watermarks.find((w) => w.shard === s), known, filter, { cap: limit, used: 0 })))
@@ -489,6 +490,9 @@ async function readTails(c: Context, shards: string[], watermarks: Watermark[], 
   })
   if (again) return { again: true }
   const reads = tails.map((t) => (t as Extract<Tail, { status: 'ok' }>).read)
+  // A read asks only for its signal's shards; a batch of another signal is refused, never read
+  // as this one (a shard of the previous release answers unfiltered; contracts/BATCH.md D57).
+  for (const r of reads) for (const b of r.batches) checkSignal(r.shard, b.payload, signal)
   const bytes = reads.reduce((a, r) => a + r.bytes, 0)
   const over = reads.some((r) => !r.complete) || bytes > budget.cap
   c.cost.tailMode = reads.length === 0 ? '' : reads.every((r) => r.paged) ? 'filtered' : 'unfiltered'
@@ -520,11 +524,16 @@ const restOf = (r: TailRead, filter: TailFilter): TailPart['rest'] =>
  */
 export const shardsCanCut = (without: string[]): boolean => without.every((l) => l === '__type__' || l === '__unit__')
 
-/** Shards to ask: every slot the tenant may write to, and every stream the ledger has registered. */
+/**
+ * Metric shards to ask: every slot the tenant may write to, and every stream the ledger has
+ * registered that is not a span or log stream (`signalOfShard`: the ledger registers the
+ * streams of `{pool}/traces/{slot}` and `{pool}/logs/{slot}` too, D57, and a metrics tail
+ * read of one of them would fail on its first batch).
+ */
 async function shardsOf(c: Context, watermarks: Watermark[]): Promise<string[]> {
   const map = await poolMap(c.env, c.tenant)
   const names = new Set(tenantSlots(map, c.tenant).map((slot) => shardName(map, slot)))
-  for (const w of watermarks) names.add(w.shard)
+  for (const w of watermarks) if (names.has(w.shard) || signalOfShard(w.shard) === 'metrics') names.add(w.shard)
   return [...names].sort()
 }
 
@@ -547,8 +556,21 @@ export function checkDeadline(c: Context): void {
 let inFlightBytes = 0
 export const ISOLATE_BUDGET_BYTES = 48 << 20
 
+/**
+ * Reserve `bytes` of the isolate's budget for a query (refused with a retryable 503 when
+ * others hold it); returns the release. For the span and log queries (`signals.ts`).
+ */
+export function reserveBytes(bytes: number): () => void {
+  if (inFlightBytes > 0 && inFlightBytes + bytes > (hooks.isolateBudgetBytes ?? ISOLATE_BUDGET_BYTES)) throw new ApiError('unavailable', 'the query service is busy; retry')
+  const held = Math.max(bytes, 1)
+  inFlightBytes += held
+  return () => {
+    inFlightBytes -= held
+  }
+}
+
 /** `atLeast`: `bytes` is a lower bound (a read stopped at the limit, D48). */
-const tooMuch = (c: Context, what: string, bytes: number, atLeast = false): ApiError =>
+export const tooMuch = (c: Context, what: string, bytes: number, atLeast = false): ApiError =>
   new ApiError(
     'execution',
     `query exceeded limit max_fetch_bytes: ${what} is ${atLeast ? 'at least ' : ''}${bytes} bytes, the limit is ${c.limits.maxFetchBytes}. Narrow the time range, or select fewer metrics by name.`,

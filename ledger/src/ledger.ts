@@ -171,7 +171,7 @@ export interface LogStatus {
   /** A checkpoint being written in parts (format 2), if any: its version, how far it is, and its parts so far. */
   checkpoint: { version: number; phase: 'files' | 'tombstones' | 'manifest'; parts: number; files: number; tombstones: number; bytes: number } | null
   /**
-   * Registrations committed but not yet logged (D57): while there are any, a shard refuses the
+   * Registrations committed but not yet logged (D61): while there are any, a shard refuses the
    * writes of those new streams. With `pendingSince`, what an operator alerts on when the log
    * cannot be written (review m-1): a stuck or failing drain shows here as registrations that
    * wait, not only as a growing `pending`.
@@ -806,7 +806,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     const known = this.stream(ref.shard)
     if (known && known.incarnation === ref.incarnation) {
       // Idempotent: a retried registration gets the answer the first one got, and whether it
-      // is logged by now (D57): derived from the outbox, never stored (review B-1).
+      // is logged by now (D61): derived from the outbox, never stored (review B-1).
       return { version: this.version(), previousIncarnation: known.previousIncarnation, logged: this.registrationLogged(ref.shard, ref.incarnation) }
     }
     // Incarnations are ordered (a larger number is newer). A lower one is a stale shard or a
@@ -828,7 +828,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
    * segment that holds them (`segmentWritten`) or with a new incarnation, whose base is in R2
    * before it commits (`startIncarnation`); and every release writes and drains the same
    * outbox. So a committed registration that no row names is in the logged prefix, whatever
-   * release committed or drained it: nothing here can be left stale by a rollback (D57;
+   * release committed or drained it: nothing here can be left stale by a rollback (D61;
    * review B-1).
    */
   private pendingRegistrations(): Map<string, Set<number>> {

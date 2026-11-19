@@ -30,7 +30,8 @@
 //   focus         a focused control's ring: stroke wide in the theme's focus, offset by stroke (or drawn inside where its box clips), 3:1 on
 //                 what is behind it, cut by no ancestor; also with a mouse over it; a legend row's and a waterfall span's ring drawn by cells;
 //   contrast      a control's border (buttons, inputs, selects, segmented controls, checkboxes) under 3:1 on what is behind it, as painted;
-//   hit-area      a control whose hit area, found by hit testing 21 px around its centre, is under 44 px or covered (every coarse width);
+//   hit-area      a control whose hit area, found by hit testing 21 px around its centre, is under 44 px or covered, or part of what it
+//                 draws (nine points of each box it draws) taken by another control's hit area (every coarse width);
 //   press         a press by a real pointer (a finger at the coarse width, a mouse at the fine one) that does not paint the press token;
 //   guard         the table wrap unpositioned, a dashed slot drawn solid (also hovered), emphasis undone (also hovered), picked members of
 //                 Other that look alike, a kept state that does not wrap;

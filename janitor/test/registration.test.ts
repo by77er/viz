@@ -1,5 +1,5 @@
 /**
- * The lost-incarnation leak (spec/README.md F16) and its fix (D57): the orphan sweep asks the
+ * The lost-incarnation leak (spec/README.md F16) and its fix (D61): the orphan sweep asks the
  * shard of a stream whose flush files wait for a unit (`ensureStream`), a shard that lost the
  * stream starts and registers a fresh incarnation, and the sweep calls an older incarnation's
  * files dead once a newer registration is LOGGED (`loggedIncarnation`), never once merely
@@ -13,8 +13,8 @@
  *                incarnation is kept while the newer registration is only committed; a rebuild
  *                rolls the registration back and the flush Worker's late unit makes the file live
  *                with its object
- *   review m-6   a shard of the release before D57 (no `ensureStream`): files kept, the sweep goes
- *                on; a ledger before D57 (no `loggedIncarnation`): D30's rule, files kept
+ *   review m-6   a shard of the release before D61 (no `ensureStream`): files kept, the sweep goes
+ *                on; a ledger before D61 (no `loggedIncarnation`): D30's rule, files kept
  */
 import { evictDurableObject, runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
@@ -147,7 +147,7 @@ describe('review m-6: release skew at the janitor', () => {
     return { ...s, files: await dataKeys(s.tenant) }
   }
 
-  it('a shard of the release before D57 has no ensureStream: the files are kept, the failure is reported, the sweep finishes', async () => {
+  it('a shard of the release before D61 has no ensureStream: the files are kept, the failure is reported, the sweep finishes', async () => {
     const s = await leaked('skew-shard')
     const oldShards = { idFromName: (n: string) => env.SHARD.idFromName(n), get: () => ({}) } as unknown as JanitorEnv['SHARD']
     const r = await sweepOrphans({ ...env, SHARD: oldShards } as JanitorEnv, s.tenant, LATER)
@@ -157,7 +157,7 @@ describe('review m-6: release skew at the janitor', () => {
     expect(await dataKeys(s.tenant)).toEqual(s.files)
   })
 
-  it('a ledger of the release before D57 sends no loggedIncarnation: D30\'s rule (a logged unit of the newer incarnation), so the files are kept, never deleted on a guess', async () => {
+  it('a ledger of the release before D61 sends no loggedIncarnation: D30\'s rule (a logged unit of the newer incarnation), so the files are kept, never deleted on a guess', async () => {
     const s = await leaked('skew-ledger')
     expect((await sweepOrphans(env, s.tenant, LATER)).ensured).toHaveLength(1) // the shard registers a fresh incarnation
     await s.ledger.drain()

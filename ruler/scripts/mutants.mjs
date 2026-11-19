@@ -1051,6 +1051,16 @@ export const MUTANTS = [
     edits: one('src/anomaly.ts', 'const blocksSpanned = (slots: number) => Math.ceil(Math.max(0, slots - 1) / ANOMALY_BLOCK) + 1', 'const blocksSpanned = (slots: number) => Math.ceil(slots / ANOMALY_BLOCK)'),
     tests: ['test/anomaly.test.ts', 'test/anomalystore.test.ts'],
   },
+  {
+    name: 'readers first broken: this release writes version 2 while gated off (the gate shipped on)',
+    edits: one('src/schema.ts', 'export const ANOMALY_STATE_WRITE: 1 | 2 = 1', 'export const ANOMALY_STATE_WRITE: 1 | 2 = 2'),
+    tests: ['test/anomalystore.test.ts'],
+  },
+  {
+    name: 'readers first broken: gated off, this release cannot read version 2 (the next release\'s rows refused after a rollback)',
+    edits: one('src/anomaly.ts', '    if (v !== ANOMALY_STATE_VERSION && v !== 2) return', '    if (v !== ANOMALY_STATE_VERSION) return'),
+    tests: ['test/anomalystore.test.ts'],
+  },
 ]
 
 const hasGo = spawnSync('go', ['version'], { encoding: 'utf8' }).status === 0

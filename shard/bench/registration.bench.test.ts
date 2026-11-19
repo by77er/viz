@@ -1,5 +1,5 @@
 /**
- * Registration before writes (D57), measured here in local workerd (one process: the shard, the
+ * Registration before writes (D61), measured here in local workerd (one process: the shard, the
  * ledger, R2 and the clients share it; the machine's load is printed with each result).
  *
  *   first-ack     a new stream's first acknowledgement: a sender sends a batch to a stream that
@@ -10,7 +10,7 @@
  *                 the shard's next call, the sender's retry. Local R2 PUTs take milliseconds,
  *                 not the 180–494 ms measured on Cloudflare, so this is a lower bound.
  *   established   appends per second of streams whose registration is confirmed, this release
- *                 in mode `logged` against the release before D57 (bench/prereg/), same clients,
+ *                 in mode `logged` against the release before D61 (bench/prereg/), same clients,
  *                 same batches; each run must have stored exactly what it acknowledged.
  *
  *   BENCH=registration npm run bench
@@ -50,7 +50,7 @@ describe('registration before writes (measured here, workerd)', () => {
     console.log(`BENCH ${JSON.stringify(rows)}`)
   })
 
-  it.runIf(only('registration'))('appends per second of established streams: the release before D57 against this one in mode `logged`, 1, 16 and 64 clients, 4 s, three runs each', async () => {
+  it.runIf(only('registration'))('appends per second of established streams: the release before D61 against this one in mode `logged`, 1, 16 and 64 clients, 4 s, three runs each', async () => {
     const rows: Record<string, unknown>[] = []
     for (let rep = 0; rep < 3; rep++) {
       for (const clients of [1, 16, 64]) {

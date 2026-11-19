@@ -17,7 +17,16 @@ export interface Env extends RouteEnv {
   FILE_CACHE_TTL_S?: string
   /** JSON overriding any default of `TenantLimits`, for the whole deployment. */
   QUERY_LIMITS?: string
+  /**
+   * Which of Tempo's and Loki's HTTP APIs this Worker answers: `traces`, `logs`, or both,
+   * comma-separated. Unset (the default): neither, and their paths are 404, until the write
+   * side of stage 2 (shards, flush, ledger tables) lands (README, "Traces and logs").
+   */
+  QUERY_SIGNALS?: string
 }
+
+/** Whether `QUERY_SIGNALS` enables a signal's API. */
+export const signalEnabled = (env: Env, signal: 'traces' | 'logs'): boolean => (env.QUERY_SIGNALS ?? '').split(',').some((x) => x.trim() === signal)
 
 /**
  * What one query may use. `limits:<tenant>` in KV overrides any field for a tenant;
@@ -92,6 +101,17 @@ export interface TenantLimits extends QueryLimits {
    * or value for the other two.
    */
   maxMetadataSeries: number
+  /**
+   * Traces (README, "Traces and logs"): spans one query may decode, checked against the rows
+   * of the row groups it would read (from the index fragments, before anything is fetched) and
+   * again by the engine as it decodes (the tail's spans count too).
+   */
+  maxSpans: number
+  /** Logs: log rows one query may decode, checked the same way. */
+  maxLogRows: number
+  /** TraceQL metrics: series in the answer, and points (series x steps). */
+  maxTraceSeries: number
+  maxTracePoints: number
 }
 
 /**
@@ -125,6 +145,10 @@ export const DEFAULT_LIMITS: TenantLimits = {
   maxCardinalityPairs: 400_000,
   cardinalitySplitAboveSeries: 50_000,
   maxMetadataSeries: 200_000,
+  maxSpans: 200_000,
+  maxLogRows: 400_000,
+  maxTraceSeries: 10_000,
+  maxTracePoints: 1_000_000,
 }
 
 /** A configuration that cannot be trusted: the query is refused (503), never run on a guess. */

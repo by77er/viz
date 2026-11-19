@@ -15,8 +15,8 @@ dedicated tenants run the same code.
 | `src/tail.ts` | Filtered, paged tail reads (D48): the filter over stored `VZB1` batches, the page cursor, `splitKeyRange` |
 | `src/pool.ts` | Pool maps and routing: which slots a tenant may use, which slot a sender goes to; `validPoolName` |
 | `scripts/mutants.mjs` | Mutation check of the newer properties (runs only on a copy outside the git checkout) |
-| `test/` | 63 tests in 8 files, run inside the Workers runtime |
-| `bench/` | The counterfactual in workerd: this shard against the frozen as-built one (`bench/asbuilt/`, `dc2a1c3`); a 20 MB tail read whole and filtered (`tail.bench.test.ts`, results in `bench/results/tail.txt`) |
+| `test/` | 77 tests in 9 files, run inside the Workers runtime, against the real ledger in the same script (`wrangler.test.jsonc`, `test/worker.ts`), as in viz-ingest |
+| `bench/` | The counterfactual in workerd: this shard against the frozen as-built one (`bench/asbuilt/`, `dc2a1c3`); a 20 MB tail read whole and filtered (`tail.bench.test.ts`, results in `bench/results/tail.txt`); registration before writes (`registration.bench.test.ts`, against the release before it frozen in `bench/prereg/`; results in `bench/results/registration.log`) |
 
 ## What is implemented
 
@@ -42,8 +42,52 @@ dedicated tenants run the same code.
 - **Discard with a fence.** Payloads are dropped after a retention window; a tail read
   asking about rows below the discard mark is refused rather than answered with a gap.
 - **Tail reads scoped to one tenant.** A caller naming an incarnation the shard does not
-  hold (it has no stream for the tenant) gets `incarnation_mismatch` with incarnation 0,
-  never an empty `ok` (review R-10), so a lost stream shows.
+  hold (it has no stream for the tenant) gets `incarnation_mismatch`, never an empty `ok`
+  (review R-10), so a lost stream shows. Since D61 it names a fresh stream the shard started
+  and registered for that read (below); without a `LEDGER` binding, incarnation 0 as before.
+- **Registration before writes** (D61; spec/README.md "Proposed fixes", R2, with the changes
+  of `design/reviews/registration-before-writes.md`). The shard registers each stream with
+  the tenant's ledger (`env.LEDGER`, `idFromName(tenant)`; in viz-ingest the same script) and,
+  in registration mode `logged`, accepts no write to a NEW stream (first use, or after the
+  shard lost its storage) until the ledger answers the registration as LOGGED
+  (`RegisterResult.logged`, derived by the ledger from its outbox). So every plan names every
+  stream that holds acknowledged rows, whatever the ledger loses (spec F6(b), F1). How:
+  - `append` to a stream that is not confirmed: the stream row is created (fresh incarnation,
+    `registered = 0`), a registration call is started in the background if none is in flight
+    and its backoff is over, and the append is answered at once `{ status: 'backpressure',
+    scope: 'registering', retryAfterMs }` (500–1000 ms, jittered): before any quota, metering
+    or group, with no await; nothing is stored, counted or held (review M-1; D37's bound is
+    unchanged). A stream that already holds acknowledged rows (made by the release before D61,
+    or in `lazy` mode) keeps accepting while it is confirmed in the background: refusing it
+    would remove no exposure.
+  - The registration: at most one call per stream at a time (single-flight), at most
+    `maxRegistrations` (4) calls per shard in flight over all tenants (review m-5: a shard's
+    six outbound connections), each waiting at most `registerTimeoutMs` (5 s), retried with
+    backoff from 250 ms doubling to 30 s by the shard's one alarm (its deadline joins `arm()`;
+    the alarm is set before each call, so a call lost with the instance is made again). On
+    `logged: true` the incarnation is written to `stream.registered` (one row write) and the
+    schedule dropped. What must be registered is rebuilt from storage in `load()`. An answer
+    without `logged` (a ledger of the release before) is not logged.
+  - `tailRead` naming an incarnation the shard has lost: it starts a fresh stream (the row
+    first, before any await, so concurrent reads get the same one; newer than the one named,
+    whatever the clock), awaits one registration call, and answers `incarnation_mismatch`
+    naming it; the next plan names it, read from 0 it is empty (spec F6 liveness, `LIVE_impl`).
+  - `ensureStream(tenant)` (new RPC): what an append does before it is accepted, without a
+    batch: for the janitor (spec F16) and a map change or a new tenant (review m-4).
+  - **Alert** (review m-1): a stream whose registration has not been logged after
+    `registerAlertMs` (60 s) is an error line (`shard <name>: the registration of <tenant>'s
+    stream … has not been logged …`), and `stats()` reports `registering` (streams waiting)
+    and `registeringForMs` (the longest wait) with `refusedRegistering` and `registerCalls`.
+    The ledger's `logStatus()` reports `registrationsPending` and `pendingSince`.
+  - **S5 heals** (review m-7): a registration refused because the ledger has a higher
+    incarnation (a clock stepped back across a storage loss) is checked against
+    `loggedWatermarks()`; a new stream that holds nothing acknowledged is renumbered above
+    the ledger's incarnation and registered. One that holds rows (from before D61) is never
+    renumbered: it stays refused by the ledger, as before, and is reported.
+  - Mode: `ShardConfig.registration` (`lazy` by default), overridden by the Worker var
+    `SHARD_REGISTRATION` (`logged` or `lazy`). Without a `LEDGER` binding the shard is lazy
+    whatever the mode. `lazy` is the append path as before D61; reads and `ensureStream`
+    register in either mode. See "Rollout".
 - **Tail reads filtered and paged** (D48; query/CARDINALITY.md "What is left" 1). `tailRead`
   takes an optional fourth argument, `TailReadOptions` (`v` 1): a time range (`minTs`,
   `maxTs`), `metrics` (`__name__` values), `labels` (exact values; `''` = absent) and a
@@ -80,7 +124,8 @@ dedicated tenants run the same code.
 - **Active-series metering and limit.** See the section below.
 - **One alarm per shard**, set to the earliest deadline and absent when idle. The deadlines
   are: age seal, discard of recorded segments, fingerprint expiry, an unsent seal
-  notification or unwritten pending marker, and an unsaved series window.
+  notification or unwritten pending marker, an unsaved series window, and a registration's
+  next call (D61).
 - **Shuffle-shard routing**: each tenant gets a small subset of the pool by rendezvous
   hashing, so tenants rarely share their whole subset.
 - **Names** (D38, `contracts/TABLES.md`): a shard object whose name does not match
@@ -88,15 +133,48 @@ dedicated tenants run the same code.
   serves nothing; `validPoolName` is what `edge` checks maps against; `dedicatedPool`
   turns a tenant id's `_` into `-`.
 - **Versioned storage and formats** (`contracts/COMPATIBILITY.md`, D24). `shard.Shard`
-  version 1 through `contracts/schema.ts`: it adopts the pre-versioning schema unchanged
-  and adds `segment.sealed_at` to objects created before it. Storage of a newer release is
+  version 2 through `contracts/schema.ts`: version 1 adopts the pre-versioning schema
+  unchanged and adds `segment.sealed_at` to objects created before it; version 2 (D61) adds
+  `stream.registered` (additive, `readableFrom` 1: the release before ignores it and never
+  changes a stream row's incarnation, so what this release wrote stays true and its 0 is
+  only conservative). Storage of a newer release is
   refused: `append` answers retryable `overload`, every other method throws
   `schema_too_new`, nothing is written, the alarm is re-armed. The series-window bucket
   carries a format byte (`SKETCH_FORMAT`); a bucket of an unknown kind or version is not
   read as something else: that tenant's metered appends are refused (retryable) rather than
   counted against an empty window. The flush message carries `v` (`FLUSH_MESSAGE_VERSION`).
-  Goldens: `test/golden/schema/v1.json`, `test/golden/formats/series-window.v1.json`,
+  Goldens: `test/golden/schema/v1.json`, `v2.json`, `test/golden/formats/series-window.v1.json`,
   `queue.flush.v1.json`.
+
+## Rollout (D61)
+
+Shard, ledger, flush, janitor and edge are one Worker, viz-ingest (`deploy/workers.json`), so
+they deploy together; but Durable Objects take new code lazily (`durable_objects_code_update`:
+"deferred 30s") and a gradual deployment runs two versions, so for a while edge isolates,
+shards and ledgers run mixed releases in every combination (COMPATIBILITY.md §1). What must
+hold, and why each combination is safe:
+
+| Caller (release) | Callee (release) | What happens |
+|---|---|---|
+| shard D61 | ledger before D61 | `registerStream` answers without `logged`: taken as not logged. In mode `lazy` nothing waits on it; in mode `logged` a new stream is refused until the ledger runs D61 (at most the code-update delay). Tested: `registration.test.ts` "a ledger of the release before D61" |
+| shard before D61 | ledger D61 | as before D61 (lazy registration by flush) |
+| janitor D61 | shard before D61 | `ensureStream` is missing: the files are kept, the failure is in `ensured`, the sweep goes on (review m-6). Tested in janitor/ |
+| janitor D61 | ledger before D61 | no `loggedIncarnation`: D30's rule (files kept longer, never deleted on a guess). Tested in janitor/ |
+| edge before the mapping | shard in mode `logged` | `registering` would be answered **429**, which Remote Write senders may drop (review M-2). **Must not happen**: hence the two releases below |
+| shard (either) | storage of the other | schema 2 is additive (compat 1). Rollback and roll-forward on the same storage, with the release before running as the old code, tested: every stream accepts afterwards, a confirmed registration stays confirmed (`registration.test.ts`) |
+
+So the order is two releases (readers before writers, COMPATIBILITY.md §3.3):
+
+1. **Release A** (this code): the ledger answers `logged` and `loggedIncarnation`; the shard
+   registers on reads and `ensureStream`, has the `logged` mode, and runs `lazy` (no new
+   status is sent); the janitor's F16 fix; and **edge maps `registering` to 503** ("Needed
+   changes elsewhere" 1, being done in edge/ by its owner). A is safe to roll back: no format
+   or status reaches a reader that does not know it, and schema 2 is additive.
+2. **Release B**: viz-ingest's vars get `"SHARD_REGISTRATION": "logged"` ("Needed changes
+   elsewhere" 3). Only once A is live everywhere and is the rollback floor (D46): a rollback
+   below A would put an edge that answers 429 in front of shards that may still run B for the
+   code-update delay. Rolling B back to A is safe at any time (the var goes; streams keep
+   their `registered` value; appends are lazy again).
 
 ## Flush triggering
 
@@ -171,14 +249,68 @@ per shard on an even share, so an unevenly spread tenant is refused before its w
 
 ```
 npm install
-npx vitest run --maxWorkers=2   # 63 tests in workerd, 8 files
+npx vitest run --maxWorkers=2   # 77 tests in workerd, 9 files
 npx tsc --noEmit                # clean
 node scripts/mutants.mjs        # on a copy outside the git checkout (see the script)
 npm run bench                   # the workerd counterfactual (bench/)
 BENCH=tail npm run bench        # a 20 MB tail, read whole and filtered
+BENCH=registration npm run bench  # registration before writes (D61)
 ```
 
-Last run, 2026-11-19: **63 passed, 0 failed**; `tsc --noEmit` clean.
+Last run, 2026-11-19: **77 passed, 0 failed**; `tsc --noEmit` clean. The suite now runs with
+the ledger in the same script (`wrangler.test.jsonc`; its drain only when a test asks).
+
+- `test/registration.test.ts` (15, D61), each tied to a trace of the protocol model or a
+  finding of `design/reviews/registration-before-writes.md`:
+  - **spec test 1, shard half** (`R1_safety`): a new stream's appends are refused
+    `registering`, nothing stored, while the ledger has only committed the registration; the
+    retry is accepted once it is logged; the shard and the ledger are evicted between every
+    step; a ledger rebuild that rolls a committed registration back is re-registered and still
+    refused until logged; after the shard is accepted the ledger, emptied and rebuilt, still
+    names the stream.
+  - **review M-1**: with one tenant's ledger hanging (3 s per call), 40 appends of that tenant
+    are all refused within 1.5 s and 40 appends of another tenant of the same shard are all
+    acknowledged meanwhile; one ledger call for the 40; nothing in flight, pending or stored. A
+    sender hammering a new stream with the default backoff makes at most 2 calls in 100 appends;
+    concurrent reads after a loss and concurrent `ensureStream` calls share one call.
+  - **review M-2, the shard's side**: the refusal is `backpressure` / `registering` with a
+    `Retry-After` of 500–1000 ms, never a scope edge answers 429.
+  - **spec test 3, shard half** (`LIVE_R2`): after a storage loss a read naming the lost
+    stream is answered with a fresh, newer stream that the ledger already has; concurrent reads
+    get the same one; read from 0 it is empty; once logged it takes writes. A registration call
+    lost with the instance is made again by the alarm, from storage.
+  - **review m-1** (alert), **m-5** (at most `maxRegistrations` calls in flight), **m-7** (S5
+    heals a stream holding nothing; one holding rows is never renumbered).
+  - **skew and rollback**: a ledger of the release before D61 (frozen,
+    `ledger/bench/prereg/`) answers without `logged` and is never taken as logged; the shard
+    release before D61 (frozen, `bench/prereg/`) run on the same storage (schema 2 opened by
+    code that knows 1), then the roll-forward: every stream accepts, a confirmed registration
+    stays confirmed. Without a `LEDGER` binding the shard is lazy and answers as before.
+- The integration traces (shard + ledger + flush + a reader following the coordinator's
+  protocol) are in `flush/test/registration.test.ts`; the F16 and F15 traces with the janitor
+  in `janitor/test/registration.test.ts`; the soak in `stack/test/soak.test.ts` runs the
+  shards in mode `logged` (400 steps, seeds 20261118, 1, 7, 42: passed).
+
+**Measured here** (local workerd, 2026-11-19, load average 2.6–3.4 on 4 cores;
+`bench/results/registration.log`):
+
+- **A new stream's first acknowledgement**, from the sender's first send, the ledger draining
+  on its own (200 ms after a commit), 30 streams each: with the shard's `Retry-After`
+  (500–1000 ms), **519–1007 ms, median 702** (one refusal each); with it rounded up to whole
+  seconds, as edge writes the header, **1006–1013 ms** (one refusal each). Local R2 PUTs take
+  milliseconds, so these are lower bounds for Cloudflare: the spec's **modelled** 0.5–1.5 s
+  assumed a 180–494 ms segment PUT and a 0.5 s Retry-After; with edge's whole seconds the
+  modelled figure is **1–2 s** (review m-9), each refusal one shard→ledger round trip that is
+  **not measured from a shard** (15–47 ms Worker→ledger on Cloudflare, s4). The experiment that
+  settles it: fresh streams started on Cloudflare, first send to first acknowledgement, n ≥ 30,
+  idle ledger and one under eight writers (spec "What remains unproven").
+- **Appends per second of established streams**, this release in mode `logged` (streams
+  confirmed) against the release before (frozen, `bench/prereg/`), same clients and batches,
+  4 s, three runs each, every run storing exactly what it acknowledged: 1 client 748 / 771 /
+  703 against 767 / 806 / 708; 16 clients 2,866 / 2,815 / 2,525 against 2,788 / 2,838 / 2,742;
+  64 clients 3,452 / 2,977 / 3,035 against 3,427 / 3,025 / 3,027. No difference beyond the
+  run-to-run spread (the path adds one boolean test per append). Nothing was tuned: no
+  parameter of this release touches that path.
 
 - `test/tail.test.ts` (8): a tail of 24 random batches written with the engine's own test
   encoder (`engine/wasm/test/vzb1.ts`), with duplicate `(series, ts)` and staleness markers,
@@ -279,6 +411,29 @@ copy): V8 keeps a NaN's bits through that path, signalling NaNs included, so the
 staleness marker cannot tell; the byte copy is what BATCH.md asks for and is right by reading.
 In all: **30 of 32 killed**, R-12 and this one surviving.
 
+**Run of 2026-11-19, registration before writes (D61)**, on a copy of `contracts/`, `shard/`,
+`ledger/`, `flush/`, `janitor/`, `compact/`, `publisher/` and `engine/wasm/` in a scratch
+directory, each mutant against the registration tests of the components named (the shard's are
+in `scripts/mutants.mjs` as `D61:`; the others in `ledger/` and `janitor/`'s scripts):
+
+| Mutant | Killed by |
+|---|---|
+| acknowledge before logged: a committed registration taken as logged | shard spec test 1 (both); flush "spec R1" |
+| acknowledge before logged: a new stream accepted unregistered | shard spec test 1; flush "spec R1", "spec F6(b)" |
+| an append parks on the registration instead of being refused | shard M-1 (both) |
+| 429 instead of a retryable scope (`tenant`) | shard spec test 1, M-2 |
+| a read naming a lost stream does not start and register a fresh one (as before D61) | shard spec test 3; flush "spec R1", "spec F6(b)" |
+| an answer without `logged` (an older ledger) taken as logged | shard skew |
+| no single-flight | **survived** the first run (appends alone cannot see it: `kick` has its own guard); killed after adding "concurrent reads … share one ledger call" |
+| no cap on registration calls in flight (m-5) | shard m-5 |
+| S5 not healed (m-7) | shard m-7 |
+| the alarm does not retry registrations | shard spec test 1 (both) |
+| a new stream's registration not rebuilt from storage | shard spec test 1, spec test 3 |
+| R-10's pattern, updated for the new code (a read of a lost stream answers an empty `ok`) | shard.test.ts |
+
+**11 of 11 D61 mutants killed** (one after a test was added), plus R-10 re-checked. The
+ledger's and the janitor's D61 mutants are listed in their READMEs.
+
 ## Not implemented yet
 
 - **Skipping stored batches without scanning them.** A filtered read decodes the series table
@@ -291,10 +446,32 @@ In all: **30 of 32 killed**, R-12 and this one surviving.
   of what a query with `=~` selects (the engine still applies the query's matchers).
 
 - **Map-epoch handover**: draining shards and moving fingerprints on a map change.
-- **Registration before writes** (spec F1). The shard only reports a new incarnation;
-  `flush/` registers it with the ledger at its first flush. Until then queries naming the old
-  incarnation are refused, indefinitely for a stream that gets no new writes (spec F6;
-  `ledger/README.md`, "Known risks").
+- **Registration before writes is OFF in production until release B** ("Rollout"): the
+  default mode is `lazy`, so F6(b) stays possible for appends until edge maps `registering`
+  and `SHARD_REGISTRATION` is `logged`. What IS on in every mode: reads and the janitor
+  register a lost stream's fresh incarnation (spec F6 liveness, F16).
+- **A forgotten registration is not re-registered** (review m-2). `stream.registered` is kept
+  for ever; it can be wrong only if the ledger forgets a LOGGED registration, which the
+  protocol never does: only a lost or replaced log (a tenant deleted and created again under
+  the same id, a point-in-time restore of the ledger, a log looked for under another cell).
+  None is built. Re-registering the same incarnation would not recover (the ledger would
+  start it at 0 against the shard's recorded prefix: `not_contiguous` for ever), and starting a
+  fresh incarnation drops the stream's unrecorded rows, a declared loss for an operator to
+  decide. Out of scope, stated in DESIGN §4.3; the code before D61 is stuck the same way.
+- **Streams are never retired** (review m-3). A read naming a lost stream, and the janitor,
+  create a stream row and a ledger registration; nothing drops a stream. After a pool is
+  retired the first query of each tenant that wrote there creates a stream in the retired
+  shard, and every query wakes it. Not built because pool retirement and tenant deletion are
+  not built; the fix is a stream-retirement change in the ledger (a new `LedgerChange` kind:
+  a log format change, readers first, two releases), after which the read path no longer
+  creates anything for a stream the ledger has dropped, and deletion must fence both paths.
+- **Registration ahead of map changes and at tenant creation** (review m-4): `ensureStream`
+  exists for it; the callers (the map-change procedure and tenant creation, in control/ and
+  edge/) do not call it yet ("Needed changes elsewhere" 4). Until they do, every (tenant, new
+  slot) pair is refused for about a second when senders first write to it.
+- **Long-poll** (the review's suggestion that the ledger answer once logged): not done. The
+  shard's backoff (250 ms, doubling) already makes one or two calls per stream, and the
+  sender's `Retry-After` dominates the first acknowledgement.
 - **CPU fairness.** Byte budgets and the in-flight limit are per shard; a tenant sending many
   tiny requests still shares the object's single thread with its neighbours. Not measured.
 - **Tuning on Cloudflare.** The in-flight limit (64), pending bytes (16 MB) and group window
@@ -312,8 +489,96 @@ In all: **30 of 32 killed**, R-12 and this one surviving.
   measure slow.
 - **The early refusal limit is per object, not per tenant**: a tenant flooding a shared
   shard gets other tenants refused as `overload` too (byte budgets stay per tenant).
+- **A ledger that cannot log refuses its tenant's new streams without bound** (D61, mode
+  `logged`): a new tenant cannot write, a shard that lost its storage takes nothing for that
+  tenant, a map change stops the moved keys. Fails closed and retryable, reported (the alert
+  after 60 s; `logStatus().registrationsPending`), and after R2 recovers the drain's backoff
+  (up to 60 s) is added. Existing streams keep accepting, as before.
+- **Whether concurrent calls into one Durable Object share its six outbound connections is
+  not measured** (review m-5). The cap of 4 registration calls per shard keeps them within six
+  with the seal notification (one queue send) and the marker (one KV write) either way.
+- **The registration's round trip from a pooled shard to a ledger elsewhere is not
+  measured**: a pooled shard serves tenants whose ledgers may be on another continent.
 
 ## Needed changes elsewhere
+
+### Registration before writes (D61)
+
+1. **`edge/`: answer `registering` with 503, never 429** (review M-2; must ship in release A,
+   before anything sets `SHARD_REGISTRATION`). In `edge/src/route.ts`, where the per-shard
+   results are folded (the loop over `results` that reads `scope === 'overload'`):
+
+   ```ts
+   // An overloaded shard, or a stream whose registration is not yet logged (D61), is a 5xx:
+   // Remote Write senders MUST retry 5xx and MAY drop 429. A full buffer stays 429.
+   if ((r as { scope: string }).scope === 'overload' || (r as { scope: string }).scope === 'registering') overloadMs = Math.max(overloadMs, r.retryAfterMs, 1)
+   else retryAfterMs = Math.max(retryAfterMs, r.retryAfterMs, 1)
+   ```
+
+   and do NOT call `noteOverload` for `registering` (it is one stream, not the shard: the
+   early refusal of the tenant's next request must stay keyed to overload). The answer is then
+   `edge/src/index.ts`'s 503 with `Retry-After` (whole seconds, `retryAfter`), and the ruler's
+   entrypoint (`edge/src/recorded.ts`) refuses it as `overloaded` (retryable). A message of its
+   own ("ingest stream is being registered; retry the whole request") is better than
+   "overloaded" if the outcome gets its own status. **Test** (`edge/test/overload.test.ts`):
+
+   ```ts
+   it('a stream being registered (D61) is 503 with Retry-After, never 429; nothing is stored; the retry once registered is stored once', async () => {
+     const t = await tenant()
+     const proto = Shard.prototype as unknown as { append: Shard['append'] }
+     const real = proto.append
+     let refuse = true
+     proto.append = async function (this: Shard, req) { return refuse ? { status: 'backpressure', scope: 'registering', retryAfterMs: 700 } : real.call(this, req) }
+     try {
+       for (const res of [await postWrite(t.key, series(3)), await postOtlp(t.key, otlp(), 'application/x-protobuf')]) {
+         expect(res.status).toBe(503)
+         expect(res.headers.get('Retry-After')).toBe('1')
+       }
+       expect((await tailOfSlot(t.map, 0, t.tenant)).batches).toEqual([])
+       refuse = false
+       clearCaches()
+       expect((await postWrite(t.key, series(3))).status).toBe(204)
+       expect((await postWrite(t.key, series(3))).status).toBe(204) // a retry: stored once
+       expect((await tailOfSlot(t.map, 0, t.tenant)).batches).toHaveLength(1)
+     } finally {
+       proto.append = real
+     }
+   })
+   ```
+
+   (in the file's `describe('an overloaded shard', …)`, whose `tenant()`, `series()` and
+   `otlp()` it uses). Mutant: map `registering` like `tenant` (429): the test fails on the
+   status. A Remote Write request split over two shards of which one refuses `registering`
+   is refused whole (503) after the other stored its batch; the sender's retry is deduplicated
+   by fingerprint, as for any partial refusal (contracts/BATCH.md).
+2. **`query/`: no code change for R2.** The coordinator as built already learns a newer
+   incarnation from `incarnation_mismatch`, re-plans, and reads a learned stream from 0; it
+   answers a shard that names a LOWER incarnation as "behind the ledger" (503), which a fresh
+   stream never is (it is started above the incarnation the read names). **Tests to add** in
+   `query/test/fence.test.ts`, against the real coordinator (the same traces run in
+   `flush/test/registration.test.ts` against a reader that follows `readTail`):
+   - *spec F6(b)*: shard configured `{ registration: 'logged' }`; ingest (retry the request
+     until 204); seal; `hooks.afterPlan` on the first attempt: flush the tenant until logged
+     (`flushAll` and the ledger's `drain()`), then `deleteAll` and evict the shard; expect the
+     exact answer, `Plan-Attempts` 2. Mutant: shard in mode `lazy`: the answer lacks the rows.
+   - *spec F6 liveness*: ingest (registered, logged), do not flush, `deleteAll` and evict the
+     shard; the query answers 200 (without those rows: the declared loss) with `Plan-Attempts`
+     2, and the next query 1. Mutant: the shard's read path answering `incarnation_mismatch(0)`
+     (as before D61): 503 after 4 attempts.
+   The existing test "a shard whose stream was recreated … a shard behind the ledger is 503"
+   is unchanged by D61 (it rewrites an existing stream's incarnation in memory; the read path
+   creates a stream only when the shard holds none).
+3. **Release B** (`stack/wrangler.jsonc` `vars`, or `deploy/workers.json` for viz-ingest):
+   `"SHARD_REGISTRATION": "logged"`, only once release A (with item 1) is live everywhere and
+   is the rollback floor (D46). Its release record must say that a rollback below A is
+   refused.
+4. **`control/` (or wherever pool maps are written) and tenant creation** (review m-4): call
+   `ensureStream(tenant)` on every slot of the tenant's new pool map, and publish the map's new
+   epoch only once each answers `registered: true` (retry while it does not; the shard's own
+   backoff paces the ledger calls). Then a refusal happens only after a shard loses its
+   storage.
+
+### Filtered and paged tail reads (D48)
 
 **`query/`** (the coordinator and the leaves; not edited here). What makes a query read only
 the tail it needs, and split leaves fetch only their key range:

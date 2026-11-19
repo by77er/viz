@@ -1,4 +1,4 @@
-// FROZEN: ledger/src/ledger.ts as it stood before registration before writes (D57; spec "Proposed fixes" R2), the release before it.
+// FROZEN: ledger/src/ledger.ts as it stood before registration before writes (D61; spec "Proposed fixes" R2), the release before it.
 // Used as the previous release on the SAME storage (test/registration.test.ts: rollback and roll-forward, review B-1).
 // Not maintained: do not edit.
 import { DurableObject } from 'cloudflare:workers'

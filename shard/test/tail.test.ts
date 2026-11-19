@@ -241,7 +241,7 @@ describe('pages', () => {
     const inc = await writeTail(s, 't', 3, 9)
     expect(await s.tailRead('t', inc + 1, 0, {})).toMatchObject({ status: 'incarnation_mismatch', incarnation: inc })
     expect(await s.tailRead('nobody', 0, 0, {})).toMatchObject({ status: 'ok', batches: [], page: { next: null } })
-    // A lost stream: refused, naming the fresh stream the shard started for it (D57), never `ok`.
+    // A lost stream: refused, naming the fresh stream the shard started for it (D61), never `ok`.
     const lost = await s.tailRead('nobody', 5, 0, {})
     expect(lost).toMatchObject({ status: 'incarnation_mismatch' })
     expect((lost as { incarnation: number }).incarnation).toBeGreaterThan(5)

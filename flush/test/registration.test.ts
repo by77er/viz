@@ -1,5 +1,5 @@
 /**
- * Registration before writes (D57; spec/README.md "Proposed fixes", R2): the model's traces
+ * Registration before writes (D61; spec/README.md "Proposed fixes", R2): the model's traces
  * replayed against the write path (real shard, ledger, flush and engine) and a reader that
  * follows the query coordinator's protocol (test/coordinator.ts). Every test runs the shard in
  * registration mode `logged`; storage loss is `deleteAll` and eviction.
@@ -12,7 +12,7 @@
  *                results/REPLAY.md): the plan names the stream before its first unit is
  *                admitted; after the shard's storage loss the tail read is refused, never `ok`,
  *                empty; the re-planned attempt returns b0 from the file. The same steps with
- *                lazy registration (the release before D57) miss b0: the finding, reproduced
+ *                lazy registration (the release before D61) miss b0: the finding, reproduced
  *   spec test 3  "spec F6 liveness": `LIVE_R2_teeth_no_read_trigger`'s 6 steps: after a shard
  *                storage loss and no further write, the first attempt is refused, the shard
  *                holds a fresh incarnation the ledger has registered, the second completes
@@ -167,7 +167,7 @@ describe('spec F6(b): a stream with acknowledged rows is named by every plan', (
     expect(answer.asked[0]!.incarnation).toBeGreaterThan(inc)
   })
 
-  it('the same steps with lazy registration (the release before D57) answer without b0: the finding, reproduced', async () => {
+  it('the same steps with lazy registration (the release before D61) answer without b0: the finding, reproduced', async () => {
     const { answer, sent } = await trace('lazy')
     expect(sent.canon().length).toBeGreaterThan(0)
     expect(answer.canon).toEqual([])

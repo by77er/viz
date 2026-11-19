@@ -6,7 +6,7 @@ name = "viz-engine-wasm-query"
 version = "0.1.0"
 license = "Apache-2.0"
 edition = "2021"
-description = "viz query engine for WebAssembly: a C ABI over viz-query (plan, PromQL evaluation, select, metadata, file pruning). No I/O."
+description = "viz query engine for WebAssembly: a C ABI over viz-query (plan, PromQL evaluation, select, metadata, file pruning), viz-traceql and viz-logql (traces and logs). No I/O."
 publish = false
 
 [lib]
@@ -16,6 +16,15 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 viz-query = { path = "../query" }
 viz-storage = { path = "../storage" }
+# ABI 6: TraceQL and LogQL in the same module (viz-logql evaluates its vector operations on
+# viz-promql, which viz-query links already; viz-goregex and regex are shared by both).
+viz-traceql = { path = "../traceql" }
+viz-logql = { path = "../logql" }
+viz-goregex = { path = "../goregex" }
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-case"] }
+# The versions viz-storage links (no second copy): the span and log readers (src/sigfiles.rs).
+parquet = { version = "60", default-features = false, features = ["snap"] }
+bytes = "1"
 serde_json = "1"
 
 # engine/AGENTS.md: the settings that measured faster.
