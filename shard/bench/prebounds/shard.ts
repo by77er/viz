@@ -1,8 +1,12 @@
+// FROZEN: shard/src/shard.ts as it stood before span and log batches carried time bounds (D72; review m-3 of
+// design/reviews/signals-end-to-end.md), at fd4b75a: schema 2, the release before it. Used as the previous release on
+// the SAME storage (test/bounds.test.ts: rollback and roll-forward). Its tail filter is frozen beside it (./tail.ts).
+// Not maintained: do not edit.
 import { DurableObject } from 'cloudflare:workers'
-import { SHARD_NAME, TENANT_ID } from '../../contracts/ledger'
-import type { Ledger } from '../../ledger/src/ledger'
-import { type SchemaSpec, type SchemaTooNew, SchemaTooNewError, columnsOf, openSchema, refusalOf } from '../../contracts/schema'
-import { SeriesWindow, UnreadableSketch } from './sketch'
+import { SHARD_NAME, TENANT_ID } from '../../../contracts/ledger'
+import type { Ledger } from '../../../ledger/src/ledger'
+import { type SchemaSpec, type SchemaTooNew, SchemaTooNewError, columnsOf, openSchema, refusalOf } from '../../../contracts/schema'
+import { SeriesWindow, UnreadableSketch } from '../../src/sketch'
 import {
   TAIL_PAGE_MAX_BYTES, TAIL_READ_VERSION, TAIL_SCAN_MAX_BYTES, type TailPage, type TailReadOptions, UnreadableBatch, compileFilter, decodeCursor, encodeCursor,
   filterBatch, fnv64,

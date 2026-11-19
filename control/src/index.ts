@@ -1,6 +1,7 @@
 import { Problem } from './errors'
 import { type Identity, type IdentityEnv, identify } from './identity'
 import { OAUTH_PATHS, readCapped, serveOAuth } from './oauth-http'
+import { deadListStatus } from './deadlist'
 import { LIMITERS, type RateLimitEnv, limiterStatus } from './ratelimit'
 import { type OpInput, type OpName, type OpResult, PREFIX, matchRoute } from './routes'
 import type { TenantEnv } from './tenant'
@@ -109,7 +110,8 @@ const tenantNotAccepted = (where: string): Problem =>
  * The body's first line is `ok`; the lines after it say whether OAuth can issue anything
  * (`OAUTH_CLIENT_KEY` set or absent; never its value) and, for each rate limiter in front of OAuth
  * (D70), whether it is `bound`, `absent`, or `skipped` (bound, and failed in this isolate in the
- * last few seconds: src/ratelimit.ts). An absent limiter does not make this 503: the checks fail
+ * last few seconds: src/ratelimit.ts), and the same of the list of dead credentials
+ * (`OAUTH_DEAD_LIST`, src/deadlist.ts: `skipped` after a failed KV read). An absent limiter does not make this 503: the checks fail
  * open by design, and whether a deployment may run without them is the deploy's gate to keep
  * (control/README.md, "Needed changes elsewhere"). The gateway reads only the status.
  */
@@ -121,7 +123,7 @@ function health(req: Request, env: Env): Response {
   if (missing.length) return text(503, `misconfigured: no ${missing.join(' or ')} binding\n`)
   const limits = limiterStatus(env)
   const oauthKey = typeof env.OAUTH_CLIENT_KEY === 'string' && env.OAUTH_CLIENT_KEY.length >= 32 ? 'set' : 'absent'
-  return text(200, ['ok', `OAUTH_CLIENT_KEY: ${oauthKey}`, ...LIMITERS.map((n) => `${n}: ${limits[n]}`), ''].join('\n'))
+  return text(200, ['ok', `OAUTH_CLIENT_KEY: ${oauthKey}`, ...LIMITERS.map((n) => `${n}: ${limits[n]}`), `OAUTH_DEAD_LIST: ${deadListStatus(env)}`, ''].join('\n'))
 }
 
 export function createWorker(hooks: Hooks = {}): ExportedHandler<Env> {
@@ -158,10 +160,10 @@ export function createWorker(hooks: Hooks = {}): ExportedHandler<Env> {
   }
 
   return {
-    async fetch(req, env): Promise<Response> {
+    async fetch(req, env, ctx): Promise<Response> {
       const pathname = new URL(req.url).pathname
       if (pathname === '/healthz') return health(req, env)
-      if (OAUTH_PATHS.has(pathname)) return serveOAuth(req, env)
+      if (OAUTH_PATHS.has(pathname)) return serveOAuth(req, env, ctx)
       const cors = corsHeaders(req, env)
       if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors })
       try {

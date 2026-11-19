@@ -36,11 +36,24 @@ export const TAIL_SCAN_MAX_BYTES = 32 * 1024 * 1024
  * batch does not have: then it keeps nothing. A batch of any other signal is never guessed at:
  * skipped when `signals` leaves it out, else the read fails (`UnreadableBatch`). A metrics query
  * passes `signals: [1]`; a read of spans or logs passes `[2]` or `[3]`.
+ *
+ * Time bounds of span and log batches (added 2026-11-19, D72, review m-3; additive within `v` 1;
+ * contracts/BATCH.md "Tail reads of spans and log records by time"): the shard records each span
+ * or log batch's time bounds once, at append (`batchTimeBounds`: the floor in milliseconds of its
+ * smallest and largest span `start` or log `ts`). A filtered read with a time range skips a span
+ * or log batch whose bounds lie wholly outside `[minTs, maxTs]`, without reading it, and returns
+ * every other one whole, as before. A batch without bounds (written before schema 3, or by the
+ * release before it, or one the shard could not walk) is kept by every time range. So a caller
+ * that needs every span starting (or log record stamped) in `[lo, hi]` nanoseconds passes
+ * `minTs = floor(lo / 10⁶)`, `maxTs = floor(hi / 10⁶)` and gets every batch that holds one.
  */
 export interface TailFilter {
   /** Keep only batches whose signal byte is one of these (1 metrics, 2 spans, 3 log records). */
   signals?: number[]
-  /** Inclusive Unix milliseconds. */
+  /**
+   * Inclusive Unix milliseconds. Metric rows by `ts`; span and log batches whole, by the bounds
+   * recorded at append (a batch without bounds is always kept).
+   */
   minTs?: number
   maxTs?: number
   /** `__name__` is one of these. */
@@ -105,6 +118,8 @@ export interface CompiledFilter {
   all: boolean
   /** True when the filter names series (`metrics`, `labels` or `keyRange`): a span or log batch then keeps nothing. */
   series: boolean
+  /** True when the filter has a time range: span and log batches are then chosen by their recorded bounds (`keepsBounds`). */
+  timed: boolean
 }
 
 const te = new TextEncoder()
@@ -153,8 +168,113 @@ export function compileFilter(f: TailFilter): CompiledFilter | { invalid: string
     ...(signals ? { signals: [...signals].sort((a, b) => a - b) } : {}),
   })
   const series = !!metrics || labels.length > 0 || !!key
-  const all = !signals && f.minTs === undefined && f.maxTs === undefined && !metrics && labels.length === 0 && !key
-  return { signals, minTs, maxTs, metrics, labels, present: labels.filter((l) => l.value.length > 0).length, key, canonical, all, series }
+  const timed = f.minTs !== undefined || f.maxTs !== undefined
+  const all = !signals && !timed && !metrics && labels.length === 0 && !key
+  return { signals, minTs, maxTs, metrics, labels, present: labels.filter((l) => l.value.length > 0).length, key, canonical, all, series, timed }
+}
+
+/**
+ * Whether a stored batch with these recorded bounds may hold a row in the filter's time range:
+ * its `[min, max]` overlaps `[minTs, maxTs]` (both inclusive), or it has no bounds. The shard
+ * applies the same test in SQL (`Shard.tailPage`); this is its statement in one place, for tests
+ * and for callers that hold a batch's bounds.
+ */
+export function keepsBounds(f: Pick<CompiledFilter, 'minTs' | 'maxTs'>, min: number | null, max: number | null): boolean {
+  return min === null || max === null || (max >= f.minTs && min <= f.maxTs)
+}
+
+const NS_PER_MS = 1_000_000n
+
+/**
+ * The time bounds of a span (signal 2) or log-record (signal 3) batch, computed once at append
+ * (D72): the floor, in Unix milliseconds, of its smallest and largest span `start`
+ * (`start_time_unix_nano`) or log `ts`, the same floor the ledger's `FileEntry.minTs`/`maxTs`
+ * take of a file's nanosecond bounds (D63). A millisecond range `[a, b]` covers nanoseconds
+ * `[a·10⁶, b·10⁶ + 999,999]`, so these bounds overlap a millisecond range exactly when the rows'
+ * nanosecond times can.
+ *
+ * Read without decoding the batch: the entry table is walked by its length fields
+ * (contracts/BATCH.md, "Spans, signal 2", "Log records, signal 3") to find the one fixed-width
+ * column, which is then scanned as pairs of u32 (exact, no float). Null for a metric batch, a
+ * batch of another signal, an empty one, and any batch whose lengths do not lead to a whole
+ * column inside it, or that holds a time outside `0 … 2^63 − 1`: such a batch is stored without
+ * bounds and every time range keeps it. It never throws: an append is never refused for it.
+ */
+export function batchTimeBounds(payload: Uint8Array): { minTs: number; maxTs: number } | null {
+  const signal = batchSignal(payload)
+  if (signal !== 2 && signal !== 3) return null
+  const len = payload.length
+  const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
+  const n = dv.getUint32(8, true)
+  const entries = dv.getUint32(12, true)
+  // Every row takes more than 8 bytes, every entry more than 8: anything larger cannot be walked.
+  if (n === 0 || n > len / 8 || entries > len / 8) return null
+  let p = 16
+  const skip16 = (): boolean => {
+    if (p + 2 > len) return false
+    p += 2 + dv.getUint16(p, true)
+    return true
+  }
+  const skip32 = (): boolean => {
+    if (p + 4 > len) return false
+    p += 4 + dv.getUint32(p, true)
+    return true
+  }
+  for (let e = 0; e < entries; e++) {
+    p += 8 // resource_fp or stream_id
+    if (signal === 2) {
+      // resource attrs: n u16, then per attribute key_len u16, key, type u8, value.
+      if (p + 2 > len) return null
+      const nAttrs = dv.getUint16(p, true)
+      p += 2
+      for (let a = 0; a < nAttrs; a++) {
+        if (!skip16() || p + 1 > len) return null
+        const type = payload[p++]!
+        if (type === 1 || type === 5) {
+          if (!skip32()) return null
+        } else if (type === 2 || type === 3) p += 8
+        else if (type === 4) p += 1
+        else return null
+        if (p > len) return null
+      }
+      // scope_name u16, scope_version u16, scope_attrs u32.
+      if (!skip16() || !skip16() || !skip32()) return null
+    } else {
+      // n_labels u32, then per label name_len u16, name, value_len u16, value.
+      if (p + 4 > len) return null
+      const nLabels = dv.getUint32(p, true)
+      p += 4
+      if (nLabels > len) return null
+      for (let l = 0; l < nLabels; l++) if (!skip16() || !skip16()) return null
+    }
+    if (p > len) return null
+  }
+  // Every column starts at a multiple of 8: `entry` u32[n], then (spans) trace_id 16n, span_id 8n,
+  // parent_span_id 8n, then `start` i64[n]; (logs) `ts` i64[n] straight after `entry`.
+  const at8 = (x: number) => Math.ceil(x / 8) * 8
+  let col = at8(at8(p) + 4 * n)
+  if (signal === 2) col += 32 * n
+  if (col + 8 * n > len) return null
+  // The smallest and largest value, compared as (high, low) u32 pairs: exact for every i64.
+  let minHi = 0xffffffff
+  let minLo = 0xffffffff
+  let maxHi = 0
+  let maxLo = 0
+  for (let i = 0, q = col; i < n; i++, q += 8) {
+    const lo = dv.getUint32(q, true)
+    const hi = dv.getUint32(q + 4, true)
+    if (hi >= 0x80000000) return null // negative: outside what the contract allows
+    if (hi < minHi || (hi === minHi && lo < minLo)) {
+      minHi = hi
+      minLo = lo
+    }
+    if (hi > maxHi || (hi === maxHi && lo > maxLo)) {
+      maxHi = hi
+      maxLo = lo
+    }
+  }
+  const ms = (hi: number, lo: number) => Number(((BigInt(hi) << 32n) | BigInt(lo)) / NS_PER_MS)
+  return { minTs: ms(minHi, minLo), maxTs: ms(maxHi, maxLo) }
 }
 
 const pad8 = (n: number) => (n + 7) & ~7

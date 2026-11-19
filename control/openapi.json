@@ -5517,6 +5517,10 @@
                 "type": "null"
               }
             ]
+          },
+          "refreshesLastDay": {
+            "type": "integer",
+            "description": "Refresh tokens issued for the grant in the last 24 hours (the code exchange's included); 0 once it has ended. About 24 for a client refreshing hourly; up to 8,640 for one rotating as fast as it may, which is how a stock of refresh tokens is collected. The revocation's audit entry keeps the last count."
           }
         },
         "required": [
@@ -5531,7 +5535,8 @@
           "lastUsedAt",
           "key",
           "revokedAt",
-          "revokeReason"
+          "revokeReason",
+          "refreshesLastDay"
         ]
       },
       "AuditEntry": {

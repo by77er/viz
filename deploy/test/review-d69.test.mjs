@@ -142,6 +142,20 @@ test('M-1 (RV-1a): a record that leaves viz-control out is judged with viz-contr
   assert.equal(servingRelease(CONTROL), 'c')
 })
 
+test('M-1: a Worker left out that was itself rolled back since keeps what its newer versions wrote under the restored Workers: every kept version since the record\'s is judged, not only the serving one', async () => {
+  const a = await shipped('a', { control: true, ingestReads: [1], controlWrites: 1 })
+  const b = await shipped('b', { control: true, ingestReads: [1, 2], controlWrites: 1, controlReads: [1, 2] })
+  await shipped('c', { control: true, ingestReads: [1, 2], controlWrites: 2, controlReads: [1, 2] })
+  // viz-control alone back to b: it writes 1 again; what c's wrote (2) stays.
+  const toB = await back(b, { only: 'viz-control' })
+  assert.equal(toB.result?.exit, 0, toB.log)
+  assert.equal(servingRelease(CONTROL), 'b')
+  const r = await back(a, { only: `${PUB},${INGEST},${QUERY}` })
+  assert.equal(r.result?.exit, 3, r.log)
+  assert.match(r.log, new RegExp(`kv\\.settings: ${CONTROL} is left serving by this rollback \\(the record does not restore it\\), and its version \\S+ \\(release c\\) writes version 2, and a reads only 1`))
+  assert.equal(servingRelease(INGEST), 'c')
+})
+
 test("M-1 (RV-1b): the rotation refusal no longer offers a bare record without viz-control; the way it offers is judged, and refused under what viz-control wrote", async () => {
   const a = await shipped('a', { control: true, ingestReads: [1], controlWrites: 1 })
   await shipped('b', { control: true, ingestReads: [1, 2], controlWrites: 1, controlReads: [1, 2] })

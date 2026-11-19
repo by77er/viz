@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Mutation check for the secrets the deploy generates (lib/secrets.mjs, its use in release.mjs, and
-// how lib/wrangler.mjs hands a value over): AGENTS.md, "Tests must have teeth". Each mutant is one
-// text replacement; `node --test test/secrets.test.mjs` must fail with it. The file is restored
-// after every mutant, also on failure.
+// how lib/wrangler.mjs hands a value over, and the review of D69's m-5, m-6, m-7 and the message of
+// M-1): AGENTS.md, "Tests must have teeth". Each mutant is one text replacement; `node --test
+// test/secrets.test.mjs test/review-d69.test.mjs` must fail with it. The file is restored after every
+// mutant, also on failure.
 //
 //   node scripts/mutants-secrets.mjs [text]   (from deploy/, in a COPY outside any git work tree;
 //                                              with text, only the mutants whose name contains it)
@@ -44,13 +45,21 @@ const MUTANTS = [
   ['m-11: uploads do not carry VIZ_DEPLOY_RUN', 'release.mjs', "'--tag', tag, '--message', message, ...runVar], { label: step.name })", "'--tag', tag, '--message', message], { label: step.name })"],
   ["m-11: phase 2's wrangler deploy does not carry VIZ_DEPLOY_RUN", 'release.mjs', '...doMode(manifest), ...runVar], { label: step.name })', '...doMode(manifest)], { label: step.name })'],
   // measured on Cloudflare, 2026-11-19, spike S9
-  ['S9: a version just created is read once, not again until it shows', 'lib/secrets.mjs', '    if (ready(info) || waited >= budget) return info', '    return info'],
+  ['S9: a version just created is read once, not again until it shows', 'lib/secrets.mjs', '    if (ready(info) || left <= 0) return info', '    return info'],
   ['S9: a rollback across the key\'s creation is not refused', 'lib/secrets.mjs', '      if (carrier && !accept.has(spec.name)) {', '      if (false) {'],
   ['S9: --accept-secret-loss is ignored (the refused rollback cannot be done on purpose)', 'lib/secrets.mjs', '      if (carrier && !accept.has(spec.name)) {', '      if (carrier) {'],
   ['S9: a rollback across a rotation is not refused (Cloudflare answers 10220 after the callers were moved)', 'lib/secrets.mjs', '    if (put) {', '    if (false) {'],
   ['S9: the secret check of a rollback is never run', 'release.mjs', '    problems.push(...secretRollbackProblems({', '    problems.push(...(() => [])({'],
   ['S9: a failed promotion restores viz-control across its own rotation', 'release.mjs', '      const back = promoted.filter((n) => !keyed.has(n))', '      const back = promoted'],
   ['a serving version that cannot be read is taken as not carrying the key', 'lib/secrets.mjs', '      if (!info) throw new Error(`${spec.worker}: serving version', '      if (!info) continue\n      if (!info) throw new Error(`${spec.worker}: serving version'],
+  // Review of D69 (design/reviews/d69-deploy-safety.md)
+  ['m-5: a refusal on the wrangler deploy path (phase 2) says nothing is promoted', 'release.mjs', "deployed: step.via === 'deploy', log })", 'deployed: false, log })'],
+  ['m-5: a refusal in phase 2 is logged as a promotion failure, not as a refusal after promotion began', 'release.mjs', "e instanceof SecretRefused ? 'REFUSED in phase 2, after promotion began (exit 1)' : 'promotion failed'", "'promotion failed'"],
+  ['m-6: the refusal of a key missing from the upload no longer says that a rollback or a redeploy does not lift it', 'lib/secrets.mjs', '          `Neither a rollback nor deploying again lifts this: the refused version is now the newest, and the next upload inherits from it (deploy/README.md, Known risks). ` +\n', ''],
+  ['m-7: the upload is read until it exists, not until the key it inherited shows', 'lib/secrets.mjs', '(x) => Boolean(x) && inherited.every((n) => secretNamesOf(x).includes(n))', '(x) => Boolean(x)'],
+  ['m-7: VIZ_FRESH_READ_MS="" is a 0 ms budget', 'lib/secrets.mjs', "  if (raw === undefined || raw.trim() === '') return FRESH_READ_MS", '  if (raw === undefined) return FRESH_READ_MS'],
+  ['m-7: a Cloudflare API request has no timeout', 'lib/cf.mjs', ', signal: AbortSignal.timeout(timeoutMs()) }', ' }'],
+  ['M-1: the rotation refusal advises a bare record without viz-control again', 'lib/secrets.mjs', '`Nothing was moved. Fix forward; or restore the other Workers only', '`Nothing was moved. Roll back with a record that leaves ${spec.worker} out (its serving version stays, a callee newer than its callers), or fix forward. Or restore the other Workers only'],
   ['m-11: every run has the same VIZ_DEPLOY_RUN', 'release.mjs', "`gh${process.env.GITHUB_RUN_ID}.${process.env.GITHUB_RUN_ATTEMPT ?? 1}-` : ''}${randomUUID()}`", "`gh${process.env.GITHUB_RUN_ID}.${process.env.GITHUB_RUN_ATTEMPT ?? 1}-` : ''}00000000-0000-4000-8000-000000000000`"],
 ]
 
@@ -64,7 +73,7 @@ try {
 
 const run = () => {
   try {
-    execFileSync('node', ['--test', '--test-concurrency=1', 'test/secrets.test.mjs'], { cwd: DEPLOY_DIR, stdio: 'pipe', timeout: 600_000 })
+    execFileSync('node', ['--test', '--test-concurrency=2', 'test/secrets.test.mjs', 'test/review-d69.test.mjs'], { cwd: DEPLOY_DIR, stdio: 'pipe', timeout: 600_000 })
     return { failed: false, detail: '' }
   } catch (e) {
     const out = String(e.stdout ?? '') + String(e.stderr ?? '')

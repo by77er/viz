@@ -1,5 +1,6 @@
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import {
+  DEAD_INACTIVE_REASONS,
   OAUTH_INTROSPECTION_CALLERS,
   type OAuthIntrospectionProps,
   type OAuthIntrospectionResult,
@@ -7,6 +8,7 @@ import {
   type TenantOAuthRpc,
   parseCredential,
 } from '../../contracts/oauth'
+import { type DeadListEnv, type DeadReason, listedDead, recordDead } from './deadlist'
 import { type OAuthEnv, credentialExpired, credentialTagValid, oauthConfig } from './oauth'
 import { type RateLimitEnv, limitBearer } from './ratelimit'
 import type { Tenant } from './tenant'
@@ -28,27 +30,32 @@ import type { Tenant } from './tenant'
  *   reaches no object (M-2);
  * - a tagged token past the expiry its body carries (layout 2, contracts/oauth.ts) is `inactive`
  *   (`expired`) and reaches no object, and counts against nothing (D70, review B-1);
+ * - so is one its tenant's object has already called dead (`unknown`, `expired`, `revoked`), with
+ *   that reason: the Worker lists it when the object says so (src/deadlist.ts; round 2, R2-M2);
  * - any other tagged token is counted against itself, then against its tenant (src/ratelimit.ts,
  *   D70), before the tenant's object is asked: over either, `rate_limited` and no object. A made-up
  *   or expired token is refused before it counts, so it cannot spend a tenant's budget, and one
  *   token spends at most its own allowance of it.
  */
 
-export interface IntrospectionEnv extends OAuthEnv, RateLimitEnv {
+export interface IntrospectionEnv extends OAuthEnv, RateLimitEnv, DeadListEnv {
   TENANT: DurableObjectNamespace<Tenant>
 }
 
 const unknown: OAuthIntrospectionResult = { v: 1, status: 'inactive', reason: 'unknown' }
 const expired: OAuthIntrospectionResult = { v: 1, status: 'inactive', reason: 'expired' }
 
-/** The entrypoint's logic, apart from the class so the tests can give it any caller. */
-export async function introspectFor(env: IntrospectionEnv, caller: unknown, token: unknown, resource: unknown): Promise<OAuthIntrospectionResult> {
+/** The entrypoint's logic, apart from the class so the tests can give it any caller. `later`: the entrypoint's `waitUntil`, or undefined to await the list's write. */
+export async function introspectFor(env: IntrospectionEnv, caller: unknown, token: unknown, resource: unknown, later?: (p: Promise<unknown>) => void): Promise<OAuthIntrospectionResult> {
   if (typeof caller !== 'string' || !OAUTH_INTROSPECTION_CALLERS.includes(caller)) return { v: 1, status: 'unauthorized' }
   const cred = typeof token === 'string' ? parseCredential(token) : null
   if (!cred || cred.kind !== 'access' || typeof resource !== 'string') return unknown
   if (!(await credentialTagValid(oauthConfig(env).clientKey, token))) return unknown
   // Past the expiry the tag vouches for: the object would say the same (D70).
   if (credentialExpired(token as string)) return expired
+  // Its object has called it dead already (R2-M2): that answer again, before any limit or object.
+  const listed = await listedDead(env, token as string)
+  if (listed !== null) return { v: 1, status: 'inactive', reason: listed }
   const limited = await limitBearer(env, cred.tenant, token as string)
   if (limited) return limited
   // The one place this picks a tenant's object: the tenant the token names.
@@ -57,6 +64,8 @@ export async function introspectFor(env: IntrospectionEnv, caller: unknown, toke
   // A plain copy for the caller; the RPC result itself is released here.
   const out = { ...r }
   disposeRpc(r)
+  // Dead for good (contracts/oauth.ts DEAD_INACTIVE_REASONS): list it.
+  if (out.status === 'inactive' && DEAD_INACTIVE_REASONS.includes(out.reason)) await recordDead(env, token as string, out.reason as DeadReason, later)
   return out
 }
 
@@ -71,6 +80,6 @@ export function disposeRpc(r: unknown): void {
 export class OAuthIntrospection extends WorkerEntrypoint<IntrospectionEnv> implements OAuthIntrospectionRpc {
   async introspectAccessToken(token: string, resource: string): Promise<OAuthIntrospectionResult> {
     const props = (this.ctx as { props?: Partial<OAuthIntrospectionProps> }).props
-    return introspectFor(this.env, props?.caller, token, resource)
+    return introspectFor(this.env, props?.caller, token, resource, (p) => this.ctx.waitUntil(p))
   }
 }

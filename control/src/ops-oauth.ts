@@ -167,6 +167,12 @@ export function grantView(t: Tenant, g: GrantRow, now: number): OAuthGrantView {
     revokedAt: iso(g.revoked_at),
     revokedBy: g.revoked_by === null ? null : (JSON.parse(g.revoked_by) as Actor),
     revokeReason: g.revoke_reason,
+    // The rows reuse detection keeps a day (review of D70, round 2, R2-M2): the signature of
+    // collecting refresh tokens, readable while the grant lives and kept by its revocation's audit entry.
+    refreshesLastDay: t.one<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM oauth_tokens WHERE tenant = ? AND grant_id = ? AND kind = 'refresh' AND issued_at > ?",
+      t.tenant, g.id, now - OAUTH_LIFETIMES.rotatedRefreshKeepSeconds * 1000,
+    )!.n,
   }
 }
 
@@ -475,20 +481,32 @@ async function issue(t: Tenant, g: GrantRow, presented: string, sealed: string, 
 
 // ---- revocation (RFC 7009) ----
 
-/** An access token ends alone; a refresh token ends its grant. A token of another client, or none at all, changes nothing. */
-export function revokeToken(t: Tenant, token: string, clientId: string, now: number): void {
+/**
+ * An access token ends alone; a refresh token ends its grant. A token of another client, or none at
+ * all, changes nothing. Returns whether the token is dead afterwards (`RevokeResult.dead`,
+ * contracts/oauth.ts): unknown here, expired, rotated, of a grant that has ended, or ended now. A
+ * live token another client presented is not; nor is anything that is not a token (no answer).
+ */
+export function revokeToken(t: Tenant, token: string, clientId: string, now: number): boolean | undefined {
   const parsed = typeof token === 'string' ? parseCredential(token) : null
-  if (!parsed || parsed.kind === 'code') return
+  if (!parsed || parsed.kind === 'code') return undefined
   const row = t.one<TokenRow>(`SELECT ${TOKEN_COLS} FROM oauth_tokens WHERE tenant = ? AND hash = ? AND kind = ?`, t.tenant, hashCredential(token), parsed.kind)
-  if (!row) return
+  // Never stored, expired and swept, or its grant ended (which deletes its rows): no row is ever
+  // stored again under this hash, so it stays dead.
+  if (!row) return true
   const g = loadGrant(t, row.grant_id)
-  if (!g || !clientMatches(t, g, clientId)) return
+  if (!g) return true
+  if (!clientMatches(t, g, clientId)) {
+    // Changes nothing. Dead only if it already was, by what cannot come back.
+    return row.expires_at <= now || g.revoked_at !== null || g.expires_at <= now || (row.kind === 'refresh' && row.rotated_at !== null)
+  }
   if (row.kind === 'access') {
     t.run('DELETE FROM oauth_tokens WHERE tenant = ? AND hash = ?', t.tenant, row.hash)
-    return
+    return true
   }
   const client = loadClient(t, g.client)!
   revokeGrant(t, g, { subject: `oauth-client:${client.id}`, kind: 'agent', name: client.name }, now, 'client')
+  return true
 }
 
 // ---- introspection, for the resource ----

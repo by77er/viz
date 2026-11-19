@@ -93,10 +93,12 @@ describe('versioned storage: storage made by other code', () => {
     await install(s, DDL_DC2A1C3, { ...OLD_ROWS, segment: OLD_ROWS.segment.map((x) => ({ ...x, sealed_at: 5 })) })
     const before = await runInDurableObject(s, (_i, st) => st.storage.sql.exec(`SELECT * FROM batch ORDER BY seq`).toArray())
     expect((await s.pendingSegments('t')).map((x) => [x.seqLo, x.seqHi])).toEqual([[1, 2]])
-    // Adopted as version 1, then migrated to the latest (2 adds `stream.registered`, additive: compat stays 1).
+    // Adopted as version 1, then migrated to the latest (2 adds `stream.registered`, 3 the batch
+    // time bounds of D72; both additive: compat stays 1). The old rows have no bounds (NULL).
     expect(await schemaRow(s)).toEqual({ component: 'shard.Shard', version: LATEST, compat: 1 })
     const after = await dumpAll(s)
     expect(after.batch).toEqual(before)
+    expect(after.batch!.map((r) => [r.min_ts, r.max_ts])).toEqual([[null, null], [null, null], [null, null]])
     expect(after.segment).toEqual([{ ...OLD_ROWS.segment[0], sealed_at: 5 }])
     expect(after.stream).toEqual([{ ...OLD_ROWS.stream[0], registered: 0 }])
     const a = await s.append({ tenant: 't', epoch: 1, fingerprint: 'f4', payload: new Uint8Array(8), rows: 1 })

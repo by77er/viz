@@ -234,6 +234,16 @@ export interface OAuthGrantView {
   revokedBy: OAuthActor | null
   /** person, client, code-reuse, refresh-reuse, wrong-client, not-exchanged, idle, approver-gone, expired. */
   revokeReason: string | null
+  /**
+   * Refresh tokens issued for the grant in the last 24 hours, the code exchange's included: counted
+   * from the rows the tenant's object keeps (a rotated refresh token is kept a day for reuse
+   * detection), so 0 once the grant has ended. A client that refreshes when its hour-long access
+   * token runs out shows about 24; one rotating at `OAUTH_LIMITS.refreshesPerGrantPerMinute` shows
+   * up to 8,640, the signature of collecting refresh tokens (review of D70, round 2, R2-M2). The
+   * revocation's audit entry keeps the last count. Added 2026-11-19 within version 1 (a new
+   * response field, COMPATIBILITY.md §4).
+   */
+  refreshesLastDay: number
 }
 
 // ---- the RPCs on the Tenant object (control/ only: its Worker and its own entrypoints) ----
@@ -251,6 +261,24 @@ export interface TokenRequest {
 }
 
 export type TokenErrorCode = 'invalid_request' | 'invalid_client' | 'invalid_grant' | 'invalid_scope' | 'invalid_target' | 'unsupported_grant_type'
+
+/**
+ * Results that say a presented credential is dead for good, which control's Worker records in its
+ * list of dead credentials and then refuses before any rate limit or object (D70, after its second
+ * review, R2-M2). Each is a promise the tenant's object keeps:
+ * - `TokenResult` `error` `invalid_grant` on the `refresh_token` grant: the presented refresh token
+ *   will never be accepted again. It is unknown (never stored, expired and swept, or its grant's rows
+ *   deleted), expired, rotated (presenting it ended the grant), of a grant that has ended or can no
+ *   longer issue (revoked, expired, its approver's key deleted or expired, its own key gone), or it
+ *   was presented by another client (which ended the grant), or it was spent by this very request.
+ *   Every other error leaves it as it was (`invalid_request`, `invalid_scope`, `invalid_target`,
+ *   `rate_limited`, `schema_too_new`).
+ * - `IntrospectionResult` `inactive` with `unknown`, `expired` or `revoked`: the access token will
+ *   never be active again. `suspended` (the grant's key or its approver's is disabled; enabling it
+ *   resumes the grant) and `audience` (asked for another resource) are not dead.
+ * - `RevokeResult` `ok` with `dead: true` (below).
+ */
+export const DEAD_INACTIVE_REASONS: readonly InactiveReason[] = ['unknown', 'expired', 'revoked']
 
 export type TokenResult =
   | {
@@ -294,7 +322,14 @@ export type IntrospectionResult =
   | { v: 1; status: 'not_provisioned' }
   | SchemaTooNew
 
-export type RevokeResult = { v: 1; status: 'ok' } | { v: 1; status: 'not_provisioned' } | SchemaTooNew
+/**
+ * `dead`: after this call the presented token is not, and never will be again, a live token of the
+ * tenant: it was unknown, expired, rotated or of a grant that had ended, or this call ended it (an
+ * access token alone, a refresh token with its grant). False when it is still live (another client
+ * presented it, which changes nothing). Absent from objects of releases before 2026-11-19: read as
+ * unknown, never as dead. Added within version 1 (a new response field, COMPATIBILITY.md §4).
+ */
+export type RevokeResult = { v: 1; status: 'ok'; dead?: boolean } | { v: 1; status: 'not_provisioned' } | SchemaTooNew
 
 export interface TenantOAuthRpc {
   /** The token endpoint, for the tenant the presented code or refresh token names. */
@@ -327,6 +362,10 @@ export interface TenantOAuthRpc {
  *   (`CREDENTIAL_TAG`), is `inactive` (`unknown`) and reaches no object.
  * - A token with the tag whose layout 2 expiry has passed (`credentialExpiresAt`) is `inactive`
  *   (`expired`) and reaches no object (D70).
+ * - A token its tenant's object has already called dead (`DEAD_INACTIVE_REASONS`), which control
+ *   lists until the token's expiry, is `inactive` with the reason recorded and reaches no limit and
+ *   no object (D70 after its second review, R2-M2). The list is eventually consistent: for about a
+ *   minute after the first such answer, other places may still ask the object once.
  * - Results are `IntrospectionResult` (version 1, above) plus `unauthorized` and `rate_limited`
  *   (D70: too many introspections of this token, or of this token's tenant, in this Cloudflare
  *   location; checked after the tag and the expiry and before the tenant's object, so only a

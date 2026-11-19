@@ -190,8 +190,9 @@ const schemas: Record<string, Schema> = {
       revokedAt: nullable(time()),
       revokedBy: nullable(ref('Actor')),
       revokeReason: nullable(str('person, client, code-reuse, refresh-reuse, wrong-client, not-exchanged, idle, approver-gone or expired.')),
+      refreshesLastDay: { type: 'integer', description: 'Refresh tokens issued for the grant in the last 24 hours (the code exchange\'s included); 0 once it has ended. About 24 for a client refreshing hourly; up to 8,640 for one rotating as fast as it may, which is how a stock of refresh tokens is collected. The revocation\'s audit entry keeps the last count.' },
     },
-    ['id', 'status', 'client', 'scopes', 'resource', 'approvedBy', 'createdAt', 'expiresAt', 'lastUsedAt', 'key', 'revokedAt', 'revokeReason'],
+    ['id', 'status', 'client', 'scopes', 'resource', 'approvedBy', 'createdAt', 'expiresAt', 'lastUsedAt', 'key', 'revokedAt', 'revokeReason', 'refreshesLastDay'],
   ),
   AuditEntry: obj(
     {

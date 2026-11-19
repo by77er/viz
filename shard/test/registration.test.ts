@@ -21,7 +21,7 @@ import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from 'c
 import { env } from 'cloudflare:workers'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Ledger } from '../../ledger/src/ledger'
-import { type AppendResult, type Shard, type ShardConfig } from '../src/shard'
+import { type AppendResult, SHARD_SCHEMA, type Shard, type ShardConfig } from '../src/shard'
 import { Shard as ShardPrereg } from '../bench/prereg/shard'
 
 type Stub = DurableObjectStub<Shard>
@@ -331,7 +331,7 @@ describe('skew and rollback (contracts/COMPATIBILITY.md; shard/README.md "Rollou
     await registered(s, tenant)
     expect(await put(s, tenant, 'a0')).toMatchObject({ status: 'ok' })
     expect(await put(s, t3, 'c0')).toMatchObject({ scope: 'registering' })
-    // ROLLBACK: the release before D61 opens the same storage (schema 2, compat 1: it may) and
+    // ROLLBACK: the release before D61 opens the same storage (schema 2 or later, compat 1: it may) and
     // takes writes lazily: into `tenant`, into a stream it creates for `t2`, and into `t3`'s
     // unregistered stream.
     await runInDurableObject(s, async (_i: Shard, st) => {
@@ -339,7 +339,8 @@ describe('skew and rollback (contracts/COMPATIBILITY.md; shard/README.md "Rollou
       for (const [t, fp] of [[tenant, 'a1'], [t2, 'b0'], [t3, 'c0']] as const) {
         expect(await old.append({ tenant: t, epoch: 1, fingerprint: fp, payload: new Uint8Array(64).fill(fp.length), rows: 1 }), `${t} under N`).toMatchObject({ status: 'ok' })
       }
-      expect(st.storage.sql.exec(`SELECT version, compat FROM viz_schema`).one()).toMatchObject({ version: 2, compat: 1 })
+      // This release's schema, not lowered by the older code (since D72: 3).
+      expect(st.storage.sql.exec(`SELECT version, compat FROM viz_schema`).one()).toMatchObject({ version: SHARD_SCHEMA.migrations.length, compat: 1 })
     })
     // ROLL FORWARD.
     await evictDurableObject(s)

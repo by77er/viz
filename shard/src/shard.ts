@@ -4,8 +4,8 @@ import type { Ledger } from '../../ledger/src/ledger'
 import { type SchemaSpec, type SchemaTooNew, SchemaTooNewError, columnsOf, openSchema, refusalOf } from '../../contracts/schema'
 import { SeriesWindow, UnreadableSketch } from './sketch'
 import {
-  TAIL_PAGE_MAX_BYTES, TAIL_READ_VERSION, TAIL_SCAN_MAX_BYTES, type TailPage, type TailReadOptions, UnreadableBatch, compileFilter, decodeCursor, encodeCursor,
-  filterBatch, fnv64,
+  TAIL_PAGE_MAX_BYTES, TAIL_READ_VERSION, TAIL_SCAN_MAX_BYTES, type TailPage, type TailReadOptions, UnreadableBatch, batchTimeBounds, compileFilter, decodeCursor,
+  encodeCursor, filterBatch, fnv64,
 } from './tail'
 export { TAIL_PAGE_MAX_BYTES, TAIL_READ_VERSION, TAIL_SCAN_MAX_BYTES, type TailFilter, type TailPage, type TailReadOptions, splitKeyRange } from './tail'
 
@@ -183,6 +183,21 @@ export const SHARD_SCHEMA: SchemaSpec = {
     readableFrom: 1,
     up: (sql) => {
       if (!columnsOf(sql, 'stream').has('registered')) sql.exec(`ALTER TABLE stream ADD COLUMN registered INTEGER NOT NULL DEFAULT 0`)
+    },
+  }, {
+    // ADDITIVE (readableFrom 1): `batch.min_ts` and `batch.max_ts` are a span or log batch's time
+    // bounds in Unix milliseconds (`batchTimeBounds`, D72), written with the row at append; NULL
+    // means unknown, and a NULL batch is kept by every time range. Rows already stored keep NULL
+    // (no backfill), and so do rows the release before writes (it names its columns and never
+    // rewrites a row's other columns): this release relies on nothing it does not write itself,
+    // and its only use of the columns is to skip a batch, never to keep one. Nullable, no default.
+    version: 3,
+    name: 'batch.min_ts, batch.max_ts: a span or log batch\'s time bounds, NULL when unknown (D72)',
+    readableFrom: 1,
+    up: (sql) => {
+      const have = columnsOf(sql, 'batch')
+      if (!have.has('min_ts')) sql.exec(`ALTER TABLE batch ADD COLUMN min_ts INTEGER`)
+      if (!have.has('max_ts')) sql.exec(`ALTER TABLE batch ADD COLUMN max_ts INTEGER`)
     },
   }],
 }
@@ -362,6 +377,8 @@ interface Pending {
   req: AppendRequest
   bytes: number
   now: number
+  /** A span or log batch's time bounds (`batchTimeBounds`), stored with its row; null: none (`batch.min_ts` NULL). */
+  bounds: { minTs: number; maxTs: number } | null
   /** Appends of the same tenant and fingerprint in the same group share one row. */
   joined: Pending[]
   resolve(r: AppendResult): void
@@ -662,7 +679,7 @@ export class Shard extends DurableObject<ShardEnv> {
     const twin = this.group.find((p) => p.req.tenant === req.tenant && p.req.fingerprint === req.fingerprint)
     if (twin) {
       return new Promise<AppendResult>((resolve, reject) => {
-        twin.joined.push({ req, bytes: 0, now: 0, joined: [], resolve: (r) => resolve(r.status === 'ok' ? { ...r, duplicate: true } : r), reject })
+        twin.joined.push({ req, bytes: 0, now: 0, bounds: null, joined: [], resolve: (r) => resolve(r.status === 'ok' ? { ...r, duplicate: true } : r), reject })
       })
     }
 
@@ -722,10 +739,13 @@ export class Shard extends DurableObject<ShardEnv> {
       if (metered.w.add(req.seriesIds, req.seriesLimit ?? 0)) metered.dirtySince ??= now
     }
 
+    // A span or log batch's time bounds (D72), once, for the tail reads that skip by time: the
+    // entry table's length fields and one column of u32 pairs; a metric batch reads one byte.
+    const bounds = batchTimeBounds(req.payload)
     return new Promise<AppendResult>((resolve, reject) => {
       this.inFlight++
       this.pendingBytes += bytes
-      this.group.push({ req, bytes, now, joined: [], resolve, reject })
+      this.group.push({ req, bytes, now, bounds, joined: [], resolve, reject })
       this.groupBytes += bytes
       if (this.groupBytes >= this.cfg.maxGroupBytes) this.commitSoon(true)
       else this.commitSoon(false)
@@ -779,8 +799,8 @@ export class Shard extends DurableObject<ShardEnv> {
           }
           const seq = s.nextSeq
           sql.exec(
-            `INSERT INTO batch (tenant, seq, fingerprint, rows, bytes, at, payload) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            req.tenant, seq, req.fingerprint, req.rows, p.bytes, p.now, req.payload,
+            `INSERT INTO batch (tenant, seq, fingerprint, rows, bytes, at, payload, min_ts, max_ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            req.tenant, seq, req.fingerprint, req.rows, p.bytes, p.now, req.payload, p.bounds?.minTs ?? null, p.bounds?.maxTs ?? null,
           )
           s.nextSeq = seq + 1
           s.bufferedBytes += p.bytes
@@ -1022,8 +1042,10 @@ export class Shard extends DurableObject<ShardEnv> {
    *
    * Signals (2026-11-19, `TailFilter.signals`): the shards of `{pool}/traces` and `{pool}/logs`
    * hold span and log batches (contracts/BATCH.md, "Streams per signal"). A filtered read keeps
-   * only the signals it names; the time range and series fields select metric rows only, and a
-   * span or log batch the read admits is returned whole. A metrics read should pass
+   * only the signals it names; the series fields select metric rows only, and a span or log batch
+   * the read admits is returned whole. The time range selects metric rows, and (D72) span and
+   * log batches whole by the bounds recorded at append: one wholly outside the range is skipped,
+   * one without bounds is kept. A metrics read should pass
    * `signals: [1]`: a shard of an earlier release ignores the field and refuses (throws) on a
    * span or log batch, so a caller must also read only its signal's shards by name.
    */
@@ -1088,10 +1110,19 @@ export class Shard extends DurableObject<ShardEnv> {
     let scannedBytes = 0
     let next: number | null = null
     // Row by row from SQLite (nothing is awaited here), so the page holds what it returns and
-    // one stored batch, not the tail.
-    for (const r of this.ctx.storage.sql.exec(
-      `SELECT seq, rows, payload FROM batch WHERE tenant = ? AND seq BETWEEN ? AND ? AND payload IS NOT NULL ORDER BY seq`, tenant, from, through,
-    )) {
+    // one stored batch, not the tail. With a time range, a batch whose recorded bounds lie wholly
+    // outside it (a span or log batch, D72) is skipped here, its payload never read; a batch
+    // without bounds (a metric batch, or one stored before schema 3 or by the release before) is
+    // always read, and `filterBatch` decides as before. A skipped batch is not examined: it counts
+    // in neither `scannedBatches` nor `scannedBytes`.
+    const rows = f.timed
+      ? this.ctx.storage.sql.exec(
+        `SELECT seq, rows, payload FROM batch WHERE tenant = ? AND seq BETWEEN ? AND ? AND payload IS NOT NULL
+           AND (min_ts IS NULL OR max_ts IS NULL OR (max_ts >= ? AND min_ts <= ?)) ORDER BY seq`,
+        tenant, from, through, Math.max(f.minTs, Number.MIN_SAFE_INTEGER), Math.min(f.maxTs, Number.MAX_SAFE_INTEGER),
+      )
+      : this.ctx.storage.sql.exec(`SELECT seq, rows, payload FROM batch WHERE tenant = ? AND seq BETWEEN ? AND ? AND payload IS NOT NULL ORDER BY seq`, tenant, from, through)
+    for (const r of rows) {
       const seq = r.seq as number
       if (scannedBytes >= this.cfg.tailScanMaxBytes) {
         next = seq

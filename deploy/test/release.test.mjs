@@ -250,6 +250,8 @@ test('formats rollback (review of D69, M-1): only the Workers restored read; one
   // Left out and writing what the restored Workers read: allowed. An older kept version that wrote 2 is judged too.
   assert.deepEqual(formatRollbackProblems(rec(['viz-ingest'], formats), [], { left: [{ ...control2, formats: { 'kv.settings': { writes: 1, reads: [1, 2] } }, serving: true }] }), [])
   assert.equal(formatRollbackProblems(rec(['viz-ingest'], formats), [], { left: [{ ...control2, serving: false }] }).length, 1)
+  // The record entry of a Worker left out is not a reader: control's a-entry reads 1 only, and is not asked.
+  assert.deepEqual(formatRollbackProblems(rec(['viz-ingest'], { ...formats, 'viz-ingest': { 'kv.settings': { writes: null, reads: [1, 2] } } }), [], { left: [{ ...control2, serving: true }] }), [])
   // A left-out version that declares nothing is unknown: refused.
   assert.match(formatRollbackProblems(rec(['viz-ingest'], formats), [], { left: [{ ...control2, formats: null }] })[0], /^viz-control: this rollback leaves it serving .* does not declare its format versions/)
   // A restored Worker the record has no entry for (viz-query in a record from D69) reads version 1 of every format.

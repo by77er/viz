@@ -19,9 +19,15 @@
 # release (upload every Worker, then promote callees first); smoke test through the public
 # URL. A failed smoke test rolls back to the previous release when the release applied no
 # Durable Object migration and is not forward-only; otherwise it fails loudly instead. Exit codes:
-# 0 deployed and healthy; 1 failed; 3 refused before anything was promoted (unacknowledged
-# migration, a rollback floor such as INGEST_SIGNALS before its readers, a generated secret that is
-# set but missing from the upload, or another run's upload under this run's key).
+# 0 deployed and healthy; 1 failed; 3 refused before anything was promoted: an unacknowledged
+# migration, a rollback floor (INGEST_SIGNALS before its readers, a floor Worker below its floor
+# after the switch was on, the switch set as a secret), a rotation of a secret the release does not
+# generate, or, for a viz-control uploaded in phase 1 (every release once it exists), its generated
+# key set but missing from the upload, the newest version not this run's upload, or the key landing
+# on another run's upload. The same three key refusals for a viz-control that goes out with
+# `wrangler deploy` in phase 2 (new, or applying a migration) come after the Workers before it were
+# promoted and while viz-control serves without its key: exit 1 (deploy/README.md, "When a deploy
+# fails").
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -101,7 +107,7 @@ node deploy/release.mjs deploy ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"}
 rc=$?
 set -e
 if [ $rc -eq 3 ]; then note "release: REFUSED before promoting anything (see above: an unacknowledged Durable Object migration, a rollback floor, or a generated secret)"; exit 3; fi
-if [ $rc -ne 0 ]; then note "release: FAILED during upload or promotion (see above)"; exit 1; fi
+if [ $rc -ne 0 ]; then note "release: FAILED during upload or promotion, or refused in phase 2 after promotion began (see above)"; exit 1; fi
 note "release: promoted; record deploy/generated/$TARGET/release.json"
 # Generated secrets, by name only (lib/secrets.mjs): kept, created or rotated.
 # shellcheck disable=SC2016

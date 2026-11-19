@@ -1,9 +1,10 @@
 import { OAUTH_LIMITS, type RateLimited } from '../../contracts/oauth'
 import { sha256Hex } from '../../dashboard/src/index.ts'
+import { resetDeadList } from './deadlist'
 
 /**
  * Rate limits in front of the OAuth endpoints and OAuth bearers (decision D70, as rewritten after
- * its review, design/reviews/d70-rate-limits.md).
+ * its review, design/reviews/d70-rate-limits.md, and again after its second, d70-rate-limits-r2.md).
  *
  * The HMAC tag (review of D44, M-2) already keeps a made-up credential away from every tenant's
  * object, and a credential's layout 2 expiry (contracts/oauth.ts) lets the Worker refuse one past it
@@ -20,9 +21,10 @@ import { sha256Hex } from '../../dashboard/src/index.ts'
  *    - `OAUTH_RL_SOURCE` and `OAUTH_RL_SOURCE_48`, the client's network (`CF-Connecting-IP`: an
  *      IPv4 address, or an IPv6 /64 and then its /48), on `/oauth/register` and `/oauth/authorize`
  *      before the body is read, and on `/oauth/token` and `/oauth/revoke` only for a request the
- *      Worker refuses by itself (no credential with the tag, or one past its expiry): a genuine
- *      credential is never counted by where it comes from (review M-1: every client hosted on
- *      Cloudflare Workers arrives from one address, `WORKERS_EGRESS`, which is not counted at all);
+ *      Worker refuses by itself without a credential of this deployment's (a malformed request, or
+ *      no tag): a genuine credential, expired or listed dead included, is never counted by where it
+ *      comes from (review M-1, and round 2 m-2: every client hosted on Cloudflare Workers arrives
+ *      from one address, `WORKERS_EGRESS`, which is not counted at all);
  *    - `OAUTH_RL_CREDENTIAL`, the presented code or token itself, at `/oauth/token` and
  *      `/oauth/revoke`, then `OAUTH_RL_TENANT`, its tenant; `OAUTH_RL_BEARER`, the access token,
  *      then `OAUTH_RL_BEARER_TENANT`, its tenant, at introspection (`OAuthIntrospection`). Only
@@ -30,19 +32,24 @@ import { sha256Hex } from '../../dashboard/src/index.ts'
  *      expired counts. Each credential spends only its own allowance, and of its tenant's no more
  *      than that: the tenant keys are fuses set near what one object serves, which a client
  *      cannot reach with its own credentials, and which take that fuse divided by the
- *      per-credential limit distinct unexpired credentials to spend (review B-1).
+ *      per-credential limit distinct unexpired credentials to spend (review B-1), each of them once:
+ *      a credential its object calls dead is listed and then refused before any limit
+ *      (src/deadlist.ts; round 2, R2-M2).
  * 2. **Exact, in the tenant's object**, where rows are written: refreshes per grant
  *    (`OAUTH_LIMITS.refreshesPerGrantPerMinute`, src/ops-oauth.ts) and the bounds D44 already had
  *    (approvals per hour, clients, live grants).
  *
  * **Every check here fails open**: a binding that is absent, throws, answers something that is not
- * `{ success: boolean }`, or has not answered within what is left of the request's
- * `CHECK_BUDGET_MS` lets the request through. A binding that failed is not asked again in this
- * isolate for `SKIP_AFTER_FAILURE_MS`, so a limiter brownout costs one request in each isolate at
- * most `CHECK_BUDGET_MS` that often (review m-1). An absent or failing binding is logged once per
+ * `{ success: boolean }`, or has not answered within its share of the request's `CHECK_BUDGET_MS`
+ * lets the request through, and then **no wider key is asked for that request** (`firstRefusal`;
+ * review of D70, round 2, R2-M1): while a credential's own limiter is down, its tenant's fuse does not
+ * count it either. A binding that failed is not asked again in this isolate for
+ * `SKIP_AFTER_FAILURE_MS`, so a limiter brownout costs one request in each isolate at most
+ * `CHECK_BUDGET_MS` that often (review m-1). An absent or failing binding is logged once per
  * isolate (`control: rate limiter …`), never per request, and `/healthz` says which are bound
- * (`limiterStatus`). Why fail open, per endpoint, is in D70; in short, these are approximate cost
- * throttles, the properties that matter are enforced elsewhere (the tag and the expiry before any
+ * (`limiterStatus`). Before any of this, a credential the tenant's object has already called dead is
+ * refused without counting (src/deadlist.ts, R2-M2). Why fail open, per endpoint, is in D70; in
+ * short, these are approximate cost throttles, the properties that matter are enforced elsewhere (the tag and the expiry before any
  * object, exact bounds on what is stored inside it), and failing closed would turn a limiter fault
  * into an OAuth outage for every tenant. The deploy, not this code, makes sure the bindings exist
  * (control/README.md, "Needed changes elsewhere"). No key is longer than about 100 characters and
@@ -77,7 +84,11 @@ export const LIMITERS: readonly LimitName[] = ['OAUTH_RL_SOURCE', 'OAUTH_RL_SOUR
 /** Every binding's period, in seconds. The deploy configures each with `"period": 60`. */
 export const RATE_PERIOD_S = 60
 
-/** How long all of one request's limiter checks may take together before the rest are skipped (the request goes on). */
+/**
+ * How long all of one request's limiter checks may take together. Each check gets an equal share
+ * (50 ms each for a credential and its fuse, all of it for an IPv4 source): a binding that has not
+ * answered within its share has failed (review of D70, round 2, m-1).
+ */
 export const CHECK_BUDGET_MS = 100
 
 /** How long this isolate skips a binding after it failed (threw, rejected, answered without `success`, or ran out of time). */
@@ -99,10 +110,11 @@ function logOnce(what: string, message: string, detail?: string): void {
   else console.error(message, detail)
 }
 
-/** Tests only: forget what this isolate logged and skipped. */
+/** Tests only: forget what this isolate logged and skipped, and the dead credentials it remembers (src/deadlist.ts), as a new isolate would. */
 export function resetLimiterState(): void {
   logged.clear()
   skipUntil.clear()
+  resetDeadList()
 }
 
 const bound = (env: RateLimitEnv, name: LimitName): RateLimit | null => {
@@ -117,23 +129,30 @@ export function limiterStatus(env: RateLimitEnv, now: number = Date.now()): Reco
   return out
 }
 
-/** Ask one binding about one key, within what is left of the request's budget. Never throws. */
-async function check(env: RateLimitEnv, name: LimitName, key: string, until: number): Promise<Verdict> {
+/** Log that a binding is absent, once per isolate: a fact of the configuration, said whether or not a request comes to ask it. */
+function noteAbsent(env: RateLimitEnv, name: LimitName): boolean {
+  if (bound(env, name) !== null) return false
+  logOnce(`${name}:absent`, `control: rate limiter ${name} is not bound; its checks are skipped and OAuth requests are served without it (D70)`)
+  return true
+}
+
+/**
+ * Ask one binding about one key, giving it `shareMs` to answer: its own share of the request's
+ * `CHECK_BUDGET_MS`, so a slow binding cannot spend another's time and is the one blamed and
+ * skipped (review of D70, round 2, m-1). A timer, not `Date.now()` arithmetic: in Workers the clock
+ * advances only at I/O (n-2). Never throws.
+ */
+async function check(env: RateLimitEnv, name: LimitName, key: string, shareMs: number): Promise<Verdict> {
   const binding = bound(env, name)
-  if (binding === null) {
-    logOnce(`${name}:absent`, `control: rate limiter ${name} is not bound; its checks are skipped and OAuth requests are served without it (D70)`)
-    return 'unchecked'
-  }
-  const now = Date.now()
-  // Skipped after a failure here, or the request's budget is gone (another binding took it).
-  if ((skipUntil.get(name) ?? 0) > now || until <= now) return 'unchecked'
-  const left = until - now
+  if (binding === null) return 'unchecked'
+  // Skipped after a failure here.
+  if ((skipUntil.get(name) ?? 0) > Date.now()) return 'unchecked'
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     const outcome: unknown = await Promise.race([
       binding.limit({ key }),
       new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`no answer within ${left} ms`)), left)
+        timer = setTimeout(() => reject(new Error(`no answer within its ${shareMs} ms`)), shareMs)
       }),
     ])
     const success = typeof outcome === 'object' && outcome !== null ? (outcome as { success?: unknown }).success : undefined
@@ -149,10 +168,24 @@ async function check(env: RateLimitEnv, name: LimitName, key: string, until: num
   }
 }
 
-/** Ask the bindings in order, stopping at the first refusal (a refused call does not count, so later keys are not spent). Null when allowed. */
+/**
+ * Ask the bindings in order, narrowest first, stopping at the first refusal (a refused call does not
+ * count, so wider keys are not spent). Null when allowed.
+ *
+ * **A wider key is asked only while every narrower one was checked** (review of D70, round 2,
+ * R2-M1). When a narrower binding is absent, failed or is skipped, the request is not counted against
+ * the wider ones either: the chain fails open together. Asking the tenant's fuse alone would count a
+ * dead credential, sent again and again, against nothing but that fuse, which is the first version's
+ * fault (B-1) come back for as long as the narrow binding is down.
+ */
 async function firstRefusal(env: RateLimitEnv, checks: [LimitName, string][]): Promise<LimitName | null> {
-  const until = Date.now() + CHECK_BUDGET_MS
-  for (const [name, key] of checks) if ((await check(env, name, key, until)) === 'refused') return name
+  for (const [name] of checks) noteAbsent(env, name)
+  const shareMs = CHECK_BUDGET_MS / checks.length
+  for (const [name, key] of checks) {
+    const verdict = await check(env, name, key, shareMs)
+    if (verdict === 'refused') return name
+    if (verdict === 'unchecked') return null
+  }
   return null
 }
 
@@ -192,8 +225,10 @@ function v6(s: string): number[] | null {
  * `'2a06:98c0:3600::103'`": developers.cloudflare.com/fundamentals/reference/http-headers/, read
  * 2026-11-19, page modified 2026-11-15). Every MCP client hosted on Workers, in any account, shares
  * it, so counting it would let anyone with a Workers account refuse all of them (review M-1). It is
- * not counted: what it reaches without a genuine credential costs this Worker's CPU only, and its
- * senders pay for their own Worker requests.
+ * not counted: what it reaches without a genuine credential is a billed request of the gateway's
+ * and this Worker's CPU, never an object or a row. (One paid invocation of a sender's Worker can make
+ * many subrequests, so what it pays does not bound what it costs here; the source limit never saved
+ * the request charge, so what the exemption gives up is CPU: review of D70, round 2, n-1.)
  */
 export const WORKERS_EGRESS = '2a06:98c0:3600::103'
 const WORKERS_EGRESS_GROUPS = v6(WORKERS_EGRESS)!
@@ -253,7 +288,8 @@ const refusal = (name: LimitName | null): Refusal | null => (name === null ? nul
 
 /**
  * The client's network: first thing at `/oauth/register` and `/oauth/authorize`; at `/oauth/token`
- * and `/oauth/revoke`, only for a request the Worker refuses by itself (review M-1).
+ * and `/oauth/revoke`, only for a request the Worker refuses by itself without a genuine credential
+ * (review M-1; round 2, m-2).
  */
 export const limitSource = async (env: RateLimitEnv, req: Request): Promise<Refusal | null> => refusal(await firstRefusal(env, sourceKeys(req.headers.get('CF-Connecting-IP'))))
 

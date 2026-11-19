@@ -1,3 +1,4 @@
+// FROZEN: shard/src/tail.ts at fd4b75a, the tail filter of the release before D72 (see ./shard.ts). Do not edit.
 /**
  * Filtered, paged tail reads (CARDINALITY.md "What is left" 1; D48): the shard's side.
  *

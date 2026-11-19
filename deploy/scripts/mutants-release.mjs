@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 // Mutation check for the release tool's rules (contracts/COMPATIBILITY.md §6): forward-only
 // marking, the rollback refusal by schema and by format version, the rollback floors a writer's
-// switch raises (D69), and what configure.mjs records (AGENTS.md, "Tests must have teeth"). Each
-// mutant is one text replacement; `node --test` on the release, release-checks and configure tests
-// must fail with it. The file is restored after every mutant, also on failure.
+// switch raises (D69), what configure.mjs records, and the fixes of the review of D69 (M-1, M-2,
+// m-2, m-3, m-8) (AGENTS.md, "Tests must have teeth"). Each mutant is one text replacement; `node
+// --test` on the release, release-checks, configure, review-d69 and workflow tests must fail with it.
+// The file is restored after every mutant, also on failure.
 //
 //   node scripts/mutants-release.mjs [text]   (from deploy/, in a COPY outside any git work tree;
 //                                              with text, only the mutants whose name contains it)
 //
-// The copy needs deploy/ (node_modules linked) and the component sources configure.mjs reads:
-// contracts/, publisher/ (src/ and test/n1, test/d64), stack/, shard/, ledger/, edge/, flush/,
-// compact/, janitor/, control/, query/, ruler/, mcp/ (their wrangler.jsonc and src/).
+// The copy needs deploy/ (node_modules linked), .github/workflows/ and the component sources
+// configure.mjs reads: contracts/, publisher/ (src/ and test/n1, test/d64), stack/, shard/, ledger/,
+// edge/, flush/, compact/, janitor/, control/, query/, ruler/, mcp/ (their wrangler.jsonc and src/).
 import { execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -36,28 +37,27 @@ const MUTANTS = [
   ["mcp/wrangler.jsonc: viz-mcp's OAUTH binding without the entrypoint (control's default fetch instead)", '../mcp/wrangler.jsonc', '"entrypoint": "OAuthIntrospection", ', ''],
   // Format versions (D69; review of D60, m-13)
   ['formats: a release writing a version the serving release does not read is not marked forward-only', 'release.mjs',
-    '      const reads = readsOf(Object.fromEntries(declaring.map((x) => [x.name, live[x.name].formats ?? {}])), f.format)\n      if (reads.includes(f.writes)) continue',
-    '      const reads = readsOf(Object.fromEntries(declaring.map((x) => [x.name, live[x.name].formats ?? {}])), f.format)\n      if (true) continue'],
+    '      if (r.reads === null || r.reads.includes(f.writes)) continue // nothing serving reads it', '      if (true) continue // nothing serving reads it'],
   ['formats rollback: the format check is never run', 'release.mjs', '    problems.push(...formatRollbackProblems(target, ran.filter((v) => fw.has(v.worker))))\n', ''],
   ['formats rollback: a version written since that the target does not read is accepted', 'release.mjs',
-    '      const reads = readsOf(target.formats, format)\n      if (reads.includes(f.writes)) continue', '      const reads = readsOf(target.formats, format)\n      if (true) continue'],
+    '      if (r.reads === null || r.reads.includes(f.writes)) continue\n      problems.push(\n        `${format}: release', '      if (true) continue\n      problems.push(\n        `${format}: release'],
   ['formats rollback: a newer version that declares no formats is ignored', 'release.mjs', '    if (v.formats === null) {', '    if (v.formats === null) continue\n    if (false) {'],
   ['formats rollback: only the versions of schema-bearing Workers are read', 'release.mjs', 'new Set([...schemaWorkers(target), ...fw, ...specs.map((sp) => sp.worker)])', 'new Set([...schemaWorkers(target), ...specs.map((sp) => sp.worker)])'],
-  ["formats rollback: Workers workers.json declares formats for are not judged when the record names none (an old record)", 'release.mjs', '  for (const w of plan.workers) if (w.formats) out.add(stagedName(w.name, target.stage ?? undefined))\n', ''],
-  ['formats: a release that declares nothing is taken to read every version (not version 1)', 'lib/formats.mjs', '  return reads ?? [1]', '  return reads ?? [1, 2, 3, 4, 5, 6, 7, 8, 9]'],
+  ["formats rollback: Workers workers.json declares formats for are not judged when the record names none (an old record)", 'release.mjs', '  for (const w of plan.workers) if (w.formats?.writes?.length) out.add(stagedName(w.name, target.stage ?? undefined))\n', ''],
+  ['formats: a release that declares nothing is taken to read every version (not version 1)', 'lib/formats.mjs', '  if (formatsByWorker === null || formatsByWorker === undefined) return { reads: [1],', '  if (formatsByWorker === null || formatsByWorker === undefined) return { reads: [1, 2, 3, 4, 5, 6, 7, 8, 9],'],
   ['formats: what a release reads is the union over its Workers, not what all of them read', 'lib/formats.mjs', '    reads = reads === null ? sorted(f.reads) : reads.filter((x) => f.reads.includes(x))', '    reads = sorted([...(reads ?? []), ...f.reads])'],
   ['formats: two read lists in one Worker are united, not intersected', 'lib/formats.mjs', '    e.reads = e.reads === null ? sorted(list) : e.reads.filter((x) => list.includes(x))', '    e.reads = sorted([...(e.reads ?? []), ...list])'],
   ['formats: a Worker that writes a version it does not read is accepted', 'lib/formats.mjs', '      if (e.writes !== null && !reads.includes(e.writes)) {', '      if (false) {'],
   ['formats: `read.` entries are recorded as written', 'lib/formats.mjs', '      if (format.startsWith(READ_PREFIX)) continue\n', ''],
-  ['configure: versions do not carry VIZ_FORMATS', 'configure.mjs', '  if (formats.length > 0) vars[FORMATS_VAR] = formatsVar(formats)\n', ''],
+  ['configure: versions do not carry VIZ_FORMATS', 'configure.mjs', '  if (formatsDeclared) vars[FORMATS_VAR] = formatsVar(formats)\n', ''],
   // Rollback floors of INGEST_SIGNALS (D64, D69; review of traces and logs, M-4)
   ['floors: the switch goes on while a Worker serving now is below its floor', 'lib/floors.mjs', '      if (w.serving && !atFloor(rule, w.floor, w.serving)) {', '      if (false) {'],
-  ["floors: the switch goes on while one of the release's own Workers is below its floor", 'lib/floors.mjs', '      if (!atFloor(rule, w.floor, w.now)) {', '      if (false) {'],
-  ['floors: with the switch off, the history is never read (older code redeployed under the data)', 'lib/floors.mjs', '    if (namesIn(value).length === 0 && workers.some((w) => !atFloor(rule, w.floor, w.now))) s.seen = await switchSeen(rule, api)\n', ''],
+  ["floors: the switch goes on while one of the release's own Workers is below its floor", 'lib/floors.mjs', '      if (w.now && !atFloor(rule, w.floor, w.now)) {', '      if (false) {'],
+  ['floors: with the switch off, the history is never read (older code redeployed under the data)', 'lib/floors.mjs', '    if (namesIn(value).length === 0 && workers.some((w) => w.now && !atFloor(rule, w.floor, w.now))) s.seen = await switchSeen(rule, api)\n', ''],
   ['floors rollback: the floor check is never run', 'release.mjs', '    problems.push(...(await floorRollbackProblems(rules, target, now, api)))\n', ''],
   ['floors rollback: a rollback below a floor is allowed whatever the switch did', 'lib/floors.mjs', '  if (!s.seen) return []', '  return []'],
   ['floors rollback: a Worker the record does not name is not judged', 'lib/floors.mjs', '        if (!l?.exists) continue // not in this deployment', '        continue'],
-  ['floors rollback: the live state of Workers the record does not name is not read', 'release.mjs', 'await api.liveState([...new Set([...names, ...rules.flatMap((r) => r.floors.map((f) => f.worker))])])', 'await api.liveState(names)'],
+  ['floors rollback: the live state of Workers the record does not name is not read', 'release.mjs', 'await api.liveState([...new Set([...names, ...deployment, ...rules.flatMap((r) => r.floors.map((f) => f.worker))])])', 'await api.liveState(names)'],
   ['floors: only the newest version of the writer is looked at for the switch', 'lib/floors.mjs', '  for (const v of await api.listVersions(rule.writer)) {', '  for (const v of (await api.listVersions(rule.writer)).slice(0, 1)) {'],
   ['floors: only the signal names edge knows today count as the switch on', 'lib/floors.mjs', ".split(',').map((x) => x.trim()).filter(Boolean)", ".split(',').map((x) => x.trim()).filter((x) => x === 'traces' || x === 'logs')"],
   ['floors: a schema floor off by one (schema 3 passes a floor of 4)', 'lib/floors.mjs', '    return Number.isInteger(n) && n >= floor.atLeast', '    return Number.isInteger(n) && n >= floor.atLeast - 1'],
@@ -65,6 +65,27 @@ const MUTANTS = [
   ['configure: versions do not carry VIZ_FLOORS', 'configure.mjs', '  if (floors.length > 0) vars[FLOORS_VAR] = floorsVar(floors)\n', ''],
   ['configure: a schema floor naming no class of its Worker is not refused', 'configure.mjs', '  checkFloorSchemas(rules, schemas)\n', ''],
   ['phase 2: a failed promotion restores the previous release across a forward-only Worker already promoted', 'release.mjs', '    } else if (crossed.length) {', '    } else if (false) {'],
+  // Review of D69 (design/reviews/d69-deploy-safety.md): M-1, format rollbacks and the Workers a record leaves out
+  ['M-1: the Workers a record leaves out are not judged (their versions never read)', 'release.mjs', '    const left = await versionsLeftServing(full, [...fw].filter((n) => !names.includes(n) && now[n]?.exists), now, api)', '    const left = []'],
+  ['M-1: a Worker left out is judged by its serving version only, not by every kept version since the record', 'release.mjs', '      if (!serving.has(v.id) && boundNumber !== null && v.number !== undefined && v.number <= boundNumber) continue', '      if (!serving.has(v.id)) continue'],
+  ["M-1: a Worker left out is judged against its own record entry too (the record's formats, not the restored Workers)", 'release.mjs', '  const readers = target.formats ? recordReaders(target, restored) : null', '  const readers = target.formats ? recordReaders(target, Object.keys(target.formats)) : null'],
+  ['M-1 (c): a Worker that declares nothing reads nothing (not version 1 of every format)', 'lib/formats.mjs', '      f = V1\n      undeclared.push(worker)', '      continue'],
+  ["M-1 (c): forward-only asks only the serving Workers that declare formats", 'release.mjs', '.filter(([, l]) => l?.exists).map(([n, l]) => [n, l.formats ?? null]))', '.filter(([, l]) => l?.exists && l.formats).map(([n, l]) => [n, l.formats]))'],
+  ["M-1 (c): a version's declaration from before they were complete is taken as complete", 'lib/formats.mjs', '  if (v.complete !== true) out[ANY] = V1\n', ''],
+  ["M-1 (c): a record from before declarations were complete is taken as complete", 'lib/formats.mjs', 'complete || f[ANY] ? f : { ...f, [ANY]: V1 }', 'f'],
+  ['M-1 (c): configure deploys a Worker that declares no formats', 'configure.mjs', '    if (w.deploy !== false && w.formats === undefined) {', '    if (false) {'],
+  ['M-1 (c): a Worker that declares none carries no VIZ_FORMATS (a rollback takes it to read version 1 of everything)', 'configure.mjs', '  if (formatsDeclared) vars[FORMATS_VAR] = formatsVar(formats)', '  if (formats.length > 0) vars[FORMATS_VAR] = formatsVar(formats)'],
+  ['M-1 (c): reads_v1 is not read (those formats are taken as not read)', 'lib/formats.mjs', "    if (s.kind === 'reads_of' || s.kind === 'reads_v1') return readList(s.worker, s.format, v, where)", "    if (s.kind === 'reads_v1') return\n    if (s.kind === 'reads_of') return readList(s.worker, s.format, v, where)"],
+  ['M-1 (c): workers.json no longer declares that viz-query reads kv.pool', 'workers.json', '          "kv.pool": "edge/src/route.ts: pool:<tenant>, which shards a query asks",\n', ''],
+  // M-2: only main, with main's own tooling
+  ["M-2: the deploy job's gate lets any ref through", '../.github/workflows/deploy.yml', '            exit 1\n          fi\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:', '            true\n          fi\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:'],
+  ["M-2: the rollback job's gate lets any ref through", '../.github/workflows/deploy.yml', "            exit 1\n          fi\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n      - uses: actions/setup-node", "            true\n          fi\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n      - uses: actions/setup-node"],
+  // m-2, m-3, m-8
+  ['m-2: a switch set as a secret is not seen', 'lib/floors.mjs', "  return SECRET_TYPES.has(b.type) ? '(a secret)' :", '  return SECRET_TYPES.has(b.type) ? null :'],
+  ['m-2: a switch set as a JSON var is not seen', 'lib/floors.mjs', "  if (b.type === 'json') return", "  if (b.type === 'json') return null\n  if (false) return"],
+  ['m-2: a release goes ahead while the switch is a secret on the writer', 'lib/floors.mjs', '  if (s.secret) {', '  if (false) {'],
+  ['m-3: a floor Worker this release does not deploy is not judged at switch-on', 'lib/floors.mjs', '        if (!manifest.order.includes(floor.worker)) return serving ? { floor, now: null, serving } : null', '        if (!manifest.order.includes(floor.worker)) return null'],
+  ['m-8: --only is ignored (the whole record is restored)', 'release.mjs', '  const target = restrictRecord(full, only, stage)', '  const target = full'],
 ]
 
 try {
@@ -77,7 +98,7 @@ try {
 
 const run = () => {
   try {
-    execFileSync('node', ['--test', '--test-concurrency=2', 'test/release.test.mjs', 'test/release-checks.test.mjs', 'test/configure.test.mjs'], { cwd: DEPLOY_DIR, stdio: 'pipe', timeout: 600_000 })
+    execFileSync('node', ['--test', '--test-concurrency=2', 'test/release.test.mjs', 'test/release-checks.test.mjs', 'test/configure.test.mjs', 'test/review-d69.test.mjs', 'test/workflow.test.mjs'], { cwd: DEPLOY_DIR, stdio: 'pipe', timeout: 600_000 })
     return { failed: false, detail: '' }
   } catch (e) {
     const out = String(e.stdout ?? '') + String(e.stderr ?? '')
