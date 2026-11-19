@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use crate::ast::*;
 use crate::data::{attr, AttrValue, Event, Link, Span, Trace};
-use crate::value::{arith, compare, go_duration, hex, hex_trimmed, regex_match, typed_match, Val};
+use crate::value::{arith, compare, go_duration, hex, hex_trimmed, regex_match, Val};
 
 /// One spanset: indices into the trace's spans, and the attributes the pipeline attached
 /// (`count()`, `by(...)`).
@@ -185,44 +185,6 @@ fn attr_val<'a>(span: &'a Span, scope: Scope, name: &str, b: Binding<'a>) -> Val
     }
 }
 
-/// For `attr op literal`: the attribute's value, preferring (for `.name`) a scope whose
-/// value has the literal's type.
-fn attr_for_literal<'a>(span: &'a Span, scope: Scope, name: &str, lit: &Val, b: Binding<'a>) -> Val<'a> {
-    if scope == Scope::None && !lit.is_nil() {
-        let s = attr(&span.attrs, name).map(Val::from_attr);
-        let r = attr(&span.resource, name).map(Val::from_attr);
-        for v in [s, r].into_iter().flatten() {
-            if same_kind(&v, lit) {
-                return v;
-            }
-        }
-    }
-    attr_val(span, scope, name, b)
-}
-
-fn same_kind(v: &Val, lit: &Val) -> bool {
-    let k = |x: &Val| match x {
-        Val::Int(_) => 1,
-        Val::Float(_) => 2,
-        Val::Str(_) => 3,
-        Val::Bool(_) => 4,
-        _ => 0,
-    };
-    match v {
-        Val::Arr(a) => {
-            let ek = match a {
-                AttrValue::IntArray(_) => 1,
-                AttrValue::FloatArray(_) => 2,
-                AttrValue::StrArray(_) => 3,
-                AttrValue::BoolArray(_) => 4,
-                _ => 0,
-            };
-            ek != 0 && ek == k(lit)
-        }
-        _ => k(v) != 0 && k(v) == k(lit),
-    }
-}
-
 fn is_id(i: Intrinsic) -> bool {
     matches!(i, Intrinsic::SpanId | Intrinsic::ParentId | Intrinsic::TraceId | Intrinsic::LinkSpanId | Intrinsic::LinkTraceId)
 }
@@ -262,18 +224,8 @@ fn eval<'a, 't: 'a>(e: &'a FieldExpr, ctx: &mut TraceCtx<'t>, i: usize, b: Bindi
                 arith(*op, &x, &y)
             }
             op => {
-                // attribute op literal: typed (see value.rs).
+                // Arrays compare element-wise (see value.rs); other values by value.
                 match (&**l, &**r) {
-                    (FieldExpr::Attr { scope, name }, FieldExpr::Static(s)) => {
-                        let lit = Val::from_static(s);
-                        let v = attr_for_literal(&trace.spans[i], *scope, name, &lit, b);
-                        return Val::Bool(typed_match(&v, *op, &lit));
-                    }
-                    (FieldExpr::Static(s), FieldExpr::Attr { scope, name }) => {
-                        let lit = Val::from_static(s);
-                        let v = attr_for_literal(&trace.spans[i], *scope, name, &lit, b);
-                        return Val::Bool(typed_match(&v, flip(*op), &lit));
-                    }
                     (FieldExpr::Intrinsic(intr, _), FieldExpr::Static(Static::Str(s)))
                     | (FieldExpr::Static(Static::Str(s)), FieldExpr::Intrinsic(intr, _))
                         if is_id(*intr) && matches!(op, BinOp::Eq | BinOp::Neq) =>
@@ -382,7 +334,8 @@ fn run_stage(st: &Stage, ctx: &mut TraceCtx, input: Vec<Spanset>) -> Vec<Spanset
             let mut out = Vec::new();
             for mut ss in input {
                 let v = aggregate(*agg, arg.as_ref(), ctx, &ss.spans);
-                if compare(&v, *op, &lit) {
+                // An aggregate over no values is undefined and fails every comparison.
+                if !v.is_nil() && compare(&v, *op, &lit) {
                     let key = format!("{}({})", agg.name(), arg.as_ref().map(expr_text).unwrap_or_default());
                     set_attr(&mut ss.attrs, key, v.into_owned());
                     out.push(ss);

@@ -266,45 +266,35 @@ fn mean_var(vals: &[(i64, f64)]) -> (f64, f64) {
     (mean, if count > 0.0 { m2 / count } else { f64::NAN })
 }
 
-/// A counter's per-second rate over the window `(range_start, range_end]`, extrapolated
-/// to the window edges as Prometheus' `rate` does. Fewer than two samples give 0.
-fn counter_rate(samples: &[(i64, f64)], range_start: i64, range_end: i64, range_ns: i64) -> f64 {
+/// `rate_counter`: the counter's increase over the window (resets compensated) per second
+/// of range. Loki (v3.7.10, observed as a black box) extrapolates the sampled interval by the
+/// range expressed in milliseconds but added as nanoseconds, so the result is
+/// `increase / range * (sampled_ns + range_ms) / sampled_ns`; this reproduces it (see
+/// README, "Differences from Loki"). Fewer than two samples give 0.
+fn counter_rate(samples: &[(i64, f64)], range_ns: i64) -> f64 {
     if samples.len() < 2 {
         return 0.0;
     }
     let first = samples[0];
     let last = samples[samples.len() - 1];
-    let mut result = last.1 - first.1;
+    let mut increase = last.1 - first.1;
     let mut prev = first.1;
     for &(_, v) in &samples[1..] {
         if v < prev {
-            result += prev;
+            increase += prev;
         }
         prev = v;
     }
-    let secs = |ns: i64| ns as f64 / 1e9;
-    let mut to_start = secs(first.0 - range_start);
-    let mut to_end = secs(range_end - last.0);
-    let sampled = secs(last.0 - first.0);
-    let avg = sampled / (samples.len() - 1) as f64;
-    let threshold = avg * 1.1;
-    if result > 0.0 && first.1 >= 0.0 {
-        let to_zero = sampled * (first.1 / result);
-        if to_zero < to_start {
-            to_start = to_zero;
-        }
+    let sampled = (last.0 - first.0) as f64;
+    let range_s = range_ns as f64 / 1e9;
+    if sampled <= 0.0 {
+        return increase / range_s;
     }
-    if to_start >= threshold {
-        to_start = avg / 2.0;
-    }
-    if to_end >= threshold {
-        to_end = avg / 2.0;
-    }
-    let factor = if sampled > 0.0 { (sampled + to_start + to_end) / sampled } else { 1.0 };
-    result * factor / secs(range_ns)
+    let range_ms = range_ns as f64 / 1e6;
+    increase / range_s * ((sampled + range_ms) / sampled)
 }
 
-fn aggregate(op: RangeOp, param: Option<f64>, w: &[(i64, f64)], r: &LogRange, t_end: i64, unwrapped: bool) -> f64 {
+fn aggregate(op: RangeOp, param: Option<f64>, w: &[(i64, f64)], r: &LogRange, unwrapped: bool) -> f64 {
     let secs = r.range_ns as f64 / 1e9;
     let sum = || w.iter().map(|x| x.1).sum::<f64>();
     match op {
@@ -325,7 +315,7 @@ fn aggregate(op: RangeOp, param: Option<f64>, w: &[(i64, f64)], r: &LogRange, t_
         }
         RangeOp::FirstOverTime => w[0].1,
         RangeOp::LastOverTime => w[w.len() - 1].1,
-        RangeOp::RateCounter => counter_rate(w, t_end - r.range_ns, t_end, r.range_ns),
+        RangeOp::RateCounter => counter_rate(w, r.range_ns),
         RangeOp::AbsentOverTime => 1.0,
     }
 }
@@ -443,7 +433,7 @@ pub(crate) fn eval_range(
             let a = samples.partition_point(|x| x.0 <= t.saturating_sub(r.range_ns));
             let b = samples.partition_point(|x| x.0 <= t);
             if a < b {
-                *slot = Some(aggregate(op, param, &samples[a..b], r, t, unwrapped));
+                *slot = Some(aggregate(op, param, &samples[a..b], r, unwrapped));
                 any = true;
             }
         }

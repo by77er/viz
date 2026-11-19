@@ -10,6 +10,7 @@ pub const E_OBJ: &str = "Value looks like object, but can't find closing '}' sym
 pub const E_ARR: &str = "Value is array, but can't find closing ']' symbol";
 pub const E_MAL: &str = "Malformed JSON error";
 pub const E_UNK: &str = "Unknown value type";
+pub const E_STR: &str = "Value is string, but can't find closing '\"' symbol";
 pub const E_UNPACK: &str = "expecting json object(6), but it is not";
 
 const MAX_DEPTH: usize = 128;
@@ -41,9 +42,14 @@ impl<'a> W<'a> {
         self.b.get(self.i).copied()
     }
 
+    /// A key: an unterminated key is "malformed".
+    fn key(&mut self) -> Result<std::borrow::Cow<'a, str>, &'static str> {
+        self.string().map_err(|_| E_MAL)
+    }
+
     fn string(&mut self) -> Result<std::borrow::Cow<'a, str>, &'static str> {
         let mut r = crate::json::Reader::with_pos(self.s, self.i);
-        let v = r.string().map_err(|_| E_MAL)?;
+        let v = r.string().map_err(|e| if e.contains("unterminated") { E_STR } else { E_MAL })?;
         self.i = r.pos();
         Ok(v)
     }
@@ -69,7 +75,7 @@ impl<'a> W<'a> {
                         Some(b'"') => {}
                         _ => return Err(E_OBJ),
                     }
-                    self.string()?;
+                    self.key()?;
                     self.ws();
                     if self.peek() != Some(b':') {
                         return Err(E_MAL);
@@ -171,7 +177,7 @@ impl<'a> W<'a> {
                 Some(b'"') => {}
                 _ => return Err(E_OBJ),
             }
-            let key = self.string()?;
+            let key = self.key()?;
             self.ws();
             if self.peek() != Some(b':') {
                 return Err(E_MAL);
@@ -240,7 +246,7 @@ pub fn unpack(line: &str) -> Result<Option<(Vec<(String, String)>, String)>, &'s
             Some(b'"') => {}
             _ => return Err(E_OBJ),
         }
-        let key = w.string()?;
+        let key = w.key()?;
         w.ws();
         if w.peek() != Some(b':') {
             return Err(E_MAL);

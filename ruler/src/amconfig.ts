@@ -254,8 +254,6 @@ export function compileConfig(input: unknown, control: NotificationTarget | null
     if (!['route', 'receivers', 'inhibit_rules', 'external_url', 'delivery'].includes(k)) c.err(k, `unknown field "${k}"`, 'Supported: route, receivers, inhibit_rules, external_url, delivery.')
   }
   const receivers = new Map<string, Integration[]>()
-  // Always present: the tenant's default destination, set in the control plane (empty when none is set).
-  receivers.set(CONTROL_RECEIVER, controlIntegrations(control))
   if (!Array.isArray(doc.receivers)) c.err('receivers', 'receivers must be a list', `List the receivers; a route may also name "${CONTROL_RECEIVER}", the webhook set in the control plane's notification settings.`)
   else if (doc.receivers.length > 64) c.err('receivers', 'more than 64 receivers', 'Remove unused receivers.')
   else {
@@ -285,6 +283,8 @@ export function compileConfig(input: unknown, control: NotificationTarget | null
       receivers.set(r.name, list)
     })
   }
+  // Always present, after the tenant's own: the default destination set in the control plane (no integration when none is set).
+  receivers.set(CONTROL_RECEIVER, controlIntegrations(control))
   const root = compileRoute(c, doc.route, 'route', null, 0, new Set(receivers.keys()), { routes: 0 })
   const inhibit: InhibitRule[] = []
   if (doc.inhibit_rules !== undefined) {

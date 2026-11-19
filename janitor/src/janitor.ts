@@ -163,6 +163,12 @@ export interface OrphanResult {
    * version, or not matching its key); never deleted automatically.
    */
   kept: { key: string; why: 'young' | 'pending_unit' | 'unknown_stream' | 'unknown_name' | 'inputs_remain' | 'unknown_inputs'; detail?: string }[]
+  /**
+   * When the youngest object kept for something a write or time can still change (`young`,
+   * `pending_unit`, `unknown_stream`, `inputs_remain`) was uploaded; absent when there is none.
+   * Lets the caller stop sweeping for objects that have waited too long (review S-6).
+   */
+  waitingSince?: number
 }
 
 /**
@@ -264,6 +270,11 @@ export async function sweepOrphans(env: JanitorEnv, tenant: string, opts: { grac
     await opts.hooks?.beforeDelete?.(doomed)
     if (doomed.length > 0) await env.BUCKET.delete(doomed)
     out.deleted.push(...doomed)
+  }
+  const uploaded = new Map(objects.map((o) => [o.key, o.uploaded]))
+  for (const k of out.kept) {
+    if (k.why === 'unknown_name' || k.why === 'unknown_inputs') continue
+    out.waitingSince = Math.max(out.waitingSince ?? 0, uploaded.get(k.key) ?? 0)
   }
   return out
 }

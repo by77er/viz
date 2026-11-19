@@ -2,6 +2,7 @@ import { createExecutionContext, createMessageBatch, getQueueResult } from 'clou
 import { env } from 'cloudflare:workers'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { sweepPending } from '../../flush/src/index'
+import { flushSettled, ledgerStub } from '../../flush/test/helpers'
 import { PENDING_MARKER_PREFIX } from '../../shard/src/shard'
 import { MAINT_QUEUE_NAME, type MaintMessage, type StackEnv, consumeMaintBatch, engine, flushTenant, handleScheduled, maintMarkerKey, maintainTenant } from '../src/index'
 import { type Sim, createSim, ingest, rng, shard } from './sim'
@@ -199,5 +200,41 @@ describe('maintenance messages carry a version', () => {
     expect(runs.sort()).toEqual(['tv0', 'tv1'])
     expect(result.retryMessages.map((m) => m.msgId).sort()).toEqual(['v0', 'v1'])
     expect(dead).toEqual([{ nope: true }])
+  })
+})
+
+describe('review S-6: leftovers that only the ledger or a shard can change stop keeping the sweep due', () => {
+  let sim: Sim
+  beforeAll(async () => { sim = await createSim(1, 6) })
+  afterAll(() => sim.restore())
+
+  it('a flush file of a unit that may yet be admitted keeps the orphan sweep due only for stalledAfterMs; it is kept, never deleted', async () => {
+    const [t] = sim.tenants
+    expect(await ingest(sim, t!, rng(9), 4, 2, 0)).toBe(204)
+    for (const s of sim.shards) {
+      await shard(s).seal(t!.name)
+      expect(await flushSettled(sim.env, engine, t!.name, s)).toMatchObject({ status: 'ok', awaitingLog: false })
+    }
+    // A leftover a crashed flush could have written: the next range of a stream the ledger
+    // knows, above its logged watermark, so the sweep must keep it (`pending_unit`).
+    const s0 = sim.shards[0]!
+    const inc = (await shard(s0).describe(t!.name))!.incarnation
+    const logged = (await ledgerStub(t!.name).loggedWatermarks()).find((w) => w.shard === s0)!.seq
+    const day = new Date().toISOString().slice(0, 10)
+    const leftover = `${env.CELL}/data/metric_samples/tenant=${t!.name}/day=${day}/L0-${s0.replaceAll('/', '_')}-${inc}-${logged + 1}-${logged + 1}-deadbeef.parquet`
+    await env.BUCKET.put(leftover, 'not admitted')
+    const opts = { orphanEveryMs: 0, orphanGraceMs: 0 }
+    // Young: the sweep stays due (time or the ledger may still settle it).
+    const young = await maintainTenant(sim.env, engine, t!.name, opts)
+    expect(young.orphans!.kept.map((k) => [k.key, k.why])).toEqual([[leftover, 'pending_unit']])
+    expect((await env.CONFIG.getWithMetadata<{ sweep: boolean }>(maintMarkerKey(t!.name))).metadata!.sweep).toBe(true)
+    // Stalled (waiting longer than stalledAfterMs on something only a write can change): kept,
+    // and no longer a reason to list the tenant's prefix every day. A later write sweeps again.
+    const stalled = await maintainTenant(sim.env, engine, t!.name, { ...opts, stalledAfterMs: 0 })
+    expect(stalled.orphans!.kept.map((k) => k.why)).toEqual(['pending_unit'])
+    expect((await env.CONFIG.getWithMetadata<{ sweep: boolean }>(maintMarkerKey(t!.name))).metadata!.sweep).toBe(false)
+    expect((await maintainTenant(sim.env, engine, t!.name, { ...opts, stalledAfterMs: 0 })).orphans).toBeNull()
+    expect(await env.BUCKET.head(leftover)).not.toBeNull()
+    expect((await maintainTenant(sim.env, engine, t!.name, { ...opts, wrote: true })).orphans).not.toBeNull()
   })
 })

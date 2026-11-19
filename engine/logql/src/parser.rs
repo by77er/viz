@@ -503,7 +503,7 @@ impl<'a> Parser<'a> {
             let pipe_pos = self.pos();
             self.next();
             let kw = match self.peek() {
-                Tok::Ident(s) if STAGE_KEYWORDS.contains(&s.as_str()) && !is_comparison(self.peek_at(1)) => Some(s.clone()),
+                Tok::Ident(s) if STAGE_KEYWORDS.contains(&s.as_str()) => Some(s.clone()),
                 _ => None,
             };
             let Some(kw) = kw else {
@@ -707,7 +707,7 @@ impl<'a> Parser<'a> {
         };
         let mut post_filters = Vec::new();
         while *self.peek() == Tok::Pipe {
-            let is_stage = matches!(self.peek_at(1), Tok::Ident(s) if STAGE_KEYWORDS.contains(&s.as_str())) && !is_comparison(self.peek_at(2));
+            let is_stage = matches!(self.peek_at(1), Tok::Ident(s) if STAGE_KEYWORDS.contains(&s.as_str()));
             if is_stage {
                 return Err(self.err_at(self.toks[self.i + 1].pos, "syntax error: only label filters are allowed after unwrap"));
             }

@@ -294,9 +294,16 @@ impl CLabelFilter {
                 typed(labels, n, |s| parse_go_duration(s).ok_or_else(|| go_duration_error(s)), |x| op.apply(x as f64, *v as f64))
             }
             CLabelFilter::Bytes(n, op, v) => typed(labels, n, |s| parse_bytes(s).ok_or_else(|| bytes_error(s)), |x| op.apply(x, *v)),
+            // An entry that already carries an error passes; otherwise the label's value is
+            // searched for addresses as a line is (observed in Loki).
             CLabelFilter::Ip(n, eq, m) => {
-                let hit = labels.get(n).is_some_and(|v| m.matches_value(v));
-                hit == *eq
+                if labels.has_error() {
+                    return true;
+                }
+                match labels.get(n) {
+                    None => false,
+                    Some(v) => m.matches_line(v) == *eq,
+                }
             }
             CLabelFilter::And(a, b) => a.eval(labels) && b.eval(labels),
             CLabelFilter::Or(a, b) => a.eval(labels) || b.eval(labels),
@@ -358,10 +365,37 @@ fn names(items: &[NameOrMatcher]) -> Result<Vec<NameM>, Error> {
         .collect()
 }
 
+fn is_error_filter(s: &Stage) -> bool {
+    matches!(s, Stage::LabelFilter(LabelFilter::Matcher(m)) if m.name == ERROR)
+}
+
+/// Within each run of consecutive label-filter stages, filters on `__error__` run last
+/// (observed in Loki: `| __error__="" | status > 0` drops lines whose `status` does not
+/// convert, as `| status > 0 | __error__=""` does).
+pub fn order_stages(stages: &[Stage]) -> Vec<&Stage> {
+    let mut out: Vec<&Stage> = Vec::with_capacity(stages.len());
+    let mut i = 0;
+    while i < stages.len() {
+        if !matches!(stages[i], Stage::LabelFilter(_)) {
+            out.push(&stages[i]);
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j < stages.len() && matches!(stages[j], Stage::LabelFilter(_)) {
+            j += 1;
+        }
+        out.extend(stages[i..j].iter().filter(|s| !is_error_filter(s)));
+        out.extend(stages[i..j].iter().filter(|s| is_error_filter(s)));
+        i = j;
+    }
+    out
+}
+
 impl Pipeline {
     pub fn compile(stages: &[Stage]) -> Result<Pipeline, Error> {
         let mut out = Vec::with_capacity(stages.len());
-        for s in stages {
+        for s in order_stages(stages) {
             out.push(match s {
                 Stage::LineFilter(f) => CStage::Line(CLineFilter::compile(f)?),
                 Stage::LabelFilter(f) => CStage::Label(CLabelFilter::compile(f)?),
@@ -467,9 +501,16 @@ impl Pipeline {
                             }
                         }
                     } else {
+                        // Requested keys that are absent become empty labels, unless a label of
+                        // that name already exists.
                         for (name, key) in params {
-                            if let Some(p) = pairs.iter().find(|p| p.key == key) {
-                                labels.add_parsed(name, &p.value);
+                            match pairs.iter().find(|p| p.key == key) {
+                                Some(p) => labels.add_parsed(name, &p.value),
+                                None => {
+                                    if !labels.has(name) {
+                                        labels.add_parsed(name, "");
+                                    }
+                                }
                             }
                         }
                     }

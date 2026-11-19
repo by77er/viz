@@ -495,6 +495,22 @@ describe('starting an incarnation (review R-3: never across R2 inside blockConcu
     expect(await seqOf2(l)).toBe(3)
   })
 
+  it('no log in R2 but data objects under the tenant\'s prefix: refused, never started empty over them (review S-5)', async () => {
+    const tenant = tenantName('nolog')
+    open(tenant)
+    // A file the ledger once listed, its log not where this ledger looks (a changed CELL, a wrong bucket, a deleted prefix).
+    const orphaned = file('L2-d-0123456789abcdef-aaaaaaaa.parquet', { level: 2 })
+    await env.BUCKET.put(orphaned.key, 'a compaction output')
+    const l = env.LEDGER.get(env.LEDGER.idFromName(tenant))
+    expect(await l.plan({ table: 'metric_samples', minTs: 0, maxTs: 1 }).then(() => 'served', (e: Error) => e.message)).toMatch(/no change log for this tenant in R2, but it has data objects/)
+    expect(await l.logStatus()).toMatchObject({ phase: 'stuck', stuck: expect.stringMatching(/refusing to start empty/) })
+    expect(await listAll(logPrefix(tenant))).toEqual([]) // no base, no incarnation
+    // Once the objects are dealt with (here: removed), it starts.
+    await env.BUCKET.delete(orphaned.key)
+    await runDurableObjectAlarm(l)
+    expect((await l.logStatus()).phase).toBe('ready')
+  })
+
   it('storage with a version row and no incarnation is refused, never rebuilt over (design/UPGRADES.md §7)', async () => {
     const { tenant, l } = open()
     await l.addUnit(pair(1, 3))

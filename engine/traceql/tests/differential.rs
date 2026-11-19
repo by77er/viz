@@ -143,7 +143,7 @@ fn export_differential_cases() {
         let data = dataset(seed * 1000 + d, &o);
         datasets.push(dataset_json(&data));
         let src = MemSource::new(data.clone());
-        let mut g = QGen { r: Rng::new(seed * 7919 + d), data: &data, mixed: o.mixed, quirks };
+        let mut g = QGen { r: Rng::new(seed * 7919 + d), data: &data, mixed: o.mixed, quirks, depth: env("VIZ_DIFF_DEPTH", 0) as u32 };
         for qi in 0..nq {
             let metrics = qi % 3 == 2;
             if !metrics {

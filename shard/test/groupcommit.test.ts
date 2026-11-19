@@ -125,6 +125,21 @@ describe('early refusal', () => {
     expect(r.out).toMatchObject({ status: 'backpressure', scope: 'overload' })
     expect(r.rows).toBe(0) // it never reached the part of `append` that reads storage
     expect(await stored(s, 't')).toEqual([])
+    // A retry of a batch the shard already holds is refused the same way: answering it as a
+    // duplicate would mean reading its fingerprint, which an overloaded shard does not do.
+    await s.configure({ maxInFlight: 64 })
+    expect(await s.append({ tenant: 't', epoch: 1, fingerprint: 'g', payload: payload(2), rows: 1 })).toMatchObject({ status: 'ok' })
+    await s.configure({ maxInFlight: 0 })
+    expect(await s.append({ tenant: 't', epoch: 1, fingerprint: 'g', payload: payload(2), rows: 1 })).toMatchObject({ status: 'backpressure', scope: 'overload' })
+  })
+
+  it('the tenant cap counts what waits in the open group: concurrent appends never take a tenant past it', async () => {
+    const s = fresh()
+    await s.configure({ tenantMaxBytes: 64 * 3, groupWindowMs: 20 })
+    const results = await Promise.all(Array.from({ length: 6 }, (_, i) => s.append({ tenant: 't', epoch: 1, fingerprint: `c${i}`, payload: payload(i), rows: 1 })))
+    expect(results.filter((r) => r.status === 'ok')).toHaveLength(3)
+    expect(results.filter((r) => r.status === 'backpressure' && r.scope === 'tenant')).toHaveLength(3)
+    expect((await s.describe('t'))!.bufferedBytes).toBe(64 * 3)
   })
 
   it('under random load, evictions and refusals, every acknowledged append is stored exactly once and nothing refused is', { timeout: 60_000 }, async () => {

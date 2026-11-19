@@ -41,7 +41,7 @@ async function scenario() {
   const notifier = notifierStub(tenant)
   ok(await notifier.setConfig(tenant, {
     route: { receiver: 'hook', group_by: ['alertname'], group_wait: '0s', group_interval: '1m', repeat_interval: '4h' },
-    receivers: [{ name: 'hook', webhook_configs: [{ url: 'https://receiver.test/hook', secret: SECRET }] }],
+    receivers: [{ name: 'hook', webhook_configs: [{ url: 'https://receiver.test/hook', secret: SECRET }, { url: 'https://receiver.test/plain', secret: SECRET, format: 'json' }] }],
     external_url: 'https://vis.bitcru.sh',
   }))
   const saved = ok(await stub.saveGroups(tenant, RULES))
@@ -86,6 +86,11 @@ describe('golden formats', () => {
     expect(await verifySignature(SECRET, first.signature ?? null, first.key!, first.raw!, first.at)).toBe(true)
     expectGolden(file('http.webhook'), { format: 'http.webhook', version: FORMATS['http.webhook'], body: first.raw, signature: first.signature })
     expectGolden(file('id.idempotency-key'), { format: 'id.idempotency-key', version: FORMATS['id.idempotency-key'], tenant, key: first.key })
+    const plain = w.received.find((r) => r.url === 'https://receiver.test/plain')!
+    expect(plain, 'the plain JSON receiver was called').toBeDefined()
+    expect(await verifySignature(SECRET, plain.signature ?? null, plain.key!, plain.raw!, plain.at)).toBe(true)
+    expect(JSON.parse(plain.raw!).idempotencyKey).toBe(plain.key)
+    expectGolden(file('http.webhook-json'), { format: 'http.webhook-json', version: FORMATS['http.webhook-json'], body: plain.raw, signature: plain.signature })
 
     const keys = saved.groups[0]!.rules.map((r) => ({ name: r.name, key: r.key, bareId: bareRuleId('payments', r.key) }))
     expectGolden(file('id.hashes'), {

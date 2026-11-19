@@ -1,0 +1,322 @@
+{
+  "url": "http://127.0.0.1:18981/explore?q=sum%20by%20(service)%20(rate(http_requests_total%5B5m%5D))&from=1794994200000&to=1795005000000",
+  "name": "real-api",
+  "states": [
+    {
+      "name": "parse-error-1440",
+      "width": 1440,
+      "steps": [
+        {
+          "eval": "localStorage.setItem('viz.settings', JSON.stringify({ baseUrl: '', token: 'e2e-read' })); setTimeout(() => location.reload(), 50)"
+        },
+        {
+          "wait": 2500
+        }
+      ],
+      "url": "http://127.0.0.1:18981/explore?q=sum%20by%20(service)%20(rate(http_requests_total%5B5m%5D)&from=1794994200000&to=1795005000000"
+    },
+    {
+      "name": "parse-error-400",
+      "width": 400,
+      "steps": [
+        {
+          "eval": "localStorage.setItem('viz.settings', JSON.stringify({ baseUrl: '', token: 'e2e-read' })); setTimeout(() => location.reload(), 50)"
+        },
+        {
+          "wait": 2500
+        }
+      ],
+      "url": "http://127.0.0.1:18981/explore?q=sum%20by%20(service)%20(rate(http_requests_total%5B5m%5D)&from=1794994200000&to=1795005000000"
+    },
+    {
+      "name": "no-key-401-1440",
+      "width": 1440,
+      "steps": [
+        {
+          "eval": "localStorage.removeItem('viz.settings')"
+        },
+        {
+          "wait": 2500
+        }
+      ]
+    },
+    {
+      "name": "no-key-401-400",
+      "width": 400,
+      "steps": [
+        {
+          "eval": "localStorage.removeItem('viz.settings')"
+        },
+        {
+          "wait": 2500
+        }
+      ]
+    },
+    {
+      "name": "readless-key-403-1440",
+      "width": 1440,
+      "steps": [
+        {
+          "eval": "localStorage.setItem('viz.settings', JSON.stringify({ baseUrl: '', token: 'e2e-write' })); setTimeout(() => location.reload(), 50)"
+        },
+        {
+          "wait": 2500
+        }
+      ]
+    },
+    {
+      "name": "readless-key-403-400",
+      "width": 400,
+      "steps": [
+        {
+          "eval": "localStorage.setItem('viz.settings', JSON.stringify({ baseUrl: '', token: 'e2e-write' })); setTimeout(() => location.reload(), 50)"
+        },
+        {
+          "wait": 2500
+        }
+      ]
+    },
+    {
+      "name": "timeout-503-1440",
+      "width": 1440,
+      "steps": [
+        {
+          "eval": "localStorage.setItem('viz.settings', JSON.stringify({ baseUrl: '', token: 'e2e-read' })); setTimeout(() => location.reload(), 50)"
+        },
+        {
+          "wait": 2500
+        },
+        {
+          "eval": "fetch('http://127.0.0.1:18982/__mock/fail?kind=timeout&count=1')"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "click": "[data-testid=run]"
+        },
+        {
+          "wait": 2000
+        }
+      ]
+    },
+    {
+      "name": "timeout-503-400",
+      "width": 400,
+      "steps": [
+        {
+          "eval": "localStorage.setItem('viz.settings', JSON.stringify({ baseUrl: '', token: 'e2e-read' })); setTimeout(() => location.reload(), 50)"
+        },
+        {
+          "wait": 2500
+        },
+        {
+          "eval": "fetch('http://127.0.0.1:18982/__mock/fail?kind=timeout&count=1')"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "click": "[data-testid=run]"
+        },
+        {
+          "wait": 2000
+        }
+      ]
+    },
+    {
+      "name": "busy-503-1440",
+      "width": 1440,
+      "steps": [
+        {
+          "eval": "localStorage.setItem('viz.settings', JSON.stringify({ baseUrl: '', token: 'e2e-read' })); setTimeout(() => location.reload(), 50)"
+        },
+        {
+          "wait": 2500
+        },
+        {
+          "eval": "fetch('http://127.0.0.1:18982/__mock/fail?kind=busy&count=4')"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "click": "[data-testid=run]"
+        },
+        {
+          "wait": 700
+        }
+      ]
+    },
+    {
+      "name": "busy-503-400",
+      "width": 400,
+      "steps": [
+        {
+          "eval": "localStorage.setItem('viz.settings', JSON.stringify({ baseUrl: '', token: 'e2e-read' })); setTimeout(() => location.reload(), 50)"
+        },
+        {
+          "wait": 2500
+        },
+        {
+          "eval": "fetch('http://127.0.0.1:18982/__mock/fail?kind=busy&count=4')"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "click": "[data-testid=run]"
+        },
+        {
+          "wait": 700
+        }
+      ]
+    },
+    {
+      "name": "platform-503-1440",
+      "width": 1440,
+      "steps": [
+        {
+          "eval": "localStorage.setItem('viz.settings', JSON.stringify({ baseUrl: '', token: 'e2e-read' })); setTimeout(() => location.reload(), 50)"
+        },
+        {
+          "wait": 2500
+        },
+        {
+          "eval": "fetch('http://127.0.0.1:18982/__mock/fail?kind=platform&count=4')"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "click": "[data-testid=run]"
+        },
+        {
+          "wait": 9000
+        }
+      ]
+    },
+    {
+      "name": "platform-503-400",
+      "width": 400,
+      "steps": [
+        {
+          "eval": "localStorage.setItem('viz.settings', JSON.stringify({ baseUrl: '', token: 'e2e-read' })); setTimeout(() => location.reload(), 50)"
+        },
+        {
+          "wait": 2500
+        },
+        {
+          "eval": "fetch('http://127.0.0.1:18982/__mock/fail?kind=platform&count=4')"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "click": "[data-testid=run]"
+        },
+        {
+          "wait": 9000
+        }
+      ]
+    },
+    {
+      "name": "unknown-key-401-1440",
+      "width": 1440,
+      "steps": [
+        {
+          "eval": "localStorage.setItem('viz.settings', JSON.stringify({ baseUrl: '', token: 'e2e-unknown' })); setTimeout(() => location.reload(), 50)"
+        },
+        {
+          "wait": 2500
+        }
+      ]
+    },
+    {
+      "name": "unknown-key-401-400",
+      "width": 400,
+      "steps": [
+        {
+          "eval": "localStorage.setItem('viz.settings', JSON.stringify({ baseUrl: '', token: 'e2e-unknown' })); setTimeout(() => location.reload(), 50)"
+        },
+        {
+          "wait": 2500
+        }
+      ]
+    },
+    {
+      "name": "step-too-small-400-1440",
+      "width": 1440,
+      "steps": [
+        {
+          "eval": "localStorage.setItem('viz.settings', JSON.stringify({ baseUrl: '', token: 'e2e-read' })); setTimeout(() => location.reload(), 50)"
+        },
+        {
+          "wait": 2500
+        }
+      ],
+      "url": "http://127.0.0.1:18981/explore?q=sum%20by%20(service)%20(rate(http_requests_total%5B5m%5D))&from=1794994200000&to=1795005000000&step=500ms"
+    },
+    {
+      "name": "step-too-small-400-400",
+      "width": 400,
+      "steps": [
+        {
+          "eval": "localStorage.setItem('viz.settings', JSON.stringify({ baseUrl: '', token: 'e2e-read' })); setTimeout(() => location.reload(), 50)"
+        },
+        {
+          "wait": 2500
+        }
+      ],
+      "url": "http://127.0.0.1:18981/explore?q=sum%20by%20(service)%20(rate(http_requests_total%5B5m%5D))&from=1794994200000&to=1795005000000&step=500ms"
+    },
+    {
+      "name": "warning-1440",
+      "width": 1440,
+      "steps": [
+        {
+          "eval": "localStorage.setItem('viz.settings', JSON.stringify({ baseUrl: '', token: 'e2e-read' })); setTimeout(() => location.reload(), 50)"
+        },
+        {
+          "wait": 2500
+        },
+        {
+          "eval": "fetch('http://127.0.0.1:18982/__mock/warn?text=partial%20response%3A%201%20of%204%20stores%20did%20not%20answer&count=1')"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "click": "[data-testid=run]"
+        },
+        {
+          "wait": 2500
+        }
+      ]
+    },
+    {
+      "name": "warning-400",
+      "width": 400,
+      "steps": [
+        {
+          "eval": "localStorage.setItem('viz.settings', JSON.stringify({ baseUrl: '', token: 'e2e-read' })); setTimeout(() => location.reload(), 50)"
+        },
+        {
+          "wait": 2500
+        },
+        {
+          "eval": "fetch('http://127.0.0.1:18982/__mock/warn?text=partial%20response%3A%201%20of%204%20stores%20did%20not%20answer&count=1')"
+        },
+        {
+          "wait": 300
+        },
+        {
+          "click": "[data-testid=run]"
+        },
+        {
+          "wait": 2500
+        }
+      ]
+    }
+  ]
+}

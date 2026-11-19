@@ -3,12 +3,14 @@
 //! The rules here were taken from the documentation and, where it is silent, from Tempo's
 //! observed behaviour (`README.md`, "Differential run"):
 //!
-//! - Numbers of different kinds (int, float, duration) compare and combine by value once an
-//!   expression is computed (`.n * 1.0 > 4`, `.n > .f`), but a bare attribute compared with a
-//!   literal only sees values of the literal's own type: `.n > 4` ignores a float `n`, and
-//!   `.n > 4.0` ignores an int `n` ([`typed_match`]).
+//! - Numbers of different kinds (int, float, duration) compare and combine by value, as
+//!   Tempo's evaluator does (`.n * 1.0 > 4`, `.n > .f`). Tempo's storage layer, when it
+//!   applies a lone condition itself, compares only values of the literal's type; that
+//!   makes Tempo's answer depend on its query plan, and viz does not copy it.
 //! - Integer arithmetic stays integral (`5 / 2 = 2`); a float operand makes a float.
 //! - A comparison involving a missing value is false; `= nil` / `!= nil` test presence.
+//! - Arrays: `=`, `=~` and the orderings hold if any element satisfies them; `!=` and `!~`
+//!   hold if no element is equal or matches, as the documentation states.
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -93,58 +95,6 @@ fn elements(v: &AttrValue) -> Vec<Val<'_>> {
         AttrValue::FloatArray(a) => a.iter().map(|v| Val::Float(*v)).collect(),
         AttrValue::BoolArray(a) => a.iter().map(|v| Val::Bool(*v)).collect(),
         _ => Vec::new(),
-    }
-}
-
-/// The type an attribute value must have to be compared with this literal (`typed_match`).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Kindish {
-    Int,
-    Float,
-    Str,
-    Bool,
-    Other,
-}
-
-fn kindish(v: &Val) -> Kindish {
-    match v {
-        Val::Int(_) => Kindish::Int,
-        Val::Float(_) => Kindish::Float,
-        Val::Str(_) => Kindish::Str,
-        Val::Bool(_) => Kindish::Bool,
-        _ => Kindish::Other,
-    }
-}
-
-/// `attribute op literal`: only attribute values of the literal's type take part (Tempo's
-/// observed behaviour; see the module comment). Arrays: `=`, `=~` and the orderings hold if
-/// any element of that type satisfies them; `!=` and `!~` hold if no element of that type
-/// is equal or matches, as the documentation states.
-pub fn typed_match(attr: &Val, op: BinOp, lit: &Val) -> bool {
-    match lit {
-        Val::Nil => {
-            return match op {
-                BinOp::Eq => attr.is_nil(),
-                BinOp::Neq => !attr.is_nil(),
-                _ => false,
-            }
-        }
-        _ => {}
-    }
-    let want = kindish(lit);
-    match attr {
-        Val::Arr(a) => {
-            let els: Vec<Val> = elements(a).into_iter().filter(|e| kindish(e) == want).collect();
-            if els.is_empty() {
-                return false;
-            }
-            match op {
-                BinOp::Neq => !els.iter().any(|e| compare(e, BinOp::Eq, lit)),
-                _ => els.iter().any(|e| compare(e, op, lit)),
-            }
-        }
-        a if kindish(a) == want && want != Kindish::Other => compare(a, op, lit),
-        _ => false,
     }
 }
 

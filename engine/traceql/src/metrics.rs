@@ -373,6 +373,9 @@ impl<'q> Leaf<'q> {
                     labels,
                     values: s.iter().zip(c).map(|(s, c)| if *c > 0 { s.value() / *c as f64 } else { f64::NAN }).collect(),
                 }),
+                // A series that never had a countable value is not returned (Tempo returns
+                // none for quantiles of a float attribute, for instance).
+                Acc::Hist(h) if h.iter().all(|b| b.is_empty()) => {}
                 Acc::Hist(h) => match self.func {
                     MetricsFn::QuantileOverTime(_, qs) => {
                         for q in qs {

@@ -114,8 +114,8 @@ impl Pattern {
     }
 
     /// The `|>` line filter: the first literal may occur anywhere; each capture runs to the
-    /// next occurrence of the literal after it; the pattern must consume the whole line
-    /// (so a pattern that ends in a literal must end the line).
+    /// next occurrence of the literal after it and must not be empty; the pattern must
+    /// consume the whole line (so a pattern that ends in a literal must end the line).
     pub fn filter_matches(&self, line: &str) -> bool {
         let mut pos = 0usize;
         for (i, n) in self.nodes.iter().enumerate() {
@@ -133,13 +133,19 @@ impl Pattern {
                         pos += l.len();
                     }
                 }
-                Node::Cap(_) => match self.nodes.get(i + 1) {
-                    Some(Node::Lit(l)) => match line[pos..].find(l.as_str()) {
-                        Some(off) => pos += off,
-                        None => return false,
-                    },
-                    _ => pos = line.len(),
-                },
+                Node::Cap(_) => {
+                    let end = match self.nodes.get(i + 1) {
+                        Some(Node::Lit(l)) => match line[pos..].find(l.as_str()) {
+                            Some(off) => pos + off,
+                            None => return false,
+                        },
+                        _ => line.len(),
+                    };
+                    if end == pos {
+                        return false;
+                    }
+                    pos = end;
+                }
             }
         }
         pos == line.len()

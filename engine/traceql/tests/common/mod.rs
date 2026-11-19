@@ -300,6 +300,8 @@ pub struct QGen<'a> {
     /// Generate features where Tempo is known to deviate (negation alone, `^`, arrays with
     /// `!=`); off for the property tests' query pool, on for targeted differential runs.
     pub quirks: bool,
+    /// 0: one feature per query (single conditions, one operator, one stage); 1: nested.
+    pub depth: u32,
 }
 
 impl<'a> QGen<'a> {
@@ -504,7 +506,8 @@ impl<'a> QGen<'a> {
         if self.r.chance(0.08) {
             return "{ }".into();
         }
-        format!("{{ {} }}", self.filter_expr(2))
+        let d = if self.depth == 0 { u32::from(self.r.chance(0.3)) } else { 2 };
+        format!("{{ {} }}", self.filter_expr(d))
     }
 
     pub fn spanset_expr(&mut self, depth: u32) -> String {
@@ -564,8 +567,9 @@ impl<'a> QGen<'a> {
     }
 
     pub fn search_query(&mut self) -> String {
-        let mut q = self.spanset_expr(2);
-        for _ in 0..self.r.below(3) {
+        let d = if self.depth == 0 { 1 } else { 2 };
+        let mut q = self.spanset_expr(d);
+        for _ in 0..self.r.below(d as u64 + 1) {
             q = format!("{q} | {}", self.stage());
         }
         q

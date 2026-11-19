@@ -100,14 +100,15 @@ impl LabelSet {
 }
 
 /// Make an extracted key a valid label name: every character other than ASCII letters,
-/// digits, `_` and `:` becomes `_`, and a leading digit gets a `_` prefix. Empty stays empty.
+/// digits and `_` becomes `_` (colons too, as observed in Loki, although its documentation
+/// allows them), and a leading digit gets a `_` prefix. Empty stays empty.
 pub fn sanitize(key: &str) -> String {
     let mut out = String::with_capacity(key.len() + 1);
     for (i, c) in key.chars().enumerate() {
         if i == 0 && c.is_ascii_digit() {
             out.push('_');
         }
-        if c.is_ascii_alphanumeric() || c == '_' || c == ':' {
+        if c.is_ascii_alphanumeric() || c == '_' {
             out.push(c);
         } else {
             out.push('_');

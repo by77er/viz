@@ -106,6 +106,8 @@ export const FORMATS = {
   'id.placement': 1,
   /** The webhook body (Alertmanager's version "4") and `X-Viz-Signature: t=…,v1=…`. */
   'http.webhook': 1,
+  /** The plain webhook body (`format: json`, `viz.notification/v1`; contracts/rules.ts version 3) and its signature. */
+  'http.webhook-json': 1,
   /** The rule-file export (Prometheus' YAML, plus viz's fields when asked). */
   'file.rules-yaml': 1,
   /**

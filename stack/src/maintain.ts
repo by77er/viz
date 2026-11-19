@@ -46,6 +46,9 @@ export interface MaintEnv extends JanitorEnv {
   MAINT_QUEUE: Queue<MaintMessage>
 }
 
+/** Kept objects stop keeping the orphan sweep due once the youngest has waited this long (review S-6). */
+export const STALLED_AFTER_MS = 7 * 24 * 3_600_000
+
 export interface MaintOptions {
   /** Policy clock (tests). Graces are always judged by real clocks: the ledger's and R2's. */
   now?: number
@@ -58,6 +61,13 @@ export interface MaintOptions {
   orphanGraceMs?: number
   /** For the orphan sweep's rule about compaction outputs; default is the compaction policy's `maxStepMs`. */
   maxCompactStepMs?: number
+  /**
+   * Objects the orphan sweep keeps because they wait on the ledger or a shard (a unit that may
+   * yet be admitted, a stream the ledger has not seen, a merge whose inputs remain) keep the
+   * sweep due only until the youngest of them has waited this long; after that only a new write
+   * makes it due again (review S-6). Default `STALLED_AFTER_MS`, seven days.
+   */
+  stalledAfterMs?: number
   /** The orphan sweep lists the tenant's whole prefix, so it runs at most this often. */
   orphanEveryMs?: number
   /** First delay before the marker write is retried (KV's per-key rate). Default 1 s. */
@@ -197,8 +207,12 @@ export async function maintainTenant(env: MaintEnv, engine: Engine, tenant: stri
     orphans = await sweepOrphans(env, tenant, { graceMs: opts.orphanGraceMs ?? DEFAULT_ORPHAN_GRACE_MS, maxCompactStepMs: opts.maxCompactStepMs })
     marker.orphansAt = Date.now()
     // Still needed only for what it had to leave for later: young objects, units that may
-    // yet be admitted, streams the ledger has not seen. (A name it cannot judge never changes.)
-    sweep = orphans.kept.some((k) => k.why !== 'unknown_name' && k.why !== 'unknown_inputs')
+    // yet be admitted, streams the ledger has not seen, merges whose inputs remain. (A name it
+    // cannot judge never changes.) Only while the youngest of those has waited less than
+    // `stalledAfterMs`: what waits longer waits on the ledger or a shard, which change only with
+    // a write, and a write makes the sweep due again (review S-6).
+    const stalledAfterMs = opts.stalledAfterMs ?? STALLED_AFTER_MS
+    sweep = orphans.waitingSince !== undefined && Date.now() - orphans.waitingSince < stalledAfterMs
   }
 
   // When could time alone make work again?

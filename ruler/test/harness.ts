@@ -43,8 +43,12 @@ export interface TenantWorld {
   sinkById: Map<string, SampleBatch>
   /** Requests the fake receiver saw, including ones it then failed. */
   received: Received[]
-  /** What the receiver does with request number `n` (0-based): a status, or 'timeout' = process it, then never answer in time. */
-  respond: (req: Received, n: number) => number | 'timeout'
+  /**
+   * What the receiver does with request number `n` (0-based): a status, 'timeout' = process
+   * it, then never answer in time, or 'network' = fail the way a runtime does when the
+   * connection drops, with an error message that quotes the URL (which may hold a credential).
+   */
+  respond: (req: Received, n: number) => number | 'timeout' | 'network'
   notifierDown: boolean
   ingestCalls: AlertUpdate[][]
   faults: Set<string>
@@ -230,6 +234,7 @@ export class TestNotifier extends Notifier {
       w.received.push(req)
       const r = w.respond(req, n)
       if (r === 'timeout') throw new DOMException('The operation was aborted due to timeout', 'TimeoutError')
+      if (r === 'network') throw new TypeError(`Network connection lost while sending to ${url} (url=${url})`)
       return new Response(r === 200 ? 'ok' : 'no', { status: r })
     }
   }
