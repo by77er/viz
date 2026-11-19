@@ -508,10 +508,12 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
   lacks, and is backed by an agent key the MCP server acts with downstream, so the client's
   token never leaves `/mcp`. Control checks the token on every request, so revocation is
   immediate there. Until a sign-in exists the consent step is a call to the control API.
-  Thirteen tools: search telemetry, describe a metric, validate a query (with the query
+  Fourteen tools: search telemetry, describe a metric, validate a query (with the query
   service's own plan: files, bytes, scan bound, refusal), run a query,
   search / get / read dashboards, the dashboard schema, write a dashboard, list revisions,
-  list and get monitors, annotate (refused until an annotation store exists). Results are
+  list and get monitors, backtest a monitor (when it would have fired and resolved, read-only,
+  under the ruler's budgets, refusals passed through with their numbers), annotate (refused
+  until an annotation store exists). Results are
   compact text within a token budget, with tenant text fenced as data, and the same page as
   structured content; each result returns its usage counters, and budgets per identity are
   the caller's to keep (D28). A JSON API (`/api/v1/agent/…`) serves the same tools through
