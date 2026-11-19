@@ -557,11 +557,20 @@ fn r2_m1_the_label_calls_have_a_budget_and_refuse_past_it_before_they_hold_it() 
     eprintln!("PEAK r2_m1_the_label_calls_have_a_budget_and_refuse_past_it_before_they_hold_it r: {} bytes, {}", held, limit_name(&r.as_ref().map(|_| Vec::new()).map_err(|e| e.clone())));
     assert_eq!(limit_name(&r), "limit max_decoded_bytes");
     assert!(held <= BUDGET + SLACK, "held {held}");
-    // 100 streams: their label sets fit (24 MB), their answer charged four times (95 MB) does
-    // not, and is refused before it is written (113 MiB and a 200 before).
-    let hundred = fat_streams(100);
-    let (r, held) = labels_call(2, "", &hundred, BUDGET);
-    eprintln!("PEAK r2_m1 series of 100: {held} bytes, {}", limit_name(&r));
+    // 60 streams: their label sets (15 MB) and one file's texts fit, their answer charged four
+    // times (57 MB) does not, and is refused before it is written.
+    let sixty = fat_streams(60);
+    let (r, held) = labels_call(2, "", &sixty, BUDGET);
+    eprintln!("PEAK r2_m1 series of 60: {held} bytes, {}", limit_name(&r));
+    match &r {
+        Err(m) => assert_eq!(m, "limit max_decoded_bytes"),
+        Ok(_) => panic!("60 fat streams answered"),
+    }
+    let w = W::default().u8(2).item(b"").i64(T0 - MIN).i64(T0 + 60 * MIN).u64(BUDGET).u32(1).item(br#"{job="a"}"#).u32(0).files(&sixty).files(&[]);
+    match logs::do_lq_labels(Req { b: &w.0, at: 0 }) {
+        Err(Fail::Limit("max_decoded_bytes", _, _, m)) => assert!(m.contains("its answer"), "{m}"),
+        _ => panic!("expected max_decoded_bytes"),
+    }
     assert_eq!(limit_name(&r), "limit max_decoded_bytes");
     assert!(held <= BUDGET + SLACK, "held {held}");
     // Names keep only the names: they answer, in little memory, however fat the values.

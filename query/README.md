@@ -787,8 +787,16 @@ module, and workerd through the whole Worker, `test/memory.test.ts`; load averag
 | 400 log lines of 200 KB | 200, 158.5 MiB + 19.1 MiB answer | 422, **38.7 MiB** | 422, **41.5 MiB** |
 | 40 of those lines, `limit` 10 | | | 200, **17.8 MiB** |
 
-So the isolate holds at most the budget plus what was fetched plus the engine's few MiB, and a
-query that does not fit is refused, never answered from part of its rows.
+~~So the isolate holds at most the budget plus what was fetched plus the engine's few MiB.~~ **That
+claim was false** (re-review R2-M2, reproduced): the budget did not cover the label calls, nor
+what an evaluation derives from its rows (a histogram's series, one series per quantile, tag-value
+sets, LogQL label sets from `regexp` and `label_format`), nor answers until they were written, and
+a few hundred rows grew WASM memory to 0.1 to 0.9 GB before the refusal. **What holds since ABI 8**
+(below, "After the re-review"): every one of those is charged before it is made, so a call's peak
+WASM memory is the budget, plus what it was handed (the files and the tail, once, and one file's
+copy while it is opened), plus a constant measured under 12 MiB (the Parquet reader's pages, one
+row or value before it is charged, the module). A query that does not fit is refused, never
+answered from part of its rows.
 
 **The caps, re-derived** (`src/config.ts`; the resource shape is TRAINING KNOWLEDGE of
 auto-instrumented services on Kubernetes, not measured from a tenant): a generator of spans with

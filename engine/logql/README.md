@@ -32,7 +32,7 @@ r.data_json();   // {"resultType":"matrix","result":[...],"stats":{...}}: Loki's
 | `parse(query) -> Expr` | Parse and validate. |
 | `trait LogSource { fn select(&self, &SelectRequest, visit) }` | The read seam (`contracts/LOGS.md` §7): rows are pushed to a visitor, so storage can stream row groups. Contract in the trait's doc comment. |
 | `MemSource` | In-memory source; `prune = true` makes it skip rows that fail `required`, as a token filter would. |
-| `Options` | `limit` (default 100), `direction` (default backward), `max_steps` (11 000), `max_series` (500 000), `now_ns` (the caller's clock, for the `now` template function). |
+| `Options` | `limit` (default 100), `direction` (default backward), `max_steps` (11 000), `max_series` (500 000), `now_ns` (the caller's clock, for the `now` template function), and (2026-11-19) `max_bytes` (default none): the label sets a pipeline makes, the entries a log query keeps, a metric query's samples and points, and an estimate for the vector operations (their inputs' size once more per operation, twice for `label_replace`: they run on viz-promql), charged as each is made; refused with `Error::Memory` before (`eval::Meter`; design/reviews/signals-end-to-end-r2.md R2-M2). A log query lets go of the label sets no kept entry refers to when its `limit` cuts entries. `QueryResult::held_bytes` is what the result is charged. |
 | `QueryResult { data: Data, stats: Stats }`, `data_json()`, `response_json()`, `error_json(&Error)` | Loki's HTTP API JSON: `streams` (`[["<ns>","line"]]`), `matrix`, `vector`, `scalar` (`[<seconds>,"<value>"]`), and a `stats` object in the documented shape (lines and bytes read, entries after the pipeline, returned; times are the caller's to fill). |
 | `Error::{Parse{msg,line,col}, Unsupported, Eval, Limit, Source}`, `error_type()` | `bad_data`, `unsupported`, `execution`, `internal`. Parse errors carry line and column. |
 
@@ -127,7 +127,8 @@ Each returns `Error::Unsupported` (or a parse error where Loki's grammar has no 
 - Instant log queries (Loki's HTTP API refuses them too); `interval` for log range queries;
   live tail; the label, series, volume, patterns and detected-fields endpoints (the engine
   answers queries only).
-- Query limits other than steps, series and nesting (below): no sample or byte budget
+- An exact byte count of the vector operations (charged by an estimate, above). Query limits other
+  than steps, series, nesting and `max_bytes`: no sample budget
   and no timeout in this crate; a caller bounds input with `selectors()`.
 - Query sharding and split execution (`engine/query`'s split for PromQL has no LogQL
   counterpart yet).
