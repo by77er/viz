@@ -227,9 +227,9 @@ one at a time against the amended protocol (the `F…` rows).
 
 In short. **Design as written** (`DESIGN_1`–`7`): F11 (2 steps) → with it fixed, F1 (5) → F10
 (6) → F2 (15, through a retention removal; still the shortest after F3 is assumed away) →
-with the as-built sweeper, F15 (17) → with every fix: no violation among the 6.5 million
-states reachable in at most 21 steps (`DESIGN_7`, recorded before this pass; bounded-depth,
-not complete). **Code as built at 6488856** (`IMPL_1`–`3`, with D30, the segment log as
+with the as-built sweeper, F15 (17) → with every fix: no violation among the 19 million
+states reachable in at most 23 steps (`DESIGN_7`, recorded before this pass and not re-run;
+bounded-depth, not complete). **Code as built at 6488856** (`IMPL_1`–`3`, with D30, the segment log as
 built and the F12 fix): F6(b) at 11 steps, also with F3 assumed away (`IMPL_2`); with
 registration before writes as well (`IMPL_3`): no violation among the 4 million states
 reachable in at most 19 steps (bounded). F3 is shadowed by F6(b) and isolated below; F12, F13,
@@ -341,9 +341,14 @@ roll-forward (`maxRB`, `rbFix`).
 - **S-1 is confirmed by the model** (`LOG_S1_rollback`): after a rollback the first-layout
   drain logs a change only as a per-change object, flush tells the shard `recorded` through it,
   and the segment rebuild would not read it: I5 fails in 14 steps (what the shard discarded is
-  above what a rebuild keeps), the first step of the review's data loss. With fix (b) (on
-  roll-forward an outbox that does not continue the segment log starts a new incarnation from
-  SQLite) it holds (`LOG_S1_heal`).
+  above what a rebuild keeps), the first step of the review's data loss; carried on, a ledger
+  loss then loses acknowledged rows (`LOG_S1_rollback_I1`, I1 in 17 steps) and lists a file
+  whose object the first-layout purge deleted (`LOG_S1_rollback_I11`, I11 in 19 steps). After
+  the roll-forward the drain stops with `LogFault` for good, as the review says. With fix (b)
+  (on roll-forward an outbox that does not continue the segment log starts a new incarnation
+  from SQLite) no violation among all states reachable in 23 steps (`LOG_S1_heal`, 6 million
+  states; exhaustive with one batch). Fix (a) alone (refuse a rebuild of an incarnation
+  holding both layouts) turns the silent loss into a refused rebuild (AV); not run.
 
 ### 2c. The amended protocol, exhaustive
 
