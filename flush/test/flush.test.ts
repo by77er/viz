@@ -449,8 +449,11 @@ describe('every answer of the ledger and of R2 is handled', () => {
     expect(await settled(s.tenant, s.shardName)).toMatchObject({ status: 'ok', recordedThrough: 1 })
     await append(s.shard, s.tenant, someSamples(s.tenant, T0 + 600_000, 20, 2))
     await s.shard.seal(s.tenant)
-    // The ledger AND its R2 log are destroyed (an operator error): it restarts knowing nothing.
+    // The ledger, its R2 log AND the tenant's data objects are destroyed (an operator error), so
+    // it may restart knowing nothing. (With data objects left, the ledger refuses to start empty
+    // over them: review S-5, tested in ledger/.)
     for (const k of await listKeys(`${env.CELL}/ledger/tenant=${s.tenant}/`)) await env.BUCKET.delete(k)
+    for (const k of await dataKeys(s.tenant)) await env.BUCKET.delete(k)
     await loseLedgerStorage(s.ledger)
     const before = await dataKeys(s.tenant)
 
@@ -529,6 +532,9 @@ describe('every answer of the ledger and of R2 is handled', () => {
       const file = engine.encodeSegment([payload])[0]!
       const key = dataFileKey({ cell: env.CELL, table: 'metric_samples', tenant: s.tenant, day: file.day, level: 0, shard: s.shardName, incarnation: seg.incarnation, seqLo: 1, seqHi: 1, sha256Hex: await sha256Hex(file.bytes) })
       const squatter = variant === 'identical bytes without a stored checksum' ? file.bytes.slice() : variant === 'other size' ? file.bytes.slice(0, file.bytes.length - 1) : file.bytes.slice().fill(7, 20, 40)
+      // The ledger exists before the squatter appears, as in production (flush plans before its
+      // first PUT); a ledger that starts empty over existing data objects refuses (review S-5).
+      await s.ledger.plan({ table: 'metric_samples', minTs: 0, maxTs: 0 })
       await env.BUCKET.put(key, squatter) // no sha256 stored with it
       const version = (await env.BUCKET.head(key))!.version
 
