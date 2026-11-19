@@ -870,9 +870,10 @@ depth, not exhaustive). Liveness rows decide AG EF on the whole graph.
   is live (`LIVE_R1_*`). So "committed" is not enough; this is also the tooth for R2's
   "logged".
 - **R2, R3 and R4 pass every safety property** within their bounds: no violation among all
-  states reachable in SAFE_DEPTHS steps (with client retries, two flush Workers, compaction,
-  retention, a ledger loss and a shard loss), TWO_DEPTHS. At F6(b)'s own bounds, F6B_DEPTHS
-  (F6(b)'s trace is 11 steps). R4's depth is the shallowest (its committed registration and the
+  states reachable in 19 (R2), 20 (R3) and 16 (R4) steps with client retries, two flush
+  Workers, compaction, retention, a ledger loss and a shard loss; in 18, 18 and 15 steps with
+  two shards, and 18, 19 and 15 with two tenants sharing a shard (4 million states each). At
+  F6(b)'s own bounds I4 holds to 19 (R1), 23 (R2, R3) and 18 (R4) steps; F6(b)'s trace is 11. R4's depth is the shallowest (its committed registration and the
   lazy paths it keeps allow more interleavings per step); it still covers R1's 15-step trace,
   and replaying that trace against R4 (`results/REPLAY.md`) shows the re-check refusing the
   attempt.
@@ -889,7 +890,9 @@ depth, not exhaustive). Liveness rows decide AG EF on the whole graph.
   steps (`LIVE_impl` back); a shard answering `ok`, empty to an incarnation it does not hold
   (`R_teeth_lost_read_as_empty`): I4 in 15 steps (F6(a) back).
 - **The F16 fix** (`PROPOSED` = as built + R2 + `F16FIX`). Safety, I11's safety half
-  included, with F13's, F14's and F15's bounds: P_SAFE. The old flush-file leak is closed
+  included: no violation within 19 steps (client retries, both faults), 21 (two compaction
+  steps at once, retention, both faults), and 28, 31 and 23 at F13's, F14's and F15's bounds,
+  whose traces are 19, 21 and 17 steps (4 or 6 million states; bounded depth). The old flush-file leak is closed
   (`LEAK_P_sl` holds where `LEAK_D30_sl` leaked in 11 steps), and so is F16: with two
   retention removals `LEAK_P_sl_comp2` and `LEAK_P_llsl2` LEAK2, where D30 as built leaks at
   the same bounds (`LEAK_D30_sl_comp2`, LEAK_BASE). Each half of the fix is load-bearing:

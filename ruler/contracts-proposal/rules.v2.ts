@@ -686,14 +686,47 @@ export interface DetectorGuide {
   /** Parameters an author must give. */
   required: string[]
   evidence: {
-    /** `held_out`: chosen on one fold of NAB, scored on the other. `post_hoc`: changed after seeing results. `none`. */
-    kind: 'held_out' | 'post_hoc' | 'none' | 'not_scorable'
-    /** True only when the defaults above are the held-out-validated configuration. */
+    /**
+     * The evidence behind the defaults above (`EvidenceKind`). EXTENDED 2026-11-19: `confirmed`
+     * (an advisory value: a reader that does not know it shows the lines, or nothing).
+     */
+    kind: 'held_out' | 'confirmed' | 'post_hoc' | 'none' | 'not_scorable'
+    /** True only when the defaults above were scored on data they were not chosen on (held out on NAB, or frozen and then scored on SMD). */
     defaultsValidated: boolean
-    /** NAB held-out scores (standard / low FP / low FN), null when not scored. */
+    /** NAB held-out scores of the defaults (standard / low FP / low FN), null when not scored. */
     nab: { standard: number; lowFp: number; lowFn: number } | null
     note: string
+    /**
+     * EXTENDED 2026-11-19 (D33 replaced). Every number the guide gives, one line each, with the
+     * kind of evidence behind it, so that a held-out score, a confirmation on unseen data and a
+     * post hoc figure are never read as one another. Absent from a release before it.
+     */
+    lines?: EvidenceLine[]
   }
+}
+
+/**
+ * ADDED 2026-11-19. How a number in the guide was obtained:
+ *
+ *   held_out       parameters chosen on one half of NAB's files, scored on the other (anomaly/README.md)
+ *   confirmed      frozen on NAB before SMD was fetched, scored on SMD once, and the rule written in
+ *                  advance (anomaly/bench/smd-frozen.json) said the hypothesis held
+ *   not_confirmed  frozen and scored the same way, and the hypothesis did not hold
+ *   post_hoc       chosen, or scored, after seeing the results it is compared with
+ *   not_scorable   checked another way (the SRE Workbook's tables, synthetic cases); no score
+ */
+export type EvidenceKind = 'held_out' | 'confirmed' | 'not_confirmed' | 'post_hoc' | 'not_scorable'
+
+/** ADDED 2026-11-19. One line of a detector's evidence. */
+export interface EvidenceLine {
+  kind: EvidenceKind
+  /** `NAB` (Numenta Anomaly Benchmark, 58 files), `SMD` (Server Machine Dataset, 28 machines, never used to choose anything), or another check. */
+  data: 'NAB' | 'SMD' | 'SRE Workbook' | 'synthetic'
+  /** The configuration scored, in words. */
+  config: string
+  /** NAB's normalised score in its three cost profiles (on SMD, NAB's scorer over SMD's labels), null when not scored. */
+  score: { standard: number; lowFp: number; lowFn: number } | null
+  text: string
 }
 
 export type MonitorState = 'firing' | 'pending' | 'ok' | 'no_data' | 'error' | 'unknown' | 'warming'

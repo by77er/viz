@@ -1,0 +1,36 @@
+--- a/bench/smd-run.ts
++++ b/bench/smd-run.ts
+@@ -100,6 +100,15 @@
+ const POSTHOC: Record<string, { family: string; label: string }> = {
+   'robust_z_quantile window 1000 (post hoc)': { family: 'robust_z_quantile', label: 'robust_z_quantile(windowPoints=1000,k=2,spread=quantile)' },
+   'robust_z_quantile window 288 (post hoc)': { family: 'robust_z_quantile', label: 'robust_z_quantile(windowPoints=288,k=2,spread=quantile)' },
++  // SCRATCH COPY ONLY (2026-11-19, ruler default): the largest window whose worst-case state fits 64 KiB; k 2 as frozen.
++  'robust_z_quantile window 1500 (post hoc)': { family: 'robust_z_quantile', label: 'robust_z_quantile(windowPoints=1500,k=2,spread=quantile)' },
++}
++/** SCRATCH COPY ONLY: a robust_z_quantile configuration outside the frozen grid, built exactly as bench/adapters.ts builds that grid's entries. */
++function extraConfig(label: string) {
++  const m = /^robust_z_quantile\(windowPoints=(\d+),k=([\d.]+),spread=quantile\)$/.exec(label)
++  if (!m) return undefined
++  const params = { windowPoints: Number(m[1]), k: Number(m[2]), spread: 'quantile' }
++  return { detector: 'robust_z_quantile', label, params, run: (f: NabFile, c: Ctx): Run => { const pts = robustZ.detect({ ts: f.ts, values: f.values }, { ...params, stepMs: c.stepMs } as never).points; return { scores: Float64Array.from(pts, (p) => p.score), flags: Uint8Array.from(pts, (p) => (p.anomalous ? 1 : 0)) } } }
+ }
+ /** The robust z family: one detector call per group of configurations that differ only in k (see runGroup). */
+ const ROBUST_Z = new Set(['robust_z', 'robust_z_quantile', 'robust_z_posthoc'])
+@@ -118,7 +127,7 @@
+   }
+ }
+ for (const [name, ph] of Object.entries(POSTHOC)) {
+-  const cfg = GRIDS[ph.family]!.find((c) => c.label === ph.label)!
++  const cfg = GRIDS[ph.family]!.find((c) => c.label === ph.label) ?? extraConfig(ph.label)!
+   if (!jobs.has(ph.label)) jobs.set(ph.label, { key: ph.label, detector: name, family: ph.family, params: cfg.params, run: (f, c) => cfg.run(f, c) })
+   jobOf[name] = Object.fromEntries(PROFILE_NAMES.map((p) => [p, [ph.label]])) as Record<ProfileName, string[]>
+ }
+@@ -415,7 +424,7 @@
+     score: Object.fromEntries(PROFILE_NAMES.map((p) => [p, scoreW(det, p, ALL)])) as Record<ProfileName, number>,
+     scoreStrict: Object.fromEntries(PROFILE_NAMES.map((p) => [p, scoreW(det, p, ALL, true)])) as Record<ProfileName, number>,
+     nabHeldOut: frozen.nabHeldOut?.[heldName] ?? null,
+-    nabInSample: Object.fromEntries(PROFILE_NAMES.map((p) => [p, det in POSTHOC ? frozen.searched[POSTHOC[det]!.family]!.find((x) => x.label === POSTHOC[det]!.label)!.scores[p] : frozen.detectors[det]![p].nabInSample])) as Record<ProfileName, number>,
++    nabInSample: Object.fromEntries(PROFILE_NAMES.map((p) => [p, det in POSTHOC ? (frozen.searched[POSTHOC[det]!.family]!.find((x) => x.label === POSTHOC[det]!.label)?.scores[p] ?? NaN) : frozen.detectors[det]![p].nabInSample])) as Record<ProfileName, number>,
+     windowRecall: win.d / std.length / totalWindows,
+     windowEventPrecision: win.s ? win.i / win.s : 0,
+     event: { ...prf(ev), onsets: ev.onsets, medianDelay: median(per.flatMap((pm) => pm.event[std[0]!]!.delays)) },

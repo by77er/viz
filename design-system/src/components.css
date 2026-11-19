@@ -635,6 +635,7 @@ textarea.vz-query { display: block; width: 100%; resize: none; color: var(--ink)
   .vz-sort { min-height: var(--control-touch); margin-block: 0; }
   .vz-table[data-fold] td[data-key], .vz-table[data-fold] td.vz-row-actions { min-height: var(--control-touch); } /* the key's line and the line "Actions…" ends: their targets keep 44 px inside the row */
   .vz-tabs button, .vz-nav a { padding-block: var(--space-3); } /* a scrolling strip clips overflow, so the hit area has to be real height */
+  .vz-segmented button { height: auto; min-height: var(--control-touch); } /* a segmented control wraps when wider than its room (320 px): stacked segments would share their hit areas, so each is drawn control-touch tall (v7: the rendered hit-area guard at 320 px) */
   .vz-menu [role^="menuitem"] { height: var(--control-touch); }
   .vz-details > summary { min-height: var(--control-touch); }
   .vz-input, .vz-select, .vz-input[data-mono] { height: var(--control-touch); font-size: var(--text-body-size); }

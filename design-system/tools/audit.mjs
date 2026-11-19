@@ -248,7 +248,8 @@ function guards({ fine, coarse }) {
     for (const el of document.querySelectorAll(sel)) {
       if (el.disabled || el.closest('[inert], [aria-busy="true"], .vz-sr') || el.matches('.vz-skip:not(:focus)') || (modal && !modal.contains(el)) || !visible(el) || !el.closest('.vz')) continue
       if (el.matches('a') && inSentence(el)) continue
-      el.scrollIntoView({ block: 'center', inline: 'nearest' }); const r = el.getBoundingClientRect(); if (r.width < 2 || r.height < 2) continue
+      { const r0 = el.getBoundingClientRect(); scrollTo(scrollX, scrollY + r0.top + r0.height / 2 - innerHeight / 2) } // the page only: a strip is measured as it stands, not scrolled under its own fixed column
+      const r = el.getBoundingClientRect(); if (r.width < 2 || r.height < 2) continue
       let strip = el.parentElement; while (strip && strip !== document.body && !/(auto|scroll)/.test(cs(strip).overflowX)) strip = strip.parentElement
       if (strip && strip !== document.body) { const b = strip.getBoundingClientRect(); if (r.left < b.left - 0.5 || r.right > b.right + 0.5) continue }
       const cx = Math.max(22, Math.min(innerWidth - 22, r.left + r.width / 2)), cy = r.top + r.height / 2

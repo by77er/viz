@@ -194,6 +194,12 @@ export interface ValidationError {
 // no-data policy, alert state, the hand-off and the notifier are those of an alerting rule.
 // A flagged alert carries the detector's sentence and the numbers behind it
 // (`ANOMALY_ANNOTATION`, `ANOMALY_DETAIL_ANNOTATION`) and its severity as the `severity` label.
+//
+// DEFAULTS CHANGED 2026-11-19 (design D33, which replaces the earlier D33), with no version
+// change: the stored form is the same, and every default is resolved and written out when a rule
+// is saved (`AnomalySpec`), so a rule stored before keeps the detector and parameters it was saved
+// with, and a release that predates the change reads a rule saved after it. What changed is what
+// an entry that leaves a field out is saved as: see `AnomalySpecInput`.
 
 /** Detectors a rule may name: the single-series detectors of `anomaly/` that run from per-series state, one point per tick. */
 export const ANOMALY_DETECTORS = ['ewma', 'threshold', 'robust_z', 'seasonal', 'cusum'] as const
@@ -213,13 +219,26 @@ export type AnomalyParamValue = number | string | boolean | null
 /** The `anomaly` block of a rule-file entry. */
 export interface AnomalySpecInput {
   /**
-   * Default `ewma` (with the parameters chosen on held-out data, not the library's); `threshold`
-   * when `severity` is `page`, which then needs `params.above` or `params.below` (design D33).
+   * Default `robust_z` with the quantile spread (k 2 times the 99th percentile of |x − median| over
+   * a window of 1,500 points) when `severity` is not `page`; `threshold` when it is, which then
+   * needs `params.above` or `params.below` (design D33). Until 2026-11-19 the default for a rule
+   * that does not page was `ewma` (half-life 100, k 8); rules saved then keep it (see above).
+   *
+   * A rule saved again over a stored anomaly rule (the same group, and the same `monitor.id`, or
+   * the same alert name and `expr` when the entry has no monitor id) keeps the stored value of every
+   * field the entry leaves out whose stored value was the default of the release that stored it:
+   * re-applying an unchanged rule file or monitor never changes what a rule does. Naming the
+   * detector or a parameter changes it. The save warns when it kept a value that differs from
+   * today's default.
    */
   detector?: AnomalyDetector
   /**
    * The detector's parameters (`anomaly/src/detectors/<name>.ts`, `<Name>Params`) by name. Not
-   * `stepMs`: that is the group's interval. Unknown names and wrong types are refused.
+   * `stepMs`: that is the group's interval. Unknown names and wrong types are refused. For
+   * `robust_z` and `seasonal` an entry that gives no `spread` gets the quantile spread with the
+   * configuration chosen on NAB and checked on SMD (D33; the defaults and the evidence for each are
+   * served at `GET /api/v1/monitors/detectors`); `spread: 'mad'` gets the library's own defaults,
+   * as every such rule did before 2026-11-19.
    */
   params?: Record<string, AnomalyParamValue>
   /** Printed after numbers in explanations, e.g. "ms". */

@@ -755,8 +755,9 @@ export class Publisher extends DurableObject<PublisherEnv> {
   }
 
   /**
-   * Where a re-base puts what it reads: `stage`, a batch per transaction. Each file's statistics
-   * are computed here, once, so a commit can write manifests and `live` rows from SQLite alone.
+   * Where a re-base puts what it reads: `stage`, a batch per transaction. A file's statistics are
+   * computed only if it is added (most of a re-base is usually published already), when its
+   * manifest is written, and kept in its row for the `live` row the commit inserts from it.
    */
   private stageSink(): BaseSink {
     const sql = this.sql
@@ -766,15 +767,15 @@ export class Publisher extends DurableObject<PublisherEnv> {
         this.ctx.storage.transactionSync(() => {
           for (const f of files) {
             const n = sql.exec(
-              `INSERT OR IGNORE INTO stage (tenant, tbl, tomb, key, day, rows, bytes, stats) VALUES (?, ?, 0, ?, ?, ?, ?, ?)`,
-              tenant, f.table, f.key, f.day, f.rows, f.bytes, JSON.stringify(statsFor(f.table, f)),
+              `INSERT OR IGNORE INTO stage (tenant, tbl, tomb, key, day, rows, bytes, min_ts, max_ts, idx) VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`,
+              tenant, f.table, f.key, f.day, f.rows, f.bytes, f.minTs, f.maxTs, typeof f.index === 'string' ? f.index : '',
             ).rowsWritten
             if (n === 0) throw new BaseRefused(`${f.key} is listed twice`)
           }
         }),
       tombstones: (tenant, tombstones) =>
         this.ctx.storage.transactionSync(() => {
-          for (const t of tombstones) sql.exec(`INSERT OR IGNORE INTO stage (tenant, tbl, tomb, key, day, rows, bytes, stats) VALUES (?, ?, 1, ?, '', 0, 0, '')`, tenant, t.table, t.key)
+          for (const t of tombstones) sql.exec(`INSERT OR IGNORE INTO stage (tenant, tbl, tomb, key, day, rows, bytes, min_ts, max_ts, idx) VALUES (?, ?, 1, ?, '', 0, 0, 0, 0, '')`, tenant, t.table, t.key)
         }),
     }
   }
@@ -897,8 +898,8 @@ export class Publisher extends DurableObject<PublisherEnv> {
           if (this.staged(table, tenant, f.key)) problem = `change ${c.version} adds ${f.key}, which is already live`
           else {
             sql.exec(
-              `INSERT INTO stage (tenant, tbl, tomb, key, day, rows, bytes, stats) VALUES (?, ?, 0, ?, ?, ?, ?, ?)`,
-              tenant, table, f.key, f.day, f.rows, f.bytes, JSON.stringify(statsFor(table, f)),
+              `INSERT INTO stage (tenant, tbl, tomb, key, day, rows, bytes, min_ts, max_ts, idx) VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`,
+              tenant, table, f.key, f.day, f.rows, f.bytes, f.minTs, f.maxTs, f.index,
             )
           }
         }
@@ -1124,13 +1125,16 @@ export class Publisher extends DurableObject<PublisherEnv> {
         let after: [string, string] = ['', '']
         for (;;) {
           const page = sql
-            .exec(`SELECT key, day, rows, bytes, stats FROM stage s WHERE ${Publisher.STAGED_ADD} AND (s.day, s.key) > (?, ?) ORDER BY s.day, s.key LIMIT 1000`, tenant, table, after[0], after[1])
+            .exec(`SELECT key, day, rows, bytes, min_ts, max_ts, idx FROM stage s WHERE ${Publisher.STAGED_ADD} AND (s.day, s.key) > (?, ?) ORDER BY s.day, s.key LIMIT 1000`, tenant, table, after[0], after[1])
             .toArray()
           if (page.length === 0) break
+          const stats: [string, string][] = []
           for (const r of page) {
             const day = r.day as string
             const key = r.key as string
-            const f: LiveFile = { key, tenant, day, rows: r.rows as number, bytes: r.bytes as number, snapshotId, seq, fileSeq: seq, stats: JSON.parse(r.stats as string) as FileStats }
+            const entry = { table, day, key, rows: r.rows as number, bytes: r.bytes as number, minTs: r.min_ts as number, maxTs: r.max_ts as number, index: r.idx as string, level: 0 }
+            const f: LiveFile = { key, tenant, day, rows: entry.rows, bytes: entry.bytes, snapshotId, seq, fileSeq: seq, stats: statsFor(table, entry) }
+            stats.push([key, JSON.stringify(f.stats)])
             parts.push({ file: f, status: STATUS_ADDED })
             const open = ranges.at(-1)
             if (open && open.tenant === tenant) open.hi = [day, key]
@@ -1138,6 +1142,10 @@ export class Publisher extends DurableObject<PublisherEnv> {
             after = [day, key]
             if (parts.length >= cfg.manifestTargetEntries) yield flush()
           }
+          // Kept for the `live` row of each: the transaction after the commit point inserts from `stage`.
+          this.ctx.storage.transactionSync(() => {
+            for (const [key, json] of stats) sql.exec(`UPDATE stage SET stats = ? WHERE tenant = ? AND tbl = ? AND tomb = 0 AND key = ?`, json, tenant, table, key)
+          })
         }
       }
       if (parts.length > 0) yield flush()

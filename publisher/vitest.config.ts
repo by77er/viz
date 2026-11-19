@@ -13,6 +13,8 @@ export default defineConfig({
     }),
   ],
   test: {
+    // The benchmark (bench/) has its own configuration: vitest.bench.config.ts.
+    include: ['test/**/*.test.ts'],
     // A shared machine (AGENTS.md): at most two test workers.
     maxWorkers: 2,
     // Runs in Node: a local sink that the end-to-end test dumps the simulated bucket into.

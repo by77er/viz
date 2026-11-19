@@ -57,7 +57,8 @@ CREATE TABLE IF NOT EXISTS pending (tenant TEXT PRIMARY KEY, since INTEGER NOT N
         void sql.exec(`
 CREATE TABLE IF NOT EXISTS stage (
       tenant TEXT NOT NULL, tbl TEXT NOT NULL, tomb INTEGER NOT NULL, key TEXT NOT NULL,
-      day TEXT NOT NULL, rows INTEGER NOT NULL, bytes INTEGER NOT NULL, stats TEXT NOT NULL,
+      day TEXT NOT NULL, rows INTEGER NOT NULL, bytes INTEGER NOT NULL, min_ts INTEGER NOT NULL, max_ts INTEGER NOT NULL, idx TEXT NOT NULL,
+      stats TEXT,
       PRIMARY KEY (tenant, tbl, tomb, key));
 CREATE INDEX IF NOT EXISTS stage_order ON stage (tenant, tbl, tomb, day, key);
 CREATE TABLE IF NOT EXISTS live_next (

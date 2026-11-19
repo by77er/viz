@@ -74,7 +74,7 @@
   {
    "type": "table",
    "name": "stage",
-   "sql": "CREATE TABLE stage ( tenant TEXT NOT NULL, tbl TEXT NOT NULL, tomb INTEGER NOT NULL, key TEXT NOT NULL, day TEXT NOT NULL, rows INTEGER NOT NULL, bytes INTEGER NOT NULL, stats TEXT NOT NULL, PRIMARY KEY (tenant, tbl, tomb, key))"
+   "sql": "CREATE TABLE stage ( tenant TEXT NOT NULL, tbl TEXT NOT NULL, tomb INTEGER NOT NULL, key TEXT NOT NULL, day TEXT NOT NULL, rows INTEGER NOT NULL, bytes INTEGER NOT NULL, min_ts INTEGER NOT NULL, max_ts INTEGER NOT NULL, idx TEXT NOT NULL, stats TEXT, PRIMARY KEY (tenant, tbl, tomb, key))"
   },
   {
    "type": "table",
