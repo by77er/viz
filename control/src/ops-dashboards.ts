@@ -5,7 +5,7 @@ import type { Actor } from './identity'
 import { createProposal } from './ops-proposals'
 import { general } from './ops-settings'
 import { type Ctx, NoChange, type Op, type Tenant } from './tenant'
-import { decodeCursor, encodeCursor, fields, isRecord, iso, likeEscape, pageLimit, str, utf8Length } from './util'
+import { decodeCursor, encodeCursor, fields, isRecord, iso, pageLimit, str, utf8Length } from './util'
 
 /**
  * Dashboards: `viz.dashboard/v1` specs with their whole history.
@@ -264,13 +264,16 @@ const list: Op = (t, c) => {
   const bind: (string | number)[] = [t.tenant]
   const search = q.q?.[0]?.trim()
   if (search) {
-    where.push("(title LIKE ? ESCAPE '\\' OR id LIKE ? ESCAPE '\\' OR intent LIKE ? ESCAPE '\\' OR owner LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')")
-    const like = `%${likeEscape(search.slice(0, 200))}%`
-    bind.push(like, like, like, like, like)
+    // Substring match with instr() rather than LIKE: Cloudflare's SQLite rejects a LIKE pattern past
+    // a short length ("LIKE or GLOB pattern too complex"), so a long search answered 500. instr()
+    // has no such limit and needs no escaping; lower() keeps LIKE's ASCII case-insensitivity.
+    where.push('(instr(lower(title), lower(?)) > 0 OR instr(lower(id), lower(?)) > 0 OR instr(lower(intent), lower(?)) > 0 OR instr(lower(owner), lower(?)) > 0 OR instr(lower(tags), lower(?)) > 0)')
+    const needle = search.slice(0, 200)
+    bind.push(needle, needle, needle, needle, needle)
   }
   if (q.tag?.[0]) {
-    where.push("tags LIKE ? ESCAPE '\\'")
-    bind.push(`%${likeEscape(JSON.stringify(q.tag[0]))}%`)
+    where.push('instr(lower(tags), lower(?)) > 0')
+    bind.push(JSON.stringify(q.tag[0]))
   }
   if (q.owner?.[0]) {
     where.push('owner = ?')
