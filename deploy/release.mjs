@@ -4,6 +4,7 @@
 //   node deploy/release.mjs deploy   [--stage S] [--ack "viz-ingest@v2 …"] [--rotate-secret NAME]
 //                                    upload every Worker, then promote in order
 //   node deploy/release.mjs rollback --record <release.json> [--stage S] [--reason …] [--accept-secret-loss NAME]
+//                                    [--only viz-query,…]   restore only these Workers of the record
 //   node deploy/release.mjs plan     [--stage S] [--ack …] [--rotate-secret NAME]   what deploy would do; exit 3 if refused
 //   node deploy/release.mjs status   [--stage S]                              what serves now
 //   node deploy/release.mjs current-release [--stage S]                      the release viz-ingest serves (its version tag)
@@ -38,13 +39,18 @@
 //   Every version a run uploads carries VIZ_DEPLOY_RUN, unique to the run; the keyed version must
 //   carry this run's, or the key went on another run's upload and nothing is promoted (m-11).
 // - Formats (contracts/COMPATIBILITY.md §6, D69): the record and every version (VIZ_FORMATS) name
-//   the version of each format a Worker writes and the versions it reads (lib/formats.mjs). A
-//   release that writes a version the serving release does not read is FORWARD-ONLY; a rollback
-//   refuses when any version newer than the target's wrote a version the target does not read.
+//   the version of each format a Worker writes and, completely, the versions it reads
+//   (lib/formats.mjs); a Worker that declares nothing is taken to read version 1 of every format. A
+//   release that writes a version some Worker serving before it does not read is FORWARD-ONLY. A
+//   rollback refuses when a Worker it restores does not read a version that any newer version of a
+//   restored Worker wrote, or that any kept version of a Worker the record leaves out (it keeps
+//   serving) wrote or writes (review of D69, M-1).
 // - Rollback floors a writer's switch raises (lib/floors.mjs, D64, D69): a release that sets
-//   INGEST_SIGNALS on viz-ingest is refused unless its viz-publisher and the one serving now read
-//   the span and log tables (publisher.Publisher schema 4 or later); once any kept viz-ingest
-//   version set it, a release or a rollback that would leave a publisher below that is refused.
+//   INGEST_SIGNALS on viz-ingest is refused unless viz-publisher (publisher.Publisher schema 4 or
+//   later), viz-query and viz-ingest (stamped VIZ_FLOORS) are each at their floor in this release and
+//   as they serve now, a floor Worker this release does not deploy included; once any kept viz-ingest
+//   version set it (as a var of any type, or a secret), a release or a rollback that would leave one
+//   of them below its floor is refused, and a release is refused while the switch is a secret.
 import { randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -52,7 +58,7 @@ import { pathToFileURL } from 'node:url'
 import { currentDeployment, listScripts, listVersions, versionInfo } from './lib/cf.mjs'
 import { DEPLOY_DIR, GENERATED_DIR, REPO_ROOT, checkStage, log, parseArgs, readJsonc, stagedName, targetName } from './lib/common.mjs'
 import { floorDeployProblems, floorRollbackProblems, floorRules, floorsOfVersion } from './lib/floors.mjs'
-import { formatsMap, formatsOfVersion, readsOf } from './lib/formats.mjs'
+import { formatsMap, formatsOfVersion, readersOf, recordReaders } from './lib/formats.mjs'
 import { schemasOfVersion } from './lib/schemas.mjs'
 import { GENERATED_SECRETS, ROTATE_ENV, RUN_VAR, SecretRefused, ensureSecrets, parseRotate, planSecrets, rotateProblems, secretFacts, secretRollbackProblems, secretsNow, secretsOfManifest } from './lib/secrets.mjs'
 import { versionIdFrom, wrangler } from './lib/wrangler.mjs'
@@ -154,9 +160,11 @@ export async function liveState(names) {
  * - `lifecycle`: a Durable Object migration tag changes on a Worker that exists (Cloudflare
  *   refuses a rollback across it too).
  * - `format`: this release writes a version of a format that the serving release does not read
- *   (COMPATIBILITY.md §6). What the serving release reads of a format is what every serving
- *   Worker that this release declares the format for reads; one that declares nothing about it
- *   (VIZ_FORMATS absent, or no entry) is taken to read version 1 (lib/formats.mjs `readsOf`).
+ *   (COMPATIBILITY.md §6). What the serving release reads of a format is what every Worker serving
+ *   now reads (`live`: this release's Workers and any other Worker of the deployment it was asked
+ *   about), as its version declares (VIZ_FORMATS): one that declares nothing at all is taken to read
+ *   version 1 of every format, an incomplete declaration (D69's) version 1 of any format it does not
+ *   list (lib/formats.mjs `readsOf`; review of D69, M-1 (c)).
  */
 export function forwardOnlyReasons(manifest, live) {
   const out = []
@@ -185,24 +193,23 @@ export function forwardOnlyReasons(manifest, live) {
       })
     }
   }
+  // Every Worker serving now, as it declares what it reads (null: nothing declared, or more than one version serving).
+  const serving = Object.fromEntries(Object.entries(live).filter(([, l]) => l?.exists).map(([n, l]) => [n, l.formats ?? null]))
   for (const name of manifest.order) {
     const w = manifest.workers.find((x) => x.name === name)
     for (const f of w.formats ?? []) {
       if (f.writes === null) continue
-      // The serving versions of every Worker this release declares the format for.
-      const declaring = manifest.workers.filter((x) => manifest.order.includes(x.name) && (x.formats ?? []).some((y) => y.format === f.format) && live[x.name]?.exists)
-      if (declaring.length === 0) continue // nothing older runs it
-      const reads = readsOf(Object.fromEntries(declaring.map((x) => [x.name, live[x.name].formats ?? {}])), f.format)
-      if (reads.includes(f.writes)) continue
-      const previousDeclared = declaring.some((x) => Boolean(live[x.name].formats?.[f.format]))
+      const r = readersOf(serving, f.format)
+      if (r.reads === null || r.reads.includes(f.writes)) continue // nothing serving reads it, or every reader reads this version
+      const assumed = [...r.undeclared, ...r.implicit]
       out.push({
         worker: name,
         kind: 'format',
         format: f.format,
         writes: f.writes,
-        previousReads: reads,
-        previousDeclared,
-        why: `${f.format}: ${name} writes version ${f.writes}, and the release serving before it reads only ${reads.join(', ')}${previousDeclared ? '' : ' (it declares no version of this format, so it is taken to read version 1)'}; contracts/COMPATIBILITY.md §3.3 deploys the reader first`,
+        previousReads: r.reads,
+        previousDeclared: assumed.length === 0,
+        why: `${f.format}: ${name} writes version ${f.writes}, and the release serving before it reads only ${r.reads.join(', ')}${assumed.length === 0 ? '' : ` (${assumed.join(', ')} declares no version of this format, so it is taken to read version 1)`}; contracts/COMPATIBILITY.md §3.3 deploys the reader first`,
       })
     }
   }
@@ -221,12 +228,16 @@ export function schemasOfManifest(manifest) {
   return out
 }
 
-/** `{ worker: { format: { writes, reads } } }` of a manifest's Workers (those that declare formats). */
+/**
+ * `{ worker: { format: { writes, reads } } }` of a manifest's Workers: every Worker that declares
+ * its formats, also one that declares none (`{}`: it reads nothing). A Worker without a declaration
+ * is left out, and a rollback to the record takes it to read version 1 of every format.
+ */
 export function formatsOfManifest(manifest) {
   const out = {}
   for (const name of manifest.order) {
-    const list = manifest.workers.find((x) => x.name === name)?.formats ?? []
-    if (list.length > 0) out[name] = formatsMap(list)
+    const list = manifest.workers.find((x) => x.name === name)?.formats
+    if (Array.isArray(list)) out[name] = formatsMap(list)
   }
   return out
 }
@@ -240,16 +251,33 @@ function formatsOfLive(manifest, live) {
 
 /**
  * contracts/COMPATIBILITY.md §6 for formats, for a rollback to the release recorded in `target`:
- * the target must read every version of a format that any version since it wrote. `ran` is every
- * version of the target's format-bearing Workers newer than the target's own (`{ worker,
- * versionId, release, formats }`, `formats` from VIZ_FORMATS, null if it declares none). What the
- * target reads is its record's `formats` (lib/formats.mjs `readsOf`): a record from before format
- * versions, or one whose Workers do not declare a format, is taken to read version 1 of it. A newer
- * version that declares no formats wrote something unknown and is refused, as for schemas. Pure.
+ * the Workers it restores must read every version of a format that was written since, and that the
+ * Workers it leaves serving write. Pure.
+ *
+ * - What the restored Workers read: their entries in the record's `formats` (lib/formats.mjs
+ *   `recordReaders`, `readsOf`): a record from before format versions, or a restored Worker it has
+ *   no entry for, is taken to read version 1 of every format; a record from before declarations were
+ *   complete (no `formatsComplete`), version 1 of any format an entry does not list. Only the Workers
+ *   the record restores read under it: an entry of a Worker left out of `workers` is not a reader.
+ * - `ran`: every version of the restored Workers that write formats, newer than the target's own
+ *   (`{ worker, versionId, release, formats }`, `formats` from VIZ_FORMATS, null if it declares
+ *   none). One that declares none wrote something unknown and is refused, as for schemas.
+ * - `left`: the kept versions of the Workers that write formats and that the record leaves out
+ *   (`{ ..., serving }`): they keep serving, so what they wrote and write stays under the restored
+ *   Workers (review of D69, M-1). Unknown is refused too.
  */
-export function formatRollbackProblems(target, ran) {
+export function formatRollbackProblems(target, ran, { left = [] } = {}) {
   const problems = []
-  const old = !target.formats
+  const restored = target.workers?.map((w) => w.name) ?? Object.keys(target.formats ?? {})
+  const readers = target.formats ? recordReaders(target, restored) : null
+  const why = (r) =>
+    r.whole
+      ? ' (its record predates format versions: taken to read version 1 of every format)'
+      : r.undeclared.length
+        ? ` (${r.undeclared.join(', ')} has no format versions in that record: taken to read version 1 of every format)`
+        : r.implicit.length
+          ? ` (${r.implicit.join(', ')} does not list it, in a record from before format declarations were complete: taken to read version 1 of it)`
+          : ''
   for (const v of ran) {
     if (v.formats === null) {
       problems.push(`${v.worker}: version ${v.versionId} (release ${v.release ?? 'unknown'}), newer than the one being restored, does not declare its format versions, so what it may have written is unknown. Fix forward.`)
@@ -257,11 +285,26 @@ export function formatRollbackProblems(target, ran) {
     }
     for (const [format, f] of Object.entries(v.formats)) {
       if (f.writes === null) continue
-      const reads = readsOf(target.formats, format)
-      if (reads.includes(f.writes)) continue
+      const r = readersOf(readers, format)
+      if (r.reads === null || r.reads.includes(f.writes)) continue
       problems.push(
-        `${format}: release ${v.release ?? 'unknown'} (${v.worker} version ${v.versionId}) wrote version ${f.writes}, and ${target.release} reads only ${reads.join(', ')}` +
-          `${old ? ' (its record predates format versions: taken to read version 1 of every format)' : ''}. A rollback to it would leave what was written unreadable (contracts/COMPATIBILITY.md §6). Fix forward instead.`,
+        `${format}: release ${v.release ?? 'unknown'} (${v.worker} version ${v.versionId}) wrote version ${f.writes}, and ${target.release} reads only ${r.reads.join(', ')}` +
+          `${why(r)}. A rollback to it would leave what was written unreadable (contracts/COMPATIBILITY.md §6). Fix forward instead.`,
+      )
+    }
+  }
+  for (const v of left) {
+    if (v.formats === null) {
+      problems.push(`${v.worker}: this rollback leaves it serving (the record does not restore it), and its version ${v.versionId} (release ${v.release ?? 'unknown'}) does not declare its format versions, so what it wrote is unknown. Restore it with the others (the whole record), or fix forward.`)
+      continue
+    }
+    for (const [format, f] of Object.entries(v.formats)) {
+      if (f.writes === null) continue
+      const r = readersOf(readers, format)
+      if (r.reads === null || r.reads.includes(f.writes)) continue
+      problems.push(
+        `${format}: ${v.worker} is left serving by this rollback (the record does not restore it), and its version ${v.versionId} (release ${v.release ?? 'unknown'}${v.serving ? ', serving now' : ''}) writes version ${f.writes}, and ${target.release} reads only ${r.reads.join(', ')}${why(r)}. ` +
+          `What it wrote${v.serving ? ', and keeps writing,' : ''} would be unreadable by the Workers restored (contracts/COMPATIBILITY.md §6; review of D69, M-1). Restore ${v.worker} with them, or fix forward.`,
       )
     }
   }
@@ -305,13 +348,36 @@ export function schemaRollbackProblems(target, ran) {
 const schemaWorkers = (target) => new Set(Object.values(target.schemas ?? {}).map((x) => x.worker))
 
 /**
- * The Workers of a target record whose versions carry format versions: those its `formats` name,
- * and those deploy/workers.json declares formats for now (a record from before format versions
- * names none, and a version uploaded since by such a Worker may have written any of them).
+ * The Workers that write formats, whose versions a rollback judges as writers: those whose entry in
+ * the target's record writes one, and those deploy/workers.json declares a `writes` source for now
+ * (a record from before format versions names none, and a version uploaded since by such a Worker
+ * may have written any of them). A Worker that writes no recorded format (viz-query, viz-mcp,
+ * viz-gateway) is judged only as a reader.
  */
-function formatWorkers(target, plan) {
-  const out = new Set(Object.keys(target.formats ?? {}))
-  for (const w of plan.workers) if (w.formats) out.add(stagedName(w.name, target.stage ?? undefined))
+function formatWriters(target, plan) {
+  const out = new Set(Object.entries(target.formats ?? {}).filter(([, f]) => Object.values(f ?? {}).some((x) => x?.writes !== null && x?.writes !== undefined)).map(([n]) => n))
+  for (const w of plan.workers) if (w.formats?.writes?.length) out.add(stagedName(w.name, target.stage ?? undefined))
+  return out
+}
+
+/**
+ * Every kept version of each Worker in `names`, which the rollback leaves serving: those newer than
+ * its version in `full` (the record before `--only`), when the record names one, else every version
+ * Cloudflare keeps (a superset of what ran since the target, which only makes the check stricter);
+ * its serving versions always. `{ worker, versionId, number, release, formats, serving }`.
+ */
+async function versionsLeftServing(full, names, now, api) {
+  const out = []
+  for (const name of names) {
+    const bound = full.workers.find((w) => w.name === name)?.versionId
+    const boundNumber = bound ? ((await api.versionInfo(name, bound))?.number ?? null) : null
+    const serving = new Set((now[name]?.versions ?? []).map((v) => v.version_id))
+    for (const v of await api.listVersions(name)) {
+      if (!serving.has(v.id) && boundNumber !== null && v.number !== undefined && v.number <= boundNumber) continue
+      const info = await api.versionInfo(name, v.id)
+      out.push({ worker: name, versionId: v.id, number: v.number, release: annotation(info, 'workers/tag'), formats: formatsOfVersion(info), serving: serving.has(v.id) })
+    }
+  }
   return out
 }
 
@@ -390,6 +456,13 @@ async function restore(manifest, workers, reason) {
 /** The vars of a manifest Worker's generated config (what its versions are uploaded with). */
 const varsOfGenerated = (w) => readJsonc(join(REPO_ROOT, w.config)).vars ?? {}
 
+/**
+ * The Workers a deploy reads the live state of: this release's, every other Worker of the manifest
+ * (one not deployed here keeps serving, and reading: review of D69, M-1 and m-3), and every Worker a
+ * rollback floor names.
+ */
+const liveNames = (manifest, rules) => [...new Set([...manifest.order, ...manifest.workers.map((w) => w.name), ...rules.flatMap((r) => [r.writer, ...r.floors.map((f) => f.worker)])])]
+
 export async function deploy({ stage, ackText = '', rotateText = '' }) {
   const manifest = loadManifest(stage)
   const release = manifest.release
@@ -399,12 +472,14 @@ export async function deploy({ stage, ackText = '', rotateText = '' }) {
   // the same release uploaded is told apart from this run's (review of D53, m-11).
   const run = newRunId()
   const runVar = ['--var', `${RUN_VAR}:${run}`]
-  const before = await liveState(manifest.order)
-  const previous = recordOf(manifest, before, { release: servingRelease(manifest, before), kind: 'previous', schemas: schemasOfLive(manifest, before), formats: formatsOfLive(manifest, before) })
+  const rules = floorRules(loadWorkersPlan(), stage)
+  const before = await liveState(liveNames(manifest, rules))
+  // formatsComplete: each entry is what that version declared (with lib/formats.mjs ANY where its declaration was incomplete).
+  const previous = recordOf(manifest, before, { release: servingRelease(manifest, before), kind: 'previous', schemas: schemasOfLive(manifest, before), formats: formatsOfLive(manifest, before), formatsComplete: true })
   const previousFile = writeRecord(stage, 'previous.json', previous)
   const plan = planRelease(manifest, before, parseAcks(ackText))
   const forwardOnly = forwardOnlyReasons(manifest, before)
-  const floors = await floorDeployProblems(floorRules(loadWorkersPlan(), stage), manifest, before, FLOOR_API, varsOfGenerated)
+  const floors = await floorDeployProblems(rules, manifest, before, FLOOR_API, varsOfGenerated)
   const specs = secretsOfManifest(manifest)
   const rotate = parseRotate(rotateText)
   const secretsBefore = await secretsNow(specs, before, SECRET_API)
@@ -511,8 +586,9 @@ export async function deploy({ stage, ackText = '', rotateText = '' }) {
     migrations: plan.migrations.map((s) => ({ worker: s.name, from: s.migration.from, to: s.migration.to })),
     // contracts/COMPATIBILITY.md §6: what each class's code knows, and whether no rollback may cross this release.
     schemas: schemasOfManifest(manifest),
-    // The same for formats: the version each Worker writes and the versions it reads (D69).
+    // The same for formats: the version each Worker writes and, completely, the versions it reads (D69; review of D69, M-1).
     formats: formatsOfManifest(manifest),
+    formatsComplete: true,
     forwardOnly: forwardOnly.length > 0,
     forwardOnlyBecause: forwardOnly,
     // Rollback floors a writer's switch raises (D64, D69): what each rule saw.
@@ -533,15 +609,32 @@ export async function deploy({ stage, ackText = '', rotateText = '' }) {
 
 const CLOUDFLARE = { liveState, versionInfo, listVersions, restore: (...a) => restore(...a) }
 
-export async function rollback({ stage, recordFile, record, reason = 'requested', acceptSecretLoss = '', api = CLOUDFLARE }) {
+/**
+ * The record restricted to the Workers `only` names (`--only`, comma or space separated; production
+ * or deployed names): the others keep what serves now, and are judged as they serve. Unknown names
+ * are refused, not ignored.
+ */
+export function restrictRecord(full, only, stage) {
+  const asked = String(only ?? '').split(/[\s,;]+/).filter(Boolean)
+  if (asked.length === 0) return full
+  const names = asked.map((n) => (full.workers.some((w) => w.name === n) ? n : stagedName(n, stage ?? undefined)))
+  const unknown = names.filter((n) => !full.workers.some((w) => w.name === n))
+  if (unknown.length) throw new Error(`--only names ${unknown.join(', ')}, which the record of ${full.release} does not have (it has ${full.workers.map((w) => w.name).join(', ')})`)
+  return { ...full, workers: full.workers.filter((w) => names.includes(w.name)) }
+}
+
+export async function rollback({ stage, recordFile, record, reason = 'requested', acceptSecretLoss = '', only = '', api = CLOUDFLARE }) {
   const plan = loadWorkersPlan()
   const manifest = { durableObjectsCodeUpdate: plan.durable_objects_code_update }
-  const target = record ?? JSON.parse(readFileSync(recordFile, 'utf8'))
-  if ((target.stage ?? null) !== (stage ?? null)) throw new Error(`the record is for ${target.target}, not ${targetName(stage)}`)
+  const full = record ?? JSON.parse(readFileSync(recordFile, 'utf8'))
+  if ((full.stage ?? null) !== (stage ?? null)) throw new Error(`the record is for ${full.target}, not ${targetName(stage)}`)
+  const target = restrictRecord(full, only, stage)
   const names = target.workers.map((w) => w.name)
   const rules = floorRules(plan, stage)
-  // Every Worker a floor rule names too: one the record does not name keeps what serves now.
-  const now = await api.liveState([...new Set([...names, ...rules.flatMap((r) => r.floors.map((f) => f.worker))])])
+  // Every Worker of the deployment and every Worker a floor rule names too: one the record does not
+  // restore keeps what serves now, and is judged as it serves (formats: review of D69, M-1; floors).
+  const deployment = plan.workers.map((w) => stagedName(w.name, stage))
+  const now = await api.liveState([...new Set([...names, ...deployment, ...rules.flatMap((r) => r.floors.map((f) => f.worker))])])
   const problems = []
   const targetInfo = {}
   for (const w of target.workers) {
@@ -551,7 +644,7 @@ export async function rollback({ stage, recordFile, record, reason = 'requested'
     } else if (!(targetInfo[w.name] = await api.versionInfo(w.name, w.versionId))) problems.push(`${w.name}: version ${w.versionId} no longer exists (Cloudflare keeps the 100 most recent)`)
   }
   if (problems.length === 0) {
-    const fw = formatWorkers(target, plan)
+    const fw = formatWriters(target, plan)
     // Generated secrets (D53; measured on Cloudflare, S9): the Workers that carry one.
     const specs = GENERATED_SECRETS.map((sp) => ({ ...sp, worker: stagedName(sp.worker, stage), canonical: sp.worker })).filter((sp) => names.includes(sp.worker))
     const ran = await versionsSince(target, api, new Set([...schemaWorkers(target), ...fw, ...specs.map((sp) => sp.worker)]))
@@ -559,8 +652,10 @@ export async function rollback({ stage, recordFile, record, reason = 'requested'
     problems.push(...secretRollbackProblems({ target, targetInfo, ran: ran.filter((v) => specs.some((sp) => sp.worker === v.worker)), specs, accept: parseRotate(acceptSecretLoss) }))
     // Schema versions (contracts/COMPATIBILITY.md §6): no class's storage may be newer than the target can open.
     problems.push(...schemaRollbackProblems(target, ran.filter((v) => schemaWorkers(target).has(v.worker))))
-    // Format versions (§6, D69): the target reads every format version written since it.
-    problems.push(...formatRollbackProblems(target, ran.filter((v) => fw.has(v.worker))))
+    // Format versions (§6, D69): the restored Workers read every format version written since the
+    // target, and every one that the Workers this rollback leaves serving wrote and write (M-1).
+    const left = await versionsLeftServing(full, [...fw].filter((n) => !names.includes(n) && now[n]?.exists), now, api)
+    problems.push(...formatRollbackProblems(target, ran.filter((v) => fw.has(v.worker)), { left }))
     // Rollback floors (D64, D69): no reader below its floor under a writer whose switch was on.
     problems.push(...(await floorRollbackProblems(rules, target, now, api)))
   }
@@ -572,7 +667,7 @@ export async function rollback({ stage, recordFile, record, reason = 'requested'
   log(`rollback to ${target.release} (${reason}), callers first:`)
   await api.restore(manifest, target.workers, `${reason}; to ${target.release}`)
   const after = await api.liveState(names)
-  const done = { ...recordOf({ ...target, order: names }, after, { kind: 'rollback', release: target.release, reason, schemas: target.schemas, formats: target.formats ?? null }), target: target.target, stage: target.stage }
+  const done = { ...recordOf({ ...target, order: names }, after, { kind: 'rollback', release: target.release, reason, schemas: target.schemas, formats: target.formats ?? null, formatsComplete: target.formatsComplete === true }), target: target.target, stage: target.stage }
   writeRecord(stage, 'rollback.json', done)
   summary(done, null)
   return { exit: 0, record: done }
@@ -592,12 +687,13 @@ function printPlan(manifest, plan, secrets = []) {
  */
 export async function planOnly({ stage, ackText = '', rotateText = '' }) {
   const manifest = loadManifest(stage)
-  const live = await liveState(manifest.order)
+  const rules = floorRules(loadWorkersPlan(), stage)
+  const live = await liveState(liveNames(manifest, rules))
   const plan = planRelease(manifest, live, parseAcks(ackText))
   const specs = secretsOfManifest(manifest)
   const rotate = parseRotate(rotateText)
   const secrets = planSecrets(await secretsNow(specs, live, SECRET_API), rotate, plan.steps)
-  const floors = await floorDeployProblems(floorRules(loadWorkersPlan(), stage), manifest, live, FLOOR_API, varsOfGenerated)
+  const floors = await floorDeployProblems(rules, manifest, live, FLOOR_API, varsOfGenerated)
   const forwardOnly = forwardOnlyReasons(manifest, live)
   const problems = [...plan.problems, ...floors.problems, ...rotateProblems(rotate, specs)]
   printPlan(manifest, plan, secrets)
@@ -632,7 +728,7 @@ function summary(record, previous) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    const args = parseArgs(process.argv.slice(2), { options: ['stage', 'ack', 'record', 'reason', 'rotate-secret', 'accept-secret-loss'] })
+    const args = parseArgs(process.argv.slice(2), { options: ['stage', 'ack', 'record', 'reason', 'rotate-secret', 'accept-secret-loss', 'only'] })
     checkStage(args.stage)
     const cmd = args._[0]
     const ackText = [args.ack ?? '', process.env.VIZ_ACK_MIGRATIONS ?? ''].join(' ')
@@ -644,7 +740,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       process.exit(r.exit)
     } else if (cmd === 'rollback') {
       if (!args.record) throw new Error('rollback needs --record <release.json>')
-      process.exit((await rollback({ stage: args.stage, recordFile: args.record, reason: args.reason, acceptSecretLoss: args['accept-secret-loss'] ?? '' })).exit)
+      process.exit((await rollback({ stage: args.stage, recordFile: args.record, reason: args.reason, acceptSecretLoss: args['accept-secret-loss'] ?? '', only: args.only ?? '' })).exit)
     } else if (cmd === 'status') {
       const manifest = loadManifest(args.stage)
       console.log(JSON.stringify(await liveState(manifest.order), null, 2))
