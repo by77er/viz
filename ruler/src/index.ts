@@ -21,7 +21,11 @@ const api = createApi()
 
 type Env = ApiEnv & RulerEnv
 
-/** Bindings the deployed Worker cannot work without. The engine is `QUERY` (HTTP) or an `EVALUATOR` (RPC). */
+/**
+ * Bindings the deployed Worker cannot work without. The engine is `QUERY` (HTTP) or an
+ * `EVALUATOR` (RPC); recording rules' sink is `SINK` (viz-ingest's entrypoint) or, in a config
+ * from before it, `INGEST` (Remote Write).
+ */
 const REQUIRED: (keyof Env)[] = ['CONFIG', 'RULER', 'NOTIFIER', 'RULER_INDEX', 'TENANT']
 
 /**
@@ -34,6 +38,7 @@ export function health(req: Request, env: Env): Response {
   if (req.method !== 'GET' && req.method !== 'HEAD') return new Response('method not allowed\n', { status: 405, headers: { Allow: 'GET, HEAD' } })
   const missing: string[] = REQUIRED.filter((b) => !env[b])
   if (!env.QUERY && !env.EVALUATOR) missing.push('QUERY')
+  if (!env.SINK && !env.INGEST) missing.push('SINK')
   const body = missing.length === 0 ? 'ok\n' : `missing binding: ${missing.join(', ')}\n`
   return new Response(req.method === 'HEAD' ? null : body, { status: missing.length === 0 ? 200 : 503, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' } })
 }

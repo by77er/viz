@@ -39,20 +39,23 @@ import type {
   Refused,
   WarmupStatus,
 } from '../contracts-proposal/rules.v2'
-import { ANOMALY_LIMIT_DEFAULTS, anomalyLimits, emptyStatus, evalAnomaly, historyOf, maxClass, newAnomalyRt, readStateRows, stateRows, type AnomalyEval, type AnomalyRt } from './anomaly'
+import { ANOMALY_LIMIT_DEFAULTS, anomalyLimits, emptyStatus, evalAnomaly, fullAnomalyWrite, historyOf, maxClass, newAnomalyRt, readAnomalyRows, type AnomalyEval, type AnomalyRt } from './anomaly'
+import type { AnomalyWrite } from './anomalystore'
 import { MAX_BACKTEST_STEPS, resolutionNote } from './backtest'
 import { anomalyWarmPoints, anomalyWarmReads, backtestAlert, backtestAnomaly, backtestSlo, CPU, HISTORY_LIMIT_DEFAULTS, historyBudgets, MAX_WARMUP_ATTEMPTS, readWarmup, sloWarmReads, warmAnomaly, warmSlo, warmupBody, warmupStatus, type HistoryIo, type Read } from './history'
 import { allRows, cloneSloRt, emptySloStatus, evalSlo, newSloRt, readSloRows, SLO_LIMIT_DEFAULTS, sliExpressions, sloHistory, tickRows, type SloEval, type SloRow, type SloRt } from './slo'
 import { classify } from './classify'
 import type { ServiceKeyResult, TenantServiceRpc } from '../../contracts/control'
+import type { RecordedSamplesRpc } from '../../contracts/ingest'
 import { ServiceCredential, type StoredKey } from './credential'
 import { ENGINE_CALLS_IN_FLIGHT, Gate, httpEngine, type Fetcher, type HttpEngine } from './engine'
 import { batchFromSingle, errorText, permissiveValidator } from './evaluator'
+import { recordedSamplesSink, SinkError } from './recorded'
 import { remoteWriteSink } from './remote'
 import { stageExpired } from './util'
 import { indexName } from './registry'
 import { ruleFileDocument } from './rulefile'
-import { RULER_SCHEMA } from './schema'
+import { ANOMALY_STATE_WRITE, RULER_SCHEMA } from './schema'
 import { compileAlertRule, DEADMAN_ALERT, DEADMAN_GROUP, deadmanGroup, parseRuleFile, type CompiledAlertRule } from './rules'
 import { evalAlertingRule, evalRecordingRule, isNoDataAlert, toSeries, type AlertEvalResult, type Series } from './statemachine'
 import { alignedTick, backoffMs, byteLength, formatDuration, hash64, mapLimit, parseDuration, resolveObjectName } from './util'
@@ -92,16 +95,26 @@ export interface RulerEnv {
     plan?(tenant: string, promql: string, startMs: number, endMs: number, stepMs: number): Promise<HistoryPlan>
     check?(tenant: string, promql: string): ReturnType<Validator['check']>
   }
-  SINK?: { write(tenant: string, batches: SampleBatch[]): Promise<void> }
+  /**
+   * Recording rules' samples: viz-ingest's `RecordedSamples` entrypoint (contracts/ingest.ts,
+   * D45), bound with `props: { caller: "viz-ruler" }`. The binding is the credential; the tenant
+   * is this object's own, passed explicitly (`recorded.ts`).
+   */
+  SINK?: RecordedSamplesRpc
   /** The registry the cron sweeper walks (`registry.ts`). */
   RULER_INDEX?: DurableObjectNamespace
   /**
    * Production wiring while the query Worker has no RPC entrypoint (README, "Needed
-   * changes"): viz-query's Prometheus HTTP API (`engine.ts`), viz-ingest's Remote Write
-   * (`remote.ts`), both with the shard's service key from control's `Tenant` object
-   * (`credential.ts`, contracts/control.ts). `EVALUATOR` / `SINK`, when bound, win.
+   * changes"): viz-query's Prometheus HTTP API (`engine.ts`) with the shard's service key from
+   * control's `Tenant` object (`credential.ts`, contracts/control.ts). `EVALUATOR`, when bound,
+   * wins.
    */
   QUERY?: Fetcher
+  /**
+   * viz-ingest's Remote Write (`remote.ts`), with the same key: the sink of the release before
+   * `SINK`, and now only its fallback when the entrypoint does not answer by its contract (an
+   * ingest release without it may still serve: D52). Alone, without `SINK`, it is the sink.
+   */
   INGEST?: Fetcher
   TENANT?: DurableObjectNamespace
   /** A staged trial's deadline (ISO 8601, set by deploy/configure.mjs --expires): after it, nothing is evaluated or re-armed. */
@@ -149,7 +162,10 @@ const ABORT_GRACE_MS = 25
 /** Alert updates per hand-off row. Keeps a row far below the 2 MB value cap. */
 const HANDOFF_CHUNK = 200
 const HANDOFF_ROWS_PER_TICK = 32
+/** Calls of one flush of recorded samples: the first and two retries (retryable failures only). */
 const SINK_ATTEMPTS = 3
+/** The longest a retry waits for an overloaded ingest's hint; the group's time budget bounds it too. */
+const SINK_MAX_WAIT_MS = 5_000
 const MAX_TICK_RETRIES = 5
 
 interface RuleRt {
@@ -387,13 +403,22 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     return { register: (shard) => stub.register(this.tenant, shard), unregister: (shard) => stub.unregister(this.tenant, shard) }
   }
 
+  /** viz-ingest's `RecordedSamples` entrypoint, when bound. Its own method only so that the test harness can bind an ingest release without it. */
+  protected recordedSamples(): RecordedSamplesRpc | undefined {
+    return this.env.SINK
+  }
+
+  /**
+   * Recording rules' samples: the `RecordedSamples` entrypoint with this object's tenant, falling
+   * back to Remote Write only when the entrypoint does not answer by its contract
+   * (`recorded.ts`, D52); Remote Write alone where no `SINK` is bound (a config from before it).
+   */
   protected sink(): Sink {
-    const binding = this.env.SINK
-    if (!binding) {
-      if (this.env.INGEST) return remoteWriteSink(this.env.INGEST, this.credential())
-      throw new Error('no SINK binding')
-    }
-    return { write: (batches) => binding.write(this.tenant, batches) }
+    const remote = this.env.INGEST ? remoteWriteSink(this.env.INGEST, this.credential()) : null
+    const binding = this.recordedSamples()
+    if (binding) return recordedSamplesSink(binding, this.tenant, remote)
+    if (remote) return remote
+    throw new Error('no SINK binding')
   }
 
   protected notifier(): NotifierPort {
@@ -445,26 +470,30 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       m.set(row.fp, reviveAlert(row.body))
     }
     // Detector state: the only copy is these rows, so memory is exactly what was last committed.
-    const bodies = new Map<string, string[]>()
-    for (const row of this.exec<{ grp: string; rule_key: string; body: string }>(`SELECT grp, rule_key, body FROM anomaly_state WHERE tenant = ? ORDER BY grp, rule_key, chunk`, t)) {
+    const bodies = new Map<string, { chunk: number; body: string }[]>()
+    for (const row of this.exec<{ grp: string; rule_key: string; chunk: number; body: string }>(`SELECT grp, rule_key, chunk, body FROM anomaly_state WHERE tenant = ? ORDER BY grp, rule_key, chunk`, t)) {
       const k = `${row.grp}\n${row.rule_key}`
-      bodies.set(k, [...(bodies.get(k) ?? []), row.body])
+      let list = bodies.get(k)
+      if (!list) bodies.set(k, (list = []))
+      list.push({ chunk: row.chunk, body: row.body })
     }
     for (const [k, rows] of bodies) {
       const cut = k.lastIndexOf('\n')
       const rt = this.groups.get(k.slice(0, cut))?.anomaly.get(k.slice(cut + 1))
       if (!rt) continue
-      const read = readStateRows(rows)
+      // Version 1 or 2 (`store.anomaly-state`); the next tick rewrites them in the version the gate says.
+      const read = readAnomalyRows(rows)
       if ('error' in read) {
         // A newer release's row format: refuse the rule and keep the rows (COMPATIBILITY.md §3.2).
         rt.unreadable = read.error
-        rt.rawRows = rows
+        rt.rawRows = rows.map((r) => r.body)
         rt.status = { ...rt.status, status: 'state_unreadable', message: read.error }
         continue
       }
       rt.series = read.series
       rt.json = read.json
-      rt.status = { ...rt.status, stateSeries: read.series.size, stateBytes: rows.reduce((n, b) => n + byteLength(b), 0) }
+      rt.store = read.store
+      rt.status = { ...rt.status, stateSeries: read.series.size, stateBytes: rows.reduce((n, r) => n + byteLength(r.body), 0) }
     }
     // SLO rings: the same, from `slo_state`.
     const sloRows = new Map<string, SloRow[]>()
@@ -719,6 +748,10 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
           return
         } catch (e) {
           lastError = errorText(e)
+          // A refusal the same call would get again (contracts/ingest.ts) is reported at once.
+          if (e instanceof SinkError && !e.retryable) break
+          // Backpressure and overload say when to come back; the wait ends early at the deadline.
+          if (e instanceof SinkError && e.retryAfterMs > 0 && attempt < SINK_ATTEMPTS) await pause(Math.min(e.retryAfterMs, SINK_MAX_WAIT_MS), abort.signal)
         }
       }
       this.samplesDropped += batch.length
@@ -790,7 +823,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
             // The detector decides which series are the rule's result; the alert state machine
             // does the rest. A refused evaluation (series cap, state limit) changes nothing.
             const rt = g.anomaly.get(rule.key) as AnomalyRt
-            const ev = evalAnomaly(rule, rt, series, queryTime, g.spec.intervalMs, aLimits, rule.annotations)
+            const ev = evalAnomaly(rule, rt, series, queryTime, g.spec.intervalMs, aLimits, rule.annotations, true, this.anomalyStateWrite())
             if (!ev.ok) {
               rt.status = ev.status
               setHealth(rule, ev.error, res?.durationMs ?? null)
@@ -881,8 +914,9 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
           if (rule.monitor) this.appendTimeline(rule.monitor.id, transitions(before, result.alerts, result.dirty, ts))
         }
         // Detector state goes in the same transaction as the alerts it produced, so a replay
-        // finds both or neither. Whole batches of series per row, never a row per series.
-        for (const { rule, anomaly } of staged) if (anomaly?.changed) this.writeAnomalyState(g.spec.name, rule.key, anomaly.json)
+        // finds both or neither. Whole batches of series per row, never a row per series: version 1
+        // rewrites them all, version 2 the head and the block of this tick's points.
+        for (const { rule, anomaly } of staged) if (anomaly?.changed && anomaly.write) this.writeAnomalyState(g.spec.name, rule.key, anomaly.write)
         // SLO rings likewise: the head and the current block of each ring, as whole batches.
         for (const { rule, slo } of staged) if (slo?.ev.changed) this.writeSloTick(g, rule as SloRule, slo.rt)
         this.enqueueHandoff(updates, ts)
@@ -896,6 +930,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
         const rt = g.anomaly.get(rule.key) as AnomalyRt
         rt.series = anomaly.next
         rt.json = anomaly.json
+        if (anomaly.changed && anomaly.write) rt.store = anomaly.write.store
         rt.status = anomaly.status
         rt.pruned = anomaly.status.pruned
       }
@@ -908,16 +943,26 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
   }
 
   /**
-   * Inside a transaction: replace one anomaly rule's state rows. Rows written per evaluation =
+   * Inside a transaction: one anomaly rule's planned rows (`AnomalyWrite`). Version 1: every row,
    * ceil(state bytes / ANOMALY_ROW_BYTES), plus the rows of a shrinking state that are deleted.
+   * Version 2: the head and the blocks this tick's points fall in, plus a block that left every
+   * series' window (deleted, or rewritten without the series that left it). A conversion between
+   * the versions deletes every row first.
    */
-  private writeAnomalyState(group: string, key: string, json: Map<string, string>): void {
-    const rows = stateRows(json)
-    rows.forEach((body, chunk) => {
+  private writeAnomalyState(group: string, key: string, w: AnomalyWrite): void {
+    const t = this.tenant
+    if (w.purge) this.exec(`DELETE FROM anomaly_state WHERE tenant = ? AND grp = ? AND rule_key = ?`, t, group, key)
+    for (const r of w.upserts) {
       this.exec(`INSERT INTO anomaly_state (tenant, grp, rule_key, chunk, body) VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT (tenant, grp, rule_key, chunk) DO UPDATE SET body = excluded.body`, this.tenant, group, key, chunk, body)
-    })
-    this.exec(`DELETE FROM anomaly_state WHERE tenant = ? AND grp = ? AND rule_key = ? AND chunk >= ?`, this.tenant, group, key, rows.length)
+        ON CONFLICT (tenant, grp, rule_key, chunk) DO UPDATE SET body = excluded.body`, t, group, key, r.chunk, r.body)
+    }
+    for (const c of w.deletes) this.exec(`DELETE FROM anomaly_state WHERE tenant = ? AND grp = ? AND rule_key = ? AND chunk = ?`, t, group, key, c)
+    if (w.deleteFrom !== null) this.exec(`DELETE FROM anomaly_state WHERE tenant = ? AND grp = ? AND rule_key = ? AND chunk >= ?`, t, group, key, w.deleteFrom)
+  }
+
+  /** The version gate of `store.anomaly-state` (`ANOMALY_STATE_WRITE`); the test harness sets it per world. */
+  protected anomalyStateWrite(): 1 | 2 {
+    return ANOMALY_STATE_WRITE
   }
 
   /**
@@ -961,10 +1006,12 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
 
   /**
    * Warm the group's pending anomaly and SLO rules so that their state at `endTs` (the query time
-   * before this tick's) is what it would be had they run all along. Per rule: the reads are planned
-   * (nothing fetched); over the budget, or refused by the engine's plan, the warm-up is refused and
-   * the rule starts cold; otherwise the reads are fetched whole and fed, in time order, through the
-   * rule's own evaluation; the state rows and the status commit in one transaction. An engine
+   * before this tick's) is what it would be had they run all along. Per rule: every query of the
+   * reads is planned first (nothing fetched); over the budget, or refused by the engine's plan, the
+   * warm-up is refused and the rule starts cold; otherwise the reads are streamed in time windows
+   * sized to the memory budget, one at a time and in order (`streamHistory`, D43), each fed through
+   * the rule's own evaluation with only its state carried between windows; the state rows and the
+   * status commit in one transaction. An engine
    * failure leaves the job pending (the rule waits this tick out) until `MAX_WARMUP_ATTEMPTS`, then
    * the rule starts cold. A warm-up the CPU model prices over `maxWarmupCpuMs` is refused (the rule
    * starts cold); one that fits that but not what this alarm's warm-ups have left waits for the
@@ -1025,7 +1072,7 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       const io: HistoryIo = { planner: this.historyPlanner(), range: this.warmupRange(), budget, memoryBytes: budgets.warmupMemory, cpu: { budgetMs: room, deferBelowMs: budgets.warmupCpuMs } }
       let run: Awaited<ReturnType<typeof warmAnomaly>> | Awaited<ReturnType<typeof warmSlo>>
       try {
-        run = rule.kind === 'anomaly' ? await warmAnomaly(rule, reads[0]!, aLimits, io) : await warmSlo(rule, I, (slo as NonNullable<typeof slo>).fine, (slo as NonNullable<typeof slo>).coarse, io)
+        run = rule.kind === 'anomaly' ? await warmAnomaly(rule, reads[0]!, aLimits, io, this.anomalyStateWrite()) : await warmSlo(rule, I, (slo as NonNullable<typeof slo>).fine, (slo as NonNullable<typeof slo>).coarse, io)
         // Give back what the model says the run did not use; an engine failure keeps the reservation.
         used = run.ok ? run.cpu.modelledMs : 'refused' in run ? (run.cpu?.spentMs ?? Math.ceil(CPU.base / 1000)) : room
       } catch (e) {
@@ -1046,14 +1093,14 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       if (!run.ok) {
         // Refused before anything was evaluated (budget, memory, the engine's plan, the CPU model), or
         // stopped in a window (the rule's own refusal: a series cap, a state limit): nothing is kept.
-        if ('refused' in run) finish({ ...base, status: 'refused', attempts: job.attempts + 1, plan: run.plan, message: `${run.refused}; ${run.cpu ? 'the rule started cold' : run.countsRead ? 'only the series counts were read and the rule started cold' : 'nothing was fetched and the rule started cold'}`, finishedAt: this.now() })
+        if ('refused' in run) finish({ ...base, status: 'refused', attempts: job.attempts + 1, plan: run.plan, exceeded: run.exceeded, message: `${run.refused}; ${run.cpu ? 'the rule started cold' : run.countsRead ? 'only the series counts were read and the rule started cold' : 'nothing was fetched and the rule started cold'}`, finishedAt: this.now() })
         else finish({ ...base, status: 'refused', attempts: job.attempts + 1, message: `${run.failed}; nothing was kept and the rule started cold`, finishedAt: this.now() })
         continue
       }
       const done: WarmupStatus = { ...base, status: 'done', attempts: job.attempts + 1, plan: run.plan, points: run.points, finishedAt: this.now() }
       if (rule.kind === 'anomaly') {
-        const rt = run.value as AnomalyRt
-        finish(done, () => this.writeAnomalyState(g.spec.name, rule.key, rt.json))
+        const { write, ...rt } = run.value as AnomalyRt & { write: AnomalyWrite }
+        finish(done, () => this.writeAnomalyState(g.spec.name, rule.key, write))
         if (current()) g.anomaly.set(rule.key, { ...rt, status: { ...rt.status, status: 'unknown', message: null } })
       } else {
         const rt = run.value as SloRt
@@ -1263,7 +1310,8 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
   }
 
   private validate(file: unknown, now: number, promqlErrors: ValidationError[] = []): { result: SaveGroupsResult; groups: RuleGroup[] } {
-    const parsed = parseRuleFile(file, this.cfg)
+    // A rule saved over a stored one keeps the defaults it was stored with (contracts/rules.ts `AnomalySpecInput`).
+    const parsed = parseRuleFile(file, this.cfg, (group) => this.groups.get(group)?.spec.anomalyRules)
     const errors = [...parsed.errors, ...promqlErrors]
     const names = new Set([...this.groups.keys()].filter((n) => n !== DEADMAN_GROUP))
     for (const g of parsed.groups) names.add(g.name)
@@ -1667,9 +1715,9 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       const memory = run.sizing ? { peakBytes: run.sizing.peakBytes, budgetBytes: run.sizing.budgetBytes } : null
       if (run.cpu) {
         const { modelledMs, budgetMs } = run.cpu
-        return { status: 'over_budget', message: `${run.refused}. Shorten the range, lengthen the step (alerting rules only), or narrow the expression; an operator can raise maxBacktestCpuMs up to the Durable Object's CPU limit (README, "CPU").`, plan: run.plan, budget, memory, cpu: { modelledMs, budgetMs } }
+        return { status: 'over_budget', message: `${run.refused}. Shorten the range, lengthen the step (alerting rules only), or narrow the expression; an operator can raise maxBacktestCpuMs up to the Durable Object's CPU limit (README, "CPU").`, exceeded: run.exceeded, plan: run.plan, budget, memory, cpu: { modelledMs, budgetMs } }
       }
-      return { status: 'over_budget', message: `${run.refused}. ${run.countsRead ? 'Only the series counts were read' : 'Nothing was fetched'}: shorten the range, lengthen the step (alerting rules only), or narrow the expression.`, plan: run.plan, budget, memory, cpu: null }
+      return { status: 'over_budget', message: `${run.refused}. ${run.countsRead ? 'Only the series counts were read' : 'Nothing was fetched'}: shorten the range, lengthen the step (alerting rules only), or narrow the expression.`, exceeded: run.exceeded, plan: run.plan, budget, memory, cpu: null }
     }
     const cost = { ...run.plan, budget, memory: { peakBytes: run.sizing.peakBytes, budgetBytes: run.sizing.budgetBytes, windowSteps: run.sizing.windowSteps, queries: run.sizing.queries }, cpu: run.cpu }
     if (parsedRule.kind === 'alert') {
@@ -1696,8 +1744,10 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
     if (g.anomaly.size > 0) {
       bundle.anomalyState = {}
       for (const [key, rt] of g.anomaly) {
+        const rule = g.spec.anomalyRules?.find((r) => r.key === key) as AnomalyRule | undefined
         if (rt.rawRows !== null) bundle.anomalyState[key] = rt.rawRows
-        else if (rt.json.size > 0) bundle.anomalyState[key] = stateRows(rt.json)
+        // Every row, whole, in the version the gate says: the head rows first, then the blocks in order.
+        else if (rule && rt.series.size > 0) bundle.anomalyState[key] = fullAnomalyWrite(rule, g.spec.intervalMs, rt.series, this.anomalyStateWrite(), rt.json).upserts.sort((a, b) => a.chunk - b.chunk).map((r) => r.body)
       }
     }
     if (g.slo.size > 0) {
@@ -1752,7 +1802,8 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
       for (const [key, rows] of Object.entries(bundle.anomalyState ?? {})) {
         const rt = g.anomaly.get(key)
         if (!rt || !keys.has(key)) continue
-        const read = readStateRows(rows)
+        // Rows carry no chunk numbers in a bundle: version 2 rows say what they are.
+        const read = readAnomalyRows(rows.map((body, chunk) => ({ chunk, body })))
         if ('error' in read) {
           // A format this code cannot read: stored as it came, and the rule is refused until a release that reads it runs.
           rows.forEach((body, chunk) => this.exec(`INSERT INTO anomaly_state (tenant, grp, rule_key, chunk, body) VALUES (?, ?, ?, ?, ?)`, t, spec.name, key, chunk, body))
@@ -1761,9 +1812,12 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
           rt.status = { ...rt.status, status: 'state_unreadable', message: read.error }
           continue
         }
+        const rule = (spec.anomalyRules ?? []).find((r) => r.key === key) as AnomalyRule
+        const write = fullAnomalyWrite(rule, spec.intervalMs, read.series, this.anomalyStateWrite(), read.json)
         rt.series = read.series
-        rt.json = read.json
-        this.writeAnomalyState(spec.name, key, read.json)
+        rt.json = write.json
+        rt.store = write.store
+        this.writeAnomalyState(spec.name, key, write)
       }
       this.exec(`DELETE FROM slo_state WHERE tenant = ? AND grp = ?`, t, spec.name)
       for (const [key, rows] of Object.entries(bundle.sloState ?? {})) {
@@ -1884,6 +1938,20 @@ export class Ruler extends DurableObject<RulerEnv> implements RulerRpc {
 }
 
 /** A stored alert. JSON has no NaN (the value of a no-data alert), so it comes back as null. */
+/** Wait `ms` of real time, or until `signal` aborts (the group's deadline), whichever comes first. Never rejects. */
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve()
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', done)
+      resolve()
+    }
+    const timer = setTimeout(done, ms)
+    signal.addEventListener('abort', done, { once: true })
+  })
+}
+
 function reviveAlert(body: string): Alert {
   const a = JSON.parse(body) as Alert
   if (a.value === null) a.value = NaN
