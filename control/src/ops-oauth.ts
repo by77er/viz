@@ -426,7 +426,7 @@ export async function refreshTokens(t: Tenant, req: TokenRequest, now: number): 
       if ('unknown' in asked || !asked.ok.every((s) => held.includes(s))) return { error: fail('invalid_scope', `A refresh may ask only for scopes the grant holds: ${held.join(' ')}.`) }
       scopes = asked.ok
     }
-    // D68: what a client stuck in a refresh loop can make this object write, bounded exactly and from
+    // D70: what a client stuck in a refresh loop can make this object write, bounded exactly and from
     // every location at once, by rows it already keeps (refresh tokens issued for the grant in the
     // last minute, the code exchange's included). Checked after reuse detection and before the
     // presented token is spent, so a refused refresh writes nothing and can be retried with it.

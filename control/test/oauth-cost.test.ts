@@ -1,9 +1,9 @@
 /**
  * What each OAuth endpoint costs per request, as an unauthenticated caller or a client can drive it
- * (D68: what the rate limits have to bound, and per what key). Sequential requests in local
+ * (D70: what the rate limits have to bound, and per what key). Sequential requests in local
  * workerd: wall time, tenant objects reached, rows written there (`Tenant.rowsWritten`), alarm
  * writes (`setAlarm` + `deleteAlarm`, each billed as a row written) and KV writes from the object.
- * Printed as `OAUTH-COST` and recorded in control/README.md, "How it was verified"; the counts D68
+ * Printed as `OAUTH-COST` and recorded in control/README.md, "How it was verified"; the counts D70
  * rests on are asserted. Measured here, not on Cloudflare.
  */
 import { runInDurableObject } from 'cloudflare:test'
@@ -167,10 +167,28 @@ it('what each OAuth endpoint costs: time, objects reached, rows, alarms and KV w
     expect((await form('/oauth/revoke', { client_id: f.clientId, token: f.refresh! })).status).toBe(200)
   })
 
+  // ---- the limiters themselves (D70), as miniflare implements them: a Durable Object with SQLite on
+  // disk per call, so this is an upper bound for local workerd, not what Cloudflare's locally cached
+  // count costs. Limits large enough not to refuse, except where a refusal is what is measured.
+  const lim = { ...e, OAUTH_RL_SOURCE: env.RL_TEST_SOURCE, OAUTH_RL_CLIENT: env.RL_TEST_TENANT, OAUTH_RL_TENANT: env.RL_TEST_TENANT, OAUTH_RL_BEARER: env.RL_TEST_TENANT, OAUTH_RL_BEARER_TENANT: env.RL_TEST_TENANT }
+  const sendFrom = async (path: string, init: RequestInit, from: string) => {
+    const res = await worker.fetch!(new Request(`${ORIGIN}${path}`, { ...init, headers: { ...(init.headers as Record<string, string>), 'CF-Connecting-IP': from } }) as never, lim as never, {} as ExecutionContext)
+    await res.arrayBuffer()
+    return res.status
+  }
+  const regInit = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_name: 'Cost agent', redirect_uris: [REDIRECT] }) }
+  let net = 0
+  await measure('register, source limit asked and allowing', N, async () => {
+    expect(await sendFrom('/oauth/register', regInit, `10.250.${net >> 8}.${net++ & 255}`)).toBe(201)
+  })
+  for (let i = 0; i < 5; i++) await sendFrom('/oauth/register', regInit, '10.251.0.1') // the test binding allows 5 a minute
+  await measure('register, refused by the source limit', N, async () => {
+    expect(await sendFrom('/oauth/register', regInit, '10.251.0.1')).toBe(429)
+  })
   console.log(`OAUTH-COST ${JSON.stringify(out)}`)
   const r = (name: string) => out[name]!
   // No credential, or a made-up one: no tenant's object, nothing written. Only the Worker's CPU.
-  for (const name of ['register', 'authorize page', 'token: forged code (no tag)']) {
+  for (const name of ['register', 'authorize page', 'token: forged code (no tag)', 'register, source limit asked and allowing', 'register, refused by the source limit']) {
     expect(r(name).objectsReached, name).toBe(0)
     expect(r(name).rowsWritten + r(name).alarmWrites + r(name).kvWrites, name).toBe(0)
   }

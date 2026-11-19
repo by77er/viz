@@ -99,7 +99,7 @@ export const OAUTH_LIMITS = {
   registrationBytes: 8_192,
   /**
    * Refresh tokens issued per grant in any 60 s (the code exchange's included), counted exactly in
-   * the tenant's object (D68). Over it, `/oauth/token` refuses a refresh with `rate_limited` before
+   * the tenant's object (D70). Over it, `/oauth/token` refuses a refresh with `rate_limited` before
    * the presented token is spent: a client stuck in a refresh loop writes at most this many times a
    * minute, from any number of Cloudflare locations.
    */
@@ -107,7 +107,7 @@ export const OAUTH_LIMITS = {
 } as const
 
 /**
- * Refused by a rate limit before anything was read or written (D68): retryable, nothing happened,
+ * Refused by a rate limit before anything was read or written (D70): retryable, nothing happened,
  * and a credential presented with the request is not spent. `retryAfterMs`: when to try again.
  * Added 2026-11-19 within version 1 of `TokenResult` and `OAuthIntrospectionResult`
  * (COMPATIBILITY.md §4, "new statuses that callers already fail closed on": control's own Worker
@@ -286,7 +286,7 @@ export interface TenantOAuthRpc {
  * - A token that is not shaped like an access token, or does not carry this deployment's tag
  *   (`CREDENTIAL_TAG`), is `inactive` (`unknown`) and reaches no object.
  * - Results are `IntrospectionResult` (version 1, above) plus `unauthorized` and `rate_limited`
- *   (D68: too many introspections of this token, or of this token's tenant, in this Cloudflare
+ *   (D70: too many introspections of this token, or of this token's tenant, in this Cloudflare
  *   location; checked after the tag and before the tenant's object, so only a credential this
  *   deployment made counts). Nothing throws for bad input.
  */

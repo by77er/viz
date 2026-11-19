@@ -26,7 +26,7 @@ import type { Tenant } from './tenant'
  * - the tenant is the one the token names: there is no tenant argument;
  * - a token not shaped like an access token, or without this deployment's tag, is `inactive` and
  *   reaches no object (M-2);
- * - a tagged token is counted against itself, then against its tenant (src/ratelimit.ts, D68),
+ * - a tagged token is counted against itself, then against its tenant (src/ratelimit.ts, D70),
  *   before the tenant's object is asked: over either, `rate_limited` and no object. A made-up token
  *   is refused before it counts, so it cannot spend a tenant's budget.
  */

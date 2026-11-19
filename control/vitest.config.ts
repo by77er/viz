@@ -15,7 +15,7 @@ export default defineConfig({
           RULER_OAUTH: { name: 'viz-control', entrypoint: 'OAuthIntrospection', props: { caller: 'viz-ruler' } },
           BARE_OAUTH: { name: 'viz-control', entrypoint: 'OAuthIntrospection' },
         },
-        // Rate Limiting bindings (D68) as miniflare implements them, under test names with small limits.
+        // Rate Limiting bindings (D70) as miniflare implements them, under test names with small limits.
         // The tests put them in place of the OAUTH_RL_* bindings (test/ratelimit.test.ts); every other
         // test runs without them, as a deployment without the bindings does (each check fails open).
         ratelimits: {

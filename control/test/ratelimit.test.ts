@@ -1,5 +1,5 @@
 /**
- * Rate limits in front of the OAuth endpoints and OAuth bearers (decision D68, src/ratelimit.ts).
+ * Rate limits in front of the OAuth endpoints and OAuth bearers (decision D70, src/ratelimit.ts).
  *
  * The Rate Limiting bindings are miniflare's own implementation, configured in vitest.config.ts
  * under test names with small limits (source 5, client 3, tenant 6, bearer 3, bearer tenant 5, all
@@ -137,7 +137,8 @@ describe('the source limit: per client network, on register, authorize, token an
     l.gets.length = 0
     let pulled = 0
     const params = new URLSearchParams({ grant_type: 'authorization_code', client_id: clientId, code, code_verifier: verifier, redirect_uri: REDIRECT, resource: RESOURCE }).toString()
-    const body = new ReadableStream({ pull(ctl) { pulled++; ctl.enqueue(new TextEncoder().encode(params)); ctl.close() } })
+    // highWaterMark 0: pulled only when someone reads it.
+    const body = new ReadableStream({ pull(ctl) { pulled++; ctl.enqueue(new TextEncoder().encode(params)); ctl.close() } }, { highWaterMark: 0 })
     expect429(await l.send('/oauth/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body, from: c, duplex: 'half' } as RequestInit & { from: string }))
     expect(pulled).toBe(0)
     expect(l.gets).toEqual([])
@@ -254,7 +255,7 @@ describe('introspection (OAuth bearers at /mcp): per token, then per tenant, bef
   })
 })
 
-describe('a limiter that fails lets the request through (fails open, D68)', () => {
+describe('a limiter that fails lets the request through (fails open, D70)', () => {
   const throwing = { limit: () => { throw new Error('limiter down') } }
   const rejecting = { limit: () => Promise.reject(new Error('limiter down')) }
   const malformed = { limit: async () => ({ ok: true }) }

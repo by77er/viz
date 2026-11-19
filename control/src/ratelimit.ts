@@ -2,7 +2,7 @@ import { OAUTH_LIMITS, type RateLimited } from '../../contracts/oauth'
 import { sha256Hex } from '../../dashboard/src/index.ts'
 
 /**
- * Rate limits in front of the OAuth endpoints and OAuth bearers (decision D68).
+ * Rate limits in front of the OAuth endpoints and OAuth bearers (decision D70).
  *
  * The HMAC tag (review of D44, M-2) already keeps a made-up credential away from every tenant's
  * object. What is left is cost and abuse: floods of cheap requests, registration spam, a client
@@ -31,7 +31,7 @@ import { sha256Hex } from '../../dashboard/src/index.ts'
  *
  * **Every check here fails open**: a binding that is absent, throws, answers something that is not
  * `{ success: boolean }`, or has not answered within `CHECK_TIMEOUT_MS` lets the request through
- * (and logs). Why, per endpoint, is in D68; in short, these are approximate cost throttles, the
+ * (and logs). Why, per endpoint, is in D70; in short, these are approximate cost throttles, the
  * properties that matter are enforced elsewhere (the tag before any object, exact bounds on what is
  * stored inside it), and failing closed would turn a limiter fault into an OAuth outage for every
  * tenant: access tokens last an hour, so every agent would lose access. The deploy, not this code,

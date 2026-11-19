@@ -434,7 +434,7 @@ const MUTANTS = [
   },
   {
     name: 'Tails that fit one by one but not together are not refused (the budget is not summed over shards)',
-    tests: ['test/limits.test.ts', 'test/tail.test.ts'],
+    tests: ['test/limits.test.ts', 'test/tail.test.ts', 'test/review-d54.test.ts', 'test/signals.test.ts'],
     file: 'src/coordinator.ts',
     find: '  const over = reads.some((r) => !r.complete) || bytes > limit',
     replace: '  const over = reads.some((r) => !r.complete)',
@@ -670,7 +670,7 @@ const MUTANTS = [
   },
   {
     name: 'M-2: each shard\'s read gets the whole budget in the first round (one budget per shard)',
-    tests: ['test/review-d54.test.ts'],
+    tests: ['test/review-d54.test.ts', 'test/signals.test.ts'],
     file: 'src/tail.ts',
     find: '  const share = Math.floor(Math.max(0, cap - used) / Math.max(1, n))',
     replace: '  const share = Math.max(0, cap - used)',
@@ -740,10 +740,18 @@ const MUTANTS = [
   },
   {
     name: 'm-7: a page that does not advance the read is asked for again',
-    tests: ['test/review-d54.test.ts'],
+    tests: ['test/review-d54.test.ts', 'test/signals.test.ts'],
     file: 'src/tail.ts',
     find: '      if (r.page.next === cursor) return unavailable',
     replace: "      if (r.page.next === cursor && cursor === '') return unavailable",
+  },
+  // ── The review's fixes on the span and log reads (D62), which share `readTails`: mutant 97 ──
+  {
+    name: 'A span or log read that goes on in the second round of the shared budget sends the filter without its signal (its cursor is bound to the signal\'s filter)',
+    tests: ['test/signals.test.ts'],
+    file: 'src/coordinator.ts',
+    find: "read.incarnation, read.above, asked, budget, 'coordinator'",
+    replace: "read.incarnation, read.above, filter, budget, 'coordinator'",
   },
 ]
 
