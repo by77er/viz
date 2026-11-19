@@ -858,7 +858,9 @@ Starting an incarnation (a new tenant, storage loss, or storage still on the fir
 runs outside `blockConcurrencyWhile`: requests wait at most 2 s and are then refused as
 retryable (`ledger_unavailable`), and the incarnation's base segment is written to R2
 **before** SQLite commits the incarnation, so one incarnation number never names two
-histories. Contract: `contracts/LEDGER-LOG.md`; code: `ledger/src/ledger.ts`.
+histories. Contract: `contracts/LEDGER-LOG.md`; code: `ledger/src/ledger.ts`. **The checkpoint
+format and the 16 MiB size limit described here are replaced by D47** (2026-11-19: alternative
+(h) below, built); the rest stands.
 
 **Alternatives.** (a) As built before: one R2 object per change, written before the
 mutation answers. (b) One object per change, written in the background. (c) Group commit
@@ -1231,6 +1233,99 @@ not measured on Cloudflare.
 **Would change if.** The plan reports the tail and the series a read returns at each step (then no
 count query); viz-query exports an RPC entrypoint that streams results (then one query per
 read again); or the Durable Object memory limit changes.
+
+## D47. A ledger checkpoint larger than one part is written in parts across drains from the state at its version, kept by pre-images; a rebuild streams into SQLite
+
+This replaces the size limit of D36 as the answer to review S-2 (D36's alternative (h)).
+
+**Decision.** A checkpoint of a state above 1 MiB (estimated) is format 2: the drain only begins
+it, in the synchronous step that fixes the segment ending at the committed version (a row with
+that version, the streams and a new attempt name); later drain steps write parts of at most
+1 MiB, one PUT each, files in SQLite's key order then tombstones, a segment always first; then a
+manifest, `If-None-Match: *`, which alone makes the checkpoint exist. Every mutation committed
+meanwhile records, in its own transaction, the pre-image of each file it adds or removes ahead of
+the checkpoint's cursor, and advances a `tracked` version; a part merges live rows with
+pre-images, so it is the state at the checkpoint's version, and a checkpoint whose `tracked` is
+behind (a release without this code committed) is abandoned. Superseded checkpoints are deleted
+only once the newer manifest is in R2, manifests before parts. A state of one part or less is
+still written as one object (format 1). A rebuild loads a checkpoint part by part, a base line
+element by element (`readLedgerLogStream`), into SQLite in transactions of a few hundred rows,
+and a new incarnation's base is written from SQLite in pieces into one conditional PUT; nothing
+holds the state. The size limit becomes the largest state measured (300 MiB, about 300,000
+files), bounded by rebuild time, not memory. Format 1 is still read; migration 3 is additive.
+
+**Alternatives.** (a) Keep the 16 MiB limit (D36). (b) A snapshot: copy the state into SQLite
+tables at the checkpoint's version, then write it out across drains. (c) Rows that record the
+version that added and removed them (soft deletion in `file`), read as of the checkpoint's
+version. (d) The checkpoint as one object written with an R2 multipart upload across drains
+(format 1 unchanged). (e) Build each checkpoint from the previous checkpoint and the segments
+since, outside the object. (f) Write a format-2 checkpoint at every new incarnation as well, and
+never read a base whole. (g) Format 2 for every state.
+
+**Why.** (a) caps a tenant at about 15,800 files. (b) writes every row of the state again at
+every checkpoint (billed row writes, seconds of copying in one step). (c) changes what a row of
+`file` means, so every reader of it changes and the release becomes forward-only. Pre-images cost
+row writes only for files changed ahead of the cursor while a checkpoint is being written, and
+leave `file` as it is. (d) cannot be conditional (`If-None-Match` does not apply to a multipart
+completion), needs parts of 5 MiB, and a rebuild would still parse one object. (e) needs a sorted
+merge of the whole state outside SQLite. (f) doubles a start's writes; a streaming reader of the
+base costs one parser instead and also reads format-1 checkpoints and older bases. (g) would
+change, for every small tenant, the bytes the publisher's golden scenario pins, for no benefit:
+a state of one part is one part either way.
+
+**Measured** (here, workerd, the release before on the same data; `ledger/README.md`): at
+100,000 files the longest step a caller waited for during a checkpoint fell from 0.93 s to 2 ms
+and the process grew by 14 MB instead of 410 MB; a rebuild grew it by 12 MB instead of 196 MB
+but took 5.4 s instead of 3.9 s; at 300,000 files a checkpoint was 272 parts in 9.3 s and a
+rebuild took 20 s, memory flat. Not measured on Cloudflare.
+
+**Cost of it.** About two row writes per file changed during a checkpoint window; a few hundred
+PUTs per checkpoint instead of one (about $0.01 a day for a busy tenant, modelled); slower
+rebuilds; one more table pair and a `tracked` write per mutation while a checkpoint runs. The
+publisher still reads a new incarnation's base whole, so deployments keep the old limit until it
+streams it.
+
+**Would change if.** A rebuild of the largest tenants takes too long on Cloudflare (then keep
+rebuild progress, or start a new incarnation from the old checkpoint); R2 offered conditional
+multipart completion (then (d) is simpler); or row writes during checkpoints show on the bill
+(then (c), forward-only).
+
+## D48. A shard filters and pages its tail reads itself, by reading the batches it stores; the unpaged form stays
+
+**Decision.** `Shard.tailRead` takes optional `TailReadOptions` (`v` 1): a time range, metric
+names, exact label values and a range of `series_id` (unsigned, the engine's split key), a page
+budget and a cursor. The shard decodes each stored `VZB1` batch above the watermark, keeps the
+series and rows the filter keeps, and returns them as new `VZB1` batches (series entries and
+values copied as bytes), at most `maxBytes` a page, with `page.next` bound to the tenant,
+incarnation, watermark and filter, through the end fixed by the first page. A batch whose kept
+rows do not fit a page is refused (`page_limit`), never cut. Without options the answer is as
+before; an older shard ignores options, so `page` in the answer is how a caller knows.
+
+**Alternatives.** (a) Filter at the coordinator (as `engine.splitTails` does now). (b) Per-batch
+metadata (time bounds, metric names) written at append and used to skip whole batches. (c) A
+second, filtered RPC method instead of options on `tailRead`. (d) Run the engine (WASM) in the
+shard to select rows. (e) Page without filtering.
+
+**Why.** (a) still moves the whole tail over RPC and counts it against the query's fetch budget:
+the wall CARDINALITY.md measured (20 MB of tail refused every query of a 100,000-series tenant).
+(b) skips little: a batch from one sender spans most metrics and every series key; it would add
+work and a schema change to the append path, which is the shard's hot path. (c) is cleaner under
+skew (an old shard fails the call instead of ignoring options) but asks every caller to change;
+options plus `page` keep current callers working and are additive. (d) puts a second engine
+instance and its memory in the object that acknowledges writes, for a filter that needs a byte
+compare. (e) bounds the answer but not what a query must fetch.
+
+**Measured** (here, workerd; `shard/README.md`): on a 22 MB tail of 100,000 series, one series
+read 248 bytes, a selective query 0.7 MB and a split leaf of 8 2.8 MB, the engine selecting
+identical samples from each; times were the same as reading the whole tail locally (30–140 ms),
+because the shard still scans every batch.
+
+**Cost of it.** The shard now reads inside stored batches (only on this read path; appends do
+not). CPU per filtered read is proportional to the shard's whole tail for that tenant.
+
+**Would change if.** Filtered reads show on the shard's CPU under load (then (b)); queries need
+regular-expression matchers or `without` splits pushed down; or `query/` prefers failing on an
+old shard to filtering itself (then (c)).
 
 ## D49. LogQL's vector operations run on viz-promql's evaluator, through its hooks
 

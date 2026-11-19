@@ -1,0 +1,25 @@
+# bench/tail.bench.test.ts, 2026-11-19, local workerd on the shared 4-core machine. Three runs (load before and after each).
+## run 1
+ 04:18:36 up  3:37,  0 user,  load average: 11.19, 9.34, 8.64
+ 04:19:03 up  3:38,  0 user,  load average: 11.00, 9.46, 8.70
+ROW {"case":"before: the whole tail","calls":1,"batches":23,"bytes":22351120,"bytesMB":22.351,"series":100000,"msMedian":55,"msMin":40,"msMax":69}
+ROW {"case":"after: one series, rate(m{instance=\"10.0.164.66:9100\"}[5m]) over the tail","calls":1,"batches":1,"bytes":248,"bytesMB":0,"series":1,"msMedian":142,"msMin":54,"msMax":166}
+ROW {"case":"after: selective, sum(rate(m{job=\"job-7\"}[5m])) for the last 3 minutes","calls":1,"batches":23,"bytes":715616,"bytesMB":0.716,"series":5000,"msMedian":53,"msMin":48,"msMax":86}
+ROW {"case":"after: one split leaf of 8, its key range","calls":1,"batches":23,"bytes":2782832,"bytesMB":2.783,"series":12448,"msMedian":75,"msMin":40,"msMax":121}
+ROW {"case":"after: no filter, paged (the cost of paging)","calls":2,"batches":23,"bytes":22351120,"bytesMB":22.351,"series":100000,"msMedian":78,"msMin":45,"msMax":103}
+## run 2
+ 04:19:03 up  3:38,  0 user,  load average: 11.00, 9.46, 8.70
+ 04:19:33 up  3:38,  0 user,  load average: 11.41, 9.71, 8.81
+ROW {"case":"before: the whole tail","calls":1,"batches":23,"bytes":22351120,"bytesMB":22.351,"series":100000,"msMedian":105,"msMin":72,"msMax":116}
+ROW {"case":"after: one series, rate(m{instance=\"10.0.164.66:9100\"}[5m]) over the tail","calls":1,"batches":1,"bytes":248,"bytesMB":0,"series":1,"msMedian":64,"msMin":57,"msMax":224}
+ROW {"case":"after: selective, sum(rate(m{job=\"job-7\"}[5m])) for the last 3 minutes","calls":1,"batches":23,"bytes":715616,"bytesMB":0.716,"series":5000,"msMedian":74,"msMin":30,"msMax":341}
+ROW {"case":"after: one split leaf of 8, its key range","calls":1,"batches":23,"bytes":2782832,"bytesMB":2.783,"series":12448,"msMedian":55,"msMin":44,"msMax":507}
+ROW {"case":"after: no filter, paged (the cost of paging)","calls":2,"batches":23,"bytes":22351120,"bytesMB":22.351,"series":100000,"msMedian":85,"msMin":39,"msMax":123}
+## run 3
+ 04:19:33 up  3:38,  0 user,  load average: 11.41, 9.71, 8.81
+ 04:20:06 up  3:39,  0 user,  load average: 11.82, 10.03, 8.95
+ROW {"case":"before: the whole tail","calls":1,"batches":23,"bytes":22351120,"bytesMB":22.351,"series":100000,"msMedian":97,"msMin":66,"msMax":277}
+ROW {"case":"after: one series, rate(m{instance=\"10.0.164.66:9100\"}[5m]) over the tail","calls":1,"batches":1,"bytes":248,"bytesMB":0,"series":1,"msMedian":37,"msMin":27,"msMax":181}
+ROW {"case":"after: selective, sum(rate(m{job=\"job-7\"}[5m])) for the last 3 minutes","calls":1,"batches":23,"bytes":715616,"bytesMB":0.716,"series":5000,"msMedian":30,"msMin":26,"msMax":45}
+ROW {"case":"after: one split leaf of 8, its key range","calls":1,"batches":23,"bytes":2782832,"bytesMB":2.783,"series":12448,"msMedian":86,"msMin":54,"msMax":161}
+ROW {"case":"after: no filter, paged (the cost of paging)","calls":2,"batches":23,"bytes":22351120,"bytesMB":22.351,"series":100000,"msMedian":123,"msMin":95,"msMax":146}

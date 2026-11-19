@@ -211,9 +211,13 @@ new ledger incarnation, whose base segment is in R2 before it commits anything, 
 incarnation number is never used for two histories and versions are never reused.
 Checkpoints, taken once the log since the last one is as large as it, bound a rebuild, which
 runs outside `blockConcurrencyWhile`: requests meanwhile wait at most 2 s and are refused as
-retryable. Because a base or checkpoint is the whole state in one piece, a ledger's state is
-bounded (16 MiB, about 15,800 files): above it `addUnit` answers `full`, retryably, until
-compaction or retention makes room (`contracts/LEDGER-LOG.md`, "Size").
+retryable. A checkpoint of a state larger than 1 MiB is written in parts across drains, from
+the state at its version (changes committed meanwhile keep pre-images), and a rebuild streams
+checkpoints and bases into SQLite, so nothing holds the whole state (D47). The bound left is
+time: a rebuild reads and writes the whole state while the tenant is refused, so the state is
+bounded at the largest measured (300 MiB, about 300,000 files; 20 s locally): above it
+`addUnit` answers `full`, retryably, until compaction or retention makes room
+(`contracts/LEDGER-LOG.md`, "Size").
 Measured on Cloudflare: 234–422 units per second with eight writers, and a rebuild of
 5,008 changes in 5.4 s (`spikes/s4-ledger-scale/`). The orphan sweeper deletes an object only if the
 ledger neither lists nor tombstones it and it can never be listed: a flush file once its
@@ -361,7 +365,11 @@ with label-based access rules. A caller cannot omit it.
   files) at three quarters of one isolate's limits. Queries that do not decompose run in one
   place. Approximate quantiles are not built.
 - A tail read is a filtered scan over a shard's unsealed and unflushed segments. Segments
-  are bounded by seal size, so the shard needs no query engine and no second index. Shards
+  are bounded by seal size, so the shard needs no query engine and no second index. The
+  filter (time range, metric names, exact label values, a range of series keys) is applied
+  by the shard and the answer comes in pages with a continuation (D48), so a query takes only
+  the tail it needs and a split leaf only its key range (built in `shard/`; `query/` does not
+  use it yet). Shards
   keep recorded segments for a short bounded time, and a refused split is retried on its
   own with a fresh ledger read, so a busy shard cannot make a whole query loop.
 - **Leaves are Durable Objects.** Measured on Cloudflare (`spikes/s1-fanout-r2/`): R2 reads

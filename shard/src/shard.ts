@@ -2,6 +2,11 @@ import { DurableObject } from 'cloudflare:workers'
 import { SHARD_NAME } from '../../contracts/ledger'
 import { type SchemaSpec, type SchemaTooNew, SchemaTooNewError, columnsOf, openSchema, refusalOf } from '../../contracts/schema'
 import { SeriesWindow, UnreadableSketch } from './sketch'
+import {
+  TAIL_PAGE_MAX_BYTES, TAIL_READ_VERSION, TAIL_SCAN_MAX_BYTES, type TailPage, type TailReadOptions, UnreadableBatch, compileFilter, decodeCursor, encodeCursor,
+  filterBatch, fnv64,
+} from './tail'
+export { TAIL_PAGE_MAX_BYTES, TAIL_READ_VERSION, TAIL_SCAN_MAX_BYTES, type TailFilter, type TailPage, type TailReadOptions, splitKeyRange } from './tail'
 
 /**
  * A pooled shard: the write-ahead log for several tenants in one Durable Object.
@@ -72,6 +77,8 @@ export interface ShardConfig {
    */
   groupWindowMs: number
   maxGroupBytes: number
+  /** A filtered tail read examines at most this many stored bytes per call; the rest is its next page (D48). */
+  tailScanMaxBytes: number
 }
 
 export const DEFAULT_CONFIG: ShardConfig = {
@@ -91,6 +98,7 @@ export const DEFAULT_CONFIG: ShardConfig = {
   overloadRetryMs: 1000,
   groupWindowMs: 0,
   maxGroupBytes: 4 << 20,
+  tailScanMaxBytes: TAIL_SCAN_MAX_BYTES,
 }
 
 /**
@@ -221,8 +229,15 @@ export interface TailBatch {
 }
 
 export type TailResult =
-  | { status: 'ok'; incarnation: number; through: number; batches: TailBatch[] }
-  /** The shard has discarded rows above the watermark it was asked about. Re-read the ledger. */
+  /**
+   * `page` is present exactly when the call passed `TailReadOptions` and this shard applied
+   * them (added 2026-11-19, D48): `batches` hold only the rows the filter keeps, at most
+   * `maxBytes` of them, and `page.next` continues the read. A caller that passed options and
+   * gets `ok` WITHOUT `page` is talking to an older shard: the batches are the whole tail,
+   * unfiltered and unpaged, as before (COMPATIBILITY.md §3.3: callee first).
+   */
+  | { status: 'ok'; incarnation: number; through: number; batches: TailBatch[]; page?: TailPage }
+  /** The shard has discarded rows above the watermark it was asked about (for a paged read: on any page). Re-read the ledger. */
   | { status: 'stale_watermark'; incarnation: number; discardedThrough: number }
   /**
    * The stream was recreated (storage loss), or the shard holds no stream for this tenant
@@ -230,6 +245,17 @@ export type TailResult =
    * register the new incarnation.
    */
   | { status: 'incarnation_mismatch'; incarnation: number }
+  /**
+   * Added with `TailReadOptions` (only ever answered to a call that passes them). The rows the
+   * filter keeps of batch `seq` alone are `bytes`, more than the page may hold: nothing is
+   * returned, never a truncated batch. Ask again with a larger `maxBytes` (up to
+   * `TAIL_PAGE_MAX_BYTES`, which one stored batch never exceeds) or a narrower filter.
+   */
+  | { status: 'page_limit'; seq: number; bytes: number; maxBytes: number }
+  /** Options or a cursor this shard refuses (malformed, or a cursor of another read). Not retryable as is. */
+  | { status: 'invalid'; reason: string }
+  /** Options or a cursor of a version this shard does not read (COMPATIBILITY.md §3.2). */
+  | { status: 'unsupported_version'; version: number; supported: number }
 
 /** A tenant with sealed segments its ledger has not recorded. */
 export interface PendingTenant {
@@ -804,8 +830,17 @@ export class Shard extends DurableObject<ShardEnv> {
   /**
    * Rows of ONE tenant above a ledger watermark. If the shard has already discarded rows
    * the caller would need, it says so instead of returning a result with a hole in it.
+   *
+   * Without `opts` (the form every caller used before D48): every batch above `aboveSeq`, whole,
+   * in one answer. With `opts`: only the rows the filter keeps (time range, metric names, exact
+   * label values, a range of series keys), in pages of at most `maxBytes`, each with `page`;
+   * `page.next` continues the read where it stopped, through the same `through`. A page never
+   * holds part of a batch's kept rows: if they alone exceed `maxBytes` the answer is
+   * `page_limit`. Every page checks the discard fence against the read's watermark: rows
+   * above it discarded since the first page refuse the rest (`stale_watermark`), even rows
+   * already returned (stricter than needed, and simple).
    */
-  async tailRead(tenant: string, incarnation: number, aboveSeq: number): Promise<TailResult> {
+  async tailRead(tenant: string, incarnation: number, aboveSeq: number, opts?: TailReadOptions): Promise<TailResult> {
     if (this.refusal) this.refused()
     // Appends waiting in the open group are not acknowledged yet, so not visible either.
     const s = this.streams.get(tenant)
@@ -813,11 +848,84 @@ export class Shard extends DurableObject<ShardEnv> {
       // No stream here. A caller that names one (an incarnation the ledger registered) is
       // told the shard does not hold it, so the loss shows instead of an empty tail (review
       // R-10); one that names none (0) and so expects nothing gets nothing.
-      return incarnation === 0 ? { status: 'ok', incarnation: 0, through: aboveSeq, batches: [] } : { status: 'incarnation_mismatch', incarnation: 0 }
+      if (incarnation !== 0) return { status: 'incarnation_mismatch', incarnation: 0 }
+      const empty: TailResult = { status: 'ok', incarnation: 0, through: aboveSeq, batches: [] }
+      return opts === undefined ? empty : { ...empty, page: { v: TAIL_READ_VERSION, next: null, scannedBatches: 0, scannedBytes: 0 } }
     }
     if (s.incarnation !== incarnation) return { status: 'incarnation_mismatch', incarnation: s.incarnation }
     if (aboveSeq < s.discardedThrough) return { status: 'stale_watermark', incarnation, discardedThrough: s.discardedThrough }
-    return { status: 'ok', incarnation, through: s.nextSeq - 1, batches: this.batches(tenant, aboveSeq + 1, s.nextSeq - 1) }
+    if (opts === undefined) return { status: 'ok', incarnation, through: s.nextSeq - 1, batches: this.batches(tenant, aboveSeq + 1, s.nextSeq - 1) }
+    return this.tailPage(tenant, s, aboveSeq, opts)
+  }
+
+  /** One page of a filtered tail read (`tailRead` with options), the stream and its fence already checked. */
+  private tailPage(tenant: string, s: Stream, aboveSeq: number, opts: TailReadOptions): TailResult {
+    if (typeof opts !== 'object' || opts === null) return { status: 'invalid', reason: 'options must be an object' }
+    const v = opts.v ?? 1
+    if (!Number.isSafeInteger(v) || v < 1) return { status: 'invalid', reason: 'v must be a positive integer' }
+    if (v > TAIL_READ_VERSION) return { status: 'unsupported_version', version: v, supported: TAIL_READ_VERSION }
+    const f = compileFilter(opts)
+    if ('invalid' in f) return { status: 'invalid', reason: f.invalid }
+    const maxBytes = opts.maxBytes ?? TAIL_PAGE_MAX_BYTES
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) return { status: 'invalid', reason: 'maxBytes must be a positive integer' }
+    const limit = Math.min(maxBytes, TAIL_PAGE_MAX_BYTES)
+    const binding = { t: fnv64(tenant), f: fnv64(f.canonical) }
+    let through = s.nextSeq - 1
+    let from = aboveSeq + 1
+    if (opts.cursor !== undefined) {
+      const c = decodeCursor(opts.cursor)
+      if ('unsupported' in c) return { status: 'unsupported_version', version: c.unsupported, supported: TAIL_READ_VERSION }
+      if ('invalid' in c) return { status: 'invalid', reason: c.invalid }
+      // A cursor continues one read: the same tenant, stream, watermark and filter.
+      if (c.t !== binding.t || c.inc !== s.incarnation || c.above !== aboveSeq || c.f !== binding.f || c.seq <= aboveSeq || c.seq > c.through + 1) {
+        return { status: 'invalid', reason: 'the cursor belongs to another read (tenant, incarnation, watermark or filter differ)' }
+      }
+      through = c.through
+      from = c.seq
+      // (A discard above the read's watermark since its first page was refused by `tailRead`.)
+    }
+    const batches: TailBatch[] = []
+    let bytes = 0
+    let scannedBatches = 0
+    let scannedBytes = 0
+    let next: number | null = null
+    // Row by row from SQLite (nothing is awaited here), so the page holds what it returns and
+    // one stored batch, not the tail.
+    for (const r of this.ctx.storage.sql.exec(
+      `SELECT seq, rows, payload FROM batch WHERE tenant = ? AND seq BETWEEN ? AND ? AND payload IS NOT NULL ORDER BY seq`, tenant, from, through,
+    )) {
+      const seq = r.seq as number
+      if (scannedBytes >= this.cfg.tailScanMaxBytes) {
+        next = seq
+        break
+      }
+      const payload = new Uint8Array(r.payload as ArrayBuffer)
+      scannedBatches++
+      scannedBytes += payload.byteLength
+      let kept: { bytes: Uint8Array; rows: number } | null
+      try {
+        kept = f.all ? { bytes: payload, rows: r.rows as number } : filterBatch(payload, f)
+      } catch (e) {
+        // An acknowledged batch this code cannot read is never skipped: the read fails.
+        if (e instanceof UnreadableBatch) throw new Error(`shard: tail of ${tenant}: batch ${seq} is unreadable (${e.message})`)
+        throw e
+      }
+      if (!kept) continue
+      if (bytes + kept.bytes.byteLength > limit) {
+        if (batches.length === 0) return { status: 'page_limit', seq, bytes: kept.bytes.byteLength, maxBytes: limit }
+        next = seq
+        break
+      }
+      batches.push({ seq, rows: kept.rows, payload: kept.bytes })
+      bytes += kept.bytes.byteLength
+    }
+    const page: TailPage = {
+      v: TAIL_READ_VERSION,
+      next: next === null ? null : encodeCursor({ inc: s.incarnation, above: aboveSeq, through, seq: next, ...binding }),
+      scannedBatches,
+      scannedBytes,
+    }
+    return { status: 'ok', incarnation: s.incarnation, through, batches, page }
   }
 
   /** Per-stream state, for the ledger, for tests and for operators. */
