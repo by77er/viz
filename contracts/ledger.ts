@@ -799,8 +799,12 @@ export class JsonObjectStream {
   private started = false
   done = false
   readonly scalars: Record<string, unknown> = {}
+  private readonly onElement: (member: string, element: unknown) => void
 
-  constructor(private readonly onElement: (member: string, element: unknown) => void) {}
+  // A declared field, not a parameter property: contracts/ compiles under `erasableSyntaxOnly`.
+  constructor(onElement: (member: string, element: unknown) => void) {
+    this.onElement = onElement
+  }
 
   push(s: string): void {
     let from = 0

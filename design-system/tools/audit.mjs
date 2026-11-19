@@ -319,9 +319,9 @@ function guards({ fine, coarse, hitOnly }) {
       const tall = owner(cx, cy - 21) === el && owner(cx, cy + 21) === el, wide = owner(cx - 21, cy) === el && owner(cx + 21, cy) === el // 44 px, less a pixel at each end where two areas meet and hit testing snaps
       if (!tall || !wide) say('hit-area', `${name(el)}: hit area under 44 px ${!tall ? 'tall' : 'wide'} with a coarse pointer (drawn ${Math.round(r.width)} x ${Math.round(r.height)} px)`)
       // its drawn box, sampled: another control's hit area or box reaching into it takes those taps (a plot's data starts under its strip)
-      const top0 = el.matches('.vz-plot') ? r.top + (parseFloat(cs(el).getPropertyValue('--strip')) || 0) : r.top, h0 = r.bottom - top0
-      for (const fx of [0.1, 0.5, 0.9]) for (const fy of [0.15, 0.5, 0.85]) { const x = r.left + r.width * fx, y = top0 + h0 * fy; if (x < 0 || x >= innerWidth || y < 0 || y >= innerHeight) continue
-        const o = owner(x, y); if (o && o !== el && !el.contains(o) && !o.contains(el) && !o.closest('.vz-menu, .vz-dialog, .vz-scrim, .vz-tooltip, .vz-notice[data-floating], dialog')) { say('hit-area', `${name(el)}: part of its drawn box (at ${Math.round(fx * 100)}%, ${Math.round(fy * 100)}%) belongs to ${name(o)} with a coarse pointer`); break } }
+      const boxes = el.matches('.vz-plot') ? [{ left: r.left, right: r.right, top: r.top + (parseFloat(cs(el).getPropertyValue('--strip')) || 0), bottom: r.bottom }] : [...el.getClientRects()].filter((q) => q.width >= 6 && q.height >= 6)
+      probe: for (const q of boxes) for (const x of [q.left + 2, (q.left + q.right) / 2, q.right - 2]) for (const y of [q.top + 2, (q.top + q.bottom) / 2, q.bottom - 2]) { if (x < 0 || x >= innerWidth || y < 0 || y >= innerHeight) continue
+        const o = owner(x, y); if (o && o !== el && !el.contains(o) && !o.contains(el) && !o.closest('.vz-menu, .vz-dialog, .vz-scrim, .vz-tooltip, .vz-notice[data-floating], dialog')) { say('hit-area', `${name(el)}: part of what it draws (${Math.round(x - r.left)}, ${Math.round(y - r.top)} px in) belongs to ${name(o)} with a coarse pointer`); break probe } }
     }
     scrollTo(0, 0)
   }

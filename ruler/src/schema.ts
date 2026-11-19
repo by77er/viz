@@ -113,6 +113,23 @@ CREATE TABLE IF NOT EXISTS tenant_shards (tenant TEXT NOT NULL PRIMARY KEY, shar
 }
 
 /**
+ * The versions of `store.anomaly-state` this release reads: version 1, and version 2, which the
+ * release after it writes, so that this release is a rollback target for that one
+ * (contracts/COMPATIBILITY.md §3.3, readers first).
+ */
+export const ANOMALY_STATE_READS = [1, 2] as const
+
+/**
+ * The version gate of `store.anomaly-state` (COMPATIBILITY.md §3.3, design D60): the version this
+ * release WRITES for robust z and seasonal rules. **1 in this release**: it reads versions 1 and 2
+ * and writes 1 (rows of version 2 are rewritten as 1 at their next tick). Set it to 2 in the release
+ * after one with this reader has been deployed to production: that release writes the ring blocks
+ * (rows of version 1 are rewritten as 2 at their next tick), and its save-time estimates, and so the
+ * series caps, follow (`estimateStateBytes`). EWMA, threshold and CUSUM are written as 1 either way.
+ */
+export const ANOMALY_STATE_WRITE: 1 | 2 = 1
+
+/**
  * Versions of what this component writes that another release reads (contracts/COMPATIBILITY.md
  * §3). Bump one only together with a new file in `test/golden/formats/`.
  */
@@ -137,12 +154,12 @@ export const FORMATS = {
    */
   'store.anomaly-rule': 1,
   /**
-   * `anomaly_state.body`. Version 1: one batch of series' detector state (`{"v":1,"series":[...]}`),
-   * still written for every detector but robust z and seasonal. Version 2 (`anomalystore.ts`):
-   * those two detectors' windows as Float64 ring blocks and a head, written while the gate
-   * `ANOMALY_STATE_WRITE` is 2. This release reads both (`ANOMALY_STATE_READS`).
+   * `anomaly_state.body`, the version written: the gate `ANOMALY_STATE_WRITE` (1 in this release).
+   * Version 1: batches of series' detector state (`{"v":1,"series":[...]}`). Version 2
+   * (`anomalystore.ts`): robust z's and seasonal's windows as Float64 ring blocks and a head, read by
+   * this release (`ANOMALY_STATE_READS`) and written by the next; its golden file is checked in.
    */
-  'store.anomaly-state': 2,
+  'store.anomaly-state': ANOMALY_STATE_WRITE,
   /** The `anomaly_detail` annotation an anomaly alert carries to the notifier and receivers (`AnomalyDetail`, `v: 1`). */
   'annotation.anomaly-detail': 1,
   /** SLO rules (contract version 4): a rule as stored in `rule_group.spec.sloRules` and exported, its key, and its per-tick expression. */
@@ -154,18 +171,3 @@ export const FORMATS = {
   /** `warmup.body`: a rule's `WarmupStatus` as stored (`{"v":1,...}`). */
   'store.warmup': 1,
 } as const
-
-/**
- * The versions of `store.anomaly-state` this release reads: whatever it writes, it reads both, so
- * it is a rollback target for a release that writes 2 (contracts/COMPATIBILITY.md §3.3).
- */
-export const ANOMALY_STATE_READS = [1, 2] as const
-
-/**
- * The version gate of `store.anomaly-state` (COMPATIBILITY.md §3.3): the version this release
- * WRITES for robust z and seasonal rules. 1: reads both and writes 1 (a readers-first release; rows
- * of version 2 are rewritten as 1 at their next tick). 2: writes the ring blocks (rows of version 1
- * are rewritten as 2 at their next tick). On (2) in this release; README, "Versioned storage", says
- * what that means for a rollback to a release that reads only 1, and how to ship the reader first.
- */
-export const ANOMALY_STATE_WRITE: 1 | 2 = 2

@@ -251,7 +251,12 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
 @container (max-width: 639px) {
   .vz-table[data-fold]:has(th[data-priority="1"] ~ th[data-priority="1"]) :is(th:first-child, td[data-key]) { flex-basis: 100%; }
   .vz-table[data-fold]:has(th[data-priority="1"] ~ th[data-priority="1"]) td.vz-row-actions:not([data-key]) { order: 1; }
-  @media (pointer: coarse) { .vz-table[data-fold]:has(th[data-priority="1"] ~ th[data-priority="1"]) td.vz-row-actions:not([data-key]) { min-height: 0; } } /* in the middle line its 44 px hit area reaches into the row's own lines above and below, not past the row: the line stays as tall as the figures (v7 review, m1: density) */
+  @media (pointer: coarse) {
+    /* in the middle line "Actions…" is drawn at its own height and its 44 px hit area reaches past it: the line stays as tall as the figures
+       (v7 review, m1: density). The key's line ends that far above it, so a tap on the key's last words is the key's (audit: hit-area). */
+    .vz-table[data-fold]:has(th[data-priority="1"] ~ th[data-priority="1"]) td.vz-row-actions:not([data-key]) { min-height: 0; }
+    .vz-table[data-fold]:has(th[data-priority="1"] ~ th[data-priority="1"]) tbody td[data-key] { padding-bottom: calc((var(--control-touch) - var(--control-sm)) / 2); }
+  }
 }
 
 /* Status: a mark with its own shape, then a word. Shape and word carry the state; colour reinforces it. */

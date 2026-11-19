@@ -1,6 +1,8 @@
 declare namespace Cloudflare {
   interface Env {
     RULER: DurableObjectNamespace<import('./harness').TestRuler>
+    /** '1' or '2': the `store.anomaly-state` gate of every test Ruler object (vitest.config.ts); '' = the release's. */
+    TEST_ANOMALY_STATE_WRITE: string
     NOTIFIER: DurableObjectNamespace<import('./harness').TestNotifier>
     RULER_INDEX: DurableObjectNamespace<import('./harness').TestRulerIndex>
     CONFIG: KVNamespace

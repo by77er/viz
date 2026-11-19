@@ -195,7 +195,8 @@ export class Crash extends Error {
 
 export class TestRuler extends Ruler {
   protected override anomalyStateWrite(): 1 | 2 {
-    return tenantWorld(this.tenant).anomalyStateWrite ?? super.anomalyStateWrite()
+    const all = (this.env as unknown as { TEST_ANOMALY_STATE_WRITE?: string }).TEST_ANOMALY_STATE_WRITE
+    return tenantWorld(this.tenant).anomalyStateWrite ?? (all === '1' || all === '2' ? (Number(all) as 1 | 2) : super.anomalyStateWrite())
   }
   protected override now(): number {
     return world.now
