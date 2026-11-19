@@ -997,7 +997,7 @@ export const MUTANTS = [
     edits: one('src/history.ts', ", ...(counted.some((x) => x) ? { countsRead: true } : {}) }", ' }'),
     tests: ['test/history.test.ts'],
   },
-  // ───────────── windowed detector state as Float64 ring blocks (store.anomaly-state v2, D56) ─────────────
+  // ───────────── windowed detector state as Float64 ring blocks (store.anomaly-state v2, D60) ─────────────
   {
     name: 'ring blocks: values stored at the wrong float width (Float32 precision)',
     edits: one('src/anomalystore.ts', 'view.setFloat64(i * 8, v === 0 ? 0 : v, true)', 'view.setFloat64(i * 8, v === 0 ? 0 : Math.fround(v), true)'),
