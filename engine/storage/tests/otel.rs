@@ -5,6 +5,7 @@ mod otelgen;
 use otelgen::*;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use proptest::prelude::*;
+use proptest::strategy::ValueTree;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use viz_storage::otel::{self, Attr, LogRow, LogStream, SignalBatchError, Span, SpanEntry, Value};
 use viz_storage::{
