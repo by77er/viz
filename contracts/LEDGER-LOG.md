@@ -117,8 +117,14 @@ ledger/tenant={tenant}/{ledgerIncarnation}/seg-{firstVersion:012}-{lastVersion:0
     same bytes.
   - A failed part or manifest write never fails or delays the log: it is retried from where it
     stood after a backoff (1 s doubling to 60 s). An eviction resumes it from SQLite.
-- A checkpoint is only an accelerator for a rebuild. Nothing else reads it, and a log with no
-  checkpoint, or with a bad one, rebuilds from an older checkpoint or the base.
+- A checkpoint is an accelerator, for the ledger's own rebuild and for a reader that meets an
+  incarnation it has no cursor for: the publisher re-bases a tenant from the newest checkpoint
+  it can read, else from the base (D55; `publisher/README.md`, "Re-base in bounded memory").
+  Such a reader reads a manifest, then its parts in order, checks each part against the
+  manifest (header, record count, key order, totals), and treats a named part that is missing
+  as `incomplete` and anything that does not match as `corrupt`: it publishes nothing from it
+  and retries. A log with no checkpoint, or with a bad one, rebuilds from an older checkpoint
+  or the base. The format carries no per-part digest (`publisher/README.md`, Contract issues).
 
 ## Size
 
