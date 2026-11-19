@@ -290,6 +290,69 @@ def _events(case, kinds, viz, tem):
     return all((ev and d["events"].get(s, 0) >= 2) or (lk and d["links"].get(s, 0) >= 2) for s in spans)
 
 
+UNION_OPS = ("&>>", "&<<", "&>", "&<", "&~")
+
+
+@rule("tempo_union_structural")
+def _union(case, kinds, viz, tem):
+    # Tempo's union structural operators return the right-hand matches but only some of the
+    # left-hand spans that relate to them (on a 81-span trace, `{ } &>> {b}` kept the
+    # ancestors of one match only); the documentation says both sides' matching spans are
+    # returned, which is what viz does. Tempo's spans must be a subset of viz's.
+    return case["kind"] == "search" and any(op in case["query"] for op in UNION_OPS) and subset_of_viz(viz, tem)
+
+
+INT_KEYS = ("n", "retries", "http.status_code", "rint", "ev")
+FLOAT_KEYS = ("f", "ratio")
+
+
+def typed_mismatch(q):
+    num = r"(=|!=|<=|>=|<|>)\s*(-?\d+(\.\d+)?)(?![\w.])"
+    for m in re.finditer(r"(?:\.|span\.|resource\.)([A-Za-z_.]+)\s*" + num, q):
+        key, lit = m.group(1), m.group(3)
+        if key in INT_KEYS and "." in lit:
+            return True
+        if key in FLOAT_KEYS and "." not in lit:
+            return True
+    return False
+
+
+@rule("tempo_typed_pushdown")
+def _typed(case, kinds, viz, tem):
+    # When Tempo's storage applies a condition itself it compares only values of the
+    # literal's type (an int attribute never matches `> 4.0`); when its evaluator applies
+    # the same condition (inside structural queries, pipelines, arithmetic) it compares
+    # numbers by value. viz always compares by value. The query must compare an int
+    # attribute with a float literal or a float attribute with an int literal.
+    return typed_mismatch(case["query"])
+
+
+@rule("tempo_unscoped_nil")
+def _unscoped_nil(case, kinds, viz, tem):
+    # For `.key = nil` Tempo's storage tests the span and the resource separately and
+    # matches if the key is missing from either; viz looks the key up (span, then
+    # resource) and matches if it is missing from both.
+    return re.search(r"(?<![\w])\.[A-Za-z_.]+\s*=\s*nil", case["query"]) is not None
+
+
+@rule("tempo_regex_error")
+def _regex_err(case, kinds, viz, tem):
+    # Tempo fails with "unexpected numbers of pre-compiled regexp" on some valid queries
+    # with several regex conditions on the same attribute; viz answers them.
+    return any(k == "error_mismatch" and "pre-compiled regexp" in str(d) for k, d in kinds)
+
+
+EVENT_KEY = re.compile(r"\b(?:event|link)\.([A-Za-z_.]+)")
+
+
+@rule("echo_event_choice")
+def _echo_event(case, kinds, viz, tem):
+    # Only echoed values differ, and only for event or link fields: Tempo echoes the event
+    # its storage matched, viz the first event the span's filter holds for.
+    keys = set(EVENT_KEY.findall(case["query"])) | {"event:name", "event:timeSinceStart", "link:spanID", "link:traceID"}
+    return all(k == "echo_value" and d[0] in keys for k, d in kinds)
+
+
 def classify(case, kinds, viz, tem):
     for name, f in RULES:
         try:
