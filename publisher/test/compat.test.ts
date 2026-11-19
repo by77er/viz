@@ -191,8 +191,9 @@ describe('Iceberg metadata written by a newer publisher', () => {
     await env.BUCKET.put(`${metaDir(cell, table)}v${n + 1}.metadata.json`, JSON.stringify(evolved))
     await env.BUCKET.put(`${metaDir(cell, table)}version-hint.text`, String(n + 1))
     const before = await listKeys(`${cell}/iceberg/`)
-    // Its own view of the table is not rebuilt from metadata it does not understand either (only `pending` may change).
-    const cache = (d: Dump) => ({ ...d, rows: Object.fromEntries(Object.entries(d.rows).filter(([k]) => k !== 'pending')) })
+    // Its own view of the table is not rebuilt from metadata it does not understand either
+    // (only the pending tenants and their retry deadline may change).
+    const cache = (d: Dump) => ({ ...d, rows: Object.fromEntries(Object.entries(d.rows).filter(([k]) => k !== 'pending' && k !== 'due')) })
     const cacheBefore = await runInDurableObject(p, (_i, s) => cache(dumpOf(s)))
 
     await addUnit(t, pairUnit(cell, t, 10, 12, T0 + DAY_MS))

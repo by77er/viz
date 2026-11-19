@@ -16,7 +16,8 @@
 //   - the real API's refusals, as a person meets them: a parse error (and where it is), an
 //     unknown function, PromQL viz does not run (422), too many points (400), a query over
 //     16 KiB (422), no key (401), an unknown key (401), a key without the read scope (403), an unreadable limits
-//     record (503 with Retry-After: 30), and the API's time limit (503 timeout)
+//     record (503 with Retry-After: 30), the API's time limit (503 timeout), and a limit on the
+//     samples a query reads (422 max_samples)
 const lib = require('./lib.cjs')
 const { chromium, T0, T1, Q_RATE, Q_CPU, Q_P95, Q_MANY, Q_BAD } = lib
 
@@ -222,6 +223,20 @@ async function main() {
         if (s && s.kind === 'timeout') break
       }
       check('real API, its time limit (503 timeout): the advice names the time limit; not retried', !!s && s.kind === 'timeout' && /The API stopped the query at its time limit/.test(s.advice), s ? `${s.message} | ${s.advice}` : 'no error state')
+    } finally {
+      lib.realKv(`limits:${keys.tenant}`, null)
+    }
+    // A limit on what the query reads, set to 1,000 samples for the tenant: 422 max_samples, and the advice is to narrow the range.
+    lib.realKv(`limits:${keys.tenant}`, '{"maxSamples":1000}')
+    try {
+      let s = null
+      for (let i = 0; i < 12; i++) {
+        await page.waitForTimeout(3000)
+        await page.goto(at(APP_REAL, Q_RATE, `&step=${45 + i}s`))
+        s = await errorState(page).catch(() => null)
+        if (s && s.kind === 'limit') break
+      }
+      check('real API, a limit on the samples read (max_samples): 422, and the advice is to narrow the range or select fewer series', !!s && s.kind === 'limit' && /^query exceeded limit max_samples/.test(s.message) && /execution with HTTP 422\. The query reads more data than the API allows\. Narrow the time range or select fewer series\./.test(s.advice), s ? `${s.message} | ${s.advice}` : 'no error state')
     } finally {
       lib.realKv(`limits:${keys.tenant}`, null)
     }

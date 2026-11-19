@@ -445,7 +445,9 @@ with a deadline and partial results; the budget hook.
 - **Images**, MCP Apps (`ui://`), `subscriptions/listen`, completions, logging.
 - **Dashboard deep links**: the app has only Explore, so links are Explore links per query.
 - **A cost estimate in bytes**: `validate_query` estimates from series counts and an assumed
-  15 s spacing; the query service has no plan-only endpoint.
+  15 s spacing. The query service now has a plan-only endpoint (`/api/v1/plan` in
+  `query/src/index.ts`: files, bytes, scan bound, split, refusal), added after this surface
+  was built; `QueryClient` does not call it yet.
 - **Deployment**: never deployed; `wrangler.jsonc` is the production shape (service
   bindings `QUERY`, `CONTROL`, `RULER`; KV `CONFIG`), not wired into `stack/`.
 
@@ -645,9 +647,10 @@ the package's footer; `design/DECISIONS.md` D25–D29 and DESIGN §8. Still open
 
 1. **`edge/src/auth.ts`**: a `verify(req, kv) → Principal` that needs no scope (control's
    Needed change 1 too); this surface asks once per scope, like control.
-2. **`query/`**: a plan-only endpoint (bytes, files, `X-Viz-Scan-Samples` without
-   evaluating) would turn `validate_query`'s estimate from series counts into bytes;
-   metric metadata (type, unit, help) would replace inference from names.
+2. **`query/`**: metric metadata (type, unit, help) would replace inference from names. The
+   plan-only endpoint asked for here now exists (`/api/v1/plan`); using it in
+   `validate_query`, so its estimate is in bytes rather than series counts, is work in
+   `mcp/` that has not been done.
 3. **`contracts/rules.ts`** imports `'../../contracts/engine'`, which resolves outside the
    repository; and the monitor view this surface reads (`MonitorView`) is only in
    `ruler/contracts-proposal/rules.v2.ts`, so `src/clients.ts` declares the subset it uses.

@@ -29,7 +29,7 @@ const MUTANTS = [
 
 // It edits gateway/src/index.ts in place: run it in a copy outside any git work tree
 // (AGENTS.md: a mutant caught in a commit ships). The copy needs deploy/ (with node_modules),
-// control/src, edge/src, dashboard/src and contracts/, which the tests import.
+// control/{src,openapi.json}, edge/src, dashboard/src and contracts/, which the tests import.
 try {
   execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: DEPLOY_DIR, stdio: 'pipe' })
   console.error('Refusing to mutate sources inside a git work tree. Copy the tree first (see above).')

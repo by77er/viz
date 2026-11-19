@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 // It edits sources in place: run it in a copy outside any git work tree (AGENTS.md: a mutant
-// caught in a commit ships). The copy needs mcp/ (with node_modules), control/src,
+// caught in a commit ships). The copy needs mcp/ (with node_modules), control/{src,openapi.json},
 // dashboard/{src,examples,schema,package.json}, edge/src and contracts/, which the tests import.
 try {
   execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: root, stdio: 'pipe' })

@@ -315,7 +315,129 @@ the viz design system · uPlot 1.6.32 · CodeMirror 6 · vitest 5 · fast-check 
   answers, which the viz API never sends. A delay longer than the query's time limit (30 s,
   or a `timeout` parameter) is answered 503 `timeout`, as the real API does.
 
-## Not done
+## The real viz API, locally
+
+The app runs against the real API: the write path, the query Worker and the control plane,
+put behind `deploy/gateway` in one script (`real/worker.ts`, `real/wrangler.jsonc`) and served
+by `wrangler dev --local`. Nothing is deployed and nothing reaches Cloudflare: the Cloudflare
+credentials are removed from wrangler's environment and every binding is local.
+
+```sh
+node real/stack.mjs start     # wrangler dev --local on 127.0.0.1:8851; provisions tenant viz-app-e2e through the
+                              # gateway's one-time bootstrap (control's Tenant.provision) and creates the keys
+                              # app-read [read] and app-write [write]
+node real/stack.mjs seed      # real/seed.ts: 13 Remote Write requests (snappy protobuf, through edge), 472,360
+                              # samples: every series of the mock, sample for sample, 08:00 to 14:00 UTC on
+                              # 2026-11-18 (counters, a classic histogram, gauges with a 12-minute gap, `up`,
+                              # and the 200 `viz_synthetic_series` gauges)
+VIZ_API_TARGET=http://127.0.0.1:8851 npx vite preview   # the app on it; paste the read key in Settings
+node real/stack.mjs stop
+```
+
+Everything it writes is under `real/.wrangler/` (git-ignored): the local Durable Object, R2,
+KV and queue state, the log, and `keys.json` (mode 0600). Keys are never printed. One setting
+differs from production: `INGEST_LIMITS` lets edge accept any timestamp (the e2e window is
+older than edge's one-hour acceptance window), as `query/test/wrangler.jsonc` does. The queues
+are real (local): segments are sealed and flushed to Parquet, so queries read lake files and
+shard tails. **`wrangler dev` reloads when the source of the components changes**, so the
+"real API" is the working tree of `query/`, `edge/`, `control/` and the rest as they are at
+that moment, other engineers' edits in progress included (one such edit, a new cost header,
+appeared while this change was being checked).
+
+## Mock and real API
+
+Found by sending the same requests to both (`e2e/contract.cjs`: 60 requests, 82 checks; the
+real answers are kept in `e2e/measurements/contract-real.json`) and by running the app on
+both (`e2e/real.cjs`). "Mock" is the mock as it was before the change that found the
+difference. The first column says which pass found it: 1 is the first pass (the change
+before this one), 2 is this one.
+
+| Pass | Where | Real API | Mock (before) | Done |
+|---|---|---|---|---|
+| 1 | Authentication | every `/api/v1/` path needs a key with the `read` scope: no key 401 `unauthorized` "missing API key", a wrong one 401 "invalid API key", both with `WWW-Authenticate: Bearer realm="viz"`; a key without `read` 403 `forbidden` "API key lacks the read scope" | no key needed; `--require-token` gave 401 "missing or invalid bearer token" with no challenge, and no 403 | app: the error state says what to do with the key and its button opens Settings (it said "Change the query"); mock: the same answers in `--require-token` mode, plus `--readless-token` for 403 |
+| 2 | Authentication, as a person reads it | a missing key and an unknown key are both 401 | (same) | app: a 401 with no key in Settings now says "No API key is set" (it said the API "did not accept the API key"), and the shell's banner tells the three cases apart (it said "rejected the credentials" for all of them, a missing key and a key without the read scope included) |
+| 1 | Busy | 503 `unavailable` with `Retry-After: 1` (a storage component, a leaf), `Retry-After: 30` (an unreadable limits record); the gateway answers 502 `unavailable` with `Retry-After: 1` when the Worker throws | never | app: retries a busy answer after its `Retry-After` (else 1, 2, 4 s), at most three times and never past the 60 s stop; the waiting line says what happened and when it asks again; the error state after the last try says how many tries over how long |
+| 2 | Busy, the isolate's byte budget | "the query service is busy; retry" now carries `Retry-After: 1`: `query/src/index.ts` sends it with every `unavailable` since 2026-11-19 | no `Retry-After`, as the real API answered when the mock was written | mock: `Retry-After: 1`; the no-`Retry-After` path (the app's own 1, 2, 4 s) is now exercised by `kind=platform`, a 503 page with no envelope, which is the only busy answer without one the app can meet |
+| 1 | Rate limit | never 429 (not in `query/`); a rate limit in front of it (Cloudflare) would send one, with `Retry-After` and no envelope | never | app: 429 is "busy", retried after `Retry-After`, the line says "limiting requests"; mock: `kind=ratelimit` (marked as not the viz API) |
+| 1 | Time limit | 30 s (`timeoutMs`), lowered by `timeout`: 503 `timeout` "query timed out", no `Retry-After` | no limit | app: not retried; the advice names the time limit; mock: the same 503 at 30 s or at `timeout`; `stall=1` delays as a stalled connection (the app's own 60 s stop) |
+| 1 | Query limits | 422 `execution` "query exceeded limit max_query_bytes …", "… max_depth …" and the other limits | a 25 KB query was a 500 "Maximum call stack size exceeded"; no depth limit | mock: both limits, same words |
+| 2 | Query limits, as a person reads them | each limit names itself (`max_query_bytes`, `max_depth`, `max_output_points`, `max_samples`, …) | (same) | app: the advice depends on the limit; it told a person whose query text was over 16 KiB to "narrow the time range or select fewer series" |
+| 2 | Too many points | 400 `bad_data` "exceeded maximum resolution of 11000 points per timeseries" when ⌊(end − start) / step⌋ + 1 > 11,000 (`engine/query` `check_range`): 11,000 steps, 11,001 points, are refused | refused only above 11,000 steps, on the unrounded seconds | mock: counted as the real engine counts; app: the advice is about the step ("The step is too small for this time range …") and the button clears it ("Use the automatic step"); it said "Change the query" and offered "Run the query again", which is refused again |
+| 2 | Times and steps | start and end rounded to the millisecond on the digits (the fourth decimal rounds half up), RFC 3339 cut after the millisecond, the step floored to a whole millisecond (0.4 ms is a step of 0: 400), evaluation on a grid of whole milliseconds (`1794994200.1`) | float seconds: a 0.1 s step from `1794994200.0000002` (what the app sent then) answered `1794994200.0000002`, `1794994200.1000001`, …, five points where the API gives six; a 0.4 ms step was accepted; a 0.9817 s step over 3 h was refused (the API rounds it to 982 ms: 10,998 points) | mock: the real parsing and grid; app: the window is computed in whole milliseconds, and a sample is on the grid when within 5 µs of a grid time (a tolerance of 1e-6 *steps* put the API's answers to a 0.1 s step off the grid, where a missing step is not drawn as a gap) |
+| 1 | PromQL it does not run | 422 `unsupported` ("limitk / limit_ratio aggregations") | 400 `bad_data` "… is not supported by the viz mock backend" | app: advice "viz does not run this part of PromQL yet"; mock: 422 `unsupported` for valid PromQL it lacks, 400 for a function that does not exist |
+| 1 | Parse errors | `parse error: unclosed left parenthesis`: **no position** | `invalid parameter "query": 1:48: parse error: …` | app: "Go to character N" asks the editor's own parser where the error is when the API gives no position; mock: the real API's form and words. Needed in `query/` (below) |
+| 1 | Parameter errors | `invalid parameter "step": zero or negative …`, `invalid parameter "end": end timestamp must not be before start time`, `invalid parameter "query": the query is empty` | other words | mock: the real words |
+| 1 | Methods, paths, body | `query`, `query_range`, `labels`, `series` take GET and POST; `label/<n>/values`, `metadata`, `status/buildinfo` GET only (405 with `Allow`); unknown paths 404; only form bodies (a JSON body is 400) | any GET or POST; other errors | mock: the same table |
+| 1 | Label endpoints | bounded by `start` and `end`; without them, all time, which reads every data file of the tenant | ignored `start` and `end` | app: every autocomplete lookup sends the page's window, widened to whole hours; mock: honours them |
+| 1 | Label sets | label names sorted in every label set; series listed in label order | insertion order | mock: sorted |
+| 1 | `metadata`, `buildinfo` | `{}`; `version`, `revision`, `branch`, `buildUser`, `buildDate`, `goVersion` | metadata for every metric; three fields | mock: `{}` and the six fields, plus `mock: true` (the banner) |
+| 1, 2 | Cost | `X-Viz-*` headers on every answer after authentication, exposed through CORS: 28, then 29 (`X-Viz-Series-Estimate`, added to `query/src` while this change was checked, uncommitted then) | none, then 28 | app: the client keeps them with each result, shown nowhere yet; mock: the same 29 names, most 0 |
+| 1 | CORS | the request's origin echoed when on the allow-list, `Vary: Origin`, cost headers exposed; never `*` | `*` | mock: the same |
+| 1, 2 | Compression | gzip when the client accepts it, with `Vary: Origin` only (under `wrangler dev`) | none; then gzip with `Vary: Origin, Accept-Encoding` | mock: gzip, `Vary: Origin` as the real API sends it |
+| 1 | `warnings`, `infos` | never sent: a part of an answer is refused (503), never returned as partial | never | app: the warnings banner says the result may be incomplete before the API's words; `infos` are read (not shown); mock: `/__mock/warn` |
+| 1 | Values, timestamps | for the same data, equal to 1e-14 relative; times to the millisecond | equal | the contract compares values for 22 requests |
+
+## Needed changes in query/
+
+`query/` was not edited. Each item is a request to the real stack (`real/stack.mjs`, tenant
+`viz-app-e2e`, a key with the `read` scope as `Authorization: Bearer …`, window
+`start=1794994200&end=1795005000` unless said) and its answer (`e2e/measurements/contract-real.json`
+holds every answer of the last contract run). Prometheus' behaviour is training knowledge
+from its source and documentation, not checked against a running Prometheus.
+
+1. **Parse errors carry no position.** `query=sum by (service) (rate(http_requests_total[5m])`
+   answers `400 bad_data "parse error: unclosed left parenthesis"`; Prometheus says
+   `invalid parameter "query": 1:49: parse error: unclosed left parenthesis`. Without
+   `line:column` a client cannot point at the error; the app asks its editor's parser
+   instead, which can disagree with the engine's. Some messages say nothing: `query=foo bar`
+   answers `parse error: invalid promql query`, where Prometheus names the unexpected token.
+2. **One point fewer than Prometheus allows.** `query=1&step=1&end=start+11000` (11,000 steps,
+   11,001 points) answers `400 "exceeded maximum resolution of 11000 points per timeseries"`;
+   Prometheus refuses only when `(end − start) / step > 11000`, so it answers this one.
+   `engine/query/src/lib.rs` `check_range` counts points (`steps + 1 > max_steps`). A Grafana
+   panel that asks for exactly 11,000 intervals works on Prometheus and fails on viz. Wanted:
+   Prometheus' rule, or the message saying "more than 11,000 steps".
+3. **`unsupported` messages are fragments.** `query=limitk(1, up)` answers
+   `422 unsupported "limitk / limit_ratio aggregations"`: no verb. Wanted: a sentence, e.g.
+   "limitk and limit_ratio are not supported by viz".
+4. **A timeout does not say the limit.** `query=viz_synthetic_series&step=15&timeout=1ms`
+   answers `503 timeout "query timed out"`; after the tenant's 30 s limit a person sees the
+   same words and cannot tell a limit from a stall. Wanted: "query timed out after 30 s (the
+   tenant's limit)".
+5. **A top-level subquery in a range query is 422, not 400.** `query=up[5m:1m]&step=15`
+   answers `422 execution "range vector is only allowed as a function argument or at the top
+   level of an instant query"`; Prometheus answers 400 `bad_data` ("invalid expression type
+   "range vector" for range query, must be Scalar or instant Vector"). A client switching on
+   the status sees an evaluation failure for a query that never ran.
+6. **The label endpoints without a window.** `GET /api/v1/labels` with no `start` and `end`
+   took 553 ms and 151 ms here, against 187 ms and 74 ms with the e2e window (measured here,
+   local, 4 small files, load average 11 on 4 cores); on a real tenant it reads every file of
+   the tenant or is refused by the limits (`query/README.md`, "Cheap label endpoints"). The
+   app always sends a window; Grafana's metric browser with no range will not. Wanted: a
+   default window (the last day, say), documented. These answers also report
+   `X-Viz-Samples-Loaded: 0` (known in `query/README.md`).
+7. **`/api/v1/metadata` is always `{}`.** The editor completes metric names without type or
+   help text on the real API. Known in `query/README.md`; listed because the app runs on it.
+8. **Compressed answers do not vary on `Accept-Encoding`.** Under `wrangler dev` every answer
+   is gzip with `Vary: Origin` only. A shared cache keyed by `Vary` could hand gzip to a
+   client that did not ask for it. Probably workerd's automatic compression rather than
+   `query/` (not checked on Cloudflare, where the edge compresses); listed so that the
+   deployed answer is checked.
+9. **Nothing is said about a partial answer, because there is none.** Not a change: the app's
+   warnings banner is worded for Prometheus-compatible stores that answer in part; the viz
+   API refuses instead (503), which the app handles as busy.
+
+Also seen, outside `query/` (read in the source, not run): control publishes `limits:<tenant>`
+with snake-case fields (`query_max_series`, `query_timeout_seconds`, …; `control/src/ops-settings.ts`),
+while the query Worker reads camel-case fields (`maxSeries`, `timeoutMs`) from the same key
+and ignores unknown ones (`query/src/config.ts`), so query limits set through control never
+reach queries.
+
+An earlier draft of this list (in the session before this one) said the isolate-budget
+refusal "the query service is busy" has no `Retry-After`. That was true when written and is
+no longer: `query/` now sends `Retry-After: 1` with it, and the item was dropped.
+
+## Not implemented
 
 - Everything outside metrics Explore: dashboards, logs, traces, alerts, the agent surface.
 - No Worker/Hono/Cloudflare deployment config; this is a static SPA build only.
@@ -325,10 +447,20 @@ the viz design system · uPlot 1.6.32 · CodeMirror 6 · vitest 5 · fast-check 
 - Neither the legend nor the table is virtualised; both are capped instead. The legend has at
   most eight coloured rows and one Other row whose members are listed 50 at a time; the table
   shows 50 rows at a time.
-- The JSON body is parsed on the main thread (no worker, no Arrow): about 32 ms unthrottled for
-  the 3.6 MB of a 200-series, 3-hour result, so about 125 ms at 4x CPU.
+- The range-query body is read on the main thread, as it arrives (`src/api/matrix.ts`); the
+  worker that would read it off the main thread (`src/api/matrixWorker.ts`) is built and
+  tested but not used (see "Speed": the harness cannot measure it fairly). Instant queries,
+  label endpoints and every error are read with `JSON.parse`.
 - No Arrow transport, no coarse-then-refine loading.
-- No login flow; the token is a pasted bearer token.
+- No login flow; the key is pasted into Settings and sent as a bearer token.
+- The `X-Viz-*` cost of a query is kept but shown nowhere (where it belongs is a design
+  question), and the app cannot ask what a query would cost before running it (the viz API
+  has no plan-only endpoint).
+- Instant queries (`/api/v1/query`) are in the client but no view uses them.
+- Not run against the real API: Grafana-style clients other than the app, a deployed
+  (Cloudflare) viz, and the refusals that need concurrent load (the isolate's byte budget)
+  or a broken component (a missing file, a leaf failing twice); the mock's `busy` and
+  `storage` failures stand in for them, with the answers read from `query/src`.
 
 ## Verification
 

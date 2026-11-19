@@ -203,6 +203,18 @@ export default {
       }
       return Response.json({ tenant, changes: want.version, ms: Date.now() - t0, refusals, files: got.files.length, same: JSON.stringify(got.files) === JSON.stringify(want.files) && JSON.stringify(got.watermarks) === JSON.stringify(want.watermarks), status: await ledger.logStatus() })
     }
+    if (u.pathname === '/purge') {
+      // Teardown: delete every object of this spike's bucket, 1,000 per call, so the bucket can be deleted.
+      let deleted = 0
+      for (let i = 0; i < 20; i++) {
+        const page = await (env as unknown as { BUCKET: R2Bucket }).BUCKET.list({ limit: 1000 })
+        if (page.objects.length === 0) break
+        await (env as unknown as { BUCKET: R2Bucket }).BUCKET.delete(page.objects.map((o) => o.key))
+        deleted += page.objects.length
+      }
+      const left = (await (env as unknown as { BUCKET: R2Bucket }).BUCKET.list({ limit: 1 })).objects.length
+      return Response.json({ deleted, empty: left === 0 })
+    }
     if (u.pathname === '/status') return Response.json(await env.LEDGER.get(env.LEDGER.idFromName(u.searchParams.get('tenant')!)).logStatus())
     return new Response('not found', { status: 404 })
   },

@@ -20,6 +20,7 @@ import type { AnomalyRuleStatus, MonitorView } from '../contracts-proposal/rules
 import spec from '../openapi.json'
 import { ANOMALY_ROW_BYTES, readStateRows, stateRows } from '../src/anomaly'
 import { exportRuleFile, importRuleFile } from '../src/rulefile'
+import { fingerprint } from '../src/util'
 import { apiKey, call } from './api'
 import { Crash, T0, tenantWorld, world } from './harness'
 import { MIN, newTenant, notifierStub, ok, rulerStub, runNotifierUntil, setup, vec, type ConfigPatch } from './helpers'
@@ -97,7 +98,7 @@ describe('alerts from anomaly rules: the detector decides, the alert state machi
       route: { receiver: 'tickets', group_by: ['alertname'], group_wait: '0s', group_interval: '1m', repeat_interval: '4h', routes: [{ match: { severity: 'page' }, receiver: 'pager' }] },
       receivers: [{ name: 'tickets', webhook_configs: [{ url: 'https://tickets.test/hook' }] }, { name: 'pager', webhook_configs: [{ url: 'https://pager.test/hook' }] }],
     }))
-    // The page rule had no detector named: severity page makes it a static threshold (D31).
+    // The page rule had no detector named: severity page makes it a static threshold (D33).
     expect(r.saved.groups[0]!.rules.map((x) => x.name)).toEqual(['LatencyAnomaly', 'ErrorsPage'])
     for (let i = 0; i < 9; i++) {
       await r.tick()
@@ -327,9 +328,12 @@ describe('state is rebuilt from SQLite alone', () => {
     for (let i = 0; i < 3; i++) await r.tick()
     const key = r.saved.groups[0]!.rules[0]!.key
     const mine = await r.rows()
-    const foreign = { tenant: 'someone-else', grp: 'anomalies/1m', rule_key: key, chunk: 0, body: (mine[0]!.body as string).replace(/"service":"a"/g, '"service":"zz"') }
+    // The other tenant's row: the same group, rule key and chunk, holding a series of its own.
+    const body = (mine[0]!.body as string).replaceAll(fingerprint({ service: 'a' }), fingerprint({ service: 'zz' })).replace(/"service":"a"/g, '"service":"zz"')
+    const foreign = { tenant: 'someone-else', grp: 'anomalies/1m', rule_key: key, chunk: 0, body }
     await runInDurableObject(r.stub, (_i, s) => void s.storage.sql.exec('INSERT INTO anomaly_state (tenant, grp, rule_key, chunk, body) VALUES (?, ?, ?, ?, ?)', foreign.tenant, foreign.grp, foreign.rule_key, foreign.chunk, foreign.body))
     await evictDurableObject(r.stub)
+    expect((await r.status()).anomaly!.stateSeries, 'loaded: this tenant\'s three series only').toBe(3)
     await r.tick()
     expect(seriesState((await r.rows()).filter((x) => x.tenant === r.tenant), 'zz')).toBeUndefined()
     expect((await r.rows()).find((x) => x.tenant === 'someone-else')).toEqual(foreign)

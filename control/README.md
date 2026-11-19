@@ -454,58 +454,79 @@ What the tests establish:
 ### Mutation checks
 
 `scripts/mutants.mjs` applies each change on its own, runs the suite and restores the
-files. All 45 make at least one test fail; the last column names the test files that failed.
-The script runs vitest with at most 2 workers. Mutants 36–45 were run on the final code
-(`node scripts/mutants.mjs versioned:`, 10 of 10 killed); 1–35 were last run as a set before
-this change, and their patterns were checked to still match.
+files; the last column names the test files that failed and, in brackets, how many tests.
+It runs vitest with at most 2 workers, counts a mutant as killed only when a test ran and
+failed (a suite that crashed or hung is reported as `NO RESULT` and counts as not killed),
+and refuses to run inside a git work tree: run it from `control/` in a copy of the
+repository (its header lists what the copy needs).
 
-| # | Mutant | Caught by |
+**All 58 were run as one set on the final code on 2026-11-19, in a copy in a scratch
+directory whose unmutated suite was first checked green (92 of 92): 58 of 58 killed.**
+Afterwards the copy's `control/src`, `contracts/schema.ts` and `openapi.json` were compared
+with the shared tree byte for byte: equal. 46–58 are this change's (proposals that create a
+dashboard, scopes for other services, `whoami`, schema version 2, the health route); their
+first run, before a container restart, did not report, so this is their only result.
+
+| # | Mutant | Caught by (tests failing) |
 |---|---|---|
-| 1 | Tenant taken from a request parameter (`?tenant=`) | isolation, rules |
-| 2 | The same, and the Tenant object trusting the tenant it is told | isolation, rules |
-| 3 | Secret stored in clear | keys and every other file |
-| 4 | List returning the stored secret material | keys |
-| 5 | Base-revision check skipped on patch | dashboards, http, property, settings |
-| 6 | Apply without the apply scope | openapi, proposals |
-| 7 | Agent self-apply allowed | proposals |
-| 8 | Proposal applied against a moved dashboard without the rebase check | proposals |
-| 9 | Mutation not atomic with its audit row: a failure part-way, then a retry, leaves a change with no entry | durability, dashboards, keys, proposals, settings |
-| 10 | KV written before the transaction commits | durability, keys, rules, settings |
-| 11 | Soft-deleted dashboard still listed | dashboards, durability, isolation |
-| 12 | Dry run commits | dashboards, keys, proposals, settings |
-| 13 | A mutation without an audit row, structural guard removed | settings |
-| 14 | Disabled key still accepted by the Tenant object | keys |
-| 15 | Disabled key published to KV as enabled | keys |
-| 16 | Old secret kept in KV after a rotation without overlap | keys, durability |
-| 17 | Revocation generation not bumped on disable | keys, durability |
-| 18 | Key deleted without its name as confirmation | keys |
-| 19 | Last admin key may be disabled or deleted | keys |
-| 20 | Usage accepted for another tenant | keys |
-| 21 | Rebase check ignores edits made underneath | proposals |
-| 22 | Expired proposal can still be applied | proposals |
-| 23 | Partial apply applies every change | proposals |
-| 24 | Proposer not recorded on the applied revision | proposals |
-| 25 | An agent with the apply scope may write directly | proposals |
-| 26 | `If-Match` ignored | dashboards |
-| 27 | Revision cap not enforced | dashboards |
-| 28 | Tenant byte cap not enforced | dashboards |
-| 29 | Pool epoch not bumped when spread grows | settings |
-| 30 | Pool slot-count change not refused | settings |
-| 31 | Shortening retention needs no confirmation | settings |
-| 32 | A statement that does not name the tenant | rules |
-| 33 | Alarm left set when there is nothing to do | dashboards, durability, proposals |
-| 34 | CORS answers any origin | http |
-| 35 | A route without documentation | openapi |
-| 36 | Runner: storage a newer release wrote is opened although it is not readable (refusal removed) | compat |
-| 37 | Runner: newer storage that IS readable is refused (`compat` ignored) | compat |
-| 38 | Runner: opening newer, readable storage lowers its version | compat |
-| 39 | Runner: migrations not in one transaction (a failing step leaves half a migration) | compat |
-| 40 | Runner: the new version is not recorded (every open migrates again) | compat |
-| 41 | `Tenant` serves storage a newer release wrote (its refusal ignored) | compat |
-| 42 | A refusing `Tenant` lets its alarm lapse | compat |
-| 43 | A released migration edited in place (version 1 no longer creates the append-only trigger) | compat, settings |
-| 44 | The KV key record edge reads changes shape without a format version | golden, keys |
-| 45 | The list cursor encoding changes without a format version | golden |
+| 1 | Tenant taken from a request parameter (`?tenant=`) | isolation, rules (3) |
+| 2 | The same, and the Tenant object trusting the tenant it is told | isolation, rules (3) |
+| 3 | Secret stored in clear | isolation, compat, creation, dashboards, durability, golden, http, keys, openapi, property, proposals, scopes, settings (68) |
+| 4 | List returning the stored secret material | keys (2) |
+| 5 | Base-revision check skipped on patch | dashboards, http, property, settings (6) |
+| 6 | Apply without the apply scope | creation, openapi, proposals (3) |
+| 7 | Agent self-apply allowed | proposals (1) |
+| 8 | Proposal applied against a moved dashboard without the rebase check | proposals (1) |
+| 9 | Mutation not atomic with its audit row: a failure part-way, then a retry, leaves a change with no entry | creation, dashboards, durability, keys, proposals, scopes, settings (11) |
+| 10 | KV written before the transaction commits | durability, keys, rules, settings (4) |
+| 11 | Soft-deleted dashboard still listed | dashboards, durability, isolation (3) |
+| 12 | Dry run commits | creation, dashboards, keys, proposals, scopes, settings (9) |
+| 13 | A mutation without an audit row, structural guard removed | settings (2) |
+| 14 | Disabled key still accepted by the Tenant object | keys (2) |
+| 15 | Disabled key published to KV as enabled | golden, keys (2) |
+| 16 | Old secret kept in KV after a rotation without overlap | durability, keys (2) |
+| 17 | Revocation generation not bumped on disable | durability, golden, keys (4) |
+| 18 | Key deleted without its name as confirmation | keys (1) |
+| 19 | Last admin key may be disabled or deleted | keys (1) |
+| 20 | Usage accepted for another tenant | keys (1) |
+| 21 | Rebase check ignores edits made underneath | proposals (1) |
+| 22 | Expired proposal can still be applied | creation, proposals (2) |
+| 23 | Partial apply applies every change | proposals (1) |
+| 24 | Proposer not recorded on the applied revision | proposals (3) |
+| 25 | An agent with the apply scope may write directly | creation, proposals, scopes (3) |
+| 26 | `If-Match` ignored | dashboards (3) |
+| 27 | Revision cap not enforced | dashboards (1) |
+| 28 | Tenant byte cap not enforced | dashboards (1) |
+| 29 | Pool epoch not bumped when spread grows | settings (1) |
+| 30 | Pool slot-count change not refused | settings (1) |
+| 31 | Shortening retention needs no confirmation | settings (1) |
+| 32 | A statement that does not name the tenant | rules (1) |
+| 33 | Alarm left set when there is nothing to do | dashboards, durability, proposals (4) |
+| 34 | CORS answers any origin | http (1) |
+| 35 | A route without documentation | openapi (2) |
+| 36 | Runner: storage a newer release wrote is opened although it is not readable (refusal removed) | compat (1) |
+| 37 | Runner: newer storage that IS readable is refused (`compat` ignored) | compat (2) |
+| 38 | Runner: opening newer, readable storage lowers its version | compat (2) |
+| 39 | Runner: migrations not in one transaction (a failing step leaves half a migration) | compat (1) |
+| 40 | Runner: the new version is not recorded (every open migrates again) | compat (6) |
+| 41 | `Tenant` serves storage a newer release wrote (its refusal ignored) | compat (1) |
+| 42 | A refusing `Tenant` lets its alarm lapse | compat (1) |
+| 43 | A released migration edited in place (version 1 no longer creates the append-only trigger) | compat, settings (3) |
+| 44 | The KV key record edge reads changes shape without a format version | golden, keys (2) |
+| 45 | The list cursor encoding changes without a format version | golden (1) |
+| 46 | Creation: an agent may apply a proposal that creates a dashboard | creation (1) |
+| 47 | Creation: the proposed spec is not validated | creation (1) |
+| 48 | Creation: the stored spec is not validated again when applied | creation (1) |
+| 49 | Creation: a retry stores a second proposal (idempotency removed) | creation (1) |
+| 50 | Creation: an id held by a live dashboard is not checked | creation, dashboards, settings (4) |
+| 51 | Creation: a row an older release rewrote into a change is still read as a creation | creation (1) |
+| 52 | Creation: purging a dashboard deletes an open proposal to create one under its id | creation (1) |
+| 53 | Scopes: control cannot issue the ruler's scopes | openapi, scopes (4) |
+| 54 | Scopes: a monitors scope opens the dashboards API | openapi, scopes (2) |
+| 55 | `whoami`: `mayApply` ignores the tenant setting (an agent with the scope always may) | creation, scopes (2) |
+| 56 | Migration 2 declared forward-only (`readableFrom: 2`) | compat (3) |
+| 57 | Released migration 2 edited in place (the column is not added) | isolation, compat, creation, dashboards, durability, proposals, scopes, settings (32) |
+| 58 | `/healthz` not served (or behind a credential) | http (1) |
 
 Mutants 36–40 break `contracts/schema.ts`, the runner every component shares; they are run
 here because this suite tests it most fully.

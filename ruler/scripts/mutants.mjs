@@ -379,6 +379,113 @@ export const MUTANTS = [
     edits: one('src/registry.ts', 'hash64(`viz-ruler-index\\n${tenant}`)', 'hash64(`viz-ruler-index/2\\n${tenant}`)'),
     tests: ['test/golden.test.ts'],
   },
+
+  // ───────────── anomaly rules (60–80) ─────────────
+  {
+    name: 'anomaly: series beyond max_series are dropped silently (the first max_series are scored) instead of refusing the evaluation',
+    edits: one('src/anomaly.ts', '  if (series.length > spec.maxSeries) {\n', '  if (series.length > spec.maxSeries) series = series.slice(0, spec.maxSeries)\n  if (false) {\n'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: detector state is never written to SQLite (memory only)',
+    edits: one('src/ruler.ts', 'for (const { rule, anomaly } of staged) if (anomaly?.changed) this.writeAnomalyState(g.spec.name, rule.key, anomaly.json)', 'void staged'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: the constructor does not rebuild detector state from SQLite',
+    edits: one('src/ruler.ts', '      rt.series = read.series\n      rt.json = read.json\n      rt.status = { ...rt.status, stateSeries', '      rt.status = { ...rt.status, stateSeries'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: a replayed tick advances each detector again (per-series replay guard removed)',
+    edits: one('src/anomaly.ts', 'if (before?.last && before.last.ts >= ts) {', 'if (false) {'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: state rows of a newer release are scored over (the rule starts cold) instead of refused',
+    edits: one('src/anomaly.ts', 'if (prev.unreadable !== null) {', 'if (false) {'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: loading detector state does not name the tenant',
+    edits: one('src/ruler.ts', 'FROM anomaly_state WHERE tenant = ? ORDER BY grp, rule_key, chunk', 'FROM anomaly_state WHERE ? IS NOT NULL ORDER BY grp, rule_key, chunk'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: the alert does not carry the detector\'s sentence',
+    edits: one('src/anomaly.ts', '        annotations[ANOMALY_ANNOTATION] = e.text\n', ''),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: the severity label is not set from anomaly.severity (routing by severity breaks)',
+    edits: one('src/rules.ts', 'const ruleLabels = { ...labels, severity: spec.severity }', 'const ruleLabels = { ...labels }'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: the default EWMA uses the library\'s parameters (half-life 30, k 4: 0.0 on NAB) instead of the held-out ones',
+    edits: one('src/anomaly.ts', '{ ...libraryDefaults(detector), ...guide.defaults }', '{ ...libraryDefaults(detector) }'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: severity page without a detector defaults to EWMA, not the static threshold',
+    edits: one('src/anomaly.ts', "detector = givenSeverity === 'page' ? DEFAULT_PAGE_DETECTOR : DEFAULT_DETECTOR", 'detector = DEFAULT_DETECTOR'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: CUSUM may page',
+    edits: one('src/anomaly.ts', "if (severity === 'page' && !guide.pageAllowed) {", 'if (false) {'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: no per-series state limit at run time',
+    edits: one('src/anomaly.ts', 'if (bytes > limits.maxAnomalyStateBytesPerSeries) {', 'if (false) {'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: no per-object state budget at save',
+    edits: one('src/ruler.ts', 'const budget = anomalyLimits(this.cfg).maxAnomalyStateBytesPerObject', 'const budget = Infinity'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: a row per series (state rows of one byte, so every series gets its own)',
+    edits: one('src/ruler.ts', 'const rows = stateRows(json)', 'const rows = stateRows(json, 1)'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: state carried over an interval change (the detector\'s step changed)',
+    edits: one('src/ruler.ts', 'if (kept.has(key) && old.spec.intervalMs === spec.intervalMs)', 'if (kept.has(key))'),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: the rule key leaves out the detector and parameters (state carried into another detector)',
+    edits: one('src/anomaly.ts', "return `${expr}\\u0000${spec.detector}\\u0000${JSON.stringify(params)}`", 'return expr'),
+    tests: ['test/anomaly.test.ts', 'test/golden.test.ts'],
+  },
+  {
+    name: 'anomaly: a missing (NaN) point clears the series\' flag (a gap treated as a recovery)',
+    edits: one('src/anomaly.ts', "{ ...before.last, ts, status: 'missing' }", "{ ...before.last, ts, status: 'missing', flag: false }"),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly: migration 2 declared breaking (readableFrom 2: the previous release is no longer a rollback target)',
+    edits: one('src/schema.ts', "      name: 'anomaly rules: per-(rule, chunk) detector state',\n      readableFrom: 1,", "      name: 'anomaly rules: per-(rule, chunk) detector state',\n      readableFrom: 2,"),
+    tests: ['test/compat.test.ts'],
+  },
+  {
+    name: 'anomaly, through the monitors API: write without scope (as mutant 29)',
+    edits: one('src/http.ts', 'const principal = await authenticate(req, env.CONFIG, def.scope as never)', "const principal = await authenticate(req, env.CONFIG, (def.method === 'GET' ? def.scope : 'monitors:read') as never)"),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly, through the monitors API: tenant from the query string (as mutant 31)',
+    edits: one('src/http.ts', 'new Call(req, env, principal.tenant,', "new Call(req, env, url.searchParams.get('tenant') ?? principal.tenant,"),
+    tests: ['test/anomaly.test.ts'],
+  },
+  {
+    name: 'anomaly, through the monitors API: tenant from a header (as mutant 32)',
+    edits: one('src/http.ts', 'new Call(req, env, principal.tenant,', "new Call(req, env, req.headers.get('X-Scope-OrgID') ?? principal.tenant,"),
+    tests: ['test/anomaly.test.ts'],
+  },
 ]
 
 const hasGo = spawnSync('go', ['version'], { encoding: 'utf8' }).status === 0

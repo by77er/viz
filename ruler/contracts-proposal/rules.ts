@@ -194,7 +194,7 @@ export type AnomalyParamValue = number | string | boolean | null
 export interface AnomalySpecInput {
   /**
    * Default `ewma` (with the parameters chosen on held-out data, not the library's); `threshold`
-   * when `severity` is `page`, which then needs `params.above` or `params.below` (design D31).
+   * when `severity` is `page`, which then needs `params.above` or `params.below` (design D33).
    */
   detector?: AnomalyDetector
   /**

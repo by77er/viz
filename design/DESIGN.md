@@ -323,10 +323,16 @@ with label-based access rules. A caller cannot omit it.
 - A leaf receives a split: a set of row groups **and** the tail rows for the same key range.
   It merges them, removes duplicates on `(series, timestamp)`, and only then evaluates. A
   `rate()` window that straddles lake and tail is therefore computed over one ordered stream.
-- Leaves return partial aggregates as Arrow IPC. Sum, count, min and max decompose exactly;
-  `avg` travels as sum and count; `topk` is per split then merged. Splits are key ranges, so
-  all rows of a series reach one leaf whichever shards they came through. Approximate quantiles are
-  opt-in and labelled.
+- Leaves return partial aggregates (D31). As built: a query whose selectors all sit inside
+  decomposable aggregations is split over `L` leaves, each owning a range of series keys, so
+  all rows of a series reach one leaf whichever shards they came through; leaves pull their
+  part's rows from reader leaves (one call per group of at most six files) and the
+  coordinator cuts the tail by part. Every aggregation is exact and order-independent (exact
+  sums rounded once; `avg` as sum and count; `topk` per part then merged), so a split answer
+  is byte-identical to one place. Partials travel in the engine's own binary form, not Arrow
+  IPC. `L` covers both the samples (scan bound) and the series (estimated from the series
+  files) at three quarters of one isolate's limits. Queries that do not decompose run in one
+  place. Approximate quantiles are not built.
 - A tail read is a filtered scan over a shard's unsealed and unflushed segments. Segments
   are bounded by seal size, so the shard needs no query engine and no second index. Shards
   keep recorded segments for a short bounded time, and a refused split is retried on its
@@ -364,7 +370,10 @@ is pinned near the bucket so that hits concentrate.
 ### 6.5 Cost visibility
 
 Bytes to scan and shards touched are known after planning. They are returned with every
-result, limited per tenant, and exposed to agents through `validate_query`.
+result, limited per tenant, and exposed to agents through `validate_query`. As built, the
+query Worker returns them as `X-Viz-*` headers on every answer, and `/api/v1/plan` returns
+what a query would read (files, bytes, scan bound, series estimate, split and leaves, the
+refusal it would get) from one ledger read, touching no shard, leaf or R2 object.
 
 ## 7. Monitors
 
@@ -380,10 +389,19 @@ result, limited per tenant, and exposed to agents through `validate_query`.
 - **Notifications** use a transactional outbox with deterministic ids. Grouping, inhibition
   and silences keep Alertmanager's semantics. A sweeper re-arms missed rulers, and a
   dead-man's-switch alert is built in.
-- **Anomaly detection** is statistics first: robust z-scores against a seasonal baseline
-  from rollups, and burn-rate SLO alerts, inside the rule tick; seasonal decomposition,
-  changepoint detection and log-template frequency shifts as scheduled jobs. Foundation
-  models in a Container are an opt-in later tier.
+- **Anomaly detection** is statistics first. An *anomaly rule* is a rule kind
+  (`contracts/rules.ts`, version 2): each tick the ruler feeds every series of one PromQL
+  expression to that series' detector, through the same batch call as other rules, and the
+  flagged series become alerts carrying the detector's sentence and numbers. Detector state
+  lives in the ruler's SQLite per (rule, series), written as whole batches per row in the
+  transaction that commits the alerts, and is rebuilt from there after eviction; a per-rule
+  series cap and state limits refuse an evaluation rather than drop series. Defaults follow
+  held-out evidence (D33): EWMA, or a static threshold for pages; the robust z-score and the
+  seasonal baseline are opt-in, since with the MAD spread both scored below a static
+  threshold on held-out data; STL, CUSUM and PELT explain changes and do not page. Burn-rate
+  SLO alerts are to compile to recording rules; seasonal decomposition, changepoint detection
+  and log-template frequency shifts are scheduled jobs (not built). Foundation models in a
+  Container are an opt-in later tier.
 - **Agentic monitors** are a natural-language objective with a deterministic guard and a
   budget. They run as a Workflow when a rule fires, an anomaly is detected, a schedule
   comes due or a person asks. They use the same read-only, tenant-scoped tools as external
@@ -435,6 +453,9 @@ result, limited per tenant, and exposed to agents through `validate_query`.
   tenant's limit, counting exactly up to 4,096 series per half-hour bucket and with a
   HyperLogLog (1.6% standard error) and a Bloom filter (about 1% of new series pass as
   known) above that.
+- **Cardinality on the read path:** reported exactly, with caps sized to the isolate (D32);
+  what a metric with 10,000, 100,000 and 1,000,000 series costs to store, count and query,
+  and where each limit bites, is in `query/CARDINALITY.md`.
 
 ## 10. Targets
 

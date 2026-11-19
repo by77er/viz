@@ -716,3 +716,44 @@ first thing to build if tenants hit the cap. (c) No caps: an isolate dies instea
 
 **Would change if.** Tenants hit the pair cap in practice (build (b), then raise the cap), or a
 report over a window wider than the caps allow is needed (then (a), labelled approximate).
+
+## D33. Anomaly rules page on EWMA or a static threshold; the other detectors explain
+
+**Decision.** An anomaly rule (`contracts/rules.ts`, version 2) that names no detector uses
+EWMA with the parameters chosen on held-out data (half-life 100 points, k 8) and severity
+`ticket`. With `severity: page` and no detector it is a static threshold, and the author must
+give the level. The robust z-score (MAD), the seasonal baseline (MAD) and CUSUM can be named;
+the save then warns with their held-out score, and CUSUM may not page (default `info`). STL and
+PELT are not rule detectors: they are for scheduled jobs and explanations; burn rate is to
+compile to recording rules. The 99th-percentile ("quantile") spread can be chosen, is marked
+unvalidated in the warning and in the guide, and is never a default. The guide, with the kind
+of evidence behind each line (held out, post hoc, not scorable), is served at
+`GET /api/v1/monitors/detectors` from one copy in `ruler/src/anomaly.ts`.
+
+**Alternatives.** (a) The design's first choice: robust z-scores against a seasonal baseline.
+(b) The robust z-score with the quantile spread, the best held-out score among the library's
+detectors (44.8). (c) No default: the author must pick. (d) Static thresholds only, no anomaly
+rules. (e) The library's own EWMA defaults (half-life 30, k 4).
+
+**Why.** On the Numenta Anomaly Benchmark, held out (parameters and threshold chosen on one
+half of the files, scored on the other, alarms as onsets; `anomaly/README.md`), standard
+profile: static threshold 21.8, EWMA 30.1 (window recall 59% against 41%), MAD robust z −105.9,
+MAD seasonal −76.4, STL −352.2, CUSUM 15.1, PELT −123.5. (a) scored below the threshold it is
+meant to beat: on heavy-tailed series the MAD describes only the bulk. (b) was found after
+seeing those results, so its score is optimistic by an unknown amount until confirmed on data
+it has not seen. (e) scored 0.0 under NAB's own protocol. EWMA lost to the threshold in the
+low-false-positive profile (3.9 against 5.5), the profile that matters for waking someone, hence
+the threshold for pages. (c) leaves every author to rediscover this; (d) loses EWMA's recall and
+the seasonal baseline's one strength, values wrong for their time of day (4 of 4 artificial
+daily anomalies against 1 of 4 without it), which stays available with its numbers shown.
+
+**Cost.** A page needs a level someone can state. EWMA's event precision on NAB was 22%: most
+of its alarms were not at a labelled anomaly, hence `ticket`. The evidence is NAB only (58 files
+of about two weeks each), nothing measured on viz's own data, and half-life 100 and k 8 were the
+largest values of the grid searched, so the optimum may lie beyond it. The guide's numbers are
+copied from `anomaly/README.md` and must be changed with it.
+
+**Would change if.** The quantile spread holds its score on data it has not seen (TSB-AD, or
+incidents labelled on viz's own tenants): then it becomes the default for non-paging rules; a
+wider grid moves EWMA's parameters; viz's own labelled incidents rank the detectors
+differently; or a detector gains a calibrated false-alarm rate that makes it fit to page.

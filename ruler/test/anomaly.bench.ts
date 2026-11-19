@@ -132,8 +132,8 @@ describe('anomaly rules in workerd: CPU and wall time per detector', () => {
     const { stub } = await setup()
     const T = 40
     note(`\nB. evalAnomaly, ${S} series, ${T} evaluations from warm state, 3 runs (ranges are min–max)`)
-    note('| detector | ms CPU per evaluation (100 series) | ms CPU per 1,000 points | wall, ms per evaluation | state, bytes per series | Node, one tick through JSON, per 1,000 points | load average |')
-    note('|---|---|---|---|---|---|---|')
+    note('| detector | ms CPU per evaluation (100 series) | ms CPU per 1,000 points | wall, ms per evaluation | state, bytes per series | scored / warming at the end | Node, one tick through JSON, per 1,000 points | load average |')
+    note('|---|---|---|---|---|---|---|---|')
     const nodeTick: Record<string, string> = { threshold: '6.3', ewma: '8.9', 'robust_z (288 points)': '193', 'seasonal (daily, 5 min, k=4)': '523', 'seasonal (weekly, 1 h, k=4)': '285', cusum: '21' }
     for (const c of CASES) {
       const rule = parsed(c)
@@ -144,7 +144,7 @@ describe('anomaly rules in workerd: CPU and wall time per detector', () => {
       const cpu: number[] = []
       const wall: number[] = []
       let bytes = 0
-      let last: { status: string; scored: number } = { status: '', scored: 0 }
+      let last: { status: string; scored: number; warming: number } = { status: '', scored: 0, warming: 0 }
       for (let run = 0; run < 3; run++) {
         const read = readStateRows(rows)
         if ('error' in read) throw new Error(read.error)
@@ -166,17 +166,20 @@ describe('anomaly rules in workerd: CPU and wall time per detector', () => {
         wall.push(m.wallMs / T)
         bytes = rt.status.stateBytes / S
         last = rt.status
-        if (run === 2) note(`| ${c.label} | ${range(cpu)} | ${range(cpu.map((x) => (x / S) * 1000), 1)} | ${range(wall)} | ${bytes.toFixed(0)} | ${nodeTick[c.label]} | ${load(m.load)} |`)
+        if (run === 2) note(`| ${c.label} | ${range(cpu)} | ${range(cpu.map((x) => (x / S) * 1000), 1)} | ${range(wall)} | ${bytes.toFixed(0)} | ${last.scored} / ${last.warming} | ${nodeTick[c.label]} | ${load(m.load)} |`)
       }
-      expect(last, `${c.label}: every series scored`).toMatchObject({ status: 'ok', scored: S })
+      // Every series was evaluated warm; CUSUM re-learns its reference for 30 points after each
+      // alarm, and on this daily sine some series are always re-learning: that is its real cost.
+      expect(last.scored + last.warming, c.label).toBe(S)
+      if (c.detector !== 'cusum') expect(last, `${c.label}: every series scored`).toMatchObject({ status: 'ok', scored: S })
     }
   })
 
   it('C. the whole tick in the object: one group with one 100-series anomaly rule, against the same group with an alerting rule that returns nothing', async () => {
     const T = 30
     note(`\nC. alarm ticks in the Ruler object, ${S} series, ${T} measured ticks after 3 unmeasured, 3 runs (ranges are min–max)`)
-    note('| rule | ms CPU per tick | wall per tick, median / p95 (ms) | SQL rows written per tick | state rows | load average |')
-    note('|---|---|---|---|---|---|')
+    note('| rule | ms CPU per tick | wall per tick, median / p95 (ms) | SQL rows written per tick | state rows | scored / warming at the end | load average |')
+    note('|---|---|---|---|---|---|---|')
     const one = async (c: (typeof CASES)[number] | null) => {
       const interval = c?.interval ?? '5m'
       const step = c?.step ?? 5 * MIN
@@ -213,14 +216,15 @@ describe('anomaly rules in workerd: CPU and wall time per detector', () => {
       const h = ok(await stub.health(tenant))
       const st = ok(await stub.rules(tenant)).rules[0]!
       expect(st.health).toBe('ok')
-      if (c) expect(st.anomaly, `${c.label}: every series scored at every tick`).toMatchObject({ status: 'ok', scored: S })
+      if (c) expect(st.anomaly!.scored + st.anomaly!.warming, c.label).toBe(S)
+      if (c && c.detector !== 'cusum') expect(st.anomaly, `${c.label}: every series scored at every tick`).toMatchObject({ status: 'ok', scored: S })
       const stateRowCount = await runInDurableObject(stub, (_i, s) => s.storage.sql.exec('SELECT COUNT(*) AS n FROM anomaly_state').one().n as number)
       const sorted = [...walls].sort((a, b) => a - b)
-      return { cpu: m.cpuMs / T, wallMedian: sorted[T >> 1]!, wallP95: sorted[Math.floor(0.95 * T)]!, rows: (h.counters.sqlRowsWritten - rows0) / T, stateRows: stateRowCount, load: m.load }
+      return { cpu: m.cpuMs / T, wallMedian: sorted[T >> 1]!, wallP95: sorted[Math.floor(0.95 * T)]!, rows: (h.counters.sqlRowsWritten - rows0) / T, stateRows: stateRowCount, scored: st.anomaly ? `${st.anomaly.scored} / ${st.anomaly.warming}` : '–', load: m.load }
     }
     for (const c of [null, ...CASES]) {
       const runs = [await one(c), await one(c), await one(c)]
-      note(`| ${c ? c.label : 'counterfactual: alerting rule, empty result'} | ${range(runs.map((r) => r.cpu))} | ${range(runs.map((r) => r.wallMedian), 0)} / ${range(runs.map((r) => r.wallP95), 0)} | ${range(runs.map((r) => r.rows), 1)} | ${runs[0]!.stateRows} | ${load(runs.at(-1)!.load)} |`)
+      note(`| ${c ? c.label : 'counterfactual: alerting rule, empty result'} | ${range(runs.map((r) => r.cpu))} | ${range(runs.map((r) => r.wallMedian), 0)} / ${range(runs.map((r) => r.wallP95), 0)} | ${range(runs.map((r) => r.rows), 1)} | ${runs[0]!.stateRows} | ${runs.at(-1)!.scored} | ${load(runs.at(-1)!.load)} |`)
     }
     console.log(`\n${report.join('\n')}`)
   })

@@ -231,6 +231,56 @@ test (cargo failures are now reported by test name). The previous engineer's 57 
 re-run unchanged before this review's changes: 57 of 57. `flush/scripts/mutants.mjs`: 18 of
 18 on the final code; `edge/scripts/mutants.mjs`: 35 of 35.
 
+**Run of 2026-11-19 (the write-path review's fixes in compact, janitor, flush and this
+script's cron and maintenance).** On a copy of the tree in a scratch area (the script refuses a
+git checkout), `MUTANT_FILES=compact/,janitor/,flush/,stack/ node scripts/mutants.mjs all`:
+**74 of 74 killed** (trigger 12, compaction 11, precedence 3, deletion 10, review 38), every
+one by a named test. Baseline first: every suite the mutants run was green unmutated on that
+copy. The 36 mutants in `shard/`, `ledger/`, `edge/` and `engine/` were not run (their owners').
+Two patterns were updated for code that had changed (series files not expired: one `expire`
+for both tables; retention one day short: `retentionCutoffDay`), and two F12 mutants added.
+`flush/scripts/mutants.mjs`, same copy: 20 of 20. Since D30 two rows of the table below read
+differently: a conflicted step's outputs being left behind is intended, and the mutant is "a
+conflicted step deletes its outputs" (killed by compact: conflict); "a compaction output is an
+orphan as soon as a flush file would be" is now "a compaction output's age floor is only the
+flush files' grace" (killed by janitor: true orphans).
+
+| Part | Mutant (review part) | Killed by |
+|---|---|---|
+| review | R-1: an unreadable retention record falls back to the default | janitor: retention policy |
+| review | R-1: no record is refused instead of meaning the default | janitor: retention policy |
+| review | R-1: a retention record of an unknown version is read | janitor: retention policy |
+| review | R-1: a refusal is not written to the marker | stack golden: queue.maint and kv.maint-marker |
+| review | R-1: a refused tenant is not looked at again within the hour | stack golden: same |
+| review | **R-2/F13: the sweep ignores a compaction output's inputs (age only)** | compact: conflict (the sweep deletes the outputs while the expired inputs remain) |
+| review | R-2: a tombstoned input whose object is still there counts as gone | compact: conflict |
+| review | R-2: a live input whose object is missing counts as gone | janitor: a live input whose object is missing |
+| review | R-2: the inputs record is not checked against the key | compact golden: reader refusals |
+| review | R-2: an inputs record of an unknown version is read | janitor golden: a newer record keeps the object |
+| review | R-2: inputs outside the output's tenant and day are accepted | compact golden: reader refusals |
+| review | R-2: outputs are written without their inputs record | compact: conflict |
+| review | F14: a `replace` answer this code does not know is taken for a conflict | compact: fails closed on an unknown answer |
+| review | **F15: a newer incarnation counts before its registration is logged** | janitor: spec F15 |
+| review | **F12: flush reads a segment unbound to its incarnation and range** | flush: spec F12 |
+| review | F12: a refused bound read is not reported as an incarnation change | flush: spec F12 |
+| review | **R-7: one shard that throws stops the flush sweep** | stack cron: shards before and after a failing one |
+| review | R-7: the maintenance sweep waits on the flush sweep | stack cron: a listing that fails stops only its own sweep |
+| review | R-7: no bound on the shards asked per cron | stack cron: at most maxShards per cron |
+| review | R-7: the window of shards never moves on | stack cron: same |
+| review | **R-11(b): maintenance after every run, changed or not** | flush consumer: a duplicate delivery asks for nothing |
+| review | R-11(b): a redelivery after a failed request does not ask again | flush consumer: a redelivery asks again |
+| review | R-11(b): a run that admitted something and then stopped does not ask | flush consumer: a run that admitted and stopped still asks |
+| review | R-11(b): a flush never reports a change | flush consumer: onFlushed after a run that changed something |
+| review | **R-11(c): the marker write is not retried** | stack cron: two runs that finish together both succeed |
+| review | R-11(c): an unchanged marker is written again | stack cron: an unchanged marker is not written |
+| review | **R-12: one dead-letter object per message** | flush consumer: ONE object for the whole batch |
+| review | R-12: a batch whose dead-letter write failed is acknowledged | flush consumer: every message retried |
+| review | versions: a flush message of an unknown version is flushed / is dead-lettered (2) | flush consumer: v absent or 1 is flushed, any other retried |
+| review | versions: a maintenance message of an unknown version is run | stack cron: v absent or 1 runs, any other retried |
+| review | versions: a marker of an unknown version is acted on by the run / by the cron (2) | stack golden: reader refusals |
+| review | versions: a dead-letter object of an unknown version is read as version 1 | flush golden: r2.dead-letters |
+| review | encoding: the flush message, the marker lose their version; `inputs16` with another separator; a flush key with nine hex digits (4) | the golden test of each format |
+
 | Part | Mutant | Killed by |
 |---|---|---|
 | trigger | a seal writes no notification | shard: announces once on size |
