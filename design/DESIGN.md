@@ -4,8 +4,12 @@ Status: draft 3.1, 2026-11-18. Draft 2 was reviewed by two independent reviewers
 findings) and rewritten as draft 3; draft 3 was re-reviewed (12 findings) and amended here.
 `REVIEW.md` lists what changed and what is still open.
 
-Nothing here has been built or measured. Evidence is in `research/`; every number is a model,
-printed as a range, and `VERIFICATION.md` names the experiment that would confirm or kill it.
+Status (2026-11-19): the backend described here is built and merged to `main`; its first
+production deploy is pending. Spikes S0–S5 and the S3/S4 re-runs were measured on Cloudflare,
+and staged copies of the deployment were trialled and destroyed (`VERIFICATION.md`,
+`deploy/README.md`). Figures not marked as measured are models, printed as ranges, and
+`VERIFICATION.md` names the experiment that would confirm or kill each. Spans and logs storage
+and self-monitoring are proposed, not built.
 
 ## 1. What viz is, and how it is deployed
 
@@ -246,7 +250,7 @@ and time.
 | Table | Grain | Sort order | Notes |
 |---|---|---|---|
 | `metric_series` | series per day | `metric_name, series_id` | promoted label columns + full label map |
-| `metric_samples` | sample | `metric_name, series_id, ts` | `series_id` is a plain 64-bit hash of all labels (`contracts/BATCH.md`). Putting hashes of `namespace` and `job` in its top 24 bits was measured on 200,000 series: a `{namespace=…}` query reads 1.3–2.6× fewer bytes by row group (6–17× only with page-level pruning, which the engine lacks), a full-metric scan is no better, and 40 bits are left to tell series apart, which is not enough (D19). Locality is to come from the sort key instead: a promoted-label column before `series_id` |
+| `metric_samples` | sample | `metric_name, series_id, ts` | `series_id` is a plain 64-bit hash of all labels (`contracts/BATCH.md`). Putting hashes of `namespace` and `job` in its top 24 bits was measured on 200,000 series: a `{namespace=…}` query reads 1.3–2.6× fewer bytes by row group (6–17× only with page-level pruning, which the engine does in memory but does not fetch, D41), a full-metric scan is no better, and 40 bits are left to tell series apart, which is not enough (D19). Locality is to come from the sort key instead: a promoted-label column before `series_id` |
 | `metric_rollup_5m`, `_1h` | series per window | same | count, sum, min, max, last, reset-aware increase |
 | `spans` | span | `service_name, span_name, start_time` | hour partitions; promoted attributes + residual maps |
 | `trace_index` | trace per day | `trace_id` | root, start, duration, counts, and the **hour partitions** that hold its spans (logical references survive compaction) |
@@ -337,8 +341,13 @@ with label-based access rules. A caller cannot omit it.
 1. One call to the tenant's ledger returns the ledger version, the partition index objects
    for the time range, and the shard watermarks.
 2. Index objects are fetched (immutable; cached).
-3. The planner prunes to row groups and pages and cuts the work into splits. Matcher
-   resolution against `metric_series` happens in the leaves, next to the data.
+3. The planner prunes files and row groups by name and time from the index fragments, and
+   reads a file as its footer and the row groups needed (byte ranges). When that does not fit
+   one place and a matcher selects by more than the metric name, it resolves the matchers
+   against `metric_series` first and reads only the row groups whose `(metric, series_id)`
+   range holds a selected series (one more round of reads); split leaves resolve their own
+   part. Pages are skipped in memory, not fetched (D41). The label endpoints read
+   `metric_series` and the tail only.
 
 ### 6.2 Execute
 

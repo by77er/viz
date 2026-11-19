@@ -2,7 +2,7 @@
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
 <style>
-/* Layout: one reading column (68ch) with figures and tables allowed to run wider; summary first, mechanism diagram second, evidence after. */
+/* Layout: one reading column (68ch) with figures and tables allowed to run wider; status first, mechanism diagram second, evidence and open risks after. */
 :root{
   --bg:#f5f7f9; --panel:#ffffff; --fg:#16202a; --muted:#5a6876; --rule:#d5dce3;
   --lake:#0d6a8c; --tail:#a85d12; --ok:#2f7a4d; --warn:#a2470f;
@@ -27,7 +27,7 @@ h3{font-size:16px;font-weight:600;margin:0 0 6px}
 p{margin:0 0 12px} p:last-child{margin-bottom:0}
 .lede{font-size:18px;color:var(--fg)}
 .muted{color:var(--muted)}
-code{font-family:var(--mono);font-size:.88em;background:color-mix(in srgb,var(--rule) 45%,transparent);padding:1px 5px;border-radius:3px}
+code{font-family:var(--mono);font-size:.88em;background:color-mix(in srgb,var(--rule) 45%,transparent);padding:1px 5px;border-radius:3px;overflow-wrap:anywhere}
 section{display:flex;flex-direction:column;gap:18px}
 ul,ol{margin:0;padding-left:22px;display:flex;flex-direction:column;gap:8px}
 
@@ -63,34 +63,47 @@ th,td{text-align:left;vertical-align:top;padding:9px 12px 9px 0;border-bottom:1p
 th{font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:500;white-space:nowrap}
 td:first-child{font-weight:500}
 td.n{white-space:nowrap;font-family:var(--mono);font-size:13.5px}
+td.src{font-size:13px;min-width:12ch}
 .tag{font-family:var(--mono);font-size:11.5px;padding:1px 7px;border-radius:10px;border:1px solid var(--rule);color:var(--muted);white-space:nowrap}
 .tag.v{border-color:var(--ok);color:var(--ok)} .tag.m{border-color:var(--warn);color:var(--warn)}
+h3 .tag{margin-left:8px;vertical-align:2px;font-weight:400}
 
-.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:28px 40px}
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));gap:28px 40px}
+.two.parts{grid-template-columns:repeat(auto-fit,minmax(min(380px,100%),1fr))}
 .two>div{min-width:0;display:flex;flex-direction:column;gap:8px}
+.risks{list-style:none;padding:0;gap:14px}
+.risks li{border-left:3px solid var(--warn);padding-left:14px}
+.risks b{font-weight:600}
+details{border:1px solid var(--rule);border-radius:6px;background:var(--panel);padding:12px 16px}
+details[open]{display:flex;flex-direction:column;gap:14px}
+summary{cursor:pointer;font-weight:500}
+summary:focus-visible{outline:2px solid var(--lake);outline-offset:2px}
 .files{font-family:var(--mono);font-size:13.5px;line-height:1.9}
 .files span{color:var(--muted);font-family:var(--sans)}
 a{color:var(--lake)} a:focus-visible{outline:2px solid var(--lake);outline-offset:2px}
+a code{color:inherit}
 </style>
 
 <div class="wrap">
 
 <header class="col">
-  <div class="eyebrow">Design brief · draft 3.1 · 18 Nov 2026</div>
+  <div class="eyebrow">Design and status · DESIGN.md draft 3.1 · 19 Nov 2026</div>
   <h1>viz: an observability store that lives in one Cloudflare account</h1>
-  <p class="lede">Metrics, logs and traces in Parquet on R2, published as Iceberg tables. PromQL and TraceQL on top. Dashboards and monitors that agents and people share. This page is the design, what the research found, how the design changed under review, and how it will be proven.</p>
+  <p class="lede">Metrics in Parquet on R2, published as Iceberg tables, with PromQL on top; TraceQL and LogQL engines built, their storage still proposed. Monitors and dashboards that agents and people share. This page is the architecture as built, what has been measured and how, what reviews and a protocol model changed, and what is still open.</p>
   <div class="status">
-    <span><b>12</b> research tracks</span>
-    <span><b>3</b> independent reviews</span>
-    <span><b>1</b> benchmark run</span>
-    <span><b>1</b> component built</span>
+    <span><b>merged</b> to main</span>
+    <span><b>first production deploy</b> pending a repository secret</span>
+    <span><b>7</b> spikes on Cloudflare</span>
+    <span><b>2</b> staged trials</span>
+    <span><b>6</b> reviews + a protocol model</span>
   </div>
 </header>
 
 <section class="col">
   <div class="notice">
     <h3>Read this first</h3>
-    <p>One component exists, the pooled shard, tested locally. Nothing has run on Cloudflare. One thing has been measured in a sandbox: the engine-language choice, below. Every other latency and cost figure is a model, printed as a range. My first cost table was wrong: a reviewer recomputed it against the design as drawn and the small-deployment figure went from $5.20 to $5–15, the team figure from $250 to $400–800. The first experiment in the plan decides where in those ranges reality sits.</p>
+    <p>The backend is built and merged to main through pull request #1: the write path, the query service, the ruler and notifier, the control plane, the MCP server, the Iceberg publisher, and the PromQL, TraceQL and LogQL engines. The first production deploy is pending a repository secret, so nothing serves <code>vis.bitcru.sh</code> yet. Staged copies of the deployment ran on Cloudflare on 18 and 19 November and were deleted afterwards (<a href="https://github.com/by77er/viz/blob/main/deploy/README.md"><code>deploy/README.md</code></a>).</p>
+    <p>Every number below says what kind it is: measured on Cloudflare (with date and runs), measured here on a shared development machine, or modelled. Costs and most latency targets are still models.</p>
   </div>
 </section>
 
@@ -100,231 +113,321 @@ a{color:var(--lake)} a:focus-visible{outline:2px solid var(--lake);outline-offse
     <p>For each tenant, one small ledger says which files exist. Everything else follows it.</p>
   </div>
   <div class="shape">
-    <div><span class="label l">Ledger</span>One Durable Object per tenant lists the live files of all that tenant's tables, plus a watermark per shard. It is the only authority on what is visible, and it can be rebuilt from a log on R2.</div>
-    <div><span class="label t">Tail</span>Rows that were acknowledged but are not yet in a listed file are held by exactly one shard, in a write-ahead log.</div>
+    <div><span class="label l">Ledger</span>One Durable Object per tenant lists the live files of all that tenant's tables, plus a watermark per shard stream. It answers at its SQLite commit and writes its change log to R2 in batched segments, so it can be rebuilt from R2 alone.</div>
+    <div><span class="label t">Tail</span>Rows that were acknowledged but are not yet in a listed file are held by exactly one shard, in a write-ahead log. Shards discard only what the ledger's R2 log already holds.</div>
     <div><span class="label">Seam</span>A query reads one ledger version, then asks each shard only for rows above its watermark. A shard that has already discarded those rows refuses, and the query re-reads the ledger. No silent gaps.</div>
-    <div><span class="label">Publication</span>Iceberg snapshots are produced from ledger changes every few minutes, for external engines. viz's own queries never wait on the catalog.</div>
+    <div><span class="label">Publication</span>Iceberg snapshots are produced from the ledgers' logs every few minutes, for external engines. viz's own queries never wait on the catalog. Built and read back by two engines; not yet deployed.</div>
   </div>
 
   <figure>
     <div class="scroll">
-    <svg viewBox="0 0 1040 450" role="img" aria-label="Write path: senders to edge Worker to shard to flush Worker to Parquet files on R2 to the tenant ledger, then asynchronously to a publisher and Iceberg tables. Read path: clients to app Worker to query Worker, which reads the file list and watermarks from the ledger and sends splits to leaf Workers; leaves read file ranges from R2 and rows above the watermark from shards.">
+    <svg viewBox="0 0 1040 570" role="img" aria-label="As built. Write path: senders to the edge Worker, to a shard, through a queue to the flush Worker, to Parquet files on R2, to the tenant ledger; asynchronously, a publisher writes Iceberg tables. A maintenance run per tenant merges and deletes files and updates the ledger. Read path: clients through the gateway to the query Worker, which reads the file list and watermarks from the ledger and sends splits to leaf Durable Objects; leaves read R2 and the shards' tails. The ruler queries over HTTP and hands alerts to the notifier, which sends signed webhooks. The MCP server and the control plane sit behind the gateway.">
       <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>
 
-      <text class="grp" x="328" y="50" fill="var(--tail)">TAIL</text>
-      <text class="grp" x="648" y="50" fill="var(--lake)">LAKE</text>
-      <text class="grp" x="904" y="50" fill="var(--muted)">PUBLISHED · MINUTES BEHIND</text>
+      <rect class="bx" x="404" y="24" width="232" height="52" rx="4"/><text class="ti" x="520" y="46">maintenance</text><text class="su" x="520" y="64">compact (D30) · retention · sweep</text>
+      <text class="al" x="396" y="48" text-anchor="end">queued after each flush,</text><text class="al" x="396" y="63" text-anchor="end">and by the hourly cron</text>
+      <line class="ln" x1="584" y1="76" x2="584" y2="117" marker-end="url(#ah)"/><text class="al" x="578" y="104" text-anchor="end">merge · delete</text>
+      <path class="ln" d="M624 76V94H700V117" marker-end="url(#ah)"/><text class="al" x="708" y="92">replace · expire</text>
 
-      <rect class="bx" x="20" y="70" width="104" height="56" rx="4"/><text class="ti" x="72" y="94">senders</text><text class="su" x="72" y="112">push · scrape</text>
-      <rect class="bx" x="148" y="70" width="104" height="56" rx="4"/><text class="ti" x="200" y="94">edge</text><text class="su" x="200" y="112">auth · decode</text>
-      <rect class="tailb" x="276" y="70" width="104" height="56" rx="4"/><text class="ti" x="328" y="94">Shard</text><text class="su" x="328" y="112">WAL · tail</text>
-      <rect class="bx" x="404" y="70" width="104" height="56" rx="4"/><text class="ti" x="456" y="94">flush</text><text class="su" x="456" y="112">sort · encode</text>
-      <rect class="lakeb" x="532" y="70" width="104" height="56" rx="4"/><text class="ti" x="584" y="94">R2 files</text><text class="su" x="584" y="112">Parquet</text>
-      <rect class="lakeb" x="660" y="70" width="104" height="56" rx="4"/><text class="ti" x="712" y="94">Ledger</text><text class="su" x="712" y="112">one per tenant</text>
-      <rect class="pubb" x="788" y="70" width="104" height="56" rx="4"/><text class="ti" x="840" y="94">Publisher</text><text class="su" x="840" y="112">one per cell</text>
-      <rect class="pubb" x="916" y="70" width="104" height="56" rx="4"/><text class="ti" x="968" y="94">Iceberg</text><text class="su" x="968" y="112">tables</text>
+      <text class="grp" x="328" y="110" fill="var(--tail)">TAIL</text>
+      <text class="grp" x="648" y="110" fill="var(--lake)">LAKE</text>
+      <text class="grp" x="904" y="110" fill="var(--muted)">PUBLISHED · NOT DEPLOYED</text>
 
-      <line class="ln" x1="124" y1="98" x2="146" y2="98" marker-end="url(#ah)"/>
-      <line class="ln" x1="252" y1="98" x2="274" y2="98" marker-end="url(#ah)"/>
-      <line class="ln" x1="380" y1="98" x2="402" y2="98" marker-end="url(#ah)"/>
-      <line class="ln" x1="508" y1="98" x2="530" y2="98" marker-end="url(#ah)"/>
-      <line class="ln" x1="636" y1="98" x2="658" y2="98" marker-end="url(#ah)"/>
-      <line class="lnd" x1="764" y1="98" x2="786" y2="98" marker-end="url(#ah)"/>
-      <line class="lnd" x1="892" y1="98" x2="914" y2="98" marker-end="url(#ah)"/>
+      <rect class="bx" x="20" y="120" width="104" height="56" rx="4"/><text class="ti" x="72" y="144">senders</text><text class="su" x="72" y="162">metrics push</text>
+      <rect class="bx" x="148" y="120" width="104" height="56" rx="4"/><text class="ti" x="200" y="144">edge</text><text class="su" x="200" y="162">auth · decode</text>
+      <rect class="tailb" x="276" y="120" width="104" height="56" rx="4"/><text class="ti" x="328" y="144">Shard</text><text class="su" x="328" y="162">WAL · tail</text>
+      <rect class="bx" x="404" y="120" width="104" height="56" rx="4"/><text class="ti" x="456" y="144">flush</text><text class="su" x="456" y="162">sort · encode</text>
+      <rect class="lakeb" x="532" y="120" width="104" height="56" rx="4"/><text class="ti" x="584" y="144">R2 files</text><text class="su" x="584" y="162">Parquet</text>
+      <rect class="lakeb" x="660" y="120" width="104" height="56" rx="4"/><text class="ti" x="712" y="144">Ledger</text><text class="su" x="712" y="162">SQLite · R2 log</text>
+      <rect class="pubb" x="788" y="120" width="104" height="56" rx="4"/><text class="ti" x="840" y="144">Publisher</text><text class="su" x="840" y="162">one per cell</text>
+      <rect class="pubb" x="916" y="120" width="104" height="56" rx="4"/><text class="ti" x="968" y="144">Iceberg</text><text class="su" x="968" y="162">v2 tables</text>
 
-      <rect class="bx" x="276" y="230" width="360" height="56" rx="4"/><text class="ti" x="456" y="254">leaf Workers</text><text class="su" x="456" y="272">merge lake and tail rows, remove duplicates, evaluate</text>
-      <line class="ln" x1="328" y1="230" x2="328" y2="129" marker-end="url(#ah)"/><text class="al" x="337" y="184">rows above watermark</text>
-      <line class="ln" x1="584" y1="230" x2="584" y2="129" marker-end="url(#ah)"/><text class="al" x="593" y="184">range reads</text>
+      <line class="ln" x1="124" y1="148" x2="146" y2="148" marker-end="url(#ah)"/>
+      <line class="ln" x1="252" y1="148" x2="274" y2="148" marker-end="url(#ah)"/>
+      <line class="ln" x1="380" y1="148" x2="402" y2="148" marker-end="url(#ah)"/>
+      <line class="ln" x1="508" y1="148" x2="530" y2="148" marker-end="url(#ah)"/>
+      <line class="ln" x1="636" y1="148" x2="658" y2="148" marker-end="url(#ah)"/>
+      <line class="lnd" x1="764" y1="148" x2="786" y2="148" marker-end="url(#ah)"/>
+      <line class="lnd" x1="892" y1="148" x2="914" y2="148" marker-end="url(#ah)"/>
 
-      <rect class="bx" x="20" y="370" width="104" height="56" rx="4"/><text class="ti" x="72" y="394">clients</text><text class="su" x="72" y="412">people · agents</text>
-      <rect class="bx" x="148" y="370" width="104" height="56" rx="4"/><text class="ti" x="200" y="394">app</text><text class="su" x="200" y="412">UI · API · MCP</text>
-      <rect class="bx" x="660" y="370" width="104" height="56" rx="4"/><text class="ti" x="712" y="394">query</text><text class="su" x="712" y="412">plan · merge</text>
-      <rect class="bx" x="916" y="370" width="104" height="56" rx="4"/><text class="ti" x="968" y="394">Ruler</text><text class="su" x="968" y="412">rule ticks</text>
+      <rect class="bx" x="276" y="250" width="360" height="56" rx="4"/><text class="ti" x="456" y="274">leaf Durable Objects</text><text class="su" x="456" y="292">read R2 · merge lake and tail · exact partial aggregates</text>
+      <line class="ln" x1="328" y1="250" x2="328" y2="179" marker-end="url(#ah)"/><text class="al" x="337" y="220">rows above watermark</text>
+      <line class="ln" x1="584" y1="250" x2="584" y2="179" marker-end="url(#ah)"/><text class="al" x="593" y="220">range reads</text>
 
-      <line class="ln" x1="124" y1="398" x2="146" y2="398" marker-end="url(#ah)"/>
-      <line class="ln" x1="252" y1="398" x2="657" y2="398" marker-end="url(#ah)"/><text class="al" x="454" y="389" text-anchor="middle">PromQL · TraceQL · LogQL</text>
-      <line class="ln" x1="916" y1="398" x2="767" y2="398" marker-end="url(#ah)"/><text class="al" x="841" y="389" text-anchor="middle">rules</text>
-      <path class="ln" d="M684 370V258H639" marker-end="url(#ah)"/><text class="al" x="676" y="322" text-anchor="end">splits</text>
-      <line class="ln" x1="736" y1="370" x2="736" y2="129" marker-end="url(#ah)"/><text class="al" x="745" y="254">file list +</text><text class="al" x="745" y="270">watermarks</text>
+      <rect class="bx" x="20" y="400" width="104" height="56" rx="4"/><text class="ti" x="72" y="424">clients</text><text class="su" x="72" y="442">Grafana · agents</text>
+      <rect class="bx" x="148" y="400" width="104" height="56" rx="4"/><text class="ti" x="200" y="424">gateway</text><text class="su" x="200" y="442">vis.bitcru.sh</text>
+      <rect class="bx" x="660" y="400" width="104" height="56" rx="4"/><text class="ti" x="712" y="424">query</text><text class="su" x="712" y="442">plan · merge</text>
+      <rect class="bx" x="916" y="400" width="104" height="56" rx="4"/><text class="ti" x="968" y="424">Ruler</text><text class="su" x="968" y="442">rule ticks</text>
+
+      <line class="ln" x1="124" y1="428" x2="146" y2="428" marker-end="url(#ah)"/>
+      <line class="ln" x1="252" y1="428" x2="657" y2="428" marker-end="url(#ah)"/><text class="al" x="454" y="419" text-anchor="middle">Prometheus HTTP API</text>
+      <line class="ln" x1="916" y1="428" x2="767" y2="428" marker-end="url(#ah)"/><text class="al" x="841" y="419" text-anchor="middle">rules over HTTP</text>
+      <path class="ln" d="M684 400V278H639" marker-end="url(#ah)"/><text class="al" x="676" y="340" text-anchor="end">splits</text>
+      <line class="ln" x1="736" y1="400" x2="736" y2="179" marker-end="url(#ah)"/><text class="al" x="745" y="300">one ledger version:</text><text class="al" x="745" y="316">files + watermarks</text>
+
+      <rect class="bx" x="148" y="490" width="104" height="56" rx="4"/><text class="ti" x="200" y="514">control</text><text class="su" x="200" y="532">keys · settings</text>
+      <rect class="bx" x="404" y="490" width="104" height="56" rx="4"/><text class="ti" x="456" y="514">mcp</text><text class="su" x="456" y="532">13 agent tools</text>
+      <rect class="bx" x="788" y="490" width="104" height="56" rx="4"/><text class="ti" x="840" y="514">Notifier</text><text class="su" x="840" y="532">route · deliver</text>
+
+      <line class="ln" x1="200" y1="456" x2="200" y2="487" marker-end="url(#ah)"/>
+      <path class="ln" d="M230 456V470H456V487" marker-end="url(#ah)"/>
+      <path class="ln" d="M508 505H712V459" marker-end="url(#ah)"/><text class="al" x="600" y="498" text-anchor="middle">tool calls</text>
+      <path class="ln" d="M968 456V518H895" marker-end="url(#ah)"/><text class="al" x="976" y="490">alerts</text>
+      <line class="ln" x1="788" y1="518" x2="768" y2="518" marker-end="url(#ah)"/><text class="al" x="762" y="522" text-anchor="end">signed webhooks</text>
     </svg>
     </div>
-    <figcaption>Solid arrows are the path that data and queries depend on. Dashed arrows are the Iceberg publication, which can lag or fail without affecting ingest, freshness or query results.</figcaption>
+    <figcaption>As built. Every public path, ingest included, enters through the gateway on <code>vis.bitcru.sh</code>. Seals reach flush through a queue; the ledger answers at its SQLite commit and writes its log to R2 a moment later. The ruler authenticates to query with a service key that control issues, and writes recording rules back through ingest. Dashed: the Iceberg publication, which is built but not yet bound or deployed, and which can lag or stop without affecting ingest, freshness or query results.</figcaption>
   </figure>
 </section>
 
 <section>
   <div class="col">
-    <h2>What the research established</h2>
-    <p>Twelve researchers each took one domain and fetched primary sources. A shared search budget ran out part-way, so Cloudflare facts are mostly verified from vendor pages and many non-Cloudflare internals rest on training knowledge. The files say which is which.</p>
+    <h2>What exists</h2>
+    <p><span class="tag v">in the deploy</span> merged to main and deployed by the pipeline, whose first production run is pending a repository secret. <span class="tag">built</span> merged and tested, not deployed. <span class="tag m">proposed</span> designed, not built.</p>
   </div>
   <div class="tw"><table>
-    <thead><tr><th>Finding</th><th>Consequence for the design</th><th>Basis</th></tr></thead>
+    <thead><tr><th>Part</th><th>Status</th><th>What it is</th><th>Read</th></tr></thead>
     <tbody>
-      <tr><td>Cloudflare's catalog, SQL engine and streaming ingest went GA on 1 Oct 2026 under the name Basin. Catalog operations cost $9 per million.</td><td>One table per tenant is ruled out on commit cost alone. Commits must be batched and skipped when nothing changed.</td><td><span class="tag v">verified ×6</span></td></tr>
-      <tr><td>The managed streaming ingest allows 20 streams per account, has a 60 s minimum roll, no sort control, and drops invalid events silently.</td><td>viz writes its own Parquet. The managed pipeline is not on the path.</td><td><span class="tag v">verified ×4</span></td></tr>
-      <tr><td>The managed SQL engine caps results at 10,000 rows and has no Workers binding.</td><td>PromQL and TraceQL need their own engine.</td><td><span class="tag v">verified</span></td></tr>
-      <tr><td>A Worker isolate has 128 MB including WASM, and only six connections may wait for headers at once.</td><td>Small row groups, streaming evaluation, and a fan-out topology that has to be tested before it is fixed.</td><td><span class="tag v">verified</span></td></tr>
-      <tr><td>There is an open, unexplained corruption report against the managed catalog in which two writers disagreed.</td><td>viz is the only writer to its tables, and the catalog is not the source of truth.</td><td><span class="tag v">verified</span></td></tr>
-      <tr><td>From 1 Dec 2026 Cloudflare sells its own logs and traces product at $0.25 per GB, without PromQL or TraceQL.</td><td>viz differentiates on open formats, standard query languages, external sources and the agent surface.</td><td><span class="tag v">verified ×3</span></td></tr>
-      <tr><td>Tempo 3.0 and Loki 4.0 both moved to a durable log, one copy on object storage and stateless queriers.</td><td>The overall shape matches where the incumbents ended up.</td><td><span class="tag">mixed</span></td></tr>
-      <tr><td>AI investigation agents score 25–60% on published root-cause benchmarks, and prompt injection through log lines is demonstrated.</td><td>Agentic monitors are advisory, read-only and never in the paging path.</td><td><span class="tag">secondary</span></td></tr>
-      <tr><td>How rules are scheduled changes their cost by three orders of magnitude.</td><td>Many rules per object, one tick, shared scans. No Workflow per rule.</td><td><span class="tag m">modelled</span></td></tr>
+      <tr><td>Write path</td><td><span class="tag v">in the deploy</span></td><td>edge, the pooled Shard, flush, the Ledger and the per-tenant maintenance run, as one Worker, <code>viz-ingest</code>, with its queues and hourly cron</td><td class="src"><a href="https://github.com/by77er/viz/blob/main/stack/README.md"><code>stack/</code></a></td></tr>
+      <tr><td>Query service</td><td><span class="tag v">in the deploy</span></td><td>The Prometheus HTTP API over lake files and shard tails, with leaf Durable Objects, <code>viz-query</code></td><td class="src"><a href="https://github.com/by77er/viz/blob/main/query/README.md"><code>query/</code></a></td></tr>
+      <tr><td>Ruler and notifier</td><td><span class="tag v">in the deploy</span></td><td>Threshold, anomaly and SLO rules, warm-ups, backtests, routing and signed webhooks, <code>viz-ruler</code></td><td class="src"><a href="https://github.com/by77er/viz/blob/main/ruler/README.md"><code>ruler/</code></a></td></tr>
+      <tr><td>Control plane</td><td><span class="tag v">in the deploy</span></td><td>Keys, dashboards, proposals, settings and audit log per tenant, <code>viz-control</code></td><td class="src"><a href="https://github.com/by77er/viz/blob/main/control/README.md"><code>control/</code></a></td></tr>
+      <tr><td>Agent surface</td><td><span class="tag v">in the deploy</span></td><td>Stateless MCP server and the same tools as JSON, <code>viz-mcp</code></td><td class="src"><a href="https://github.com/by77er/viz/blob/main/mcp/README.md"><code>mcp/</code></a></td></tr>
+      <tr><td>Gateway</td><td><span class="tag v">in the deploy</span></td><td>Routes <code>vis.bitcru.sh</code> by path; no web page</td><td class="src"><a href="https://github.com/by77er/viz/blob/main/deploy/README.md"><code>deploy/</code></a></td></tr>
+      <tr><td>Iceberg publisher</td><td><span class="tag">built</span></td><td>R2-native Iceberg metadata, one object per cell; the write path does not bind it yet, so it is not deployed</td><td class="src"><a href="https://github.com/by77er/viz/blob/main/publisher/README.md"><code>publisher/</code></a></td></tr>
+      <tr><td>TraceQL and LogQL engines</td><td><span class="tag">built</span></td><td>Clean-room Rust crates; not wired into storage, ingest or the query service</td><td class="src"><a href="https://github.com/by77er/viz/blob/main/engine/traceql/README.md"><code>engine/traceql/</code></a>, <a href="https://github.com/by77er/viz/blob/main/engine/logql/README.md"><code>engine/logql/</code></a></td></tr>
+      <tr><td>Compaction beyond a Worker</td><td><span class="tag">built</span></td><td>The compaction Workflow is built and not started; the Container for merges over 16 MB is not built</td><td class="src"><a href="https://github.com/by77er/viz/blob/main/compact/README.md"><code>compact/</code></a></td></tr>
+      <tr><td>Spans and logs storage</td><td><span class="tag m">proposed</span></td><td>Table contracts only; nothing writes or reads them, and edge decodes metrics only</td><td class="src"><a href="https://github.com/by77er/viz/blob/main/contracts/TRACES.md"><code>TRACES.md</code></a>, <a href="https://github.com/by77er/viz/blob/main/contracts/LOGS.md"><code>LOGS.md</code></a></td></tr>
+      <tr><td>Monitoring viz with viz</td><td><span class="tag m">proposed</span></td><td>A <code>viz-internal</code> tenant in the same deployment, for scaling and cost per unit of work (D23)</td><td class="src"><a href="https://github.com/by77er/viz/blob/main/design/SELF-MONITORING.md"><code>SELF-MONITORING.md</code></a></td></tr>
+      <tr><td>Scrape and adapters</td><td><span class="tag m">proposed</span></td><td>Pull ingest and the two-way adapter contract (DESIGN §4.4)</td><td class="src"><a href="https://github.com/by77er/viz/blob/main/design/DESIGN.md"><code>DESIGN.md</code></a></td></tr>
+      <tr><td>Web app</td><td><span class="tag">built</span></td><td>A metrics Explore view, run locally against the real API; not part of the deployment (see "The interface")</td><td class="src"><a href="https://github.com/by77er/viz/blob/claude/cloudflare-observability-platform-ibaqya/app/README.md"><code>app/</code></a></td></tr>
     </tbody>
   </table></div>
 </section>
 
 <section>
-  <div class="col">
-    <h2>How the design changed under review</h2>
-    <p>I gave the second draft to two reviewers who had not seen my reasoning and asked them to break it. They returned 57 findings, 11 of them critical. The third draft is a structural response.</p>
-  </div>
-  <div class="tw"><table>
-    <thead><tr><th>What the review found</th><th>Draft 2</th><th>Draft 3</th></tr></thead>
-    <tbody>
-      <tr><td>A catalog outage would stall ingest within minutes, and table metadata grew with tenants × days.</td><td>Visibility state stored inside Iceberg snapshots; one committer per table.</td><td>Per-tenant ledger is the authority. Iceberg is published from it.</td></tr>
-      <tr><td>A slow query or a stale cached pointer could read a silent hole.</td><td>Write-ahead log trimmed after a grace period.</td><td>A fence: shards refuse watermarks they have already passed.</td></tr>
-      <tr><td>Every ingest request and every query touched every shard of the tenant.</td><td>Rows routed by series hash.</td><td>Rows routed by sender, so one request lands in one shard.</td></tr>
-      <tr><td>Sorting and encoding a minute of data inside a 128 MB object blocks acknowledgements.</td><td>The shard encodes Parquet.</td><td>Shards seal small segments. A stateless Worker encodes.</td></tr>
-      <tr><td>A <code>rate()</code> window straddling old and new data could be wrong or double counted.</td><td>Recent rows evaluated separately.</td><td>Old and recent rows for a key range are merged before evaluation.</td></tr>
-      <tr><td>Trace lookup by ID read hundreds of filters.</td><td>Day partitions; index gave only a time window.</td><td>Hour partitions with few files each; index rows name the hours.</td></tr>
-      <tr><td>The cost table quoted numbers derived for a different architecture.</td><td>$5.20 / $250 / $18–25k.</td><td>Ranges recomputed for this design; see below.</td></tr>
-      <tr><td>The first experiment was the one with a fallback.</td><td>Catalog commit first.</td><td>Billing behaviour, connection limits and a real read slice first.</td></tr>
-    </tbody>
-  </table></div>
-  <div class="col">
-    <p>A third reviewer then attacked only what was new in draft 3. It judged the core sound: the fenced seam, the contiguous watermark, and catalog independence. It found 12 problems at the edges, four of them critical, such as an index updated outside the ledger transaction and sequence numbers that were per shard when shards can be shared between tenants. Draft 3.1 amends the text for each. Those amendments have not been reviewed again; the next real check is the formal model, not another reading.</p>
-  </div>
-</section>
-
-<section>
-  <h2>The parts</h2>
-  <div class="two">
+  <h2>The parts, as built</h2>
+  <div class="two parts">
     <div><h3>Write path</h3>
-      <p>The edge Worker checks the API key and decodes OTLP or Remote Write into a columnar batch. The shard appends it to its log and answers only once that is durable; appends that arrive together share one transaction. When its buffer is full it answers 429; when it has too much in flight it refuses at once, before doing any work, with 503 and a Retry-After. It never accepts and drops. Shards seal small segments; a stateless Worker turns each into one sorted Parquet file per table, and the ledger admits all of them in one transaction. The ledger answers at its commit and writes its change log to R2 in batched segments a fraction of a second later; shards discard only what that log holds.</p></div>
-    <div><h3>Storage</h3>
-      <p>Seven tables: series, samples and rollups for metrics; spans and a trace index; logs. Every file holds one tenant, so retention and erasure are file drops. Compaction is time-ordered and keeps sort order. Rollups are written when an hour closes. viz is the only writer; managed compaction stays off.</p></div>
+      <p>edge authenticates the key and decodes Remote Write 1.0 or OTLP metrics into columnar batches, routed by sender. A shard with 64 appends in flight or 16 MB pending refuses at once, before reading anything, with 503 and <code>Retry-After</code>; accepted appends share one SQLite transaction and each caller is answered after it (D37). A seal reaches flush through a queue, with a KV marker and an hourly sweep under it (D18). The ledger admits each flush unit in one transaction, answers, and drains its changes to R2 as one segment about 0.2 s later; shards discard only what is logged (D36). <a href="https://github.com/by77er/viz/blob/main/design/DESIGN.md">DESIGN §4</a></p></div>
+    <div><h3>Storage and maintenance</h3>
+      <p>Tenant-pure Parquet files for metric samples and series. A per-tenant maintenance run expires whole days (30 by default), merges files in a Worker (at most 16 MB per step, 70 MB of WASM memory measured), and deletes what the ledger calls deletable. A merge never deletes its outputs; each output records its inputs, and the sweep deletes an unlisted output only once an input is gone for good, with no clock involved (D30). An idle deployment wakes no object. <a href="https://github.com/by77er/viz/blob/main/design/DESIGN.md">DESIGN §5.2</a></p></div>
     <div><h3>Read path</h3>
-      <p>Each language parses to its own tree and lowers to one plan. The tenant filter comes from the session and cannot be omitted. A query that aggregates is split over leaves that each own a range of series keys, sized by samples and by series; they return exact partial aggregates, so the answer is identical to one place. A query that does not aggregate runs in one place, bounded by one isolate.</p></div>
-    <div><h3>One engine</h3>
-      <p>A Rust core with no I/O does parsing, planning, Parquet and evaluation. It runs as WASM in Workers, natively in Containers, and inside a seeded simulator in CI. That last use is why it has no I/O.</p></div>
+      <p>One ledger read gives a version, its files and its watermarks; shards return rows above them or refuse. Files are read through leaf Durable Objects, each with its own six connections (D17). Aggregations split over leaves that each own a range of series keys and return exact partials, byte-identical to one place (D31). Series-level pruning reads only the row groups that hold a selected series (D41). <code>/api/v1/plan</code> reports what a query would read without reading it. <a href="https://github.com/by77er/viz/blob/main/query/README.md"><code>query/README.md</code></a></p></div>
+    <div><h3>Engines</h3>
+      <p>A Rust core with no I/O, compiled to WASM: Parquet encode and decode, PromQL, split execution and the cardinality report. TraceQL and LogQL engines are separate clean-room crates checked against Tempo and Loki run as black boxes. They wait for spans and logs storage, which is proposed (<code>contracts/TRACES.md</code>, <code>contracts/LOGS.md</code>). <a href="https://github.com/by77er/viz/blob/main/engine/promql/README.md"><code>engine/</code></a></p></div>
     <div><h3>Monitors</h3>
-      <p>Prometheus rule semantics, extended to logs and traces. Each rule is classified when saved by what it has to read, and its cost is shown. Anomaly detection is statistics first. Agentic monitors run when a rule or anomaly fires, use read-only tools, and link every claim to the query behind it. As built, rules evaluate through the query API with a service key the tenant's control plane issues, and alerts go to the webhook set in the control plane, signed, as Alertmanager's JSON or viz's plain form (D39).</p></div>
-    <div><h3>Dashboards</h3>
-      <p>A small typed spec with stable panel ids. Edits are patches, dry-run against real data before saving. Every dashboard has a visual form, a text digest and a structured form from the same data; agents read the digest. About a dozen MCP tools, shared with the REST API; agents propose new dashboards and changes, and a person applies them. Prometheus and Tempo HTTP APIs are served, so Grafana works on day one.</p></div>
-    <div><h3>Tenancy and auth</h3>
-      <p>Tenant id comes only from the credential. Hashed, scoped API keys for machines; OAuth and single sign-on for people and agents. Each tenant has its own ledger and its own stream inside pooled shards. Small tenants share tables; a tenant needing direct Iceberg access, residency or scale gets a dedicated cell.</p></div>
-    <div><h3>Pull and adapters</h3>
-      <p>Scrapers run on alarms and feed the same write path. Adapters share one contract in both directions with Arrow as the currency: poll an external system on ingest, or scan it at query time. First-party adapters ship first.</p></div>
+      <p>Ruler objects evaluate each group per tick through the query service's HTTP API with a service key that the tenant's control plane issues, one call in flight per object; recording rules write back through Remote Write (D39). Anomaly rules default to EWMA, or a static threshold for pages (D33). SLO rules raise the SRE Workbook's multi-window burn-rate alerts from one query per tick (D42). New rules are warmed from history under a planned budget, and backtests replay the same evaluation (D43). <a href="https://github.com/by77er/viz/blob/main/ruler/README.md"><code>ruler/README.md</code></a></p></div>
+    <div><h3>Delivery</h3>
+      <p>One Notifier per tenant groups, inhibits and silences with Alertmanager's semantics and sends from a transactional outbox. Each body is built once and every attempt sends the same bytes under the same <code>Idempotency-Key</code>, signed with HMAC-SHA256. The destination (a webhook URL, viz's <code>viz.notification/v1</code> or Alertmanager's JSON, a write-only secret) is set in control and offered as the receiver <code>viz:default</code>. A dead-man's-switch alert is built in. <a href="https://github.com/by77er/viz/blob/main/design/DECISIONS.md">D39</a></p></div>
+    <div><h3>Agents and control</h3>
+      <p>control keeps keys, dashboards and their revisions, proposals, settings and an audit log in one Tenant object per tenant. mcp is a stateless MCP server with 13 tools, served also as JSON under <code>/api/v1/agent</code> through one dispatcher (D25–D27). Results fence tenant text as data and return usage counters (D28). Agents propose new dashboards and changes, and a person applies them (D29). The tenant comes only from the API key; OAuth is a seam, not built. <a href="https://github.com/by77er/viz/blob/main/mcp/README.md"><code>mcp/README.md</code></a></p></div>
+    <div><h3>Publication</h3>
+      <p>One publisher object per cell writes Iceberg v2 metadata straight to R2, applying each tenant's ledger log strictly in version order and stopping at a hole rather than skipping it. The maintenance run nudges it and its own alarm publishes about two minutes later; an idle cell has no alarm (D34). It is built and tested, not yet bound in the write path or deployed; the managed catalog is undecided (S8). <a href="https://github.com/by77er/viz/blob/main/publisher/README.md"><code>publisher/README.md</code></a></p></div>
   </div>
 </section>
 
 <section>
-  <div class="col"><h2>First measurement: Rust or JavaScript for the engine</h2>
-  <p>The same encode and the same <code>sum(rate(metric[5m]))</code> query were implemented both ways over 1.92 million samples. Each side was tuned separately, each read the other's files, and all variants returned identical results to 12 digits.</p></div>
+  <div class="col">
+    <h2>From a push to production</h2>
+    <p>Every push to <code>main</code> deploys, so two releases always share storage for a while. Every Durable Object records a schema version and refuses storage newer than its code; formats that cross a release carry a version; readers deploy before writers (D24, <a href="https://github.com/by77er/viz/blob/main/design/UPGRADES.md"><code>UPGRADES.md</code></a>).</p>
+    <ol>
+      <li>The checks of <code>ci.yml</code> run: both WASM engines built once, the Rust tests, and type checks and tests for each TypeScript component.</li>
+      <li><code>deploy.sh</code> ensures the bucket <code>viz-lake</code>, the KV namespace <code>viz-config</code> and four queues, and generates each Worker's configuration.</li>
+      <li><code>release.mjs</code> refuses a release whose Durable Object migrations no commit acknowledges, uploads every Worker, then promotes callees first: ingest, control, query, ruler, mcp, gateway.</li>
+      <li><code>smoke.mjs</code> waits until <code>/healthz</code> reports the new release, then writes a sample and reads it back.</li>
+      <li>If the smoke test fails and the release has no migration, the previous release is restored automatically; with a migration it fails loudly, because the release is forward-only.</li>
+    </ol>
+    <p class="muted">Status: merged to main; first production deploy pending a repository secret. The workflows have not yet run on GitHub. The same scripts ran twice against staged copies on Cloudflare (evidence below). <a href="https://github.com/by77er/viz/blob/main/deploy/README.md"><code>deploy/README.md</code></a></p>
+  </div>
+</section>
+
+<section>
+  <div class="col">
+    <h2>Evidence</h2>
+    <p>Grouped by kind. Measurements on Cloudflare were read inside the platform unless the row says "from outside", which includes this sandbox's network path.</p>
+  </div>
+
+  <div class="col"><h3>Measured on Cloudflare <span class="tag v">platform</span></h3></div>
   <div class="tw"><table>
-    <thead><tr><th>Workload</th><th>JavaScript, tuned</th><th>Rust as WASM, tuned</th><th>Ratio</th></tr></thead>
+    <thead><tr><th>What</th><th>Result</th><th>When, runs</th><th>Source</th></tr></thead>
     <tbody>
-      <tr><td>Encode 1.92M rows to Parquet</td><td class="n">1,030 ms</td><td class="n">240 ms</td><td class="n">4.3×</td></tr>
-      <tr><td>Query one metric (one row group decoded)</td><td class="n">37 ms</td><td class="n">4.8 ms</td><td class="n">7.7×</td></tr>
-      <tr><td>Query all counters (full scan)</td><td class="n">291 ms</td><td class="n">32 ms</td><td class="n">9.0×</td></tr>
-      <tr><td>Full scan on a file encoded to favour JavaScript</td><td class="n">178 ms</td><td class="n">45 ms</td><td class="n">4.0×</td></tr>
-      <tr><td>Memory during a query</td><td class="n">110–130 MB process RSS over idle</td><td class="n">18–20 MB WASM memory</td><td class="n"></td></tr>
-      <tr><td>Code size, gzip</td><td class="n">0.11 MB</td><td class="n">0.80 MB</td><td class="n"></td></tr>
+      <tr><td>S0 · periodic wakes</td><td>A woken object bills for the moments it runs: 17–26 ms per alarm wake, 37–47 ms per request wake. Objects woken every 60 s ran at 0.04–0.09% duty against a 25% kill threshold, about $0.002 a month each.</td><td class="n">18 Nov, first 2 hours; 24-hour read pending</td><td class="src"><a href="https://github.com/by77er/viz/blob/main/spikes/s0-do-billing/README.md"><code>spikes/s0</code></a></td></tr>
+      <tr><td>S1 · fan-out and R2 reads</td><td>96 R2 reads through service-bound leaves took 727–958 ms however they were divided; through Durable Object leaves 312 ms, and 192 reads over 32 leaves 173 ms. A range read costs about 45 ms whatever its size below 1 MB.</td><td class="n">18 Nov, a few runs per case</td><td class="src"><a href="https://github.com/by77er/viz/blob/main/spikes/s1-fanout-r2/README.md"><code>spikes/s1</code></a></td></tr>
+      <tr><td>S2 · engine in a Worker</td><td>Billed CPU, Rust against JavaScript: 8.7 against 158 ms for a selective query, 70 against 698 ms for a full scan. The 128 MB limit is not enforced at allocation, which is not a budget to design to.</td><td class="n">18 Nov, median of 20–30 requests</td><td class="src"><a href="https://github.com/by77er/viz/blob/main/spikes/s2-engine-in-worker/README.md"><code>spikes/s2</code></a></td></tr>
+      <tr><td>S3 · one shard, re-run</td><td>With early refusal and group commit, at 64 clients: 864–1,056 acknowledged requests a second, 99th percentile 129–148 ms, against 301–340 a second and 446–493 ms for the shard as first built, the same day. At 200 clients, refusals came back in 0–7 ms at the median.</td><td class="n">19 Nov, 3 × 10 s per cell</td><td class="src"><a href="https://github.com/by77er/viz/blob/main/spikes/s3-ingest-throughput/README.md"><code>spikes/s3</code></a></td></tr>
+      <tr><td>S4 · ledger, re-run</td><td>With the segment log, eight writers: 234–422 units a second against 1.7–3.3 for the per-change ledger the same day; <code>addUnit</code> median 16–31 ms. A rebuild of 5,008 changes from 104 segments took 5.4 s, state identical. A plan over 7,000 files took 276 ms and 5.8 MB (18 Nov).</td><td class="n">19 Nov, 3 × 20 s per cell</td><td class="src"><a href="https://github.com/by77er/viz/blob/main/spikes/s4-ledger-scale/README.md"><code>spikes/s4</code></a></td></tr>
+      <tr><td>R2 writes</td><td>An R2 write takes 0.17–0.26 s at the median up to 1 MB, and writes share the six-in-flight limit; 32 Durable Objects wrote 192 objects in 0.85 s.</td><td class="n">18 Nov, 20 writes per row</td><td class="src"><a href="https://github.com/by77er/viz/blob/main/spikes/s5-r2-writes/README.md"><code>spikes/s5-r2-writes</code></a></td></tr>
+      <tr><td>S8 · Iceberg commits</td><td>R2-native baseline: about 0.5 commits a second per table under 2–8 committers, every chain linear; 2 of 80 commits starved at 8 committers, in both runs. The managed catalog was not reached: the token lacks the catalog permission. Nothing is decided.</td><td class="n">19 Nov, 2, 4 and 8 committers; 8 twice</td><td class="src"><a href="https://github.com/by77er/viz/blob/main/spikes/s8-managed-catalog/README.md"><code>spikes/s8</code></a></td></tr>
+      <tr><td>Trial 1 · upgrade under load</td><td>16,306 Remote Write requests across two promotions, a manual and an automatic rollback: none refused, no query failed, 65,224 samples acknowledged and all read back with their values. Durable Objects moved to new code 29.7 s after promotion. A rollback across a migration was refused by the tool and by Cloudflare.</td><td class="n">18 Nov, one 13.6-minute run, from outside</td><td class="src"><a href="https://github.com/by77er/viz/blob/main/deploy/README.md"><code>deploy/</code></a></td></tr>
+      <tr><td>Trial 2 · monitors and agents</td><td>20 of 20 alerts delivered once each, every signature verified, in both body forms; evaluation to webhook p50 174 ms, p90 187 ms, p99 266 ms. A recording rule round-tripped through Remote Write. MCP calls took 279–915 ms from outside.</td><td class="n">19 Nov, n = 20</td><td class="src"><a href="https://github.com/by77er/viz/blob/main/deploy/README.md"><code>deploy/</code></a></td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="col"><h3>Measured here <span class="tag">development machine</span></h3>
+  <p class="muted">A shared machine, often loaded above its core count, so times are rough; counts, bytes and results are exact.</p></div>
+  <div class="tw"><table>
+    <thead><tr><th>What</th><th>Result</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td>Engine language</td><td>Same workload both ways, each tuned, each reading the other's files: Rust as WASM 4–9× faster than tuned JavaScript (encode 240 against 1,030 ms; full scan 32 against 291 ms), identical results.</td><td class="src"><a href="https://github.com/by77er/viz/blob/main/bench/README.md"><code>bench/</code></a>, D5</td></tr>
+      <tr><td>PromQL</td><td>Upstream <code>promqltest</code> corpus: 935 passed, 1 failed, 167 skipped with their reasons. 219,600 differential evaluations against Prometheus 3.8.0's engine: all agree.</td><td class="src"><a href="https://github.com/by77er/viz/blob/main/engine/promql/README.md"><code>engine/promql</code></a></td></tr>
+      <tr><td>TraceQL</td><td>Tempo's example list: 0 failures over 463 queries. 3,600 differential cases against Tempo v3.1.1: 2,225 agree, 495 both reject, 880 classified by named rules, 0 unexplained.</td><td class="src"><a href="https://github.com/by77er/viz/blob/main/engine/traceql/README.md"><code>engine/traceql</code></a></td></tr>
+      <tr><td>LogQL</td><td>7,895 differential evaluations against Loki v3.7.10: 7,616 agree, 220 both fail, 59 explained, 0 unexplained.</td><td class="src"><a href="https://github.com/by77er/viz/blob/main/engine/logql/README.md"><code>engine/logql</code></a></td></tr>
+      <tr><td>Iceberg read-back</td><td>PyIceberg 0.12.0 and DuckDB 2.0.0 read the published tables at four stages: 504 checks, 0 failed, identical content hashes from both readers and the Parquet files.</td><td class="src"><a href="https://github.com/by77er/viz/blob/main/publisher/README.md"><code>publisher/</code></a></td></tr>
+      <tr><td>High cardinality</td><td><code>sum by (job)</code> over 100,000 series was refused after materialising 87 MiB; counted by series as well as samples it answers on 7 leaves.</td><td class="src"><a href="https://github.com/by77er/viz/blob/main/query/CARDINALITY.md"><code>CARDINALITY.md</code></a>, D31</td></tr>
+      <tr><td>Anomaly detectors</td><td>Numenta benchmark, held out: EWMA 30.1 against a static threshold's 21.8; the robust z-score with MAD −105.9, the MAD seasonal baseline −76.4. A second benchmark (SMD), with every parameter frozen on NAB first, has no reported result yet.</td><td class="src"><a href="https://github.com/by77er/viz/blob/main/anomaly/README.md"><code>anomaly/</code></a>, D33</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="col"><h3>Modelled <span class="tag m">ranges</span></h3>
+  <p>Costs at list price, from the reviewers' recomputation of the research model against this design (<a href="https://github.com/by77er/viz/blob/main/design/DESIGN.md">DESIGN §11</a>). Only S0's wake cost is measured.</p></div>
+  <div class="tw"><table>
+    <thead><tr><th>Case</th><th>Per month</th><th>What decides it</th><th>Settled by</th></tr></thead>
+    <tbody>
+      <tr><td>Small deployment: 10k series, 1 GB logs/day, 1M spans/day, 20 rules</td><td class="n">≈ $5 plan fee + storage</td><td>The work inside each tick; the wake itself is measured</td><td>S0's 24-hour read, then ticks that do real work, read from the analytics API</td></tr>
+      <tr><td>One more small active tenant</td><td class="n">&lt; $1 pooled · ≈ $6 dedicated</td><td>Pool assignment, seal age</td><td>S3 with pooled tenants</td></tr>
+      <tr><td>Team: 1M series, 100 GB logs/day, 500M spans/day, 2k rules</td><td class="n">$400–800</td><td>Compaction CPU, commit window, rule classes, first-load reads</td><td>S5 read slice, S7, a merge run in a deployed Worker</td></tr>
+      <tr><td>Scale: 100M series, 10 TB logs/day, 50B spans/day</td><td class="n">tens of thousands</td><td>Long-retention storage, shard duration</td><td>No experiment named yet</td></tr>
     </tbody>
   </table></div>
   <div class="col">
-    <p>The gap comes mostly from 64-bit integer decoding, which JavaScript has to route through BigInt. On the Rust side, tuning mattered as much as the language: keeping metric names dictionary-encoded and enabling WASM SIMD took the full scan from 73 ms to 32 ms.</p>
-    <p class="muted">Limits of this result: sandbox wall time, not billed CPU on Cloudflare. The local Workers runtime does not enforce the 128 MB limit. Both sides used snappy; the zstd build for WASM is untested. The Rust module holds one hard-coded query, so a full engine will be larger than 0.8 MB. I did not write a custom JavaScript decoder, which could narrow the integer gap.</p>
+    <ul>
+      <li>A compaction merge at the budget: about 2–3.5 s on Cloudflare, 0.3–0.6 s for a small hourly merge. Settled by a merge run in a deployed Worker (<a href="https://github.com/by77er/viz/blob/main/compact/README.md"><code>compact/</code></a>).</li>
+      <li>A ruler group's tick: 0.1–0.3 s per rule, one after another, so a 1,000-rule group would hit the 120 s group timeout. Not measured on Cloudflare; an RPC entrypoint in the query service would remove it (D39).</li>
+      <li>The ledger's 16 MiB state limit assumes about four copies in memory at a checkpoint's peak against 128 MB; not measured on Cloudflare (<a href="https://github.com/by77er/viz/blob/main/ledger/README.md"><code>ledger/</code></a>).</li>
+    </ul>
+  </div>
+  <div class="tw"><table>
+    <thead><tr><th>Target (DESIGN §10)</th><th>Hypothesis</th><th>Where it stands</th></tr></thead>
+    <tbody>
+      <tr><td>Ingest acknowledgement</td><td class="n">p50 &lt; 80 ms · p99 &lt; 500 ms</td><td>Met on Cloudflare per shard: medians 30–71 ms, 99th 86–276 ms from 1 to 200 clients (S3 re-run, 19 Nov, n = 3)</td></tr>
+      <tr><td>Time until a row is queryable</td><td class="n">p99 &lt; 10 s</td><td>No distribution yet; the two trials' smoke tests read their samples 0.8 s and 1.3 s after acknowledgement, once each</td></tr>
+      <tr><td>Dashboard refresh, warm partials</td><td class="n">p50 &lt; 300 ms</td><td>Not measured; partials are not cached yet</td></tr>
+      <tr><td>First load, 24 h including today</td><td class="n">p95 &lt; 3 s</td><td>Not measured; the S5 read slice settles it</td></tr>
+      <tr><td>Trace by ID with a time hint</td><td class="n">p95 &lt; 1 s</td><td>Not measured; needs spans storage, then S6</td></tr>
+    </tbody>
+  </table></div>
+  <div class="col"><p class="muted">Still to run, in order (<a href="https://github.com/by77er/viz/blob/main/design/VERIFICATION.md"><code>VERIFICATION.md</code></a> §4): S0's 24-hour read; S5, one PromQL query over 1 h, 24 h and 30 d on team-scale data; S6, trace by ID and a log needle search at volume; S7, tail reads under ingest and rule load; S8's managed-catalog half, once the token has the catalog write permission.</p></div>
+</section>
+
+<section>
+  <div class="col">
+    <h2>The protocol model</h2>
+    <p>Two models written independently, one in Quint checked with TLC and one explicit-state checker at the granularity of the code, explore every interleaving of append, seal, flush, admission, discard, compaction, retention, deletion, the orphan sweep and the loss of a shard's or a ledger's storage. Switching off any guard the design names produces a counterexample in both, so the models have teeth.</p>
+    <p>They found F1–F16. Two compaction findings (F13, and F14, which is critical), incarnation reuse (F11), a flush that filed a new incarnation's rows under the old one (F12) and a sweep that trusted an unlogged registration (F15) were fixed and re-checked: no counterexample to the ten safety invariants within bounds, up to 31 steps and about 19 million states. That is bounded, not exhaustive: at most 3 batches, 2 shards, 2 tenants and one fault of each kind, with shard-map changes not modelled. F6(b), with the registration rule F1 behind it, and F8 are open. <a href="https://github.com/by77er/viz/blob/main/spec/README.md"><code>spec/README.md</code></a></p>
   </div>
 </section>
 
 <section>
-  <div class="col"><h2>Cost and targets</h2>
-  <p>List prices, recomputed by a reviewer from the research model. Hosted comparators in the research sit at more than ten times the team figure.</p></div>
+  <div class="col">
+    <h2>Reviews and what they changed</h2>
+    <p>Reviewers had not built what they reviewed and were not given the authors' reasoning. Full reports and dispositions are under <a href="https://github.com/by77er/viz/blob/main/design/REVIEW.md"><code>design/REVIEW.md</code></a>.</p>
+  </div>
   <div class="tw"><table>
-    <thead><tr><th>Case</th><th>Per month</th><th>What decides it</th></tr></thead>
+    <thead><tr><th>Review</th><th>Found</th><th>Disposition</th></tr></thead>
     <tbody>
-      <tr><td>Small deployment: 10k series, 1 GB logs/day, 1M spans/day, 20 rules</td><td class="n">$5–15</td><td>How Cloudflare bills an object that wakes once a minute</td></tr>
-      <tr><td>One more small active tenant</td><td class="n">&lt; $1 pooled · ~$6 dedicated</td><td>Pool assignment</td></tr>
-      <tr><td>Team: 1M series, 100 GB logs/day, 500M spans/day, 2k rules</td><td class="n">$400–800</td><td>Compaction CPU, commit window, rule classes, first-load reads</td></tr>
-      <tr><td>Scale: 100M series, 10 TB logs/day, 50B spans/day</td><td class="n">tens of thousands</td><td>Long-retention storage, shard duration</td></tr>
+      <tr><td>Draft 2, two reviewers</td><td>57 findings, 11 critical: a catalog outage stalled ingest, truncation guarded by a timer, every request touching every shard</td><td>Rewritten as draft 3 around the per-tenant ledger, the fence and sender routing. The minor findings were not dispositioned one by one</td></tr>
+      <tr><td>Draft 3 re-review</td><td>12 findings, 4 critical, all at the edges; the core judged sound</td><td>Amended in draft 3.1; the protocol model then checked the amended protocol</td></tr>
+      <tr><td>The completed write path</td><td>0 blockers, 4 majors: retention falling back to the default (R-1), a swept adopted output (R-2), an unbounded rebuild (R-3), 429 at the series limit (R-4); 8 minors</td><td>All fixed, each with a test that failed before; R-2 by D30</td></tr>
+      <tr><td>Protocol model</td><td>F1–F16, three critical: F1 and F2 against the design text, F14 against the code</td><td>F11–F15 fixed and re-checked; F6(b) with F1, and F8, open</td></tr>
+      <tr><td>Segment log and compaction</td><td>0 blockers, 2 majors: rollback then roll-forward stopped the log (S-1); whole-state checkpoints (S-2); 7 minors. D30 and F15 found safe</td><td>S-1 fixed and checked by the model. S-2 mitigated with a hard guard; the full fix is not built</td></tr>
+      <tr><td>Pull request #1, automated</td><td>Stale lockfiles, a ledger snapshotted mid-change, a mutant captured by a snapshot, an overflow in <code>anomaly</code>, design text behind the code</td><td>Each fixed before merge; AGENTS.md gained "mutate a copy" and "snapshot only what is green"</td></tr>
     </tbody>
   </table></div>
-  <div class="tw"><table>
-    <thead><tr><th>Path</th><th>Target (hypothesis)</th></tr></thead>
-    <tbody>
-      <tr><td>Ingest acknowledgement, 1 MB batch</td><td class="n">p99 &lt; 500 ms</td></tr>
-      <tr><td>Time until a row is queryable</td><td class="n">p99 &lt; 10 s</td></tr>
-      <tr><td>Dashboard refresh with warm partial results</td><td class="n">p50 &lt; 300 ms</td></tr>
-      <tr><td>First load, 24 hours including today</td><td class="n">p95 &lt; 3 s</td></tr>
-      <tr><td>Trace by ID with a time hint</td><td class="n">p95 &lt; 1 s</td></tr>
-    </tbody>
-  </table></div>
+  <details>
+    <summary>What draft 3 changed, finding by finding</summary>
+    <div class="tw"><table>
+      <thead><tr><th>What the review found</th><th>Draft 2</th><th>Draft 3</th></tr></thead>
+      <tbody>
+        <tr><td>A catalog outage would stall ingest within minutes, and table metadata grew with tenants × days.</td><td>Visibility state stored inside Iceberg snapshots; one committer per table.</td><td>Per-tenant ledger is the authority. Iceberg is published from it.</td></tr>
+        <tr><td>A slow query or a stale cached pointer could read a silent hole.</td><td>Write-ahead log trimmed after a grace period.</td><td>A fence: shards refuse watermarks they have already passed.</td></tr>
+        <tr><td>Every ingest request and every query touched every shard of the tenant.</td><td>Rows routed by series hash.</td><td>Rows routed by sender, so one request lands in one shard.</td></tr>
+        <tr><td>Sorting and encoding a minute of data inside a 128 MB object blocks acknowledgements.</td><td>The shard encodes Parquet.</td><td>Shards seal small segments. A stateless Worker encodes.</td></tr>
+        <tr><td>A <code>rate()</code> window straddling old and new data could be wrong or double counted.</td><td>Recent rows evaluated separately.</td><td>Old and recent rows for a key range are merged before evaluation.</td></tr>
+        <tr><td>Trace lookup by ID read hundreds of filters.</td><td>Day partitions; index gave only a time window.</td><td>Hour partitions with few files each; index rows name the hours.</td></tr>
+        <tr><td>The cost table quoted numbers derived for a different architecture.</td><td>$5.20 / $250 / $18–25k.</td><td>Ranges recomputed for this design.</td></tr>
+        <tr><td>The first experiment was the one with a fallback.</td><td>Catalog commit first.</td><td>Billing behaviour, connection limits and a real read slice first.</td></tr>
+      </tbody>
+    </table></div>
+  </details>
 </section>
 
-<section>
-  <div class="col"><h2>How this gets verified</h2>
-  <p>Two layers. The first is what I did to check this document. The second is what the system has to pass as it is built.</p></div>
-  <div class="two">
-    <div><h3>This pass</h3>
-      <ul>
-        <li>Independent researchers; facts several reached separately are treated as established.</li>
-        <li>Every claim tagged verified, secondary or training knowledge.</li>
-        <li>Six disagreements between researchers listed and resolved in writing.</li>
-        <li>Adversarial review of the draft, then a rewrite, then a re-review of the rewrite.</li>
-        <li>Every modelled number tied to an experiment with a kill criterion.</li>
-      </ul></div>
-    <div><h3>The system</h3>
-      <ul>
-        <li>Numbered invariants: an acknowledged row is durable, never lost, never doubled; no tenant reads another's data; results do not depend on where rows are stored.</li>
-        <li>A formal model of the seal, flush, ledger and publish protocol, with traces replayed against the code.</li>
-        <li>Deterministic simulation of the Rust core with injected faults.</li>
-        <li>The upstream PromQL test corpus, plus differential runs against real Prometheus and Tempo.</li>
-        <li>Every published snapshot read back by DuckDB and PyIceberg.</li>
-        <li>Cost as a test: CI fails when a change adds object reads or subrequests to a reference query.</li>
-        <li>In production, a canary tenant writes known data and reads it back continuously.</li>
-      </ul></div>
-  </div>
-  <div class="col"><h3>Experiments, in order</h3>
-  <p class="muted">Ordered so the ones that decide topology and the cost floor come first.</p></div>
-  <div class="tw"><table>
-    <thead><tr><th>#</th><th>Experiment</th><th>Decides</th></tr></thead>
-    <tbody>
-      <tr><td class="n">S0</td><td>Durable Object duration billing for objects woken every 1–60 s</td><td>The cost floor</td></tr>
-      <tr><td class="n">S1</td><td>Connection limits across service bindings, and R2 range-read latency</td><td>Query fan-out topology</td></tr>
-      <tr><td class="n">S2</td><td>The Rust core in an isolate: size, startup, peak memory during encode and decode</td><td>Whether the engine choice stands</td></tr>
-      <tr><td class="n">S3</td><td>Real ingest bodies end to end: object requests per request, rows written, acknowledgement latency. <em>Measured on Cloudflare: one shard took 230–340 requests a second as first built, 864–1,056 with group commit and early refusal (99th percentile under 150 ms)</em></td><td>Routing key, commit window, ingest cost</td></tr>
-      <tr><td class="n">S4</td><td>Ledger at 1,000 flush units a minute and 300k live files; rebuild from the R2 log. <em>Measured on Cloudflare: about one unit a second as first built, 234–422 with eight writers after the log moved to batched segments; 5,008 changes rebuilt in 5.4 s</em></td><td>When a ledger has to be split</td></tr>
-      <tr><td class="n">S5</td><td>One real PromQL query over 1 h, 24 h and 30 d on team-scale synthetic data</td><td>Row shape, sort key, latency targets</td></tr>
-      <tr><td class="n">S6</td><td>Trace by ID, one structural TraceQL query, and a log needle search at volume</td><td>Span partitioning and log indexing</td></tr>
-      <tr><td class="n">S7</td><td>Tail reads under ingest and rule load</td><td>Whether rules can read the tail</td></tr>
-      <tr><td class="n">S8</td><td>Iceberg publication read back by two engines; then managed-catalog commits</td><td>Whether managed-catalog publication ships</td></tr>
-    </tbody>
-  </table></div>
+<section class="col">
+  <h2>Open risks</h2>
+  <ul class="risks">
+    <li><b>The ledger's state limit (review S-2's guard).</b> A tenant's ledger holds at most 16 MiB of state, about 15,800 live files, because a base or checkpoint is the whole state in one piece. Above it <code>addUnit</code> answers <code>full</code>; flush retries, the tenant's shards fill and its senders get 429 until compaction or retention make room. Nothing alerts on it. The full fix, a state written in pieces and a rebuild that streams into SQLite, is not built. <a href="https://github.com/by77er/viz/blob/main/ledger/README.md"><code>ledger/README.md</code></a></li>
+    <li><b>F6(b), registration after the first write.</b> A shard registers a new stream with the ledger only at its first flush. If a shard loses its storage while a query is between its plan and its tail read, and the stream was on its first unit, that query can silently miss a batch that is safe in a file: one wrong answer, not lost data, and rare. A stream that gets no new writes after a loss is refused indefinitely. The fix, registering before the first write, spans shard, ledger, flush and query and is not built; no code test covers it yet. <a href="https://github.com/by77er/viz/blob/main/spec/README.md"><code>spec/README.md</code></a> F6</li>
+    <li><b>The tail-read wall.</b> Every query reads every shard's whole unflushed tail, and the tail counts against the 16 MiB fetch limit. Ten minutes of 100,000 series at 60 s is 20.2 MB, so every query of such a tenant was refused until a flush (measured here); a tenant spread over more than four to eight shards would be refused all the time (modelled). The fix, a filtered and paged tail read in the shard, is not built. <a href="https://github.com/by77er/viz/blob/main/query/CARDINALITY.md"><code>CARDINALITY.md</code></a> item 1</li>
+    <li><b>The pruning wall.</b> One series of a 100,000-series metric over an hour had a scan bound of 6.6 M samples, over the 3 M limit, so it was refused. Series-level pruning, which reads only the row groups holding the selected series, landed on 19 November (D41, <a href="https://github.com/by77er/viz/blob/main/query/README.md"><code>query/README.md</code></a>); <code>CARDINALITY.md</code> still lists it as open. A selection spread across the id space, such as one namespace, still needs every row group, and a compacted day file can make a one-hour query's bound too large.</li>
+    <li><b>The ruler evaluates over HTTP, one query at a time.</b> Fine for groups of tens of rules; a 1,000-rule group would hit its timeout until the query service exports an RPC entrypoint (D39).</li>
+    <li><b>Plans grow with file count</b> (276 ms and 5.8 MB at 7,000 files, S4), and shard-map changes have no drain-and-handover yet, so pool changes that would move keys are refused. CPU fairness inside a pooled shard is unmeasured. <a href="https://github.com/by77er/viz/blob/main/design/DESIGN.md">DESIGN §13</a></li>
+  </ul>
+</section>
+
+<section class="col">
+  <h2>Licence and clean-room engines</h2>
+  <p>viz is Apache-2.0, chosen by the owner on 19 November (D35; <a href="https://github.com/by77er/viz/blob/main/LICENSE"><code>LICENSE</code></a>, <a href="https://github.com/by77er/viz/blob/main/NOTICE"><code>NOTICE</code></a>). The reference implementations of TraceQL and LogQL, Grafana Tempo and Loki, are AGPL-3.0, so viz's engines for both are written clean-room from the public documentation. Tempo v3.1.1 and Loki v3.7.10 are used only as black boxes at test time, their test suites are fetched at test time and never stored, and each crate's <code>CLEANROOM.md</code> lists every source consulted. Where Tempo's documentation is silent, viz follows its evaluator's observed behaviour, not its storage shortcuts (D40). An earlier TraceQL crate that transcribed and ported Tempo's code was removed and is not shipped.</p>
+  <p>Third-party material kept in the tree is listed with its obligations in <a href="https://github.com/by77er/viz/blob/main/THIRD_PARTY.md"><code>THIRD_PARTY.md</code></a>: Prometheus's test corpus (Apache-2.0), a port of the NAB scorer (MIT) and two fonts (SIL OFL 1.1). A dependency check found no copyleft package that ships.</p>
+</section>
+
+<section class="col">
+  <h2>The interface</h2>
+  <p>The design system is the ground truth for anything a person sees, and every change to it goes to a reviewer who did not write it (D16). Its review history: v1 and v2 rejected, v3 approved, v4 and v5 rejected. v5 fell on two blockers, series colour lost after a filter or an edit round trip and tables that scrolled the page sideways at 400 px and 200% zoom, plus seven majors. Version 6 answers every v5 finding and is in revision, not yet reviewed.</p>
+  <ul>
+    <li><b>Flow screens</b>: the first version was rejected; they now run on v5 and are to be re-imaged on v6.</li>
+    <li><b>The app</b>: a metrics Explore view that runs against the real viz API, served locally, as well as a mock. Its restyle onto the system was rejected; the logic findings are fixed and the visual migration waits for the revised system. It is not part of the deployment, and its timings are not yet judged because the machine was overloaded.</li>
+  </ul>
+  <p class="muted"><a href="https://github.com/by77er/viz/blob/claude/cloudflare-observability-platform-ibaqya/design-system/README.md"><code>design-system/README.md</code></a>, <a href="https://github.com/by77er/viz/blob/claude/cloudflare-observability-platform-ibaqya/app/README.md"><code>app/README.md</code></a>. Both directories are on the working branch, not yet on main.</p>
 </section>
 
 <section class="col">
   <h2>Decisions for you</h2>
   <ol>
-    <li><strong>Who is the first user?</strong> Decided: your own account. Shards are pooled from the start, with a dedicated pool for any tenant that needs full isolation. The pooled shard is implemented and tested in <code>shard/</code>.</li>
-    <li><strong>Iceberg a few minutes behind.</strong> Decided: accepted.</li>
-    <li><strong>Rust core.</strong> Decided: Rust, supported by the benchmark above. Still to check on Cloudflare itself: the enforced 128 MB limit, billed CPU, and a zstd build.</li>
-    <li><strong>Managed catalog.</strong> Its use is analytics and export through external SQL engines. Iceberg metadata is written straight to R2 first; the managed catalog waits until someone needs it. Not yet confirmed by you.</li>
-    <li><strong>Order of signals.</strong> Decided: metrics, then traces and rules, then logs and detection.</li>
+    <li><strong>The first production deploy.</strong> Open: add the repository secrets <code>CLOUDFLARE_API_TOKEN</code> and <code>CLOUDFLARE_ACCOUNT_ID</code>, then run the deploy with its migrations acknowledged (<code>deploy/README.md</code>, "One-time setup").</li>
+    <li><strong>Managed catalog.</strong> Open: S8 cannot run until the token has Workers R2 Data Catalog Write. Until then publication stays R2-native, which DuckDB and PyIceberg read.</li>
+    <li><strong>Licence.</strong> Decided: Apache-2.0, with clean-room TraceQL and LogQL (D35).</li>
+    <li><strong>Rust core.</strong> Decided, and S2 on Cloudflare widened the margin to 10–18× in billed CPU. Still open: a zstd build and sustained memory behaviour.</li>
+    <li><strong>Monitoring viz with viz.</strong> Proposed on your direction: one deployment, a <code>viz-internal</code> tenant, aimed at scaling and cost rather than outage alerts (D23). Not built.</li>
+    <li><strong>Earlier decisions stand</strong>: your own account first, with pooled shards (D13); Iceberg a few minutes behind (D2); metrics, then traces and rules, then logs and detection (D14).</li>
   </ol>
+</section>
+
+<section>
+  <details>
+    <summary>What the research established before the build</summary>
+    <p class="col">Twelve researchers each took one domain and fetched primary sources. A shared search budget ran out part-way, so Cloudflare facts are mostly verified from vendor pages and many non-Cloudflare internals rest on training knowledge. The files in <code>research/</code> say which is which.</p>
+    <div class="tw"><table>
+      <thead><tr><th>Finding</th><th>Consequence for the design</th><th>Basis</th></tr></thead>
+      <tbody>
+        <tr><td>Cloudflare's catalog, SQL engine and streaming ingest went GA on 1 Oct 2026 under the name Basin. Catalog operations cost $9 per million.</td><td>One table per tenant is ruled out on commit cost alone. Commits must be batched and skipped when nothing changed.</td><td><span class="tag v">verified ×6</span></td></tr>
+        <tr><td>The managed streaming ingest allows 20 streams per account, has a 60 s minimum roll, no sort control, and drops invalid events silently.</td><td>viz writes its own Parquet. The managed pipeline is not on the path.</td><td><span class="tag v">verified ×4</span></td></tr>
+        <tr><td>The managed SQL engine caps results at 10,000 rows and has no Workers binding.</td><td>PromQL and TraceQL need their own engine.</td><td><span class="tag v">verified</span></td></tr>
+        <tr><td>A Worker isolate has 128 MB including WASM, and only six connections may wait for headers at once.</td><td>Small row groups, streaming evaluation, and leaves that are Durable Objects (confirmed by S1).</td><td><span class="tag v">verified</span></td></tr>
+        <tr><td>There is an open, unexplained corruption report against the managed catalog in which two writers disagreed.</td><td>viz is the only writer to its tables, and the catalog is not the source of truth.</td><td><span class="tag v">verified</span></td></tr>
+        <tr><td>From 1 Dec 2026 Cloudflare sells its own logs and traces product at $0.25 per GB, without PromQL or TraceQL.</td><td>viz differentiates on open formats, standard query languages, external sources and the agent surface.</td><td><span class="tag v">verified ×3</span></td></tr>
+        <tr><td>Tempo 3.0 and Loki 4.0 both moved to a durable log, one copy on object storage and stateless queriers.</td><td>The overall shape matches where the incumbents ended up.</td><td><span class="tag">mixed</span></td></tr>
+        <tr><td>AI investigation agents score 25–60% on published root-cause benchmarks, and prompt injection through log lines is demonstrated.</td><td>Agentic monitors are advisory, read-only and never in the paging path.</td><td><span class="tag">secondary</span></td></tr>
+        <tr><td>How rules are scheduled changes their cost by three orders of magnitude.</td><td>Many rules per object, one tick. No Workflow per rule.</td><td><span class="tag m">modelled</span></td></tr>
+      </tbody>
+    </table></div>
+  </details>
 </section>
 
 <section class="col">
   <h2>Where everything is</h2>
-  <p>Branch <code>claude/cloudflare-observability-platform-ibaqya</code> in <code>by77er/viz</code>.</p>
+  <p>Repository <a href="https://github.com/by77er/viz"><code>by77er/viz</code></a>, branch <code>main</code>; the interface work (<code>app/</code>, <code>design-system/</code>) is on <code>claude/cloudflare-observability-platform-ibaqya</code>. Each component's README says what is implemented, what is not, how it was verified and its known risks.</p>
   <div class="files">
-    design/DESIGN.md <span>— the architecture, draft 3.1</span><br>
-    design/DECISIONS.md <span>— each decision, its alternatives, and what would change it</span><br>
-    design/VERIFICATION.md <span>— invariants, test layers, experiments, evidence per milestone</span><br>
-    design/REVIEW.md <span>— findings and what changed; raw reports in design/reviews/</span><br>
-    shard/ <span>— the pooled shard Durable Object, its routing and 15 tests</span><br>
-    bench/README.md <span>— the engine benchmark, its tuning log and how to rerun it</span><br>
-    research/01 … 12 <span>— one file per research track, about 100,000 words in total</span>
+    <a href="https://github.com/by77er/viz/blob/main/design/DESIGN.md">design/DESIGN.md</a> <span>— the architecture, draft 3.1, with as-built notes</span><br>
+    <a href="https://github.com/by77er/viz/blob/main/design/DECISIONS.md">design/DECISIONS.md</a> <span>— D1 to D43: each decision, its alternatives, and what would change it</span><br>
+    <a href="https://github.com/by77er/viz/blob/main/design/VERIFICATION.md">design/VERIFICATION.md</a> <span>— invariants, test layers, experiments and their status</span><br>
+    <a href="https://github.com/by77er/viz/blob/main/design/REVIEW.md">design/REVIEW.md</a> <span>— every review and its dispositions; raw reports in design/reviews/</span><br>
+    <a href="https://github.com/by77er/viz/blob/main/design/UPGRADES.md">design/UPGRADES.md</a> <span>— formats, rollback rules, updating in place</span><br>
+    <a href="https://github.com/by77er/viz/blob/main/spec/README.md">spec/README.md</a> <span>— the two protocol models, findings F1–F16, limits of the evidence</span><br>
+    <a href="https://github.com/by77er/viz/tree/main/spikes">spikes/</a> <span>— each experiment on Cloudflare, its cost, result and cleanup</span><br>
+    <a href="https://github.com/by77er/viz/blob/main/deploy/README.md">deploy/README.md</a> <span>— push to production, rollback, the two staged trials</span><br>
+    <a href="https://github.com/by77er/viz/blob/main/query/CARDINALITY.md">query/CARDINALITY.md</a> <span>— what 10k, 100k and 1M series cost, and the walls</span><br>
+    <a href="https://github.com/by77er/viz/blob/main/THIRD_PARTY.md">THIRD_PARTY.md</a> <span>— third-party material and the clean-room record</span><br>
+    <a href="https://github.com/by77er/viz/tree/main/research">research/</a> <span>— one file per research track, claims tagged by kind</span>
   </div>
 </section>
 
