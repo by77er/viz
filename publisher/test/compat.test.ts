@@ -26,7 +26,7 @@ import { describeSchema, type Migration, openSchema, schemaRelease, type SchemaS
 import { LEDGER_CHANGE_VERSION, LEDGER_SEGMENT_VERSION, unsupported, unsupportedSegment } from '../src/log'
 import { FORMATS, PUBLISHER_SCHEMA } from '../src/schema'
 import { expectGolden, goldenDir } from './golden'
-import { addUnit, copyLog, fresh, icebergLive, ledgerVersion, listKeys, metaDir, metadataVersions, mirror, pairUnit, publisher, putObjects, readMetadata, segmentsOf, T0, DAY_MS, TABLES } from './helpers'
+import { addUnit, copyLog, dropCheckpoints, fresh, icebergLive, ledgerVersion, listKeys, metaDir, metadataVersions, mirror, pairUnit, publisher, putObjects, readMetadata, segmentsOf, T0, DAY_MS, TABLES } from './helpers'
 import v0 from './fixtures/storage/v0.json'
 import { type Dump, dumpOf, install, replaceWith, schemaRow, withoutVersion } from './storage'
 
@@ -90,9 +90,9 @@ describe('versioned storage', () => {
     const after = await runInDurableObject(p, (_i, s) => ({ row: schemaRow(s), dump: withoutVersion(ownDump(dumpOf(s))) }))
     // Every migration after 1 is additive (readableFrom 1): `compat` stays 1.
     expect(after.row).toMatchObject({ version: LATEST, compat: 1 })
-    // Version 2 added the `due` table, empty; every row of the adopted tables is as it was.
-    expect(after.dump.rows.due).toEqual([])
-    const { due: _due, ...adopted } = after.dump.rows
+    // Version 2 added the `due` table and version 3 `stage` and `live_next`, all empty; every row of the adopted tables is as it was.
+    for (const t of ['due', 'stage', 'live_next']) expect(after.dump.rows[t], t).toEqual([])
+    const { due: _due, stage: _stage, live_next: _next, ...adopted } = after.dump.rows
     expect(canon(adopted)).toEqual(canon(V0.rows))
   })
 
@@ -220,6 +220,8 @@ describe('ledger log objects this code does not know (COMPATIBILITY.md §3.2, §
     const t = tenant('acme')
     for (let i = 0; i < 4; i++) await addUnit(t, pairUnit(cell, t, 1 + 3 * i, 3 + 3 * i, T0 + i * 1000), { drain: true })
     await mirror(t, cell)
+    // About segments: a re-base from a checkpoint would start past the one rewritten below.
+    await dropCheckpoints(cell, t)
     const { ledgerIncarnation, version } = await ledgerVersion(t)
     const seg = (await segmentsOf(cell, t, ledgerIncarnation)).find((s) => s.first === version - 1)!
     expect(seg).toMatchObject({ first: version - 1, last: version - 1 })

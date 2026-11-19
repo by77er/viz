@@ -52,6 +52,7 @@ const stale = []
   if (press && !read('dist/viz-press.js')?.endsWith(press)) stale.push('dist/viz-press.js is not src/press.js: run npm run build')
   const fx = read('dist/fixture/index.html'); if (fx && (!fx.includes(viz.replace(/url\("fonts\//g, 'url("../fonts/')) || (chart && !fx.includes(chart)))) stale.push('dist/fixture/index.html inlines CSS or a chart older than the tree (v6 review, m6): run npm run build')
   const ref = read('dist/reference.html'); if (ref && !ref.includes(viz)) stale.push('dist/reference.html inlines CSS older than the tree: run npm run build') }
+const perturbed = await (async () => { const { tokenCss } = await import(pathToFileURL(join(root, 'tools/css.mjs')).href); return perturbedCss(tokenCss, JSON.parse(readFileSync(join(root, 'project/tokens.json'), 'utf8'))) })()
 const configs = quick
   ? [{ w: 320, coarse: true }, { w: 400, coarse: true }, { w: 720, zoom: 2 }, { w: 1500 }]
   : [...[320, 400, 560, 640, 800, 1024, 1280, 1500].map((w) => ({ w })), ...[320, 400, 768].map((w) => ({ w, coarse: true })), ...[640, 720, 750].map((w) => ({ w, zoom: 2 }))]
@@ -196,6 +197,136 @@ function words() {
   return out
 }
 
+// ---- guards: each fix the reviews asked for, checked by what it does when rendered, so a later rule that overrides it fails whatever its
+// spelling (v6 review, M1: seven overrides passed the presence checks). Run at 1500 px with a fine pointer and at 400 px with a coarse one.
+function guards({ fine, coarse }) {
+  const out = [], cs = (e) => getComputedStyle(e), modal = document.querySelector('dialog:modal')
+  const name = (e) => { const t = (e.getAttribute?.('aria-label') || e.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 32); return `<${e.tagName.toLowerCase()}${typeof e.className === 'string' && e.className ? '.' + e.className.trim().split(/\s+/).join('.') : ''}>${t ? ' "' + t + '"' : ''}` }
+  const rgb = (v) => { v = String(v).trim(); if (!v.startsWith('#')) return v.replace(/\s*,\s*/g, ', '); let h = v.slice(1); if (h.length === 3) h = [...h].map((c) => c + c).join(''); return `rgb(${parseInt(h.slice(0, 2), 16)}, ${parseInt(h.slice(2, 4), 16)}, ${parseInt(h.slice(4, 6), 16)})` }
+  const tok = (el, t) => cs(el).getPropertyValue('--' + t).trim(), px = (el, t) => parseFloat(tok(el, t))
+  const visible = (e) => e.getClientRects().length > 0 && (!e.checkVisibility || e.checkVisibility()) && cs(e).visibility === 'visible'
+  const say = (kind, msg) => { if (out.filter((x) => x[0] === kind).length < 6) out.push([kind, msg]) }
+  // the table wrap is positioned, so what is absolutely placed inside is clipped by its scroll (v5 review, B2.1; mutant Y12)
+  for (const w of document.querySelectorAll('.vz-table-wrap')) if (cs(w).position === 'static') say('guard', `${name(w)} is position: static as rendered: a visually hidden head inside it escapes its scroll and widens the page (v5 review, B2.1)`)
+  if (fine) {
+    // the focus ring, as drawn on focus: stroke wide in focus, offset by stroke (a hairline in a segmented control, inside a tab strip),
+    // or, for a legend row and a waterfall span, drawn by the row's cells (v4 and v5 reviews; mutant Y10)
+    for (const el of document.querySelectorAll('a[href], button, input, select, textarea, summary, [tabindex="0"]')) {
+      if (el.disabled || el.closest('[inert], [hidden]') || (modal && !modal.contains(el)) || !visible(el) || !el.closest('.vz')) continue
+      el.focus({ focusVisible: true }); if (document.activeElement !== el || !el.matches(':focus-visible')) continue
+      const s = cs(el), focus = rgb(tok(el, 'focus')), stroke = px(el, 'stroke'), hair = px(el, 'hairline')
+      if (el.matches('.vz-series, .vz-waterfall-span')) { const td = el.closest('tr')?.querySelector('td'); if (!td || !cs(td).boxShadow.includes(focus)) say('focus', `${name(el)} focused: its row's cells draw no ring in focus (${td ? cs(td).boxShadow : 'no cell'})`) }
+      else if (s.outlineStyle === 'none' || Math.abs(parseFloat(s.outlineWidth) - stroke) > 0.01 || s.outlineColor !== focus || ![stroke, hair, -stroke].some((o) => Math.abs(parseFloat(s.outlineOffset) - o) < 0.01)) say('focus', `${name(el)} focused draws outline ${s.outlineStyle} ${s.outlineWidth} ${s.outlineColor} offset ${s.outlineOffset}, not the ring (${stroke}px solid ${focus}, offset ${stroke}px)`)
+    }
+    document.activeElement?.blur?.()
+    // dashed slots: a swatch of slots 5 to 8 is two dashes in the series colour on no fill (v4 review M1; mutant Y13)
+    for (const sw of document.querySelectorAll('.vz-swatch[data-series="5"], .vz-swatch[data-series="6"], .vz-swatch[data-series="7"], .vz-swatch[data-series="8"], .vz-swatch[data-pattern="dash"]')) {
+      if (!visible(sw) || sw.matches('[data-off]') || sw.closest('[data-error]')) continue
+      const s = cs(sw), series = rgb(tok(sw, 'series')), ok = ['Left', 'Right'].every((k) => s[`border${k}Style`] === 'solid' && parseFloat(s[`border${k}Width`]) > 0 && s[`border${k}Color`] === series) && /rgba\(.*,\s*0\)|transparent/.test(s.backgroundColor)
+      if (!ok) say('guard', `${name(sw)} is not drawn dashed as rendered (borders ${s.borderLeftStyle} ${s.borderLeftWidth} ${s.borderLeftColor} / ${s.borderRightStyle}, fill ${s.backgroundColor}; the series is ${series}): its slot is told from 1 to 4 by hue alone`) }
+    // emphasis from the legend: the lines that step back are series-other hairlines (v4 review; mutant Y15)
+    for (const chart of document.querySelectorAll('.vz-chart')) { const plot = chart.querySelector('svg.vz-plot'), rows = [...chart.querySelectorAll('tbody tr[data-key]:not([data-key="other"]) .vz-series')]
+      if (!plot || rows.length < 2 || chart.matches('[data-error]') || !visible(plot)) continue
+      rows[1].dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+      if (plot.hasAttribute('data-emph')) for (const l of plot.querySelectorAll('.vz-series-g:not([data-emph-on]) .vz-line')) { const s = cs(l), other = rgb(tok(l, 'series-other'))
+        if (s.stroke !== other || Math.abs(parseFloat(s.strokeWidth) - px(l, 'hairline')) > 0.01) { say('guard', `emphasis in ${name(chart.closest('.vz-panel')?.querySelector('.vz-panel-title') ?? chart)}: a line that steps back is ${s.stroke} ${s.strokeWidth}, not a series-other hairline (${other})`); break } }
+      rows[1].dispatchEvent(new FocusEvent('focusout', { bubbles: true })) }
+    // nothing loops (Motion; never a spinner: the owner's direction; mutant Y5)
+    for (const el of document.querySelectorAll('*')) { const s = cs(el); if (s.animationName !== 'none' && /infinite/.test(s.animationIterationCount) && (!s.animationTimeline || s.animationTimeline === 'auto')) say('motion', `${name(el)} animates ${s.animationName} ${s.animationIterationCount} times: nothing loops, and a spinner never covers a wait`) }
+  }
+  if (coarse) {
+    // every control's hit area is 44 by 44, measured by what the page finds under a finger (Touch; mutant Y11). A link inside running text
+    // is text and exempt; a control partly scrolled out of a strip is reached by scrolling.
+    const sel = 'a[href], button, input:not([type="checkbox"]):not([type="radio"]), select, textarea, summary, [role^="menuitem"], [role="tab"], label.vz-check, [tabindex="0"]'
+    const owner = (x, y) => document.elementFromPoint(x, y)?.closest(sel)
+    const flow = (x) => { let b = x.parentElement; while (b && /^(inline|contents)$/.test(cs(b).display)) b = b.parentElement; return b }
+    const inSentence = (a) => { const b = flow(a); if (!b || /flex|grid/.test(cs(b).display)) return false; const w = document.createTreeWalker(b, NodeFilter.SHOW_TEXT); let t
+      while ((t = w.nextNode())) if (t.textContent.trim() && !a.contains(t) && !t.parentElement.closest('a, button, input, select, textarea, .vz-sr') && flow(t) === b) return true; return false }
+    for (const el of document.querySelectorAll(sel)) {
+      if (el.disabled || el.closest('[inert], [aria-busy="true"], .vz-sr') || el.matches('.vz-skip:not(:focus)') || (modal && !modal.contains(el)) || !visible(el) || !el.closest('.vz')) continue
+      if (el.matches('a') && inSentence(el)) continue
+      el.scrollIntoView({ block: 'center', inline: 'nearest' }); const r = el.getBoundingClientRect(); if (r.width < 2 || r.height < 2) continue
+      let strip = el.parentElement; while (strip && strip !== document.body && !/(auto|scroll)/.test(cs(strip).overflowX)) strip = strip.parentElement
+      if (strip && strip !== document.body) { const b = strip.getBoundingClientRect(); if (r.left < b.left - 0.5 || r.right > b.right + 0.5) continue }
+      const cx = Math.max(22, Math.min(innerWidth - 22, r.left + r.width / 2)), cy = r.top + r.height / 2
+      if (owner(cx, cy) !== el) { const at = document.elementFromPoint(cx, cy); if (!(at && el.contains(at))) say('hit-area', `${name(el)} is covered at its centre by ${at ? name(at) : 'nothing'} with a coarse pointer`); continue }
+      const tall = owner(cx, cy - 21.5) === el && owner(cx, cy + 21.5) === el, wide = owner(cx - 21.5, cy) === el && owner(cx + 21.5, cy) === el
+      if (!tall || !wide) say('hit-area', `${name(el)}: hit area under 44 px ${!tall ? 'tall' : 'wide'} with a coarse pointer (drawn ${Math.round(r.width)} x ${Math.round(r.height)} px)`)
+    }
+    scrollTo(0, 0)
+  }
+  return out
+}
+// The page with every token moved: colours inverted, lengths and durations doubled. A computed colour, length or duration that does not move
+// with them was written out somewhere (a stylesheet, a style attribute, a script, an SVG attribute, the browser's own defaults), whatever
+// its spelling; an opacity other than 1 has no token at all. Every element inside .vz is read before and after, in one task, so nothing
+// redraws in between.
+function tokenTrace({ css }) {
+  const out = [], seen = new Set(), say = (key, msg) => { if (!seen.has(key) && seen.size < 12) { seen.add(key); out.push(['token', msg]) } }
+  const name = (e) => { const t = (e.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 24); return `<${e.tagName.toLowerCase()}${typeof e.className === 'string' && e.className ? '.' + e.className.trim().split(/\s+/).join('.') : (e.className?.baseVal ? '.' + e.className.baseVal.split(/\s+/).join('.') : '')}>${t ? ' "' + t + '"' : ''}` }
+  const COLOUR = ['color', 'background-color', 'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color', 'outline-color', 'text-decoration-color', 'column-rule-color', 'caret-color']
+  const SIDES = ['top', 'right', 'bottom', 'left'], LENGTH = [...SIDES.map((k) => 'margin-' + k), ...SIDES.map((k) => 'padding-' + k), 'row-gap', 'column-gap', 'border-top-left-radius', 'border-top-right-radius', 'border-bottom-left-radius', 'border-bottom-right-radius', 'font-size', 'line-height', 'letter-spacing', 'word-spacing', 'text-indent', 'text-underline-offset', 'text-decoration-thickness', 'min-width', 'min-height', 'max-width', 'max-height', 'outline-offset']
+  const DURATION = ['transition-duration', 'transition-delay', 'animation-duration', 'animation-delay']
+  const PAINT = /^(text|tspan|path|rect|circle|ellipse|polygon|polyline|line)$/
+  const els = [...document.querySelectorAll('.vz, .vz *')].filter((e) => e.getClientRects().length && !e.closest('.vz-sr'))
+  const snap = () => els.map((e) => { const s = getComputedStyle(e), v = {}, svg = e instanceof SVGElement
+    for (const p of COLOUR) v[p] = s.getPropertyValue(p); for (const p of LENGTH) v[p] = s.getPropertyValue(p); for (const p of DURATION) v[p] = s.getPropertyValue(p)
+    for (const k of SIDES) v[`border-${k}-width`] = s.getPropertyValue(`border-${k}-style`) === 'none' ? '0px' : s.getPropertyValue(`border-${k}-width`)
+    v['outline-width'] = s.outlineStyle === 'none' ? '0px' : s.outlineWidth; v['box-shadow'] = s.boxShadow; v.opacity = s.opacity
+    if (svg && PAINT.test(e.tagName)) { if (e.tagName !== 'line') v.fill = s.fill; v.stroke = s.stroke; v['stroke-width'] = s.stroke === 'none' ? '0px' : s.strokeWidth; v['fill-opacity'] = s.fillOpacity; v['stroke-opacity'] = s.strokeOpacity }
+    if (svg) { delete v['background-color']; for (const p of LENGTH) if (!/^(font-size|letter-spacing|word-spacing)$/.test(p)) delete v[p] }
+    return v })
+  // transitions held still in both readings (a transition would report the old value as the new one); their durations are still read
+  const hold = document.createElement('style'); hold.textContent = '.vz, .vz *, .vz *::before, .vz *::after { transition-property: none !important; animation-play-state: paused !important; }'; document.head.appendChild(hold)
+  const a = snap(), st = document.createElement('style'); st.textContent = css; document.head.appendChild(st); const b = snap(); st.remove(); hold.remove()
+  const zero = (x) => /^(0(px|s|ms)?|0px 0px|none|auto|normal|medium|from-font|rgba\(0, 0, 0, 0\)|transparent)$/.test(x.trim())
+  const parts = (x) => x.match(/rgba?\([^)]*\)|-?[\d.]+px|-?[\d.]+m?s/g) ?? []
+  els.forEach((e, i) => { for (const [p, v] of Object.entries(a[i])) { const w = b[i][p]
+    if (p === 'opacity' || p === 'fill-opacity' || p === 'stroke-opacity') { if (v !== '1') say(e.tagName + p + v, `${p}: ${v} on ${name(e)}: there is no opacity token`); continue }
+    if (/%/.test(v) || /(min|max|fit)-content|none/.test(v)) continue
+    if (p === 'box-shadow' || /duration|delay/.test(p)) { const pa = parts(v), pb = parts(w); pa.forEach((x, j) => { if (!zero(x) && x === pb[j]) say(p + x, `${p} on ${name(e)} holds ${x}, which does not come from a token (${v.slice(0, 60)})`) }); continue }
+    if (zero(v)) continue
+    if (v === w) say(p + v, `${p}: ${v} on ${name(e)} does not come from a token`) } })
+  return out
+}
+// moved tokens, for tokenTrace: colours inverted, px, ch and ms doubled
+function perturbedCss(tokenCss, t) {
+  const inv = (x) => String(x).replace(/#([0-9a-f]{6})\b/gi, (_, h) => '#' + [0, 2, 4].map((i) => (255 - parseInt(h.slice(i, i + 2), 16)).toString(16).padStart(2, '0')).join('')).replace(/#([0-9a-f]{3})\b/gi, (_, h) => '#' + [...h].map((c) => (15 - parseInt(c, 16)).toString(16).repeat(2)).join('')).replace(/rgba?\((\d+)\s*,\s*(\d+)\s*,\s*(\d+)/g, (_, r, g, b) => `rgba(${255 - r}, ${255 - g}, ${255 - b}`)
+  const dbl = (x) => String(x).replace(/(-?\d*\.?\d+)(px|ch|ms)\b/g, (_, n, u) => `${+n * 2}${u}`)
+  const move = (x) => dbl(inv(x)), u = JSON.parse(JSON.stringify(t))
+  for (const k of u.color.tokens) k.value = typeof k.value === 'string' ? move(k.value) : Object.fromEntries(Object.entries(k.value).map(([th, v]) => [th, move(v)]))
+  for (const f of Object.keys(u)) if (Array.isArray(u[f]?.tokens) && f !== 'color') for (const k of u[f].tokens) k.value = typeof k.value === 'string' ? move(k.value) : Object.fromEntries(Object.entries(k.value).map(([th, v]) => [th, move(v)]))
+  for (const g of u.type.groups) for (const st of g.styles) { st.fontSize = dbl(st.fontSize); st.lineHeight = dbl(st.lineHeight) }
+  const { tokensCss, typeCss } = tokenCss(u); return tokensCss + typeCss
+}
+// a finger's press, as painted: CDP touch events held on each kind of control (v5 review, M3; mutant Y18)
+async function fingerPress(page, cdp) {
+  const out = [], rgb = (v) => { v = String(v).trim(); if (!v.startsWith('#')) return v.replace(/\s*,\s*/g, ', '); const h = v.slice(1); return `rgb(${parseInt(h.slice(0, 2), 16)}, ${parseInt(h.slice(2, 4), 16)}, ${parseInt(h.slice(4, 6), 16)})` }
+  const n = await page.evaluate(() => { const kinds = ['.vz-button:not([data-tone]):not([data-quiet])', '.vz-button[data-quiet]', '.vz-button[data-tone]', '.vz-segmented button', '.vz-menu [role^="menuitem"]', '.vz-sort', '.vz-tree-toggle', '.vz-legend-table tbody tr[data-key] .vz-series']
+    const modal = document.querySelector('dialog:modal'); let i = 0
+    for (const k of kinds) { let c = 0; for (const el of document.querySelectorAll(k)) { if (c >= 2) break; if (el.disabled || el.closest('[inert], [aria-busy="true"], [hidden], .vz-sr') || (modal && !modal.contains(el)) || !el.getClientRects().length || getComputedStyle(el).visibility !== 'visible' || (el.checkVisibility && !el.checkVisibility())) continue; el.dataset.vzProbe = String(i++); c++ } }
+    return i })
+  for (let i = 0; i < n; i++) {
+    const at = await page.evaluate((i) => { const el = document.querySelector(`[data-vz-probe="${i}"]`); el.scrollIntoView({ block: 'center', inline: 'nearest' }); const r = el.getBoundingClientRect(), paint = el.matches('.vz-series') ? el.closest('tr').querySelector('td') : el, tone = el.closest('[data-tone]')?.dataset.tone
+      const x = r.left + r.width / 2, y = r.top + r.height / 2, hit = document.elementFromPoint(x, y)
+      return { x, y, own: !!hit && (hit === el || el.contains(hit) || (el.matches('.vz-series') && el.closest('tr').contains(hit))), rest: getComputedStyle(paint).backgroundColor, want: getComputedStyle(el).getPropertyValue(tone ? `--${tone}-pressed` : '--pressed').trim(), what: `${el.tagName.toLowerCase()}.${[...el.classList].join('.')} "${(el.textContent || '').trim().slice(0, 24)}"` } }, i)
+    if (!at.own) continue
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: at.x, y: at.y }] })
+    const now = await page.evaluate((i) => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => { const el = document.querySelector(`[data-vz-probe="${i}"]`), paint = el.matches('.vz-series') ? el.closest('tr').querySelector('td') : el; done(getComputedStyle(paint).backgroundColor) }))), i)
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] })
+    if (now === at.rest || now !== rgb(at.want)) out.push(['press', `a finger held on ${at.what} paints ${now} (at rest ${at.rest}); its press is ${rgb(at.want)}`])
+  }
+  return out.slice(0, 6)
+}
+// with reduced motion requested, nothing transitions and nothing animates by the clock (Reduced motion; mutant Y14)
+function stillness() {
+  const out = []; for (const el of document.querySelectorAll('.vz, .vz *')) { const s = getComputedStyle(el)
+    if (s.transitionDuration.split(',').some((d) => parseFloat(d) > 0) && s.transitionProperty !== 'none') out.push(['motion', `<${el.tagName.toLowerCase()}.${[...el.classList].join('.')}> transitions ${s.transitionProperty} over ${s.transitionDuration} with reduced motion requested`])
+    if (s.animationName !== 'none' && (!s.animationTimeline || s.animationTimeline === 'auto')) out.push(['motion', `<${el.tagName.toLowerCase()}.${[...el.classList].join('.')}> animates ${s.animationName} with reduced motion requested`])
+    if (out.length >= 6) break }
+  return out
+}
+
 const types = { '.html': 'text/html; charset=utf-8', '.json': 'application/json', '.css': 'text/css', '.js': 'text/javascript', '.woff2': 'font/woff2', '.png': 'image/png', '.svg': 'image/svg+xml' }
 const server = createServer((req, res) => { const p = join(root, decodeURIComponent(new URL(req.url, 'http://x').pathname)); if (!p.startsWith(root) || !existsSync(p) || statSync(p).isDirectory()) { res.writeHead(404); res.end(); return } res.writeHead(200, { 'content-type': types[extname(p)] ?? 'application/octet-stream' }); res.end(readFileSync(p)) })
 const port = await new Promise((ok) => server.listen(0, '127.0.0.1', () => ok(server.address().port))), urlOf = (p) => `http://127.0.0.1:${port}/${relative(root, p)}`
@@ -208,6 +339,14 @@ for (const c of configs) {
     errors = []
     try { await page.goto(urlOf(p), { waitUntil: 'load', timeout: 60000 }); await page.waitForTimeout(/fixture/.test(p) ? 600 : 0); await page.evaluate(() => document.fonts.ready); await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))); await page.waitForTimeout(120) } catch (e) { results.push({ page: p, config: label(c), kind: 'load', msg: e.message.split('\n')[0] }); continue }
     const found = await page.evaluate(audit, { coarse: !!c.coarse, words: true })
+    const fine = c.w === 1500 && !c.zoom && !c.coarse, touch = c.w === 400 && !!c.coarse
+    if (fine || touch) {
+      if (fine) await page.keyboard.press('Shift') // keyboard modality, so a focused control shows its ring as from the keyboard
+      found.push(...await page.evaluate(guards, { fine, coarse: touch }))
+      if (touch) found.push(...await fingerPress(page, await ctx.newCDPSession(page)))
+      await page.evaluate((th) => { if (th) document.documentElement.dataset.theme = th }, touch ? 'dark' : null) // the token trace in both themes
+      found.push(...await page.evaluate(tokenTrace, { css: perturbed }))
+    }
     if (c.w === 1500 && !c.zoom && !c.coarse && /compositions|fixture/.test(p)) found.push(...(await page.evaluate(words)))
     for (const e of errors) found.push(['script', e])
     for (const [kind, msg] of found) results.push({ page: p, config: label(c), kind, msg })
@@ -215,6 +354,11 @@ for (const c of configs) {
   await ctx.close()
   process.stdout.write(`\r${label(c).padEnd(16)} done, ${results.length} finding(s) so far, ${Math.round((Date.now() - started) / 1000)} s`)
 }
+{ // reduced motion: one more pass at 1500 px
+  const ctx = await browser.newContext({ viewport: { width: 1500, height: 900 }, reducedMotion: 'reduce' }), page = await ctx.newPage()
+  for (const p of pages) { try { await page.goto(urlOf(p), { waitUntil: 'load', timeout: 60000 }); await page.waitForTimeout(/fixture/.test(p) ? 600 : 0) } catch { continue }
+    for (const [kind, msg] of await page.evaluate(stillness)) results.push({ page: p, config: '1500 reduced motion', kind, msg }) }
+  await ctx.close() }
 await browser.close(); server.close()
 for (const msg of stale) results.unshift({ page: join(root, 'dist'), config: 'build', kind: 'stale', msg })
 const rel = (p) => relative(root, p), flows = (r) => /\/flows\//.test(r.page)

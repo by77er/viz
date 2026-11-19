@@ -9,7 +9,7 @@
  *
  *   <dir>/publisher/   src, test, tools, configs; node_modules is a symlink to the real one
  *   <dir>/contracts/   copied
- *   <dir>/ledger/      src/ and bench/asbuilt/ copied (the test worker drives the real ledger)
+ *   <dir>/ledger/      src/, bench/asbuilt/ and bench/before/ copied (the test worker drives the real ledgers)
  *
  * Each mutant edits one file of the copy, runs the suites it names (at most 2 workers), and
  * puts the copy's file back. The shared tree is only read.
@@ -34,6 +34,7 @@ if (!existsSync(join(root, 'node_modules'))) symlinkSync(join(source, 'node_modu
 cpSync(join(repo, 'contracts'), join(dir, 'contracts'), { recursive: true })
 cpSync(join(repo, 'ledger', 'src'), join(dir, 'ledger', 'src'), { recursive: true })
 cpSync(join(repo, 'ledger', 'bench', 'asbuilt'), join(dir, 'ledger', 'bench', 'asbuilt'), { recursive: true })
+cpSync(join(repo, 'ledger', 'bench', 'before'), join(dir, 'ledger', 'bench', 'before'), { recursive: true })
 console.log(`mutating a copy under ${dir}`)
 
 const P = 'src/publisher.ts'

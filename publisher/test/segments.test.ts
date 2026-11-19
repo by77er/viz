@@ -169,7 +169,7 @@ describe('golden: real segment bytes from the ledger', () => {
     const p = publisher(cell)
     const last = g.stages.at(-1)!
     const r = await p.publish()
-    expect(r.tenants).toEqual([{ tenant: g.tenant, status: 'ok', cursors: { metric_samples: last.cursor, metric_series: last.cursor } }])
+    expect(r.tenants).toEqual([{ tenant: g.tenant, status: 'ok', cursors: { metric_samples: last.cursor, metric_series: last.cursor }, rebase: expect.objectContaining({ source: 'base', format: null, objects: 1 }) }])
     for (const table of TABLES) expect(await icebergLive(cell, table)).toEqual(last.live[table])
     // Incarnation 2's base segment and one more: the older incarnation and the checkpoint are not read.
     expect(r.ops.get).toBeLessThanOrEqual(2 + 2 * 2) // two segments, then per table: current metadata (none yet) and the hint

@@ -2,8 +2,8 @@
 
 A stateless remote MCP server on a Worker (Streamable HTTP at `/mcp`), and the same
 operations as JSON under `/api/v1/agent/…`. Agents discover telemetry, check and run
-queries, read dashboards as text digests, and change dashboards through dry runs and
-proposals that a person applies. DESIGN §7 (agents are read-only and tenant-scoped,
+queries, read dashboards as text digests, change dashboards through dry runs and proposals
+that a person applies, and backtest a monitor over a past range before proposing it. DESIGN §7 (agents are read-only and tenant-scoped,
 telemetry is untrusted input) and §8 (one model, three readers; agent tools) are what it
 implements. No Durable Object.
 
@@ -347,7 +347,9 @@ firing 2026-11-18T11:55:00Z → end of range (5m, still firing) {route="/pay"} |
 pending 2026-11-17T20:41:00Z → 2026-11-17T20:44:00Z (3m), cleared without firing {route="/cart"} | summary: Checkout 5xx ratio on /cart is 1.4%
 pending 2026-11-18T03:10:00Z → 2026-11-18T03:15:00Z (5m), then fired {route="/pay"}
 pending 2026-11-18T11:50:00Z → 2026-11-18T11:55:00Z (5m), then fired {route="/pay"}
-``\````
+```
+Cost (the ruler's plan and models, not measured): read 345,840 samples, 2.75 MiB in 1 range query (budget 20,000,000 samples, 128 MiB); memory peak 6.5 MiB (budget 32 MiB); CPU 12 ms (budget 20 s).
+````
 The same monitor when the ruler's CPU model refuses it (HTTP 422; the lines are asserted in `backtest.test.ts`):
 ````
 Error over-budget: The ruler refused this backtest over its CPU budget: its CPU model (modelled, not measured) puts the whole run at 46.2 s; the budget is 20 s (2.3× over). It read the first window to count the series; nothing was kept.
@@ -421,7 +423,8 @@ range queries against the budget; the memory model's peak; the CPU model's run; 
 ruler's plan and models, not measurements). Structured: `kind`, `summary` (with `firstFiringMs`,
 `lastFiringMs`, `lastResolvedMs`, `firingSeries`), `range`, `resolution`, `warmup`, `intervals`
 (`total`, `listed`, `omitted`, `omittedFiring`, `malformed`), `cost`, and under `data` the
-intervals with every annotation and the note.
+intervals with every annotation and the note. `usage.queries` counts the range queries the
+ruler's run took, from its `cost`.
 
 **Nothing is cut silently.** A page shows what fits `max_tokens` (from 800 for this tool: the
 header, note, cursor line and cost always fit whole) and says `Truncated: N of M items not
@@ -865,6 +868,25 @@ the dry-run probe that `mayApply` replaced).
 | 31 | OAuth: the 401 challenge does not name the protected resource metadata | oauth (1) |
 | 32 | OAuth: the tenant object asked is the one a request header names, not the token's | oauth (1) |
 | 33 | OAuth: protected resource metadata names no authorization server | oauth (1) |
+| 34 | `backtest_monitor`: tenant taken from the arguments (accepted by the schema and sent to the ruler) | backtest (1) |
+| 35 | `backtest_monitor`: a refusal swallowed and answered as an empty backtest | backtest, injection (10) |
+| 36 | `backtest_monitor`: intervals past the listing cap dropped without the count (text) | backtest (1) |
+| 37 | `backtest_monitor`: intervals past the listing cap dropped without the count (structure) | backtest (1) |
+| 38 | `backtest_monitor`: `over_budget` does not say which budget (plan, memory, CPU) refused | backtest (5) |
+| 39 | `backtest_monitor`: a refusal retried once | backtest (9) |
+
+34–39 (`backtest_monitor`) were run on 2026-11-19 in a copy in a uniquely named scratch directory
+(`node scripts/mutants.mjs 34 35 36 37 38 39`), taken after the copy's unmutated suite passed 218
+of 218: **6 of 6 killed**, and the copy's `src/` was equal to the shared tree's afterwards. They
+were run twice, the second time on the final code (two `Math.min`/`Math.max` spreads became
+reductions after the first run); both runs gave the counts above. A first attempt in a scratch
+directory named `mut/` gave **no result**: the scratch area is shared, the copy was deleted under
+the run, and the runner exited without a table; it was not counted. Mutant 34 is caught only by
+`backtest.test.ts`: `isolation.test.ts`'s "no tool takes a tenant" loop sends `{tenant}` alone,
+which this tool refuses anyway for the missing `monitor`. 1–33 were not re-run in this change; it
+touches only `src/clients.ts` (a new method), `src/session.ts` (a new limit), `src/registry.ts`,
+`src/mcp.ts` (one sentence of the instructions), `src/tools/misc.ts` (`needRuler` exported) and the
+new `src/tools/backtest.ts`.
 
 27–33 (OAuth, D44) were run on 2026-11-19 in a scratch copy outside git
 (`node scripts/mutants.mjs 1 26 27 28 29 30 31 32 33`), taken after its suite passed 191 of 191:

@@ -98,7 +98,7 @@ export type PageOutcome =
 /** Test hooks (empty in production): both are shared by the coordinator and the leaves. */
 export const tailHooks: {
   /** A shard to read as one of the previous release does: the options are not passed, so it answers without `page`. */
-  previousRelease?: (shard: string) => boolean
+  previousRelease?: (shard: string, where: 'coordinator' | 'leaf') => boolean
   /** Replaces a shard's answer (as a test cannot otherwise make a shard misbehave). */
   alter?: (shard: string, answer: unknown, where: 'coordinator' | 'leaf') => unknown
 } = {}
@@ -121,7 +121,7 @@ export async function readPages(
   alter?: (answer: unknown) => unknown,
 ): Promise<PageOutcome> {
   const out: TailRead = { status: 'ok', shard, incarnation, above, through: null, batches: [], bytes: 0, paged: true, complete: true, overBytes: 0, calls: 0, scannedBatches: 0, scannedBytes: 0 }
-  const previous = tailHooks.previousRelease?.(shard) ?? false
+  const previous = tailHooks.previousRelease?.(shard, where) ?? false
   const unavailable = (reason: string): PageOutcome => ({ status: 'unavailable', shard, reason, calls: out.calls })
   let cursor: string | undefined
   for (let page = 0; ; page++) {

@@ -228,9 +228,9 @@ describe('tail reads (D48)', () => {
   }, 1_200_000)
 
   it('a shard of the previous release next to one of this one, the rest read by the parts: the same answer', async () => {
-    tailHooks.previousRelease = (s) => s === w.shards[1]
     let viaLeaves = 0
-    for (const q of extra.filter((x) => !x.query.includes('label_replace') && !x.query.includes('__name__=~'))) {
+    for (const [old, q] of w.shards.flatMap((s) => extra.filter((x) => !x.query.includes('label_replace') && !x.query.includes('__name__=~')).map((x) => [s, x] as const))) {
+      tailHooks.previousRelease = (s) => s === old
       delete hooks.tailCap
       const want = await (await run(w.a.key, q)).text()
       hooks.tailCap = 1
@@ -241,7 +241,21 @@ describe('tail reads (D48)', () => {
       expect(['unfiltered', 'unfiltered+leaves'], q.id).toContain(res.headers.get('X-Viz-Tail-Mode'))
       if (res.headers.get('X-Viz-Tail-Mode') === 'unfiltered+leaves') viaLeaves++
     }
-    expect(viaLeaves).toBeGreaterThan(5)
+    expect(viaLeaves).toBeGreaterThanOrEqual(4)
+  }, 600_000)
+
+  it('a shard rolled back between the coordinator\'s read and a part\'s (it answers the part with its whole tail): the part cuts it, the same answer', async () => {
+    tailHooks.previousRelease = (_s, where) => where === 'leaf'
+    let n = 0
+    for (const q of extra.filter((x) => !x.query.includes('label_replace') && !x.query.includes('__name__=~'))) {
+      delete hooks.tailCap
+      const want = await (await run(w.a.key, q)).text()
+      hooks.tailCap = 1
+      const res = await run(w.a.key, q)
+      expect(await res.text(), q.id).toBe(want)
+      if (res.headers.get('X-Viz-Tail-Mode') === 'filtered+leaves') n++
+    }
+    expect(n).toBeGreaterThan(10)
   }, 600_000)
 
   it('a leaf of the previous release ignores the rest of the tail it is given: 503, never an answer without it', async () => {

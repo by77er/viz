@@ -142,7 +142,7 @@ export function lintCss(text, { file, line0 = 0, report, tokens, declarationsOnl
     // nested rules (CSS nesting): their selectors resolved against this one
     node.block.children.forEach((c) => { if (c.type === 'Rule') rule(c, sel, cond, at); else if (c.type === 'Atrule') atrule(c, sel, cond) })
   }
-  const split = (text) => text.split(/,(?![^()[\]]*[)\]])/).map((x) => x.trim())
+  const split = (text) => { const out = []; let d = 0, cur = ''; for (const ch of text) { if ('(['.includes(ch)) d++; else if (')]'.includes(ch)) d--; if (ch === ',' && !d) { out.push(cur.trim()); cur = '' } else cur += ch } out.push(cur.trim()); return out } // commas at depth 0 only (a :is(a, b) is one selector)
   const rule = (node, parent, cond, at) => {
     const own = split(csstree.generate(node.prelude)), sel = parent ? parent.flatMap((p) => own.map((x) => (x.includes('&') ? x.replace(/&/g, p) : `${p} ${x}`))) : own
     declare(node, sel, cond, at)
@@ -164,7 +164,7 @@ export function lintCss(text, { file, line0 = 0, report, tokens, declarationsOnl
 
 // Script: colours anywhere in code; CSS written as strings (a style attribute inside a template, cssText, style.<prop> = …, setProperty)
 // linted as CSS, with each ${…} read as a value computed at run time; in strings, lengths and durations. Comments are not code.
-export function lintScript(text, { file, line0 = 0, report, tokens, test = false }) {
+export function lintScript(text, { file, line0 = 0, report, tokens, test = false, breakpoints = null }) {
   const lines = text.split('\n'), strip = (s) => s.replace(/\/\*[\s\S]*?\*\//g, (c) => c.replace(/[^\n]/g, ' ')).replace(/(^|[^:\\'"`])\/\/.*$/gm, '$1')
   const code = strip(text), codeLines = code.split('\n'), lineAt = (i) => code.slice(0, i).split('\n').length
   const runtime = (s) => s.replace(/\$\{(?:[^{}]|\{[^{}]*\})*\}(?:px|ms|s|%|deg)?/g, 'var(--computed)')
@@ -181,18 +181,60 @@ export function lintScript(text, { file, line0 = 0, report, tokens, test = false
   const kebab = (p) => p.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase())
   for (const m of code.matchAll(/\.style\.([a-zA-Z]+)\s*=\s*(?:(['"`])((?:(?!\2).)*)\2|(-?[\d.]+)\b)(?=\s*(?:[;,)}]|$))/gm)) { if (skip(m.index) || m[1] === 'cssText') continue; const v = m[3] ?? m[4]; lintCss(`${kebab(m[1])}: ${runtime(v)}`, { file, line0: line0 + lineAt(m.index) - 1, report, tokens, declarationsOnly: true, sourceLines: [lines[lineAt(m.index) - 1]] }) }
   for (const m of code.matchAll(/\.style\.setProperty\(\s*(['"])([\w-]+)\1\s*,\s*(?:(['"`])((?:(?!\3).)*)\3|(-?[\d.]+))(?=\s*\))/g)) { if (skip(m.index)) continue; lintCss(`${m[2]}: ${runtime(m[4] ?? m[5])}`, { file, line0: line0 + lineAt(m.index) - 1, report, tokens, declarationsOnly: true, sourceLines: [lines[lineAt(m.index) - 1]] }) }
+  const at = (i) => line0 + lineAt(i) - 1, ln = (i) => line0 + lineAt(i), decl = (text, i) => lintCss(runtime(text), { file, line0: at(i), report, tokens, declarationsOnly: true, sourceLines: [lines[lineAt(i) - 1]] })
+  // an object of style properties: { opacity: 0.5, color: "tomato", "border-width": "3px" }, read as declarations
+  const props = (body, i) => { for (const m of body.matchAll(/(?:^|[,{\s])(['"]?)([a-zA-Z-]+)\1\s*:\s*(?:(['"`])((?:(?!\3).)*)\3|(-?[\d.]+|Infinity)\b)/g)) { const p = kebab(m[2]), v = m[4] ?? m[5]
+      if (p === 'iterations' && (v === 'Infinity' || +v > 1)) report('loop', file, ln(i), [`animate(): iterations: ${v}: nothing loops (Motion)`])
+      else if (/^(duration|delay|end-delay)$/.test(p) && m[5] && +m[5] !== 0) report('duration', file, ln(i), [`animate(): ${p}: ${v} ms written out: read a duration token`])
+      else if (/^(easing)$/.test(p)) { if (v && !/var\(/.test(v)) report('easing', file, ln(i), [`animate(): easing: ${v}`]) }
+      else if (!/^(iterations|duration|delay|end-delay|fill|direction|composite|offset|id|pseudo-element|iteration-start|playback-rate|timeline|range-start|range-end)$/.test(p)) decl(`${p}: ${v}`, i) } }
+  // Object.assign(el.style, { … })
+  for (const m of code.matchAll(/Object\.assign\(\s*[\w$.[\]'"]*\.style\s*,\s*\{([^}]*)\}/g)) { if (!skip(m.index)) props(m[1], m.index) }
+  // el.animate(keyframes, options): every property and option written in the call
+  for (const m of code.matchAll(/\.animate\(([^;]*?)\)\s*(?:[;\n]|\.)/g)) { if (!skip(m.index)) props(m[1], m.index) }
+  // el.setAttribute('style', '…') and a presentation attribute set from script
+  for (const m of code.matchAll(/\.setAttribute(?:NS)?\(\s*(?:[^,]+,\s*)?(['"])([\w-]+)\1\s*,\s*(['"`])((?:(?!\3).)*)\3/g)) { if (skip(m.index)) continue
+    if (m[2] === 'style') decl(m[4], m.index); else if (m[2] in PRESENTATION) presentation(m[2], runtime(m[4]), (k, w) => report(k, file, ln(m.index), [w]), tokens) }
+  // el.style['opacity'] = … (a property by name)
+  for (const m of code.matchAll(/\.style\[\s*(['"])([\w-]+)\1\s*\]\s*=\s*(?:(['"`])((?:(?!\3).)*)\3|(-?[\d.]+)\b)/g)) { if (!skip(m.index)) decl(`${kebab(m[2])}: ${m[4] ?? m[5]}`, m.index) }
+  // presentation attributes inside markup written as strings: <rect fill="red" stroke-width="3">
+  for (const m of code.matchAll(/<[a-zA-Z][^<>]*>/g)) { if (skip(m.index)) continue; for (const a of m[0].matchAll(/\s([a-z-]+)=(\\?["'])((?:(?!\2).)*)\2/g)) if (a[1] in PRESENTATION) presentation(a[1], runtime(a[3]), (k, w) => report(k, file, ln(m.index), [w]), tokens) }
+  // matchMedia('(max-width: …)'): a condition, like @media
+  for (const m of code.matchAll(/matchMedia\(\s*(['"`])((?:(?!\1).)*)\1/g)) { if (!skip(m.index)) mediaWidths(m[2], breakpoints, (w) => report('breakpoint', file, ln(m.index), [`matchMedia("${m[2]}"): ${w}`])) }
+  // an emoji anywhere in code (a string, a template)
+  for (const m of code.matchAll(new RegExp(EMOJI.source, 'gu'))) { if (!skip(m.index)) report('emoji', file, ln(m.index), [`${m[0]}: no emoji (Words)`]) }
 }
 
+// An SVG presentation attribute (fill="red", stroke-width="3"), read as the property it sets: a colour must be a token (attributes cannot
+// read one, so any colour is a literal: use a class), a bare number in a length attribute is px, an opacity other than 1 is an opacity.
+function presentation(name, value, r, tokens) {
+  const v = value.trim(), kind = PRESENTATION[name]
+  if (!v || /^(none|inherit|currentcolor|transparent|url\(#[^)]*\))$/i.test(v) || v.includes('${') || v.includes('var(--computed)')) return
+  if (kind === 'length') { if (!/^0([a-z%]*)$/i.test(v)) r('length', `${name}="${v}" (an SVG attribute: a length in px)`); return }
+  if (kind === 'opacity') { if (+v !== 1) r('opacity', `${name}="${v}"`); return }
+  const hits = []; lintCss(`${name}: ${v}`, { file: '', report: (k, f, l, m) => hits.push([k, m.join(' ')]), tokens, declarationsOnly: true }); for (const [k, m] of hits) r(k, `${name}="${v}" (an SVG attribute) ${m}`)
+  if (kind === 'colour' && !hits.length && !/^var\(/.test(v)) r('colour', `${name}="${v}" (an SVG attribute cannot read a token: use a class)`)
+}
+// the widths in a media condition (a media attribute, matchMedia), against the breakpoint tokens
+function mediaWidths(text, breakpoints, r) {
+  let ast; try { ast = csstree.parse(text, { context: 'mediaQueryList' }) } catch { r(`"${text}" does not parse`); return }
+  csstree.walk(ast, (n) => { if (n.type === 'Dimension') { const u = unesc(n.unit).toLowerCase(), v = +n.value; if (u !== 'px' || (breakpoints && !breakpoints.has(v))) r(`${n.value}${n.unit} is not a breakpoint token (or one less)`) } })
+}
 // HTML: <style> as CSS, style attributes (any quoting) as CSS, inline scripts as script, colours anywhere else in the text.
 export function lintHtml(text, { file, report, tokens, breakpoints }) {
   const doc = parse5.parse(text, { sourceCodeLocationInfo: true }), lines = text.split('\n'), rules = []
   const walk = (n) => {
+    if (/^(style|link|source)$/.test(n.nodeName)) for (const a of n.attrs ?? []) if (a.name === 'media') { const at = n.sourceCodeLocation?.attrs?.media?.startLine ?? n.sourceCodeLocation?.startLine ?? 1; mediaWidths(a.value, breakpoints, (what) => report('breakpoint', file, at, [`<${n.nodeName} media="${a.value}">: ${what}`])) }
     if (n.nodeName === 'style') { const t = n.childNodes?.[0]; if (t?.value) { const at = t.sourceCodeLocation?.startLine ?? 1; rules.push(...lintCss(t.value, { file, line0: at - 1, report, tokens, breakpoints, sourceLines: t.value.split('\n') })) } return }
-    if (n.nodeName === 'script') { const t = n.childNodes?.[0]; if (t?.value && !(n.attrs ?? []).some((a) => a.name === 'type' && /json/.test(a.value))) lintScript(t.value, { file, line0: (t.sourceCodeLocation?.startLine ?? 1) - 1, report, tokens }); return }
+    if (n.nodeName === 'script') { const t = n.childNodes?.[0]; if (t?.value && !(n.attrs ?? []).some((a) => a.name === 'type' && /json/.test(a.value))) lintScript(t.value, { file, line0: (t.sourceCodeLocation?.startLine ?? 1) - 1, report, tokens, breakpoints }); return }
     for (const a of n.attrs ?? []) { const at = n.sourceCodeLocation?.attrs?.[a.name]?.startLine ?? n.sourceCodeLocation?.startLine ?? 1
-      if (a.name === 'style') { if (!/token-lint-ignore/.test(lines[at - 1] ?? '')) lintCss(a.value, { file, line0: at - 1, report, tokens, declarationsOnly: true, sourceLines: [lines[at - 1]] }) }
-      else { const m = a.value.match(/^#[0-9a-f]{3,8}$|\b(?:rgba?|hsla?|oklch|color-mix)\(/i); if (m && !/^(href|id|for|aria-|data-)/.test(a.name)) report('colour', file, at, [`${a.name}="${a.value}"`]) } }
-    if (n.nodeName === '#text') { const m = n.value.match(/\b(?:rgba?|hsla?|oklch|color-mix)\(/gi); if (m) report('colour', file, n.sourceCodeLocation?.startLine ?? 1, m) }
+      if (/token-lint-ignore/.test(lines[at - 1] ?? '')) continue
+      if (a.name === 'style') lintCss(a.value, { file, line0: at - 1, report, tokens, declarationsOnly: true, sourceLines: [lines[at - 1]] })
+      else if (a.name in PRESENTATION) presentation(a.name, a.value, (kind, what) => report(kind, file, at, [what]), tokens)
+      else { const m = a.value.match(/^#[0-9a-f]{3,8}$|\b(?:rgba?|hsla?|oklch|color-mix)\(/i); if (m && !/^(href|id|for|aria-|data-)/.test(a.name)) report('colour', file, at, [`${a.name}="${a.value}"`]) }
+      if (EMOJI.test(a.value)) report('emoji', file, at, [`${a.name}="${a.value.slice(0, 40)}": no emoji (Words)`]) }
+    if (n.nodeName === '#text') { const m = n.value.match(/\b(?:rgba?|hsla?|oklch|color-mix)\(/gi); if (m) report('colour', file, n.sourceCodeLocation?.startLine ?? 1, m)
+      if (EMOJI.test(n.value) && !/^(script|style)$/.test(n.parentNode?.nodeName)) report('emoji', file, n.sourceCodeLocation?.startLine ?? 1, [`"${n.value.trim().slice(0, 40)}": no emoji (Words)`]) }
     n.childNodes?.forEach(walk); if (n.content) walk(n.content)
   }
   walk(doc)

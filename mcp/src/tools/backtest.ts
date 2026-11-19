@@ -240,7 +240,7 @@ function readIntervals(raw: unknown[]): { intervals: Interval[]; malformed: numb
 }
 
 /** The ruler's own summary formula (ruler/src/backtest.ts `summarize`), plus what an agent asks first. */
-export function summarize(intervals: Interval[]) {
+function summarize(intervals: Interval[]) {
   const firing = intervals.filter((i) => i.state === 'firing')
   const pending = intervals.filter((i) => i.state === 'pending')
   const fired = new Set(firing.map((i) => `${i.fingerprint}@${i.startMs}`))
@@ -255,9 +255,9 @@ export function summarize(intervals: Interval[]) {
     firingAtEnd: firing.some((i) => i.open),
     series: new Set(intervals.map((i) => i.fingerprint)).size,
     firingSeries: new Set(firing.map((i) => i.fingerprint)).size,
-    firstFiringMs: firing.length ? Math.min(...firing.map((i) => i.startMs)) : null,
+    firstFiringMs: firing.length ? firing.reduce((n, i) => Math.min(n, i.startMs), Infinity) : null,
     lastFiringMs: lastFire ? lastFire.startMs : null,
-    lastResolvedMs: firing.length && !firing.some((i) => i.open) ? Math.max(...firing.map((i) => i.endMs)) : null,
+    lastResolvedMs: firing.length && !firing.some((i) => i.open) ? firing.reduce((n, i) => Math.max(n, i.endMs), -Infinity) : null,
   }
 }
 
