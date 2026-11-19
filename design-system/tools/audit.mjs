@@ -23,8 +23,9 @@
 //                 changed first", "slowest first", "highest … first") the rows do not follow;
 //   age           an age beyond a day written as "N d ago", or "0 s ago", in a table cell (Words: the absolute time beyond a day).
 // Exit status 1 if any page outside flows/ fails. Flow screens are reported, never edited.
-import { readdirSync, existsSync, writeFileSync } from 'node:fs'
-import { join, resolve, relative } from 'node:path'
+import { readdirSync, existsSync, writeFileSync, readFileSync, statSync } from 'node:fs'
+import { createServer } from 'node:http'
+import { join, resolve, relative, extname } from 'node:path'
 import { createRequire } from 'node:module'
 const { chromium } = createRequire(import.meta.url)('playwright')
 const args = process.argv.slice(2), opt = (n) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : undefined }
@@ -85,12 +86,16 @@ function audit({ coarse, words }) {
   let small = 99, where = ''; for (const e of document.body.querySelectorAll('*')) { if (hiddenText(e) || ![...e.childNodes].some((x) => x.nodeType === 3 && x.textContent.trim()) || !shown(e)) continue; const f = parseFloat(cs(e).fontSize); if (f < small) { small = f; where = name(e) } }
   if (small < 11) out.push(['tiny', `text at ${small} px: ${where}`])
   // links in sentences and links that stand alone, with a coarse pointer
-  if (coarse) for (const a of document.querySelectorAll('a[href]')) { if (!shown(a) || hiddenText(a) || a.closest('[inert], nav, .vz-nav') ) continue
+  if (coarse) for (const a of document.querySelectorAll('a[href]')) { if (!shown(a) || hiddenText(a) || a.closest('[inert], .vz-nav')) continue
+    // inside a sentence: other words share the link's inline flow (its nearest ancestor that is not inline is a block container, not a flex
+    // or grid row of items, and holds words outside the link and outside other controls)
     let block = a.parentElement; while (block && /^(inline|contents)$/.test(cs(block).display)) block = block.parentElement
-    const words = (x) => (x.textContent || '').replace(/\s+/g, ' ').trim(), inSentence = block && words(block) !== words(a) && !a.closest('td[data-key], .vz-table td')
-    const r = a.getBoundingClientRect(), lh = parseFloat(cs(a).lineHeight) || r.height
-    if (inSentence && r.height > lh + 6) out.push(['sentence-link', `${name(a)} is inside a sentence in ${name(block)} but drawn ${Math.round(r.height)} px tall: it breaks its line`])
-    if (!inSentence && !a.closest('td[data-key]')) { const cx = r.left + r.width / 2, cy = r.top + r.height / 2; if (cy < 0 || cy > innerHeight || cx < 0 || cx > vw) continue
+    const flow = (x) => { let b = x.parentElement; while (b && /^(inline|contents)$/.test(cs(b).display)) b = b.parentElement; return b }
+    let other = false; if (block && !/flex|grid/.test(cs(block).display)) { const w = document.createTreeWalker(block, NodeFilter.SHOW_TEXT); let t
+      while ((t = w.nextNode())) { if (!t.textContent.trim() || a.contains(t) || t.parentElement.closest('a, button, input, select, textarea, .vz-sr') || flow(t) !== block) continue; other = true; break } }
+    const rects = [...a.getClientRects()], tallest = Math.max(...rects.map((r) => r.height)), lh = parseFloat(cs(block ?? a).lineHeight) || 20
+    if (other && tallest > lh + 6) out.push(['sentence-link', `${name(a)} is inside a sentence in ${name(block)} but drawn ${Math.round(tallest)} px tall: it breaks its line`])
+    if (!other && !a.closest('td[data-key]')) { const r = rects[0], cx = r.left + r.width / 2, cy = r.top + r.height / 2; if (cy < 0 || cy > innerHeight || cx < 0 || cx > vw) continue
       const own = (y) => { const e = document.elementFromPoint(cx, y); return e && (e === a || a.contains(e)) }; let top = cy, bottom = cy; while (top > cy - 40 && own(top - 0.5)) top -= 0.5; while (bottom < cy + 40 && own(bottom + 0.5)) bottom += 0.5
       if (bottom - top + 0.5 < 44 && own(cy)) out.push(['sentence-link', `${name(a)} stands alone in ${name(block)} but its hit area is ${bottom - top + 0.5} px tall`]) } }
   return out
@@ -120,6 +125,9 @@ function words() {
   return out
 }
 
+const types = { '.html': 'text/html; charset=utf-8', '.json': 'application/json', '.css': 'text/css', '.js': 'text/javascript', '.woff2': 'font/woff2', '.png': 'image/png', '.svg': 'image/svg+xml' }
+const server = createServer((req, res) => { const p = join(root, decodeURIComponent(new URL(req.url, 'http://x').pathname)); if (!p.startsWith(root) || !existsSync(p) || statSync(p).isDirectory()) { res.writeHead(404); res.end(); return } res.writeHead(200, { 'content-type': types[extname(p)] ?? 'application/octet-stream' }); res.end(readFileSync(p)) })
+const port = await new Promise((ok) => server.listen(0, '127.0.0.1', () => ok(server.address().port))), urlOf = (p) => `http://127.0.0.1:${port}/${relative(root, p)}`
 const browser = await chromium.launch(), results = [], started = Date.now()
 for (const c of configs) {
   const ctx = await browser.newContext({ viewport: { width: c.zoom ? c.w : c.w, height: 900 }, deviceScaleFactor: c.zoom ?? 1, ...(c.coarse ? { hasTouch: true, isMobile: true } : {}) })
@@ -127,7 +135,7 @@ for (const c of configs) {
   page.on('pageerror', (e) => errors.push(e.message))
   for (const p of pages) {
     errors = []
-    try { await page.goto('file://' + p, { waitUntil: 'load', timeout: 60000 }); await page.evaluate(() => document.fonts.ready); await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))); await page.waitForTimeout(120) } catch (e) { results.push({ page: p, config: label(c), kind: 'load', msg: e.message.split('\n')[0] }); continue }
+    try { await page.goto(urlOf(p), { waitUntil: 'load', timeout: 60000 }); await page.waitForTimeout(/fixture/.test(p) ? 600 : 0); await page.evaluate(() => document.fonts.ready); await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))); await page.waitForTimeout(120) } catch (e) { results.push({ page: p, config: label(c), kind: 'load', msg: e.message.split('\n')[0] }); continue }
     const found = await page.evaluate(audit, { coarse: !!c.coarse, words: true })
     if (c.w === 1500 && !c.zoom && !c.coarse && /compositions/.test(p)) found.push(...(await page.evaluate(words)))
     for (const e of errors) found.push(['script', e])
@@ -136,7 +144,7 @@ for (const c of configs) {
   await ctx.close()
   process.stdout.write(`\r${label(c).padEnd(16)} done, ${results.length} finding(s) so far, ${Math.round((Date.now() - started) / 1000)} s`)
 }
-await browser.close()
+await browser.close(); server.close()
 const rel = (p) => relative(root, p), flows = (r) => /\/flows\//.test(r.page)
 console.log(`\n\n${pages.length} pages x ${configs.length} configurations (${configs.map(label).join('; ')})`)
 for (const group of [['System pages', (r) => !flows(r)], ['Flow screens (read only, reported)', flows]]) {
