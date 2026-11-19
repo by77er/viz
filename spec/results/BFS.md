@@ -110,6 +110,7 @@ Breadth-first, exhaustive within the bounds of each row; every counterexample is
 | `LEAK_D30_shardloss` no leak, D30 + log as built: shard loss, ledger loss, retention of every file, compaction, no client retry; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leak | stopped: memory bound: stopped at 3,000,002 states (depth 32); the graph is incomplete, so AG EF is NOT decided (unexpected) | 3,000,002 | 14,725,070 | 32 | 286.2 s | 2.4e-7 |
 | `LEAK_V1_shardloss` no leak, the rules before D30 (age-swept outputs, committed newer incarnation): same bounds as LEAK_D30_shardloss; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leak | stopped: memory bound: stopped at 3,000,001 states (depth 32); the graph is incomplete, so AG EF is NOT decided (unexpected) | 3,000,001 | 14,861,377 | 32 | 284.7 s | 2.4e-7 |
 | `LEAK_D30_ll` no leak, D30 + log as built: compaction, retention (2 removals), ledger loss, no shard loss; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leak | holds (exhaustive) | 1,640,059 | 10,097,949 | 56 | 172.4 s | 7.3e-8 |
+| `LEAK_D30_sl` no leak, D30 + log as built: compaction, retention (2 removals), shard loss, no ledger loss; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory) | AG EF no leak | **violated** LIVE_NoLeak in 11 steps | 1,090,381 | 6,619,573 | 52 | 130.1 s | 3.2e-8 |
 
 ## Counterexamples
 
@@ -1167,6 +1168,24 @@ Violates `LIVE_QueryCanComplete`. from the last state of the trace no continuati
 6. SHARD STORAGE LOSS(s0)
 7. flush PUT L0(s0 inc1 1..2)
 8. addUnit(s0 inc 1 1..2) admitted (registers the stream)
+
+### LEAK_D30_sl
+
+no leak, D30 + log as built: compaction, retention (2 removals), shard loss, no ledger loss; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory)
+
+Violates `LIVE_NoLeak`. from the last state of the trace no continuation deletes every unlisted object; unlisted then: L0(s0 inc1 1..2) (sweep keeps it).
+
+1. registerStream(s0, inc 1)
+2. ledger drain: PUT segment v1..v1
+3. registration logged -> s0 accepts writes
+4. append(b0 -> s0) seq 1
+5. append(b1 -> s0) seq 2
+6. seal(s0, ..2)
+7. flush: pendingSegments(s0) -> inc 1 1..2
+8. flush readSegment(s0 inc 1 1..2)
+9. SHARD STORAGE LOSS(s0)
+10. flush PUT L0(s0 inc1 1..2)
+11. flush crash (s0 inc 1 1..2)
 
 ### W_leak_behind_lost_flush
 

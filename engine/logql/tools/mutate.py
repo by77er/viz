@@ -4,7 +4,7 @@ scratch directory (never to the shared tree), run the suites, and report which c
 
     MUTATE_DIR=/path/to/scratch python3 -I tools/mutate.py [--loki-cases cases.json --loki loki.json]
 
-Suites: `unit` (cargo test --lib), `api` (tests/api.rs), `conformance` (tests/conformance.rs,
+Suites: `unit` (cargo test --lib), `api` (tests/api.rs), `semantics` (tests/semantics.rs), `conformance` (tests/conformance.rs,
 needs testdata/loki-oracle/cases.json), `props` (tests/props.rs, PROPTEST_CASES=32) and, with
 --loki-cases/--loki, `differential`: the case file is re-exported from the mutant with the
 same generator seed and rounds and compared with the Loki outputs already recorded for it
@@ -94,6 +94,7 @@ def main():
         os.symlink(os.path.join(os.path.dirname(CRATE), 'promql'), promql)
     env = {'CARGO_TARGET_DIR': os.path.join(work, 'target'), 'PROPTEST_CASES': '32', 'CARGO_BUILD_JOBS': '2'}
     suites = [('unit', ['cargo', 'test', '-q', '--lib']), ('api', ['cargo', 'test', '-q', '--test', 'api']),
+              ('semantics', ['cargo', 'test', '-q', '--test', 'semantics']),
               ('conformance', ['cargo', 'test', '-q', '--test', 'conformance']),
               ('props', ['cargo', 'test', '-q', '--test', 'props', '--', '--test-threads', '2'])]
     seed_rounds = None

@@ -20,7 +20,7 @@ import { HttpError } from '../../edge/src/errors'
 import { EngineLoadError, type Grid, QueryError, type SplitPlan, createQueryEngine } from '../../engine/wasm-query/js/index'
 import wasm from '../../engine/wasm-query/js/viz_query.wasm'
 import { ConfigError, type Env, tenantLimits } from './config'
-import { ApiError, type Context, type Cost, MAX_TS, MIN_TS, type QueryPlan, type SplitSpec, addStats, cardinality, gather, newCost } from './coordinator'
+import { ApiError, type Context, type Cost, MAX_TS, MIN_TS, type QueryPlan, type SplitSpec, addStats, cardinality, gather, gatherSeries, newCost } from './coordinator'
 import { cardinalityParams, parseTime, rangeParams, readParams, required, timeoutParam, windowParams } from './params'
 
 export { Leaf } from './leaf'
@@ -77,6 +77,7 @@ const COST_HEADERS: [string, keyof Cost][] = [
   ['X-Viz-Leaf-Peak-Wasm-Bytes', 'leafPeakWasmBytes'],
   ['X-Viz-Leaf-Max-Samples', 'leafMaxSamples'],
   ['X-Viz-Leaf-Reruns', 'leafReruns'],
+  ['X-Viz-Pruning', 'pruning'],
 ]
 
 const allowedOrigins = (env: Env): string[] => (env.CORS_ORIGINS ?? '').split(',').map((s) => s.trim()).filter((s) => s !== '' && s !== '*')
@@ -202,18 +203,24 @@ function metaRanges(c: Context, match: string[], start: number, end: number) {
   return sets.map((matchers) => ({ matchers, minTs: start, maxTs: end }))
 }
 
+/**
+ * The label endpoints read series files and the tail, never samples (`gatherSeries`), and
+ * are bounded by the series they list (`maxMetadataSeries`) instead of a query's limits.
+ */
+const metaLimits = (c: Context) => ({ ...c.limits, maxSeries: c.limits.maxMetadataSeries })
+
 const labels: Handler = async (c, params) => {
   const { start, end } = windowParams(params)
   const match = params.getAll('match[]')
   const ranges = metaRanges(c, match, start, end)
-  return gather(c, ranges, ranges, (input) => JSON.stringify(c.engine.labelNames(input, match, start, end, c.limits)))
+  return gatherSeries(c, ranges, (input) => JSON.stringify(c.engine.labelNames(input, match, start, end, metaLimits(c))))
 }
 
 const labelValues: Handler = async (c, params, label) => {
   const { start, end } = windowParams(params)
   const match = params.getAll('match[]')
   const ranges = metaRanges(c, match, start, end)
-  return gather(c, ranges, ranges, (input) => JSON.stringify(c.engine.labelValues(input, label, match, start, end, c.limits)))
+  return gatherSeries(c, ranges, (input) => JSON.stringify(c.engine.labelValues(input, label, match, start, end, metaLimits(c))))
 }
 
 const series: Handler = async (c, params) => {
@@ -221,7 +228,7 @@ const series: Handler = async (c, params) => {
   const match = params.getAll('match[]')
   if (match.length === 0) throw new ApiError('bad_data', 'no match[] parameter provided')
   const ranges = metaRanges(c, match, start, end)
-  return gather(c, ranges, ranges, (input) => JSON.stringify(c.engine.series(input, match, start, end, c.limits)))
+  return gatherSeries(c, ranges, (input) => JSON.stringify(c.engine.series(input, match, start, end, metaLimits(c))))
 }
 
 /**

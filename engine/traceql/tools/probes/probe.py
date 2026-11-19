@@ -8,7 +8,7 @@ SCR=os.environ['VIZ_TQ_WORK']  # a scratch directory holding bin/godiff
 S=1_700_000_000_000_000_000
 def a(k,t,v): 
     if t.endswith('_array'): return {"key":k,"type":t,"array":[str(x) for x in v]}
-    return {"key":k,"type":t,"value":str(v).lower() if t=='bool' else str(v)}
+    return {"key":k,"type":t,"value":str(v).lower() if t=='bool' else str(v)}  # floats may be "nan", "inf"
 resources=[[a("service.name","str","frontend"),a("env","str","prod")],
            [a("service.name","str","backend"),a("env","str","prod"),a("rint","int",7)],
            [a("service.name","str","db")],
@@ -22,7 +22,7 @@ spans=[
  sp(TA,"a1"*8,"","GET /",0,kind=2,st=0,start=0,dur=1000,attrs=[a("http.status_code","int",200),a("foo","str","bar"),a("b","bool",True),a("f","float",1.5),a("arr","str_array",["x","y"]),a("n","int",3)]),
  sp(TA,"a2"*8,"a1"*8,"db",1,kind=3,st=2,msg="boom",start=10,dur=500,attrs=[a("foo","str","baz"),a("http.status_code","int",500),a("n","int",5),a("f","float",2.5)],
     events=[{"time":str(S+15_000_000),"name":"exception","attrs":[a("exception.message","str","boom"),a("ev","int",1)]},{"time":str(S+20_000_000),"name":"log","attrs":[a("ev","int",2)]}]),
- sp(TA,"a3"*8,"a2"*8,"query",2,kind=1,st=1,start=20,dur=200,attrs=[a("n","int",7)],links=[{"trace_id":TB,"span_id":"b1"*8,"trace_state":"","attrs":[a("lk","str","v")]}]),
+ sp(TA,"a3"*8,"a2"*8,"query",2,kind=1,st=1,start=20,dur=200,attrs=[a("n","int",7),a("r","float","nan"),a("ea","str_array",[])],links=[{"trace_id":TB,"span_id":"b1"*8,"trace_state":"","attrs":[a("lk","str","v")]}]),
  sp(TA,"a4"*8,"a1"*8,"cache",1,kind=3,st=0,start=600,dur=50,attrs=[a("foo","str","bar"),a("n","float",4.5),a("ia","int_array",[500,3])]),
  sp(TB,"b1"*8,"","POST /",0,kind=2,st=2,start=5000,dur=300,attrs=[a("http.status_code","str","200")],scope=1),
  sp(TB,"b2"*8,"b1"*8,"db",1,kind=3,st=0,start=5100,dur=100,attrs=[a("foo","str","bar")],scope=1),
