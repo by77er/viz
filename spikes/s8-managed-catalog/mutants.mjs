@@ -29,6 +29,7 @@ const mutants = [
   ['V1', 'chain verification does not report a snapshot listed twice', 'src/commit.ts', "    if (byId.has(s['snapshot-id'])) problems.push(`snapshot ${s['snapshot-id']} listed twice`)\n", ''],
   ['V2', 'chain verification does not report a fork', 'src/commit.ts', "  for (const s of byId.values()) if (!seen.has(s['snapshot-id'])) problems.push", '  for (const s of byId.values()) if (false) problems.push'],
   ['P1', 'publication ignores removed files (gross, not net)', 'src/commit.ts', 'const removes = [...cur.live.values()].filter((l) => !wantKeys.has(l.file.key))', 'const removes = [...cur.live.values()].filter(() => false)'],
+  ['J1', 'a repeated job start runs the exercise again (the harness double-counts)', 'src/index.ts', '    if (cur) return { state: cur.state, started: false }\n', ''],
   ['L1', 'after main moved, the old request is resubmitted instead of a rebuilt one', 'src/commit.ts', 'last && last.parent === parent ? last.body : await plan(t)', 'last && last.parent !== parent ? last.body : await plan(t)'],
 ]
 

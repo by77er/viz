@@ -47,7 +47,10 @@ nyc_taxi), not on NAB in aggregate.
 | `bench/fetch-nab.sh`, `bench/nab-manifest.json` | fetch NAB into `bench/data/` (git-ignored); SHA-256 of every data and label file used |
 | `bench/verify-scorer.ts`, `bench/nab-run.ts`, `bench/adapters.ts` | scorer check; the benchmark; how each detector runs on NAB and the tuning grids |
 | `bench/burn-table.ts`, `bench/cpu.ts` | SRE Workbook table; CPU, state size, history per detector |
-| `scripts/mutants.mjs` | 25 mutation checks, applied to a throw-away copy in a scratch directory; `--verify-clean` checks the tree read-only |
+| `bench/freeze.ts`, `bench/smd-frozen.json` | second benchmark, step 1: every parameter chosen on NAB alone and the SMD protocol, written with a timestamp before SMD was fetched (refuses to overwrite) |
+| `bench/fetch-smd.sh`, `bench/smd-manifest.json` | fetch SMD into `bench/data/smd/` (git-ignored; refuses to run before the freeze); SHA-256 of every SMD file used |
+| `bench/smd.ts`, `bench/smd-run.ts` | SMD loader and scorer (NAB-rule windows, don't-care spans, event metric, machine bootstrap); the run, resumable per machine |
+| `scripts/mutants.mjs` | 38 mutation checks, applied to a throw-away copy in a scratch directory; `--verify-clean` checks the tree read-only |
 | `scripts/make-fixtures.py`, `scripts/nab-sweeper-fixture.py` | fixture generators (independent implementations) |
 
 Dependencies (dev only): `vitest` (tests), `fast-check` (property tests), `typescript`
@@ -284,9 +287,22 @@ rule fires equals the table's 2 % / 5 % / 10 % whatever the error ratio (window 
 | 23 | quantile spread uses the median deviation | heavy-tail test |
 | 24 | NAB scorer: 10 % probation instead of 15 % | `sweeper.py` fixtures |
 | 25 | NAB scorer: every detection in a window counts | `sweeper.py` fixtures |
+| 26 | SMD windows: half-width w instead of ⌊w/2⌋ | NAB-rule window test |
+| 27 | SMD windows: width not divided among the segments | NAB-rule window test |
+| 28 | SMD segments: dimensions read as 0-based | series-segments test |
+| 29 | SMD don't care: machine segments that list the dimension excluded too | don't-care test (would have survived the first version of the tests, seen on reading them before the run: in their only case the listing segment lay inside its window; a case where it outruns the window was added) |
+| 30 | SMD rows: don't-care spans not applied | rows test |
+| 31 | SMD rows: NAB probation applied inside the test half | rows test |
+| 32 | SMD runs: a run begun in the history counted as an onset | runs test |
+| 33 | SMD machine view: touching runs not merged into one alarm | union test |
+| 34 | SMD event metric: tolerance not applied after the segment end | tolerance tests |
+| 35 | SMD event metric: don't-care onsets counted as false | event-count test |
+| 36 | SMD bootstrap: machines resampled without replacement | bootstrap test |
+| 37 | NAB run: `files.map(sweepRows)` (the index becomes the probation; this bug was real, below) | `map(sweepRows)` guard |
+| 38 | SMD normalisation: null score not subtracted | normalisation test |
 
-25 / 25 killed, last on the final code with the copy-based procedure below (two survived the
-first run and are listed above with what changed).
+38 / 38 killed (25 on the code below on 2026-11-18; 26–38 added with the SMD harness, run on
+2026-11-19 with the copy-based procedure).
 Procedure: the script copies `src`, `test`, `bench` and `scripts` to a fresh scratch directory
 (node_modules and the NAB data linked read-only), applies one mutant there, runs the named
 tests with vitest's JSON reporter, and deletes the copy; the shared tree is only read.

@@ -203,7 +203,15 @@ proptest! {
                     other => return Err(TestCaseError::fail(format!("query {q}: {other:?}"))),
                 };
                 got.sort();
-                prop_assert_eq!(&got, &want, "query {} at {}", q, t);
+                // Equal labels; values equal up to 1e-12 relative (viz-promql's stddev/stdvar
+                // depend on input order in the last bit, and `or` orders its output
+                // differently when a series has no point at the step).
+                prop_assert_eq!(got.len(), want.len(), "query {} at {}", q, t);
+                for (a, b) in got.iter().zip(want.iter()) {
+                    let (x, y) = (f64::from_bits(a.1), f64::from_bits(b.1));
+                    prop_assert!(a.0 == b.0, "query {} at {}: {:?} vs {:?}", q, t, a, b);
+                    prop_assert!(a.1 == b.1 || (x - y).abs() <= 1e-12 * x.abs().max(y.abs()) || (x.is_nan() && y.is_nan()), "query {} at {}: {} vs {}", q, t, x, y);
+                }
                 t += step;
             }
         }

@@ -36,6 +36,8 @@ const wrangler = join(here, 'node_modules/.bin/wrangler')
 const results = join(here, 'results')
 // Which implementations the contention and latency steps run: S8_CATALOGS=r2-native runs the baseline alone.
 const CATALOGS = (process.env.S8_CATALOGS ?? 'rest,r2-native').split(',')
+// Table names carry a run tag, so a rerun never appends to an earlier run's table.
+const RUN = process.env.S8_RUN ?? 'a'
 mkdirSync(results, { recursive: true })
 const save = (name, v) => writeFileSync(join(results, name), JSON.stringify(v, null, 2) + '\n')
 const stamp = () => new Date().toISOString()
@@ -81,6 +83,22 @@ async function call(path, body) {
   const j = await r.json()
   if (j.error) throw new Error(`${path}: ${j.error}\n${(j.stack ?? []).join('\n')}`)
   return j
+}
+
+/** Start a job (idempotent on the Worker's side) and poll its result: no request stays open for long. */
+async function job(path, body) {
+  const { names } = await call(path, body)
+  const deadline = Date.now() + 16 * 60_000
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 3_000))
+    const rs = await call('/result', { names })
+    if (rs.every((r) => r.state === 'done' || r.state === 'failed')) {
+      const bad = rs.filter((r) => r.state !== 'done')
+      if (bad.length) throw new Error(`${path}: ${JSON.stringify(bad.map((b) => b.error))}`)
+      return { names, results: rs.map((r) => r.result) }
+    }
+    if (Date.now() > deadline) throw new Error(`${path}: not done after 16 minutes: ${JSON.stringify(rs.map((r) => r.state))}`)
+  }
 }
 
 const fixture = JSON.parse(readFileSync(join(repo, 'publisher/test/fixtures/fixture.json'), 'utf8'))
@@ -157,10 +175,11 @@ async function contend() {
   const out = []
   for (const catalog of CATALOGS) {
     for (const n of [2, 4, 8]) {
-      const name = `contend_${catalog.replace('-', '')}_${n}`
+      const name = `contend_${catalog.replace('-', '')}_${n}_${RUN}`
       await call('/setup', { catalog, ns: 'bench', name, table: 'metric_samples' })
-      const r = await call('/contend', { catalog, ns: 'bench', name, table: 'metric_samples', committers: n, commits: 10, template, run: `${name}-${Date.now()}` })
-      out.push({ catalog, committers: n, ...r, ids: undefined })
+      const { names } = await job('/contend', { catalog, ns: 'bench', name, table: 'metric_samples', committers: n, commits: 10, template, run: `${name}-${Date.now()}` })
+      const r = await call('/contend-summary', { catalog, ns: 'bench', name, table: 'metric_samples', names })
+      out.push({ catalog, name, ...r })
       console.log(`${catalog} x${n}: ${r.succeeded}/${r.commits} committed, ${r.conflicts} conflicts, ${r.unknowns} unknown, attempts/commit p50 ${r.attemptsPerCommit.p50} max ${r.attemptsPerCommit.max}, statuses ${JSON.stringify(r.statuses)}, chain ok ${r.verify.ok} (${r.verify.chain})`)
     }
   }
@@ -172,7 +191,7 @@ async function unknown() {
   const out = {}
   for (const [name, interfere, trials] of [['unknown_alone', false, 30], ['unknown_interfere', true, 20]]) {
     await call('/setup', { catalog: 'rest', ns: 'bench', name, table: 'metric_samples' })
-    out[name] = await call('/unknown', { catalog: 'rest', ns: 'bench', name, table: 'metric_samples', trials, delays, interfere, template, run: `${name}-${Date.now()}`, settleMs: 10_000 })
+    out[name] = (await job('/unknown', { catalog: 'rest', ns: 'bench', name, table: 'metric_samples', trials, delays, interfere, template, run: `${name}-${Date.now()}`, settleMs: 10_000 })).results[0]
     const t = out[name].trials
     console.log(`${name}: ${t.length} trials; ${t.filter((x) => x.attempts.length === 1).length} landed despite the lost answer; ${t.filter((x) => x.status === 'committed').length} committed by a resubmission or rebase; ${t.filter((x) => x.landedLate).length} landed late; verify ${JSON.stringify(out[name].verify)}`)
   }
@@ -182,10 +201,10 @@ async function unknown() {
 async function latency() {
   const out = {}
   for (const catalog of CATALOGS) {
-    const name = `latency_${catalog.replace('-', '')}`
+    const name = `latency_${catalog.replace('-', '')}_${RUN}`
     await call('/setup', { catalog, ns: 'bench', name, table: 'metric_samples' })
     const batches = []
-    for (let b = 0; b < 4; b++) batches.push(await call('/latency', { catalog, ns: 'bench', name, table: 'metric_samples', n: 50, template, run: `${name}-${b}-${Date.now()}` }))
+    for (let b = 0; b < 4; b++) batches.push((await job('/latency', { catalog, ns: 'bench', name, table: 'metric_samples', n: 50, template, run: `${name}-${b}-${Date.now()}` })).results[0])
     out[catalog] = batches
     console.log(`${catalog}: ${batches.map((x) => `commit p50 ${x.commit.p50} p90 ${x.commit.p90} p99 ${x.commit.p99}`).join(' | ')}`)
   }
@@ -209,7 +228,7 @@ async function latency() {
 async function probes() {
   await call('/setup', { catalog: 'rest', ns: 'bench', name: 'probe', table: 'metric_samples' })
   const idem = await call('/idempotency', { catalog: 'rest', ns: 'bench', name: 'probe', table: 'metric_samples', template, run: `idem-${Date.now()}` })
-  const exp = await call('/expire', { catalog: 'rest', ns: 'bench', name: 'latency_rest', table: 'metric_samples', keep: 2, template, run: `exp-${Date.now()}` })
+  const exp = await call('/expire', { catalog: 'rest', ns: 'bench', name: `latency_rest_${RUN}`, table: 'metric_samples', keep: 2, template, run: `exp-${Date.now()}` })
   save('probes.json', { at: stamp(), idempotency: idem, expire: exp })
   console.log(JSON.stringify({ idem, exp }, null, 1))
 }
@@ -262,7 +281,7 @@ async function down() {
   if (existsSync(urlFile) && existsSync(keyFile)) {
     try {
       log.push({ drop: await call('/drop', { ns: 'cell_0', names: ['metric_samples', 'metric_series'], purge: true }) })
-      const bench = ['contend_rest_2', 'contend_rest_4', 'contend_rest_8', 'unknown_alone', 'unknown_interfere', 'latency_rest', 'probe']
+      const bench = [...[2, 4, 8].map((n) => `contend_rest_${n}_${RUN}`), 'unknown_alone', 'unknown_interfere', `latency_rest_${RUN}`, 'probe']
       log.push({ drop: await call('/drop', { ns: 'bench', names: bench, purge: true }) })
       log.push({ wipe: await call('/wipe', { prefix: '' }) })
     } catch (e) {

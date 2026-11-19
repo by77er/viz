@@ -99,7 +99,7 @@ def main():
             continue
         res = json.load(open(path))
         if fname == "contend.json":
-            pairs = [(f"contend_rest_{r['committers']}", r["verify"]["files"]) for r in res["runs"] if r["catalog"] == "rest"]
+            pairs = [(r["name"], r["verify"]["files"]) for r in res["runs"] if r["catalog"] == "rest"]
         else:
             pairs = [(n, res[n]["verify"]["files"]) for n in tables]
         for name, files in pairs:

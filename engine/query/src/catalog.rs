@@ -70,6 +70,20 @@ pub fn for_each_series(
     want: &dyn Fn(&[u8]) -> bool,
     f: &mut dyn FnMut(SeriesRow<'_>) -> Result<(), QueryError>,
 ) -> Result<(), QueryError> {
+    for_each_series_with(bytes, file, want_range, want, true, f)
+}
+
+/// [`for_each_series`], decoding the `labels` column only when `with_labels` (otherwise
+/// `labels_json` is empty): a caller that needs only ids and times saves the column that
+/// is most of the file.
+pub fn for_each_series_with(
+    bytes: &[u8],
+    file: usize,
+    want_range: &dyn Fn(&[u8], &[u8]) -> bool,
+    want: &dyn Fn(&[u8]) -> bool,
+    with_labels: bool,
+    f: &mut dyn FnMut(SeriesRow<'_>) -> Result<(), QueryError>,
+) -> Result<(), QueryError> {
     let src = viz_storage::sparse::Source::from_bytes(Bytes::copy_from_slice(bytes), Some(file)).map_err(|e| QueryError::internal(format!("metric_series file {file}: {e}")))?;
     let r = viz_storage::sparse::reader(src.clone()).map_err(perr(file))?;
     let descr = r.metadata().file_metadata().schema_descr();
@@ -102,12 +116,15 @@ pub fn for_each_series(
             continue;
         }
         read_col::<Int64Type>(&*rg, 1, n, file, &mut sids)?;
-        read_col::<ByteArrayType>(&*rg, 2, n, file, &mut labels)?;
+        if with_labels {
+            read_col::<ByteArrayType>(&*rg, 2, n, file, &mut labels)?;
+        }
         read_col::<Int64Type>(&*rg, 3, n, file, &mut lo)?;
         read_col::<Int64Type>(&*rg, 4, n, file, &mut hi)?;
         for i in 0..n {
             if want(names[i].data()) {
-                f(SeriesRow { metric_name: names[i].data(), series_id: sids[i], labels_json: labels[i].data(), min_ts: lo[i], max_ts: hi[i] })?;
+                let labels_json = if with_labels { labels[i].data() } else { &[] };
+                f(SeriesRow { metric_name: names[i].data(), series_id: sids[i], labels_json, min_ts: lo[i], max_ts: hi[i] })?;
             }
         }
     }

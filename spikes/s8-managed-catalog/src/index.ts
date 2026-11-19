@@ -66,7 +66,61 @@ async function copies(env: Env, template: Publish, tenant: string, tag: string, 
   return out
 }
 
+type JobKind = 'contend' | 'latency' | 'unknown'
+interface Job {
+  kind: JobKind
+  args: unknown
+  state: 'pending' | 'running' | 'done' | 'failed'
+  deadline: number
+  error?: string
+}
+
 export class Committer extends DurableObject<Env> {
+  /**
+   * Long exercises run as a job: started by a request, run once by a one-shot alarm, polled for.
+   * A start that is repeated (an HTTP client or proxy retrying the POST) finds the job and does
+   * nothing, so no exercise runs twice; an alarm retried after a crash finds it `running` and
+   * marks it failed instead of running it again. The alarm is never re-armed, and a job not
+   * begun by its deadline is not run.
+   */
+  async startJob(kind: JobKind, args: unknown): Promise<{ state: Job['state']; started: boolean }> {
+    const cur = await this.ctx.storage.get<Job>('job')
+    if (cur) return { state: cur.state, started: false }
+    await this.ctx.storage.put<Job>('job', { kind, args, state: 'pending', deadline: Date.now() + 15 * 60_000 })
+    await this.ctx.storage.setAlarm(Date.now())
+    return { state: 'pending', started: true }
+  }
+
+  async alarm(): Promise<void> {
+    const job = await this.ctx.storage.get<Job>('job')
+    if (!job || job.state !== 'pending') {
+      if (job?.state === 'running') await this.ctx.storage.put<Job>('job', { ...job, state: 'failed', error: 'interrupted: the alarm ran again while the job was running; not run twice' })
+      return
+    }
+    if (Date.now() > job.deadline) {
+      await this.ctx.storage.put<Job>('job', { ...job, state: 'failed', error: 'deadline passed before the job began' })
+      return
+    }
+    await this.ctx.storage.put<Job>('job', { ...job, state: 'running' })
+    try {
+      const fn = { contend: this.contend, latency: this.latency, unknown: this.unknown }[job.kind] as (a: unknown) => Promise<unknown>
+      const result = await fn.call(this, job.args)
+      await this.ctx.storage.put('result', result)
+      await this.ctx.storage.put<Job>('job', { ...job, state: 'done' })
+    } catch (e) {
+      await this.ctx.storage.put<Job>('job', { ...job, state: 'failed', error: String(e).slice(0, 1000) })
+    }
+  }
+
+  async jobResult(): Promise<{ state: Job['state'] | 'none'; error?: string; result?: unknown }> {
+    const job = await this.ctx.storage.get<Job>('job')
+    if (!job) return { state: 'none' }
+    const out: { state: Job['state']; error?: string; result?: unknown } = { state: job.state }
+    if (job.error) out.error = job.error
+    if (job.state === 'done') out.result = await this.ctx.storage.get('result')
+    return out
+  }
+
   /** `GET /v1/config` n times: reachability and front-door latency of the catalog from here. */
   async probe(n: number) {
     const cat = new RestCatalog({ uri: this.env.CATALOG_URI, warehouse: this.env.WAREHOUSE, token: this.env.CATALOG_TOKEN, bucket: this.env.BUCKET_NAME })
@@ -117,11 +171,12 @@ export class Committer extends DurableObject<Env> {
     const wait = t.startAt - Date.now()
     if (wait > 0) await new Promise((r) => setTimeout(r, wait))
     const results: ReturnType<typeof slim>[] = []
+    const firstAt = Date.now()
     for (const f of files) {
       const id = newSnapshotId()
       results.push(slim(await commitWithRetry(c, id, appendPlan(c, [f], id, { 'viz.committer': `c${t.index}` }))))
     }
-    return { index: t.index, startedLateMs: Math.max(0, -wait), results, calls: c.cat.calls }
+    return { index: t.index, startedLateMs: Math.max(0, -wait), firstAt, lastAt: Date.now(), results, calls: c.cat.calls.length }
   }
 
   /** Uncontended appends one after another: the latency of a publish and of its parts. */
@@ -272,20 +327,38 @@ export default {
           return json(await stub('setup').setup(args))
         case '/publish':
           return json(await stub(`publisher-${args.ns}`).publish(args as unknown as Parameters<Committer['publish']>[0]))
+        // The long exercises are jobs (Committer.startJob): a POST starts them, idempotently, and
+        // the driver polls `/result`. A retried POST never runs an exercise twice.
         case '/contend': {
           const n = Math.min(Number(args.committers), LIMITS.committers)
-          const startAt = Date.now() + 3_000
+          const startAt = Date.now() + 5_000
           const run = String(args.run)
-          const t0 = Date.now()
-          const parts = await Promise.all(
-            Array.from({ length: n }, (_, index) => stub(`contend-${run}-${index}`).contend({ ...(args as unknown as Parameters<Committer['contend']>[0]), index, startAt, run })),
-          )
-          const wallMs = Date.now() - t0 - 3_000
+          const names = Array.from({ length: n }, (_, index) => `contend-${run}-${index}`)
+          const started = await Promise.all(names.map((nm, index) => stub(nm).startJob('contend', { ...args, index, startAt, run })))
+          return json({ names, started })
+        }
+        case '/latency': {
+          const nm = `latency-${args.catalog}-${args.run}`
+          return json({ names: [nm], started: [await stub(nm).startJob('latency', args)] })
+        }
+        case '/unknown': {
+          const nm = `unknown-${args.run}`
+          return json({ names: [nm], started: [await stub(nm).startJob('unknown', args)] })
+        }
+        case '/result':
+          return json(await Promise.all((args.names as unknown as string[]).map((nm) => stub(nm).jobResult())))
+        case '/contend-summary': {
+          type Part = Awaited<ReturnType<Committer['contend']>>
+          const res = (await Promise.all((args.names as unknown as string[]).map((nm) => stub(nm).jobResult()))) as unknown as { state: string; error?: string; result?: unknown }[]
+          const failed = res.filter((r) => r.state !== 'done')
+          if (failed.length > 0) return json({ error: `jobs not done: ${JSON.stringify(failed.map((f) => [f.state, f.error]))}` })
+          const parts = res.map((r) => r.result as Part)
           const all = parts.flatMap((p) => p.results)
           const ids = all.filter((r) => r.status === 'committed' || r.status === 'landed').map((r) => r.snapshotId)
-          const verify = await stub('verifier').verify({ ...args, intended: [...(args.baseline as number[] ?? []), ...ids] })
+          const verify = await stub('verifier').verify({ ...args, intended: [...((args.baseline as unknown as number[]) ?? []), ...ids] })
+          const firstStart = Math.min(...parts.map((p) => p.firstAt)), lastEnd = Math.max(...parts.map((p) => p.lastAt))
           return json({
-            committers: n,
+            committers: parts.length,
             commits: all.length,
             succeeded: ids.length,
             gaveUp: all.filter((r) => r.status === 'gave-up').length,
@@ -295,17 +368,13 @@ export default {
             attemptsPerCommit: quantiles(all.map((r) => r.attempts.length)),
             msToSuccess: quantiles(all.map((r) => r.ms)),
             commitRequestMs: quantiles(all.flatMap((r) => r.attempts.map((a) => a.ms))),
-            statuses: all.flatMap((r) => r.attempts.map((a) => a.status)).reduce<Record<string, number>>((m, s) => ((m[s] = (m[s] ?? 0) + 1), m), {}),
-            wallMs,
+            statuses: all.flatMap((r) => r.attempts.map((a) => a.status)).reduce<Record<string, number>>((m, st) => ((m[st] = (m[st] ?? 0) + 1), m), {}),
+            wallMs: lastEnd - firstStart,
+            commitsPerSecond: +(ids.length / ((lastEnd - firstStart) / 1000)).toFixed(2),
             startedLateMs: parts.map((p) => p.startedLateMs),
-            verify: { ok: verify.ok, problems: verify.problems, chain: verify.chain.length, files: verify.files.length, rows: verify.rows },
-            ids,
+            verify: { ok: verify.ok, problems: verify.problems.slice(0, 20), problemCount: verify.problems.length, chain: verify.chain.length, files: verify.files.length, rows: verify.rows },
           })
         }
-        case '/latency':
-          return json(await stub(`latency-${args.catalog}-${args.run}`).latency(args as unknown as Parameters<Committer['latency']>[0]))
-        case '/unknown':
-          return json(await stub(`unknown-${args.run}`).unknown(args as unknown as Parameters<Committer['unknown']>[0]))
         case '/verify':
           return json(await stub('verifier').verify(args))
         case '/expire':
