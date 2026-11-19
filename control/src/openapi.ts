@@ -189,7 +189,7 @@ const schemas: Record<string, Schema> = {
       key: nullable(obj({ id: str(), name: str('oauth:<grantId>') }, ['id', 'name'])),
       revokedAt: nullable(time()),
       revokedBy: nullable(ref('Actor')),
-      revokeReason: nullable(str('person, client, code-reuse, refresh-reuse, wrong-client, not-exchanged, idle or expired.')),
+      revokeReason: nullable(str('person, client, code-reuse, refresh-reuse, wrong-client, not-exchanged, idle, approver-gone or expired.')),
     },
     ['id', 'status', 'client', 'scopes', 'resource', 'approvedBy', 'createdAt', 'expiresAt', 'lastUsedAt', 'key', 'revokedAt', 'revokeReason'],
   ),

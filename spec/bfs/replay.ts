@@ -14,7 +14,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { type Cfg, type St, PROPS, SAFETY, init, successors } from './model.ts'
-import { AMENDED, D30, IMPL_V1, E, R1, R2, R3 } from './run.ts'
+import { AMENDED, D30, IMPL_V1, E, R1, R2, R3, R4 } from './run.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -74,6 +74,8 @@ const REPLAYS: [string, string, Cfg, ReplayOpts?][] = [
   ['F6b_impl_now', 'F6(b) bounds with R1 (registration committed before writes), the registration put first', { ...E.find((e) => e.name === 'F6b_impl_now')!.cfg, ...R1 }, { prefix: REG_COMMITTED }],
   ['F6b_impl_now', 'F6(b) bounds with R2 (registration logged before writes), the registration put first', { ...E.find((e) => e.name === 'F6b_impl_now')!.cfg, ...R2 }, { prefix: REG_LOGGED }],
   ['F6b_impl_now', 'F6(b) bounds with R3 (logged before writes; coordinator settles), the registration put first', { ...E.find((e) => e.name === 'F6b_impl_now')!.cfg, ...R3 }, { prefix: REG_LOGGED }],
+  ['F6b_impl_now', 'F6(b) bounds with R4 (committed before writes; coordinator re-checks), the registration put first', { ...E.find((e) => e.name === 'F6b_impl_now')!.cfg, ...R4 }, { prefix: REG_COMMITTED }],
+  ['R1_safety', 'R1_safety\'s bounds with R4 (R1 + the coordinator re-check)', { ...E.find((e) => e.name === 'R1_safety')!.cfg, ...R4 }],
 ]
 
 function show(o: Outcome): string[] {

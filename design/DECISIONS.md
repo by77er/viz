@@ -1228,8 +1228,10 @@ URL>/mcp`, RFC 8707). mcp publishes RFC 9728 metadata and answers 401 and 403 wi
   /api/v1/control/oauth/approve` with the request handle, by a person (kind `key` or `user`, never
   `agent`) holding `admin`; `dryRun` shows exactly what would be granted. The grant holds the
   requested scopes the approver's own key holds (admin counts for the dashboards scopes only;
-  `admin`, `write`, `monitors:write|ack` are never grantable). The answer carries the redirect
-  with the code, `state` and `iss`, which the person opens. The server never redirects by itself.
+  `admin`, `write`, `monitors:write|ack` are never grantable), and the grant follows that key
+  afterwards: suspended while it is disabled, ended once it is deleted. The answer carries the
+  redirect with the code, `state` and `iss`, which the person opens. The server never redirects
+  by itself.
 - **A grant is backed by an agent key.** Approval creates an ordinary key `oauth:<grantId>`
   (kind `agent`, the grant's scopes, expiring with the grant). The resource calls the query
   service, the control plane and the ruler with that key, never with the client's token. The

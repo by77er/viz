@@ -5511,7 +5511,7 @@
             "anyOf": [
               {
                 "type": "string",
-                "description": "person, client, code-reuse, refresh-reuse, wrong-client, not-exchanged, idle or expired."
+                "description": "person, client, code-reuse, refresh-reuse, wrong-client, not-exchanged, idle, approver-gone or expired."
               },
               {
                 "type": "null"

@@ -312,6 +312,10 @@ The interface goes through design review (AGENTS.md, "Design changes"); none is 
 - The grant's key may be **disabled** like any key (the grant is `suspended`: the resource refuses
   its tokens; refresh still rotates) and enabled again; it cannot be rotated or deleted on its
   own (409 `grant-key`: revoke the grant), and persons cannot create keys named `oauth:…`.
+- **A grant follows its approver's key**, so it is never broader than that key later either:
+  while the approver's key is disabled the grant is `suspended`; once it is deleted or expired
+  the resource and the token endpoint refuse the grant at once, and the alarm, due immediately,
+  ends it (`approver-gone`) with its key.
 
 **What is stored, and the service surface.**
 - Codes and tokens are stored as the SHA-256 of the whole string (format `credential.oauth`:
@@ -465,7 +469,7 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
 
 ```
 npm install
-npm test             # 130 tests in 16 files, in workerd (at most 2 workers)
+npm test             # 131 tests in 16 files, in workerd (at most 2 workers)
 npx tsc --noEmit     # clean
 npm run mutants      # 91 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md)
 npm run gen:openapi  # rewrite openapi.json from src/openapi.ts
@@ -473,7 +477,7 @@ npm run gen:openapi  # rewrite openapi.json from src/openapi.ts
 
 Measured here: vitest 5.1 in workerd, TypeScript 5.9, Node 22.23. The suite takes 11 to 75 s
 on a shared machine (75 s on a cold cache with the load average above 6). Last run
-2026-11-19: 130 of 130 pass, `tsc` clean.
+2026-11-19: 131 of 131 pass, `tsc` clean.
 
 What the tests establish:
 
@@ -547,7 +551,7 @@ What the tests establish:
   `service:` names are refused for persons; another tenant, an unknown service (also
   `toString`) and four malformed instances are refused with every table unchanged. The ruler's
   own tests (`ruler/test/wiring.test.ts`) use this real object too.
-- **OAuth** (`oauth.test.ts`, 27 tests; helpers in `test/oauth.ts`, an OAuth client speaking to
+- **OAuth** (`oauth.test.ts`, 28 tests; helpers in `test/oauth.ts`, an OAuth client speaking to
   the real Worker). Every threat below is checked in stored state (SQLite rows, KV records,
   introspection), not only by status code.
   *Metadata and registration*: the RFC 8414 document exactly; registration stores nothing, two
@@ -599,6 +603,9 @@ What the tests establish:
   spy), any error body, the audit log, the grants list or the keys list.
   *Rollback*: the previous release's runner opens storage holding grants and tokens at version 3
   and changes nothing.
+  *The approver's key*: disabled, the grant is suspended at once; enabled, it works again;
+  deleted, the token and the refresh token are refused at once, the alarm is due now and ends the
+  grant (`approver-gone`) and its key's KV record.
   *Unknown tenants*: codes, access and refresh tokens naming three tenants nobody provisioned are
   refused (`not_provisioned`, `invalid_grant`, revocation 200) and leave those objects with no
   table and no alarm; provisioning one afterwards works.

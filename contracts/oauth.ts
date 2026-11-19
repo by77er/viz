@@ -33,6 +33,7 @@
  *   `OAUTH_SCOPES`, and a grant never holds a scope its approver's own key does not hold
  *   (`admin` counts as the dashboards scopes control lets it stand for, and is never granted).
  * - Only a person approves: an identity of kind `key` or `user` with `admin`, never an agent.
+ *   A grant follows its approver's key: suspended while it is disabled, ended once it is deleted.
  * - Every RPC result carries `v` (COMPATIBILITY.md §3.1); a caller refuses a `v` it does not know.
  *   Nothing here throws for bad input.
  *
@@ -158,7 +159,7 @@ export interface OAuthGrantView {
   key: { id: string; name: string } | null
   revokedAt: string | null
   revokedBy: OAuthActor | null
-  /** person, client, code-reuse, refresh-reuse, not-exchanged, idle, expired. */
+  /** person, client, code-reuse, refresh-reuse, wrong-client, not-exchanged, idle, approver-gone, expired. */
   revokeReason: string | null
 }
 

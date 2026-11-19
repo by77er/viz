@@ -268,6 +268,8 @@ export const R1: Partial<Cfg> = { reg: 'committed', regOnRead: 'named' }
 export const R2: Partial<Cfg> = { reg: 'logged', regOnRead: 'named' }
 /** R3: R2's write side; no registration on the read path: the coordinator settles a lost incarnation after one re-plan. */
 export const R3: Partial<Cfg> = { reg: 'logged', regOnRead: 'none', lostEmpty: true }
+/** R4: R1, plus the coordinator re-reads the ledger after its tail reads and re-plans if a shard it read without a watermark has been registered since. */
+export const R4: Partial<Cfg> = { reg: 'committed', regOnRead: 'named', recheck: true }
 /** The F16 fix: the janitor makes a shard that lost a stream register a fresh incarnation; a newer incarnation kills old flush files once its registration is logged. */
 export const F16FIX: Partial<Cfg> = { regOnSweep: true, sweepNewerReg: true }
 const BASE: Cfg = { ...IMPL, noRetryAcrossLoss: true }
@@ -283,6 +285,7 @@ const VARIANTS: [string, string, Partial<Cfg>, 'holds' | 'violated'][] = [
   ['R1', 'R1 (registration committed before writes)', R1, 'violated'],
   ['R2', 'R2 (registration logged before writes; shard registers on a read naming a lost incarnation)', R2, 'holds'],
   ['R3', 'R3 (registration logged before writes; coordinator settles a lost incarnation)', R3, 'holds'],
+  ['R4', 'R4 (registration committed before writes; coordinator re-checks unregistered shards after its tail reads)', R4, 'holds'],
 ]
 for (const [v, what, over, expect] of VARIANTS) {
   prop(`${v}_safety`, `${what}: client retries, two flush Workers, 1 compaction, 1 retention removal, ledger loss + shard loss`, { ...BASE, ...FAULTS, ...over }, expect)

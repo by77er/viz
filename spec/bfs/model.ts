@@ -96,6 +96,12 @@ export interface Cfg {
    * naming one); a later plan that names no newer one gets an empty tail from that shard.
    */
   lostEmpty?: boolean
+  /**
+   * Variant R4: after its tail reads, the coordinator reads the ledger's watermarks once more;
+   * if a shard the plan did not name (read from incarnation 0) is now registered, the attempt
+   * is refused and re-planned.
+   */
+  recheck?: boolean
 }
 
 // ------------------------------------------------------------------ interning (global, deterministic)
@@ -1048,11 +1054,21 @@ export function successors(c: Cfg, s: St, emit: Emit): void {
     }
     if (q.nd.length === 0) {
       const unread = q.fi.filter((f) => !readable(s, f))
+      // variant R4: shards read without a watermark that the ledger has registered since the plan
+      const since = c.recheck ? range(c.ns).filter((x) => q.wm[x]![0] === 0 && s.L[q.t]!.wm[x]![0] !== 0) : []
       if (unread.length > 0 && c.missingErr) {
         if (canRefuse && !off(s.L[q.t]!)) {
           const ns = cp(s)
           ns.q = plan(c, ns, q.t, { ...ns.q })
           emit(`query: ${FILES[unread[0]!]!.name} missing -> re-plan`, ns)
+        }
+      } else if (c.recheck && off(s.L[q.t]!)) {
+        // the re-read waits for the ledger
+      } else if (since.length > 0) {
+        if (canRefuse) {
+          const ns = cp(s)
+          ns.q = plan(c, ns, q.t, { ...ns.q })
+          emit(`query: re-read the ledger: s${since[0]} registered since the plan -> re-plan`, ns)
         }
       } else {
         const ns = cp(s)

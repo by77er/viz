@@ -104,6 +104,7 @@ const shortB = (s) => s
   .replace(/^query: tailRead\(s\d, inc (\d+), above (\d+)\) = (.*) -> re-plan$/, (_m, i, a, w) => `tail(inc${i} >${a})=${w.toUpperCase()} → re-plan`)
   .replace(/^query: read files, merge -> (.*?)( \(.*\))?$/, (_m, g, u) => `done{${g === 'nothing' ? '' : g}}${u ? ' (file unreadable, read as empty)' : ''}`)
   .replace(/^query: .* missing -> re-plan$/, 'file missing → re-plan')
+  .replace(/^query: re-read the ledger: (s\d) registered since the plan -> re-plan$/, 're-read ledger: $1 registered → re-plan')
   .replace(/^compact( t\d)?: read .*$/, 'compRead')
   .replace(/^compact PUT .*$/, 'compPut')
   .replace(/^compact crash .*$/, 'compCrash')
