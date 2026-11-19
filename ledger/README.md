@@ -231,7 +231,13 @@ BENCH=checkpoint BENCH_SIZES=100000 BENCH_VARIANTS=after node bench/rss.mjs -- n
 
 Last run, 2026-11-19 on the shared machine (load average 6 to 10): **100 passed, 0 failed**;
 `tsc --noEmit` clean. `publisher/`'s suite, which pins the bytes of every log object a small
-scenario writes through this `Ledger`, passed against it (78 passed). Earlier: Before that run the suite failed 4 rebuild tests by timeout: they take
+scenario writes through this `Ledger`, passed against it (78 passed); `tsc --noEmit` is clean in
+edge, flush, query, stack, compact, janitor and publisher, which import this code. `stack/`'s
+soak on this code (`SOAK_STEPS=3000 npx vitest run --maxWorkers=1 test/soak.test.ts`, seed
+20261118, run alone among this engineer's jobs, load average 8–12): 3,000 steps, every
+invariant held at every step, 246 s, peak memory 1,053 MB for the process tree and 599 MB for
+the largest process (sampled every 100 ms). Its tenants' states stay small, so it exercises the
+streaming rebuild and the base written in pieces, not format-2 checkpoints. Earlier: Before that run the suite failed 4 rebuild tests by timeout: they take
 1–3 s alone and over 20 s while other suites run, and the default limit is 5 s; the
 configuration now allows 60 s (`vitest.config.ts`). The crash property test
 (`segments.test.ts`) runs three seeds of 70 random steps with failed and half-failed PUTs,
