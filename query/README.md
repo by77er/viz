@@ -572,9 +572,10 @@ fails the call (503, the RPC throws twice).
   answers `{}` because nothing stores it; the write path drops Remote Write metadata and
   OTLP descriptions. It needs a place to live first ("Needed changes", 9); the endpoint is
   then a lookup.
-- **High cardinality, what is left** (CARDINALITY.md): the label endpoints over leaves (and
-  so with a tail too large for the coordinator); split readers still read every series file
-  for every part; a streaming merge for the cardinality report; sketches.
+- **High cardinality, what is left** (CARDINALITY.md): a streaming merge for the cardinality
+  report (item 4: not started in this work); sketches; series files of under 100,000 series of
+  a metric are one row group, so every split part and every part of a label call reads them
+  whole.
 - **The tail, what is left** (D48): the cardinality report reads the whole tail (paged, no
   filter: its counts depend on each batch's whole spans); regular-expression and `!=`
   matchers are not sent to the shards (exact values only); a tail read costs each shard a
@@ -837,6 +838,18 @@ run had two invariance tests failing (a count of tail batches that depends on wh
 senders went, since relaxed), which cannot kill a mutant and killed none; the re-run's
 unmutated suite passed in full. Rows 47 to 60 of the table below.
 
+**Split parts and the series files (2026-11-19, ABI 5, mutants 71 to 73, on a scratch tree,
+07:35 to 07:38 UTC, load average 5.7 to 7.2): 3 of 3 killed**, the unmutated suite first passing
+in full, the shared tree's files unchanged (`5b583386b7062e95` before and after). **Mutant 72
+survived the first run** (07:28 to 07:32): every part that saw a foreign series in the test's
+data also had strays of its own and answered from its second read, so a reader's first read
+not reporting `foreign` went unseen; the test gained a case with one such series alone (the part
+its id is in answers from its first read), and the re-run killed it. (A run at 07:32 was
+invalid as a whole: `shard/src/shard.ts` was mid-edit by another engineer and no test file
+compiled; nothing was counted from it.) Not added: a reader that ignores `seriesByPart`, which
+no query-suite world can tell apart (every series file there is one row group); the engine's
+mutant, `foreign` never counted, is killed by `tests/series_ranges.rs`.
+
 **The label endpoints over leaves and `limit` (2026-11-19, mutants 61 to 70, on a scratch tree,
 06:52 to 06:58 UTC, load average 7.7 to 9.3): 10 of 10 killed**, the unmutated suite first passing
 in full, the shared tree's files unchanged (`c011da469efe0f4f` before and after). Two more in
@@ -932,6 +945,9 @@ rebuilt module had the same SHA-256 as before the run.
 | 68 | a negative `limit` accepted | meta › `limit`… |
 | 69 | a query result cut one series late | meta › `limit` on queries…; `limitResult` |
 | 70 | a label list cut by `limit` carries no warning | meta › `limit`… |
+| 71 | **a part that saw a foreign series is ignored** (no second run with whole series files) | tail › a series whose split key is not its id (lake) |
+| 72 | a reader does not report the foreign series it saw (first read) | tail › the same (one such series alone) |
+| 73 | a split leaf does not add up its readers' foreign series | tail › the same |
 
 **Run 2026-11-19, 01:16 to 01:53 UTC, all 43 mutants on a scratch copy** (load average 7 to
 21): **43 of 43 killed, none survived, none invalid**; the unmutated suite passed first in

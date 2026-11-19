@@ -338,6 +338,11 @@ own report.
 All numbers measured here (Linux x86-64, 4 cores shared with other builds, rustc
 1.97.0, Node 22.23), not on Cloudflare.
 
+**2026-11-19, foreign series in the extract (ABI 5):** `cargo test -j 2 --release` (the release
+profile, to spare a shared disk): **60 tests, all passing** in 12 targets (the 57 below and
+`tests/series_ranges.rs`, 3), 07:39 to 07:45 UTC at a load average of 5.6 to 7.1, against
+`engine/storage` `src/*.rs` SHA-256 `66398f84…`.
+
 **2026-11-19, the label calls over parts:** `cargo test -j 2`: **57 tests, all passing** in 11
 targets (the 55 below and `tests/meta_parts.rs`, 2), 06:47 to 06:52 UTC at a load average of 7.7
 to 7.9, against `engine/storage` as it was at 06:41 (`src/*.rs` SHA-256 `f55f874a7f4df43c…`).
