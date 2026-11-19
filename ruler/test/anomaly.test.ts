@@ -777,13 +777,30 @@ describe('defaults across an upgrade (D33 replaced on 2026-11-19: robust z with 
     const next = T0 + ts.length * MIN
     // Flagged, so that the stored entry carries the explanation too.
     const spikeValue = -0.000031234567890123457
-    const r = evalAnomaly(rule, rt, [{ metric: labels, value: spikeValue, text: String(spikeValue) }], next, MIN, limits, {})
+    // As version 1 (JSON, the gate at 1): the longest encoding.
+    const r = evalAnomaly(rule, rt, [{ metric: labels, value: spikeValue, text: String(spikeValue) }], next, MIN, limits, {}, true, 1)
     expect(r.ok, r.ok ? '' : r.error).toBe(true)
     if (!r.ok) return
     expect(r.flagged.length).toBe(1)
     const bytes = new TextEncoder().encode(r.json.get(fingerprint(labels))!).length
+    expect(bytes).toBe(r.write!.perSeries.get(fingerprint(labels)))
     expect(bytes).toBeLessThanOrEqual(limits.maxAnomalyStateBytesPerSeries)
     // With room to spare for longer labels (measured 60.9 KB at the time of writing).
     expect(bytes).toBeLessThan(limits.maxAnomalyStateBytesPerSeries - 4000)
+    // As version 2 (Float64 ring blocks, the gate on): under the estimate the save used, whatever the
+    // values print as: the same bytes for the longest-printing values as for small integers.
+    const r2 = evalAnomaly(rule, rt, [{ metric: labels, value: spikeValue, text: String(spikeValue) }], next, MIN, limits, {}, true, 2)
+    if (!r2.ok) throw new Error(r2.error)
+    const v2 = r2.write!.perSeries.get(fingerprint(labels))!
+    expect(r2.write!.store.version).toBe(2)
+    expect(v2).toBeLessThanOrEqual(rule.anomaly.stateBytesPerSeries)
+    expect(v2).toBeLessThan(bytes / 2.5)
+    const small = libraryBatch('robust_z', { ...rule.anomaly.params }, ts, ts.map((_t, i) => i % 7))
+    const rtSmall = newAnomalyRt(rule)
+    rtSmall.series.set(fingerprint(labels), { labels, state: small.state, last: null, seenAt: ts.at(-1)! })
+    const s2 = evalAnomaly(rule, rtSmall, [{ metric: labels, value: 3, text: '3' }], next, MIN, limits, {}, true, 2)
+    if (!s2.ok) throw new Error(s2.error)
+    const sizeOf = (w: NonNullable<typeof s2.write>) => [...w.store.entries.values()].reduce((n, m) => n + (m.get(fingerprint(labels)) ?? 0), 0)
+    expect(sizeOf(s2.write!)).toBe(sizeOf(r2.write!))
   })
 })

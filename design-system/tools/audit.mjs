@@ -254,6 +254,7 @@ function guards({ fine, coarse, hitOnly }) {
     return null }
   const dashed = '.vz-swatch[data-series="5"], .vz-swatch[data-series="6"], .vz-swatch[data-series="7"], .vz-swatch[data-series="8"], .vz-swatch[data-pattern="dash"]'
   const hold = document.createElement('style'); hold.textContent = '.vz, .vz *, .vz *::before, .vz *::after { transition-property: none !important; }'; document.head.appendChild(hold) // read what a state settles to, not a frame of its easing
+  for (const e of document.querySelectorAll('*')) if (e.scrollLeft) e.scrollLeft = 0 // strips as a page opens: a press or a hover in another pass may have scrolled one
   if (!hitOnly) {
     // the table wrap is positioned, so what is absolutely placed inside is clipped by its scroll (v5 review, B2.1; mutant Y12)
     for (const w of document.querySelectorAll('.vz-table-wrap')) if (cs(w).position === 'static') say('guard', `${name(w)} is position: static as rendered: a visually hidden head inside it escapes its scroll and widens the page (v5 review, B2.1)`)
