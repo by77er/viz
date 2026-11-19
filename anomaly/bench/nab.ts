@@ -3,6 +3,8 @@
  * (nab/sweeper.py `calcSweepScore`, `calcScoreByThreshold`; nab/optimizer.py
  * `optimizeThreshold`; nab/scorer.py `scoreCorpus`; nab/runner.py `normalize`), fetched from
  * github.com/numenta/NAB master on 2026-11-18. Comments quote the Python they port.
+ * NAB is Copyright 2014-2024 Numenta Inc., MIT licence: see ./LICENSE-NAB.txt, which must travel
+ * with this file and any substantial portion of it.
  *
  * Node only (reads files). Not part of the library.
  */
