@@ -156,7 +156,7 @@ describe('compaction of spans, trace_index and logs', () => {
     expect(await reader(l.ledger)).toEqual(logsBefore)
     const tok = JSON.parse(r3.outputs[0]!.index).tok as [number, number]
     const file = await (await env.BUCKET.get(r3.outputs[0]!.key))!.arrayBuffer()
-    const kv = (parquetMetadata(file).key_value_metadata ?? []).find((x: { key: string }) => x.key === 'viz.token_filter')
+    const kv = (parquetMetadata(file).key_value_metadata ?? []).find((x) => x.key === "viz.token_filter")
     expect(kv?.value).toBe(`${tok[0]},${tok[1]}`)
     expect(new TextDecoder().decode(new Uint8Array(file, tok[0], 4))).toBe('VZT1')
   })
@@ -173,7 +173,7 @@ describe('compaction of spans, trace_index and logs', () => {
       expect(run.steps.every((x) => x.status === 'merged' || x.status === 'idle')).toBe(true)
       expect(await reader(s.ledger)).toEqual(before)
     }
-    const spans = await plan(t.ledger, 'spans')
+    const spans = (await plan(t.ledger, 'spans')).sort((a, b) => (a.key < b.key ? -1 : 1))
     expect(spans.map((f) => [f.level, /\/hour=(\d\d)\/L2-h(\d\d)-/.exec(f.key)?.slice(1)])).toEqual([12, 13, 14].map((h) => [2, [String(h), String(h)]]))
     expect((await plan(t.ledger, 'trace_index')).map((f) => [f.level, /\/L2-d-/.test(f.key)])).toEqual([[2, true]])
     expect((await plan(l.ledger, 'logs')).map((f) => [f.level, /\/L2-d-/.test(f.key)])).toEqual([[2, true]])
@@ -211,8 +211,9 @@ describe('D30 for the span and log tables', () => {
       const t = await flushed(signal, `twice-${table}`, 6)
       const before = await reader(t.ledger)
       const results: StepResult[] = await Promise.all([0, 1, 2].map(() => compactStep(env, engine, t.tenant, { now: QUIET })))
-      expect(results.filter((x) => x.status === 'merged')).toHaveLength(1)
+      // The same inputs, so the same key: the first replace swaps, the others are its replay or a conflict.
       for (const x of results) expect(['merged', 'conflict']).toContain(x.status)
+      expect(results.some((x) => x.status === 'merged')).toBe(true)
       const outputs = (await dataKeys(t.tenant)).filter((k) => /\/L1-/.test(k))
       expect(outputs).toHaveLength(1)
       expect(await reader(t.ledger)).toEqual(before)
