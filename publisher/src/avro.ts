@@ -192,8 +192,10 @@ export async function writeAvro(
   records: readonly unknown[],
   metadata: Record<string, string>,
   codec: AvroCodec = 'deflate',
+  /** The 16-byte sync marker; random unless given (a writer that must repeat its bytes passes one). */
+  sync: Uint8Array = crypto.getRandomValues(new Uint8Array(16)),
 ): Promise<Uint8Array> {
-  const sync = crypto.getRandomValues(new Uint8Array(16))
+  if (sync.length !== 16) throw new Error('avro: a sync marker is 16 bytes')
   const o = new Out()
   o.raw(MAGIC)
   const meta: [string, string][] = [['avro.schema', JSON.stringify(schema)], ['avro.codec', codec], ...Object.entries(metadata)]

@@ -43,6 +43,29 @@ CREATE TABLE IF NOT EXISTS pending (tenant TEXT PRIMARY KEY, since INTEGER NOT N
       readableFrom: 1,
       up: (sql) => void sql.exec(`CREATE TABLE IF NOT EXISTS due (job TEXT PRIMARY KEY, at INTEGER NOT NULL);`),
     },
+    {
+      // Scratch for state that must not be held in memory (D-PUBSTREAM). `stage`: what a re-base read (a
+      // ledger checkpoint or base, streamed a part at a time), then the changes after it, which a
+      // commit diffs against `live` in SQL. `live_next`: a table's files as R2 says, filled a
+      // manifest at a time by a resync and swapped into `live` in one transaction. Both are
+      // emptied by the operation that fills them, at its start and its end. Additive: releases
+      // 1 and 2 neither read nor write them, so both stay rollback targets.
+      version: 3,
+      name: 'stage and live_next: re-base and resync in bounded memory',
+      readableFrom: 1,
+      up: (sql) =>
+        void sql.exec(`
+CREATE TABLE IF NOT EXISTS stage (
+      tenant TEXT NOT NULL, tbl TEXT NOT NULL, tomb INTEGER NOT NULL, key TEXT NOT NULL,
+      day TEXT NOT NULL, rows INTEGER NOT NULL, bytes INTEGER NOT NULL, stats TEXT NOT NULL,
+      PRIMARY KEY (tenant, tbl, tomb, key));
+CREATE INDEX IF NOT EXISTS stage_order ON stage (tenant, tbl, tomb, day, key);
+CREATE TABLE IF NOT EXISTS live_next (
+      tbl TEXT NOT NULL, key TEXT NOT NULL, tenant TEXT NOT NULL, day TEXT NOT NULL, rows INTEGER NOT NULL, bytes INTEGER NOT NULL,
+      snapshot_id INTEGER NOT NULL, seq INTEGER NOT NULL, file_seq INTEGER NOT NULL, stats TEXT NOT NULL, manifest TEXT NOT NULL,
+      PRIMARY KEY (tbl, key));
+`),
+    },
   ],
 }
 

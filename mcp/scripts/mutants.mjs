@@ -17,7 +17,8 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 // It edits sources in place: run it in a copy outside any git work tree (AGENTS.md: a mutant
 // caught in a commit ships). The copy needs mcp/ (with node_modules), control/{src,openapi.json},
-// dashboard/{src,examples,schema,package.json}, edge/src and contracts/, which the tests import.
+// dashboard/{src,examples,schema,package.json}, edge/src, contracts/ and ruler/openapi.json, which
+// the tests import.
 try {
   execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: root, stdio: 'pipe' })
   console.error('Refusing to mutate sources inside a git work tree. Copy the tree first (see above).')
@@ -173,6 +174,34 @@ const MUTANTS = [
   {
     name: 'OAuth: protected resource metadata names no authorization server',
     changes: [['src/oauth.ts', '    authorization_servers: [cfg.issuer],', '    authorization_servers: [],']],
+  },
+  // 34–39: backtest_monitor
+  {
+    name: 'backtest_monitor: tenant taken from the arguments (accepted by the schema and sent to the ruler)',
+    changes: [
+      ['src/tools/backtest.ts', '      monitor: MONITOR_ARG,', "      monitor: MONITOR_ARG,\n      tenant: { type: 'string', maxLength: 200 },"],
+      ['src/tools/backtest.ts', 'const req = { monitor: { ...monitor }, fromMs: range.fromMs, toMs: range.toMs, step: durText(range.stepMs) }', 'const req = { monitor: { ...monitor }, fromMs: range.fromMs, toMs: range.toMs, step: durText(range.stepMs), ...(args.tenant ? { tenant: args.tenant } : {}) }'],
+    ],
+  },
+  {
+    name: 'backtest_monitor: a refusal swallowed and answered as an empty backtest',
+    changes: [['src/tools/backtest.ts', 'if (!answer.ok) throw refusal(answer, { kind: asked, range, monitor }, s)', "if (!answer.ok) return pagedResult({ tool: this.name, s, args, maxTokens: 1500, header: 'backtest_monitor: would not have fired.\\n', items: [], offset: 0 })"]],
+  },
+  {
+    name: 'backtest_monitor: intervals past the listing cap dropped without the count (text)',
+    changes: [['src/tools/backtest.ts', '${omitted ? `; the first ${grouped(listed.length)} are listed, ${grouped(omitted)} more (${grouped(omittedFiring)} firing, ${grouped(omitted - omittedFiring)} pending) are only counted above` : \'\'}', '']],
+  },
+  {
+    name: 'backtest_monitor: intervals past the listing cap dropped without the count (structure)',
+    changes: [['src/tools/backtest.ts', 'intervals: { total: sorted.length, listed: listed.length, omitted, omittedFiring, malformed },', 'intervals: { total: listed.length, listed: listed.length, omitted: 0, omittedFiring: 0, malformed },']],
+  },
+  {
+    name: 'backtest_monitor: over_budget does not say which budget (plan, memory, cpu) refused',
+    changes: [['src/tools/backtest.ts', 'const { budget, reason } = whichBudget(ob, rulerMessage)', "const { budget, reason } = { budget: 'unknown' as BudgetName, reason: 'unknown' as Reason }"]],
+  },
+  {
+    name: 'backtest_monitor: a refusal retried once',
+    changes: [['src/tools/backtest.ts', 'const answer = await ruler.backtest(req, { signal: AbortSignal.timeout(s.limits.backtestTimeoutMs) })', 'let answer = await ruler.backtest(req, { signal: AbortSignal.timeout(s.limits.backtestTimeoutMs) })\n    if (!answer.ok) answer = await ruler.backtest(req, { signal: AbortSignal.timeout(s.limits.backtestTimeoutMs) })']],
   },
 ]
 
