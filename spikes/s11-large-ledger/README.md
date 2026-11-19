@@ -4,7 +4,9 @@ Production keeps the ledger's state at 16 MiB (`LEDGER_STATE_MAX_BYTES` in
 `stack/wrangler.jsonc`, `STATE_MAX_BYTES` in `ledger/src/ledger.ts`), although the code reaches
 300 MiB in local workerd (D47, D55). The review of D47/D48/D55 (P-3) keeps that cap until "a
 rebuild and a first publication above 16 MiB have been timed on Cloudflare against the CPU
-limit". This spike times both, on Cloudflare, at several state sizes.
+limit". This spike times both, on Cloudflare, at 16, 64 and 150 MiB.
+
+RESULTS-PLACEHOLDER
 
 ## Plan (written before deploying)
 
