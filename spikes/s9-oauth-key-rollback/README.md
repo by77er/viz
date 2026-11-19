@@ -1,6 +1,7 @@
 # Spike S9: rolling back across the release that created (or rotated) viz-control's OAuth key
 
-**Status: done (2026-11-19, 11:01–11:26 UTC). Measured on Cloudflare; everything deployed was deleted.**
+**Status: done (2026-11-19, 11:01–11:26 UTC). Measured on Cloudflare; everything deployed was
+deleted.**
 
 The question comes from `deploy/README.md`, "Known risks", "Rollback across the release that
 created (or rotated) the OAuth key", and from D53 in `design/DECISIONS.md`. On a stage:
@@ -25,14 +26,15 @@ case once (run 3). Raw evidence is below.
 
 Two more findings that were not asked for:
 
-- **A version read straight after it is created is sometimes not there yet.** In 2 of 16 such reads
-  (13 made by `release.mjs`, 3 by the driver's `lag` check), the version was not visible yet. Both
-  failures came in the first release to create the key on a Worker about a minute old. Run 1, R1:
-  "version 25a57f92-… does not list OAUTH_CLIENT_KEY after it was put; nothing was promoted". Run
-  2, R1: "version f3dc4a39-… was not found, so its secrets cannot be checked". Each failed with
-  exit 1 and promoted nothing, and running the same release again succeeded. In the 3 `lag` puts,
-  made later on a Worker about 8 minutes old, the first read saw the secret 193–368 ms after
-  wrangler exited.
+- **A version read straight after it is created is sometimes not there yet.** In 2 of 16 such
+  reads (13 made by `ensureSecrets` in `release.mjs`, 3 by the driver's `lag` check), the read did
+  not show what had just been created: once a 404, once a version without the secret just put (or
+  a 404; `release.mjs` reports both the same way). Both failures came in the first release to
+  create the key on a Worker about a minute old. Run 1, R1: "version 25a57f92-… does not list
+  OAUTH_CLIENT_KEY after it was put; nothing was promoted". Run 2, R1: "version f3dc4a39-… was not
+  found, so its secrets cannot be checked". Each failed with exit 1 and promoted nothing, and
+  running the same release again succeeded. In the 3 `lag` puts, made later on a Worker about 8
+  minutes old, the first read saw the secret 193–368 ms after wrangler exited.
 - **The script's secret list names the secrets of the newest version, not those of the serving
   one.** After R1's failed first attempt, and all through the rollback, R0 served without the key
   while `GET …/secrets` listed `OAUTH_CLIENT_KEY`.
@@ -70,7 +72,8 @@ Nothing else was created: no R2 bucket, no queue, no other Worker. `--expires
    the unmodified `node deploy/release.mjs` CLI. Run 3's first release, Ra, did not use this
    change: it is the normal first deploy, with the key put in phase 2.
 4. **KV namespace by the driver.** `resources.mjs ensure` would also have made an R2 bucket and four
-   queues that viz-control does not bind. Teardown used the normal `resources.mjs destroy --stage s9`.
+   queues that viz-control does not bind. Teardown used the normal `resources.mjs destroy --stage
+   s9`.
 5. A stage keeps viz-control's `PUBLIC_URL` (`https://vis.bitcru.sh`), which is the issuer. Signing
    and verifying registrations do not depend on it.
 
@@ -85,15 +88,21 @@ each round:
 - `GET /oauth/authorize` with each client id registered so far → **200 if its signature verifies
   under the key now serving**, 400 "not registered" if it does not.
 
-A **forged** id (one signature character changed) was included as a control. It was 400 in every
-round of every phase. While each probe ran, `wrangler tail --format json` recorded the version
-that served each request, and the deployment API recorded which version was deployed. Client ids
-are not secrets; the scratch files that held them were deleted.
+In runs 1 and 2, a **forged** id (R1's client id with one signature character changed) was
+included as a control from the rollback on, and it was 400 in every round. In run 3, the clients
+of key A and key B served as each other's control. While each probe ran, `wrangler tail --format
+json` recorded the version that served each request, and the deployment API recorded which version
+was deployed. Client ids are not secrets; the scratch files that held them were deleted.
 
 ## Raw evidence
 
 All times are UTC on 2026-11-19. "Rounds" are probe rounds 10 s apart. In each round's cells,
-`a/b` means a out of b requests. "Tail" shows the version that served the tail events seen.
+`a/b` means a out of b requests. "Tail" shows the version that served the tail events seen. The
+tail sometimes saw fewer events than requests were sent (for example 26 of 30 after run 1's
+rollback, and 10 of 12 for run 1's R1). In the two mixed rounds, right after a deployment, none of
+the answers that came from the previous version appeared in the tail. That was not investigated:
+the probe's own answers carry the result, and the tail only confirms which version served the
+settled rounds.
 
 ### Run 1: created, then rolled back (no key, then key)
 
@@ -171,13 +180,16 @@ All times are UTC on 2026-11-19. "Rounds" are probe rounds 10 s apart. In each r
 
 - "a stage shows uploads not inheriting the key": **not triggered**. Uploads inherit the
   `secret_text` bindings of the newest version, whatever made it (a `versions upload` or a
-  `versions secret put`). Inheritance did not come from the deployed version or from the last
-  plain upload: four releases separate these cases, and in run 3 the value itself shows it (key B
-  from the newest version, not key A from the serving one).
+  `versions secret put`). It did not come from the deployed version or from the last plain upload.
+  Four releases (run 1's R1 re-run and R2, run 2's R2 and run 3's Rc) separate the newest version
+  from the deployed one, and three of them also separate it from the last plain upload. In run 3
+  the value itself shows it: key B from the newest version, not key A, which the serving version
+  and the last plain upload both carried.
 - "a rollback refused with 10220": **triggered for a rotation, not for the creation**. What was
-  measured: Cloudflare allows deploying a version that lacks a secret the serving version has, and
-  refuses a version whose value for a secret differs from the current one, unless `?force=true`
-  is given.
+  measured: Cloudflare allows deploying a version that lacks a secret the serving version has. It
+  refuses, unless `?force=true` is given, a version whose value for a secret differs from that of
+  the version serving now (which was also the newest one, so which of the two it compares with is
+  not known).
 
 **Recommended changes** (none made here; `deploy/` belongs to its owner):
 
@@ -202,15 +214,16 @@ All times are UTC on 2026-11-19. "Rounds" are probe rounds 10 s apart. In each r
 ## Cost
 
 **Measured on Cloudflare**: GraphQL `workersInvocationsAdaptive` and
-`durableObjectsInvocationsAdaptiveGroups`, window 11:00–11:30 UTC, read at 11:26:52. That was
-after the last deletion, so the rows are under `__unknown__`, the name analytics gives deleted
-scripts; that no other deleted script ran in the window is likely, not checked. The result:
-**263 Worker requests, 0 errors, 0 subrequests, CPU p50 0.75 ms and p99 3.4 ms, 0 Durable Object
-requests.** The probes sent 268 requests (counted by the client). The 3 that workers.dev answered
-404 before the re-created script was routed may not count as invocations, and ingestion may lag.
-At list prices, 263 requests × $0.30/M is about $0.0001. All of it is inside the plan's included
-allowances, so the cost is $0. KV operations were not read; nothing on the probed paths uses KV.
-No bill was read.
+`durableObjectsInvocationsAdaptiveGroups`, window 11:00–11:30 UTC, read at 11:26:52 and again at
+11:28:58 with the same result. Both reads came after the last deletion, so the rows are under
+`__unknown__`, the name analytics gives deleted scripts; that no other deleted script ran in the
+window is likely, not checked. The result: **263 Worker requests, 0 errors, 0 subrequests, CPU p50
+0.75 ms and p99 3.4 ms, 0 Durable Object requests.** The probes sent 268 requests (counted by the
+client), 5 more than counted. Three of them may be the requests workers.dev answered 404 before
+the re-created script was routed, which may not count as invocations; the other 2 are not
+explained. At list prices, 263 requests × $0.30/M is about $0.0001. All of it is inside the plan's
+included allowances, so the cost is $0. KV operations were not read; nothing on the probed paths
+uses KV. No bill was read.
 
 Stated before deploying (unchanged): **worst case under US$0.01, stated as under US$0.10.** The
 plan was about 300 Worker requests, no Durable Object requests and no KV operations. Only
