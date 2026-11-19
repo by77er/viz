@@ -279,7 +279,7 @@ fn merge_bench(args: &[String]) {
             .sum();
         let mut times = Vec::new();
         let mut out = None;
-        let cap: usize = std::env::var("MERGE_RG_BYTES").ok().map_or(viz_storage::SIGNAL_ROW_GROUP_BYTES, |v| v.parse().unwrap());
+        let cap: usize = std::env::var("MERGE_RG_BYTES").ok().map_or(viz_storage::MERGE_ROW_GROUP_BYTES, |v| v.parse().unwrap());
         let opts = SignalMergeOptions { write: viz_storage::SignalWriteOptions { max_row_group_bytes: cap, ..Default::default() }, ..Default::default() };
         let mut peak = 0;
         for _ in 0..runs {
@@ -293,7 +293,21 @@ fn merge_bench(args: &[String]) {
             peak = PEAK.load(Relaxed) - base + in_bytes;
         }
         let out = out.unwrap();
-        let plain = merge_signal_files_shared(table, &ins, &SignalMergeOptions { token_filter: false, ..Default::default() }).unwrap();
+        let plain = merge_signal_files_shared(table, &ins, &SignalMergeOptions { token_filter: false, ..opts.clone() }).unwrap();
+        if table == SignalTable::Logs {
+            // What the filter saves a search for one request id (`|= "request_id=… "`): row groups kept.
+            let (o, l) = viz_storage::tokens::token_filter_location(&out.bytes).unwrap();
+            let f = viz_storage::tokens::TokenFilter::parse(&out.bytes[o as usize..(o + l) as usize]).unwrap();
+            let rows = viz_storage::read_logs(&out.bytes).unwrap();
+            let (mut kept, mut n) = (0usize, 0usize);
+            for r in rows.iter().step_by(rows.len() / 50 + 1) {
+                let Some(id) = r.line.split("request_id=").nth(1).and_then(|x| x.split(' ').next()) else { continue };
+                let q = vec![vec![format!("request_id={id} ")]];
+                kept += (0..f.n_row_groups()).filter(|g| f.may_match(*g, &q)).count();
+                n += 1;
+            }
+            println!("logs: a search for one request id keeps {:.2} of {} row groups on average ({n} ids; {} distinct tokens)", kept as f64 / n as f64, f.n_row_groups(), f.n_tokens());
+        }
         times.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let filter = out.bytes.len() - plain.bytes.len();
         println!(
