@@ -89,12 +89,12 @@ const mutants = [
   ['an overload refusal is not remembered', 'src/route.ts',
     "      if (last.status === 'backpressure' && (last as { scope: string }).scope === 'overload') noteOverload(map, slot, last.retryAfterMs)\n", ''],
   ['a shard status edge does not know counts as stored', 'src/route.ts', "      if (!KNOWN.has(last.status)) return { status: 'error' }\n", ''],
-  ['names: a pool map whose pool is outside POOL_NAME is used', 'src/route.ts',
+  ['names: a pool map whose pool is outside POOL_NAME is used', '../shard/src/pool.ts',
     'validPoolName(pool) && !DERIVED_SIGNALS', "typeof pool === 'string' && pool !== '' && !DERIVED_SIGNALS"],
   // stage 3 of traces and logs: no base pool ending in a derived pool's suffix (contracts/BATCH.md "Streams per signal")
-  ['names: a base pool ending in /logs is accepted', 'src/route.ts',
+  ['names: a base pool ending in /logs is accepted', '../shard/src/pool.ts',
     '!DERIVED_SIGNALS.some((s) => pool.endsWith(`/${s}`))', "!pool.endsWith('/traces')"],
-  ['names: a base pool ending in /traces or /logs is accepted', 'src/route.ts',
+  ['names: a base pool ending in /traces or /logs is accepted', '../shard/src/pool.ts',
     '&& !DERIVED_SIGNALS.some((s) => pool.endsWith(`/${s}`))', ''],
   // the recorded-samples entrypoint (contracts/ingest.ts, D41)
   ['recorded: any service binding may write (caller not checked)', 'src/recorded.ts',

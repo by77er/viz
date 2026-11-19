@@ -344,7 +344,7 @@ const mutants = [
     "if (INGEST_PATHS.has(path) || SIGNAL_INGEST_PATHS.has(path)) return 'ingest'", "if (INGEST_PATHS.has(path)) return 'ingest'"],
   ['gateway', 'gateway: /api/v1/plan is not routed', 'deploy/gateway/src/index.ts', T.gatewayE2E,
     "'/api/v1/metadata', '/api/v1/plan'])", "'/api/v1/metadata'])"],
-  ['gateway', 'edge: a base pool ending in /logs is accepted', 'edge/src/route.ts', T.gatewayE2E,
+  ['gateway', 'edge: a base pool ending in /logs is accepted', 'shard/src/pool.ts', T.gatewayE2E,
     '!DERIVED_SIGNALS.some((s) => pool.endsWith(`/${s}`))', "!pool.endsWith('/traces')"],
   ['gateway', 'query: QUERY_SIGNALS ignored on the Loki read paths', 'query/src/index.ts', T.gatewayE2E,
     "if (path.startsWith('/loki/')) return signalEnabled(env, 'logs') ? lokiRoute(path) : null", "if (path.startsWith('/loki/')) return lokiRoute(path)"],

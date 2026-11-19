@@ -5,7 +5,9 @@
 // It edits the sources in place (here and in ../contracts), so run it from control/ in a COPY
 // of the repository outside any git work tree (AGENTS.md: a mutant caught in a commit ships).
 // The copy needs control/ (with node_modules), contracts/, edge/src, shard/src, ruler/src,
-// mcp/src and dashboard/{src,examples,schema,package.json}. It refuses to run in a work tree.
+// mcp/src and dashboard/{src,examples,schema,package.json}, and janitor/src, compact/src and
+// flush/src (test/settings.test.ts reads retention with the janitor's own parser). It refuses to
+// run in a work tree.
 import { execSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 

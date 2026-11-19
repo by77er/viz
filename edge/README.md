@@ -196,8 +196,8 @@ their files, but the publisher must read those tables first ("Needed changes" 2)
 
 **Base pools (stage 3, 2026-11-19).** A pool map whose pool ends in `/traces` or `/logs`
 (`pool:<tenant>` or `DEFAULT_POOL`) is refused like one outside `POOL_NAME`: 503 with
-`Retry-After: 30`, for every signal, metrics included, and nothing is stored (`validBasePool` in
-`src/route.ts`; `contracts/BATCH.md`, "Streams per signal", changed first). Otherwise the metric
+`Retry-After: 30`, for every signal, metrics included, and nothing is stored (`validBasePool`, in `shard/src/pool.ts` since
+review M-5 and shared with control, re-exported by `src/route.ts`; `contracts/BATCH.md`, "Streams per signal", changed first). Otherwise the metric
 shard `{pool}/{slot}` of a pool `p/logs` would be the very object, under the very name, of the log
 shard `p/logs/{slot}` of a pool `p`, and `query/` (which tells a shard's signal by its name, D62)
 would read it as a log shard. Names that only look alike are pools like any other (`…/tracesx`,
