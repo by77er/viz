@@ -135,6 +135,10 @@ describe('versioned storage', () => {
 
   it('refuses storage a newer release migrated past what it knows: every method throws schema_too_new, the alarm is re-armed, nothing written', async () => {
     const { t, p } = await published()
+    // Work is due when the newer release takes over: a nudged tenant and its publish deadline.
+    // A refusing alarm must leave both as they are (it would otherwise publish and clear them).
+    await p.notify([t])
+    expect(await p.schedule()).toMatchObject({ due: { publish: expect.any(Number) } })
     const before = await runInDurableObject(p, async (_i, s) => {
       expect(openSchema(s.storage, plus({ name: 'breaking (simulated N+1)', readableFrom: LATEST + 1, up: (sql) => void sql.exec('CREATE TABLE future (x TEXT NOT NULL)') }))).toMatchObject({ version: LATEST + 1 })
       await s.storage.setAlarm(Date.now() + 3_600_000)

@@ -306,21 +306,28 @@ All measured here unless it says Cloudflare.
   (stack/, ledger/, …), which is their CI job's business and was mid-edit by others while this
   was written. The shim is checked by bundling it (`wrangler deploy --dry-run`, phase 1 of every
   stage release) and ran through the whole trial.
-- `node gateway/scripts/mutants.mjs`: **11 of 11 mutants killed**:
+- `node gateway/scripts/mutants.mjs`, run from `deploy/` in a copy of the tree in a scratch
+  directory (it refuses a git work tree; its header lists what the copy needs), after the
+  copy's unmutated suite passed 55 of 55: **13 of 13 mutants killed** (2026-11-19). A mutant
+  counts as killed only when a test ran and failed; a suite that did not load or finish is
+  reported as such and counts as not killed. The copy's `gateway/src/index.ts` was equal to
+  the shared tree's afterwards.
 
-  | Mutant | Killed by |
+  | Mutant | Killed by (tests failing) |
   |---|---|
-  | bootstrap accepts any token | refuses a wrong, missing or malformed token |
-  | bootstrap ignores the expiry | refuses after the window closes |
-  | bootstrap accepts a body or query string | takes no tenant from the request |
-  | bootstrap exists without the secret | does not exist while no secret is set |
-  | no `x-viz-route` on forwarded answers | 27 routing and transparency tests |
-  | the response body is buffered | streams the response |
-  | status text dropped | 12 status tests |
-  | `/api/v1/label` prefix too wide | `/api/v1/label` is a 404 |
-  | control prefix matches `/api/v1/controls` | `/api/v1/controls` is a 404 |
-  | healthy when any backend is | unhealthy when one fails |
-  | a throwing backend crashes the gateway | retryable 502 |
+  | bootstrap accepts any token | refuses a wrong, missing or malformed token (1) |
+  | bootstrap ignores the expiry | refuses after the window closes (1) |
+  | bootstrap accepts a body or query string | takes no tenant from the request (1) |
+  | bootstrap exists without the secret | does not exist while no secret is set (1) |
+  | no `x-viz-route` on forwarded answers | the routing and transparency tests (27) |
+  | the response body is buffered | streams the response (1) |
+  | status text dropped | the status tests (12) |
+  | `/api/v1/label` prefix too wide | `/api/v1/label` is a 404 (2) |
+  | control prefix matches `/api/v1/controls` | `/api/v1/controls` is a 404 (2) |
+  | healthy when any backend is | unhealthy when one fails (2) |
+  | control's health probes the OpenAPI document again | control's health is its own `/healthz` (1) |
+  | bootstrap answers a `schema_too_new` refusal with 500 | a retryable 503, nothing created (1) |
+  | a throwing backend crashes the gateway | retryable 502 (1) |
 
 - `wrangler deploy --dry-run` of all four generated production configs: bundles (viz-ingest
   2,642.54 KiB / 799.96 KiB gzip, viz-control 303.48 / 58.00, viz-query 2,625.71 / 824.97,

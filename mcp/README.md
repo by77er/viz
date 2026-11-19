@@ -455,16 +455,16 @@ with a deadline and partial results; the budget hook.
 
 ```
 npm install
-npm test               # 179 tests in 9 files, in workerd
+npm test               # 179 tests in 9 files, in workerd (at most 2 workers)
 npx tsc --noEmit       # clean
-npm run mutants        # 23 mutants (run it on a copy of the tree, not in place: AGENTS.md)
+npm run mutants        # 23 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md)
 npm run conformance    # the official conformance suite against wrangler dev on 127.0.0.1:8921
 npm run measure        # read_dashboard tokens and wall time per example and budget
 npm run spike:libs     # the library check above (3 tests)
 ```
 
 Measured here: vitest 5.1.1 in workerd, TypeScript 5.9, Node 22.23, wrangler 4. The suite
-takes about 35–45 s on a shared machine.
+takes about 35–75 s on a shared machine. Last run 2026-11-19: 179 of 179 pass, `tsc` clean.
 
 | File | Tests | What |
 |---|---|---|
@@ -533,13 +533,19 @@ unchanged, so no proposal was made behind the agent's back either.
 ### Mutation checks
 
 `scripts/mutants.mjs` applies each change on its own, runs the whole suite and restores the
-files. All 20 make at least one test fail.
+files. It refuses to run inside a git work tree: run it in a copy of the repository (its
+header lists what the copy needs). A suite that does not finish is reported as `NO RESULT`
+and counts as not killed. **All 23 were run as one set on 2026-11-19, in a copy in a scratch
+directory whose unmutated suite was first checked green (179 of 179): 23 of 23 killed.** The
+copy's `src/` was equal to the shared tree's afterwards. 21–23 cover this change (`mayApply`,
+proposals that create a dashboard, `panelOrder`); 2 was rewritten for it (it used to remove
+the dry-run probe that `mayApply` replaced).
 
 | # | Mutant | Caught by (failing tests) |
 |---|---|---|
 | 1 | Tenant taken from a request header (`X-Viz-Tenant`) instead of the credential | isolation (1) |
-| 2 | Agent apply allowed: the dry-run verdict "would become a proposal" is not refused | write (1) |
-| 3 | Dry run writes: the control-plane check is sent without `dryRun` | injection, write (8) |
+| 2 | Agent apply allowed: `whoami`'s `mayApply` is not consulted before writing | isolation, write (4) |
+| 3 | Dry run writes: the control-plane check is sent without `dryRun` | injection, write (7) |
 | 4 | Preview digests skipped: changed panels are not run | e2e, write (4) |
 | 5 | Injection outside the data field: the dashboard title in `read_dashboard`'s header | injection (2) |
 | 6 | Budget ignored: pages laid out for 32,000 tokens whatever `max_tokens` says | budget, protocol, tools (6) |
@@ -554,9 +560,12 @@ files. All 20 make at least one test fail.
 | 15 | Parallelism unbounded | examples (1) |
 | 16 | Scope check skipped in the dispatcher | tools (1) |
 | 17 | Cursor accepted for other arguments | budget (1) |
-| 18 | Revoked key accepted: a control-plane 401 falls back to edge's cached answer | isolation (1) |
+| 18 | Revoked key accepted: a control-plane 401 falls back to edge's cached answer | isolation (2) |
 | 19 | A tenant in the query string ignored instead of refused | tools (1) |
 | 20 | Unknown metric names not checked in the write preview | e2e, write (2) |
+| 21 | No answer on `mayApply` (an older control release, or edge's fallback) taken as yes | isolation (1) |
+| 22 | A proposed new dashboard sent as a direct create | write (1) |
+| 23 | `read_dashboard` lists panels in structure in layout order, not in the text's order (`panelOrder`) | examples (3) |
 
 Mutant 14 **survived** its first version, which only stopped new queries from starting:
 the deadline is also enforced by aborting what is in flight, so the panels were still

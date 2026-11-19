@@ -412,13 +412,18 @@ func probe() {
 		{1_700_000_000_123_000_000, 1_700_000_600_456_000_000, 60_000_000_000},
 		{1_700_000_000_000_000_000, 1_700_000_600_000_000_000, 60_000_000_000},
 		{1_700_000_007_000_000_000, 1_700_000_067_000_000_000, 15_000_000_000},
+		{1_699_999_980_000_000_000, 1_700_000_040_000_000_000, 60_000_000_000},
+		{1_700_000_000_000_000_000, 1_700_000_020_000_000_000, 1_000_000_000},
+		{1_700_000_000_500_000_000, 1_700_000_020_000_000_001, 1_000_000_000},
+		{1_700_000_000_000_000_000, 1_700_000_000_000_000_000, 1_000_000_000},
+		{1_700_000_000_000_000_000, 1_700_000_100_000_000_000, 7_000_000_000},
 	} {
 		req := &tempopb.QueryRangeRequest{Start: x.start, End: x.end, Step: x.step}
 		before := *req
 		traceql.AlignRequest(req)
 		fmt.Printf("AlignRequest start=%d end=%d step=%d -> start=%d end=%d step=%d\n", before.Start, before.End, before.Step, req.Start, req.End, req.Step)
 	}
-	for _, d := range []time.Duration{time.Minute, 15 * time.Minute, time.Hour, 6 * time.Hour, 24 * time.Hour, 7 * 24 * time.Hour} {
+	for _, d := range []time.Duration{time.Second, 10 * time.Second, 30 * time.Second, time.Minute, 2 * time.Minute, 5 * time.Minute, 10 * time.Minute, 15 * time.Minute, 30 * time.Minute, time.Hour, 2 * time.Hour, 3 * time.Hour, 6 * time.Hour, 12 * time.Hour, 24 * time.Hour, 48 * time.Hour, 7 * 24 * time.Hour} {
 		fmt.Printf("DefaultQueryRangeStep(%v) = %v\n", d, time.Duration(traceql.DefaultQueryRangeStep(0, uint64(d))))
 	}
 }

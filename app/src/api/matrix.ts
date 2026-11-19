@@ -294,10 +294,13 @@ export class MatrixParser {
     }
   }
 
-  /** The whole body has arrived: the parsed matrix, or NotAMatrix with the parsed body. */
+  /**
+   * The whole body has arrived: the parsed matrix, or NotAMatrix with the parsed body. On the
+   * fast path the body's text is joined only when it is first read (`text`, `valuesText`: the
+   * JSON form): joining 3.4 MB of pieces took about 12 ms unthrottled, after the last byte.
+   */
   finish(): ParsedMatrix {
     this.joined = null
-    const text = this.text()
     if (this.mode === Mode.After && this.pending.trim() === '') {
       let envelope: unknown
       try {
@@ -307,10 +310,19 @@ export class MatrixParser {
       }
       const e = envelope as { status?: unknown; data?: { resultType?: unknown; result?: unknown }; warnings?: unknown; infos?: unknown } | undefined
       if (e && e.status === 'success' && e.data && e.data.resultType === 'matrix' && Array.isArray(e.data.result) && e.data.result.length === 0) {
-        return { series: this.series, warnings: strings(e.warnings), infos: strings(e.infos), text, fast: true }
+        const parser = this
+        return {
+          series: this.series,
+          warnings: strings(e.warnings),
+          infos: strings(e.infos),
+          get text() {
+            return parser.text()
+          },
+          fast: true,
+        }
       }
     }
-    return fromJson(text)
+    return fromJson(this.text())
   }
 
   /** Consume as much of `s` as forms complete units; returns where the first incomplete one starts. */

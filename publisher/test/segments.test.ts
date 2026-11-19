@@ -14,7 +14,8 @@
 import { runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
-import { ledgerBaseKey, ledgerLogKey, type FileEntry, type LedgerChange, type Table } from '../../contracts/ledger'
+import { encodeLedgerSegment, ledgerBaseKey, ledgerLogKey, ledgerSegmentKey, type FileEntry, type LedgerChange, type Table } from '../../contracts/ledger'
+import { readTenantLog } from '../src/log'
 import { FORMATS } from '../src/schema'
 import { goldenFile } from './golden'
 import {
@@ -243,10 +244,10 @@ describe('reading segments', () => {
     const { cell, tenant } = fresh()
     const t = tenant('mid')
     for (let i = 1; i <= 3; i++) await addUnit(t, pairUnit(cell, t, i, i, T0 + i * 1000))
-    await mirror(t, cell) // one segment: the registration and three units
-    // A second shard's first unit: its registration (no file) and the unit share a segment.
-    await addUnit(t, { ...pairUnit(cell, t, 1, 1, T0 + 2 * DAY_MS), shard: 'pool/1' })
-    await mirror(t, cell)
+    await ledger(t).drain() // [1, 4]: the registration and three units
+    for (let i = 4; i <= 5; i++) await addUnit(t, pairUnit(cell, t, i, i, T0 + i * 1000))
+    await mirror(t, cell) // [5, 6]: units 4 and 5
+    const real = (await segmentsOf(cell, t, 1)).find((s) => s.first === 5)!
     expect((await segmentsOf(cell, t, 1)).map((s) => [s.first, s.last])).toEqual([[0, 0], [1, 4], [5, 6]])
 
     const p = publisher(cell)
@@ -256,16 +257,27 @@ describe('reading segments', () => {
     expect(r.tenants[0]).toMatchObject({ status: 'more', cursors: { metric_samples: { version: 4 }, metric_series: { version: 4 } } })
     await expectVerified(p)
 
-    // A cursor inside a segment (this reader never leaves one; another release might): version
-    // 5 is the registration, which changes no table, so the table is right at 5.
-    await runInDurableObject(p, (_i, s) => void s.storage.sql.exec(`UPDATE cursor SET version = 5 WHERE tenant = ?`, t))
-    await expectVerified(p)
+    // A cursor inside [5, 6], as a release that advanced mid-segment would leave it: publish
+    // through a segment [5, 5] holding the ledger's own line for version 5, then put [5, 6] back.
+    const body = await (await env.BUCKET.get(real.key))!.text()
+    const alone = `${cell}/${ledgerSegmentKey(t, 1, 5, 5)}`
+    await env.BUCKET.delete(real.key)
+    await env.BUCKET.put(alone, encodeLedgerSegment(t, 1, [{ version: 5, json: body.split('\n')[1]! }]))
+    expect((await p.publish([t])).tenants[0]).toMatchObject({ status: 'ok', cursors: { metric_samples: { version: 5 } } })
+    await env.BUCKET.delete(alone)
+    await env.BUCKET.put(real.key, body)
+    await expectVerified(p) // the table is right at 5, inside [5, 6]
     // Nothing starts after it yet: the rest of [5, 6] waits for the next segment (README, "Reading the log").
     expect((await p.publish([t])).tenants[0]).toMatchObject({ status: 'ok', cursors: { metric_samples: { version: 5 } } })
-    const u = await addUnit(t, pairUnit(cell, t, 4, 4, T0 + 4000))
+    const u = await addUnit(t, pairUnit(cell, t, 6, 6, T0 + 6000))
     await mirror(t, cell) // [7, 7] starts above 6: the reader looks for the segment holding 6
+    // The reader's own promise: the changes after the cursor, contiguous, the holding segment's
+    // lines at or below the cursor left out.
+    const read = await readTenantLog(env.BUCKET, cell, t, { ledgerIncarnation: 1, version: 5 }, 2000)
+    expect({ status: read.status, start: read.start, versions: read.changes.map((c) => c.version) }).toEqual({ status: 'ok', start: 5, versions: [6, 7] })
     const again = await p.publish([t])
     expect(again.tenants[0]).toMatchObject({ status: 'ok', cursors: { metric_samples: { version: 7 }, metric_series: { version: 7 } } })
+    // Units 5 and 6; version 5 (unit 4), at the cursor, is not applied again.
     expect(again.tables.metric_samples).toMatchObject({ added: 2, removed: 0 })
     expect(await icebergLive(cell, 'metric_samples')).toContain(u.files[0]!.key)
     for (const table of TABLES) expect(await icebergLive(cell, table)).toEqual(await liveKeys(t, table))

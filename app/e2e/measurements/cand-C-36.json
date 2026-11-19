@@ -4,67 +4,68 @@
   "query": "sum by (service, route, status) (rate(http_requests_total[5m]))",
   "layout": "desktop",
   "root": "/tmp/claude-0/-home-user-viz/3c79101e-93fd-5a8e-90a7-fca4d8b40aab/scratchpad/appw/cand/C/app",
-  "when": "2026-11-19T01:25:02.399Z",
-  "runs": 15,
+  "when": "2026-11-19T01:32:37.353Z",
+  "runs": 20,
   "setup": "Chromium, CPU 4x, Fast 4G, 1440x900, fine pointer, fresh context per run",
   "cores": 4,
   "calibrationsMs": [
     584.198016,
     676.6380580000002,
-    567.812293
+    567.812293,
+    603.260184
   ],
   "summary": {
     "load1": {
-      "p75": 19.73,
-      "median": 17.48,
-      "max": 21.19,
+      "p75": 21.19,
+      "median": 17.79,
+      "max": 26.28,
       "min": 12.04
     },
     "loadEnd": {
-      "p75": 19.85,
-      "median": 17.43,
-      "max": 21.19,
+      "p75": 21.19,
+      "median": 17.79,
+      "max": 26.28,
       "min": 12.04
     },
     "press": {
-      "p75": 31.100000000093132,
-      "median": 28.399999999906868,
+      "p75": 29.5,
+      "median": 19.800000000046566,
       "max": 138.20000000018626,
       "min": 7
     },
     "busy": {
       "p75": 48.200000000186265,
       "median": 42.799999999813735,
-      "max": 94.29999999981374,
+      "max": 362.79999999981374,
       "min": 27.5
     },
     "runToPaint": {
       "p75": 1120.6000000000931,
-      "median": 846.7000000001863,
-      "max": 1151.8999999999069,
+      "median": 780.0999999998603,
+      "max": 2199.1999999997206,
       "min": 620.7000000001863
     },
     "chartToTable": {
-      "p75": 154.60000000009313,
-      "median": 93.19999999995343,
+      "p75": 143,
+      "median": 79.70000000018626,
       "max": 194.20000000018626,
-      "min": 55.799999999813735
+      "min": 38.700000000186265
     },
     "tableToText": {
-      "p75": 76.19999999995343,
-      "median": 56,
+      "p75": 61.4000000001397,
+      "median": 45.60000000009313,
       "max": 173.20000000018626,
       "min": 33
     },
     "textToChart": {
-      "p75": 42.5,
-      "median": 36.299999999813735,
-      "max": 49.700000000186265,
+      "p75": 42.60000000009313,
+      "median": 37.5,
+      "max": 156.5,
       "min": 29.100000000093132
     },
     "picker": {
-      "p75": 81.20000000018626,
-      "median": 63.40000000037253,
+      "p75": 78.5999999998603,
+      "median": 61,
       "max": 281.5,
       "min": 42.5
     },
@@ -75,7 +76,7 @@
       "min": 16.5
     },
     "responseFull": {
-      "p75": 249.29999999981374,
+      "p75": 189.89999999990687,
       "median": 135.39999999990687,
       "max": 391.79999999981374,
       "min": 24.799999999813735
@@ -83,13 +84,13 @@
     "inp": {
       "p75": 152,
       "median": 112,
-      "max": 264,
-      "min": 64
+      "max": 336,
+      "min": 56
     },
     "inputDelay": {
-      "p75": 15.300000000279397,
-      "median": 12.099999999860302,
-      "max": 45.39999999990687,
+      "p75": 20.90000000037253,
+      "median": 12.599999999860302,
+      "max": 76.39999999990687,
       "min": 6
     },
     "clsLoad": {
@@ -112,7 +113,7 @@
     },
     "judgedRuns": {
       "count": 0,
-      "of": 15,
+      "of": 20,
       "cores": 4
     }
   },
@@ -423,6 +424,101 @@
       "inpEvent": "pointerup",
       "inputDelay": 38.700000000186265,
       "loadEnd": 20.78
+    },
+    {
+      "load1": 23.37,
+      "clsLoad": 0,
+      "press": 47.10000000009313,
+      "busy": 44.89999999990687,
+      "runToPaint": 739.1000000000931,
+      "response": 156.79999999981374,
+      "responseFull": 184.39999999990687,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 38.700000000186265,
+      "tableToText": 44.799999999813735,
+      "textToChart": 50.39999999990687,
+      "picker": 112.29999999981374,
+      "inp": 56,
+      "inpEvent": "pointerup",
+      "inputDelay": 31.300000000279397,
+      "loadEnd": 24.13
+    },
+    {
+      "load1": 24.13,
+      "clsLoad": 0,
+      "press": 9.799999999813735,
+      "busy": 32,
+      "runToPaint": 1344.1000000000931,
+      "response": 128.60000000009313,
+      "responseFull": 137.3000000002794,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 188.1999999997206,
+      "tableToText": 43.10000000009313,
+      "textToChart": 156.5,
+      "picker": 54,
+      "inp": 208,
+      "inpEvent": "pointerup",
+      "inputDelay": 50.5,
+      "loadEnd": 24.26
+    },
+    {
+      "load1": 24.26,
+      "clsLoad": 0,
+      "press": 10.699999999720603,
+      "busy": 31.40000000037253,
+      "runToPaint": 685.9000000003725,
+      "response": 54,
+      "responseFull": 80.8000000002794,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 93.6999999997206,
+      "tableToText": 39,
+      "textToChart": 63.799999999813735,
+      "picker": 56.1999999997206,
+      "inp": 96,
+      "inpEvent": "pointerup",
+      "inputDelay": 13.099999999627471,
+      "loadEnd": 26.28
+    },
+    {
+      "load1": 26.28,
+      "clsLoad": 0,
+      "press": 16,
+      "busy": 362.79999999981374,
+      "runToPaint": 2199.1999999997206,
+      "response": null,
+      "responseFull": 119,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 60.60000000009313,
+      "tableToText": 37,
+      "textToChart": 40.5,
+      "picker": 48.799999999813735,
+      "inp": 336,
+      "inpEvent": "pointerup",
+      "inputDelay": 76.39999999990687,
+      "loadEnd": 25.91
+    },
+    {
+      "load1": 25.91,
+      "clsLoad": 0,
+      "press": 17.59999999962747,
+      "busy": 50.39999999990687,
+      "runToPaint": 768.5999999996275,
+      "response": 65.20000000018626,
+      "responseFull": 161,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 77.59999999962747,
+      "tableToText": 37.5,
+      "textToChart": 34.6999999997206,
+      "picker": 61,
+      "inp": 80,
+      "inpEvent": "pointerup",
+      "inputDelay": 8.799999999813735,
+      "loadEnd": 25.39
     }
   ]
 }

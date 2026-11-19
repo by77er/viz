@@ -4,91 +4,92 @@
   "query": "sum by (service, route, status) (rate(http_requests_total[5m]))",
   "layout": "desktop",
   "root": "/tmp/claude-0/-home-user-viz/3c79101e-93fd-5a8e-90a7-fca4d8b40aab/scratchpad/appw/cand/B/app",
-  "when": "2026-11-19T01:23:04.261Z",
-  "runs": 15,
+  "when": "2026-11-19T01:30:39.362Z",
+  "runs": 20,
   "setup": "Chromium, CPU 4x, Fast 4G, 1440x900, fine pointer, fresh context per run",
   "cores": 4,
   "calibrationsMs": [
     698.4786780000002,
     595.7354250000001,
-    557.118741
+    557.118741,
+    507.080467
   ],
   "summary": {
     "load1": {
-      "p75": 17.21,
-      "median": 16.63,
-      "max": 18.38,
+      "p75": 18.38,
+      "median": 16.83,
+      "max": 22.1,
       "min": 10.1
     },
     "loadEnd": {
-      "p75": 16.83,
-      "median": 16.16,
-      "max": 18.21,
+      "p75": 18.21,
+      "median": 16.63,
+      "max": 22.02,
       "min": 10.24
     },
     "press": {
-      "p75": 23.899999999906868,
-      "median": 15.300000000046566,
-      "max": 50.5,
-      "min": 10.399999999906868
+      "p75": 26.100000000093132,
+      "median": 15.599999999627471,
+      "max": 95.89999999990687,
+      "min": 9.700000000186265
     },
     "busy": {
-      "p75": 55,
+      "p75": 49.799999999813735,
       "median": 44.299999999813735,
       "max": 106.9000000001397,
-      "min": 20.5
+      "min": 14.299999999813735
     },
     "runToPaint": {
       "p75": 1039.9000000003725,
       "median": 924.2000000001863,
-      "max": 1648.7999999998137,
+      "max": 1700.1000000000931,
       "min": 683.6999999999534
     },
     "chartToTable": {
-      "p75": 111.80000000004657,
-      "median": 86.60000000009313,
+      "p75": 103.59999999962747,
+      "median": 78.39999999990687,
       "max": 474.60000000009313,
-      "min": 42.10000000009313
+      "min": 18.800000000279397
     },
     "tableToText": {
-      "p75": 67.39999999990687,
-      "median": 45.5,
+      "p75": 54.3000000002794,
+      "median": 44.5,
       "max": 127.5,
-      "min": 35
+      "min": 19.100000000093132
     },
     "textToChart": {
-      "p75": 56.60000000009313,
-      "median": 42,
+      "p75": 53.799999999813735,
+      "median": 41.5,
       "max": 178.10000000009313,
-      "min": 20.90000000037253
+      "min": 16
     },
     "picker": {
-      "p75": 95.70000000018626,
-      "median": 67,
+      "p75": 84.29999999981374,
+      "median": 65.89999999990687,
       "max": 206.3000000002794,
       "min": 35.199999999953434
     },
     "response": {
-      "p75": 196.10000000009313,
-      "median": 91.89999999990687,
+      "p75": 169.5,
+      "median": 100.69999999995343,
       "max": 270,
       "min": 39.5999999998603
     },
     "responseFull": {
-      "p75": 290.70000000018626,
-      "median": 146.1999999997206,
+      "p75": 266.30000000004657,
+      "median": 172.5,
       "max": 660.7000000001863,
       "min": 99
     },
     "inp": {
-      "p75": 144,
+      "p75": 112,
       "median": 104,
-      "max": 384,
+      "max": 448,
       "min": 48
     },
     "inputDelay": {
-      "p75": 28.600000000093132,
-      "median": 14.399999999906868,
+      "p75": 26.300000000279397,
+      "median": 16,
       "max": 108.29999999981374,
       "min": 5.2999999998137355
     },
@@ -112,7 +113,7 @@
     },
     "judgedRuns": {
       "count": 0,
-      "of": 15,
+      "of": 20,
       "cores": 4
     }
   },
@@ -423,6 +424,101 @@
       "inpEvent": "pointerup",
       "inputDelay": 5.5,
       "loadEnd": 15.78
+    },
+    {
+      "load1": 22.1,
+      "clsLoad": 0,
+      "press": 15.599999999627471,
+      "busy": 47.299999999813735,
+      "runToPaint": 920.7000000001863,
+      "response": null,
+      "responseFull": 227.10000000009313,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 44,
+      "tableToText": 50.89999999990687,
+      "textToChart": 60.89999999990687,
+      "picker": 52.60000000009313,
+      "inp": 88,
+      "inpEvent": "pointerup",
+      "inputDelay": 17,
+      "loadEnd": 22.02
+    },
+    {
+      "load1": 22.02,
+      "clsLoad": 0,
+      "press": 30,
+      "busy": 33.200000000186265,
+      "runToPaint": 1182.8999999999069,
+      "response": 120,
+      "responseFull": 173.10000000009313,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 461.70000000018626,
+      "tableToText": 27.399999999906868,
+      "textToChart": 16,
+      "picker": 65.89999999990687,
+      "inp": 448,
+      "inpEvent": "pointerup",
+      "inputDelay": 20.90000000037253,
+      "loadEnd": 21.87
+    },
+    {
+      "load1": 21.87,
+      "clsLoad": 0,
+      "press": 37.299999999813735,
+      "busy": 14.299999999813735,
+      "runToPaint": 1030.3999999999069,
+      "response": 127.1999999997206,
+      "responseFull": 172.5,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 21.199999999720603,
+      "tableToText": 19.100000000093132,
+      "textToChart": 45.299999999813735,
+      "picker": 42.40000000037253,
+      "inp": 48,
+      "inpEvent": "pointerdown",
+      "inputDelay": 35.09999999962747,
+      "loadEnd": 22.02
+    },
+    {
+      "load1": 22.02,
+      "clsLoad": 0,
+      "press": 9.700000000186265,
+      "busy": 46.40000000037253,
+      "runToPaint": 1700.1000000000931,
+      "response": 71.89999999990687,
+      "responseFull": 123.29999999981374,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 57.200000000186265,
+      "tableToText": 44.60000000009313,
+      "textToChart": 38.200000000186265,
+      "picker": 71.89999999990687,
+      "inp": 56,
+      "inpEvent": "pointerup",
+      "inputDelay": 6.5,
+      "loadEnd": 21.78
+    },
+    {
+      "load1": 21.78,
+      "clsLoad": 0,
+      "press": 95.89999999990687,
+      "busy": 67.5,
+      "runToPaint": 839.8999999999069,
+      "response": 138.29999999981374,
+      "responseFull": 261.5,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 18.800000000279397,
+      "tableToText": 43.10000000009313,
+      "textToChart": 39.89999999990687,
+      "picker": 73.60000000009313,
+      "inp": 72,
+      "inpEvent": "pointerdown",
+      "inputDelay": 16.799999999813735,
+      "loadEnd": 21.19
     }
   ]
 }

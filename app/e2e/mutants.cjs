@@ -138,6 +138,8 @@ const SETS = {
       one('window: computed in fractional seconds (a 0.1 s step asks for another grid than the API evaluates)', 'src/lib/step.ts',
         '  const stepMs = Math.max(1, Math.round(step * 1000))\n  const startMs = Math.floor(Math.round(startSec * 1000) / stepMs) * stepMs\n  const endMs = Math.max(startMs + stepMs, Math.floor(Math.round(endSec * 1000) / stepMs) * stepMs)\n  return { start: startMs / 1000, end: endMs / 1000, step: stepMs / 1000 }',
         '  const start = Math.floor(startSec / step) * step\n  const end = Math.max(start + step, Math.floor(endSec / step) * step)\n  return { start, end, step }'),
+      one('parser: the body text the JSON form reads is the first piece only (the lazy join)', 'src/api/matrix.ts',
+        "return (this.joined ??= this.chunks.join(''))", "return (this.joined ??= this.chunks[0] ?? '')"),
       one('alignment: the grid tolerance is a fraction of a step (sub-second steps leave the grid)', 'src/lib/series.ts',
         '  const tolerance = 5e-6 / step\n', '  const tolerance = 1e-6\n'),
     ],

@@ -105,8 +105,8 @@ const mutants = [
   // ── never upstream of ingest (D15), and nothing while idle (D34) ──
   { id: 'I1', what: 'a nudge waits for the publisher however long it takes', file: N, tests: ['test/triggers.test.ts'],
     edits: [['    return await Promise.race([call, late])', '    return await call']] },
-  { id: 'I2', what: 'a refused nudge throws into its caller (the maintenance run)', file: N, tests: ['test/triggers.test.ts'],
-    edits: [['      () => true,\n      () => false,', '      () => true,\n      (e: unknown) => {\n        throw e\n      },']] },
+  { id: 'I2', what: 'a refused nudge throws into its caller (the maintenance run): both the rejection handler and the catch removed', file: N, tests: ['test/triggers.test.ts'],
+    edits: [['      () => true,\n      () => false,', '      () => true,\n      (e: unknown) => {\n        throw e\n      },'], ['  } catch {\n    return false\n  } finally {', '  } finally {']] },
   { id: 'I3', what: 'notify publishes at once instead of leaving it to the alarm', file: P, tests: ['test/triggers.test.ts'],
     edits: [["    this.dueNoLaterThan('publish', now + this.config().publishIntervalMs)\n    await this.rearm()\n  }", "    this.dueNoLaterThan('publish', now + this.config().publishIntervalMs)\n    await this.rearm()\n    await this.serial(() => this.publishNow(tenants.filter((t) => TENANT_ID.test(t))))\n  }"]] },
   { id: 'I4', what: 'the alarm keeps itself alive when nothing is due (an hourly wake)', file: P, tests: ['test/triggers.test.ts'],

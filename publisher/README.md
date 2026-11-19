@@ -3,8 +3,9 @@
 Turns the tenants' ledger change logs into Iceberg tables that external engines can read
 (design/DESIGN.md §5.3, decisions D2, D4, D15). One SQLite Durable Object per cell, named by
 the cell id, is the only writer of that cell's Iceberg metadata. viz's own queries never read
-what it writes, and nothing on the ingest or query path calls it: if it is slow or stopped,
-external readers see older data and physical deletes wait. Nothing else.
+what it writes, and nothing on the ingest or query path calls it (the maintenance run nudges
+it, best effort and bounded: D34): if it is slow or stopped, external readers see older data
+and physical deletes wait. Nothing else.
 
 | File | Contents |
 |---|---|
@@ -393,51 +394,46 @@ attempted was readable.
 | What is written (2) | format version, schema, partition spec, name mapping, partition values checked against the key layout, statistics, manifest list counts and ranges, summary; an unreadable index fragment |
 | Driving (3) | `notify` then alarm, which leaves only the sweep's deadline and then none; a nudge during a running publish is kept; `locationPrefix` cannot change |
 | Smoke, end to end, measurements (3) | |
-| Versioned storage (`compat.test.ts`, 6) | a fresh object at version 1 with the golden schema; migrations 1..N reproduce the golden of N; version 1 equals the pre-versioning `sqlite_master` (`test/fixtures/storage/v0.json`); that dump (a cell published once) adopted with every row unchanged and served; a publisher left by pre-versioning code keeps publishing after adoption, verifies clean and is not migrated again after eviction; storage of a breaking N+1 refused by all 11 methods, alarm re-armed, every table unchanged; storage of an additive N+1 served, written, left at version 2 |
+| Versioned storage (`compat.test.ts`, 6) | a fresh object at the latest version (2) with the golden schema; migrations 1..N reproduce the golden of N; version 1 equals the pre-versioning `sqlite_master` (`test/fixtures/storage/v0.json`); that dump (a cell published once) adopted and migrated to 2 with every adopted row unchanged and served; a publisher left by pre-versioning code keeps publishing after adoption, verifies clean and is not migrated again after eviction; storage of a breaking N+1, with a tenant pending and due, refused by all 11 methods, alarm re-armed, every table unchanged; storage of an additive N+1 served, written, left at N+1 |
 | Newer Iceberg metadata (`compat.test.ts`, 1) | a table evolved by a newer publisher (schema 1 with a new field id, `viz.format-version` 2): publish refused and the tenant left pending, sweep refused, nothing under `iceberg/` changed, SQLite not rebuilt from it, `verify` reports it |
 | Versioned storage, migration 2 (`compat.test.ts`, +1) | storage at golden version 1 (no `due`) migrates to 2, keeps publishing, verifies clean, uses the new table, is not migrated twice; adoption of the pre-versioning dump now ends at version 2 with every adopted row unchanged |
 | Log objects this code does not know (`compat.test.ts`, 7) | five rewrites of one real segment as a newer ledger would write it (header `v` 2, unknown header kind, change `v` 2, unknown change kind, a file of table `spans`): each stops the tenant before that segment, twice in a row, with the earlier segments published and the later one unread; restored, it catches up. The same for a change object of the first layout. The reader's accept and refuse rules, and its pinned versions equal the contract's |
-| Segments (`segments.test.ts`, 9) | golden: the current ledger writes the checked-in segment bytes (only `at` differs); those bytes published stage by stage (two units in one segment; a compaction with a checkpoint beside it; retention and a unit in one segment; a new incarnation re-based from its base segment) and all at once; the first layout (as-built ledger) read, a hole in it stops the tenant, and the segment incarnation a current ledger starts on taking it over is followed; both layouts in one incarnation refused; whole segments only, and a cursor inside a segment finished from the holding segment once a later one exists; overlapping segments refused before both; unreadable checkpoints ignored; `removedFiles` naming another table, or not matching `removed`, refused |
+| Segments (`segments.test.ts`, 9) | golden: the current ledger writes the checked-in segment bytes (only `at` differs); those bytes published stage by stage (two units in one segment; a compaction with a checkpoint beside it; retention and a unit in one segment; a new incarnation re-based from its base segment) and all at once; the first layout (as-built ledger) read, a hole in it stops the tenant, and the segment incarnation a current ledger starts on taking it over is followed; both layouts in one incarnation refused; whole segments only, and a cursor inside a segment (left by publishing through a `[5, 5]` holding the ledger's own line) finished from the holding segment once a later one exists, without re-applying the change at the cursor; overlapping segments refused before both; unreadable checkpoints ignored; `removedFiles` naming another table, or not matching `removed`, refused |
 | Triggers (`triggers.test.ts`, 3) | `notify` writes nothing to R2 and publishes nothing, later nudges never push the deadline back; a nudge returns false within its bound from a publisher that is slow (5 s) or refuses, and with none bound; a tenant's day of flushes and a compaction, each nudged, then the alarm settles in 5 runs (sweep, two expiries, mark, delete) to no alarm and no deadline, every remaining metadata object referenced, and 48 idle hours run no alarm and write nothing |
 | Golden formats (`golden.test.ts`, 5) | every format has a file for its version; `metadata.json` of both new tables; field ids permanent across versions; Avro schemas; the cursors object and an `add_unit` change (now read from its segment) |
 
 ### Mutation checks
 
-Each mutation was applied to the source alone, `test/publisher.test.ts` run, and the source
-restored (`tools/mutants.mjs`). **15 mutants, 15 killed, 0
-survived.** The eight asked for are M1, M2, M3, M4, M5 (and M6), M7, M8, M9.
+`tools/mutants.mjs` copies the component (with `contracts/` and the ledger sources it imports,
+`node_modules` linked) to `$MUTANT_DIR` outside the shared tree, applies one mutant at a time
+to the copy, runs the suites it names with at most 2 workers, and restores the copy's file.
+The shared tree is only read (AGENTS.md). Run on 2026-11-19 on the final code:
+**FINAL_COUNT**
+
+The three properties asked for with the segment reader: **stop at an unknown version** (S1,
+S2, S3, M19), **never skip a hole** (S4, S5, S6, M3), **never block ingest** (I1, I2, I3; I4 and
+I5 for "nothing while idle").
 
 | # | Mutation | Result (tests failing) | A test that fails |
 |---|---|---|---|
-| M1 | skip the conditional write (metadata is written unconditionally) | killed (1) | lets only one of two writers create a metadata version; the other takes its state and retries |
-| M2 | apply log entries out of order (changes replayed newest first) | killed (32) | applies a log in version order and records the ledger version it reflects |
-| M3 | ignore a gap in the versions | killed (1) | stops at a hole in the versions, reports it, and continues once the hole is filled |
-| M4 | publish gross instead of net changes (a removal of a not-yet-published file is ignored) | killed (3) | applies a log in version order and records the ledger version it reflects |
-| M5 | drop DELETED handling (a removed file stays a live entry in the rewritten manifest) | killed (10) | never publishes a file that was added and removed between two publications |
-| M6 | removed files are not taken out of the manifests at all | killed (10) | never publishes a file that was added and removed between two publications |
-| M7 | sweep without a grace period (an unreferenced object is deleted when first seen) | killed (5) | converges after a crash right after "manifests-written" |
-| M8 | cursor saved before the metadata is written | killed (2) | converges after a crash right after "metadata-written" |
-| M9 | wrong partition value (day off by one) | killed (29) | applies a log in version order and records the ledger version it reflects |
-| M10 | sweep on a stale view (no check that R2 has a newer metadata version) | killed (1) | does not delete the files of a commit that is in flight |
-| M11 | sweep treats only the current snapshot as referenced | killed (7) | converges after a crash right after "manifests-written" |
-| M12 | a removed file is handed to deletion while a retained snapshot references it | killed (2) | never publishes a file that was added and removed between two publications |
-| M13 | snapshot expiry does not keep a minimum of two | killed (2) | expires snapshots from maintain() when no publish does it |
-| M14 | a lost conditional write is treated as success | killed (1) | lets only one of two writers create a metadata version; the other takes its state and retries |
-| M15 | re-base ignores the new base (an older incarnation cursor continues as if nothing happened) | killed (1) | re-bases from the base of the new incarnation: removes what is gone, adds what is new |
-| M16 | the publisher serves storage a newer release wrote (guard removed) | killed (1) | refuses storage a newer release migrated past what it knows … |
-| M17 | a refusing publisher publishes from its alarm (and writes) | killed (1) | same |
-| M18 | rebuilds its view from metadata a newer publisher wrote (no check in resync) | killed (1), after the test was strengthened | is never committed over, rebuilt from or swept against … |
-| M19 | a ledger change of an unknown version is applied as if it were known | killed (1) | a change with a newer `v` or an unknown kind stops the tenant before it … |
-| M20 | a released migration edited in place (version 1 loses an index) | killed (2) | a fresh publisher is at the latest version, and its schema is the golden file |
-| M21 | a field id reassigned (`tenant` of `metric_samples` takes id 7) | killed (2) | iceberg.metadata: a new table's metadata.json, for both tables (and the field-id test) |
-| M22 | the cursors object changes shape without a format version | killed (1) | r2.cursors and read.ledger-change … |
+FINAL_TABLE
 
-M16–M22 run `test/compat.test.ts` or `test/golden.test.ts` (the mutant names which), with at
-most 2 workers, on the final code: 7 of 7 killed. **M18 survived its first run**: removing
-the check in `resync` alone changed nothing visible, because the commit path checks the
-metadata again before writing. The test now also requires that the publisher's own SQLite is
-not rebuilt from metadata it does not understand, and M18 is killed. M1–M15 were not re-run
-after this change; the suite they run (`test/publisher.test.ts`) still passes.
+**What did not die at first, and what was done** (first full run of this set, before the last
+test changes: 31 of 34 killed):
+
+- **M17** (a refusing publisher runs its alarm) survived: the refusal test's storage had
+  nothing pending or due, and the alarm now keeps the sweep's deadline, so running the alarm
+  changed nothing visible. The test now nudges a tenant before the newer release takes over,
+  so a refusing alarm that ran would publish and clear it. Killed.
+- **S7** (a cursor inside a segment re-reads that segment from its start) survived twice. The
+  first time the change at the cursor added no file; the test now puts a unit there (through a
+  segment `[5, 5]` holding the ledger's own line, then the ledger's `[5, 6]`). The second time it
+  survived because `plan()` also skips changes at or below the cursor, so publication was right
+  anyway: equivalent at the level of the table. The reader's own promise (changes start at
+  `start + 1`) is now asserted on `readTenantLog` directly. Killed.
+- **I2** as first written (only the rejection handler rethrows) was equivalent: the outer
+  `catch` in `nudge` turns the rejection into `false` as well. Redefined to remove both layers;
+  killed.
 
 M8 is caught by the crash injected after the metadata write, not by one before it: the test
 seams sit after each step, and the mutant saves the cursor between two of them. M2 and M9
@@ -535,8 +531,9 @@ about 290 kB per commit (modelled from that slope, not measured).
   the ones that rebuild state select by table and manifest, not by tenant. Statements about
   one file or one tenant's files do name the tenant. Its callers are internal; a tenant id
   passed to it is not a credential check.
-- No adversarial review of the commit protocol has been done (AGENTS.md asks for one before
-  building on it).
+- No adversarial review of the commit protocol, the segment reader or the trigger has been
+  done (AGENTS.md asks for one before building on it), and the publisher is not in the
+  protocol model (spec/README.md, "Not modelled").
 
 ## Needed changes
 
