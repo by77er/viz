@@ -9,6 +9,7 @@ import { decodeRemoteWrite } from './prw'
 import { type Limited, type Outcome, type RouteEnv, appendAll, clearMapCache, refuseEarly } from './route'
 import { snappyDecompress } from './snappy'
 import { SpanCollector, decodeTracesJson, decodeTracesProto } from './spans'
+import { enabledSignals } from '../../shard/src/pool'
 
 // For now the shard is deployed in the same script as the edge Worker.
 export { Shard } from '../../shard/src/shard'
@@ -21,15 +22,17 @@ export interface Env extends RouteEnv {
   /**
    * Comma-separated signals besides metrics that this deployment accepts: `traces` enables
    * `/v1/traces`, `logs` enables `/v1/logs` and `/loki/api/v1/push`. Unset: neither (404).
-   * Stage 1: their batches go to the `{pool}/traces` and `{pool}/logs` shards, which no flush
-   * drains yet (edge/README.md, "Needed changes"). Do not enable before stage 2.
+   * Their batches go to the `{pool}/traces` and `{pool}/logs` shards; since stage 2 flush
+   * drains those into the `spans`, `trace_index` and `logs` tables and the ledger lists them.
+   * Not before the publisher reads those tables, in a deployment that has one (the publisher
+   * stops a tenant at a change naming a table it does not know: edge/README.md, "Traces and
+   * logs, stage 2"). Also read by flush's full sweep (`shardsFromPoolMaps`).
    */
   INGEST_SIGNALS?: string
 }
 
-/** Whether `INGEST_SIGNALS` enables a signal. */
-export const signalEnabled = (env: Env, signal: 'traces' | 'logs'): boolean =>
-  (env.INGEST_SIGNALS ?? '').split(',').some((x) => x.trim() === signal)
+/** Whether `INGEST_SIGNALS` enables a signal (shard/src/pool.ts `enabledSignals`, shared with flush). */
+export const signalEnabled = (env: Env, signal: 'traces' | 'logs'): boolean => enabledSignals(env.INGEST_SIGNALS).includes(signal)
 
 /** Drop the in-memory key and pool-map caches (tests; also harmless in production). */
 export function clearCaches(): void {

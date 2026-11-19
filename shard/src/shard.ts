@@ -1012,13 +1012,20 @@ export class Shard extends DurableObject<ShardEnv> {
    * the caller would need, it says so instead of returning a result with a hole in it.
    *
    * Without `opts` (the form every caller used before D48): every batch above `aboveSeq`, whole,
-   * in one answer. With `opts`: only the rows the filter keeps (time range, metric names, exact
-   * label values, a range of series keys), in pages of at most `maxBytes`, each with `page`;
+   * in one answer. With `opts`: only the rows the filter keeps (signals, time range, metric names,
+   * exact label values, a range of series keys), in pages of at most `maxBytes`, each with `page`;
    * `page.next` continues the read where it stopped, through the same `through`. A page never
    * holds part of a batch's kept rows: if they alone exceed `maxBytes` the answer is
    * `page_limit`. Every page checks the discard fence against the read's watermark: rows
    * above it discarded since the first page refuse the rest (`stale_watermark`), even rows
    * already returned (stricter than needed, and simple).
+   *
+   * Signals (2026-11-19, `TailFilter.signals`): the shards of `{pool}/traces` and `{pool}/logs`
+   * hold span and log batches (contracts/BATCH.md, "Streams per signal"). A filtered read keeps
+   * only the signals it names; the time range and series fields select metric rows only, and a
+   * span or log batch the read admits is returned whole. A metrics read should pass
+   * `signals: [1]`: a shard of an earlier release ignores the field and refuses (throws) on a
+   * span or log batch, so a caller must also read only its signal's shards by name.
    */
   async tailRead(tenant: string, incarnation: number, aboveSeq: number, opts?: TailReadOptions): Promise<TailResult> {
     if (this.refusal) this.refused()

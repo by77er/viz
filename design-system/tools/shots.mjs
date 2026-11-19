@@ -19,7 +19,7 @@
 // State options: width (default 1440), height, scale (default 2; 1 for wide pages), coarse (touch, coarse pointer), zoom (2 = 200%: half the
 //   CSS width at twice the scale), greyscale, reducedMotion, clip (selector) with pad, measure (prints sideways overflow, the smallest text,
 //   any sans text set in tabular figures, and with a coarse pointer every hit area under 44px; an item partly scrolled out of a scrolling
-//   strip is listed separately; a control covered at its centre, a drawn box reached by a neighbour's hit area and every link inside a sentence
+//   strip is listed separately, and one whose 44 px reach past the image's bottom edge counted; a control covered at its centre, a drawn box reached by a neighbour's hit area and every link inside a sentence
 //   are reported, never skipped), outline (draws the measured hit areas into the image).
 import { readdirSync, mkdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -31,7 +31,7 @@ const href = (u) => (u.includes('://') ? u : 'file://' + resolve(u))
 // Runs in the page. The hit area of a control is what a finger can actually reach: found by asking the page which element is at each
 // point, so an area clipped by a scrolling strip or covered by a neighbour's area is measured as it behaves, not as it is declared.
 function measurePage(coarse) {
-  const out = { overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth, smallestText: 99, tabularSans: [], small: [], areas: [], scrolled: [], inSentence: [], covered: [], overlaps: [], underSheet: [] }
+  const out = { overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth, smallestText: 99, tabularSans: [], small: [], areas: [], scrolled: [], inSentence: [], covered: [], overlaps: [], underSheet: [], edge: 0 }
   // a link is inside a sentence when other words share its inline flow: its nearest ancestor that is not inline is a block container (not a flex
   // or grid row of items) holding words outside the link and outside other controls (v5 review, m12: v5 counted only links inside a p)
   const flowOf = (x) => { let b = x.parentElement; while (b && /^(inline|contents)$/.test(getComputedStyle(b).display)) b = b.parentElement; return b }
@@ -49,6 +49,7 @@ function measurePage(coarse) {
     const sheet = [...document.querySelectorAll('.vz-menu[data-open]')].find((x) => getComputedStyle(x).position === 'fixed'); if (sheet && !sheet.contains(el)) { const r0 = el.getBoundingClientRect(), s0 = sheet.getBoundingClientRect(); if (r0.bottom > s0.top && r0.top < s0.bottom) { out.underSheet.push(name(el)); continue } } // under an open sheet menu: closed by a press outside (flows G27)
     if (el.matches('input[type="checkbox"]') && el.closest('label')) continue // measured as its label
     const r = el.getBoundingClientRect(); if (r.width <= 1 || r.height <= 1 || r.bottom < 0 || r.top > innerHeight) continue // a visually hidden control (skip link at rest)
+    if (r.bottom + 22 > innerHeight) { out.edge++; continue } // its 44 px reach past the image's bottom edge, where hit testing finds nothing: counted, not measured (the page audit scrolls to it)
     // a link inside a sentence is text and exempt from 44px; it is measured and listed, because the main path must never be one
     if (el.matches('a') && inSentence(el)) { out.inSentence.push({ name: name(el), w: +r.width.toFixed(1), h: +r.height.toFixed(1) }); continue }
     // an item partly scrolled out of a scrolling strip (nav, tabs, a wide table) is reachable by scrolling; it is listed, not measured
@@ -102,7 +103,7 @@ async function runState(browser, sc, state, theme, outDir) {
   const tag = `${sc.name ?? 'view'}-${state.name}-${theme}`
   if (state.measure) {
     const m = await page.evaluate(measurePage, !!state.coarse)
-    console.log(`${tag}: sideways overflow ${m.overflow}px; smallest text ${m.smallestText}px; tabular sans ${m.tabularSans.length}` + (state.coarse ? `; ${m.areas.length} hit areas, ${m.small.length} under 44px, ${m.covered.length} covered, ${m.overlaps.length} drawn boxes reached by a neighbour, ${m.inSentence.length} links inside sentences` + (m.scrolled.length ? `; ${m.scrolled.length} partly scrolled out of a strip (${m.scrolled.join(', ')})` : '') + (m.underSheet.length ? `; ${m.underSheet.length} under an open sheet menu (${m.underSheet.join(', ')})` : '') : ''))
+    console.log(`${tag}: sideways overflow ${m.overflow}px; smallest text ${m.smallestText}px; tabular sans ${m.tabularSans.length}` + (state.coarse ? `; ${m.areas.length} hit areas, ${m.small.length} under 44px, ${m.covered.length} covered, ${m.overlaps.length} drawn boxes reached by a neighbour, ${m.inSentence.length} links inside sentences` + (m.edge ? `; ${m.edge} at the image's bottom edge, not measured` : '') + (m.scrolled.length ? `; ${m.scrolled.length} partly scrolled out of a strip (${m.scrolled.join(', ')})` : '') + (m.underSheet.length ? `; ${m.underSheet.length} under an open sheet menu (${m.underSheet.join(', ')})` : '') : ''))
     for (const t of m.tabularSans) console.log(`  TABULAR SANS  ${t}`)
     for (const s of m.small) console.log(`  SMALL ${s.w}x${s.h}  <${s.tag}> ${s.name}`)
     for (const c of m.covered) console.log(`  COVERED  ${c.name}  (its centre belongs to ${c.by})`)

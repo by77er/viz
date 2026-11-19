@@ -1,0 +1,40 @@
+# node tools/shots.mjs scenario reviews/system-v8/shots.json reviews/system-v8/images (load before: 1.96 2.77 3.43 5/187 32549; after: 1.89 2.65 3.36 1/112 819)
+v8-dashboard-1500-light: sideways overflow 0px; smallest text 11px; tabular sans 0
+v8-dashboard-1500-dark: sideways overflow 0px; smallest text 11px; tabular sans 0
+v8-dashboard-400-coarse-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 79 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 2 partly scrolled out of a strip (acme-prod, Settings)
+v8-dashboard-400-coarse-dark: sideways overflow 0px; smallest text 11px; tabular sans 0; 79 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 2 partly scrolled out of a strip (acme-prod, Settings)
+v8-dialog-1500-light: sideways overflow 0px; smallest text 13px; tabular sans 0
+v8-dialog-1500-dark: sideways overflow 0px; smallest text 13px; tabular sans 0
+v8-dialog-400-coarse-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 2 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences
+v8-dialog-400-coarse-dark: sideways overflow 0px; smallest text 13px; tabular sans 0; 2 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences
+v8-states-1500-light: sideways overflow 0px; smallest text 11px; tabular sans 0
+v8-states-1500-dark: sideways overflow 0px; smallest text 11px; tabular sans 0
+v8-states-400-coarse-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 10 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 2 partly scrolled out of a strip (acme-prod, Settings)
+v8-states-400-coarse-dark: sideways overflow 0px; smallest text 11px; tabular sans 0; 10 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 2 partly scrolled out of a strip (acme-prod, Settings)
+v8-long-table-1500-light: sideways overflow 0px; smallest text 13px; tabular sans 0
+v8-long-table-1500-dark: sideways overflow 0px; smallest text 13px; tabular sans 0
+v8-long-table-400-coarse-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 37 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 5 partly scrolled out of a strip (acme-prod, Settings, Max, cores, Memory, MiB, Restarts)
+v8-long-table-400-coarse-dark: sideways overflow 0px; smallest text 13px; tabular sans 0; 37 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 5 partly scrolled out of a strip (acme-prod, Settings, Max, cores, Memory, MiB, Restarts)
+v8-folded-list-1500-light: sideways overflow 0px; smallest text 13px; tabular sans 0
+v8-folded-list-1500-dark: sideways overflow 0px; smallest text 13px; tabular sans 0
+v8-folded-list-400-coarse-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 46 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 at the image's bottom edge, not measured; 2 partly scrolled out of a strip (acme-prod, Settings)
+v8-folded-list-400-coarse-dark: sideways overflow 0px; smallest text 13px; tabular sans 0; 46 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 at the image's bottom edge, not measured; 2 partly scrolled out of a strip (acme-prod, Settings)
+v8-monitor-1500-light: sideways overflow 0px; smallest text 11px; tabular sans 0
+v8-monitor-1500-dark: sideways overflow 0px; smallest text 11px; tabular sans 0
+v8-monitor-400-coarse-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 21 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 2 links inside sentences; 2 partly scrolled out of a strip (acme-prod, Settings)
+  IN SENTENCE 109.8x18  node-b overview  (text, exempt; never the main path)
+  IN SENTENCE 117.9x16  notification settings  (text, exempt; never the main path)
+v8-monitor-400-coarse-dark: sideways overflow 0px; smallest text 11px; tabular sans 0; 21 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 2 links inside sentences; 2 partly scrolled out of a strip (acme-prod, Settings)
+  IN SENTENCE 109.8x18  node-b overview  (text, exempt; never the main path)
+  IN SENTENCE 117.9x16  notification settings  (text, exempt; never the main path)
+v8-charts-1500-light: sideways overflow 0px; smallest text 11px; tabular sans 0
+v8-charts-1500-dark: sideways overflow 0px; smallest text 11px; tabular sans 0
+v8-charts-400-coarse-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 56 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 2 partly scrolled out of a strip (acme-prod, Settings)
+v8-charts-400-coarse-dark: sideways overflow 0px; smallest text 11px; tabular sans 0; 56 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 2 partly scrolled out of a strip (acme-prod, Settings)
+v8-folded-list-320-coarse-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 31 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 2 at the image's bottom edge, not measured; 4 partly scrolled out of a strip (Traces, Logs, acme-prod, Settings)
+v8-folded-list-320-coarse-dark: sideways overflow 0px; smallest text 13px; tabular sans 0; 31 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 2 at the image's bottom edge, not measured; 4 partly scrolled out of a strip (Traces, Logs, acme-prod, Settings)
+v8-folded-list-400-coarse-hit-areas-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 29 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 1 at the image's bottom edge, not measured; 2 partly scrolled out of a strip (acme-prod, Settings)
+v8-folded-list-zoom-200-light: sideways overflow 0px; smallest text 13px; tabular sans 0
+v8-dialog-list-closed-400-coarse-light: sideways overflow 0px; smallest text 13px; tabular sans 0; 12 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 2 partly scrolled out of a strip (acme-prod, Settings)
+v8-dialog-list-closed-400-coarse-dark: sideways overflow 0px; smallest text 13px; tabular sans 0; 12 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences; 2 partly scrolled out of a strip (acme-prod, Settings)
+v8-chart-controls-320-coarse-light: sideways overflow 0px; smallest text 11px; tabular sans 0; 115 hit areas, 0 under 44px, 0 covered, 0 drawn boxes reached by a neighbour, 0 links inside sentences

@@ -588,7 +588,8 @@ pub(crate) fn read_trace_index(bytes: &[u8], mut visit: impl FnMut(viz_storage::
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LogRec {
     pub stream_id: i64,
-    pub labels: Vec<(String, String)>,
+    /// Shared by every row of the stream (read once per distinct `labels` text or batch entry).
+    pub labels: std::rc::Rc<Vec<(String, String)>>,
     pub ts: i64,
     pub line: String,
     pub metadata: Vec<(String, String)>,
@@ -636,19 +637,19 @@ pub(crate) fn read_logs(bytes: &[u8], mut visit: impl FnMut(LogRec) -> Res<()>) 
     let f = open(bytes, "logs", LOGS_LEAVES)?;
     let mut n = 0u64;
     // A row group stores each stream's labels once (dictionary); parse each distinct text once.
-    let mut last: (String, Vec<(String, String)>) = (String::new(), Vec::new());
+    let mut last: (String, std::rc::Rc<Vec<(String, String)>>) = (String::new(), std::rc::Rc::new(Vec::new()));
     for g in f.held_groups() {
         f.rows(g, "logs", |r| {
             n += 1;
             let text = s(get(r, "labels")?, "labels")?;
             if text != last.0 {
                 let parsed = viz_storage::json::parse_labels(&text).map_err(|e| internal("labels", e))?;
-                last = (text, parsed);
+                last = (text, std::rc::Rc::new(parsed));
             }
             let metadata = map(get(r, "metadata")?, "metadata")?.into_iter().map(|(k, v)| Ok((k, s(v, "metadata value")?))).collect::<Res<Vec<_>>>()?;
             visit(LogRec {
                 stream_id: l(get(r, "stream_id")?, "stream_id")?,
-                labels: last.1.clone(),
+                labels: std::rc::Rc::clone(&last.1),
                 ts: l(get(r, "ts")?, "ts")?,
                 line: s(get(r, "line")?, "line")?,
                 metadata,
@@ -667,12 +668,12 @@ pub(crate) fn read_logs(bytes: &[u8], mut visit: impl FnMut(LogRec) -> Res<()>) 
 /// The records of a `VZB1` signal-3 batch, in row order.
 pub(crate) fn batch_logs(bytes: &[u8], mut visit: impl FnMut(LogRec) -> Res<()>) -> Res<u64> {
     let b = viz_storage::otel::decode_logs(bytes).map_err(|e| internal("log batch", e))?;
-    let streams: Vec<Vec<(String, String)>> = b.streams.iter().map(|s| s.labels.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect()).collect();
+    let streams: Vec<std::rc::Rc<Vec<(String, String)>>> = b.streams.iter().map(|s| std::rc::Rc::new(s.labels.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect())).collect();
     for r in &b.rows {
         let st = b.streams.get(r.entry as usize).ok_or_else(|| internal("log batch", "entry out of range"))?;
         visit(LogRec {
             stream_id: st.stream_id,
-            labels: streams[r.entry as usize].clone(),
+            labels: std::rc::Rc::clone(&streams[r.entry as usize]),
             ts: r.ts,
             line: r.line.to_string(),
             metadata: r.metadata.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),

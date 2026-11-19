@@ -1,7 +1,6 @@
-import type { Engine } from '../../contracts/engine'
 import { TENANT_ID } from '../../contracts/ledger'
 import type { FlushMessage } from '../../shard/src/shard'
-import { type FlushEnv, type FlushResult, flushTenant } from './flush'
+import { type FlushEngine, type FlushEnv, type FlushResult, flushTenant } from './flush'
 
 /**
  * The flush queue's consumer: `{v, tenant, shard}` messages (written by a shard when it seals,
@@ -96,7 +95,7 @@ export async function writeDeadLetters(env: Pick<FlushEnv, 'BUCKET' | 'CELL'>, l
   for (const l of letters) console.error(`dead letter on ${l.queue}: ${l.reason}`, JSON.stringify(l.body))
 }
 
-export async function consumeFlushBatch(batch: MessageBatch<unknown>, env: FlushEnv, engine: Engine, opts: ConsumerOptions = {}): Promise<GroupOutcome[]> {
+export async function consumeFlushBatch(batch: MessageBatch<unknown>, env: FlushEnv, engine: FlushEngine, opts: ConsumerOptions = {}): Promise<GroupOutcome[]> {
   const dead = opts.deadLetter ?? ((l: DeadLetter[]) => writeDeadLetters(env, l))
   const groups = new Map<string, { msg: FlushMessage; messages: Message<unknown>[] }>()
   const junk: Message<unknown>[] = []

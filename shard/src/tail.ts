@@ -24,8 +24,22 @@ export const TAIL_SCAN_MAX_BYTES = 32 * 1024 * 1024
 /**
  * What a filtered tail read keeps. Every field is optional; what is absent does not filter. A row
  * is kept when its timestamp is in `[minTs, maxTs]` and its series matches every given filter.
+ *
+ * Signals (added 2026-11-19, stage 2 of traces and logs; additive within `v` 1): a stored batch
+ * is a metrics batch (signal 1) or, in the shards of the derived pools `{pool}/traces` and
+ * `{pool}/logs`, a span (2) or log-record (3) batch (contracts/BATCH.md, "Streams per signal").
+ * `signals` keeps only batches of those signals, by the header's signal byte, without reading
+ * further. Everything else in the filter selects METRIC rows: the time range and the series
+ * fields apply to signal 1 only. A batch of signal 2 or 3 that `signals` admits is returned
+ * whole, as stored (its times are nanoseconds in columns of their own; the reader filters them),
+ * unless the filter names `metrics`, `labels` or `keyRange`, which select series that such a
+ * batch does not have: then it keeps nothing. A batch of any other signal is never guessed at:
+ * skipped when `signals` leaves it out, else the read fails (`UnreadableBatch`). A metrics query
+ * passes `signals: [1]`; a read of spans or logs passes `[2]` or `[3]`.
  */
 export interface TailFilter {
+  /** Keep only batches whose signal byte is one of these (1 metrics, 2 spans, 3 log records). */
+  signals?: number[]
   /** Inclusive Unix milliseconds. */
   minTs?: number
   maxTs?: number
@@ -75,6 +89,8 @@ const DECIMAL = /^(0|[1-9]\d{0,19})$/
 
 /** A filter checked and prepared for matching, or the reason it is refused. */
 export interface CompiledFilter {
+  /** The signals kept, or null for every signal this code reads (1, 2, 3). */
+  signals: Set<number> | null
   minTs: number
   maxTs: number
   /** Metric names as UTF-8, by length (compared as bytes, never decoded). */
@@ -87,6 +103,8 @@ export interface CompiledFilter {
   canonical: string
   /** True when nothing is filtered. */
   all: boolean
+  /** True when the filter names series (`metrics`, `labels` or `keyRange`): a span or log batch then keeps nothing. */
+  series: boolean
 }
 
 const te = new TextEncoder()
@@ -98,6 +116,9 @@ export function compileFilter(f: TailFilter): CompiledFilter | { invalid: string
   if (f.minTs !== undefined && !Number.isSafeInteger(f.minTs)) return { invalid: 'minTs must be an integer' }
   if (f.maxTs !== undefined && !Number.isSafeInteger(f.maxTs)) return { invalid: 'maxTs must be an integer' }
   if (minTs > maxTs) return { invalid: 'minTs is after maxTs' }
+  if (f.signals !== undefined && (!Array.isArray(f.signals) || f.signals.length === 0 || f.signals.some((x) => !Number.isInteger(x) || x < 1 || x > 255))) {
+    return { invalid: 'signals must be a non-empty list of signal numbers (1 to 255)' }
+  }
   if (f.metrics !== undefined && (!Array.isArray(f.metrics) || f.metrics.length === 0 || f.metrics.some((m) => typeof m !== 'string' || m === ''))) return { invalid: 'metrics must be a non-empty list of names' }
   if (f.labels !== undefined && (!Array.isArray(f.labels) || f.labels.some((l) => typeof l !== 'object' || l === null || typeof l.name !== 'string' || l.name === '' || typeof l.value !== 'string'))) {
     return { invalid: 'labels must be a list of { name, value }' }
@@ -121,15 +142,19 @@ export function compileFilter(f: TailFilter): CompiledFilter | { invalid: string
     }
   }
   const labels = (f.labels ?? []).map((l) => ({ name: te.encode(l.name), value: te.encode(l.value) }))
+  const signals = f.signals ? new Set(f.signals) : null
   const canonical = JSON.stringify({
     minTs: f.minTs ?? null,
     maxTs: f.maxTs ?? null,
     metrics: names ? names.sort() : null,
     labels: f.labels ? [...f.labels].map((l) => [l.name, l.value]).sort() : null,
     keyRange: key ? [String(key.lo), String(key.hi)] : null,
+    // Only when given: a filter without signals keeps the text (and so the cursors) it had before.
+    ...(signals ? { signals: [...signals].sort((a, b) => a - b) } : {}),
   })
-  const all = f.minTs === undefined && f.maxTs === undefined && !metrics && labels.length === 0 && !key
-  return { minTs, maxTs, metrics, labels, present: labels.filter((l) => l.value.length > 0).length, key, canonical, all }
+  const series = !!metrics || labels.length > 0 || !!key
+  const all = !signals && f.minTs === undefined && f.maxTs === undefined && !metrics && labels.length === 0 && !key
+  return { signals, minTs, maxTs, metrics, labels, present: labels.filter((l) => l.value.length > 0).length, key, canonical, all, series }
 }
 
 const pad8 = (n: number) => (n + 7) & ~7
@@ -141,14 +166,25 @@ const equalBytes = (a: Uint8Array, b: Uint8Array, at: number, len: number) => {
 
 export class UnreadableBatch extends Error {}
 
+/** The signal byte of a stored batch (contracts/BATCH.md, offset 4), or null when it has no `VZB1` header. */
+export function batchSignal(payload: Uint8Array): number | null {
+  if (payload.length < 16 || payload[0] !== 0x56 || payload[1] !== 0x5a || payload[2] !== 0x42 || payload[3] !== 0x31) return null
+  return payload[4]!
+}
+
 /**
  * The rows of one stored batch that the filter keeps, as a `VZB1` batch, with their count; null
- * when none is kept. The bytes are returned unchanged when every row is kept.
+ * when none is kept. The bytes are returned unchanged when every row is kept. A span or log batch
+ * is kept whole or not at all (`TailFilter`).
  */
 export function filterBatch(payload: Uint8Array, f: CompiledFilter): { bytes: Uint8Array; rows: number } | null {
   const bad = (why: string) => new UnreadableBatch(`not a VZB1 batch: ${why}`)
-  if (payload.length < 16 || payload[0] !== 0x56 || payload[1] !== 0x5a || payload[2] !== 0x42 || payload[3] !== 0x31 || payload[4] !== 1) throw bad('header')
+  const signal = batchSignal(payload)
+  if (signal === null) throw bad('header')
   const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
+  if (f.signals && !f.signals.has(signal)) return null
+  if (signal === 2 || signal === 3) return f.series ? null : { bytes: payload, rows: dv.getUint32(8, true) }
+  if (signal !== 1) throw bad(`signal ${signal}`)
   const nRows = dv.getUint32(8, true)
   const nSeries = dv.getUint32(12, true)
   // The series table: which entries the filter keeps, and where each one's bytes are.

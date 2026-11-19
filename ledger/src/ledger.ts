@@ -44,8 +44,10 @@ import {
   type ReplaceRequest,
   type ReplaceResult,
   type StreamRef,
+  TABLES,
   type Table,
   type Watermark,
+  dataKeyPrefix,
 } from '../../contracts/ledger'
 import { type SchemaSpec, type SchemaTooNew, SchemaTooNewError, columnsOf, openSchema, refusalOf } from '../../contracts/schema'
 
@@ -194,8 +196,20 @@ export class LedgerUnavailableError extends Error {
   }
 }
 
-const TABLES: readonly Table[] = ['metric_samples', 'metric_series']
 const DAY = /^\d{4}-\d{2}-\d{2}$/
+const HOUR_MS = 3_600_000
+
+/**
+ * The hour of its day that a `spans` file's times lie in (contracts/TRACES.md "Object keys": one
+ * file per hour of start time, keyed `…/day={day}/hour={HH}/`), or null when `[minTs, maxTs]`
+ * is not inside one hour of `day`. Its key must lie under that hour's prefix.
+ */
+function spanHour(f: FileEntry): number | null {
+  const start = Date.parse(`${f.day}T00:00:00Z`)
+  if (!Number.isFinite(start) || f.minTs < start) return null
+  const hour = Math.floor((f.minTs - start) / HOUR_MS)
+  return hour <= 23 && f.maxTs < start + (hour + 1) * HOUR_MS ? hour : null
+}
 const CHANGE_OBJECT = /\/(\d{12,})\.json$/
 /** Default: the alarm runs this long after the first unlogged commit, so a burst shares a segment. */
 export const DRAIN_DELAY_MS = 200
@@ -380,6 +394,7 @@ function fileProblem(f: FileEntry, prefix: (f: FileEntry) => string): string | n
   if (!isCount(f.bytes) || !isCount(f.rows) || !isCount(f.level)) return `bad bytes/rows/level for ${f.key}`
   if (!Number.isSafeInteger(f.minTs) || !Number.isSafeInteger(f.maxTs) || f.minTs > f.maxTs) return `bad time range for ${f.key}`
   if (typeof f.index !== 'string') return `index fragment must be a string for ${f.key}`
+  if (f.table === 'spans' && spanHour(f) === null) return `spans file ${f.key}: its times are not inside one hour of ${f.day}`
   // Only this tenant's objects, of this table and day (contracts/ledger.ts `FileEntry.key`):
   // whatever the ledger lists, the janitor will one day delete.
   const p = prefix(f)
@@ -597,8 +612,13 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     return r ? toStored(r) : null
   }
 
-  /** Where a file of this table and day must be: `{cell}/data/{table}/tenant={tenant}/day={day}/`. */
-  private readonly keyPrefix = (f: FileEntry): string => `${this.cell}/data/${f.table}/tenant=${this.tenant}/day=${f.day}/`
+  /**
+   * Where a file of this table and day must be: `{cell}/data/{table}/tenant={tenant}/day={day}/`,
+   * and for `spans` under the hour its times lie in, `…/hour={HH}/` (contracts/ledger.ts
+   * `dataKeyPrefix`; `fileProblem` has checked that hour exists).
+   */
+  private readonly keyPrefix = (f: FileEntry): string =>
+    dataKeyPrefix(this.cell, f.table, this.tenant, f.day, f.table === 'spans' ? (spanHour(f) ?? undefined) : undefined)
 
   /**
    * Inside the transaction that removes `keys` from the live set: remember them, with the
@@ -1158,6 +1178,10 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     this.checkpointRetryAt = 0
     try {
       const written = await this.drainSerial(Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER)
+      // A drain that worked ends any backoff, as one by the alarm does: the log writes again,
+      // so the next commits are logged at the usual delay, not when an old backoff runs out.
+      this.failures = 0
+      this.retryNotBefore = 0
       this.stuck = null
       return { written }
     } catch (e) {

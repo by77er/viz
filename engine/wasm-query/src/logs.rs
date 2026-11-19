@@ -42,17 +42,61 @@ impl LogSource for Rows {
     }
 }
 
-type RowKey = (i64, i64, String, Vec<(String, String)>);
+/// FNV-1a 64 of a row key `(stream_id, ts, line, metadata)`: the de-duplication index only
+/// (equal hashes are compared in full).
+fn row_hash(r: &LogRec) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |b: &[u8]| {
+        for x in b {
+            h = (h ^ *x as u64).wrapping_mul(0x100_0000_01b3);
+        }
+        h = (h ^ 0xff).wrapping_mul(0x100_0000_01b3);
+    };
+    eat(&r.stream_id.to_le_bytes());
+    eat(&r.ts.to_le_bytes());
+    eat(r.line.as_bytes());
+    for (k, v) in &r.metadata {
+        eat(k.as_bytes());
+        eat(v.as_bytes());
+    }
+    h
+}
 
 /// Decode the files (in the order given) and the tail batches, de-duplicate, group by stream.
-pub(crate) fn rows(files: &[&[u8]], tails: &[&[u8]], max_rows: u64, decoded: &mut u64) -> Res<Rows> {
-    let mut by: HashMap<RowKey, LogRec> = HashMap::new();
+/// Memory: each row is held once (no copy of its line or metadata for the index), and a
+/// stream's labels once per file or batch entry, shared by its rows.
+/// With `want`, only rows some selector can read are kept: a row whose stream matches none of
+/// the selectors, or whose time is outside all their ranges, cannot change the answer (the
+/// engine re-applies both) and is dropped before it is held. Both are parts of the row key, so
+/// dropping them before de-duplication changes no other row.
+pub(crate) fn rows(files: &[&[u8]], tails: &[&[u8]], max_rows: u64, decoded: &mut u64, want: Option<&[Sel]>) -> Res<Rows> {
+    let compiled: Option<Vec<(Option<Compiled>, i64, i64)>> = want.map(|w| w.iter().map(|s| (Compiled::new(&s.matchers), s.start, s.end)).collect());
+    // Per stream (by its shared labels), whether a selector's matchers admit it.
+    let mut admitted: HashMap<*const Vec<(String, String)>, Vec<bool>> = HashMap::new();
+    let mut kept: Vec<Option<LogRec>> = Vec::new();
+    let mut index: HashMap<u64, Vec<u32>> = HashMap::new();
     let mut put = |r: LogRec| -> Res<()> {
         *decoded += 1;
         if *decoded > max_rows {
             return Err(Fail::Limit("max_rows", max_rows, *decoded, format!("query exceeded limit max_rows: more than {max_rows} log rows decoded, the limit is {max_rows}. Narrow the time range, or select fewer streams.")));
         }
-        by.insert((r.stream_id, r.ts, r.line.clone(), r.metadata.clone()), r);
+        if let Some(c) = &compiled {
+            let ok = admitted.entry(std::rc::Rc::as_ptr(&r.labels)).or_insert_with(|| c.iter().map(|(m, _, _)| m.as_ref().is_none_or(|m| m.matches(&r.labels))).collect());
+            if !c.iter().zip(ok.iter()).any(|((_, lo, hi), m)| *m && r.ts >= *lo && r.ts < *hi) {
+                return Ok(());
+            }
+        }
+        let slots = index.entry(row_hash(&r)).or_default();
+        for &i in slots.iter() {
+            let old = kept[i as usize].as_ref().expect("indexed rows are kept");
+            if old.stream_id == r.stream_id && old.ts == r.ts && old.line == r.line && old.metadata == r.metadata {
+                // The later row wins for the other columns.
+                kept[i as usize] = Some(r);
+                return Ok(());
+            }
+        }
+        slots.push(kept.len() as u32);
+        kept.push(Some(r));
         Ok(())
     };
     for f in files {
@@ -61,17 +105,17 @@ pub(crate) fn rows(files: &[&[u8]], tails: &[&[u8]], max_rows: u64, decoded: &mu
     for b in tails {
         sigfiles::batch_logs(b, &mut put)?;
     }
-    let mut grouped: BTreeMap<Vec<(String, String)>, Vec<(Vec<(String, String)>, LogRow)>> = BTreeMap::new();
-    for (_, r) in by {
+    drop(index);
+    let mut grouped: BTreeMap<std::rc::Rc<Vec<(String, String)>>, Vec<(Vec<(String, String)>, LogRow)>> = BTreeMap::new();
+    for r in kept.into_iter().flatten() {
         let metadata = r.logql_metadata();
-        let raw = r.metadata;
-        grouped.entry(r.labels).or_default().push((raw, LogRow { ts_ns: r.ts, line: r.line, metadata }));
+        grouped.entry(r.labels).or_default().push((r.metadata, LogRow { ts_ns: r.ts, line: r.line, metadata }));
     }
     let streams = grouped
         .into_iter()
         .map(|(labels, mut v)| {
             v.sort_by(|a, b| (a.1.ts_ns, a.1.line.as_bytes()).cmp(&(b.1.ts_ns, b.1.line.as_bytes())).then_with(|| a.0.cmp(&b.0)));
-            (labels, v.into_iter().map(|x| x.1).collect())
+            (std::rc::Rc::unwrap_or_clone(labels), v.into_iter().map(|x| x.1).collect())
         })
         .collect();
     Ok(Rows { streams })
@@ -143,7 +187,7 @@ impl Compiled {
 }
 
 /// A selector's read: matchers and `[start, end)` in nanoseconds.
-struct Sel {
+pub(crate) struct Sel {
     matchers: Vec<Matcher>,
     start: i64,
     end: i64,
@@ -219,10 +263,15 @@ pub(crate) fn do_lq_query(mut r: Req<'_>) -> Res<Vec<u8>> {
     let files = r.files("logs file")?;
     let tails = r.files("tail batch")?;
     r.end()?;
-    // Refuse a bad query before reading anything.
+    // Refuse a bad query before reading anything; what each selector reads.
     viz_logql::parse(q).map_err(lq_err)?;
+    let sels: Vec<Sel> = if kind == 1 { viz_logql::selectors(q, start, start, 1) } else { viz_logql::selectors(q, start, end, step) }
+        .map_err(lq_err)?
+        .into_iter()
+        .map(|s| Sel { matchers: s.matchers, start: s.start_ns, end: s.end_ns })
+        .collect();
     let mut decoded = 0u64;
-    let src = rows(&files, &tails, max_rows, &mut decoded)?;
+    let src = rows(&files, &tails, max_rows, &mut decoded, Some(&sels))?;
     let opts = Options { limit, direction, max_steps, max_series, now_ns: None };
     let out = if kind == 1 { viz_logql::query_instant(&src, q, start, &opts) } else { viz_logql::query_range(&src, q, start, end, step, &opts) }.map_err(lq_err)?;
     let json = out.data_json();

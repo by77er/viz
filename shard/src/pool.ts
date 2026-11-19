@@ -84,3 +84,22 @@ export const dedicatedPool = (tenant: string, slots: number, epoch: number): Poo
   spread: slots,
   epoch,
 })
+
+/**
+ * The signals that have pools of their own (contracts/BATCH.md, "Streams per signal"; D57):
+ * spans go to `{pool}/traces` and log records to `{pool}/logs`, with the pool map's slots,
+ * spread and epoch; metrics use the pool itself. One derivation for every component that names
+ * these shards (edge appends there, flush's sweep and the janitor find them, query reads them).
+ */
+export type DerivedSignal = 'traces' | 'logs'
+export const DERIVED_SIGNALS: readonly DerivedSignal[] = ['traces', 'logs']
+
+/** The pool map of a signal's shards, or null when the derived name is not a valid pool name (a base pool over 113 characters). */
+export function signalPool(map: PoolMap, signal: DerivedSignal): PoolMap | null {
+  const pool = `${map.pool}/${signal}`
+  return validPoolName(pool) ? { ...map, pool } : null
+}
+
+/** The signals `INGEST_SIGNALS` enables (`traces`, `logs`, `traces,logs`; unset: none). */
+export const enabledSignals = (raw: string | undefined): DerivedSignal[] =>
+  DERIVED_SIGNALS.filter((s) => (raw ?? '').split(',').some((x) => x.trim() === s))

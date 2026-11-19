@@ -1,4 +1,4 @@
-import { type PoolMap, shardName, slotFor, tenantSlots, validPoolName } from '../../shard/src/pool'
+import { type PoolMap, shardName, signalPool, slotFor, tenantSlots, validPoolName } from '../../shard/src/pool'
 import type { AppendResult, Shard } from '../../shard/src/shard'
 import { type Batch, buildBatches, type Collector } from './batch'
 import { HttpError } from './errors'
@@ -28,9 +28,10 @@ export type Signal = 'metrics' | 'traces' | 'logs'
 /** The pool map a signal's batches are appended with. 503 if the derived name is not a valid pool name. */
 export function signalMap(map: PoolMap, signal: Signal): PoolMap {
   if (signal === 'metrics') return map
-  const pool = `${map.pool}/${signal}`
-  if (!validPoolName(pool)) throw new HttpError(503, `the ${signal} pool name derived from ${map.pool} is not a valid pool name`, { 'Retry-After': '30' })
-  return { ...map, pool }
+  // One derivation for every component (shard/src/pool.ts `signalPool`).
+  const derived = signalPool(map, signal)
+  if (!derived) throw new HttpError(503, `the ${signal} pool name derived from ${map.pool} is not a valid pool name`, { 'Retry-After': '30' })
+  return derived
 }
 
 /** What `appendAll` needs of a request's decoded rows: the metrics `Collector`, or a span or log collector. */
