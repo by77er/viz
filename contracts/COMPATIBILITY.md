@@ -264,6 +264,12 @@ latest, compat }`, and per format the versions it reads and writes.
 - The **rollback floor** is the oldest release a rollback may reach; a forward-only release
   raises it to itself. Rules that say "once A is the floor" mean: the release tool will no
   longer roll back past A.
+- **A floor raised by a switch.** A switch that makes a writer start a format version (a var
+  such as `INGEST_SIGNALS`) raises the floor of every reader of that version to the first
+  release that reads it, from the first version with the switch on, per Worker rather than for
+  the whole release. The release that turns the switch on is refused unless every such reader
+  is at its floor in it and as it serves; the release record names the rule and what it saw
+  (D69; `deploy/workers.json` `rollback_floors`).
 - **Bootstrapping.** The first release with versioned storage cannot protect against a
   rollback to code from before it (that code checks nothing). Version 1 equals that code's
   schema, so such a rollback is harmless; but no migration 2 may ship until the first
