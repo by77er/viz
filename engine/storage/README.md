@@ -433,6 +433,110 @@ of the batch bytes. The WASM speed of these encoders was not measured (no bindin
 them yet). A single cold 20,000-span segment took 10.9 s per million spans; the table is the
 steady state over 50 segments.
 
+## Compaction of spans and logs (2026-11-19)
+
+Contracts: `contracts/TRACES.md` and `LOGS.md`, "Compaction", and LOGS.md §6 (the token filter,
+whose place inside the file was settled first, D65); design/DECISIONS.md D68. Metric code and
+output are untouched: the golden files of `tests/golden/v1-2026-11-18` are still byte-identical,
+and flush's span and log output is unchanged (its writers were split into row-group-at-a-time
+writers that flush and compaction share; every existing test, the byte-for-byte determinism
+property included, passes as before).
+
+| API | What it does |
+|---|---|
+| `merge_signal_files(table, inputs)`, `merge_signal_files_shared(table, &[Bytes], &SignalMergeOptions)` | Compaction of one table and partition (`src/sigmerge.rs`), inputs lowest precedence first. `spans`: files of ONE hour; a first pass over the two id columns finds, per `(trace_id, span_id)`, the last occurrence (later input, then later row), then a k-way merge in the contract's order keeps only those. `trace_index`: files of ONE day; the rows of one trace become one (`merge_fragments`, the later input's root on a tie, at most 64 services by most spans then name, `services_truncated`). `logs`: files of ONE day; a row is dropped when the next row in the merged order (ties: the later input after) has the same row key, as flush does. Refuses (`SignalError::Merge`) no inputs, no rows, an unsorted input, rows of two partitions (checked on every row read, winners or not), and a file of another table. |
+| `merge_signal_files_chunked` | The same, the output left in the 1 MiB chunks it was written in (the WASM binding copies them out one by one). |
+| `SignalMergeOptions` | `write` (default: flush's, row groups cut at `MERGE_ROW_GROUP_BYTES` = 2 MiB instead of 16), `token_filter` (default on; off gives exactly the bytes a flush of the same rows would), `token_filter_max_tokens` (default `MAX_FILTER_TOKENS`, 2^19). |
+| `tokens::{for_each_token, tokens, literal_tokens}` | The token rule of LOGS.md §6 (runs of ASCII letters and digits and non-ASCII characters, at least 4 bytes, ASCII-lowercased, cut to 64 bytes at a character boundary), and the tokens strictly inside a literal. |
+| `tokens::TokenFilterBuilder` | Builds a file's `VZT1` filter while its row groups are written: tokens in 1 MiB arena chunks, an open-addressing table at most 3/4 full, one bitset byte per 8 row groups (about 12 bytes a token besides its bytes); past the bound it frees everything and the file gets no filter. `write` streams the filter in 64 KiB pieces. |
+| `tokens::TokenFilter` | Reads a filter: `parse` checks the header and sizes, `lookup`/`has` binary-search the blocks' first tokens and scan one block (checking prefix lengths, bounds and order), `may_match(rg, required)` is false only when some clause has no literal whose implied tokens are all in the row group; any doubt answers true. `entries` decodes all. `token_filter_location` reads `viz.token_filter` from a file's footer. |
+
+How a merged `logs` file carries its filter: the `LogsFileWriter` writes it through
+`SerializedFileWriter::write_all` after the last row group (and its bloom filter), records
+`viz.token_filter` = `"{off},{len}"` in the footer's key-value metadata and `"tok":[off,len]` in
+the fragment, whose `foot` then starts where the filter ends.
+
+### How it was verified
+
+```
+CARGO_TARGET_DIR=$PWD/target cargo test -j 2 -- --test-threads 2      # 79 tests, 11 in tests/sigmerge.rs
+cargo run --release --example merge_independent -- DIR 40 && python3 -I tools/merge_independent_check.py DIR
+cargo run --release --example otel_bench -- merge 8 25000 3 [DIR]      # throughput, size, peak heap
+python3 tools/mutants.py sigmerge tokens otel                           # on a scratch copy
+```
+
+**`tests/sigmerge.rs`** (11 tests; properties 120 cases each, on the span and log generators of
+`tests/otelgen`, which produce duplicates within and across batches, every attribute type, NaN,
+Unicode, and starts across an hour and a day): units of 1 to 2 batches, 1 to 4 units, each flushed
+as flush does, then every partition merged in unit order with row groups of 1 to 5 rows and pages
+of 3:
+
+- `spans_merge_per_hour_into_the_deduplicated_union`: the merged rows, read back, are the
+  reference computed from the batches alone (within a unit the later row, across units the later
+  unit), and the merged bytes, fragment and bounds are exactly those of ONE flush of a batch
+  holding just those rows; merging in two steps (the first inputs, then that output with the
+  rest) gives the same bytes; the fragment agrees with the footer.
+- `trace_index_merges_fragments_per_day`: the merged rows equal the fragments recomputed here
+  from each unit's spans and merged by an implementation of the contract's rule written in the
+  test; `min_tid`/`max_tid` per row group; two-step merges equal.
+- `logs_merge_per_day_into_the_deduplicated_union_with_its_token_filter`: without the filter the
+  bytes and fragment equal one flush of the reference rows; with it, the same rows and row
+  groups, `tok` after the last row group, `foot` starting where it ends, the footer's
+  `viz.token_filter` equal to `tok`; the filter lists exactly the tokens of each row group's
+  lines and metadata values, computed by a tokenizer written over characters in the test; for
+  literals cut from the lines and some fixed ones, `may_match` never rules out a row group that
+  holds a line containing the literal, and rules one out exactly when an implied token is missing.
+- `default_layout_merges_are_one_flush`: with the merge's default options, merged bytes equal a
+  flush of the same rows with the same options (spans and logs).
+- Fixed: refusals (two days, two hours, another table, no input, an unsorted file written by hand
+  with the `parquet` crate); 64 services kept by the rule (80 spans, 70 services); a root span
+  stored by two units takes the later unit's fragment, in either order; the token rule (case,
+  3-byte runs, `_` splits, non-ASCII, a cut at 64 bytes inside a two-byte character) and implied
+  tokens; the filter's exact bytes for a small case, lookups before, between and after blocks,
+  damaged filters refused and a refused filter never pruning, 40 tokens over 70 row groups, the
+  bound; a merge past the bound writes no filter and is then byte-identical to one without.
+
+**Independent readers** (`examples/merge_independent.rs`, `tools/merge_independent_check.py`):
+40 random cases of 2 to 5 units of span and log batches (random attributes of every type with
+NaN, -0 and infinities, Unicode, ids from small pools so duplicates are common, starts across an
+hour and a day, row groups of 1 to 12 rows or the default), every partition merged. PyArrow
+26.0.1 and DuckDB 2.0.0 read every input and output whole; the check computes what each output
+must hold from the INPUTS' rows itself (the last input's row per key, a trace's rows merged with
+the later input's root on a tie, at most 64 services), compares every column exactly (doubles by
+their bits), checks one partition per file, row-group caps, every fragment field against the
+footer, and for `logs` parses the `VZT1` filter from the bytes at `viz.token_filter` and requires
+exactly the tokens of each row group (its own tokenizer). Run 2026-11-19 on the final code:
+RESULTS_INDEPENDENT.
+
+### Memory and speed (measured here, not on Cloudflare)
+
+Native, release build, Linux x86-64, one thread, 4 shared cores at load average 4 to 5
+(`otel_bench merge 8 25000 3`, peak heap counted by a global allocator; the generator is the
+one described in the example's header: 20 services, 200 span names, a high-cardinality user id,
+log lines of logfmt with a unique 16-hex-digit request id):
+
+| Table | Inputs | Input MB (rows) | Output MB (row groups) | Merge (min of 3) | Throughput | Peak heap with the inputs |
+|---|---|---|---|---|---|---|
+| spans (one hour) | 8 | 16.13 (177,860) | 16.57 (49) | 3.06 s | 5.3 MB/s, 58 k rows/s | 60 MB |
+| trace_index (one day) | 8 | 0.91 (16,672) | 0.88 (2) | 0.15 s | 6.1 MB/s | 21 MB |
+| logs (one day) | 8 | 11.69 (200,000) | 15.90 (34), of which the token filter 4.01 (25%) | 1.24 s | 9.4 MB/s, 161 k rows/s | 50 MB |
+
+Output size: spans files grow 3% (more, smaller row groups than the inputs' single groups:
+49 instead of 7 at 16 MiB groups, dictionaries repeated); logs grow by their filter: 206,905
+distinct tokens, most of them request ids, about 19 bytes each. What the filter buys on that
+file: a search for one request id (`|= "request_id=… "`) keeps on average **1.00 of 34** row
+groups (50 ids). In WASM (`engine/wasm/tools/measure_signal_merge.mjs`, engine/wasm/README.md)
+the same merges peak at 62 MB (spans), 62 MB (logs, 11 MB in) and 81 MB (logs, 16 MB in) and
+take 4.0, 1.8 and 2.4 s.
+
+How the memory came down (spans, the 8 inputs above): 199 MB of heap with 16 MiB output row
+groups decoded whole and a contiguous output (6 times a group's counted size: owned strings, a
+resource entry and its split per row, the views and the leaves); readers decoding 64 values at a
+time per column instead of 1024 (the record reader's default held 2.3 MB per open spans file);
+the winners of pass 1 in one sorted vector instead of a hash map; resource entries interned;
+the output written in chunks (a growing `Vec` doubled past the inputs' size); 2 MiB row groups.
+Smaller groups than 2 MiB were not measured below; 4 MiB left spans at 75 MB in WASM.
+
 ## Known risks
 
 - **Partial reads trust the planner.** A row group whose `series_id` chunk is not in a sparse

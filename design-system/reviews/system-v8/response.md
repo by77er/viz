@@ -18,8 +18,8 @@ test worker, every server stopped.
   (`evidence/audit-new-checks-on-v7.txt`) were run against the v7 copy. The reviewer's 13 mutants were run on v7 by the reviewer
   (1 caught); here they ran against v8.
 - **`npm test`**: `chart-rules.test.mjs` and `check.test.mjs` (the corpus without its browser mutants).
-- **`tools/mutants.mjs`**: the whole corpus, browser mutants included, each on a copy in the scratch area: **155 of 155 as
-  expected** (150 caught, the 5 harmless edits pass): 153 in one run on the final tree, and U10 and U11, added after it, run alone.
+- **`tools/mutants.mjs`**: the whole corpus, browser mutants included, each on a copy in the scratch area: **159 of 159 as
+  expected** (154 caught, the 5 harmless edits pass), in one run on the final tree.
 - **`tools/check.mjs`** on the component CSS (with its rendered audit), the previews, the compositions and the fixtures.
 - **`tools/audit.mjs`**: every page at its 14 configurations, the guards in both themes at both pointers, presses by finger and mouse,
   hover, the token trace and the reduced-motion pass in both themes at both pointers.
@@ -34,11 +34,12 @@ test worker, every server stopped.
 |---|---|---|
 | M1 a narrowed query leaves the screen grey beside reserved colours, nothing offered | One rule for every way the screen changes: a series not in the result is not on screen, so its slot is open as a hidden series' is; the largest series on screen in Other take open slots at once; "Colour the eight largest" offered wherever Other has members | `chart-rules.test.mjs`: the reviewer's narrowing (failing first on v7), 300 random narrowing sequences done twice (query edit, dashboard filter) that must colour alike, 400 random sequences with narrow-and-back among the moves; mutants C1, C2, C4, C14, C15; `compare/v8-m1-query-narrowed-to-node-b-*`, `images/v8-chart-query-node-b-*` |
 | M2 single-unit number columns left-aligned | `vz-right` on "Memory, MiB" (Table preview) and on "Memory, MiB" and "Restarts" (folded-list composition) | the audit's **align** check, rendered, on every page at every configuration (failing first on v7); mutants U2, U3; `compare/v8-m2-*` |
-| M3 each guard renders one context; a token redefined locally passes | Every guard in both themes and both pointers; rings and borders read as painted, against the theme's tokens; a system token is defined once, by its theme (lint), and checked on every element as rendered; custom properties, `font-variation-settings` and picked members of Other read | the reviewer's 13 (W1 to W10, W17, W23, W24) all caught; v8's own U1 to U11; the reviewer's 65 (X 32, Y 20, W 13) caught; the corpus 155 of 155 as expected |
+| M3 each guard renders one context; a token redefined locally passes | Every guard in both themes and both pointers; rings and borders read as painted, against the theme's tokens; a system token is defined once, by its theme (lint), and checked on every element as rendered; custom properties, `font-variation-settings` and picked members of Other read | the reviewer's 13 (W1 to W10, W17, W23, W24) all caught; v8's own U1 to U11; the reviewer's 65 (X 32, Y 20, W 13) caught; the corpus 159 of 159 as expected |
 | m1 stacked folded rows cost density | The row is its key link's target; the key's line and "Actions…" are drawn at their own height; the 44 px are the row's | rows measured below; U5, U6 and the hit-area guard; `compare/v8-m2-m1-folded-list-400-*` |
 | m2 the audit's header names v6 | Rewritten: the latest review's compositions, every guard and context | `tools/audit.mjs` lines 1 to 44 |
 | m3 a segmented control drawn taller with a coarse pointer | Drawn at its own height; a wrapped one keeps its rows apart by a gap, so the 44 px hit areas do not meet | U8 and the hit-area guard at 320 px; `compare/v8-m3-segmented-preview-*`, `images/v8-chart-controls-320-coarse-light.png` |
-| Timings | The load beside every timing; a row is judged only when most of its samples were at a load of 4 or less (the harness now applies "most" strictly). The load was low enough that most rows of run 1 are judged: **two are over budget, in v7 and v8 alike** (the theme change at both layouts, the phone's touch crosshair) | `speed/`, Speed below |
+| **Theme change** (blocker row; returned after the first hand-off) | Restyle less: the press marks the control, not every ancestor; charts off screen are skipped (`content-visibility: auto`); no colour is eased | Judged: desktop 128 → 72 and 90 → 82, phone 110 → 69 (budget 100); transitions left running 93 → 0; `speed.mjs`'s new row, `check.mjs`, the ring and press guards, U12 to U15; `compare-theme/` |
+| Timings | The load beside every timing; a row is judged only when most of its samples were at a load of 4 or less (the harness now applies "most" strictly). The load was low enough that most rows of run 1 are judged: **two were over budget, in v7 and v8 alike** (the theme change at both layouts, now fixed; the phone's touch crosshair, not fixed) | `speed/`, Speed below |
 
 ## Majors
 
@@ -134,11 +135,12 @@ log's "Show all … lines" ring cut by the table wrap (inside); `<b>`/`<strong>`
 reached the key's last words (the key's line now ends that far above it).
 
 **What guards it.** The reviewer's 13 (W1 to W10, W17, W23, W24, written as the review gives them) are in the corpus and all caught;
-so are v8's own eleven (U1 to U11): U1 redefines `rule-control` and `focus` from script at run time, where no lint can see it, and is
+so are v8's own fifteen (U1 to U15): U1 redefines `rule-control` and `focus` from script at run time, where no lint can see it, and is
 caught by the rendered focus and contrast guards. The whole corpus, on the final tree (`evidence/mutants.txt`; 23 min at a load of
 1.4 to 7.3): **153 of 153 as expected**: R1 to R17, N 13, X 32, V 17, Y 20, Z 8, W 13, U 9, C 15 and A 4 caught (148); R18 and H1 to H4
 (harmless edits) pass. Then U10 (the stacked key's clearance above "Actions…" removed) and U11 ("Other" allowed to
-shrink) were added for the last two fixes and run alone on the same tree: both caught. **155 of 155.** Before the final run, three of v8's own were not as expected and were fixed in the checks or the corpus, not
+shrink) were added and caught, and U12 to U15 with the theme work. **The final run, after the theme work: 159 of 159 as expected**
+(154 caught, 5 harmless edits pass; 12 min at a load of 8.7 to 10; `evidence/mutants.txt`). Before the first final run, three of v8's own were not as expected and were fixed in the checks or the corpus, not
 waved through: W7 (the waiting line moved over the plot) ran on the Panel preview, which draws no chart, and is now run on the
 reference, where the new drawn-box sampling catches it; U9 ran on the Claim preview, whose strong words have their own rule (now the
 Section preview); C1 had become equivalent under v8 (rewritten, see below). The new drawn-box sampling then found the stacked
@@ -242,7 +244,13 @@ the number of elements restyled, not how many of them use a colour.
 | 3. No colour is eased: the three hover transitions removed (buttons, inputs, segments) | **Yes** | A/B, desktop, alone: 113 → 94 (load 3.6). Before, the frame that counts as done still showed the controls in the old theme's colours for 100 ms (`compare-theme/`). Motion already said "animate opacity and position only"; hover now changes in the next frame, as a press does. |
 | 1 + 2' | — | A/B, desktop 103 → 95 (load 2.9). |
 | **1 + 2' + 3** (a variant of the built page) | — | A/B at a load of 1.7 to 1.9, **judged**: **desktop 107 → 82**, **phone 152 → 66**. |
-| **The final tree** (the same three changes in `src/`, rebuilt) | — | @@FINAL@@ |
+| **The final tree** (the same three changes in `src/`, rebuilt) | — | Theme row alone, A/B, **judged**: **desktop 90 → 82** (load 3.3), **phone 110 → 69** (load 2.6). Full desktop scenario, **judged** (load 3.3 to 3.4): **128 → 72**, every row within, worst interaction 144 → 104. Full phone scenario at a load of 4.4 to 4.6 (not judged): 152 → 78. Transitions running when the change is drawn: 93 → 0 at both layouts (judged). Layout shift unchanged: 0.0000 on the phone, 0.0004 and 0.0002 on the desktop (judged). |
+
+**Result: the row passes at both layouts, at a judged load** (p75 at or under 100 ms: desktop 72 and 82, phone 69), so no budget
+decision is needed. The margin is thinner on the desktop, where every chart is near the viewport and 1,133 elements are still
+restyled; the next step there, if it is needed, is fewer elements per chart, not containment. Printed: `evidence/speed-theme-ab.txt`,
+`evidence/speed-desktop-run3-final.txt`, `evidence/speed-phone-run3-final.txt`; results: `speed/theme-*-ab.json`,
+`speed/*-run3-final.json`.
 
 What it restyles now (traced, final tree): the phone's theme change restyles 559 elements (was 1,720), with no press-wide invalidation
 and no transitions; the desktop's 1,133 (was 1,439 with the transitions' recalculations), in 4 recalculations instead of 6 or 7.
@@ -279,20 +287,21 @@ changed here; reported.
 
 ## The page audit, final run
 
-`tools/audit.mjs`, every page: 31 previews, the reference, the fixture, the 11 compositions, and the 12 flow screens reported apart
+`tools/audit.mjs`, every page, run again after the theme work: 31 previews, the reference, the fixture, the 11 compositions, and the 12 flow screens reported apart
 (56 pages), at 14 configurations (320 to 1500 px fine; 320, 400 and 768 px coarse; 200% zoom of 1280, 1440 and 1500 px windows).
 **System pages: 0 findings.** Flow screens (read only, reported apart): 122 findings, all known and for the flows' own revision: the
 press guard finds a finger's press never painted on 11 screens (they do not load `viz-press.js`), four folding tables on screens 1, 8
 and 12 that scroll at 800 px and up, 768 px coarse or 200% zoom (`data-fold="wide"` is their fix), and screen 1's "1 proposal
 waiting", a link inside a sentence drawn as a control. As printed: `evidence/audit-full.txt`.
 
-`tools/check.mjs` on the component CSS (tokens, structure, the rendered contrast and reservation audit): 780 of 780 checks, 30 previews rendered in both themes at rest, hover, press and a
+`tools/check.mjs` on the component CSS (tokens, structure, the rendered contrast and reservation audit): 763 of 763 checks (fewer
+than before the theme work: the press rules no longer have a transition to switch off), 30 previews rendered in both themes at rest, hover, press and a
 finger's press with 0 failures, reserved heights equal to drawn, 0 literal values (`evidence/check.txt`). On the previews,
-the compositions and the fixtures (`--no-render`): 775 of 775 checks, 0 literal values in 45 files.
+the compositions and the fixtures (`--no-render`): 758 of 758 checks, 0 literal values in 45 files.
 
-`npm test`: 175 tests, **131 pass, 0 fail**, 44 skipped: the 20 chart tests, and the corpus's 111 mutants that need no browser
-(96 for `check.mjs`, 15 for the chart rules); the 44 that need a browser (36 audit, 8 rendered check) are skipped there unless
-`VIZ_SLOW=1`, and ran in the corpus runs above. 76 s (`evidence/npm-test.txt`).
+`npm test`: 179 tests, **133 pass, 0 fail**, 46 skipped: the 20 chart tests, and the corpus's 113 mutants that need no browser
+(98 for `check.mjs`, 15 for the chart rules); the 46 that need a browser (38 audit, 8 rendered check) are skipped there unless
+`VIZ_SLOW=1`, and ran in the corpus run above. 98 s (`evidence/npm-test.txt`).
 
 ## Images
 
@@ -321,6 +330,12 @@ in the monitor's prose (exempt). `tools/shots.mjs` now counts, instead of measur
 bottom edge (the first capture reported three such controls as small or covered; the page audit, which scrolls to each, found
 nothing there).
 
+**The theme change** (`compare-theme/`, 4 images: to dark from light and to light from dark, 1440 and 400 px coarse; v8 as first
+handed off left, final right): the fixture's first frame after the tap. On the left, the segmented control, "Share…" and "Run query"
+are still in the old theme's colours, 100 ms of transition still to run, while the page around them has changed; on the right every
+control is drawn in the new theme in that frame. The composed screens in `images/` were captured again on the final tree; the v7 to
+v8 pairs in `compare/` were captured before the theme work, which changes nothing they show (no hover, no theme change in them).
+
 Judged on the composed images: no regression found. Two defects were found on them and fixed before this run: Other's cut range at
 1440 (M1) and the navigation ring on the letters (M3).
 
@@ -340,6 +355,15 @@ fold (the row as the key's target) and rings without a change of markup; their p
   selects and summaries in other cells lie above it), the row is at least `control-touch` tall and padded `space-2` at its top; the key
   cell no longer has a 44 px minimum. In the stacked form (two kept columns below 640 px) the key cell's bottom padding is
   `(control-touch − control-sm) / 2` and "Actions…" is drawn at its own height.
+- `viz-press.js` marks `data-pressed` on the pressed control and on its pressable ancestors (a legend row), no longer on every ancestor up
+  to `body`; a rule written as `body[data-pressed] …` or `.vz-something[data-pressed] .child` on a non-pressable ancestor would no longer
+  match (none in the system).
+- Hover no longer eases: the colour transitions on `.vz-button`, `.vz-input`/`.vz-select` and `.vz-segmented button` are gone. A
+  component that adds a colour transition fails `check.mjs`.
+- `.vz-chart` is `content-visibility: auto` (paint, layout and style containment always; skipped off screen): nothing inside a chart may
+  float outside it (put menus and popovers outside it); its clip margin is `space-3`.
+- `fixtures/speed.json` and `fixtures/speed-phone.json` have a row "Change theme: transitions still running when it is drawn" (type
+  `transitions`, budget 0); `tools/speed.mjs` touches a control two frames after scrolling it into view.
 - Navigation links have `space-1` of side padding and the same negative margin (no change to the layout), as tabs do. The legend's "Other" is never cut; its count gives way first.
 - Focus rings drawn inside the control (offset minus `stroke`) in the navigation, the legend's sort and action buttons, a sort button
   with a coarse pointer, and the log message's button.
@@ -355,8 +379,14 @@ fold (the row as the key's target) and rings without a change of markup; their p
 
 ## Disagreements, and what was not done
 
-- **The theme change is judged over budget at both layouts**, in v7 and v8 alike (Speed), and the phone's touch crosshair just over;
-  neither is fixed here. The theme change needs a decision (restyle less, or another budget for it) and is the next change to make.
+- **The theme change was over budget** (Speed) and is fixed by restyling less (the section after it): no budget decision is asked for.
+  Its margin on the desktop is thinner (72 to 82 ms at p75 against 100).
+- **The phone's touch crosshair** over 36 series stays at about its budget (p75 45 to 54 ms against 50, judged runs on both sides of
+  it); restyling does not reach it (its time is the chart's pointer handler and the legend's layout). Not fixed; reported.
+- Hover no longer eases its fill. This is a visible change of feel, made because an eased colour cannot be told apart from a theme
+  change and showed the old theme after the change was drawn; the alternatives weighed were easing only on entering hover (the
+  hovered control still lags a theme change, and leaving is abrupt) and an overlay whose opacity eases (every control and state
+  rebuilt; no time for it here). Would change if the owner wants hover easing back: the overlay is the way that keeps the theme whole.
 - `design/DECISIONS.md` is outside `design-system/`, where this work was confined; the M1 decision is recorded in the Chart README
   ("Why this rule": decision, alternatives weighed, the cost, what would change it). An entry there is for the owner of `design/`.
 - The flow screens and the app are not re-imaged on v8 (`flows/` and `app/` were not to be edited).
@@ -369,7 +399,8 @@ fold (the row as the key's target) and rings without a change of markup; their p
 
 ## Files
 
-- `src/components.css` (v8: rings inside where clipped, the fold's row target and stacked spacing, strong words, `--mark-size`,
+- `src/press.js` (the control and its pressable ancestors only).
+- `src/components.css` (v8: no colour transitions, `.vz-chart` off-screen containment, rings inside where clipped, the fold's row target and stacked spacing, strong words, `--mark-size`,
   segmented rows, the navigation's side padding, "Other" never cut), `project/tokens.json` (version 8), `project/README.md` (colour, focus ring, a token defined once, numbers
   right-aligned, the segmented control's coarse rule), `project/review.md` (the Many series row), `project/method.md`.
 - Components: Chart (`preview.html`: the v8 algorithm, `legendActions`, the "node-b only" segment, the picked panel, the
@@ -381,24 +412,28 @@ fold (the row as the key's target) and rings without a change of markup; their p
   `font-variation-settings`), `lib/structure.mjs` (the fold's touch entry), `check.mjs`, `mutants-corpus.mjs` (W1 to W10, W17, W23, W24;
   U1 to U11; C1 to C15 for v8), `test/chart-rules.test.mjs` (rewritten for v8: the narrowing, twins, P3), `shots.mjs` (a control
   whose 44 px reach past the image's edge is counted, not measured), `speed.mjs` (a row is judged only on a strict majority of samples
-  at or below the limit).
+  at or below the limit; the `transitions` row type; a control is touched once painted), `lib/structure.mjs` (no colour eased;
+  `.vz-chart`'s containment), `audit.mjs` (paint containment as a clip; a press that marks `body`; skipped content laid out before hit
+  testing), `check.mjs` (a chart's drawn height read with it laid out). `fixtures/speed.json`, `fixtures/speed-phone.json` (the
+  transitions row).
 - `reviews/system-v8/`: this file; `compositions/` (v7's, with `vz-right` on Memory and Restarts in `folded-list.html`);
-  `shots-compare.json`, `shots.json`; `compare/`; `images/`; `speed/`; `evidence/` (the runs as printed).
+  `shots-compare.json`, `shots.json`, `shots-theme-compare.json`; `compare/`; `compare-theme/`; `images/`; `speed/`; `evidence/`
+  (the runs as printed).
 - `README.md` (version 8, the tools, the corpus, history, the flows' status).
 
 ## Housekeeping
 
 No mutant was applied in the tree: every one ran on a copy under the session's scratch area, each deleted after its run (the runner
-refuses a directory inside the tree). One corpus run was stopped early on purpose, to fix the navigation ring first; its copy and its
-browser were removed, and the corpus was run again in full on the final tree. The final runs of `check.mjs`, `npm test`, the corpus
-and the audit are on the tree as it is now, with two exceptions: `tools/speed.mjs` (the tie rule) changed after the full corpus run,
-and no check, test or mutant reads it; and `tools/mutants-corpus.mjs` gained U10 and U11 after it, which then ran on the current tree,
-as did `npm test`. No edit is half-finished.
+refuses a directory inside the tree). The final runs of `check.mjs`, `npm test`, the corpus (159 of 159) and the audit (0 findings on
+the system's pages) are on the tree as it is now, after the theme work, except two text-only edits made after the corpus run (the
+`duration-fast` usage line in `tokens.json`, which no check or build output reads, and the Chart README's "Off screen"). No edit is
+half-finished.
 
-The v7 copy used for "before", the raw captures, probes and JSON outputs were deleted at the end (the scratch work directory, 13 MB).
-Servers started by the audit, the harness and `shots.mjs` stopped with them; no process of this session is left running.
+The scratch copies (v7 for "before" in the first part; v8 as first handed off, and every variant of the theme experiments, in the
+second), raw captures, traces and probes were deleted at the end. Servers started by the audit, the harness, `shots.mjs` and the trace
+scripts stopped with them; no process of this session is left running.
 
-Two slips, said plainly: once, a read-only `git status` ran inside a command by mistake (its output discarded; nothing else was
-done with git); and a `pkill -f "node tools/mutants.mjs"` meant for my own corpus run also matched another session's process of the
-same name in `/home/user/viz/query` (it kept running). Since then I stopped processes by PID only. No Cloudflare resource was touched;
-nothing was published.
+Slips, said plainly: a read-only `git status` ran once inside a command by mistake, and later a bare `git` (no subcommand: it printed
+its usage) slipped into another; nothing else was done with git. A `pkill -f "node tools/mutants.mjs"` meant for my own corpus run
+also matched another session's process of the same name in `/home/user/viz/query` (it kept running); since then I stopped processes
+by PID only. No Cloudflare resource was touched; nothing was published.

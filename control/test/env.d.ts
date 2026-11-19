@@ -16,6 +16,13 @@ declare namespace Cloudflare {
     MCP_OAUTH: Service<import('../src/introspection').OAuthIntrospection>
     RULER_OAUTH: Service<import('../src/introspection').OAuthIntrospection>
     BARE_OAUTH: Service<import('../src/introspection').OAuthIntrospection>
+    /** Tests only (vitest.config.ts): Rate Limiting bindings with small limits, put in place of OAUTH_RL_* by test/ratelimit.test.ts. */
+    RL_TEST_SOURCE: RateLimit
+    RL_TEST_CLIENT: RateLimit
+    RL_TEST_TENANT: RateLimit
+    RL_TEST_BEARER: RateLimit
+    RL_TEST_BEARER_TENANT: RateLimit
+    RL_TEST_10S: RateLimit
   }
 }
 

@@ -82,6 +82,7 @@ afterEach(() => {
   delete hooks.signalPruning
   delete hooks.afterPlan
   delete hooks.alterTail
+  delete hooks.tailCap
   delete tailHooks.previousRelease
   delete tailHooks.alter
   clearLimitsCache()

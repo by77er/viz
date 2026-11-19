@@ -218,6 +218,53 @@ export function schemasOfManifest(manifest) {
   return out
 }
 
+/** `{ worker: { format: { writes, reads } } }` of a manifest's Workers (those that declare formats). */
+export function formatsOfManifest(manifest) {
+  const out = {}
+  for (const name of manifest.order) {
+    const list = manifest.workers.find((x) => x.name === name)?.formats ?? []
+    if (list.length > 0) out[name] = formatsMap(list)
+  }
+  return out
+}
+
+/** What the serving versions declare, as a record's `formats` (for `previous.json`); null if none declares. */
+function formatsOfLive(manifest, live) {
+  const out = {}
+  for (const name of manifest.order) if (live[name]?.formats) out[name] = live[name].formats
+  return Object.keys(out).length > 0 ? out : null
+}
+
+/**
+ * contracts/COMPATIBILITY.md §6 for formats, for a rollback to the release recorded in `target`:
+ * the target must read every version of a format that any version since it wrote. `ran` is every
+ * version of the target's format-bearing Workers newer than the target's own (`{ worker,
+ * versionId, release, formats }`, `formats` from VIZ_FORMATS, null if it declares none). What the
+ * target reads is its record's `formats` (lib/formats.mjs `readsOf`): a record from before format
+ * versions, or one whose Workers do not declare a format, is taken to read version 1 of it. A newer
+ * version that declares no formats wrote something unknown and is refused, as for schemas. Pure.
+ */
+export function formatRollbackProblems(target, ran) {
+  const problems = []
+  const old = !target.formats
+  for (const v of ran) {
+    if (v.formats === null) {
+      problems.push(`${v.worker}: version ${v.versionId} (release ${v.release ?? 'unknown'}), newer than the one being restored, does not declare its format versions, so what it may have written is unknown. Fix forward.`)
+      continue
+    }
+    for (const [format, f] of Object.entries(v.formats)) {
+      if (f.writes === null) continue
+      const reads = readsOf(target.formats, format)
+      if (reads.includes(f.writes)) continue
+      problems.push(
+        `${format}: release ${v.release ?? 'unknown'} (${v.worker} version ${v.versionId}) wrote version ${f.writes}, and ${target.release} reads only ${reads.join(', ')}` +
+          `${old ? ' (its record predates format versions: taken to read version 1 of every format)' : ''}. A rollback to it would leave what was written unreadable (contracts/COMPATIBILITY.md §6). Fix forward instead.`,
+      )
+    }
+  }
+  return [...new Set(problems)]
+}
+
 /**
  * contracts/COMPATIBILITY.md §6, for a rollback to the release recorded in `target`: for every
  * class, `canOpen(target.latest, newest storage written since)`. `ran` is every version of the
@@ -251,19 +298,32 @@ export function schemaRollbackProblems(target, ran) {
   return [...new Set(problems)]
 }
 
-/** Every version Cloudflare keeps of the target's schema-bearing Workers that is newer than the target's. */
-async function versionsSince(target, api) {
+/** The Workers of a target record whose versions carry schema versions: those its `schemas` name. */
+const schemaWorkers = (target) => new Set(Object.values(target.schemas ?? {}).map((x) => x.worker))
+
+/**
+ * The Workers of a target record whose versions carry format versions: those its `formats` name,
+ * and those deploy/workers.json declares formats for now (a record from before format versions
+ * names none, and a version uploaded since by such a Worker may have written any of them).
+ */
+function formatWorkers(target, plan) {
+  const out = new Set(Object.keys(target.formats ?? {}))
+  for (const w of plan.workers) if (w.formats) out.add(stagedName(w.name, target.stage ?? undefined))
+  return out
+}
+
+/** Every version Cloudflare keeps of the target's Workers in `names` that is newer than the target's. */
+async function versionsSince(target, api, names) {
   const out = []
-  const workers = new Set(Object.values(target.schemas ?? {}).map((x) => x.worker))
   for (const w of target.workers) {
-    if (!workers.has(w.name) || !w.versionId) continue
+    if (!names.has(w.name) || !w.versionId) continue
     const own = await api.versionInfo(w.name, w.versionId)
     const ownNumber = own?.number ?? null
     for (const v of await api.listVersions(w.name)) {
       if (v.id === w.versionId) continue
       if (ownNumber !== null && v.number !== undefined && v.number <= ownNumber) continue
       const info = await api.versionInfo(w.name, v.id)
-      out.push({ worker: w.name, versionId: v.id, number: v.number, release: annotation(info, 'workers/tag'), schemas: schemasOfVersion(info) })
+      out.push({ worker: w.name, versionId: v.id, number: v.number, release: annotation(info, 'workers/tag'), schemas: schemasOfVersion(info), formats: formatsOfVersion(info) })
     }
   }
   return out
@@ -324,33 +384,42 @@ async function restore(manifest, workers, reason) {
   }
 }
 
+/** The vars of a manifest Worker's generated config (what its versions are uploaded with). */
+const varsOfGenerated = (w) => readJsonc(join(REPO_ROOT, w.config)).vars ?? {}
+
 export async function deploy({ stage, ackText = '', rotateText = '' }) {
   const manifest = loadManifest(stage)
   const release = manifest.release
   const tag = release.slice(0, 40)
   const message = `viz ${release}`.slice(0, 100)
+  // Unique to this run: on every version it uploads (VIZ_DEPLOY_RUN), so a version another run of
+  // the same release uploaded is told apart from this run's (review of D53, m-11).
+  const run = newRunId()
+  const runVar = ['--var', `${RUN_VAR}:${run}`]
   const before = await liveState(manifest.order)
-  const previous = recordOf(manifest, before, { release: servingRelease(manifest, before), kind: 'previous', schemas: schemasOfLive(manifest, before) })
+  const previous = recordOf(manifest, before, { release: servingRelease(manifest, before), kind: 'previous', schemas: schemasOfLive(manifest, before), formats: formatsOfLive(manifest, before) })
   const previousFile = writeRecord(stage, 'previous.json', previous)
   const plan = planRelease(manifest, before, parseAcks(ackText))
   const forwardOnly = forwardOnlyReasons(manifest, before)
+  const floors = await floorDeployProblems(floorRules(loadWorkersPlan(), stage), manifest, before, FLOOR_API, varsOfGenerated)
   const specs = secretsOfManifest(manifest)
   const rotate = parseRotate(rotateText)
   const secretsBefore = await secretsNow(specs, before, SECRET_API)
+  log(`run ${run}`)
   printPlan(manifest, plan, planSecrets(secretsBefore, rotate, plan.steps))
   for (const f of forwardOnly) log(`  FORWARD-ONLY: ${f.why}`)
-  const refusals = [...plan.problems, ...rotateProblems(rotate, specs)]
+  const refusals = [...plan.problems, ...floors.problems, ...rotateProblems(rotate, specs)]
   if (refusals.length) {
     log('\nrelease: REFUSED before uploading or promoting anything:')
     for (const p of refusals) log(`  - ${p}`)
-    log('  See deploy/README.md, "Durable Object migrations" and "Worker secrets the deploy generates".')
+    log('  See deploy/README.md, "Durable Object migrations", "Rollback floors" and "Worker secrets the deploy generates".')
     return { exit: EXIT_REFUSED, plan }
   }
   const secretActions = []
   const withSecrets = (step, versionId) => {
     const mine = specs.filter((s) => s.worker === step.name)
     if (mine.length === 0) return null
-    return ensureSecrets({ worker: step.name, versionId, specs: mine, now: secretsBefore, rotate, release, tag, message, api: SECRET_API, log })
+    return ensureSecrets({ worker: step.name, versionId, specs: mine, now: secretsBefore, rotate, release, run, tag, message, api: SECRET_API, log })
   }
 
   // Phase 1: upload (or, where a version cannot be uploaded, bundle). Nothing serves yet.
@@ -359,7 +428,7 @@ export async function deploy({ stage, ackText = '', rotateText = '' }) {
   try {
     for (const step of plan.steps) {
       if (step.via === 'versions') {
-        const r = await wrangler(['versions', 'upload', '--config', join(REPO_ROOT, step.config), '--tag', tag, '--message', message], { label: step.name })
+        const r = await wrangler(['versions', 'upload', '--config', join(REPO_ROOT, step.config), '--tag', tag, '--message', message, ...runVar], { label: step.name })
         uploaded[step.name] = versionIdFrom(r, 'version-upload')
         log(`  ${step.name}: uploaded ${uploaded[step.name]} (serving nothing yet)`)
         // Generated secrets go on the upload, still serving nothing; phase 2 promotes the keyed version.
@@ -389,7 +458,7 @@ export async function deploy({ stage, ackText = '', rotateText = '' }) {
         await promoteVersion(manifest, step, uploaded[step.name], message)
         log(`  ${step.name}: ${uploaded[step.name]} at 100%`)
       } else {
-        const r = await wrangler(['deploy', '--config', join(REPO_ROOT, step.config), '--tag', tag, '--message', message, ...doMode(manifest)], { label: step.name })
+        const r = await wrangler(['deploy', '--config', join(REPO_ROOT, step.config), '--tag', tag, '--message', message, ...doMode(manifest), ...runVar], { label: step.name })
         uploaded[step.name] = versionIdFrom(r, 'deploy')
         if (step.migration) migrationApplied = true
         log(`  ${step.name}: deployed ${uploaded[step.name]}${step.migration ? ` with migration ${step.migration.to}` : ''}`)
@@ -409,8 +478,14 @@ export async function deploy({ stage, ackText = '', rotateText = '' }) {
     }
   } catch (e) {
     log(`\nrelease: promotion failed at ${plan.steps[promoted.length]?.name}: ${e.message}`)
+    // A Worker promoted for which this release is forward-only (a schema its objects may have
+    // migrated, a format version it may have written) cannot be put back under the previous release.
+    const crossed = forwardOnly.filter((f) => promoted.includes(f.worker))
     if (migrationApplied) {
       log('  A Durable Object migration has been applied, so nothing is rolled back (migrations are forward-only).')
+      log('  Fix forward: push a commit that repairs the release; see deploy/README.md, "When a deploy fails".')
+    } else if (crossed.length) {
+      log(`  This release is forward-only for what was promoted (${crossed.map((f) => f.why).join('; ')}), so nothing is rolled back: the previous release could not read it.`)
       log('  Fix forward: push a commit that repairs the release; see deploy/README.md, "When a deploy fails".')
     } else if (promoted.length) {
       log(`  rolling back what was promoted (${promoted.join(', ')}) to the previous release`)
@@ -425,11 +500,17 @@ export async function deploy({ stage, ackText = '', rotateText = '' }) {
     migrations: plan.migrations.map((s) => ({ worker: s.name, from: s.migration.from, to: s.migration.to })),
     // contracts/COMPATIBILITY.md §6: what each class's code knows, and whether no rollback may cross this release.
     schemas: schemasOfManifest(manifest),
+    // The same for formats: the version each Worker writes and the versions it reads (D69).
+    formats: formatsOfManifest(manifest),
     forwardOnly: forwardOnly.length > 0,
     forwardOnlyBecause: forwardOnly,
+    // Rollback floors a writer's switch raises (D64, D69): what each rule saw.
+    floors: floors.seen,
     via: Object.fromEntries(plan.steps.map((s) => [s.name, s.via])),
     // Generated secrets, by name: kept, created or rotated, and on which version. Never a value.
     secrets: secretActions.map(({ worker, name, action, versionId }) => ({ worker, name, action, versionId })),
+    // The VIZ_DEPLOY_RUN every version this run uploaded carries.
+    run,
   })
   for (const w of record.workers) if (w.versionId !== uploaded[w.name]) log(`  warning: ${w.name} serves ${w.versionId}, expected ${uploaded[w.name]}`)
   const file = writeRecord(stage, 'release.json', record)
@@ -442,11 +523,14 @@ export async function deploy({ stage, ackText = '', rotateText = '' }) {
 const CLOUDFLARE = { liveState, versionInfo, listVersions, restore: (...a) => restore(...a) }
 
 export async function rollback({ stage, recordFile, record, reason = 'requested', api = CLOUDFLARE }) {
-  const manifest = { durableObjectsCodeUpdate: loadPlanCodeUpdate() }
+  const plan = loadWorkersPlan()
+  const manifest = { durableObjectsCodeUpdate: plan.durable_objects_code_update }
   const target = record ?? JSON.parse(readFileSync(recordFile, 'utf8'))
   if ((target.stage ?? null) !== (stage ?? null)) throw new Error(`the record is for ${target.target}, not ${targetName(stage)}`)
   const names = target.workers.map((w) => w.name)
-  const now = await api.liveState(names)
+  const rules = floorRules(plan, stage)
+  // The readers of the floor rules too: a record that does not name one leaves the serving one.
+  const now = await api.liveState([...new Set([...names, ...rules.map((r) => r.reader)])])
   const problems = []
   for (const w of target.workers) {
     if (!w.versionId) problems.push(`${w.name}: the record has no single version to restore`)
@@ -454,8 +538,16 @@ export async function rollback({ stage, recordFile, record, reason = 'requested'
       problems.push(`${w.name}: the release being restored ran under Durable Object migration ${w.migrationTag ?? '(none)'}, and ${now[w.name]?.migrationTag ?? '(none)'} is in force now. Cloudflare does not roll back across a class lifecycle change and migrations are forward-only: fix forward instead.`)
     } else if (!(await api.versionInfo(w.name, w.versionId))) problems.push(`${w.name}: version ${w.versionId} no longer exists (Cloudflare keeps the 100 most recent)`)
   }
-  // Schema versions (contracts/COMPATIBILITY.md §6): no class's storage may be newer than the target can open.
-  if (problems.length === 0) problems.push(...schemaRollbackProblems(target, await versionsSince(target, api)))
+  if (problems.length === 0) {
+    const fw = formatWorkers(target, plan)
+    const ran = await versionsSince(target, api, new Set([...schemaWorkers(target), ...fw]))
+    // Schema versions (contracts/COMPATIBILITY.md §6): no class's storage may be newer than the target can open.
+    problems.push(...schemaRollbackProblems(target, ran.filter((v) => schemaWorkers(target).has(v.worker))))
+    // Format versions (§6, D69): the target reads every format version written since it.
+    problems.push(...formatRollbackProblems(target, ran.filter((v) => fw.has(v.worker))))
+    // Rollback floors (D64, D69): no reader below its floor under a writer whose switch was on.
+    problems.push(...(await floorRollbackProblems(rules, target, now, api)))
+  }
   if (problems.length) {
     log(`rollback to ${target.release}: REFUSED, nothing changed:`)
     for (const p of problems) log(`  - ${p}`)
@@ -464,14 +556,10 @@ export async function rollback({ stage, recordFile, record, reason = 'requested'
   log(`rollback to ${target.release} (${reason}), callers first:`)
   await api.restore(manifest, target.workers, `${reason}; to ${target.release}`)
   const after = await api.liveState(names)
-  const done = { ...recordOf({ ...target, order: names }, after, { kind: 'rollback', release: target.release, reason, schemas: target.schemas }), target: target.target, stage: target.stage }
+  const done = { ...recordOf({ ...target, order: names }, after, { kind: 'rollback', release: target.release, reason, schemas: target.schemas, formats: target.formats ?? null }), target: target.target, stage: target.stage }
   writeRecord(stage, 'rollback.json', done)
   summary(done, null)
   return { exit: 0, record: done }
-}
-
-function loadPlanCodeUpdate() {
-  return JSON.parse(readFileSync(join(DEPLOY_DIR, 'workers.json'), 'utf8')).durable_objects_code_update
 }
 
 function printPlan(manifest, plan, secrets = []) {
@@ -493,10 +581,13 @@ export async function planOnly({ stage, ackText = '', rotateText = '' }) {
   const specs = secretsOfManifest(manifest)
   const rotate = parseRotate(rotateText)
   const secrets = planSecrets(await secretsNow(specs, live, SECRET_API), rotate, plan.steps)
-  const problems = [...plan.problems, ...rotateProblems(rotate, specs)]
+  const floors = await floorDeployProblems(floorRules(loadWorkersPlan(), stage), manifest, live, FLOOR_API, varsOfGenerated)
+  const forwardOnly = forwardOnlyReasons(manifest, live)
+  const problems = [...plan.problems, ...floors.problems, ...rotateProblems(rotate, specs)]
   printPlan(manifest, plan, secrets)
+  for (const f of forwardOnly) log(`  FORWARD-ONLY: ${f.why}`)
   for (const p of problems) log(`  - ${p}`)
-  return { exit: problems.length ? EXIT_REFUSED : 0, plan, secrets: secrets.map(({ worker, name, action }) => ({ worker, name, action })), problems }
+  return { exit: problems.length ? EXIT_REFUSED : 0, plan, secrets: secrets.map(({ worker, name, action }) => ({ worker, name, action })), forwardOnly, problems }
 }
 
 /** The release record as a table, to stderr and to the GitHub job summary. */
