@@ -278,6 +278,20 @@ const MUTANTS = [
     find: 'const limits: QueryLimits = { ...c.limits, maxSamples: qSamples, maxSeries: qSeries, maxStepPoints: L * c.limits.maxStepPoints }',
     replace: 'const limits: QueryLimits = { ...c.limits, maxSamples: share(qSamples, L, 0), maxSeries: qSeries, maxStepPoints: L * c.limits.maxStepPoints }',
   },
+  {
+    name: 'A shard status this release does not know falls through to the stream-mismatch path (contracts/COMPATIBILITY.md)',
+    tests: ['test/fence.test.ts'],
+    file: 'src/coordinator.ts',
+    find: "    if (status !== 'incarnation_mismatch') throw new ApiError('unavailable', `shard ${shard} answered a status this release does not know (${status.slice(0, 40)}); retry`)\n",
+    replace: '',
+  },
+  {
+    name: 'An engine that does not load is answered as a retryable 503',
+    tests: ['test/http.test.ts'],
+    file: 'src/index.ts',
+    find: "      return failure('internal', 'the query engine could not be loaded', headers)",
+    replace: "      return failure('unavailable', 'the query engine could not be loaded', { ...headers, 'Retry-After': '1' })",
+  },
 ]
 
 function run(cmd, args, opts = {}) {
@@ -332,11 +346,16 @@ if (baseline.size > 0) console.log(`tsc reports ${baseline.size} error(s) before
 
 console.log('unmutated suite …')
 const clean = suite()
-if (!clean.ok) {
-  console.error('the unmutated suite fails; fix that first:', clean.failed)
+if (clean.broken) {
+  console.error('the unmutated suite does not run:', clean.failed)
   process.exit(2)
 }
-console.log('unmutated suite passes\n')
+// Tests that fail without any mutant (another component mid-edit) cannot kill one: a mutant
+// is killed only by a failure the unmutated suite does not have.
+const baselineFailed = new Set(clean.failed)
+if (clean.ok) console.log('unmutated suite passes\n')
+else console.log(`unmutated suite: ${baselineFailed.size} test(s) fail without any mutant and are not counted:\n  ${[...baselineFailed].join('\n  ')}\n`)
+const fresh = (r) => ({ ...r, failed: r.failed.filter((f) => !baselineFailed.has(f)), ok: r.failed.every((f) => baselineFailed.has(f)) })
 
 let survived = 0
 let restore = () => {}
@@ -357,8 +376,8 @@ for (const m of chosen) {
     const added = m.rust ? [] : [...tscErrors()].filter((l) => !baseline.has(l))
     if (added.length > 0) result = { ok: false, failed: [`BUILD ERROR: ${added[0]}`], broken: true }
     else {
-      result = suite(whole ? [] : m.tests)
-      if (result.ok && !whole) result = suite() // not caught where expected: is it caught anywhere?
+      result = fresh(suite(whole ? [] : m.tests))
+      if (result.ok && !whole) result = fresh(suite()) // not caught where expected: is it caught anywhere?
     }
   } finally {
     restore()

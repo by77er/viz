@@ -13,12 +13,12 @@ deterministic simulator. Nothing panics on input. Builds for the host and for
 
 ```
 export CARGO_TARGET_DIR=$PWD/target
-cargo test -j 2 -- --test-threads 2                         # 45 tests, about 6 minutes on a loaded machine
+cargo test -j 2 -- --test-threads 2                         # 47 tests, about 6 minutes on a loaded machine
 cargo test --test corpus -- --nocapture                     # upstream corpus through storage, per file
 cargo build --release --target wasm32-unknown-unknown       # the library
 (cd wasm && cargo build --release --target wasm32-unknown-unknown) && node tools/wasm_check.mjs
 cargo run --release --example bench                         # the benchmark
-python3 tools/mutants.py                                    # mutation check
+python3 tools/mutants.py                                    # mutation check (edits src/ in place: build nothing else meanwhile)
 ```
 
 ```rust
@@ -280,8 +280,8 @@ own report.
 All numbers measured here (Linux x86-64, 4 cores shared with other builds, rustc
 1.97.0, Node 22.23), not on Cloudflare.
 
-`cargo test`: **45 tests, all passing** (lib 2, api 10, corpus 1, invariance 3, limits 10,
-plan 5, prune 3, split 6, staleness 5), run on 2026-11-18 with `-j 2` and two test threads
+`cargo test`: **47 tests, all passing** (lib 2, api 10, corpus 1, invariance 3, limits 10,
+plan 5, prune 3, split 8, staleness 5), run on 2026-11-18 with `-j 2` and two test threads
 on a machine with a load average of 6 to 20 (6 min). Seven are property tests. The
 references of the invariance tests (and of `query/`'s fixtures) are `viz-promql` over its
 in-memory source **with this crate's aggregations** (`reference_range`), since every
@@ -320,6 +320,14 @@ evaluation here uses them; with that change all 37 earlier tests pass unchanged.
 - `results_do_not_depend_on_the_order_extracts_arrive_in`: a sample rewritten in a later
   file and again in the tail reads back as the last write whatever order a leaf receives
   its batches in.
+- `signed_zeros_give_the_same_bits_in_any_order`: `-0` and `+0` in different parts or
+  orders give the same bits for `min`, `max`, `sum`, `avg`.
+- `min_by_group_over_signed_zeros_regression`: the input CI's run of
+  `partials_merge_exactly` reported (`min by (g)` over `1e-300`, `-0`, `+0`), split four
+  ways and merged in three orders. That CI run tested a snapshot of the tree taken while
+  the mutation check had mutant 36 applied (the mutation tools edit sources in place and
+  restore them): the property caught the mutant, which is its job; the source was right.
+  **Do not snapshot or build `engine/query` or `query/` while a mutation run is going.**
 - `exact::tests` (unit): correct rounding on cancellation, ties to even, sticky bits,
   subnormals, overflow, infinities; variance of small integers equals the rational value.
 
@@ -470,7 +478,9 @@ Stack needed at depth 100, measured with `examples/stack_probe.rs` and
 `python3 tools/mutants.py` applies one source change at a time, runs the suite (property
 tests at 8 cases, corpus left out), restores the file, and reports the failing tests. It
 confirms first that the unmutated suite passes and tells a failing test from a build
-error. **31 of 31 mutants were killed**; none survived. `engine/storage` is another
+error. **41 of 41 mutants were killed** (31 before split execution, all re-run where the
+source they mutate changed; 10 new for split execution and exact aggregation, run on
+2026-11-19 with `split` and the unit tests in the suite); none survived in the end. `engine/storage` is another
 component under concurrent edit and was not mutated; storage-side faults (5, 7) are
 emulated in the adapter. Mutant 9 is in `engine/promql/src/api.rs`.
 
@@ -507,6 +517,22 @@ emulated in the adapter. Mutant 9 is in `engine/promql/src/api.rs`.
 | 29 | `label_values` ignores the matchers | `metadata_calls` |
 | 30 | `series()` accepts a set that matches everything | `metadata_calls` |
 | 31 | `!~` translated as `=~` | `results_do_not_depend_…`, `source_returns_the_reference_series` |
+| 32 | **Split by file, not by series**: a reader keeps every series of its files (a series' rows end up in several leaves, and partials count it twice) | `split_equals_one_place`, `a_leaf_stops_at_its_budget_…`, `the_query_limits_are_replayed_…` |
+| 33 | **`topk`/`bottomk` merged with `k` one too small** | `split_equals_one_place` |
+| 34 | **`avg` merged as the mean of the parts' means** | `split_equals_one_place` |
+| 35 | **A non-decomposable query split anyway** (a binary operation between two vectors taken as series-local) | `which_queries_split_and_why_not` |
+| 36 | **Merge order dependence**: `min` keeps whichever of `-0`, `+0` came first | `signed_zeros_give_the_same_bits_in_any_order` (it **survived** the first run, where only the random property could catch it and 8 cases never drew both zeros in one group; the directed test was written for it, and kills it) |
+| 37 | **Merge order dependence**: the parts' sums added as floats | `split_equals_one_place` |
+| 38 | A leaf lets the batch that arrives last win, not the one of higher precedence | `results_do_not_depend_on_the_order_extracts_arrive_in` |
+| 39 | The coordinator does not replay `max_samples` on the summed counts | `the_query_limits_are_replayed_exactly_on_the_summed_counts` |
+| 40 | **A leaf's budget is not enforced while gathering** | `a_leaf_stops_at_its_budget_and_a_rerun_with_the_rest_is_identical` |
+| 41 | Exact sums truncated instead of rounded to nearest | `exact::tests::rounding_is_exact_on_known_cases` |
+
+Mutant 28 was rewritten for the new call it mutates (`query_range_expr` with the
+aggregation hook) and is killed as before, now also by the limit replay test. Partial
+results counted twice on a retry, the tail evaluated apart from the lake, a per-leaf
+budget not passed, and the cardinality mutants live in the Worker and are in `query/`'s
+mutation check.
 
 What the table shows about the tests: the off-by-one mutants on the source's range (3,
 4) and on the plan (21, 22) are **not** caught by the random property tests, because

@@ -1,5 +1,0 @@
-# The end-to-end test's dump of the simulated bucket, and measurement output.
-export/
-mutants.out
-target/
-*.log

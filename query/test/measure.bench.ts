@@ -135,7 +135,7 @@ async function perLeaf(label: string, t: Tenant, params: Record<string, string>)
       console.log(
         `MEASURE   leaf ${l.part}: ${l.summary.gatheredSamples} samples of ${l.summary.gatheredSeries} series held, ${l.summary.loadedSamples} loaded | ` +
           `${l.stats.readerCalls} reader calls, ${mib(l.stats.extractBytes)} MiB of extracts received, ${mib(l.stats.bytesRead)} MiB of files read by its readers | ` +
-          `peak WASM memory ${mib(l.stats.wasmMemoryBytes)} MiB | ${l.stats.ms} ms (local, its readers included)`,
+          `peak WASM memory ${mib(l.stats.wasmMemoryBytes)} MiB | ${l.stats.ms} ms (local, its readers included): its own engine ${l.stats.ownEngineMs.toFixed(0)} ms, its readers' engine ${l.stats.readerEngineMs.toFixed(0)} ms (longest call ${l.stats.readerEngineMaxMs.toFixed(0)} ms)`,
       )
     }
     const peak = Math.max(...leaves.map((l) => l.stats.wasmMemoryBytes))
@@ -171,13 +171,19 @@ function splitEstimate(r: Run, per: LeafRun, pool = 32): void {
   const readers = n('Reader-Calls')
   const rounds = [1, Math.ceil(readers / pool)]
   const leaves = [0, 1].map((i) => DO_CALL[i]! + rounds[i]! * ROUND[i]!)
-  const slowest = Math.max(...per.leaves.map((l) => l.stats.ms))
-  const cpu = [0, 1].map((i) => 2 * (i === 0 ? Math.ceil(slowest / Math.max(1, Math.max(...per.leaves.map((l) => l.stats.readerCalls)))) : slowest) + 2 * n('Engine-Ms'))
+  // CPU on the critical path: the slowest leaf's own engine time, plus its readers' engine
+  // time either in parallel (one call's worth: the longest) or spread over the pool's
+  // objects (the sum of every leaf's reader time over `pool`), then the merge; all x 2 (S2).
+  const own = Math.max(...per.leaves.map((l) => l.stats.ownEngineMs))
+  const readerMax = Math.max(...per.leaves.map((l) => l.stats.readerEngineMaxMs))
+  const readerSum = per.leaves.reduce((a, l) => a + l.stats.readerEngineMs, 0)
+  const cpu = [2 * (own + readerMax + n('Engine-Ms')), 2 * (own + readerSum / pool + n('Engine-Ms'))]
   const total = [0, 1].map((i) => ledger[i]! + tail[i]! + leaves[i]! + cpu[i]!)
   console.log(
     `ESTIMATE ${r.label} (production, modelled): ledger ${plans} plan calls x ${DO_CALL.join('-')} ms + ${n('Files-Listed')} files x ${PER_FILE.join('-')} ms = ${ledger.map((x) => x.toFixed(0)).join('-')} ms; ` +
       `tail 1 call = ${tail.join('-')} ms; leaves: 1 DO call + ${rounds.join(' to ')} reader round(s) (${readers} reader calls over a pool of ${pool}) x ${ROUND.join('-')} ms = ${leaves.join('-')} ms; ` +
-      `CPU 2 x (slowest leaf ${slowest} ms local, its readers in parallel .. in series) + 2 x merge ${n('Engine-Ms')} ms = ${cpu.join('-')} ms; total ${total.map((x) => x.toFixed(0)).join('-')} ms with warm objects`,
+      `CPU 2 x (slowest leaf's own engine ${own.toFixed(0)} ms + readers ${readerMax.toFixed(0)} ms (longest call) .. ${(readerSum / pool).toFixed(0)} ms (all ${readerSum.toFixed(0)} ms over ${pool} objects) + merge ${n('Engine-Ms')} ms) = ${cpu.map((x) => x.toFixed(0)).join('-')} ms; ` +
+      `total ${total.map((x) => x.toFixed(0)).join('-')} ms with warm objects`,
   )
 }
 
@@ -185,6 +191,10 @@ describe('measurements (local)', () => {
   it('1 hour and 24 hours over 2,000 series, data partly flushed', async () => {
     const w = await world()
     // ── Dataset A: scraped every 15 s (11.5 M samples in 24 h). ──
+    // Locally the split leaves run one after another (to measure each one's memory) on a
+    // shared machine: on a busy day that took 32 s, over the default 30 s time limit.
+    for (const t of [w.a, w.b]) await env.CONFIG.put(`limits:${t.name}`, JSON.stringify({ timeoutMs: 120_000 }))
+    clearLimitsCache()
     const a = await load(w, w.a, 15_000)
     console.log(`MEASURE dataset A (15 s scrape): ${a.samples} samples of ${N_SERIES} series through edge, ${a.segments} flushed 10-minute segments (x 2 shards), last 10 minutes in the tail; loading took ${(a.ms / 1000).toFixed(0)} s`)
 
@@ -225,14 +235,14 @@ describe('measurements (local)', () => {
     splitEstimate(d60s, per60)
     // ... and, at 2.9 M samples, it can still be evaluated in one place with the sample
     // limit raised: the SAME BYTES, 2,000 series over 24 hours, at 2 and at 8 leaves.
-    await env.CONFIG.put(`limits:${w.b.name}`, JSON.stringify({ maxSamples: 3_000_000, splitAboveSamples: 1e12 }))
+    await env.CONFIG.put(`limits:${w.b.name}`, JSON.stringify({ maxSamples: 3_000_000, splitAboveSamples: 1e12, timeoutMs: 120_000 }))
     clearLimitsCache()
     const d60 = await measure('24 h, 60 s scrape, step 5 m, ONE PLACE, maxSamples raised to 3,000,000, files from the Cache API', w.b, day)
     report(d60)
     expect(d60.status).toBe(200)
     expect(d60.res.headers.get('X-Viz-Execution')).toBe('single')
     expect(d60s.body).toBe(d60.body)
-    await env.CONFIG.delete(`limits:${w.b.name}`)
+    await env.CONFIG.put(`limits:${w.b.name}`, JSON.stringify({ timeoutMs: 120_000 }))
     clearLimitsCache()
     hooks.forceLeaves = 8
     const d60s8 = await perLeaf('24 h, 60 s scrape, step 5 m, split over 8 leaves', w.b, day)
@@ -249,6 +259,8 @@ describe('measurements (local)', () => {
 
   it('the 7-day, 60 s, 5,000-series query, scaled down to one day (7.2 M samples) and extrapolated', async () => {
     const w = await world()
+    await env.CONFIG.put(`limits:${w.a.name}`, JSON.stringify({ timeoutMs: 120_000 }))
+    clearLimitsCache()
     const n = 5_000
     const c = await load(w, w.a, 60_000, n)
     console.log(`MEASURE dataset C (60 s scrape, ${n} series): ${c.samples} samples through edge, ${c.segments} flushed 10-minute segments (x 2 shards); loading took ${(c.ms / 1000).toFixed(0)} s`)

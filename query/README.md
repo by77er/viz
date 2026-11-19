@@ -351,6 +351,28 @@ every series file) when the series files are over `maxFetchBytes`. No sample is 
   series that has samples in a file on both sides of the window but none inside counts as
   in it (at most one file's span at each edge: ten minutes for flush files).
 
+### Release skew (contracts/COMPATIBILITY.md)
+
+- **Every shard status is handled by name.** `tailRead` answers `ok`, `stale_watermark`
+  and `incarnation_mismatch` are handled as before; `schema_too_new`, any status this
+  release does not know, and an `ok` without batches are a retryable 503 (`unavailable`,
+  `Retry-After: 1`), never an empty tail and never a stream to re-read
+  (`fence.test.ts`, "release skew", through a test hook that replaces the shard's answer).
+  A ledger that throws `schema_too_new` is a 503 with `Retry-After: 5`.
+- **Leaves keep no storage** (no SQLite, no alarm), so they have no schema to open through
+  `contracts/schema.ts`.
+- **An engine that does not load is a 500**, not a retryable 503: the binding throws
+  `EngineLoadError` (instantiation failed, or the module's ABI is not the binding's), the
+  Worker answers `internal`, and a split leaf whose engine does not load fails its query
+  with 500 too (`http.test.ts`).
+- Not done: the coordinator–leaf RPC arguments (`EvaluateRequest`, `ExtractRequest`, the
+  cardinality request) carry no `v` field. The leaves' answers are versioned by their
+  magic (`VZL1`, `VZC1`, `VZB1`) and the module by its ABI number, but an answer with an
+  unknown magic is reported as `internal` (500), not as a retryable refusal. During a
+  gradual deployment a coordinator of one release can call a leaf of the other; both are
+  in the same script, so this needs a `v` on the requests and an `unsupported_version`
+  answer before either format changes.
+
 ## Not implemented
 
 - **Split execution, what is left.** Queries that do not decompose (`quantile` or
@@ -384,6 +406,13 @@ every series file) when the series files are over `maxFetchBytes`. No sample is 
   they cover all time, as in Prometheus, and are then bounded only by the limits.
 - **Statistics for the label endpoints**: `X-Viz-Samples-Loaded` and `-Series-Loaded`
   are 0 for them.
+- **A plan-only endpoint** (asked for by the MCP builder): the bytes, files and scan bound
+  a query would read, and whether it would split, without evaluating. Everything it would
+  return is computed before any file is read (the cost headers of a refused query show
+  it), so it is `gather` stopping after the ledger read; not built.
+- **Metric metadata** (type, unit, help; also asked for by the MCP builder):
+  `/api/v1/metadata` answers `{}` because nothing stores it; the write path drops
+  Remote Write metadata and OTLP descriptions.
 - **Production wiring.** `wrangler.jsonc` binds `SHARD` and `LEDGER` by `script_name` to
   Workers that are themselves still combined scripts. Nothing was deployed, and the
   bindings were only exercised in the one-script composition. `wrangler deploy --dry-run`
@@ -398,16 +427,26 @@ every series file) when the series files are over `maxFetchBytes`. No sample is 
 ## How it was verified
 
 All measured here, locally (Linux x86-64, 4 cores shared with other builds, Node 22.23,
-workerd through `@cloudflare/vitest-plugin` 1.8), on 2026-11-18. Nothing ran on
+workerd through `@cloudflare/vitest-plugin` 1.8), on 2026-11-18 and 19. Nothing ran on
 Cloudflare.
 
-`npm test`: **62 tests, all passing**, in 8 files, in five full runs that day (three
-consecutive after the mutation check: 39 s, 40 s, 45 s while other engineers' suites ran
-on the same cores; the last at 22:27 UTC against the sources fingerprinted under "Known
-risks"). `npx tsc --noEmit`: clean. `engine/query`: `cargo test`, 37 passed
-(3 min 9 s). `engine/promql`: `cargo test`, 26 passed, 1 ignored. `node
-../engine/wasm-query/tools/check.mjs`: 12 of 12. `node tools/gen-fixtures.mjs` reproduces
-both fixture files byte for byte.
+**After split execution and the cardinality report (2026-11-19, about 01:00 UTC, load
+average near 20):** `npx vitest run --maxWorkers=2`: **78 tests, all passing**, in 10 files
+(102 s): the 62 earlier ones, 8 in `split.test.ts`, 5 in `cardinality.test.ts`, 2 release-
+skew tests in `fence.test.ts` and 1 in `http.test.ts`. `npx tsc --noEmit`: clean.
+`engine/query`: `cargo test`, 47 passed; a soak of its two split properties at 120 cases
+each passed. `engine/promql`: 27 passed, 1 ignored. `node
+../engine/wasm-query/tools/check.mjs`: 12 of 12. `node tools/gen-fixtures.mjs` was re-run
+with the reference's new aggregations: `workload.json` is byte-identical, `expected.json`
+changed only in the `stddev` query (16th and 17th significant digits, both tenants).
+Two things in other components changed under these tests and were followed here: the
+ledger now lists files by precedence (`leaves.test.ts`), and flush tells a shard
+`recorded` only at the ledger's logged watermark, so `flushAll` in `test/world.ts` runs the
+ledger's alarm and flushes again (without it no shard discarded, and four tests that need
+an all-lake moment failed).
+
+Before (2026-11-18): `npm test`: 62 tests, all passing, in 8 files, in five full runs that
+day (39 to 45 s); `engine/query` 37 passed; `engine/promql` 26 passed, 1 ignored.
 
 ### The reference
 
@@ -494,6 +533,13 @@ both tenants. Plus 10 label-endpoint calls per tenant.
 | **Cardinality isolation.** Two tenants on the same shards, lake and tail; a parameter and headers naming the other tenant | `cardinality.test.ts` | the other tenant's metric, label and values never appear, one place and over leaves; a tenant with no data gets zeros and nulls |
 | The lake alone after the shards discard | `cardinality.test.ts` | the same report |
 
+**The independent client.** The app's API client (`app/src/api/client.ts`) used to be
+the independent consumer; `app/` is not on `main`, so `http.test.ts` now uses
+`test/client.ts`, a small Prometheus API client written from the API documentation (GET
+with parameters, a bearer key, the `{status, data}` envelope, `PromApiError`). The tests
+need nothing outside `query/` but the components they run (edge, shard, ledger, flush and
+their test helpers).
+
 The shapes were checked against the Prometheus HTTP API documentation
 (`prometheus.io/docs/prometheus/latest/querying/api/`, read on 2026-11-18): the envelope
 fields, 400 / 422 / 503, the parameters and methods of each endpoint, the four result
@@ -505,10 +551,15 @@ run against the Worker**, and no response was compared with a running Prometheus
 
 `node tools/mutants.mjs` applies one change to the source, runs the whole suite,
 restores the source, and prints the failing tests. It first confirms that every mutant
-applies and that the unmutated suite passes, and counts a mutant that does not type-check
-as invalid. Mutant 8 changes Rust and rebuilds the WASM module before and after.
+applies and runs the unmutated suite; a test that fails there (another component
+mid-edit) cannot kill a mutant, and a mutant is invalid only if it adds a type error that
+the unmutated sources do not have (the tool compares with a baseline since a ledger edit
+left type errors in `ledger/` for a while). Vitest runs with two workers. Mutant 8 changes
+Rust and rebuilds the WASM module before and after. **The tool edits `src/` in place:
+build, test or snapshot nothing from `query/` while it runs** (a CI snapshot taken during
+`engine/query`'s mutation run tested a mutant; see that README).
 
-Last run 2026-11-18, against the sources and module described here: **26 of 26 mutants
+Run 2026-11-18 for mutants 1 to 26 (before split execution; 10 since rewritten): **26 of 26
 killed, none survived, none invalid**; the unmutated suite passed first; 6 min 54 s.
 After the run every source was back (each mutant's text found exactly once again) and the
 rebuilt module had the same SHA-256 as before the run.
@@ -541,6 +592,26 @@ rebuilt module had the same SHA-256 as before the run.
 | 24 | CORS echoes any origin | http › CORS |
 | 25 | the series files are not handed to the engine | invariance › the three placements |
 | 26 | after the refusal bound the query answers from what it has | fence › discarded for good; a shard behind the ledger; a missing file (3 tests) |
+| 27 | **split by file instead of by series** (each leaf reads some file groups and keeps every series in them) | split › the table + 64 at 1, 2, 7, 32 leaves; split by itself; budgets; reruns; … (7 tests) |
+| 28 | **the tail evaluated apart from the lake** (each leaf gets another leaf's tail rows) | split › the same 7 tests |
+| 29 | **a leaf's partial merged twice when a leaf was retried** | split › a reader or a split leaf that fails once is retried, nothing counted twice |
+| 30 | **the per-leaf budget not enforced** | split › each leaf stops at its share; a leaf over its share is run again |
+| 31 | **a query that does not decompose sent to the leaves anyway** | split › the table at 1, 2, 7, 32 leaves; the fallback test |
+| 32 | reader groups of eight reads | leaves › files go to the readers in precedence order (groups of at most six); split › the table |
+| 33 | **cardinality counts the tenant named by a `tenant` parameter** | cardinality › never counts another tenant's series |
+| 34 | **churn counts series that existed before the range** (the look-back window is not read) | cardinality › churn; caps (2 tests) |
+| 35 | a split query's result checked against one leaf's share instead of the query's budget | split › budgets; reruns (2 tests) |
+| 36 | an unknown shard status falls through to the stream-mismatch path | fence › release skew: an unknown status or schema_too_new is a retryable 503 |
+| 37 | an engine that does not load answered as a retryable 503 | http › an engine that does not load is a 500 |
+
+Mutants 27 to 37 are new with split execution, the cardinality report and the
+compatibility fixes; mutant 10 was rewritten for the precedence order (it now sorts by
+key). **Run 2026-11-19 (mutants 10 and 27 to 37): 12 of 12 killed, none survived, none
+invalid**; the unmutated suite was run first. The kinds of mutant asked for are rows 27 (by
+file), 33 and 34 of this table, 29 (retry counted twice), 30 (budget), 31 (not
+decomposable), 28 (tail apart from the lake), and, in `engine/query`'s table, 32 to 41
+(`topk` k too small, `avg` as a mean of means, merge order, precedence, limit replay,
+rounding).
 
 The ten kinds of mutant the task names are rows 1, 4, 5, 6, 8, 11 and 12, 3, 13, 16 (and
 15), 17 and 18. Fourteen mutants are caught by exactly one test (1 to 3, 10, 13 to 16, 18,
@@ -550,6 +621,93 @@ behavioural cache test would need two objects whose keys differ only in their ha
 the write path never produces.
 
 ### Measurements
+
+#### With split execution (2026-11-19)
+
+`npm run measure`, the same workload and query as below (`sum by (job)(rate(http_requests_total[5m]))`,
+2,000 series, 24 h 5 min, flushed in ten-minute units on 2 shards, the last 10 minutes in
+the tails), plus a third tenant with **5,000 series at 60 s for one day** (7.23 M samples),
+the 7-day query scaled down by 7 because seven days through the local stack would not fit
+the 1.5 GB this shared machine allows one process. **Local figures**, on 4 cores at a load
+average near 20 (other engineers' builds): engine times were 1.2 to 2.9 times the
+2026-11-18 run's for the same 1-hour query (96 and 234 ms against 81 to 145 ms).
+
+Split leaves are run **one after another**, each from a fresh engine instance, so that each
+memory figure is that leaf's own peak: locally every object shares one process, and eight
+leaves at once held 1.6 GB of RSS together (sessions, readers' buffers, extracts in
+flight), more than this machine allows; that first attempt was stopped. The figures below
+are from a complete run at about 00:55 UTC (counts, memory, answers) and a second at about
+01:10 (where the CPU goes; there the 24-hour 15 s query reached the default 30 s time
+limit at 32.4 s with its leaves in series, though every leaf finished, so the bench now
+gives its tenants 120 s).
+
+| | 24 h, 15 s scrape, step 5 m | 24 h, 60 s scrape, step 5 m | 1 day of the 7-day query: 5,000 series, 60 s, step 30 m |
+|---|---:|---:|---:|
+| answer, default limits | **200** (was 422 `max_scan_samples`) | **200** (was 422 `max_samples` after decoding 76 MiB) | **200** |
+| samples loaded / series | 11,560,000 / 2,000 | 2,890,000 / 2,000 | 7,225,000 / 5,000 |
+| leaves (parts) | 8 | 2 (and 8, forced) | 5 |
+| samples held per leaf | 1,051,960 to 1,907,400 | 1,361,190 and 1,528,810 | 1,199,350 to 1,748,450 |
+| series per leaf (of 2,000 or 5,000) | 182 to 330 | 942 and 1,058 | 830 to 1,210 |
+| **peak WASM memory per leaf** | **47.1 to 84.1 MiB** | 64.4 and 71.8 MiB (8 leaves: 13.7 to 23.5 MiB) | **53.6 to 77.4 MiB** |
+| coordinator's WASM memory (merge) | 7.5 MiB | 3.8 MiB | 6.4 MiB |
+| files listed / read (each by every leaf's readers) | 580 / 580 (27.8 MiB) | 580 / 580 (10.6 MiB) | 580 / 580 (26.0 MiB) |
+| reader calls (97 file groups per leaf) | 776 | 194 | 485 |
+| file reads (R2 + Cache API) | 4,640 (556 R2 GETs from R2 cold) | 1,160 | 2,900 |
+| **bytes over RPC**: extracts to leaves | **234.9 MiB** | 70.1 MiB | 175.4 MiB |
+| tail to leaves / answers to the coordinator | 0.96 MiB / under 1 MiB | 0.39 MiB / under 1 MiB | 0.97 MiB / under 1 MiB |
+| local wall time, leaves in series, files from R2 / from the Cache API | 13.9 s / 13.9 s | 4.2 s | 18.9 s |
+| per leaf (second run): its own engine (gather + evaluate) | 760 to 2,061 ms (median about 1,050) | | 582 to 1,400 ms |
+| per leaf: its readers' engine time, sum (longest call) | 1,005 to 1,584 ms (37 to 240 ms) | | 1,632 to 2,967 ms (78 to 204 ms) |
+| merge at the coordinator | 37 ms | 4 ms | 2 to 8 ms |
+| response | 194,948 B | 172,808 B | 30,385 B |
+
+- **Identical to one place at scale**: 24 hours at a 60 s scrape split over 2 leaves, over
+  8 leaves, and evaluated in one place (with `maxSamples` raised to 3 M, peak 76.4 MiB)
+  gave **byte-identical** responses. Every split result was also checked (20 jobs, every
+  point within 15% of the expected rate) and is identical from R2 and from the cache.
+- **Memory per leaf** is about 44 bytes a sample held: 20 in the gathering session (time,
+  value, precedence), 16 in the copy `select` hands the evaluator (it could move instead),
+  and the step grid. The leaf with the most series held 1.9 M samples (84 MiB), below its
+  share (2 M) and 128 MB.
+- **The spread of series over parts is uneven** (182 to 330 of an average 250): FNV-1a's
+  high bits are not uniform for these label sets. A mixing step before taking the range
+  would even it out but give up ranges of raw `series_id` (which row-group reads by key
+  range want). Not changed; the budgets absorb it (a leaf over its share is re-run).
+- **RPC carries 20 bytes a sample** (extracts as `VZB1`), about 8 times the Parquet bytes:
+  235 MiB for the 24-hour query, in 776 messages of at most a few MiB.
+
+**Production estimate (modelled), 24 hours at 15 s**, from these counts and the figures
+measured on Cloudflare (spikes S1, S2, S4; DO call 10 to 70 ms; a round of up to six reads
+55 to 203 ms; CPU twice local):
+
+| step | arithmetic | ms |
+|---|---|---:|
+| ledger, 2 `plan` calls and 580 files | 2 x 10..70 + 580 x 0.025..0.04 | 35 to 163 |
+| tail, 1 call deep | 10..70 | 10 to 70 |
+| leaves: one DO call, then their 776 reader calls at once | 10..70 + **1 to 25 rounds** x 55..203 (1 if each call has its own six connections, 776 / 32 if calls to one object share them: not measured) | 65 to 5,145 |
+| CPU on the critical path | 2 x (slowest leaf's own engine 2,061 + readers: longest call 240 .. all 10,105 ms over 32 objects = 316 + merge 37) | 4,676 to 4,828 |
+| **total, warm objects** | | **about 4.8 to 10.2 s** |
+
+With the median leaf instead of the slowest (1,050 ms own) and this machine's load taken
+out (the same run's 1-hour query was 2.4 times its quiet-machine engine time), the CPU part
+is nearer 1.5 to 2.5 s. First use of a leaf object adds 250 to 700 ms (S1).
+
+**7 days at 60 s, 5,000 series (extrapolated from the one-day run, not run):** 50.6 M
+samples, 4,060 files (ten-minute flush units), 181 MiB. Leaves: `ceil(50.6 M / 1.5 M)` = 34,
+capped at `maxLeaves` = **32 leaves of about 1.58 M samples**, so about **70 MiB per leaf**
+(the one-day run held 1.75 M in 77.4 MiB; the step grid is smaller with 156 series a leaf).
+It fits the limits (scan bound 50.4 M of `maxQueryScanSamples` 100 M; 4,060 files of
+`maxQueryFiles` 20,000; 181 MiB of `maxQueryFetchBytes` 512 MiB). **But with ten-minute
+flush files it is not fast:** every leaf reads every file, so 32 x 677 file groups = about
+21,700 reader calls and 130,000 file reads; at 1 to 677 rounds of 55 to 203 ms that is
+0.1 to 137 s of I/O, and the readers decode every file's `series_id` column 32 times
+(about 32 x 7 x 11 s / 5 of local reader time spread over 32 objects: 15 s each, 31 s at
+twice local). Over the 30 s time limit. Compacted day files (16 MB, a handful per day)
+cut the groups to about 10 per leaf; row-group reads by key range ("Needed changes", 2)
+would cut each leaf's reading and decoding to its own part. Measured on Cloudflare: none
+of this.
+
+#### Before split execution (2026-11-18)
 
 `npm run measure` (`test/measure.bench.ts`), with the production leaf pool size of 32.
 Two tenants each write 24 h 5 min of `http_requests_total` for 2,000 series (20 jobs x
@@ -593,9 +751,8 @@ the random query id; times are given as first run / second run.
 
 - **24 hours at a 15 s scrape does not run.** 11.5 M samples are 176 MiB decoded, more
   than an isolate has; the query is refused from the ledger's row counts before a single
-  file or shard is read, and says what to do. Answering it needs evaluation split over
-  leaves ("Not implemented").
-- **24 hours at a 60 s scrape runs only with `maxSamples` raised** to 3,000,000; with the
+  file or shard is read, and says what to do. (Now split over leaves and answered: above.)
+- **24 hours at a 60 s scrape ran only with `maxSamples` raised** (now it is split) to 3,000,000; with the
   default limits it is refused by the engine's `max_samples` (2,890,000 > 2,000,000), but
   only after all 580 files were read and decoded: 76.4 MiB of WASM memory for a refusal
   ("Known risks", materialise then refuse).

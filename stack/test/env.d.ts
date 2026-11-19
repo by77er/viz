@@ -16,3 +16,8 @@ declare namespace Cloudflare {
     MAINT_QUEUE: Queue<import('../src/maintain').MaintMessage>
   }
 }
+
+/** Vite's `import.meta.glob`, used to load golden files (test/golden.ts), as in control/. */
+interface ImportMeta {
+  glob(pattern: string | string[], options: { eager: true; import: 'default' }): Record<string, unknown>
+}

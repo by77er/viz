@@ -67,6 +67,20 @@ export class QueryError extends Error {
   }
 }
 
+/** The message prefix of `EngineLoadError` (it survives an RPC boundary as text). */
+export const ENGINE_LOAD_PREFIX = 'engine: the WebAssembly module did not load'
+
+/**
+ * The module could not be instantiated (or is not the ABI this binding speaks). Not a
+ * query's fault and not transient: retrying in the same deployment cannot help.
+ */
+export class EngineLoadError extends Error {
+  override name = 'EngineLoadError'
+  constructor(cause: string) {
+    super(`${ENGINE_LOAD_PREFIX}: ${cause}`)
+  }
+}
+
 /** What a query read (design §6.5). */
 export interface QueryStats {
   /** Calls the evaluator made to storage. */
@@ -330,8 +344,15 @@ export function createQueryEngine(module: WebAssembly.Module): QueryEngine {
 
   const instance = (): Module => {
     if (x) return x
-    const made = new WebAssembly.Instance(module, {}).exports as unknown as Module
-    if (made.viz_q_abi_version() !== ABI_VERSION) throw new Error(`engine: module ABI ${made.viz_q_abi_version()}, binding expects ${ABI_VERSION}`)
+    let made: Module
+    let abi: number
+    try {
+      made = new WebAssembly.Instance(module, {}).exports as unknown as Module
+      abi = made.viz_q_abi_version()
+    } catch (e) {
+      throw new EngineLoadError(e instanceof Error ? e.message : String(e))
+    }
+    if (abi !== ABI_VERSION) throw new EngineLoadError(`module ABI ${abi}, binding expects ${ABI_VERSION}`)
     created++
     x = made
     return made

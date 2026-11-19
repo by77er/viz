@@ -73,6 +73,10 @@ node tools/check.mjs          # load proof and size report, in Node
 `scanRows` and `filesNeeded` are thin: the rule lives in `engine/query`
 (`src/prune.rs`, `scan_rows` and `files_needed`), next to the format it reads.
 
+- **A module that does not load** (instantiation fails, or its ABI number is not the
+  binding's) throws `EngineLoadError`, whose message starts with `ENGINE_LOAD_PREFIX`
+  (so it is recognisable after an RPC boundary). The query Worker answers it with 500:
+  retrying in the same deployment cannot help (`query/test/http.test.ts`).
 - **ABI version 2** (was 1: the operations above were added; none changed). A gathering
   session lives in the instance: if the instance is dropped (a trap, or `reset()`), its
   sessions are gone and the next `gatherAdd` fails (`internal`), so the query Worker's

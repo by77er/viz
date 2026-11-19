@@ -1,6 +1,6 @@
 /** Helpers shared by the detectors. */
 import type { Point, Series, Summary } from './types.ts'
-import { inferStep, okTs } from './stats.ts'
+import { inferStep, MAX_TS, okTs } from './stats.ts'
 
 export interface CommonParams {
   /** Series resolution. 0 = inferred from the timestamps (median spacing), then kept in state. */
@@ -30,8 +30,8 @@ export const val = (v: number): number => (Math.abs(v) <= MAX_ABS ? v + 0 : NaN)
  */
 export const tsv = (t: number): number => (okTs(t) ? t + 0 : NaN)
 
-/** Largest step accepted (the span of the Date range); a larger param or stored step is ignored. */
-const MAX_TS_STEP = 8.64e15
+/** Largest step accepted: the span of the Date range (-MAX_TS to +MAX_TS). A larger param or stored step is ignored. */
+const MAX_STEP = 2 * MAX_TS
 
 export const length = (s: Series) => Math.min(s?.ts?.length ?? 0, s?.values?.length ?? 0)
 
@@ -73,8 +73,8 @@ export function warmingPoint(ts: number, value: number, expected: number | null 
  * which points the first call happened to see.
  */
 export function resolveStep(paramStep: number, stateStep: number | undefined, series: Series, lastTs?: number | null): number {
-  if (paramStep > 0 && paramStep <= 2 * MAX_TS_STEP) return paramStep
-  if (stateStep && stateStep > 0 && stateStep <= 2 * MAX_TS_STEP) return stateStep
+  if (paramStep > 0 && paramStep <= MAX_STEP) return paramStep
+  if (stateStep && stateStep > 0 && stateStep <= MAX_STEP) return stateStep
   const n = length(series)
   const inferred = inferStep(series.ts.subarray(0, n))
   if (inferred > 0 && Number.isFinite(inferred)) return inferred

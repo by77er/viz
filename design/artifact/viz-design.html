@@ -210,7 +210,7 @@ a{color:var(--lake)} a:focus-visible{outline:2px solid var(--lake);outline-offse
     <div><h3>Monitors</h3>
       <p>Prometheus rule semantics, extended to logs and traces. Each rule is classified when saved by what it has to read, and its cost is shown. Anomaly detection is statistics first. Agentic monitors run when a rule or anomaly fires, use read-only tools, and link every claim to the query behind it.</p></div>
     <div><h3>Dashboards</h3>
-      <p>A small typed spec with stable panel ids. Edits are patches, dry-run against real data before saving. Every dashboard has a visual form, a text digest and a structured form from the same data; agents read the digest. About a dozen MCP tools, shared with the REST API. Prometheus and Tempo HTTP APIs are served, so Grafana works on day one.</p></div>
+      <p>A small typed spec with stable panel ids. Edits are patches, dry-run against real data before saving. Every dashboard has a visual form, a text digest and a structured form from the same data; agents read the digest. About a dozen MCP tools, shared with the REST API; agents propose new dashboards and changes, and a person applies them. Prometheus and Tempo HTTP APIs are served, so Grafana works on day one.</p></div>
     <div><h3>Tenancy and auth</h3>
       <p>Tenant id comes only from the credential. Hashed, scoped API keys for machines; OAuth and single sign-on for people and agents. Each tenant has its own ledger and its own stream inside pooled shards. Small tenants share tables; a tenant needing direct Iceberg access, residency or scale gets a dedicated cell.</p></div>
     <div><h3>Pull and adapters</h3>

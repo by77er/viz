@@ -3,6 +3,7 @@ import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
 import { PRECEDENCE_PER_VERSION as P, type FileEntry, type FlushUnit, type LedgerChange, type LiveFile } from '../../contracts/ledger'
 import type { Ledger } from '../src/ledger'
+import { readLog, readSegments } from './helpers'
 
 /**
  * File precedence (contracts/ledger.ts `LiveFile`): which file wins when two files of one
@@ -10,15 +11,20 @@ import type { Ledger } from '../src/ledger'
  */
 type Stub = DurableObjectStub<Ledger>
 let n = 0
+let current = ''
 const open = (): { tenant: string; l: Stub } => {
-  const tenant = `prec-${n++}`
+  const tenant = `prec-${Date.now().toString(36)}-${n++}`
+  current = tenant
   return { tenant, l: env.LEDGER.get(env.LEDGER.idFromName(tenant)) }
 }
 const T0 = Date.UTC(2026, 10, 10, 12)
 const dayOf = (ts: number) => new Date(ts).toISOString().slice(0, 10)
+/** `d/{table}/{name}` stands for the real data key of the current tenant and the file's day (contracts/TABLES.md). */
+const full = (key: string, day = dayOf(T0)) => key.replace(/^d\/(metric_\w+)\//, (_m, table: string) => `${env.CELL}/data/${table}/tenant=${current}/day=${day}/`)
 const file = (key: string, over: Partial<FileEntry> = {}): FileEntry => {
   const minTs = over.minTs ?? T0
-  return { table: 'metric_samples', day: dayOf(minTs), key, bytes: 100, rows: 10, minTs, maxTs: minTs + 999, level: 0, index: '', ...over }
+  const day = over.day ?? dayOf(minTs)
+  return { table: 'metric_samples', day, key: full(key, day), bytes: 100, rows: 10, minTs, maxTs: minTs + 999, level: 0, index: '', ...over }
 }
 /** A flush unit as flush makes it: one samples and one series file, named like flush names them. */
 const unit = (shard: string, seqLo: number, seqHi: number, ts = T0): FlushUnit => ({
@@ -76,7 +82,7 @@ describe('file precedence', () => {
     await l.addUnit(unit('p_0', 2, 2))
     await l.addUnit(unit('p_1', 2, 2, T0 + 3_600_000))
     const files = await plan(l)
-    const key = (shard: string, s: number, t = 'samples') => `d/metric_${t}/L0-${shard}-900-${s}-${s}-${t === 'samples' ? 'aaaaaaaa' : 'bbbbbbbb'}.parquet`
+    const key = (shard: string, s: number, t = 'samples') => full(`d/metric_${t}/L0-${shard}-900-${s}-${s}-${t === 'samples' ? 'aaaaaaaa' : 'bbbbbbbb'}.parquet`)
     const before = files.map((f) => f.key)
     // p_0's two units without p_1's first, which overlaps them in time and ranks between them.
     const jump = await l.replace({ remove: [key('p_0', 1), key('p_0', 2), key('p_0', 1, 'series'), key('p_0', 2, 'series')], add: [file('d/metric_samples/L1-x', { level: 1 }), file('d/metric_series/L1-x', { level: 1, table: 'metric_series' })] })
@@ -88,8 +94,7 @@ describe('file precedence', () => {
       add: [file('d/metric_samples/L1-y', { level: 1 }), file('d/metric_series/L1-y', { level: 1, table: 'metric_series' })],
     })
     expect(ok.status).toBe('ok')
-    const changes = await Promise.all((await env.BUCKET.list({ prefix: `${env.CELL}/ledger/tenant=${tenant}/` })).objects.filter((o) => !o.key.endsWith('base.json')).map(async (o) => (await env.BUCKET.get(o.key))!.json<LedgerChange>()))
-    const replace = changes.find((c) => c.kind === 'replace')!
+    const replace = (await readLog(tenant, l)).find((c) => c.kind === 'replace')!
     expect(replace.added.every((f: LiveFile) => typeof f.precedence === 'number' && typeof f.precedenceLow === 'number')).toBe(true)
   })
 
@@ -100,12 +105,17 @@ describe('file precedence', () => {
     const [sa, sb] = await plan(l, 'metric_series')
     await l.replace({ remove: [a!.key, b!.key, sa!.key, sb!.key], add: [file('d/metric_samples/L1-z', { level: 1 }), file('d/metric_series/L1-z', { level: 1, table: 'metric_series' })] })
     const want = { samples: await plan(l), series: await plan(l, 'metric_series') }
+    await l.drain()
     // Strip every precedence from the log, as an older ledger would have written it.
-    const prefix = `${env.CELL}/ledger/tenant=${tenant}/`
-    for (const o of (await env.BUCKET.list({ prefix })).objects) {
-      const c = await (await env.BUCKET.get(o.key))!.json<LedgerChange>()
-      c.added = c.added.map(({ precedence: _p, precedenceLow: _q, ...f }) => f) as LiveFile[]
-      await env.BUCKET.put(o.key, JSON.stringify(c))
+    for (const seg of await readSegments(tenant)) {
+      const [header, ...lines] = (await (await env.BUCKET.get(seg.key))!.text()).split('\n')
+      const stripped = lines.map((line) => {
+        if (line === '') return line
+        const c = JSON.parse(line) as LedgerChange
+        c.added = c.added.map(({ precedence: _p, precedenceLow: _q, ...f }) => f) as LiveFile[]
+        return JSON.stringify(c)
+      })
+      await env.BUCKET.put(seg.key, [header, ...stripped].join('\n'))
     }
     const r = await runInDurableObject(l, async (inst: Ledger, state) => {
       await state.storage.deleteAll()
@@ -118,7 +128,7 @@ describe('file precedence', () => {
 
   it('refuses a unit with more files than a version has precedence values', async () => {
     const { l } = open()
-    const files = Array.from({ length: P + 1 }, (_, i) => file(`k${i}`))
+    const files = Array.from({ length: P + 1 }, (_, i) => file(`d/metric_samples/k${i}`))
     expect(await l.addUnit({ shard: 'p_0', incarnation: 900, seqLo: 1, seqHi: 1, files })).toMatchObject({ status: 'invalid' })
   })
 })

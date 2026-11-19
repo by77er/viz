@@ -2,7 +2,11 @@
   "name": "@viz/ledger",
   "private": true,
   "type": "module",
-  "scripts": { "test": "vitest run", "typecheck": "tsc --noEmit" },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "bench": "vitest run --config vitest.bench.config.ts --silent=false"
+  },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.8.4",
     "@cloudflare/workers-types": "^5.20261117.1",

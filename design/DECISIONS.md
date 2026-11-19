@@ -468,3 +468,182 @@ with the same transactional guarantee; or deploys become strictly forward-only (
 rollbacks), when `readableFrom` would always equal `version`; or a component needs a
 migration too large for the constructor's 30 s, when backfills move to alarm-driven batches
 under the same version row.
+
+## D25. The MCP server uses the SDK v2 handler directly, not the `agents` wrapper
+
+**Decision.** `mcp/` serves MCP with `createMcpHandler` from `@modelcontextprotocol/server`
+2.4.0 (the TypeScript SDK's v2 line, implementing the 2026-07-28 revision), on a plain
+Worker. The Worker does its own routing, Origin check and authentication in front of it.
+
+**Alternatives.** (a) `createMcpHandler` from `agents` 0.33.0 (`agents/mcp/server`), which
+wraps the same SDK v2 handler and adds route matching, CORS, Origin/Host checks and an
+`AsyncLocalStorage` auth context. (b) `McpAgent` from `agents`, a Durable Object per session.
+(c) `@modelcontextprotocol/sdk` 1.x, the sessionful v1 line.
+
+**Why.** All three run in workerd (checked: `mcp/` `npm run spike:libs`). The wrapper (a)
+adds what this Worker already does itself, plus a dependency tree (`yaml`, `nanoid`,
+`capnweb`, `partysocket`, OpenTelemetry, …) and `nodejs_compat`. `McpAgent` (b) is marked
+deprecated and feature-frozen in its own types, and needs sessions this server does not
+keep (D26). The v1 SDK (c) is built around sessions; its client is still used in tests as
+the 2025-era client.
+
+**Would change if.** viz adopts `@cloudflare/workers-oauth-provider` and its integration turns
+out to need the wrapper (it wraps any `fetch` handler, so probably not), or the SDK v2 line
+stops supporting Workers without `nodejs_compat`.
+
+## D26. The MCP server is stateless: a server per request, no sessions
+
+**Decision.** Every HTTP request to `/mcp` builds a fresh server; nothing is kept between
+requests. Revision 2026-07-28 is served natively (per-request `_meta`, `server/discover`, no
+`initialize`); 2025-11-25, 2025-06-18 and 2025-03-26 clients are served through the SDK's
+stateless legacy path (`initialize` and `ping` answered, no session id). `GET` and `DELETE
+/mcp` are 405. Paging state travels in cursors bound to the tool and its arguments, with the
+time range and dashboard revision pinned.
+
+**Alternatives.** (a) Sessions held in a Durable Object per session (`McpAgent`). (b)
+Sessions in KV. (c) Sessionful only for the 2025 revisions.
+
+**Why.** The spec became stateless at 2026-07-28 (research 09 §2.1, 08 §5.4), and nothing
+the tools do needs server-side state: identity is checked against the control plane on
+every request, and a cursor carries what a next page needs. A Durable Object per session would
+put a stateful hop and a billable object on every agent call for no behaviour; KV cannot
+give a session read-your-writes. Costs: no server-initiated messages (`subscriptions`,
+progress, `logging/setLevel` are not offered), and every page re-runs its queries.
+
+**Would change if.** viz needs server-to-client notifications (subscriptions to a monitor or
+a dashboard), or measured re-query cost of paging dominates an agent's spend.
+
+## D27. The JSON agent API mirrors the MCP tools, one dispatcher for both
+
+**Decision.** `mcp/` also serves the same tools as plain JSON: `POST /api/v1/agent/tools/{name}`
+with the tool's arguments as the body, plus resources and prompts under `/api/v1/agent/…`.
+Both surfaces go through one dispatcher (scopes, argument schema, budget hook, counters), so
+a call returns the same text and structure on either; tool errors carry their HTTP status.
+
+**Alternatives.** (a) MCP only. (b) A REST design of its own (resources per noun, e.g.
+`GET /dashboards/{id}/digest`), with MCP tools calling it. (c) Agents use the control plane
+and the Prometheus API directly.
+
+**Why.** Agent hosts without MCP, scripts, the agentic monitors' Workflows (DESIGN §7) and
+tests need the same operations; one dispatcher means one place for scopes, cleaning of
+untrusted text and budgets, and a test asserts the two surfaces answer identically. A REST
+design of its own (b) would be a second contract to keep equal to the first. The underlying
+APIs (c) return raw data with tenant text unfenced and no token budget, which is what the
+tools exist to avoid.
+
+**Would change if.** The in-app assistant or the UI needs operations that are not tools (then
+they belong in the control plane or query APIs), or a tool's arguments stop being
+expressible as one JSON object.
+
+## D28. Per-identity agent budgets are returned counters, not server-side counters
+
+**Decision.** Every agent tool result carries `usage` (queries, series, points, upstream calls,
+milliseconds); the caller (an agent host, AI Gateway, or an agentic monitor's Workflow with
+per-run and per-day budgets, research 08 §6.4) sums them and stops. Each single call is
+bounded by the server's limits, and the query service enforces the tenant's own. A
+`BudgetHook { admit, record }` in `mcp/src/session.ts` is the seam for a server-side cap.
+
+**Alternatives.** (a) Counters in KV per identity. (b) Counters in a Durable Object per
+identity or tenant.
+
+**Why.** KV has no atomic increment, allows about one write per second per key and propagates
+in tens of seconds, so a per-call counter under-counts concurrent calls by design while
+costing a write per call: it would look like enforcement without being it. A Durable Object
+(b) is exact but puts a stateful hop on every call of a surface that is otherwise stateless
+(D26).
+
+**Would change if.** Agents that do not budget themselves become common enough that a tenant
+needs a hard server-side cap; then (b), behind the existing hook.
+
+## D29. Agents propose and a person applies, including new dashboards
+
+**Decision.** An agent identity's dashboard writes are proposals: named changes to an existing
+dashboard, or a whole new dashboard (`POST /api/v1/control/proposals`), reviewed and applied by
+a person in the control plane. `write_dashboard` mode `apply` is refused for an agent (403
+with an offer to propose) rather than silently turned into a proposal; whether a caller may
+apply comes from the control plane's `whoami` (`mayApply`). The agent surface has no apply,
+approve, revert or delete tool, and it does not honour `admin`: agent keys get explicit
+scopes. A tenant can let agents apply (`agentsMayApply`); applying a proposal that creates a
+dashboard then follows the same rule as a direct create.
+
+**Alternatives.** (a) The control plane turns an agent's apply into a proposal and says so
+(its behaviour for `PATCH`), with the agent surface passing that through. (b) New dashboards
+are not proposable: an agent can only describe one in text. (c) A creation proposal stored
+apart from proposals (its own table), or as a JSON Patch replacing the document root.
+(d) `admin` honoured on the agent surface as it is in the control plane.
+
+**Why.** D8: agents are advisory; a person decides what changes. A silent proposal (a) leaves
+an agent believing it applied something. Without creation proposals (b) the commonest agent
+task, "build a dashboard for X", ends in text a person must paste. A creation is a row of
+the same proposals table with an additive nullable `spec` column (control schema version 2),
+so review, expiry, decline, listing and caps are shared, and the previous release stays a
+valid rollback target; a separate table (c) duplicates all of that, and a root-replacing
+patch hides a creation in the shape of a change, which every path that handles changes
+(rebase check, partial apply, edit) would then have to recognise anyway.
+`admin` is total in the control plane (keys, settings, `agentsMayApply`), so honouring it
+here (d) would let an agent key escape every agent rule.
+
+**Would change if.** People routinely approve agent changes without reading them (then the
+review is theatre and the rule should be revisited with data), or `user` identities with
+roles arrive and replace keys for people.
+
+## D30. An unreferenced compaction output is deleted only once an input of it is gone for good
+
+**Decision.** A compaction step never deletes its outputs, not even when `replace` answers
+`conflict`. Every output carries the list of its inputs as R2 custom metadata (`viz-inputs`,
+`{"v":1,"inputs":[…]}`, checked against the `inputs16` in its key). The orphan sweep
+(`janitor/`) deletes an output that the ledger neither lists nor tombstones only when one of
+its inputs is **gone for good**: not live in the same ledger read, and its object absent from
+the sweep's listing. Objects are deleted only after a logged removal (purge) or once they can
+never be listed (this sweep, by the same rules), so such an input never becomes live again,
+and `replace` admits an output only with every input live. Compaction output keys are
+unchanged. Replaces the earlier rule, which deleted an unreferenced output by its R2 upload
+age (≥ max(24 h, 2 × the step deadline)) and let a conflicted step delete its outputs when the
+ledger did not know them. Alongside it, for flush files (spec F15): a newer incarnation of a
+stream makes an older incarnation's file dead only once that newer incarnation has a logged
+unit, which proves its registration is logged.
+
+**Why it was needed.** Output keys are a function of the inputs, so a retry ADOPTS the objects
+an earlier attempt left (`exists`). The adopted object keeps its old upload time, so the
+sweep could judge it by an age that says nothing about the step now holding it, and delete
+it between that step's PUT and its `replace`: a live file with no object, then its inputs
+purged (review R-2; the protocol model's F13). And "an input is gone, so no step can list
+these outputs" was false while the input's removal was unlogged: a ledger rebuilt from its
+log brings the input back and an identical step commits the very objects the conflicted
+step deleted (the model's F14, critical). Both are acknowledged-row loss (I1, I11).
+
+**Alternatives.** (a) **Step-unique output keys** (the model's fix for F13/F14): a fresh step
+id in every output key, so no step adopts or deletes another's object; a conflicted step
+deletes only its own outputs, and only once the conflicting removal is logged; the sweep
+keeps its age rule. Sound, and checked by the model, but it changes the key format of
+`contracts/TABLES.md` (a format change under `contracts/COMPATIBILITY.md` §3.4, read by query,
+the publisher and the sweep), turns every retry into a new pair of objects to be cleaned up
+(no adoption), and keeps the sweep's safety resting on two clocks (the Worker's step deadline
+against R2's upload time). (b) **An intent in the ledger** before the PUTs (the reviewer's
+suggestion), which `orphanCheck` reports as known: needs new ledger state and RPCs, and with
+adopted keys still races (the sweep may judge before the retry records its intent; R2 deletes
+are not conditional), so it needs (a) as well. (c) **Refresh the upload time on adoption**
+(re-PUT): does not close it; the sweep decided on its earlier listing. (d) **HEAD and re-PUT
+after `replace`**: narrows the window, does not close it. (e) **Never adopt; fail the step on
+an existing object**: a crashed attempt then blocks its job until the sweep removes the
+leftover.
+
+**Why this one.** It closes R-2, F13 and F14 with one rule that rests on ledger facts already
+monotone (a removed key whose object is gone never returns), as D20 did for removals, and on
+no clock. Nothing on the step's path is added: the record rides on the PUT the step already
+makes. No contract or key format changes; the only new persisted format is the versioned
+metadata record, which compact writes and janitor reads (golden files in both). A retry still
+adopts its predecessor's objects, so a crash costs no extra objects.
+
+**Cost.** A leftover output lives until one of its inputs is purged (the inputs' delete grace,
+then the next orphan sweep, at most daily), or for as long as its inputs stay live: R2 bytes,
+not correctness, and bounded by retention. An output whose record is missing or unreadable is
+never deleted automatically (reported as `unknown_inputs`). A merge whose input names exceed
+6 KB of metadata is refused (`too_many_inputs`; about 25 pairs at 120-byte keys; the
+budget allows 8). The sweep lists with metadata and asks the ledger about the missing inputs
+of each unreferenced output in the same read.
+
+**Would change if.** R2 offers a conditional delete (then the sweep could delete exactly the
+version it judged, and age would do); the ledger gains intents or leases for other reasons;
+merges need more inputs than metadata holds (then the record moves to a sidecar object or
+the keys become step-unique, alternative (a)); or leftovers accumulate enough to matter.

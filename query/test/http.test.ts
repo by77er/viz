@@ -1,11 +1,13 @@
 /**
  * The HTTP surface: Prometheus-compatible parameters, envelopes, status codes, CORS and
- * authentication, and the app's own API client (app/src/api, read-only) run against the
- * Worker.
+ * authentication, and a small Prometheus API client (test/client.ts, written from the API
+ * documentation; the tests need nothing outside query/) run against the Worker.
  */
 import { exports } from 'cloudflare:workers'
 import { beforeAll, describe, expect, it } from 'vitest'
-import { PromApiError, PromClient } from '../../app/src/api/client'
+import { EngineLoadError, createQueryEngine } from '../../engine/wasm-query/js/index'
+import { engine } from '../src/index'
+import { PromApiError, PromClient } from './client'
 import { makeKey } from '../../edge/test/helpers'
 import { QUERIES, type World, api, cost, expected, flushAll, ingest, seriesIn, workload, world } from './world'
 
@@ -352,8 +354,8 @@ describe('authentication', () => {
   })
 })
 
-describe("the app's API client (app/src/api/client.ts), unchanged, against the Worker", () => {
-  const client = (key: string) => new PromClient({ baseUrl: 'https://viz.test', token: key, fetch: (input, init) => exports.default.fetch(input as string, init as RequestInit) })
+describe('a Prometheus API client (test/client.ts, written from the API documentation) against the Worker', () => {
+  const client = (key: string) => new PromClient({ baseUrl: 'https://viz.test', token: key, fetch: (input, init) => exports.default.fetch(input, init) })
 
   it('every call parses, and returns what the reference says', async () => {
     const c = client(w.a.key)
@@ -382,5 +384,25 @@ describe("the app's API client (app/src/api/client.ts), unchanged, against the W
     const e = await client('viz_nokey_0123456789').query('up').catch((x) => x)
     expect(e).toBeInstanceOf(PromApiError)
     expect(e).toMatchObject({ errorType: 'unauthorized', status: 401 })
+  })
+})
+
+describe('an engine that does not load', () => {
+  it('is an EngineLoadError, and the Worker answers 500 internal for it: retrying cannot help', async () => {
+    // Workers may not compile WebAssembly at run time; a value that is not a module fails the same way.
+    const broken = createQueryEngine({} as WebAssembly.Module)
+    expect(() => broken.plan('up', 0, 0, 1)).toThrow(EngineLoadError)
+    expect(() => broken.plan('up', 0, 0, 1)).toThrow(/^engine: the WebAssembly module did not load/)
+    const plan = engine.plan
+    engine.plan = () => {
+      throw new EngineLoadError('injected')
+    }
+    try {
+      const res = await api(w.a.key, '/api/v1/query', { query: 'up', time: sec(END) })
+      expect([res.status, (await res.json<{ errorType: string; error: string }>()).errorType, res.headers.get('Retry-After')]).toEqual([500, 'internal', null])
+    } finally {
+      engine.plan = plan
+    }
+    expect((await api(w.a.key, '/api/v1/query', { query: 'up', time: sec(END) })).status).toBe(200)
   })
 })

@@ -39,6 +39,12 @@ finished) belong in each component's README and in `design/`, not here.
 - **Tests must have teeth.** After writing tests for a safety property, break the property
   in the source on purpose, confirm a test fails, restore the source, and list the mutants
   and which test caught each in the README. A mutant that survives is reported, not hidden.
+  Apply mutants to a copy of the component in your scratch area, never in place in the shared
+  tree: others commit and snapshot the tree while you work, and a mutant caught in a commit
+  ships (one reached a pull request to `main` this way).
+- **Snapshot only what is green.** A pull request to `main` takes each directory from a state
+  its owner reported green (all its suites, with no mutation run or edit in progress), not
+  from whatever is on disk.
 - **Independent readers.** Anything viz writes in an open format (Parquet, Iceberg, the
   Prometheus API) is also read back by an implementation viz did not write.
 - **Review before building on it.** Protocol changes get an adversarial review by someone

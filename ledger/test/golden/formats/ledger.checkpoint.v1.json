@@ -1,0 +1,5 @@
+{
+  "format": "ledger.checkpoint",
+  "version": 1,
+  "body": "{\"v\":1,\"kind\":\"viz.ledger.checkpoint\",\"tenant\":\"<tenant>\",\"ledgerIncarnation\":\"<incarnation>\",\"firstVersion\":4,\"lastVersion\":4,\"changes\":1}\n{\"ledgerIncarnation\":\"<incarnation>\",\"version\":4,\"at\":\"<ms>\",\"kind\":\"base\",\"added\":[],\"removed\":[],\"watermarks\":[{\"shard\":\"pool/0\",\"incarnation\":7001,\"seq\":5}],\"previousIncarnations\":[],\"tombstones\":[{\"key\":\"cell-0/data/metric_samples/tenant=<tenant>/day=2026-11-10/samples-pool_0-7001-1-5\",\"table\":\"metric_samples\",\"version\":3,\"at\":\"<ms>\"},{\"key\":\"cell-0/data/metric_samples/tenant=<tenant>/day=2026-11-10/L1-samples-pool_0-7001-1-5\",\"table\":\"metric_samples\",\"version\":4,\"at\":\"<ms>\"},{\"key\":\"cell-0/data/metric_series/tenant=<tenant>/day=2026-11-10/series-pool_0-7001-1-5\",\"table\":\"metric_series\",\"version\":4,\"at\":\"<ms>\"}],\"units\":[]}\n"
+}

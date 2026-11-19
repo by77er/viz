@@ -267,3 +267,44 @@ describe('files', () => {
     }
   })
 })
+
+describe('release skew (contracts/COMPATIBILITY.md)', () => {
+  afterEach(() => {
+    delete hooks.alterTail
+    delete hooks.betweenPlans
+  })
+
+  it('a shard status this release does not know, or schema_too_new, is a retryable 503, never an empty tail', async () => {
+    const w = await world()
+    await ingest(w)
+    const q = QUERIES.find((x) => x.id === 'rate-sum-by')!
+    const answers: unknown[] = [
+      { status: 'schema_too_new', component: 'shard.Shard', version: 9, compat: 9, known: 1, retryAfterMs: 5000 },
+      { status: 'paused', incarnation: 1 },
+      { status: 'ok', incarnation: 1, through: 5 },
+    ]
+    for (const answer of answers) {
+      hooks.alterTail = () => answer
+      for (const path of ['/api/v1/query_range', '/api/v1/labels', '/api/v1/status/tsdb']) {
+        const res = path === '/api/v1/query_range' ? await run(w.a.key, q) : await api(w.a.key, path, { start: String(workload.t0 / 1000), end: String(workload.end / 1000) })
+        const body = await res.json<{ errorType?: string; data?: unknown }>()
+        expect([path, JSON.stringify(answer).slice(0, 30), res.status, body.errorType, body.data]).toEqual([path, JSON.stringify(answer).slice(0, 30), 503, 'unavailable', undefined])
+        expect(res.headers.get('Retry-After')).toBe('1')
+        // Refused at once: not taken for a stream to re-read, nor sent back to the ledger.
+        expect(cost(res, 'Plan-Attempts')).toBe(1)
+      }
+    }
+    delete hooks.alterTail
+    expect(await (await run(w.a.key, q)).json()).toEqual(expected.a[q.id])
+  })
+
+  it('a ledger whose storage is newer than this release reads (it throws schema_too_new) is a retryable 503', async () => {
+    const w = await world()
+    await ingest(w)
+    hooks.betweenPlans = async () => {
+      throw new Error('schema_too_new: ledger.Ledger storage is at version 9, this release knows 1')
+    }
+    const res = await run(w.a.key, QUERIES.find((x) => x.id === 'rate-sum-by')!)
+    expect([res.status, (await res.json<{ errorType: string }>()).errorType, res.headers.get('Retry-After')]).toEqual([503, 'unavailable', '5'])
+  })
+})

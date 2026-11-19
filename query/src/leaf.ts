@@ -90,7 +90,7 @@ export interface ExtractRequest {
 }
 
 export type ExtractAnswer =
-  | { status: 'ok'; batch: Uint8Array; rows: number; series: number; bytesRead: number; cacheHits: number; r2Gets: number }
+  | { status: 'ok'; batch: Uint8Array; rows: number; series: number; bytesRead: number; cacheHits: number; r2Gets: number; engineMs: number }
   | { status: 'missing'; key: string }
   | { status: 'refused'; reason: string }
 
@@ -125,6 +125,11 @@ export interface EvaluateStats {
   /** This leaf's engine memory after evaluating (its peak if it had the instance to itself). */
   wasmMemoryBytes: number
   ms: number
+  /** Time in this leaf's own engine calls (gathering and evaluating), not its readers'. */
+  ownEngineMs: number
+  /** Its readers' engine time: the sum, and the longest one call took. */
+  readerEngineMs: number
+  readerEngineMaxMs: number
 }
 
 export type EvaluateAnswer = { status: 'ok'; answer: Uint8Array; stats: EvaluateStats } | { status: 'missing'; key: string } | { status: 'refused'; reason: string }
@@ -181,8 +186,9 @@ export class Leaf extends DurableObject<LeafEnv> {
       bytes.push(r.bytes)
     }
     try {
+      const t0 = performance.now()
       const ex = leafEngine.extract(bytes.slice(0, req.series.length), bytes.slice(req.series.length), req.without, req.part, req.parts, req.ranges)
-      return { status: 'ok', batch: ex.batch, rows: ex.rows, series: ex.series, bytesRead, cacheHits, r2Gets: files.length - cacheHits }
+      return { status: 'ok', batch: ex.batch, rows: ex.rows, series: ex.series, bytesRead, cacheHits, r2Gets: files.length - cacheHits, engineMs: performance.now() - t0 }
     } finally {
       maybeReset()
     }
@@ -199,7 +205,17 @@ export class Leaf extends DurableObject<LeafEnv> {
     const t0 = Date.now()
     if (leafHooks.beforeEvaluate) await leafHooks.beforeEvaluate(req.part, 0)
     if (leafHooks.resetBeforeEvaluate && openSessions === 0) leafEngine.reset()
-    const stats: EvaluateStats = { readerCalls: 0, readerRetries: 0, extractBytes: 0, extractRows: 0, bytesRead: 0, cacheHits: 0, r2Gets: 0, wasmMemoryBytes: 0, ms: 0 }
+    const stats: EvaluateStats = {
+      readerCalls: 0, readerRetries: 0, extractBytes: 0, extractRows: 0, bytesRead: 0, cacheHits: 0, r2Gets: 0, wasmMemoryBytes: 0, ms: 0, ownEngineMs: 0, readerEngineMs: 0, readerEngineMaxMs: 0,
+    }
+    const own = <T>(f: () => T): T => {
+      const t = performance.now()
+      try {
+        return f()
+      } finally {
+        stats.ownEngineMs += performance.now() - t
+      }
+    }
     const handle = leafEngine.gatherNew(req.ranges, req.budget)
     openSessions++
     let open = true
@@ -233,19 +249,22 @@ export class Leaf extends DurableObject<LeafEnv> {
             stats.bytesRead += answer.bytesRead
             stats.cacheHits += answer.cacheHits
             stats.r2Gets += answer.r2Gets
+            stats.readerEngineMs += answer.engineMs ?? 0
+            stats.readerEngineMaxMs = Math.max(stats.readerEngineMaxMs, answer.engineMs ?? 0)
             // Gathered as it arrives, with its group's precedence: arrival order does not matter.
-            if (!aborted && missing === null && refused === null && answer.batch.byteLength > 0) aborted = leafEngine.gatherAdd(handle, gi, answer.batch).aborted
+            const batch = answer.batch
+            if (!aborted && missing === null && refused === null && batch.byteLength > 0) aborted = own(() => leafEngine.gatherAdd(handle, gi, batch).aborted)
           }
         }),
       )
       if (missing !== null) return { status: 'missing', key: missing }
       if (refused !== null) return { status: 'refused', reason: refused }
       if (!aborted) {
-        for (let i = 0; i < req.tails.length && !aborted; i++) aborted = leafEngine.gatherAdd(handle, req.groups.length + i, req.tails[i]!).aborted
+        for (let i = 0; i < req.tails.length && !aborted; i++) aborted = own(() => leafEngine.gatherAdd(handle, req.groups.length + i, req.tails[i]!).aborted)
       }
       open = false
       openSessions--
-      const answer = leafEngine.gatherEval(handle, req.query, req.grid, req.fragments, req.limits)
+      const answer = own(() => leafEngine.gatherEval(handle, req.query, req.grid, req.fragments, req.limits))
       stats.wasmMemoryBytes = leafEngine.memoryBytes()
       stats.ms = Date.now() - t0
       return { status: 'ok', answer, stats }

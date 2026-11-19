@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest'
 import type { Engine } from '../../contracts/engine'
 import type { FileEntry, LedgerChange, LiveFile } from '../../contracts/ledger'
 import { flushTenant } from '../../flush/src/flush'
-import { DAY_MS, Sent, T0, append, dataKeys, listKeys, liveKeys, read, sha256Hex, someSamples, stream } from '../../flush/test/helpers'
+import { DAY_MS, Sent, T0, append, breakLedgerLog, dataKeys, flushSettled, listKeys, liveKeys, loseLedgerStorage, read, sha256Hex, someSamples, stream } from '../../flush/test/helpers'
+import { type JanitorEnv, purgeTenant, sweepOrphans } from '../../janitor/src/janitor'
 import { DEFAULT_POLICY, type Pair, type StepResult, chooseJob, compactStep, compactTenant, compactedKey, engine, jumpsOver, pairFiles, pairStem } from '../src/index'
 
 const HOUR = 3_600_000
@@ -14,16 +15,28 @@ async function flushed(prefix: string, n: number, at: (i: number) => number = (i
     await append(s.shard, s.tenant, someSamples(s.tenant, at(i), 24, i), sent)
     await s.shard.seal(s.tenant)
   }
-  const r = await flushTenant(env, engine, s.tenant, s.shardName)
+  const r = await flushSettled(env, engine, s.tenant, s.shardName)
   expect(r).toMatchObject({ status: 'ok', awaitingLog: false })
   return { ...s, sent }
 }
 const planOf = async (l: Awaited<ReturnType<typeof flushed>>['ledger'], table: 'metric_samples' | 'metric_series') =>
   (await l.plan({ table, minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })).files
-const lastChange = async (tenant: string): Promise<LedgerChange> => {
-  const keys = (await listKeys(`${env.CELL}/ledger/tenant=${tenant}/`)).filter((k) => !k.endsWith('base.json'))
-  return (await env.BUCKET.get(keys[keys.length - 1]!))!.json<LedgerChange>()
+/**
+ * Every change in the tenant's ledger log, in order, whatever the layout: one object per change,
+ * or segments (contracts/LEDGER-LOG.md; header line, then one change per line). Drains first,
+ * since the ledger writes its log in the background.
+ */
+const changesOf = async (tenant: string): Promise<LedgerChange[]> => {
+  await env.LEDGER.get(env.LEDGER.idFromName(tenant)).drain()
+  const out: LedgerChange[] = []
+  for (const k of await listKeys(`${env.CELL}/ledger/tenant=${tenant}/`)) {
+    const text = await (await env.BUCKET.get(k))!.text()
+    if (/\/seg-\d+-\d+\.jsonl$/.test(k)) for (const line of text.split('\n').slice(1)) { if (line) out.push(JSON.parse(line) as LedgerChange) }
+    else if (/\/\d+\.json$/.test(k)) out.push(JSON.parse(text) as LedgerChange)
+  }
+  return out.filter((c) => c.kind !== 'base').sort((a, b) => a.ledgerIncarnation - b.ledgerIncarnation || a.version - b.version)
 }
+const lastChange = async (tenant: string): Promise<LedgerChange> => (await changesOf(tenant)).at(-1)!
 /** A policy clock at which today's hours are quiet but the day is still open. */
 const QUIET = T0 + 30 * 60_000
 const CLOSED = T0 + 2 * DAY_MS
@@ -178,7 +191,7 @@ describe('compactStep', () => {
       await append(s.shard, s.tenant, someSamples(s.tenant, T0 + i * 60_000, 24, i), sent)
       await s.shard.seal(s.tenant)
     }
-    await flushTenant(env, engine, s.tenant, s.shardName)
+    await flushSettled(env, engine, s.tenant, s.shardName)
     const before = await read(s.tenant, [s.shardName])
     expect(before.lakeRows).toBe(96) // four files of 24 rows; `sent` holds fewer distinct samples
     const r = await compactStep(env, engine, s.tenant, { now: QUIET })
@@ -203,12 +216,12 @@ describe('compactStep', () => {
     expect((await read(t.tenant, [t.shardName])).canon).toEqual(t.sent.canon())
   })
 
-  it('conflict: an input removed while the step ran means nothing is swapped and the outputs are deleted', async () => {
+  it('conflict: an input removed while the step ran means nothing is swapped; the outputs are left for the orphan sweep', async () => {
     const t = await flushed('c4', 4, (i) => T0 - 3 * DAY_MS + i * 60_000)
     const more = new Sent()
     await append(t.shard, t.tenant, someSamples(t.tenant, T0, 24, 9), more)
     await t.shard.seal(t.tenant)
-    await flushTenant(env, engine, t.tenant, t.shardName)
+    await flushSettled(env, engine, t.tenant, t.shardName)
     const live = await liveKeys(t.ledger)
     let outputs: string[] = []
     // Retention expires the old day between the step's PUTs and its replace.
@@ -226,13 +239,19 @@ describe('compactStep', () => {
     expect(r.status).toBe('conflict')
     if (r.status !== 'conflict') return
     expect(r.missing.sort()).toEqual(live.filter((k) => k.includes('day=2026-11-15')))
-    expect(r.discarded.sort()).toEqual(outputs.sort())
-    for (const k of outputs) expect(await env.BUCKET.head(k)).toBeNull()
+    // The step deletes nothing (spec/README.md F14): the objects stay until the sweep can tell.
+    for (const k of outputs) expect(await env.BUCKET.head(k)).not.toBeNull()
     // The expired day did not come back, and what is left reads exactly as sent.
     expect(await liveKeys(t.ledger)).toEqual(live.filter((k) => k.includes('day=2026-11-18')))
     expect((await read(t.tenant, [t.shardName])).canon).toEqual(more.canon())
     // Planning again finds nothing wrong and nothing to do.
     expect((await compactStep(env, engine, t.tenant, { now: T0 })).status).toBe('idle')
+    // Once the expired inputs are purged, nothing can ever list the outputs: the sweep deletes them.
+    const j = env as unknown as JanitorEnv
+    expect((await sweepOrphans(j, t.tenant, { now: Date.now() + 25 * HOUR })).deleted).toEqual([])
+    await t.ledger.drain() // the removal is deletable once it is logged (the ledger's alarm)
+    await purgeTenant(j, t.tenant, { graceMs: 0 })
+    expect((await sweepOrphans(j, t.tenant, { now: Date.now() + 25 * HOUR })).deleted.sort()).toEqual(outputs.sort())
   })
 
   it('conflict after an identical step won and its outputs were removed since: the tombstoned objects are left for the janitor', async () => {
@@ -257,7 +276,7 @@ describe('compactStep', () => {
         },
       },
     })
-    expect(b).toMatchObject({ status: 'conflict', discarded: [] })
+    expect(b).toMatchObject({ status: 'conflict' })
     const check = await t.ledger.orphanCheck(outputs)
     expect(check).toMatchObject({ live: [], tombstoned: outputs })
     // The reader holding the plan from before the removal can still read every file of it.
@@ -273,7 +292,7 @@ describe('compactStep', () => {
     expect((await dataKeys(t.tenant)).filter((k) => /\/L1-/.test(k))).toEqual(live)
     expect((await read(t.tenant, [t.shardName])).canon).toEqual(t.sent.canon())
     // One replace in the log, not three.
-    const changes = await Promise.all((await listKeys(`${env.CELL}/ledger/tenant=${t.tenant}/`)).filter((k) => !k.endsWith('base.json')).map(async (k) => (await env.BUCKET.get(k))!.json<LedgerChange>()))
+    const changes = await changesOf(t.tenant)
     expect(changes.filter((c) => c.kind === 'replace')).toHaveLength(1)
   })
 
@@ -311,6 +330,24 @@ describe('compactStep', () => {
     expect((await read(t.tenant, [t.shardName])).canon).toEqual(t.sent.canon())
   })
 
+  it('fails closed on a replace answer it does not know (a newer ledger, schema_too_new): nothing swapped, nothing deleted', async () => {
+    const t = await flushed('c9', 4)
+    const live = await liveKeys(t.ledger)
+    // Calls go to the real stub, except `replace`, which answers a status this code does not know.
+    const wrap = (stub: DurableObjectStub<never>) =>
+      new Proxy(stub, {
+        get: (s, p) =>
+          p === 'then' ? undefined
+          : p === 'replace' ? async () => ({ status: 'schema_too_new', component: 'ledger.Ledger', found: 2, compat: 2, known: 1, retryAfterMs: 30_000 })
+          : (...a: unknown[]) => (s as unknown as Record<string | symbol, (...x: unknown[]) => unknown>)[p]!(...a),
+      })
+    const LEDGER = new Proxy(env.LEDGER, { get: (n, p) => (p === 'get' ? (id: DurableObjectId) => wrap(n.get(id) as never) : (Reflect.get(n, p) as (...a: unknown[]) => unknown).bind(n)) })
+    let outputs: string[] = []
+    await expect(compactStep({ ...env, LEDGER }, engine, t.tenant, { now: QUIET, hooks: { afterPut: (o) => void (outputs = o.map((f) => f.key)) } })).rejects.toThrow(/schema_too_new/)
+    expect(await liveKeys(t.ledger)).toEqual(live)
+    for (const k of outputs) expect(await env.BUCKET.head(k)).not.toBeNull()
+  })
+
   it('compactedKey refuses parts that could leave the tenant prefix', () => {
     const ok = { cell: 'c', table: 'metric_samples' as const, tenant: 't', day: '2026-11-18', level: 2, inputs16: '0'.repeat(16), sha256Hex: 'a'.repeat(64) }
     expect(compactedKey(ok)).toBe('c/data/metric_samples/tenant=t/day=2026-11-18/L2-d-0000000000000000-aaaaaaaa.parquet')
@@ -321,3 +358,116 @@ describe('compactStep', () => {
 })
 
 export type { StepResult }
+
+/**
+ * Review R-2 (design/reviews/write-path-completion.md) and the protocol model's F13 and F14
+ * (spec/README.md): a compaction output is only as safe as the rule the orphan sweep and the
+ * step itself use to delete it. Each test drives one interleaving deterministically through
+ * the hooks of `compactStep` and `sweepOrphans`.
+ */
+describe('review R-2: compaction outputs and concurrent deleters', () => {
+  const HOUR = 3_600_000
+  const janitorEnv = env as unknown as JanitorEnv
+  const exists = async (keys: string[]) => (await Promise.all(keys.map((k) => env.BUCKET.head(k)))).map((o) => o !== null)
+
+  // Ported from the reviewer's compact/test/review.test.ts.
+  it('an adopted output survives a sweep that runs between its PUT and its replace', async () => {
+    const t = await flushed('rv-adopt', 4)
+    const inputs = await liveKeys(t.ledger)
+    expect(inputs).toHaveLength(8)
+    // Attempt 1 of the job crashes after its PUTs (too_slow, a ledger that threw, a killed isolate).
+    let leftover: string[] = []
+    await expect(compactStep(env, engine, t.tenant, { now: QUIET, hooks: { afterPut: (o) => { leftover = o.map((f) => f.key); throw new Error('crash after PUT') } } })).rejects.toThrow('crash after PUT')
+    expect(await exists(leftover)).toEqual([true, true])
+    // Attempt 2 of the SAME job, the sweep's clock 25 h on: its PUTs answer `exists`, and a
+    // sweep runs between its PUTs and its replace.
+    let swept: string[] = []
+    const r = await compactStep(env, engine, t.tenant, {
+      now: QUIET,
+      hooks: { afterPut: async () => { swept = (await sweepOrphans(janitorEnv, t.tenant, { now: Date.now() + 25 * HOUR })).deleted } },
+    })
+    expect(r).toMatchObject({ status: 'merged', put: ['exists', 'exists'] })
+    expect(swept).toEqual([])
+    const listed = await liveKeys(t.ledger)
+    expect(listed).toEqual([...leftover].sort())
+    expect(await exists(listed), 'listed outputs exist in R2').toEqual([true, true])
+    // After the delete grace (and once the replace is logged) the inputs go; the rows are still in an object.
+    await t.ledger.drain()
+    await purgeTenant(janitorEnv, t.tenant, { graceMs: 0 })
+    expect(await exists(inputs)).toEqual(inputs.map(() => false))
+    expect((await read(t.tenant, [t.shardName])).canon).toEqual(t.sent.canon())
+  })
+
+  it('the review sequence exactly: the sweep has listed and judged the leftover when the adopting step commits, then deletes', async () => {
+    const t = await flushed('rv-seq', 4)
+    await expect(compactStep(env, engine, t.tenant, { now: QUIET, hooks: { afterPut: () => { throw new Error('crash after PUT') } } })).rejects.toThrow('crash after PUT')
+    const leftover = (await dataKeys(t.tenant)).filter((k) => /\/L1-/.test(k))
+    // Steps 4-6 of R-2: the sweep (clock 25 h on) lists the leftover and asks the ledger, which
+    // does not know it; before the sweep deletes, attempt k adopts the leftover and commits.
+    let step: StepResult | null = null
+    const o = await sweepOrphans(janitorEnv, t.tenant, {
+      now: Date.now() + 25 * HOUR,
+      hooks: { beforeDelete: async () => { step = await compactStep(env, engine, t.tenant, { now: QUIET }) } },
+    })
+    expect(step).toMatchObject({ status: 'merged', put: ['exists', 'exists'] })
+    expect(o.deleted).toEqual([])
+    expect(await liveKeys(t.ledger)).toEqual(leftover)
+    expect(await exists(leftover)).toEqual([true, true])
+    await t.ledger.drain()
+    expect((await purgeTenant(janitorEnv, t.tenant, { graceMs: 0 })).deleted).toHaveLength(8)
+    expect((await read(t.tenant, [t.shardName])).canon).toEqual(t.sent.canon())
+  })
+
+  it('spec F14: a step that conflicts on an unlogged removal leaves its outputs; a rebuild lets the identical step commit them', async () => {
+    const t = await flushed('rv-f14', 4)
+    const inputs = await liveKeys(t.ledger)
+    let b: StepResult | null = null
+    // Step A has PUT its outputs. Step B (the same job, the same keys) runs to the end inside
+    // A's window: retention expires the inputs while B runs, committed but NOT logged, so B's
+    // replace conflicts. Then the ledger loses its storage: the rebuild from its log does not
+    // have the expiry, the inputs are live again, and A's replace commits.
+    const a = await compactStep(env, engine, t.tenant, {
+      now: QUIET,
+      hooks: {
+        afterPut: async () => {
+          b = await compactStep(env, engine, t.tenant, {
+            now: QUIET,
+            hooks: {
+              afterPlan: async () => {
+                await breakLedgerLog(t.ledger)
+                await t.ledger.expire({ table: 'metric_samples', beforeDay: '2026-11-19' })
+                await t.ledger.expire({ table: 'metric_series', beforeDay: '2026-11-19' })
+              },
+            },
+          })
+          await loseLedgerStorage(t.ledger)
+          expect((await liveKeys(t.ledger)).sort()).toEqual(inputs)
+        },
+      },
+    })
+    expect(b).toMatchObject({ status: 'conflict' })
+    expect(a).toMatchObject({ status: 'merged' })
+    const live = await liveKeys(t.ledger)
+    expect(live).toHaveLength(2)
+    expect(await exists(live), 'every listed file has its object').toEqual([true, true])
+    expect((await read(t.tenant, [t.shardName])).canon).toEqual(t.sent.canon())
+  })
+
+  it('a leftover whose inputs are gone for good is deleted; until then it is kept, however old', async () => {
+    const t = await flushed('rv-gone', 4)
+    await expect(compactStep(env, engine, t.tenant, { now: QUIET, hooks: { afterPut: () => { throw new Error('crash after PUT') } } })).rejects.toThrow('crash after PUT')
+    const leftover = (await dataKeys(t.tenant)).filter((k) => /\/L1-/.test(k))
+    const later = { now: Date.now() + 365 * DAY_MS }
+    // Inputs live: kept, a year on.
+    expect((await sweepOrphans(janitorEnv, t.tenant, later)).deleted).toEqual([])
+    // Inputs expired (logged) but not yet purged: their objects exist, so still kept.
+    await t.ledger.expire({ tables: ['metric_samples', 'metric_series'], beforeDay: '2026-11-19' })
+    await t.ledger.drain()
+    const kept = await sweepOrphans(janitorEnv, t.tenant, later)
+    expect(kept.deleted).toEqual([])
+    // Purged: no step can ever make the leftover live, so it goes.
+    expect((await purgeTenant(janitorEnv, t.tenant, { graceMs: 0 })).deleted).toHaveLength(8)
+    expect((await sweepOrphans(janitorEnv, t.tenant, later)).deleted.sort()).toEqual(leftover)
+    expect(await dataKeys(t.tenant)).toEqual([])
+  })
+})

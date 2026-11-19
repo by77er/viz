@@ -13,3 +13,4 @@ gocache/
 deploy/generated/
 engine/traceql/tools/godiff/.work/
 app/dist-new/
+__pycache__/

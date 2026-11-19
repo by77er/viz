@@ -112,8 +112,10 @@ fn canon_min(a: f64, b: f64) -> f64 {
         a
     } else if b < a {
         b
-    } else {
+    } else if a.is_sign_negative() {
         a
+    } else {
+        b
     }
 }
 

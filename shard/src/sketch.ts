@@ -21,6 +21,13 @@
  */
 
 export const HLL_REGISTERS = 4096
+/** Format version of a saved bucket (byte 1 of its header). */
+export const SKETCH_FORMAT = 1
+
+/** A stored bucket in a format this code does not read. */
+export class UnreadableSketch extends Error {
+  override name = 'UnreadableSketch'
+}
 const HLL_BITS = 12
 const BLOOM_HASHES = 7
 const MIN_BLOOM_BITS = 1 << 17 // 16 KB
@@ -84,15 +91,22 @@ function bloomHas(bits: Uint8Array, h1: number, h2: number): boolean {
   return true
 }
 
-function bloomAdd(bits: Uint8Array, h1: number, h2: number): void {
+/** Set the id's bits. True if any bit was not set before (the filter changed). */
+function bloomAdd(bits: Uint8Array, h1: number, h2: number): boolean {
   const mask = bits.length * 8 - 1
   const step = h2 | 1
   let p = h1
+  let changed = false
   for (let i = 0; i < BLOOM_HASHES; i++) {
     const b = p & mask
-    bits[b >>> 3]! |= 1 << (b & 7)
+    const bit = 1 << (b & 7)
+    if ((bits[b >>> 3]! & bit) === 0) {
+      bits[b >>> 3]! |= bit
+      changed = true
+    }
     p = (p + step) | 0
   }
+  return changed
 }
 
 /** Bloom size for `expected` ids at about 10 bits each: a power of two between 16 KB and 1 MB. */
@@ -114,14 +128,16 @@ class Bucket {
   }
 
   /** Returns true if the bucket's count may have changed (a new id, or a raised register). */
-  add(id: bigint, h1: number, h2: number): boolean {
+  /** Record an id. `counted`: the count may have changed. `changed`: the bucket's bytes changed. */
+  add(id: bigint, h1: number, h2: number): { counted: boolean; changed: boolean } {
     if (this.exact) {
-      if (this.exact.has(id)) return false
+      if (this.exact.has(id)) return { counted: false, changed: false }
       this.exact.add(id)
-      return true
+      return { counted: true, changed: true }
     }
-    bloomAdd(this.bloom!, h1, h2)
-    return hllAdd(this.hll!, h1, h2)
+    const bloom = bloomAdd(this.bloom!, h1, h2)
+    const hll = hllAdd(this.hll!, h1, h2)
+    return { counted: hll, changed: bloom || hll }
   }
 
   /** Switch from the exact set to the sketch, carrying every id over. */
@@ -150,10 +166,15 @@ class Bucket {
     }
   }
 
-  /** `u8 kind`, then for exact the ids (i64 LE), for a sketch the registers and the Bloom bits. */
+  /**
+   * An 8-byte header, `u8 kind` (0 exact, 1 sketch), `u8 version` (SKETCH_FORMAT; 0 in
+   * buckets saved before the byte existed, read as 1), six zero bytes; then for exact the
+   * ids (i64 LE), for a sketch the registers and the Bloom bits.
+   */
   save(): Uint8Array {
     if (this.exact) {
       const out = new Uint8Array(8 + 8 * this.exact.size)
+      out[1] = SKETCH_FORMAT
       const view = new DataView(out.buffer)
       let p = 8
       for (const id of this.exact) {
@@ -164,6 +185,7 @@ class Bucket {
     }
     const out = new Uint8Array(8 + HLL_REGISTERS + this.bloom!.length)
     out[0] = 1
+    out[1] = SKETCH_FORMAT
     out.set(this.hll!, 8)
     out.set(this.bloom!, 8 + HLL_REGISTERS)
     return out
@@ -171,6 +193,12 @@ class Bucket {
 
   static load(bytes: Uint8Array): Bucket {
     const b = new Bucket()
+    // Refuse what a newer release wrote rather than read it as an exact list
+    // (contracts/COMPATIBILITY.md §3.1, design/UPGRADES.md §7).
+    const version = bytes[1] === 0 ? 1 : bytes[1]
+    if (bytes.byteLength < 8 || (bytes[0] !== 0 && bytes[0] !== 1) || version !== SKETCH_FORMAT) {
+      throw new UnreadableSketch(`series window bucket of kind ${bytes[0]}, format ${bytes[1]}; this code reads kind 0 or 1, format ${SKETCH_FORMAT}`)
+    }
     if (bytes[0] === 1) {
       b.exact = null
       b.hll = bytes.slice(8, 8 + HLL_REGISTERS)
@@ -245,8 +273,13 @@ export class SeriesWindow {
     return { current: this.count(), fresh }
   }
 
-  /** Record every id of an accepted batch in the current bucket. `expected` sizes a new Bloom filter. */
-  add(ids: BigInt64Array, expected: number): void {
+  /**
+   * Record every id of an accepted batch in the current bucket. `expected` sizes a new Bloom
+   * filter. Returns whether anything to save changed (a batch of series already in the
+   * current bucket changes nothing: review R-11).
+   */
+  add(ids: BigInt64Array, expected: number): boolean {
+    let changed = false
     for (let i = 0; i < ids.length; i++) {
       const id = ids[i]!
       const [lo, hi] = halves(id)
@@ -254,7 +287,9 @@ export class SeriesWindow {
       // The HyperLogLog is fed every id, also one the Bloom filter (wrongly or rightly)
       // calls known: the count must not inherit the filter's false positives.
       const wasExact = this.cur.exact !== null
-      if (!this.cur.add(id, h1, h2)) continue
+      const r = this.cur.add(id, h1, h2)
+      if (r.changed) changed = true
+      if (!r.counted) continue
       this.estimate = null
       if (wasExact && !this.prev.has(id, h1, h2)) this.union++
       if (this.cur.exact && this.cur.exact.size > this.exactMax) {
@@ -262,6 +297,7 @@ export class SeriesWindow {
         this.estimate = null
       }
     }
+    return changed
   }
 
   /** The two buckets as `[bucket index, bytes]`, for the shard to store. */

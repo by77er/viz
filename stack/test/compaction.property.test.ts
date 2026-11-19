@@ -1,9 +1,9 @@
 import { afterAll, describe, expect, it } from 'vitest'
 import { compactStep } from '../../compact/src/compact'
-import { read } from '../../flush/test/helpers'
+import { flushSettled, read } from '../../flush/test/helpers'
 import { expireTenant } from '../../janitor/src/janitor'
 import { env } from 'cloudflare:workers'
-import { engine, flushTenant } from '../src/index'
+import { engine } from '../src/index'
 import { DAY_MS, type Sim, type SimTenant, checkTenant, checksum, createSim, ingest, ledger, rng, shard } from './sim'
 
 /**
@@ -22,7 +22,8 @@ afterAll(() => sims.forEach((s) => s.restore()))
 async function flushAll(sim: Sim, t: SimTenant): Promise<void> {
   for (const s of sim.shards) {
     await shard(s).seal(t.name)
-    const r = await flushTenant(sim.env, engine, t.name, s)
+    // Until the shard is told `recorded`: flush, the ledger's drain (its alarm), flush again.
+    const r = await flushSettled(sim.env, engine, t.name, s)
     expect(r).toMatchObject({ status: 'ok', awaitingLog: false, remaining: 0 })
   }
 }
@@ -78,13 +79,14 @@ describe('compaction preserves the rows (I8)', () => {
         const x = await compactStep(sim.env, engine, t.name, {
           now: clock(),
           policy: policy(),
-          hooks: { [at]: async () => { cutoff = (await expireTenant(sim.env, t.name)).beforeDay } },
+          hooks: { [at]: async () => { cutoff = (await expireTenant(sim.env, t.name)).beforeDay! } },
         })
-        if (cutoff === '') cutoff = (await expireTenant(sim.env, t.name)).beforeDay // the step was idle: expire anyway
+        if (cutoff === '') cutoff = (await expireTenant(sim.env, t.name)).beforeDay! // the step was idle: expire anyway
         expires++
         if (x.status === 'conflict') {
           conflicts++
-          for (const k of x.discarded) expect(await env.BUCKET.head(k), where).toBeNull()
+          // A conflicted step deletes nothing (spec/README.md F14): its outputs stay for the
+          // orphan sweep, and `checkTenant` below requires them to be names the sweep can judge.
         }
         t.model.expire(cutoff)
         // Nothing of an expired day came back, whatever the step did.

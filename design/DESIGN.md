@@ -75,8 +75,9 @@ per-tenant ledger has none of those problems and is a far smaller thing to prove
 | `Ruler` | Durable Object, one per tenant rule shard | Rule ticks (one batch evaluation per group), alert state machine, acknowledgements, backtests, hands transitions to the notifier. Serves the Prometheus `/api/v1/rules` and `/api/v1/alerts` shapes and viz's `/api/v1/monitors` | every rule interval |
 | `Notifier` | Durable Object, one per tenant | Routing, grouping, inhibition, silences, and the delivery outbox. One per tenant because grouping spans that tenant's rulers | when alerts change, and on its group timers |
 | `Scraper` | Durable Object, one per target group | Pull ingest | every scrape interval |
-| `Tenant` | Durable Object, one per tenant | Config, keys, dashboards and revisions, rule definitions, retention policy | on edits; reads are cached |
-| `app` | Worker + static assets | UI, REST and Prometheus/Tempo-compatible APIs, MCP, OAuth | per request |
+| `Tenant` | Durable Object, one per tenant | Keys, dashboards and revisions, proposed changes, settings (retention, limits, pool), audit log; publishes what the data path needs to KV. Rule groups are held by the `Ruler` | per control-plane request; the data path reads its KV records, never the object |
+| `app` | Worker + static assets | UI, REST and Prometheus/Tempo-compatible APIs, OAuth | per request |
+| `mcp` | Worker | The agent surface: a stateless MCP server and the same tools as JSON under `/api/v1/agent/…`; no Durable Object (§8, D25–D27) | per agent call |
 | `LiveTail` | Durable Object | Hibernating WebSockets for live log tail | while a viewer is connected |
 | `jobs` | Workflows | Compaction, rollups, retention, orphan sweep, scrubbing, investigations. As built, compaction, retention and deletion are a per-tenant maintenance run on a queue (§5.2) | scheduled or triggered |
 | Heavy worker | Container (fronted by a Durable Object) | The same engine for work that exceeds isolate limits | on demand |
@@ -195,8 +196,14 @@ log through an outbox. (As built, it waits for that R2 write before answering, w
 measurement on Cloudflare showed limits it to about one unit per second; the write is
 moving to batched background segments.) It tells a shard to discard only what has been both committed and
 logged. A rebuilt ledger starts a new ledger incarnation, so versions are never reused, and
-periodic checkpoints bound rebuild time. The orphan sweeper deletes only files that are
-unreferenced *and* belong to a sequence range below the stream's logged watermark.
+periodic checkpoints bound rebuild time. The orphan sweeper deletes an object only if the
+ledger neither lists nor tombstones it and it can never be listed: a flush file once its
+stream's *logged* watermark covers its sequence range, or once a newer incarnation of the
+stream has a logged unit (so its registration is logged); a compaction output once one of
+its inputs is gone for good, that is, not live and its object already deleted, which
+happens only after a logged removal. A compaction step never deletes an output, not even
+on conflict, because an identical step may adopt the same object. No clock and no ledger
+rebuild can make the sweeper delete a file that may still become live (D30).
 
 ### 4.4 Pull and adapters
 
@@ -245,8 +252,9 @@ rows are chosen over chunk blobs for openness and simplicity, pending the read-s
   output its inputs' range, refusing a merge that would jump over an overlapping file
   (D22).
 - **When it runs (as built).** Compaction, retention, deletion and the orphan sweep are one
-  per-tenant maintenance run, consumed from a queue. A successful flush asks for one; so
-  does the hourly cron, for tenants whose KV marker says time alone has made work (an hour
+  per-tenant maintenance run, consumed from a queue. A flush that changed something
+  (admitted a unit, wrote an object, or saw a segment recorded) asks for one; so does the
+  hourly cron, for tenants whose KV marker says time alone has made work (an hour
   gone quiet, a day closed, the oldest day reaching its retention, a grace ending, an orphan
   sweep still needed after objects were written). The compaction Workflow is built but not
   started.
@@ -259,6 +267,9 @@ rows are chosen over chunk blobs for openness and simplicity, pending the read-s
   the ledger keeps a tombstone per removed key and releases it for deletion once the
   removal is in its R2 log and a grace period has passed by its own clock; the wait for
   publication is added with the publisher (tombstones carry the ledger version for that).
+  A tenant without a policy record gets the default (30 days); a record that cannot be read
+  (malformed, or of a version the janitor does not know) expires nothing for that tenant and
+  is reported every hour until fixed, never replaced by the default.
 - **Index fragments.** Each file's row-group offsets, key statistics and page-index
   locations are stored with its ledger row. Compaction consolidates the fragments of a
   partition into one content-addressed index object. Planning never issues one footer read
@@ -392,11 +403,18 @@ result, limited per tenant, and exposed to agents through `validate_query`.
   form, generated from the same spec and data. Agents read digests (value, range, trend,
   outliers, threshold state per panel) instead of raw series or screenshots; the digest is
   also the accessible view.
-- **Agent tools.** A stateless MCP endpoint with OAuth scopes and about a dozen tools:
-  search telemetry, describe a metric, validate a query, run a query, search / get / read /
-  write dashboards, list revisions, annotate. Results are compact text within a token
-  budget. The REST API and the in-app assistant call the same operations. Rendering a live
-  panel inside an agent host (MCP Apps) comes after launch.
+- **Agent tools.** A stateless MCP endpoint (its own Worker, `mcp/`; D25, D26) with
+  scoped, tenant-bound credentials: API keys today, with OAuth a seam not yet built.
+  Thirteen tools: search telemetry, describe a metric, validate a query, run a query,
+  search / get / read dashboards, the dashboard schema, write a dashboard, list revisions,
+  list and get monitors, annotate (refused until an annotation store exists). Results are
+  compact text within a token budget, with tenant text fenced as data, and the same page as
+  structured content; each result returns its usage counters, and budgets per identity are
+  the caller's to keep (D28). A JSON API (`/api/v1/agent/…`) serves the same tools through
+  the same dispatcher (D27); the in-app assistant, not built yet, is to call them too. Writes
+  by agents are dry runs and proposals, for a new dashboard or a change to one; a person
+  applies them (D29). Rendering a live panel inside an agent host (MCP Apps) comes after
+  launch.
 - **Compatibility.** The Prometheus and Tempo HTTP APIs are served, so Grafana and existing
   tooling work against viz from day one.
 - **Stack.** React 19 single-page app on Workers static assets; Hono; TanStack Router and

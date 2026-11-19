@@ -1,17 +1,23 @@
 import { evictDurableObject, runInDurableObject } from 'cloudflare:test'
 import { env, exports } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
-import { ledgerLogKey, type LedgerChange } from '../../contracts/ledger'
+import type { LedgerChange } from '../../contracts/ledger'
 import type { Segment } from '../../shard/src/shard'
 import { STALE_NAN } from '../../engine/wasm/test/vzb1'
 import { type FlushOptions, type FlushResult, dataFileKey, engine, flushTenant } from '../src/index'
 import {
-  DAY_MS, Sent, T0, append, breakLedgerLog, dataKeys, discardRecorded, healLedgerLog, ledgerStub, listKeys, liveKeys, loseLedgerStorage, read, sha256Hex,
+  DAY_MS, Sent, T0, append, breakLedgerLog, dataKeys, discardRecorded, flushSettled, healLedgerLog, ledgerStub, listKeys, liveKeys, loggedChanges, loseLedgerStorage, read, sha256Hex,
   shardStub, someSamples, stream,
 } from './helpers'
 import { StaleTail } from './read'
 
 const flush = (tenant: string, shardName: string, opts?: FlushOptions): Promise<FlushResult> => flushTenant(env, engine, tenant, shardName, opts)
+/**
+ * Flush until the shard has been told what the ledger LOGGED: one run, then the ledger's drain
+ * (its alarm, run here at once) and further runs. Segments as the run that first handled them
+ * saw them. The ledger drains only when asked in this suite (vitest.config.ts).
+ */
+const settled = (tenant: string, shardName: string, opts?: FlushOptions): Promise<FlushResult> => flushSettled(env, engine, tenant, shardName, opts)
 const dayOf = (ts: number) => new Date(ts).toISOString().slice(0, 10)
 
 /** The key contracts/TABLES.md prescribes, built here from the object's own bytes. */
@@ -24,17 +30,8 @@ async function expectedKey(key: string, tenant: string, shardName: string, seg: 
   return `${env.CELL}/data/${table}/tenant=${tenant}/day=${day}/L0-${shardName.replaceAll('/', '_')}-${seg.incarnation}-${seg.seqLo}-${seg.seqHi}-${hash8}.parquet`
 }
 
-/** Every add_unit change in the tenant's ledger log. */
-async function loggedUnits(tenant: string): Promise<LedgerChange[]> {
-  const out: LedgerChange[] = []
-  for (const key of await listKeys(`${env.CELL}/ledger/tenant=${tenant}/`)) {
-    if (key.endsWith('base.json')) continue
-    const c = await (await env.BUCKET.get(key))!.json<LedgerChange>()
-    expect(key).toBe(`${env.CELL}/${ledgerLogKey(tenant, c.ledgerIncarnation, c.version)}`)
-    if (c.kind === 'add_unit') out.push(c)
-  }
-  return out
-}
+/** Every add_unit change in the tenant's ledger log in R2 (what is logged, not what is committed). */
+const loggedUnits = async (tenant: string): Promise<LedgerChange[]> => (await loggedChanges(tenant)).filter((c) => c.kind === 'add_unit')
 
 const versions = async (keys: string[]) => Promise.all(keys.map(async (k) => (await env.BUCKET.head(k))!.version))
 
@@ -75,8 +72,10 @@ describe('flushing sealed segments', () => {
     expect(before.canon).toEqual(sent.canon())
     expect([before.sampleFiles.length, before.tailBatches]).toEqual([0, 4]) // all tail
 
+    // One run admits both units. The ledger writes its change log in the background, so the
+    // shard is told nothing yet (it may discard only what the log holds) and the run says so.
     const r = await flush(tenant, shardName)
-    expect(r).toMatchObject({ status: 'ok', tenant, shard: shardName, loggedThrough: 3, recordedThrough: 3, awaitingLog: false, remaining: 0 })
+    expect(r).toMatchObject({ status: 'ok', tenant, shard: shardName, loggedThrough: 0, recordedThrough: 0, awaitingLog: true, remaining: 0, changed: true })
     expect(r.segments.map((s) => [s.seqLo, s.seqHi, s.outcome, s.files.map((f) => `${f.table}@${f.day}:${f.put}`)])).toEqual([
       [1, 2, 'admitted', [`metric_samples@${dayOf(T0)}:created`, `metric_series@${dayOf(T0)}:created`]],
       [3, 3, 'admitted', [
@@ -110,6 +109,13 @@ describe('flushing sealed segments', () => {
       expect(f.day).toBe(dayOf(f.maxTs))
       expect(JSON.parse(f.index).v).toBe(1)
     }
+    // The ledger's log catches up (its alarm, run here at once); the next run records both
+    // segments in the shard, and writes and admits nothing.
+    expect(await loggedUnits(tenant)).toEqual([])
+    await ledger.drain()
+    const again = await flush(tenant, shardName)
+    expect(again).toMatchObject({ status: 'ok', loggedThrough: 3, recordedThrough: 3, awaitingLog: false, remaining: 0, changed: true })
+    expect(again.segments.map((s) => [s.seqLo, s.outcome, s.files.length])).toEqual([[1, 'already_admitted', 0], [3, 'already_admitted', 0]])
     // One unit per segment, with the segment's exact range, holding only that segment's files.
     const units = await loggedUnits(tenant)
     expect(units.map((u) => u.unit)).toEqual([{ seqLo: 1, seqHi: 2 }, { seqLo: 3, seqHi: 3 }])
@@ -154,7 +160,7 @@ describe('flushing sealed segments', () => {
     expect(await flush(tenant, shardName)).toMatchObject({ status: 'ok', segments: [] }) // unsealed: not its business
     expect(await dataKeys(tenant)).toEqual([])
     await shard.seal(tenant)
-    const first = await flush(tenant, shardName)
+    const first = await settled(tenant, shardName)
     expect(first.segments).toHaveLength(1)
     const keys = await dataKeys(tenant)
     const v = await versions(keys)
@@ -173,10 +179,10 @@ describe('flushing sealed segments', () => {
       await append(shard, tenant, someSamples(tenant, T0 + i * 600_000, 8, i), sent)
       await shard.seal(tenant)
     }
-    const a = await flush(tenant, shardName, { maxSegments: 3 })
+    const a = await settled(tenant, shardName, { maxSegments: 3 })
     expect(a).toMatchObject({ status: 'ok', recordedThrough: 3, remaining: 1 })
     expect(a.segments.map((s) => s.seqLo)).toEqual([1, 2, 3])
-    const b = await flush(tenant, shardName, { maxSegments: 3 })
+    const b = await settled(tenant, shardName, { maxSegments: 3 })
     expect(b).toMatchObject({ status: 'ok', recordedThrough: 4, remaining: 0 })
     expect(b.segments.map((s) => s.seqLo)).toEqual([4])
     expect((await read(tenant, [shardName])).canon).toEqual(sent.canon())
@@ -243,6 +249,10 @@ describe('safe to run twice and to stop anywhere', () => {
     const keys = await dataKeys(tenant)
     expect(keys).toHaveLength(4)
     expect(await liveKeys(ledger)).toEqual(keys)
+    // Once the log has caught up, one more run records both segments and writes nothing.
+    const last = await settled(tenant, shardName)
+    expect(last).toMatchObject({ status: 'ok', recordedThrough: 3, awaitingLog: false })
+    expect(last.segments.flatMap((s) => s.files)).toEqual([])
     const units = await loggedUnits(tenant)
     expect(units.map((u) => u.unit)).toEqual([{ seqLo: 1, seqHi: 2 }, { seqLo: 3, seqHi: 3 }])
     expect(await shard.describe(tenant)).toMatchObject({ recordedThrough: 3 })
@@ -267,7 +277,7 @@ describe('safe to run twice and to stop anywhere', () => {
     expect((await read(tenant, [shardName])).canon).toEqual(sent.canon()) // still served from the tail
     const v = await versions(orphans)
 
-    const r = await flush(tenant, shardName)
+    const r = await settled(tenant, shardName)
     expect(r).toMatchObject({ status: 'ok', recordedThrough: 3 })
     expect(r.segments[0]!.files.map((f) => f.put)).toEqual(['exists', 'exists']) // same bytes, same keys
     expect(r.segments[1]!.files.map((f) => f.put)).toEqual(['created', 'created'])
@@ -294,7 +304,7 @@ describe('safe to run twice and to stop anywhere', () => {
     const v = await versions(keys)
     const ledgerVersion = between.ledgerVersion
 
-    const r = await flush(tenant, shardName)
+    const r = await settled(tenant, shardName)
     expect(r).toMatchObject({ status: 'ok', recordedThrough: 3 })
     expect(r.segments.map((s) => [s.seqLo, s.outcome, s.files.length])).toEqual([[1, 'already_admitted', 0], [3, 'admitted', 2]])
     expect(await versions(keys)).toEqual(v)
@@ -307,7 +317,9 @@ describe('safe to run twice and to stop anywhere', () => {
 
   it('converges after a crash right after recorded, and after the shard and ledger objects are evicted mid-run', async () => {
     const { tenant, shardName, shard, ledger, sent } = await twoSegments()
-    await expect(flush(tenant, shardName, crash('afterRecorded', 1))).rejects.toThrow('injected crash afterRecorded')
+    // The ledger's log catches up right after segment 1 is admitted, so the run tells the shard.
+    const drainThenCrash: FlushOptions = { hooks: { afterAddUnit: async () => void (await ledger.drain()), afterRecorded: crash('afterRecorded', 1).hooks!.afterRecorded! } }
+    await expect(flush(tenant, shardName, drainThenCrash)).rejects.toThrow('injected crash afterRecorded')
     expect(await shard.describe(tenant)).toMatchObject({ recordedThrough: 2 })
     // Evict both objects at every step of the second run: all their state is in storage.
     let evictions = 0
@@ -315,7 +327,7 @@ describe('safe to run twice and to stop anywhere', () => {
       // An object that is not running right now has nothing in memory to lose.
       for (const o of [shard, ledger]) await evictDurableObject(o).then(() => evictions++, () => undefined)
     }
-    const r = await flush(tenant, shardName, { hooks: { afterPut: evict, afterAddUnit: evict, afterRecorded: evict } })
+    const r = await settled(tenant, shardName, { hooks: { afterPut: evict, afterAddUnit: evict, afterRecorded: evict } })
     expect(r).toMatchObject({ status: 'ok', recordedThrough: 3, loggedThrough: 3 })
     expect(r.segments.map((s) => s.seqLo)).toEqual([3])
     expect(evictions).toBeGreaterThanOrEqual(4) // both objects really were evicted during the run
@@ -330,8 +342,9 @@ describe('safe to run twice and to stop anywhere', () => {
 
   it('tells the shard only what the ledger has LOGGED, so a ledger that loses its storage loses no rows', async () => {
     const { tenant, shardName, shard, ledger, sent } = await twoSegments()
-    // The ledger can commit but cannot write its change log.
+    // The stream is registered and logged; then the ledger can commit but cannot write its change log.
     await ledger.registerStream({ shard: shardName, incarnation: (await shard.describe(tenant))!.incarnation })
+    await ledger.drain()
     await breakLedgerLog(ledger)
     const r = await flush(tenant, shardName)
     expect(r).toMatchObject({ status: 'ok', loggedThrough: 0, recordedThrough: 0, awaitingLog: true })
@@ -350,7 +363,7 @@ describe('safe to run twice and to stop anywhere', () => {
     expect((await read(tenant, [shardName])).canon).toEqual(sent.canon()) // every row is still in the shard
 
     // The next run reports both segments again; the objects are already there.
-    const again = await flush(tenant, shardName)
+    const again = await settled(tenant, shardName)
     expect(again).toMatchObject({ status: 'ok', loggedThrough: 3, recordedThrough: 3, awaitingLog: false })
     expect(again.segments.flatMap((s) => s.files.map((f) => f.put))).toEqual(['exists', 'exists', 'exists', 'exists'])
     await discardRecorded(shard)
@@ -361,6 +374,7 @@ describe('safe to run twice and to stop anywhere', () => {
   it('records later, once the log has caught up, without reporting anything twice', async () => {
     const { tenant, shardName, shard, ledger, sent } = await twoSegments()
     await ledger.registerStream({ shard: shardName, incarnation: (await shard.describe(tenant))!.incarnation })
+    await ledger.drain()
     await breakLedgerLog(ledger)
     expect(await flush(tenant, shardName)).toMatchObject({ status: 'ok', recordedThrough: 0, awaitingLog: true })
     await healLedgerLog(ledger)
@@ -384,9 +398,10 @@ describe('every answer of the ledger and of R2 is handled', () => {
     // While the run is between segments 1 and 2, the ledger loses its storage together with
     // the unlogged unit of segment 1 (its log could not be written), and comes back empty.
     await s.ledger.registerStream({ shard: s.shardName, incarnation: (await s.shard.describe(s.tenant))!.incarnation })
+    await s.ledger.drain()
     await breakLedgerLog(s.ledger)
     let lost = false
-    const r = await flush(s.tenant, s.shardName, {
+    const r = await settled(s.tenant, s.shardName, {
       hooks: {
         afterAddUnit: async (seg) => {
           if (seg.seqLo === 1 && !lost) {
@@ -417,7 +432,8 @@ describe('every answer of the ledger and of R2 is handled', () => {
     }
     // Run B completes entirely while run A is between writing segment 1's files and reporting them.
     let b: FlushResult | undefined
-    const a = await flush(s.tenant, s.shardName, { hooks: { afterPut: async (seg) => { if (seg.seqLo === 1) b = await flush(s.tenant, s.shardName) } } })
+    // B runs to the end, its log caught up; A then finds both segments admitted and logged.
+    const a = await flush(s.tenant, s.shardName, { hooks: { afterPut: async (seg) => { if (seg.seqLo === 1) b = await settled(s.tenant, s.shardName) } } })
     expect(b).toMatchObject({ status: 'ok', recordedThrough: 2 })
     expect(a).toMatchObject({ status: 'ok', recordedThrough: 2 })
     expect((await loggedUnits(s.tenant)).map((u) => u.unit)).toEqual([{ seqLo: 1, seqHi: 1 }, { seqLo: 2, seqHi: 2 }])
@@ -430,7 +446,7 @@ describe('every answer of the ledger and of R2 is handled', () => {
     const s = stream()
     await append(s.shard, s.tenant, someSamples(s.tenant, T0, 20, 1))
     await s.shard.seal(s.tenant)
-    expect(await flush(s.tenant, s.shardName)).toMatchObject({ status: 'ok', recordedThrough: 1 })
+    expect(await settled(s.tenant, s.shardName)).toMatchObject({ status: 'ok', recordedThrough: 1 })
     await append(s.shard, s.tenant, someSamples(s.tenant, T0 + 600_000, 20, 2))
     await s.shard.seal(s.tenant)
     // The ledger AND its R2 log are destroyed (an operator error): it restarts knowing nothing.
@@ -451,7 +467,7 @@ describe('every answer of the ledger and of R2 is handled', () => {
     const sent = new Sent()
     await append(s.shard, s.tenant, someSamples(s.tenant, T0, 20, 1), sent)
     const old = (await s.shard.seal(s.tenant))!
-    expect(await flush(s.tenant, s.shardName)).toMatchObject({ status: 'ok', recordedThrough: 1 })
+    expect(await settled(s.tenant, s.shardName)).toMatchObject({ status: 'ok', recordedThrough: 1 })
     await discardRecorded(s.shard)
     // The shard loses its storage: a new incarnation, sequence numbers start again at 1.
     await runInDurableObject(s.shard, async (_i, state) => { await state.storage.deleteAll() })
@@ -462,7 +478,7 @@ describe('every answer of the ledger and of R2 is handled', () => {
     expect(fresh.seqLo).toBe(1)
     expect(fresh.incarnation).toBeGreaterThan(old.incarnation)
 
-    const r = await flush(s.tenant, s.shardName)
+    const r = await settled(s.tenant, s.shardName)
     expect(r).toMatchObject({ status: 'ok', recordedThrough: 1, loggedThrough: 1 })
     expect(r.segments).toMatchObject([{ incarnation: fresh.incarnation, seqLo: 1, outcome: 'admitted' }])
     expect((await s.ledger.plan({ table: 'metric_samples', minTs: 1, maxTs: 0 })).watermarks).toEqual([{ shard: s.shardName, incarnation: fresh.incarnation, seq: 1 }])
@@ -516,7 +532,7 @@ describe('every answer of the ledger and of R2 is handled', () => {
       await env.BUCKET.put(key, squatter) // no sha256 stored with it
       const version = (await env.BUCKET.head(key))!.version
 
-      const r = await flush(s.tenant, s.shardName)
+      const r = await settled(s.tenant, s.shardName)
       // Whatever happened, the object that was there is untouched.
       expect((await env.BUCKET.head(key))!.version).toBe(version)
       expect(new Uint8Array(await (await env.BUCKET.get(key))!.arrayBuffer())).toEqual(squatter)
@@ -543,14 +559,18 @@ describe('entry points', () => {
     await append(s.shard, s.tenant, someSamples(s.tenant, T0, 20, 1), sent)
     await s.shard.seal(s.tenant)
     const rpc = await exports.Flush.flushTenant(s.tenant, s.shardName)
-    expect(rpc).toMatchObject({ status: 'ok', recordedThrough: 1 })
+    expect(rpc).toMatchObject({ status: 'ok', recordedThrough: 0, awaitingLog: true, segments: [{ seqLo: 1, outcome: 'admitted' }] })
+    await s.ledger.drain()
+    expect(await exports.Flush.flushTenant(s.tenant, s.shardName)).toMatchObject({ status: 'ok', recordedThrough: 1, awaitingLog: false })
 
     await append(s.shard, s.tenant, someSamples(s.tenant, T0 + 600_000, 20, 2), sent)
     await s.shard.seal(s.tenant)
     const post = (body: unknown, method = 'POST') => exports.default.fetch('https://flush.internal/flush', { method, body: method === 'POST' ? JSON.stringify(body) : undefined })
     const res = await post({ tenant: s.tenant, shard: s.shardName })
     expect(res.status).toBe(200)
-    expect(await res.json()).toMatchObject({ status: 'ok', recordedThrough: 2, segments: [{ seqLo: 2, outcome: 'admitted' }] })
+    expect(await res.json()).toMatchObject({ status: 'ok', recordedThrough: 1, awaitingLog: true, segments: [{ seqLo: 2, outcome: 'admitted' }] })
+    await s.ledger.drain()
+    expect(await (await post({ tenant: s.tenant, shard: s.shardName })).json()).toMatchObject({ status: 'ok', recordedThrough: 2, awaitingLog: false })
     expect((await read(s.tenant, [s.shardName])).canon).toEqual(sent.canon())
 
     expect((await post({ tenant: 'a/b', shard: 'x' })).status).toBe(400)
@@ -574,5 +594,43 @@ describe('entry points', () => {
     await expect(flush('a/b', 'pool/0')).rejects.toThrow(/tenant id must match/)
     await expect(flush('ok', '')).rejects.toThrow(/shard name/)
     expect(shardStub).toBeDefined()
+  })
+})
+
+// spec/README.md F12 (the protocol model's trace `F12_impl_read_unbound`): a flush that listed a
+// segment before the shard lost its storage must not read the new incarnation's batches under
+// the old incarnation's name.
+describe('spec F12: a flush read is bound to the incarnation it was listed in', () => {
+  it('the shard loses its storage between the listing and the read; the new incarnation\'s batch is not filed under the old one', async () => {
+    const s = stream('f12')
+    const old = new Sent()
+    await append(s.shard, s.tenant, someSamples(s.tenant, T0, 20, 1), old)
+    const listed = (await s.shard.seal(s.tenant))!
+    const fresh = new Sent()
+    const r = await flushTenant(env, engine, s.tenant, s.shardName, {
+      hooks: {
+        afterList: async () => {
+          // After the worker listed (inc 1, 1..1): the shard loses its storage, a new batch arrives
+          // in a new incarnation with sequence number 1 again, and is sealed.
+          await runInDurableObject(s.shard, async (_i, state) => { await state.storage.deleteAll() })
+          await evictDurableObject(s.shard)
+          await new Promise((x) => setTimeout(x, 3))
+          await append(s.shard, s.tenant, someSamples(s.tenant, T0 + 600_000, 20, 2), fresh)
+          const seg = (await s.shard.seal(s.tenant))!
+          expect(seg).toMatchObject({ seqLo: 1, seqHi: 1 })
+          expect(seg.incarnation).toBeGreaterThan(listed.incarnation)
+        },
+      },
+    })
+    expect(r).toMatchObject({ status: 'error', reason: 'shard_incarnation_changed' })
+    // Nothing of the new incarnation was admitted under the old one's name.
+    expect((await liveKeys(s.ledger)).filter((k) => k.includes(`-${listed.incarnation}-1-1-`))).toEqual([])
+    // The next run files the new batch under its own incarnation; the rows lost with the old
+    // storage are lost (and visible as such through the ledger's incarnation boundary), not misfiled.
+    const again = await flushSettled(env, engine, s.tenant, s.shardName)
+    expect(again).toMatchObject({ status: 'ok', awaitingLog: false })
+    const keys = await liveKeys(s.ledger)
+    expect(keys.every((k) => !k.includes(`-${listed.incarnation}-`))).toBe(true)
+    expect((await read(s.tenant, [s.shardName])).canon).toEqual(fresh.canon())
   })
 })

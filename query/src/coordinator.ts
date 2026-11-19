@@ -20,7 +20,7 @@
 import type { ScanInput } from '../../contracts/engine'
 import type { FileEntry, LiveFile, Plan, Watermark } from '../../contracts/ledger'
 import { poolMap } from '../../edge/src/route'
-import { type FetchRange, type Grid, type LeafSummary, type QueryEngine, type QueryLimits, type QueryStats, leafSummary } from '../../engine/wasm-query/js/index'
+import { ENGINE_LOAD_PREFIX, type FetchRange, type Grid, type LeafSummary, type QueryEngine, type QueryLimits, type QueryStats, leafSummary } from '../../engine/wasm-query/js/index'
 import { hash32, shardName, tenantSlots } from '../../shard/src/pool'
 import { type Env, type TenantLimits, fileCacheTtl, leafPoolSize } from './config'
 import { type EvaluateAnswer, type EvaluateRequest, type EvaluateStats, type FileRef, MAX_BYTES_PER_CALL, MAX_READS_PER_CALL, type ReadItem, type ReadResult } from './leaf'
@@ -123,6 +123,8 @@ export const hooks: {
   beforeSplitLeaf?: (part: number, attempt: number) => Promise<void>
   /** The sample files' keys in the order they go to the engine (one place) or to the readers (split). */
   sampleOrder?: (keys: string[]) => void
+  /** Replaces a shard's answer to `tailRead` (a release skew a test cannot otherwise make). */
+  alterTail?: (shard: string, answer: unknown) => unknown
   /** Each split leaf's statistics and the header of its answer (for the measurement). */
   leafStats?: (part: number, stats: EvaluateStats, summary: LeafSummary) => void
 } = {}
@@ -360,8 +362,10 @@ async function readTail(c: Context, shard: string, w: Watermark | undefined, kno
   }
   for (let call = 0; call < 2; call++) {
     c.cost.shardCalls++
-    const r = await stub.tailRead(c.tenant, incarnation, above)
+    const raw = await stub.tailRead(c.tenant, incarnation, above)
+    const r = hooks.alterTail ? (hooks.alterTail(shard, raw) as typeof raw) : raw
     if (r.status === 'ok') {
+      if (!Array.isArray(r.batches)) throw new ApiError('unavailable', `shard ${shard} answered ok without batches; retry`)
       let bytes = 0
       const batches = r.batches.map((b) => {
         bytes += b.payload.byteLength
@@ -370,7 +374,12 @@ async function readTail(c: Context, shard: string, w: Watermark | undefined, kno
       return { status: 'ok', batches, bytes }
     }
     if (r.status === 'stale_watermark') return { status: 'refused', why: `shard ${shard} has discarded rows above the watermark` }
-    // incarnation_mismatch
+    // Every other status is handled by name (contracts/COMPATIBILITY.md §2.4, §3.2): a shard
+    // whose storage is newer than this release reads, or a status it does not know, is a
+    // retryable failure, never an empty tail and never a stream to re-read.
+    const status: string = r.status
+    if (status === 'schema_too_new') throw new ApiError('unavailable', `shard ${shard} runs a newer storage schema than this release reads (schema_too_new); retry`)
+    if (status !== 'incarnation_mismatch') throw new ApiError('unavailable', `shard ${shard} answered a status this release does not know (${status.slice(0, 40)}); retry`)
     if (r.incarnation < incarnation) return { status: 'refused', why: `shard ${shard} is behind the ledger` }
     known.set(shard, r.incarnation)
     if (w) return { status: 'refused', why: `shard ${shard} has a newer stream than the ledger knows` }
@@ -660,7 +669,10 @@ async function runSplit<T>(
       try {
         a = await call(1)
       } catch (e) {
-        throw new ApiError('unavailable', `a split leaf failed twice: ${e instanceof Error ? e.message : String(e)}`)
+        const m = e instanceof Error ? e.message : String(e)
+        // A module that does not load will not load on a retry either (500, not 503).
+        if (m.startsWith(ENGINE_LOAD_PREFIX)) throw new ApiError('internal', `a split leaf could not load the query engine: ${m}`)
+        throw new ApiError('unavailable', `a split leaf failed twice: ${m}`)
       }
     }
     if (a.status === 'refused') throw new ApiError('unavailable', `a leaf refused to read data files: ${a.reason}`)

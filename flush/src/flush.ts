@@ -71,7 +71,7 @@ export type FlushFailure =
   | 'stale_incarnation'
   /** The ledger still refused the incarnation after it was registered. */
   | 'incarnation_mismatch'
-  /** The shard's stream changed incarnation while this run was in progress. */
+  /** The shard's stream changed incarnation while this run was in progress (also: a segment listed in one incarnation can no longer be read in it). */
   | 'shard_incarnation_changed'
   /** The shard refused the recorded mark as not contiguous. */
   | 'shard_not_contiguous'
@@ -97,6 +97,12 @@ export interface FlushResult {
   awaitingLog: boolean
   /** Sealed segments left for a later run because of `maxSegments`. */
   remaining: number
+  /**
+   * This run changed something maintenance may care about: it admitted a unit, wrote an
+   * object, or saw a segment it handled become recorded. A run that found everything already
+   * done (a duplicate delivery) has `changed: false` (review R-11(b)).
+   */
+  changed: boolean
   /** For `status: 'error'`. */
   reason?: FlushFailure
   detail?: string
@@ -104,6 +110,8 @@ export interface FlushResult {
 
 /** Fault-injection points for tests. A hook that throws stands for a crash at that point. */
 export interface FlushHooks {
+  /** After the pending list was read, before any segment is. */
+  afterList?(pending: Segment[]): void | Promise<void>
   afterPut?(segment: Segment, files: FlushedFile[]): void | Promise<void>
   afterAddUnit?(segment: Segment, result: AddUnitResult): void | Promise<void>
   afterRecorded?(segment: Segment): void | Promise<void>
@@ -142,13 +150,16 @@ function sameBytes(a: ArrayBuffer, b: ArrayBuffer): boolean {
 /**
  * Write one file under its content-addressed key with `If-None-Match: *`. If an object is
  * already there, it counts as written only when its size and SHA-256 equal this file's.
+ * `customMetadata` is written with a new object; an existing one keeps what it has (for a
+ * compaction output the key fixes the inputs, so it is the same record).
  */
-export async function putFile(bucket: R2Bucket, key: string, bytes: Uint8Array, sha256: ArrayBuffer): Promise<'created' | 'exists'> {
+export async function putFile(bucket: R2Bucket, key: string, bytes: Uint8Array, sha256: ArrayBuffer, customMetadata?: Record<string, string>): Promise<'created' | 'exists'> {
   // `sha256` makes R2 verify the upload and keep the digest with the object.
   const created = await bucket.put(key, bytes, {
     onlyIf: { etagDoesNotMatch: '*' },
     sha256,
     httpMetadata: { contentType: PARQUET },
+    ...(customMetadata ? { customMetadata } : {}),
   })
   if (created !== null) return 'created'
   const existing = await bucket.head(key)
@@ -180,7 +191,14 @@ interface Ctx {
 
 /** Steps 1 to 3: read, encode, write. Returns the unit to report and what was written. */
 async function writeSegment(c: Ctx, seg: Segment): Promise<{ unit: FlushUnit; files: FlushedFile[] }> {
-  const batches = await c.shard.readSegment(c.tenant, seg.seqLo)
+  // Bound to the incarnation and range the segment was listed with: after a storage loss the
+  // shard may hold another incarnation's batches under the same sequence numbers, which must
+  // never be filed under the old name (spec/README.md F12). The shard answers null then.
+  const batches = await c.shard.readSegment(c.tenant, seg.seqLo, seg.incarnation, seg.seqHi)
+  if (batches === null) {
+    const now = await c.shard.describe(c.tenant)
+    if (now?.incarnation !== seg.incarnation) throw new Stop('shard_incarnation_changed', `stream ${c.shardName} is now incarnation ${now?.incarnation ?? 'none'}; segment ${seg.seqLo}..${seg.seqHi} was listed in ${seg.incarnation}`)
+  }
   // A pending segment still has every payload: the shard discards only after `recorded`.
   // If it does not (another run recorded it and it has since been discarded), say so.
   const complete =
@@ -248,6 +266,10 @@ async function report(c: Ctx, seg: Segment, unit: FlushUnit): Promise<{ outcome:
       // watermark and continue from the segment that extends it.
       throw new Restart()
     }
+    default:
+      // An answer this code does not know (a newer ledger, `schema_too_new`): fail closed.
+      // The exception makes the consumer retry; nothing is taken as admitted.
+      throw new Error(`flush: the ledger answered addUnit with ${JSON.stringify((result as { status?: unknown }).status)}; retry`)
   }
 }
 
@@ -280,13 +302,14 @@ export async function flushTenant(env: FlushEnv, engine: Engine, tenant: string,
   }
   const maxSegments = opts.maxSegments ?? 64
   const handled = new Map<number, FlushedSegment>()
-  const out: FlushResult = { status: 'ok', tenant, shard: shardName, segments: [], loggedThrough: 0, recordedThrough: 0, awaitingLog: false, remaining: 0 }
+  const out: FlushResult = { status: 'ok', tenant, shard: shardName, segments: [], loggedThrough: 0, recordedThrough: 0, awaitingLog: false, remaining: 0, changed: false }
   let incarnation: number | null = null
 
   try {
     for (let restarts = 0; ; restarts++) {
       try {
         const pending = await c.shard.pendingSegments(tenant)
+        await c.hooks.afterList?.(pending)
         out.remaining = 0
         if (pending.length === 0) break
         if (incarnation !== null && pending[0]!.incarnation !== incarnation) {
@@ -330,6 +353,8 @@ export async function flushTenant(env: FlushEnv, engine: Engine, tenant: string,
             if (r.status === 'not_contiguous') {
               throw new Stop('shard_not_contiguous', `the shard refused recorded(${logged}); it has recorded through ${r.recordedThrough}`)
             }
+            // Fail closed on an answer this code does not know: never take it for "recorded".
+            if (r.status !== 'ok') throw new Error(`flush: the shard answered recorded with ${JSON.stringify((r as { status?: unknown }).status)}; retry`)
           }
           await c.hooks.afterRecorded?.(seg)
         }
@@ -353,5 +378,10 @@ export async function flushTenant(env: FlushEnv, engine: Engine, tenant: string,
   out.recordedThrough = state?.recordedThrough ?? 0
   if (state) out.loggedThrough = await loggedWatermark(c, state.incarnation)
   out.awaitingLog = out.segments.some((s) => s.incarnation === state?.incarnation && s.seqHi > out.recordedThrough)
+  // Every segment handled here was pending (unrecorded) when this run read the list; one that
+  // is recorded now became so during the run.
+  out.changed = out.segments.some(
+    (s) => s.outcome === 'admitted' || s.files.some((f) => f.put === 'created') || (s.incarnation === state?.incarnation && s.seqHi <= out.recordedThrough),
+  )
   return out
 }

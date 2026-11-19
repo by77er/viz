@@ -35,7 +35,6 @@ and `design/DECISIONS.md` (each decision, its alternatives and what would change
 | **Read path and engines** | |
 | `query/` | Prometheus HTTP API Worker, with query leaves as Durable Objects |
 | `engine/` | Rust engine crates compiled to WebAssembly: storage, PromQL, query |
-| `publisher/` | Publishes the ledgers as Iceberg tables that external engines can read |
 | **Control, monitors and agents** | |
 | `control/` | Tenant control plane: keys, dashboards, settings |
 | `ruler/` | Rule evaluation, notification and the monitors API |
@@ -51,6 +50,7 @@ and `design/DECISIONS.md` (each decision, its alternatives and what would change
 Each component has a README with what is implemented, what is not, how it was verified
 and its known risks.
 
-Not on `main` yet: the web app and its design system (`app/`, `design-system/`), which merge
-after their design reviews approve, and the TraceQL engine (`engine/traceql/`), which waits on
-a licensing decision. All three are on the development branch.
+Not on `main` yet, all on the development branch: the web app and its design system (`app/`,
+`design-system/`), which merge after their design reviews approve; the Iceberg publisher
+(`publisher/`), which merges once it reads the ledger's segment log; and the TraceQL engine
+(`engine/traceql/`), which waits on a licensing decision.
