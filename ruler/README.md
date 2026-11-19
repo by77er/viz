@@ -551,8 +551,9 @@ over a save with their state, are not warmed.
 an SLO entry (or a monitor document of any kind); **`POST /api/v1/monitors/{id}/backtest`** (new,
 `monitors:read`) takes a saved monitor as stored, at its group's interval. Every read is planned
 first, as in part 11, against `RulerLimits.maxBacktestScanSamples` (20,000,000) and
-`maxBacktestBytes` (128 MiB): past them the answer is `over_budget` (HTTP 422 `over_budget` with
-`plan` and `budget`) and nothing is fetched; an engine failure is `failed` (502).
+`maxBacktestBytes` (128 MiB), and read in windows sized to `maxBacktestMemoryBytes` (32 MiB,
+part 13): past any of them the answer is `over_budget` (HTTP 422 `over_budget` with `plan`,
+`budget` and the memory model's `memory`) and nothing is fetched; an engine failure is `failed` (502).
 
 - **Alerting rules** as before (part 4), now planned first.
 - **Anomaly and SLO rules** run at their interval (a step other than the interval is refused: a
