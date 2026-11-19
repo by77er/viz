@@ -203,8 +203,11 @@ struct Translator<'a> {
     /// Recorded rather than inserted, so that every offset stays valid and a wrap costs constant
     /// work; [`Translator::assemble`] writes them in one pass at the end.
     opens: Vec<(usize, u32)>,
-    /// Names kept so far (with `names`), to refuse a repeat Rust cannot hold.
-    seen: std::collections::BTreeSet<String>,
+    /// With `names`: every name kept, and the first group whose name starts with a digit. Rust
+    /// cannot hold such a name or a repeat; both are checked once the pattern is known to be
+    /// valid in Go (`names_held`), so that Go's refusal of a later error comes first.
+    kept: Vec<String>,
+    digit_name: Option<String>,
 }
 
 fn invalid(msg: impl Into<String>) -> Error {
@@ -226,7 +229,8 @@ impl<'a> Translator<'a> {
             posix_from: 0,
             posix_next: None,
             opens: Vec::new(),
-            seen: std::collections::BTreeSet::new(),
+            kept: Vec::new(),
+            digit_name: None,
         }
     }
 
@@ -281,7 +285,22 @@ impl<'a> Translator<'a> {
         if self.frames.len() > 1 {
             return Err(invalid(format!("missing closing ): `{}`", self.src)));
         }
+        self.names_held()?;
         Ok(self.assemble())
+    }
+
+    /// With `names`, after a pattern Go accepts: Unsupported if a name cannot be kept in Rust
+    /// (one that starts with a digit, or one used twice).
+    fn names_held(&mut self) -> Result<(), Error> {
+        let cannot = |why: String| Error::Unsupported(format!("{why} is valid in Go but cannot be kept as a group name"));
+        if let Some(g) = &self.digit_name {
+            return Err(cannot(format!("the name in `{g}`, which starts with a digit,")));
+        }
+        self.kept.sort_unstable();
+        match self.kept.windows(2).find(|w| w[0] == w[1]) {
+            Some(w) => Err(cannot(format!("`{}`, a name used twice,", w[0]))),
+            None => Ok(()),
+        }
     }
 
     /// The output with every recorded `(?:` written at its offset: one pass, linear in the
@@ -480,14 +499,11 @@ impl<'a> Translator<'a> {
             return Err(invalid(format!("invalid named capture: `{}`", self.text(self.i, k + 1))));
         }
         let text = if self.names {
-            if name.starts_with(|c: char| c.is_ascii_digit()) || self.seen.contains(&name) {
-                return Err(Error::Unsupported(format!(
-                    "the group name in `{}` is valid in Go but cannot be kept: a name that starts with a digit or is used twice",
-                    self.text(self.i, k + 1)
-                )));
+            if self.digit_name.is_none() && name.starts_with(|c: char| c.is_ascii_digit()) {
+                self.digit_name = Some(self.text(self.i, k + 1));
             }
             let text = format!("(?P<{name}>");
-            self.seen.insert(name);
+            self.kept.push(name);
             text
         } else {
             "(".to_string()

@@ -696,8 +696,10 @@ metrics query of a tenant with a span or log stream registered would have failed
 Checked before anything is fetched, from the ledger's sizes and the fragments' row counts:
 `maxFiles` (both rounds of a trace query together), `maxFetchBytes` (files; then files plus the
 tail, as for metrics), and **`maxSpans` (18,000) / `maxLogRows` (30,000)** on the rows of the row
-groups a query reads (a trace query's `trace_index` rows and its `spans` rows each on their own:
-a fragment is not a span). The engine checks the row caps again on the rows it HOLDS, the
+groups a query reads (for a trace query, its `spans` rows only: a fragment is not a span, and
+the engine holds one extent per trace found in `trace_index` under the byte budget, 192 bytes
+each; before, the fragments counted against `maxSpans`, which over the margin's five hours would
+refuse a tenant with more than about one trace a second). The engine checks the row caps again on the rows it HOLDS, the
 tail's included (`max_spans`, `max_rows`: 422 naming the limit); a span outside the query's
 bound, or a log row no selector reads, is decoded and dropped and counts nothing (since ABI 7;
 before, every row decoded counted). **What bounds memory is `maxDecodedBytes` (32 MiB)**,

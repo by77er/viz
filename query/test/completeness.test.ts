@@ -14,6 +14,10 @@
  *   e  root 09:00–09:01 (unit 1), child 12:00–12:01 (unit 3)             beyond the margin
  *   f  root 09:02–09:03 (unit 1), child 10:30–10:31 (tail, never flushed)
  *   g  root 09:02–09:03 (unit 1), the same span again (unit 4)           a retry: one span
+ *   h  root 09:05–09:06 (unit 1), child 11:30–11:31 (unit 3)             beyond the margin, in
+ *                                                                         the same hour file as
+ *                                                                         a's child (read, and
+ *                                                                         dropped by the engine)
  *
  * The window is 08:55–09:10 and the default margin two hours, so the bound is 06:55–11:10.
  * Expected answers are written out by hand below, and checked again against the query with the
@@ -63,6 +67,7 @@ const UNITS: S[][] = [
     { trace: 'e', span: 6, name: 'e-root', from: 0, to: 1 },
     { trace: 'f', span: 8, name: 'f-root', from: 2, to: 3 },
     { trace: '9', span: 10, name: 'g-root', from: 2, to: 3 },
+    { trace: '8', span: 13, name: 'h-root', from: 5, to: 6 },
   ],
   [
     { trace: 'c', span: 3, name: 'c-root', from: -90, to: -85 },
@@ -72,6 +77,7 @@ const UNITS: S[][] = [
     { trace: 'a', span: 5, parent: 1, name: 'late-child', from: 120, to: 121 },
     { trace: 'd', span: 12, parent: 11, name: 'd-second', from: 40, to: 45 },
     { trace: 'e', span: 7, parent: 6, name: 'e-child', from: 180, to: 181 },
+    { trace: '8', span: 14, parent: 13, name: 'h-child', from: 150, to: 151 },
   ],
   [{ trace: '9', span: 10, name: 'g-root', from: 2, to: 3 }],
 ]
@@ -117,6 +123,7 @@ const METRICS: [string, string][][] = [
   [['q', '{ trace:rootName = "c-root" } | count_over_time() by (name)'], ['start', sec(-5)], ['end', sec(10)], ['step', '300s']],
 ]
 const BY_ID: [string, [string, string][]][] = [
+  [id('8'), WINDOW],
   [id('a'), []],
   [id('a'), WINDOW],
   [id('e'), []],
@@ -175,7 +182,10 @@ describe('trace completeness within the margin (D62; review M-1)', () => {
     expect([by[id('f')]?.durationMs, by[id('f')]?.serviceStats.api?.spanCount]).toEqual([89 * 60_000, 2])
     // g: one span, sent twice into two units (trace_index counts it twice; the answer once).
     expect(by[id('9')]?.serviceStats.api?.spanCount).toBe(1)
-    expect(Object.keys(by).sort()).toEqual(['a', '9', 'b', 'c', 'd', 'e', 'f'].map(id).sort())
+    // h: its child (11:30) is in the hour file read for a's child (11:00), beyond the bound
+    // (11:10): read, and dropped by the engine.
+    expect([by[id('8')]?.durationMs, by[id('8')]?.serviceStats.api?.spanCount]).toEqual([60_000, 1])
+    expect(Object.keys(by).sort()).toEqual(['a', '9', '8', 'b', 'c', 'd', 'e', 'f'].map(id).sort())
 
     const long = await search(t, '{ trace:duration > 1h }')
     expect(long.traces.map((x) => x.traceID).sort()).toEqual(['a', 'c', 'd', 'f'].map(id).sort())
@@ -196,11 +206,11 @@ describe('trace completeness within the margin (D62; review M-1)', () => {
     hooks.signalPruning = false
     const every = await answers(t)
     const differ = on.flatMap((x, i) => (x === every[i] ? [] : [i]))
-    // Only where e is concerned: its child at 12:00 is beyond 11:10. Over every span e lasts
-    // three hours, so it is in the `{ }` search with another summary, in `trace:duration > 1h`
-    // and its count, and trace e by ID with its hint has two spans. Nothing else differs.
-    const eHinted = QUERIES.length + METRICS.length + BY_ID.findIndex(([trace, p]) => trace === id('e') && p.length > 0)
-    expect(differ).toEqual([0, 1, QUERIES.length, eHinted])
+    // Only where e and h are concerned: their children (12:00, 11:30) are beyond 11:10. Over
+    // every span they last hours, so they are in the `{ }` search with other summaries, in
+    // `trace:duration > 1h` and its count, and each by ID with its hint has two spans.
+    const hinted = (t: string) => QUERIES.length + METRICS.length + BY_ID.findIndex(([trace, p]) => trace === id(t) && p.length > 0)
+    expect(differ).toEqual([0, 1, QUERIES.length, hinted('8'), hinted('e')].sort((x, y) => x - y))
     // e without a hint is whole in both.
     const eWhole = QUERIES.length + METRICS.length + BY_ID.findIndex(([trace, p]) => trace === id('e') && p.length === 0)
     expect((JSON.parse(on[eWhole]!.slice(4)) as { batches: { scopeSpans: { spans: unknown[] }[] }[] }).batches[0]!.scopeSpans[0]!.spans.length).toBe(2)

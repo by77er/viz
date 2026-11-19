@@ -162,7 +162,7 @@ textarea.vz-input { height: auto; min-height: calc(3 * var(--text-ui-lh) + 2 * v
 .vz-table td:has(> .vz-link:active), .vz-table td:has(> .vz-link[data-pressed]) { background: var(--pressed); }
 .vz-table td.vz-row-actions { width: 0; text-align: right; } /* the last column: "Actions…", a quiet small button that opens the row's menu */
 /* Sortable head: a button in the th; the th carries aria-sort. The arrow's space is always reserved. */
-.vz-sort { position: relative; display: inline-flex; align-items: center; gap: var(--space-1); font: inherit; color: inherit; background: none; border: 0; border-radius: var(--radius-1); cursor: pointer; padding: var(--space-1); margin: calc(-1 * var(--space-1)); } /* space-1 on every side, given back by the margin: a ring drawn inside it (the legend's heads) keeps a hairline clear of its letters (v9: space-half put it on the descenders) */
+.vz-sort { position: relative; display: inline-flex; align-items: center; gap: var(--space-1); font: inherit; color: inherit; background: none; border: 0; border-radius: var(--radius-1); cursor: pointer; padding: var(--space-half) var(--space-1); margin: calc(-1 * var(--space-half)) calc(-1 * var(--space-1)); }
 .vz-sort::after { content: ""; flex: none; border: var(--space-1) solid transparent; border-top-width: 0; visibility: hidden; }
 .vz-right .vz-sort { flex-direction: row-reverse; }
 .vz-sort:hover { color: var(--ink); background: var(--hover); }
@@ -385,7 +385,8 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width: 
 .vz-table.vz-legend-table tr:has(.vz-series:focus-visible) td:last-child { box-shadow: inset calc(-1 * var(--stroke)) 0 0 var(--focus), inset 0 var(--stroke) 0 var(--focus), inset 0 calc(-1 * var(--stroke)) 0 var(--focus); }
 .vz-table.vz-legend-table { table-layout: fixed; } /* the script sets each figure column's width once per draw; the name takes the rest */
 .vz-table.vz-legend-table th, .vz-table.vz-legend-table td { overflow: hidden; }
-.vz-table.vz-legend-table .vz-sort:focus-visible, .vz-table.vz-legend-table .vz-legend-actions .vz-button:focus-visible { outline-offset: calc(-1 * var(--stroke)); } /* inside the legend, whose cells and scrolling wrap clip: the ring is drawn inside the control, as in a tab strip (v8: the rendered focus guard found it cut) */
+.vz-table.vz-legend-table .vz-sort:focus-visible, .vz-table.vz-legend-table .vz-legend-actions .vz-button:focus-visible { outline-offset: calc(-1 * var(--stroke)); }
+.vz-table.vz-legend-table th .vz-sort { padding-block: calc(var(--space-1) - var(--hairline)); margin-block: 0; vertical-align: top; } /* it fills the head (legend-head: a label line and space-1 above and below, less the head's rule), so its ring, drawn inside, keeps a hairline clear of its letters (v9: with space-half it touched the descenders) */ /* inside the legend, whose cells and scrolling wrap clip: the ring is drawn inside the control, as in a tab strip (v8: the rendered focus guard found it cut) */
 .vz-series { position: static; display: flex; align-items: center; gap: var(--space-2); width: 100%; min-width: 0; font: inherit; color: inherit; background: none; border: 0; padding: 0; text-align: left; cursor: pointer; white-space: nowrap; }
 .vz-series::after { content: ""; position: absolute; inset: 0; }
 .vz-series:focus-visible { outline: 0; }

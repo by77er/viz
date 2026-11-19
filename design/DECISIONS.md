@@ -2359,10 +2359,11 @@ shard tails, one engine call.
    charged once; a metric query's series are charged per point; the answer is charged four
    times its length (twice in WASM, once more as a JavaScript string). Past the budget the call
    is refused: 422 `max_decoded_bytes`. The row caps, `maxSpans` (18,000) and `maxLogRows`
-   (30,000), are checked from the fragments before anything is fetched and again by the engine
-   on the rows it holds (a span outside the bound below, or a log row no selector reads, is not
-   held and not counted); they are derived from the budget and the memory a realistic row takes,
-   so that a realistic query meets the cheap refusal before the budget.
+   (30,000), are checked from the fragments before the span or log files are fetched and again
+   by the engine on the rows it holds (a span outside the bound below, or a log row no selector
+   reads, is not held and not counted; `trace_index` fragments are not spans and are held under
+   the byte budget alone); they are derived from the budget and the memory a realistic row
+   takes, so that a realistic query meets the cheap refusal before the budget.
 2. **A trace the answer names is whole within a margin.** A search, a TraceQL metrics query
    that needs whole traces, and trace by ID with a time hint have a bound: the window widened by
    the tenant's `traceMarginMs` (2 h) on each side. `trace_index` is planned over the bound; the
