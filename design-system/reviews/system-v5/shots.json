@@ -1,0 +1,329 @@
+{
+ "name": "v5",
+ "themes": [
+  "light",
+  "dark"
+ ],
+ "states": [
+  {
+   "name": "dashboard-1500",
+   "url": "reviews/system-v5/compositions/dashboard.html",
+   "width": 1500,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "dashboard-1440",
+   "url": "reviews/system-v5/compositions/dashboard.html",
+   "scale": 1
+  },
+  {
+   "name": "dashboard-400",
+   "url": "reviews/system-v5/compositions/dashboard.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "monitor-1440",
+   "url": "reviews/system-v5/compositions/monitor.html",
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "monitor-400",
+   "url": "reviews/system-v5/compositions/monitor.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "monitor-400-hit-areas",
+   "url": "reviews/system-v5/compositions/monitor.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true,
+   "outline": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "monitor-zoom-200",
+   "url": "reviews/system-v5/compositions/monitor.html",
+   "zoom": 2,
+   "scale": 0.5,
+   "measure": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "dialog-1440",
+   "url": "reviews/system-v5/compositions/dialog.html",
+   "scale": 1,
+   "height": 900
+  },
+  {
+   "name": "dialog-400",
+   "url": "reviews/system-v5/compositions/dialog.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "height": 800,
+   "measure": true
+  },
+  {
+   "name": "states-1440",
+   "url": "reviews/system-v5/compositions/states.html",
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "states-400",
+   "url": "reviews/system-v5/compositions/states.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "long-table-1440",
+   "url": "reviews/system-v5/compositions/long-table.html",
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "long-table-400",
+   "url": "reviews/system-v5/compositions/long-table.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "charts-1440",
+   "url": "reviews/system-v5/compositions/charts.html",
+   "scale": 1,
+   "steps": [
+    {
+     "focus": "#trip .vz-plot"
+    },
+    {
+     "key": "Home"
+    },
+    {
+     "key": "Shift+ArrowRight"
+    },
+    {
+     "key": "Shift+ArrowRight"
+    },
+    {
+     "key": "ArrowRight"
+    },
+    {
+     "key": "ArrowRight"
+    },
+    {
+     "key": "ArrowRight"
+    },
+    {
+     "key": "ArrowRight"
+    },
+    {
+     "key": "ArrowRight"
+    },
+    {
+     "key": "ArrowRight"
+    },
+    {
+     "key": "ArrowRight"
+    },
+    {
+     "key": "ArrowRight"
+    },
+    {
+     "focus": "#newpod .vz-plot"
+    },
+    {
+     "key": "End"
+    },
+    {
+     "key": "ArrowLeft"
+    },
+    {
+     "key": "ArrowLeft"
+    },
+    {
+     "key": "ArrowLeft"
+    },
+    {
+     "focus": "#c8 tbody tr:nth-child(5) .vz-series"
+    }
+   ],
+   "measure": true
+  },
+  {
+   "name": "charts-400",
+   "url": "reviews/system-v5/compositions/charts.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "steps": [
+    {
+     "focus": "#trip .vz-plot"
+    },
+    {
+     "key": "Home"
+    },
+    {
+     "key": "Shift+ArrowRight"
+    },
+    {
+     "key": "Shift+ArrowRight"
+    },
+    {
+     "key": "ArrowRight"
+    },
+    {
+     "key": "ArrowRight"
+    },
+    {
+     "key": "ArrowRight"
+    },
+    {
+     "key": "ArrowRight"
+    },
+    {
+     "key": "ArrowRight"
+    },
+    {
+     "key": "ArrowRight"
+    },
+    {
+     "key": "ArrowRight"
+    },
+    {
+     "key": "ArrowRight"
+    },
+    {
+     "focus": "#newpod .vz-plot"
+    },
+    {
+     "key": "End"
+    },
+    {
+     "key": "ArrowLeft"
+    },
+    {
+     "key": "ArrowLeft"
+    },
+    {
+     "key": "ArrowLeft"
+    },
+    {
+     "focus": "#c8 tbody tr:nth-child(5) .vz-series"
+    }
+   ],
+   "measure": true
+  },
+  {
+   "name": "charts-grey-1440",
+   "url": "reviews/system-v5/compositions/charts.html",
+   "scale": 1,
+   "greyscale": true,
+   "steps": [
+    {
+     "focus": "#trip .vz-plot"
+    },
+    {
+     "key": "Home"
+    },
+    {
+     "key": "Shift+ArrowRight"
+    },
+    {
+     "key": "Shift+ArrowRight"
+    },
+    {
+     "key": "ArrowRight"
+    },
+    {
+     "key": "ArrowRight"
+    },
+    {
+     "key": "ArrowRight"
+    },
+    {
+     "key": "ArrowRight"
+    },
+    {
+     "key": "ArrowRight"
+    },
+    {
+     "key": "ArrowRight"
+    },
+    {
+     "key": "ArrowRight"
+    },
+    {
+     "key": "ArrowRight"
+    },
+    {
+     "focus": "#newpod .vz-plot"
+    },
+    {
+     "key": "End"
+    },
+    {
+     "key": "ArrowLeft"
+    },
+    {
+     "key": "ArrowLeft"
+    },
+    {
+     "key": "ArrowLeft"
+    },
+    {
+     "focus": "#c8 tbody tr:nth-child(5) .vz-series"
+    }
+   ],
+   "themes": [
+    "light",
+    "dark"
+   ]
+  },
+  {
+   "name": "claims-1440",
+   "url": "reviews/system-v5/compositions/claims.html",
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "claims-400",
+   "url": "reviews/system-v5/compositions/claims.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "secret-1440",
+   "url": "reviews/system-v5/compositions/secret.html",
+   "scale": 1,
+   "height": 900
+  },
+  {
+   "name": "secret-400",
+   "url": "reviews/system-v5/compositions/secret.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "height": 800,
+   "measure": true
+  }
+ ]
+}
