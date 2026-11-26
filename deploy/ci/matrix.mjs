@@ -13,7 +13,10 @@ import { REPO_ROOT } from '../lib/common.mjs'
 
 /**
  * TypeScript components. `wasm`: needs the built engines (artifact `wasm-engines`).
- * `install`: other directories whose node_modules a test imports from. `needs`: directories
+ * `install`: other directories whose node_modules a test or a `prepare` script imports from.
+ * `rust`: the job needs the Rust toolchain, because `prepare` builds a native example.
+ * `prepare`: commands run in the component's directory after the installs and before tsc, for
+ * fixtures that are generated and git-ignored (tens of MB). `needs`: directories
  * without which the component cannot run at all. `optional`: test files that import from a
  * directory that may be absent, excluded (tsc and vitest) when it is; `imports` is the text in
  * that file that makes it depend on `needs`, and deploy/test/matrix.test.mjs fails once the file
@@ -23,18 +26,31 @@ export const TS = [
   { dir: 'shard', wasm: true },
   { dir: 'edge' },
   { dir: 'ledger' },
-  { dir: 'flush', wasm: true },
-  { dir: 'compact', wasm: true },
+  // flush, compact and engine/wasm read the files they write back with hyparquet, an implementation
+  // viz did not write, which lives in bench/node_modules.
+  { dir: 'flush', wasm: true, install: ['bench'] },
+  { dir: 'compact', wasm: true, install: ['bench'] },
   { dir: 'janitor', wasm: true },
   { dir: 'stack', wasm: true, install: ['bench'], optional: [{ file: 'test/e2e.test.ts', needs: 'bench/package.json', imports: 'bench/node_modules/hyparquet', why: 'imports hyparquet from bench/node_modules' }] },
-  { dir: 'query', wasm: true },
+  // query's trace and log tests compare the Worker's answers with the native engines' over a
+  // generated corpus: tools/gen-signal-fixtures.sh builds engine/wasm-query's example
+  // signal_fixtures and runs edge/scripts/otel-corpus.mjs, which imports from edge/node_modules.
+  // The benchmark's fixtures (example signal_bench, 7 and 12 MB) are not generated in CI.
+  {
+    dir: 'query',
+    wasm: true,
+    install: ['edge'],
+    rust: true,
+    prepare: ['tools/gen-signal-fixtures.sh'],
+    optional: [{ file: 'test/signals.bench.ts', needs: 'query/test/fixtures/signals/bench-small.json', imports: 'fixtures/signals/bench-small.json', why: 'is a benchmark over fixtures CI does not generate' }],
+  },
   { dir: 'control' },
   { dir: 'dashboard' },
   { dir: 'anomaly' },
   { dir: 'ruler' },
   { dir: 'publisher' },
   { dir: 'mcp' },
-  { dir: 'engine/wasm', wasm: true },
+  { dir: 'engine/wasm', wasm: true, install: ['bench'] },
   { dir: 'deploy' },
   { dir: 'app', needs: ['design-system'] },
   { dir: 'design-system', commands: ['node tools/check.mjs'] },
@@ -77,6 +93,8 @@ export function matrix(root = REPO_ROOT) {
       install: install.join(' '),
       lockfiles: [lock ? `${c.dir}/package-lock.json` : null, ...install.map((d) => `${d}/package-lock.json`)].filter(Boolean).join('\n') || 'deploy/package-lock.json',
       npm: lock,
+      rust: Boolean(c.rust),
+      prepare: (c.prepare ?? []).join(' && '),
       exclude: exclude.join(' '),
       commands: (c.commands ?? []).join(' && '),
     })
