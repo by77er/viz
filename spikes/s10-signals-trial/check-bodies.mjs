@@ -42,6 +42,12 @@ const k = B.realisticLoki(rnd, NS)
 same('Loki protobuf (snappy)', snappy.compress(B.lokiProto(k)), body('realistic Loki push (snappy), 8,200 entries'))
 same('Loki JSON', B.lokiJson(k), new TextDecoder().decode(body('realistic Loki push JSON, 8,200 entries')))
 
+// 1b. Distinct spans: bodies.mjs's LCG multiplies in doubles and cycles early (found in this trial).
+const hex = (b) => Buffer.from(b).toString('hex')
+const distinct = (t) => new Set(t.resource_spans.flatMap((r) => r.scope_spans[0].spans).map((s) => hex(s.trace_id) + hex(s.span_id))).size
+for (const seed of [7, 1001000, 1001001]) console.log(`distinct (trace id, span id) in 8,200 spans, seed ${seed}: lcg ${distinct(B.realisticTraces(B.lcg(seed), NS))}, lcg32 ${distinct(B.realisticTraces(B.lcg32(seed), NS))}`)
+if (distinct(B.realisticTraces(B.lcg32(7), NS)) !== 8200) failed++
+
 // 2. Through edge's decoders.
 const dir = mkdtempSync(join(tmpdir(), 's10-check-'))
 const out = join(dir, 'edge.mjs')
