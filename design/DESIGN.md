@@ -15,9 +15,11 @@ Spans and logs are on `main` end to end: ingest decoding, shards, flush, the led
 (D68), Iceberg publication (D67) and the Tempo and Loki read APIs (D62), built behind
 `INGEST_SIGNALS` and `QUERY_SIGNALS`, both off in production. Their adversarial review
 (`reviews/signals-end-to-end.md`) found a blocker and six majors, all fixed; D62 was reviewed
-again (`reviews/signals-end-to-end-r2.md`, approve with changes) and its four findings fixed.
-`QUERY_SIGNALS` stays off until the narrow re-check of those four fixes is done and spike S10 is
-run again on this build (§6.4).
+again (`reviews/signals-end-to-end-r2.md`, approve with changes), its four findings fixed, and
+the fixes re-checked on 2026-11-26 (`reviews/signals-end-to-end-r3.md`: D62 approved, measured
+here, not on Cloudflare). `QUERY_SIGNALS` stays off until spike S10's realistic and fat shapes are
+run again on Cloudflare with this build, Grafana has run against a staged gateway, and the owner
+accepts the stated ceilings for the tenants in question (§6.4).
 
 Not verified on Cloudflare: the release this tree makes over production puts six Rate Limiting
 bindings on viz-control (D70), and nobody has yet seen Cloudflare accept them at upload or read
@@ -331,8 +333,8 @@ and time.
 
 The span and log tables are written and listed as built on the write side (stage 2, behind
 `INGEST_SIGNALS`): flush, the ledger, retention and deletion; `query` reads them behind
-`QUERY_SIGNALS` (D62, §6.4; off, and to stay off until the fixes for the second review of D62 are
-re-checked and spike S10 is run again: `design/reviews/signals-end-to-end-r2.md`),
+`QUERY_SIGNALS` (D62, §6.4; off, and to stay off until spike S10 is run again on this build, a
+Grafana run, and the owner's acceptance of the stated ceilings: `design/reviews/signals-end-to-end-r3.md`),
 and both halves are joined through the gateway (stage 3), and they
 are compacted (D68, §5.2). The publisher publishes them as Iceberg tables of their own (D67, §5.3;
 before it, D64's release read them without publishing them): `INGEST_SIGNALS` may go on in a
@@ -544,8 +546,11 @@ memory (M-2). Both were fixed as D62 describes, with the review's inputs as test
 Loki label calls (R2-M1) and charged after the fact for derived structures and answers (R2-M2), the
 margin's cost larger than stated (R2-M3) and trace by ID refused for ordinary tenants (R2-M4a);
 all four are fixed as D62's second rewrite (2026-11-19) describes, with its reproductions as tests.
-`QUERY_SIGNALS` stays off until the re-review's narrow re-check of those four, which has not been
-done, and a rerun of spike S10 on this build; a Grafana run is also outstanding (`query/README.md`,
+The narrow re-check of those four (`design/reviews/signals-end-to-end-r3.md`, 2026-11-26; measured
+here on the ABI 8 module, not on Cloudflare) closes all four and approves D62, with four corrections
+to stated ceilings (below, and D62 "Corrections from the narrow re-check"). `QUERY_SIGNALS` stays off
+until S10's realistic and fat shapes are run again on Cloudflare with ABI 8, Grafana has run against
+a staged gateway, and the owner accepts those ceilings for the tenants in question (`query/README.md`,
 "Traces and logs", "What remains before the flag"). Spike S10 (measured on Cloudflare, 2026-11-19, on the build before those fixes) found the memory
 budget held (isolate at most 70.8 MiB) but every trace query refused at about 690,000 spans in five
 minutes, by `maxFetchBytes` against one hour's bytes: one place serves trace by ID up to about
@@ -608,7 +613,12 @@ another signal refuses the query, never misread).
   trace extents), against the tenant's `maxDecodedBytes` (32 MiB), the Loki label calls included,
   and the answer four times before it is written; it refuses (422) before the thing that would
   pass the budget is made. A call's peak WASM memory is then the budget plus what it was handed
-  plus a constant measured under 12 MiB (it reached 0.1 to 0.9 GB on a few hundred rows before).
+  plus a constant measured under 12 MiB (it reached 0.1 to 0.9 GB on a few hundred rows before);
+  for fat rows in flush's 16 MiB row groups the constant is up to one row group's decoded pages
+  (70.8 MiB measured where the bound says 53.8; the isolate still fits, with a thinner margin:
+  r3-m1). A LogQL query that makes a series per line is refused well under the row cap: `sum by
+  (level) (count_over_time({…} | logfmt [1m]))` over lines with a unique field at about 6,000 rows
+  in the window, and at 30,000 with `| keep level` (r3-m2).
   The row caps (`maxSpans` 18,000, `maxLogRows` 30,000) count rows held and are checked from the
   fragments before any fetch (trace by ID by bytes). Split execution by trace-id hash, partial
   results with a cursor, and pushing predicates to sorted and promoted columns are not built. A
@@ -919,6 +929,6 @@ the stage deploy twice, and it waits for the owner.
 | Plans grow with file count: 276 ms and 5.8 MB at 7,000 files | Not yet fixed. Index fragments inline only for small plans; consolidated partition indexes; paging |
 | A tenant's ledger holds at most 300 MiB of state, about 300,000 live files: memory no longer bounds it (checkpoints in parts, a rebuild that streams; D47), the time a rebuild takes does (20 s here at that size, modelled 20–60 s on Cloudflare, the tenant refused meanwhile) | `addUnit` answers `full`, retryably, above it; compaction and retention make room. The publisher re-bases such a tenant streaming, from its newest checkpoint or its base, in bounded memory (measured at 300,000 files under a capped heap, `publisher/README.md`), but production keeps 16 MiB: a rollback to a release before D47 must not meet a larger state, and the time is the bound. Measured on Cloudflare since (S11, `spikes/s11-large-ledger/`, 2026-11-19): a rebuild used 14.2 s of CPU at 64 MiB and 16.4–18.6 s at 150 MiB, a first publication 5.6 s and 14.0 s, against the 30 s default; 300 MiB was not run and extrapolates over it. S11 recommends 64 MiB; not lifted yet (D47; `design/reviews/d47-d48-d55.md`, P-2, P-3) |
 | The first release over production carries viz-control's six Rate Limiting bindings, which have never been uploaded to Cloudflare or read back from its version API (review of D69, round 2, M2-2); that release is forward-only for viz-control | **Open.** `spikes/s13-upgrade-trial/` runs the release on a stage first; it is prepared and not run, waiting for the owner. Everything else about the release was checked against fakes only. The other six Workers can be rolled back alone (`--only`) |
-| Spans and logs on Cloudflare (S10, `spikes/s10-signals-trial/`, measured 2026-11-19): a compaction run was killed at the 30 s CPU limit (8 merges at 2.6–3.6 s each; retried successfully); every trace query is refused above about 240,000 spans in an hour (`maxFetchBytes` against one hour's files); a 4 KB body of empty spans costs 1.4–3.4 s of edge CPU to decode; flush throughput bounds span ingest at about 2.5 requests a second of 8,200 spans; a stage's cron and maintenance timers run on after its expiry | **Open**, none fixed. Both flags are off in production. Compaction: bound merges per run by CPU spent, or raise `limits.cpu_ms` (D68). Trace queries: bloom filters on `spans.trace_id`, `trace_index` read in waves, smaller row groups (D62, not built). Decode CPU: not bounded by D71. `QUERY_SIGNALS` also waits for the re-check of D62's second review fixes and a rerun of S10 |
+| Spans and logs on Cloudflare (S10, `spikes/s10-signals-trial/`, measured 2026-11-19): a compaction run was killed at the 30 s CPU limit (8 merges at 2.6–3.6 s each; retried successfully); every trace query is refused above about 240,000 spans in an hour (`maxFetchBytes` against one hour's files); a 4 KB body of empty spans costs 1.4–3.4 s of edge CPU to decode; flush throughput bounds span ingest at about 2.5 requests a second of 8,200 spans; a stage's cron and maintenance timers run on after its expiry | **Open**, none fixed. Both flags are off in production. Compaction: bound merges per run by CPU spent, or raise `limits.cpu_ms` (D68). Trace queries: bloom filters on `spans.trace_id`, `trace_index` read in waves, smaller row groups (D62, not built). Decode CPU: not bounded by D71. D62's second review fixes were re-checked and approved on 2026-11-26 (measured here); `QUERY_SIGNALS` still waits for a rerun of S10 on this build, a Grafana run and the owner's acceptance of the stated ceilings |
 | Cloudflare ships an overlapping product | Open formats, PromQL/TraceQL, external sources, agent surface |
 | Platform-wide outage | Accepted for a Cloudflare-only product; data remains plain Parquet and Iceberg |

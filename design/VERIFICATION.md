@@ -94,8 +94,10 @@ Spikes run since under numbers this table does not use, each with its README:
   the decode limits (D71), the query memory budget, publication read by three outside readers.
   Open: one compaction run killed at the 30 s CPU limit; every trace query refused above about
   240,000 spans in an hour; a 4 KB body costing 1.4–3.4 s of edge CPU to decode; a stage's
-  timers running on after its expiry. A rerun on the current build is one of the two things
-  `QUERY_SIGNALS` waits for.
+  timers running on after its expiry. A rerun of its realistic and fat shapes on the current
+  build (ABI 8) is one of the three things `QUERY_SIGNALS` waits for, with a Grafana run and the
+  owner's acceptance of D62's stated ceilings; the narrow re-check of D62 is done and approves it
+  (`reviews/signals-end-to-end-r3.md`).
 - **S11** (`spikes/s11-large-ledger/`): the S4 row above.
 - **S12** (`spikes/s12-reload-on-a-phone/`, deployed 2026-11-26): the design system's pages on
   a public address, to see whether a phone loses its scroll position on reload as the emulator

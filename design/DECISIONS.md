@@ -2450,9 +2450,12 @@ approve with changes: R2-M1 to R2-M4 and R2-m1 to R2-m5, and after the review of
 text the first review rejected (`design/reviews/signals-end-to-end.md`, M-1 and M-2); "Replaces" at
 the end lists what changed each time. The contract changed first, in its own change:
 `contracts/engine.ts` `SignalBudget` and `SignalEngine`, ABI 8 of `engine/wasm-query`.
-`QUERY_SIGNALS` stays off until the re-review's narrow re-check of R2-M1 to R2-M4(a), which has
-not been done, and a rerun of the Cloudflare trial (S10 ran on the build before this rewrite); the
-Grafana run of `query/README.md` "What remains before the flag" is also outstanding.)
+The re-review's narrow re-check of R2-M1 to R2-M4(a) was done on 2026-11-26
+(`design/reviews/signals-end-to-end-r3.md`, round 3: 0 blockers, 0 majors, 4 minors) and approves
+D62: all four majors are closed and reproduced on the ABI 8 module, measured here, not on
+Cloudflare. Its four minors correct statements of this entry that were too generous; they are
+under "Corrections from the narrow re-check" in "What volume this serves", below. `QUERY_SIGNALS`
+stays off for three other reasons, given there.)
 
 **Decision.** The query Worker answers Tempo's and Loki's APIs (behind `QUERY_SIGNALS`,
 `query/README.md` "Traces and logs") in one place: files through the leaf pool, the signal's
@@ -2648,6 +2651,33 @@ in one query**:
   window.
 Above that a trace query is refused (422), never misanswered. This is a ceiling of reading one
 place, not of memory.
+
+**Corrections from the narrow re-check** (round 3, 2026-11-26, `reviews/signals-end-to-end-r3.md`;
+measured here on the ABI 8 module, not on Cloudflare). All four round-2 majors are closed. Four
+statements above are too generous, and each stands corrected here:
+- *The peak bound* (r3-m1). "Budget, plus what was handed, plus under 12 MiB" does not hold for fat
+  rows in flush's 16 MiB row groups: the reader's pages for one such row group exceed the constant.
+  Measured 70.8 MiB where the bound says 53.8, and 57.5 where it says 47.3. The constant is "up to
+  one row group's decoded pages (16 MiB at flush's cut)". The isolate still fits, with a thinner
+  margin; cutting flush row groups at 2 MiB, as compaction does, restores it (follow-up 2).
+- *The log ceiling for `logfmt` without `keep`* (r3-m2). `sum by (level) (count_over_time({…} |
+  logfmt [1m]))` over lines that carry a unique field makes one series per line, and is refused at
+  about 6,000 rows in the window (1.7 lines a second over an hour), not 30,000. The charge is real
+  memory (35.1 MiB at 10,000 rows with no budget). The same query with `| keep level` answers at
+  30,000 rows in 14.1 MiB.
+- *The margin's id meter* (r3-m3). The first pass holds 64 bytes for each trace with a piece wholly
+  in the 2 h after the window, so at most about 520,000 traces there, roughly 73 traces a second.
+  It binds before the 16 MiB fetch ceiling only where `trace_index` is small per trace, as with
+  single-span traces: refused at 100 such traces a second with about 8 MiB of `trace_index`.
+- *A span re-sent with a moved start* (r3-m4). Span-local calls cut to their window before
+  de-duplication and trace queries cut to their bound, so for one window they can count different
+  copies: metrics and tag values the earlier copy, search the later one (and so no trace). Only a
+  sender that changes a span's start between retries reaches it (`contracts/TRACES.md`, "What a
+  merge does not resolve").
+
+`QUERY_SIGNALS` stays off until S10's realistic and fat shapes are re-run on Cloudflare with ABI 8,
+Grafana has run against a staged gateway, and the owner accepts these ceilings for the tenants in
+question.
 
 **Follow-up design (not built; for D62's owner to schedule).** What removes the ceiling, in order:
 1. *Trace by ID by trace id within the hour.* `spans` files carry a bloom filter on `trace_id` per
