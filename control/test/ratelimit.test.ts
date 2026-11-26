@@ -17,7 +17,7 @@ import { BASE62, CREDENTIAL_LAYOUT, OAUTH_LIMITS, credentialExpiresAt } from '..
 import worker from '../src/index'
 import { introspectFor } from '../src/introspection'
 import { credentialExpired, credentialTagValid, expiryChars, mintCredential, oauthConfig } from '../src/oauth'
-import { CHECK_BUDGET_MS, LIMITERS, SKIP_AFTER_FAILURE_MS, WORKERS_EGRESS, resetLimiterState, sourceKeys, sourceNetwork } from '../src/ratelimit'
+import { CHECK_BUDGET_MS, LIMITERS, RATE_PERIOD_S, SKIP_AFTER_FAILURE_MS, WORKERS_EGRESS, resetLimiterState, sourceKeys, sourceNetwork } from '../src/ratelimit'
 import type { Tenant } from '../src/tenant'
 import { B62 } from '../src/util'
 import { newTenant, stubOf } from './helpers'
@@ -509,6 +509,25 @@ describe('/healthz reports each limiter (review M-2, m-2)', () => {
 describe('the limits are per Cloudflare location only while control and mcp have no Smart Placement (review m-8)', () => {
   it('neither Worker\'s configuration places it', () => {
     for (const [name, text] of [['control', controlWrangler], ['mcp', mcpWrangler]]) expect(text, name).not.toMatch(/"placement"/)
+  })
+})
+
+describe('the shipped rate limits match the source (review round 4, m-1)', () => {
+  it('wrangler.jsonc binds exactly LIMITERS, each over RATE_PERIOD_S, and each fuse is at least 1,200 times the per-credential limit', () => {
+    // The block is plain JSON inside the JSONC file: read it without a JSONC parser.
+    const block = /"ratelimits":\s*(\[[\s\S]*?\n\s*\])/.exec(controlWrangler)
+    expect(block, 'control/wrangler.jsonc has no ratelimits block').not.toBeNull()
+    const bound = JSON.parse(block![1]!) as { name: string; simple: { limit: number; period: number } }[]
+    expect(bound.map((b) => b.name).sort()).toEqual([...LIMITERS].sort())
+    for (const b of bound) {
+      expect(b.simple.period, b.name).toBe(RATE_PERIOD_S)
+      expect(Number.isInteger(b.simple.limit) && b.simple.limit > 0, b.name).toBe(true)
+    }
+    const limit = (n: string) => bound.find((b) => b.name === n)!.simple.limit
+    // D70: tripping a tenant fuse must take at least 1,200 distinct unexpired credentials at the token
+    // endpoint, and at least 25 at introspection.
+    expect(limit('OAUTH_RL_TENANT') / limit('OAUTH_RL_CREDENTIAL')).toBeGreaterThanOrEqual(1200)
+    expect(limit('OAUTH_RL_BEARER_TENANT') / limit('OAUTH_RL_BEARER')).toBeGreaterThanOrEqual(25)
   })
 })
 
