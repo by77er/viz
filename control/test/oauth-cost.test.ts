@@ -9,13 +9,16 @@
  */
 import { runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
-import { expect, it } from 'vitest'
+import { beforeEach, expect, it } from 'vitest'
 import worker from '../src/index'
 import { introspectFor } from '../src/introspection'
 import { resetLimiterState } from '../src/ratelimit'
 import type { Tenant } from '../src/tenant'
-import { newTenant, stubOf } from './helpers'
+import { newTenant, stubOf, windowRoom } from './helpers'
 import { ORIGIN, REDIRECT, RESOURCE, approve, authorize, authorizeUrl, codeOf, newClient, pkce } from './oauth'
+
+// No test here may straddle the minute: the local binding's windows are the wall clock's (helpers.ts).
+beforeEach(() => windowRoom(), 20_000)
 
 interface Probe {
   alarms: number

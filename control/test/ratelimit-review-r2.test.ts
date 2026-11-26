@@ -13,14 +13,17 @@
  * tree the review read.
  */
 import { env } from 'cloudflare:workers'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { credentialExpiresAt } from '../../contracts/oauth'
 import worker from '../src/index'
 import { introspectFor } from '../src/introspection'
 import { credentialExpired, mintCredential, oauthConfig } from '../src/oauth'
 import * as ratelimit from '../src/ratelimit'
-import { auditOf, call, newTenant, post } from './helpers'
+import { auditOf, call, newTenant, post, windowRoom } from './helpers'
 import { ORIGIN, RESOURCE, connect, refresh as refreshPlain, revokeAtServer } from './oauth'
+
+// No test here may straddle the minute: the local binding's windows are the wall clock's (helpers.ts).
+beforeEach(() => windowRoom(), 20_000)
 
 const KEY = oauthConfig(env).clientKey!
 const byte = () => crypto.getRandomValues(new Uint8Array(1))[0]!
