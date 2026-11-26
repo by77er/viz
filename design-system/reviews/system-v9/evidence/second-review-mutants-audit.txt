@@ -1,0 +1,78 @@
+The 48 mutants of tools/mutants-corpus.mjs that run tools/audit.mjs, re-run after the reload pass changed. Measured here, 26 Nov:
+node tools/mutants.mjs <scratch>/mutants --only <the 48 ids>; each mutant on a fresh copy outside the tree, deleted after its run.
+
+started 2026-11-26T22:10:31Z, load 1.63 1.72 1.71
+
+
+load average 1.63 1.72 1.71 on 4 cores
+
+| Mutant | What was broken | Run | Expected | Result | First line the check printed |
+|---|---|---|---|---|---|
+| Y10 | the focus ring made transparent by a later rule | audit | caught | caught | focus         400 coarse      light: <button.vz-button> "Run query" focused draws outline solid 2px rgba(0, 0, 0, 0) offset 2px, not the ring (2px sol |
+| Y11 | coarse hit areas removed by a later rule | audit | caught | caught | hit-area      320 coarse      light: <button.vz-button> "Run query": hit area under 44 px tall with a coarse pointer (drawn 95 x 32 px)  (and at 400 c |
+| Y12 | the table wrap unpositioned by a later rule (v5 B2.1 back) | audit | caught | caught | overflow      320 coarse      page scrolls sideways by 249 px: nothing unclipped found past the edge  (and at 400 coarse) |
+| Y13 | a dashed swatch filled solid by a later rule | audit | caught | caught | guard         400 coarse      light: <span.vz-swatch> is not drawn dashed as rendered (borders solid 0px rgb(14, 126, 239) / solid, fill rgb(14, 126,  |
+| Y14 | a transition put back under reduced motion | audit | caught | caught | motion        1500 reduced motion light: <div.vz-progress-bar> transitions transform over 0.18s with reduced motion requested  (and at 1500 reduced mo |
+| Y15 | emphasis undone by a later rule of the same weight | audit | caught | caught | guard         400 coarse      light: emphasis in <h3.vz-panel-title> "Latency by route, p99": a line that steps back is rgb(164, 2, 85) 2px, not a ser |
+| Y17 | a kept state made nowrap again by a later !important rule (v5 B2.2 back) | audit | caught | caught | guard         320 coarse      <span.vz-status> "Lagging" in a kept column of a folded table does not wrap (white-space: nowrap): a long state is cut o |
+| Y18 | a finger's press painted as rest by a later rule | audit | caught | caught | press         400 coarse      light: a finger held on button.vz-button "Add panel" paints rgb(255, 255, 255) (at rest rgb(255, 255, 255)); its press i |
+| Z2 | v6's arrangement of a list with one kept column: "Actions…" on the key's line and no key minimum (v6 review, B1) | audit | caught | caught | key-width     320 coarse      <td> "Ingest pipeline" is 116 px of a 286 px row, under key-min (50%): the name is squeezed by the kept columns or the a |
+| Z3 | a cut name capped at half the measure but not at its cell, and the key link unable to shrink (v6 B1, image 01) | audit | caught | caught | cut           320 coarse      "c6b5-73b1d" in <span> "c6b5-73b1d" is outside its cell, over its neighbour (93 to 170, visible 16 to 159) |
+| Z5 | the chosen segment's fill outranks a press again (rule order) | audit | caught | caught | press         400 coarse      light: a finger held on button. "6 h" paints rgb(228, 228, 228) (at rest rgb(228, 228, 228)); its press is rgb(214, 214, |
+| Z6 | the legend's action rows drawn shorter than a legend row with a coarse pointer: a button's hit area reaches the row above | audit | caught | caught | reserve       320 coarse      the chart "CPU by pod" reserves 819.5 px and draws 799.5 px: skipped off screen or waiting for its data it is the wrong  |
+| Z7 | the CSS changed after the build: dist/ stale (v6 review, m6) | audit | caught | caught | stale         build           dist/reference.html inlines CSS older than the tree: run npm run build |
+| Z8 | v6's fold, whole: the key squeezed, the cut uncapped, the actions on the key's line (v6 review, B1, images 01 and 02) | audit | caught | caught | cut           320 coarse      "checkout-api" in <a.vz-link> "checkout-api p99 latency, POST /" is outside its cell, over its neighbour (24 to 92, visi |
+| W1 | the focus ring made transparent with a coarse pointer only (a tablet with a keyboard) | audit | caught | caught | focus         400 coarse      light: <button.vz-button> "Run query" focused draws outline solid 2px rgba(0, 0, 0, 0) offset 2px, not the ring (2px sol |
+| W2 | a row of controls that clips its overflow with a fine pointer: the ring loses its top and bottom (image 07) | audit | caught | caught | focus         1500            light: <button.vz-button> "Run query" focused: its ring is cut by <div.vz-controls> "Run query Add panel Cancel Save " ( |
+| W3 | a dashed swatch filled solid with a coarse pointer only | audit | caught | caught | guard         400 coarse      light: <span.vz-swatch> is not drawn dashed as rendered (borders solid 0px rgb(14, 126, 239) / solid, fill rgb(14, 126,  |
+| W4 | emphasis undone in the dark theme only | audit | caught | caught | guard         400 coarse      dark: emphasis in <h3.vz-panel-title> "Latency by route, p99": a line that steps back is rgb(207, 61, 132) 2px, not a se |
+| W5 | a mouse's press painted as rest with a fine pointer only | audit | caught | caught | press         1500            light: a mouse held on button.vz-button "Add panel" paints rgb(255, 255, 255) (at rest rgb(255, 255, 255), hovered rgb(2 |
+| W6 | a menu that transitions with reduced motion and a coarse pointer | audit | caught | caught | motion        400 coarse reduced motion light: <div.vz-menu> transitions opacity over 0.18s with reduced motion requested  (and at 400 coarse reduced  |
+| W7 | the waiting line moved down over the plot | audit | caught | caught | hit-area      320 coarse      light: <svg> "Request rate by service, req/s, ": part of what it draws (254, 46 px in) belongs to <button.vz-progress-ac |
+| W17 | the third picked member of Other drawn solid: its line's dots and its swatch's dots removed | audit | caught | caught | guard         400 coarse      light: the 3 members of Other picked out in <h3.vz-panel-title> "CPU by pod, three of Other picke" are drawn with 2 patt |
+| U1 | rule-control and focus redefined from script at run time (the lint reads no value built at run time): the rendered checks catch it | audit | caught | caught | focus         400 coarse      light: <button.vz-button> "Run query" focused draws outline solid 2px rgb(228, 228, 228) offset 2px, not the ring (2px s |
+| U2 | a single-unit number column left-aligned (the v7 review's M2, image 05) | audit | caught | caught | align         1500            the column "Memory, MiB" of <table.vz-table> "PodCPU, coresThrottled, %Memory," holds bare numbers of one unit but 1 of  |
+| U3 | right-aligned number columns made left-aligned at the fine pointer by a later rule | audit | caught | caught | align         720 at 200%     the column "Requests, req/s" of <table.vz-table> "ServiceStateRequests, req/sError" holds bare numbers of one unit but 5 |
+| U5 | a folded row's name with no room above it (its 44 px around the name reach the row above) | audit | caught | caught | hit-area      320 coarse      light: <a.vz-link> "cart-service error rate, every r": hit area under 44 px tall with a coarse pointer (drawn 234 x 20 p |
+| U6 | the folded row no longer the key's target (the key's line is its link's only area: 28 px) | audit | caught | caught | hit-area      320 coarse      light: <a.vz-link> "cart-service error rate, every r": hit area under 44 px tall with a coarse pointer (drawn 234 x 20 p |
+| U7 | the navigation's focus ring outside its links again: cut by the strip with a coarse pointer | audit | caught | caught | focus         400 coarse      light: <a> "Explore" focused: its ring is cut by <nav.vz-nav> "Sections" (overflow auto auto) |
+| U8 | a wrapped segmented control's rows without their gap with a coarse pointer (v7 review, m3: drawn at its own height) | audit | caught | caught | hit-area      320 coarse      light: <button> "All services": hit area under 44 px tall with a coarse pointer (drawn 270 x 30 px) |
+| U9 | strong words at the browser's 700 again | audit | caught | caught | token         400 coarse      light: font-weight: 700 on <b> "payments-db" does not come from a token  (and at 1500) |
+| U10 | a stacked folded row's key line ending at the line "Actions…" is on: its hit area takes the key's last words | audit | caught | caught | hit-area      320 coarse      light: <a.vz-link> "checkout-api p99 latency, POST /": part of what it draws (268, 38 px in) belongs to <button.vz-butto |
+| U11 | "Other" in the legend allowed to shrink: cut beside a wide range at 320 px | audit | caught | caught | cut           320 coarse      "Other" in <span.vz-series-name> "Other" is cut (60 to 95, visible 60 to 93)  (and at 320 coarse, 320 coarse, 320 coarse |
+| U13 | a chart's clip margin removed: rings and small controls' hit areas at its edges cut by its paint containment | audit | caught | caught | focus         400 coarse      light: <svg> "Latency by route, p99, ms, 09:16" focused: its ring is cut by <div.vz-chart> "02505007501,000ms09:1615:161 |
+| U14 | the press script marking every ancestor again (body included: every table cell restyled on each press and release) | audit | caught | caught | press         400 coarse      light: a finger held on button.vz-button "Add panel" marks body and 3 other elements data-pressed: every ancestor, not t |
+| Q2b.audit | the same, as rendered: the audit reads what each control eases, computed, and counts the transitions a change of theme starts | audit | caught | caught | motion        320 coarse      a change of theme to dark leaves 30 transition(s) running in the frame it is drawn (the first: <button.vz-button> backgr |
+| Q3.audit | the same, as rendered on the Field preview (the fixture has no input) | audit | caught | caught | motion        320 coarse      a change of theme to dark leaves 12 transition(s) running in the frame it is drawn (the first: <input.vz-input> border-b |
+| Q4.audit | the same, as computed on the Chart preview by the audit | audit | caught | caught | skip          320 coarse      the chart "Latency by route, p99" computes content-visibility: visible: off screen it is restyled on every change of the |
+| Q10 | the navigation's side padding removed: its ring, drawn inside, over the first pixels of "Explore" (the v8 review's V10) | audit | caught | caught | focus         400 coarse      light: <a> "Explore" focused: its ring is drawn inside it and lies 1.8 px over its letters (a ring drawn inside keeps a  |
+| T3.audit | four charts of the Chart preview with no reservation in their markup: caught by each chart's reservation in the page as served (reserve), not dependab | audit | caught | caught | reserve       1500            the chart "Latency by route, p99" reserves 264.5 px in the page as served, before any script, and draws 365.5 px: a load |
+| T8.audit | on a reload of the Chart preview, a quarter of the window added at the top of the page 300 ms after its script runs and taken away 150 ms later, scrol | audit | caught | caught | reload-shift  1500            reloaded while scrolled to chart 6 of 10 ("CPU by pod, the query narrowed to node-b"): layout shift 0.1922, and the char |
+| T9.audit | the switch that makes the reload pass's 400 px pointer coarse removed from tools/audit.mjs (as if Chromium had dropped it): the pass would read a fine | audit | caught | caught | pointer       400 coarse      the pointer is not coarse at this layout: the switch that makes it so (--blink-settings, a Chromium internal) did not ta |
+| T4 | the legend heads' sort buttons without their room: a ring drawn inside on the descenders again | audit | caught | caught | focus         1500            light: <button.vz-sort> "Last, ms" focused: its ring is drawn inside it and comes within 0 px of its letters (a ring dra |
+| T5 | the navigation links without their room above and below: a ring drawn inside on the descender of "Explore" | audit | caught | caught | focus         1500            light: <a> "Explore" focused: its ring is drawn inside it and comes within 0 px of its letters (a ring drawn inside keep |
+| T6 | the font no longer preloaded by the pages tools/reference.mjs builds | audit | caught | caught | font          1500            the page does not preload the sans face (link rel="preload" as="font" in its head): its text rewraps when the face arriv |
+| A1 | the hidden "Actions" head escapes the table (B2.1, image 03) | audit | caught | caught | overflow      320 coarse      page scrolls sideways by 249 px: nothing unclipped found past the edge  (and at 400 coarse) |
+| A2 | "Burning budget" over "Actions…" in a kept column (B2.2, image 04): the status nowrap again, and the wrap and the minimum width removed from both fold | audit | caught | caught | fold-scroll   320 coarse      <table.vz-table> "DashboardStateWhat it answersCha" folds (data-fold="wide") but scrolls 51 px sideways at this width  ( |
+| A3 | "Actions…" off screen in a folded row (B2.2, image 04) | audit | caught | caught | fold-scroll   320 coarse      <table.vz-table> "DashboardStateWhat it answersCha" folds (data-fold="wide") but scrolls 41 px sideways at this width  ( |
+| A4 | a link in a help line drawn as a control (m1, image 08) | audit | caught | caught | sentence-link 320 coarse      <a.vz-link> "notification settings" is inside a sentence in <span.vz-help> "Pages go to the rota set in noti" but drawn  |
+
+Y: 8 of 8 as expected; Z: 6 of 6 as expected; W: 8 of 8 as expected; U: 12 of 12 as expected; Q: 4 of 4 as expected; T: 6 of 6 as expected; A: 4 of 4 as expected
+Every mutant caught; every harmless edit passes.
+exit status 0; ended 2026-11-26T22:20:55Z, load 1.06 1.50 1.63
+
+----
+
+T8.audit and T3.audit run by the corpus runner against the SHIPPED audit.mjs (a scratch tree whose tools/audit.mjs is the version before this change); load 1.16 1.50 1.63
+
+
+load average 1.16 1.50 1.63 on 4 cores
+
+| Mutant | What was broken | Run | Expected | Result | First line the check printed |
+|---|---|---|---|---|---|
+| T3.audit | four charts of the Chart preview with no reservation in their markup: caught by each chart's reservation in the page as served (reserve), not dependab | audit | caught | caught | reserve       1500            the chart "Latency by route, p99" reserves 264.5 px in the page as served, before any script, and draws 365.5 px: a load |
+| T8.audit | on a reload of the Chart preview, a quarter of the window added at the top of the page 300 ms after its script runs and taken away 150 ms later, scrol | audit | caught | **CAUGHT, but not every literal: /reload-shift\s+(400 coarse\s+reloaded while scrolled to chart|1500\s+reloaded while scrolled to chart[^\n]*\(and at [^)\n]*400 coarse)/** | reload-shift  1500            reloaded while scrolled to chart 6 of 10 ("CPU by pod, the query narrowed to node-b"): layout shift 0.1922, and the char |
+
+T: 1 of 2 as expected
+1 mutant(s) not as expected: T8.audit
+exit status 1

@@ -1,0 +1,61 @@
+When does the browser mark a layout shift hadRecentInput although no input was given? Measured here, 26 Nov, with the probe printed below the results
+(a page that is not viz; run from design-system/ as: node mark.mjs 2). Read: with isMobile, a shift up to about 460 ms after the reload began is marked,
+and one from about 610 ms is not, whether the pointer is made coarse by touch emulation or in Blink; without isMobile none is marked. Why the browser does this
+was not established.
+
+load 1.76 1.73 1.65; 2 tries each; each entry: [ms after the reload began, value, marked hadRecentInput]
+1500 fine; shift 100 ms after the script runs: [[117,0.1333,false]]  [[118,0.1333,false]]
+1500 fine; shift 300 ms after the script runs: [[315,0.1333,false]]  [[311,0.1333,false]]
+1500 fine; shift 450 ms after the script runs: [[466,0.1333,false]]  [[464,0.1333,false]]
+1500 fine; shift 600 ms after the script runs: [[615,0.1333,false]]  [[612,0.1333,false]]
+1500 fine; shift 1000 ms after the script runs: [[1011,0.1333,false]]  [[1016,0.1333,false]]
+400 fine; shift 100 ms after the script runs: [[113,0.2222,false]]  [[115,0.2222,false]]
+400 fine; shift 300 ms after the script runs: [[314,0.2222,false]]  [[315,0.2222,false]]
+400 fine; shift 450 ms after the script runs: [[470,0.2222,false]]  [[460,0.2222,false]]
+400 fine; shift 600 ms after the script runs: [[612,0.2222,false]]  [[613,0.2222,false]]
+400 fine; shift 1000 ms after the script runs: [[1011,0.2222,false]]  [[1010,0.2222,false]]
+400, hasTouch and isMobile (touch emulation: the shipped pass); shift 100 ms after the script runs: [[113,0.2222,true]]  [[113,0.2222,true]]
+400, hasTouch and isMobile (touch emulation: the shipped pass); shift 300 ms after the script runs: [[315,0.2222,true]]  [[311,0.2222,true]]
+400, hasTouch and isMobile (touch emulation: the shipped pass); shift 450 ms after the script runs: [[462,0.2222,true]]  [[461,0.2222,true]]
+400, hasTouch and isMobile (touch emulation: the shipped pass); shift 600 ms after the script runs: [[612,0.2222,false]]  [[616,0.2222,false]]
+400, hasTouch and isMobile (touch emulation: the shipped pass); shift 1000 ms after the script runs: [[1013,0.2222,false]]  [[1010,0.2222,false]]
+400, coarse in Blink and isMobile (the changed pass); shift 100 ms after the script runs: [[115,0.2222,true]]  [[110,0.2222,true]]
+400, coarse in Blink and isMobile (the changed pass); shift 300 ms after the script runs: [[315,0.2222,true]]  [[314,0.2222,true]]
+400, coarse in Blink and isMobile (the changed pass); shift 450 ms after the script runs: [[461,0.2222,true]]  [[462,0.2222,true]]
+400, coarse in Blink and isMobile (the changed pass); shift 600 ms after the script runs: [[610,0.2222,false]]  [[615,0.2222,false]]
+400, coarse in Blink and isMobile (the changed pass); shift 1000 ms after the script runs: [[1014,0.2222,false]]  [[1010,0.2222,false]]
+400, coarse in Blink, no isMobile; shift 100 ms after the script runs: [[120,0.2222,false]]  [[119,0.2222,false]]
+400, coarse in Blink, no isMobile; shift 300 ms after the script runs: [[310,0.2222,false]]  [[310,0.2222,false]]
+400, coarse in Blink, no isMobile; shift 450 ms after the script runs: [[468,0.2222,false]]  [[466,0.2222,false]]
+400, coarse in Blink, no isMobile; shift 600 ms after the script runs: [[611,0.2222,false]]  [[618,0.2222,false]]
+400, coarse in Blink, no isMobile; shift 1000 ms after the script runs: [[1009,0.2222,false]]  [[1013,0.2222,false]]
+
+---- the probe (mark.mjs) ----
+// When does the browser mark a layout shift hadRecentInput although no input was given? A page that is not viz: 40 blocks, and 200 px
+// added at its top `delay` ms after its script runs (scroll anchoring off, so the shift is seen when scrolled). Jump to 3,000, reload,
+// read every layout-shift entry of the reloaded document. Run from the design-system folder (for playwright): node <this> [tries]
+import { createServer } from 'node:http'
+import { createRequire } from 'node:module'
+import { loadavg } from 'node:os'
+const { chromium } = createRequire(process.cwd() + '/')('playwright')
+const tries = +(process.argv[2] ?? 3)
+const html = (delay) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>t</title>
+<style>html { overflow-anchor: none } body { margin: 0 } .b { height: 300px; box-sizing: border-box; border-top: 1px solid }</style></head>
+<body>${Array.from({ length: 40 }, (_, i) => `<div class="b">Block ${i + 1}</div>`).join('')}<script>setTimeout(() => { const d = document.createElement('div'); d.style.height = '200px'; document.body.prepend(d) }, ${delay})</script></body></html>`
+const server = createServer((q, s) => { s.writeHead(200, { 'content-type': 'text/html' }); s.end(html(+new URL(q.url, 'http://x').searchParams.get('d'))) })
+const port = await new Promise((ok) => server.listen(0, '127.0.0.1', () => ok(server.address().port)))
+const coarseInBlink = '--blink-settings=primaryPointerType=2,availablePointerTypes=2,primaryHoverType=1,availableHoverTypes=1'
+const modes = [['1500 fine', [], { viewport: { width: 1500, height: 900 } }], ['400 fine', [], { viewport: { width: 400, height: 900 } }], ['400, hasTouch and isMobile (touch emulation: the shipped pass)', [], { viewport: { width: 400, height: 900 }, hasTouch: true, isMobile: true }], ['400, coarse in Blink and isMobile (the changed pass)', [coarseInBlink], { viewport: { width: 400, height: 900 }, isMobile: true }], ['400, coarse in Blink, no isMobile', [coarseInBlink], { viewport: { width: 400, height: 900 } }]]
+console.log(`load ${loadavg().map((x) => x.toFixed(2)).join(' ')}; ${tries} tries each; each entry: [ms after the reload began, value, marked hadRecentInput]`)
+for (const [name, args, context] of modes) {
+  const browser = await chromium.launch({ args })
+  for (const delay of [100, 300, 450, 600, 1000]) { const seen = []
+    for (let t = 0; t < tries; t++) { const ctx = await browser.newContext(context), page = await ctx.newPage()
+      await ctx.addInitScript(() => { const z = (window.__s = []); new PerformanceObserver((l) => { for (const e of l.getEntries()) z.push([Math.round(e.startTime), +e.value.toFixed(4), e.hadRecentInput]) }).observe({ type: 'layout-shift', buffered: true }) })
+      await page.goto(`http://127.0.0.1:${port}/?d=${delay}`, { waitUntil: 'load' }); await page.waitForTimeout(delay + 400)
+      await page.evaluate(() => scrollTo(0, 3000)); await page.waitForTimeout(500)
+      await page.reload({ waitUntil: 'load' }); await page.waitForTimeout(delay + 1200)
+      seen.push(JSON.stringify(await page.evaluate(() => window.__s))); await ctx.close() }
+    console.log(`${name}; shift ${delay} ms after the script runs: ${seen.join('  ')}`) }
+  await browser.close() }
+server.close()

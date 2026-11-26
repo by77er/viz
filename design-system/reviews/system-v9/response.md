@@ -3,7 +3,11 @@
 The input is `reviews/system-v8/review.md` (reject: one blocker, B1; no majors; minors m1 to m3) and its three images, and the
 lead's decision on m3: "Colour the eight largest" is offered only when pressing it would change a colour, that is, when one of the
 eight largest series on screen is not coloured ("every response meaningful" outranks "offered wherever a series is in Other").
-Status: **not reviewed.** It goes to an independent reviewer under `project/review.md`.
+Status: **reviewed, twice.** `review.md` rejected v9 on one blocker, the landing miss this response left open under B1, and says v9 can
+be approved once that is settled by a fix or a recorded waiver. `second-review.md` **waived it** on 26 Nov: the miss is made by the
+measuring tool. The record of the waiver, what is still not known, what reopens it and what changed in the tools is under "After the
+reviews" at the end. Everything before that section is the response as the reviewers read it; where a statement in it turned out false,
+it is marked "Corrected" in place and listed there.
 
 "Before" is v8 exactly as it was on disk at the start of this session: a copy of `design-system/` (md5 of `src/components.css`
 `7f3caf81…`, the review's commit) taken before any edit, in the session's scratch area; `npm run build` there reproduced the tree's
@@ -102,6 +106,19 @@ not needed once every reservation is exact, and is not checkable in CSS.
   caught at 320 px and in the markup), **T3** (a chart with no markup reservation: `check.mjs`) and **T3.audit** (four charts without:
   first caught by the reloads, landing 1,178 px away; in the first whole corpus run it **survived**, because whether a reload shows it
   depends on whether the browser draws a frame before the chart script; now caught every time by the served-page reservation), **T6** (no preload: `font`), **Z6** rewritten (below).
+- **Corrected, 26 Nov (second review): what kills T3.audit, and where it survives.**
+  - **Killed by `reserve` only**: each chart's reservation in the page as served with no script run, at both layouts, in every run
+    (measured here on 26 Nov: 4 findings at 1500 px and 4 at 400 px in 6 of 6 runs, with the shipped pass and with the changed one).
+  - **It survives the reload pass's own two measures, layout shift and landing, at both layouts, in some runs.** Measured here, a run
+    being every chart of the Chart preview or `--quick`'s two: with the changed pass the reloads at 400 px had a finding in 2 of 4
+    runs, and at 1500 px in 2 of 4; with the pass as shipped, at 400 px in **0 of 2** runs, at 1500 px in 2 of 2. No reload landed
+    elsewhere in any of these runs (0 of 88 reloads). The second reviewer's runs: not caught at 400 px in two runs of each pass.
+  - "First caught by the reloads, landing 1,178 px away" above **was not a catch**. That finding had a layout shift of 0.0000 and was
+    the emulator's landing miss, which the second review reproduced on this mutant under the shipped pass (its E10).
+  - Why 400 px was blind: the shifts this mutant causes come in the first half second of a load, and with `isMobile` the browser marks
+    those as following input. The shipped pass summed only unmarked entries, so its reloads at 400 px could not show the mutant at
+    all. With every entry counted they show it when the browser happens to draw a frame before the chart script (0.4184 and 0.8565
+    here), which is still not every run. `evidence/second-review-t3-audit.txt`.
 
 ### Measured: reload while scrolled to a chart
 
@@ -136,6 +153,9 @@ Over every load:
 My runs of v8 differ from the review's in detail: at 400 px coarse I measure no layout shift but a landing far away (the restored
 position points into a page made shorter by the skipped charts above it), where the review measured both. Both are B1, and both are
 gone in v9.
+
+**Settled after review, 26 Nov: waived by the second reviewer as the measuring tool's doing** ("After the reviews", below). The
+paragraph that follows is kept as written; its "cause not found" and its rate (three in about 330) no longer stand.
 
 **Not fixed, open: an intermittent landing miss at 400 px coarse.** Three times in v9, a reload at 400 px coarse came back with the
 scroll position somewhere other than where it was, with **no layout shift**:
@@ -363,7 +383,8 @@ offered the legend is one 25 px row taller than v8's. No regression found.
   (`evidence/mutants-first-run-19-nov.txt`); it had been caught in the run of new mutants an hour before. Whether a reload shows a
   missing markup reservation depends on whether the browser draws a frame before the chart script, so the reload pass alone was not a
   dependable guard. The audit now also reads every chart's reservation in the page as served with no script run (B1, "What guards
-  it"), which catches T3.audit every time; T3.audit expects that finding. The session was stopped by a usage limit after that first run
+  it"), which catches T3.audit every time; T3.audit expects that finding. (Corrected, 26 Nov: it is the only measure that does. The
+  reloads of the reload pass do not catch T3.audit dependably at either layout: B1, "What guards it now".) The session was stopped by a usage limit after that first run
   and resumed on 26 Nov; the served-page check, the last reload pass, this corpus run and `npm test` (197 tests, 139 pass, 0 fail, 58
   skipped) are from 26 Nov.
 
@@ -398,7 +419,8 @@ offered the legend is one 25 px row taller than v8's. No regression found.
 ## What did not work, and what was not done
 
 - **The intermittent landing miss at 400 px coarse** (B1, above): three in about 330 reloads, no layout shift, cause not found; the
-  final full audit fails on it. Open.
+  final full audit fails on it. Open. (26 Nov: the first reviewer measured it far more often and made it the blocker; the second
+  reviewer found the cause, the measuring tool, and waived it: "After the reviews".)
 - **The crosshair's remaining time** is the plot's repaint and the legend's layout; moving the crosshair to its own layer is not done.
   Margin 6 ms at a low load; at a load near 4 one measurement reached 50.
 - **The theme change on the phone** came out at 99 ms in one 10-run sample (69 in the 20-run one): within, but thin there.
@@ -454,3 +476,255 @@ offered the legend is one 25 px row taller than v8's. No regression found.
 - The session stopped on 19 Nov at a usage limit while the corpus was running, and resumed on 26 Nov; no one else edited `design-system/`
   in between. The background runs of 19 Nov were gone; the corpus was run again (above).
 - No Cloudflare resource was touched; nothing was published.
+
+## After the reviews: B1 waived by a second reviewer, and what changed because of it (26 Nov)
+
+The rubric: "A blocker may be waived only by a second reviewer, who records why." The reviewer's record is `second-review.md`. This
+section is the author's side of it: what was waived and on what evidence, what is not known, what reopens it, and the changes that
+review required. **Nothing in the system's CSS, markup or scripts changed**: `src/`, `project/tokens.json`, `project/components/`,
+`dist/`, `bundle.css` and the compositions are as reviewed. Two tools, the corpus and the text changed.
+
+### The waiver
+
+- **What was waived.** B1 of `review.md`: at 400 px with a coarse pointer a reload often came back at the wrong scroll position, with
+  no layout shift (Narrow and zoom, blocker: "reloaded scrolled to each chart … and landing where it was"). It is the "intermittent
+  landing miss" this response left open under B1. It is waived, not withdrawn and not fixed.
+- **By whom.** The second reviewer, on 26 Nov, who wrote neither the system nor `review.md`. Not the author, and not the first
+  reviewer. Only B1 was reviewed again. `review.md` says that with B1 settled by a fix or a recorded waiver v9 can be approved; that
+  verdict is the first reviewer's and is not restated here as an approval.
+- **On what evidence.** All four are the second reviewer's measurements on this machine (the E numbers are that file's):
+  1. *The outgoing document says so itself.* Playwright's `hasTouch` makes the pointer coarse by DevTools touch emulation. Between its
+     `beforeunload` and its `pagehide`, the document a reload is replacing reads pointer coarse, height 9,659, scroll 8,859, and then
+     pointer **fine**, height 9,124, scroll 8,324. The reload comes back at 8,324: the "535 px short" is the page's coarse height less
+     its fine height. 8 of 8 touch-scrolled reloads and 9 of 9 script-scrolled ones (E4).
+  2. *The reloaded document plays no part.* Answered with a plain 30,000 px page, the reload is restored to the same wrong offset in
+     10 of 12 (E3).
+  3. *A page that is not viz does the same.* 24 blocks and one `@media (pointer: coarse)` rule: 8 of 8 with a recorder at `pagehide`,
+     7 of 16 without; without the rule, 0 of 8 (E6, image `02`, appendix A).
+  4. *With a pointer that stays coarse, the system's pages land where they were.* The pointer made coarse in Blink by a command-line
+     switch, no touch emulation, same pages, same coarse layout, same drags: **0 of 204** reloads elsewhere (E7, E10).
+- **What this response had wrong about it.** "Cause not found" (it was findable: the outgoing document, which I never looked at). The
+  rate, "three in about 330 reloads" (`review.md`, m2: 4 of 29 on a first pass, 22 of 34 after a touch scroll; the second review: from
+  0 of 12 to 9 of 9 on one page, depending on what else the outgoing document is doing). "The page does not move under the person; the
+  browser restores to the wrong place" was right as far as it went. The spike's "0 of 36 after a synthetic gesture" was void and its
+  reading that the fling matters was wrong (`spikes/s12-reload-on-a-phone/README.md`, corrected).
+- **What is NOT known.**
+  - **No real phone was tested**, by the author, by either reviewer or by anyone. The spike's pages are still up for that test and the
+    test has not been run.
+  - **The stable coarse pointer is a command-line switch on desktop Chromium standing in for a phone.** It is not a phone. That a
+    phone's pointer type does not change during a navigation is the second reviewer's training knowledge, not a measurement.
+  - Only Chromium was tried (the headless shell 157.0.8103.78, and full Chromium 153 headless and in a window, by the second
+    reviewer). Not Firefox, not WebKit, no other version. Chromium's source was not read; one search found no filed issue.
+  - Not explained, by the second reviewer's own list: what decides whether the outgoing document is laid out again before it goes
+    (which is what makes the rate vary); why an animation-frame loop in it lowers the rate; why the system's page passes through
+    8,638 before settling at 8,324; why the outgoing page's fine-pointer height depends on how it was scrolled.
+  - Why the browser marks the layout shifts of the first half second of a load as following input under `isMobile` (below).
+- **What reopens B1.** Either of two things:
+  1. **A reproduction on a real phone**: the test in `spikes/s12-reload-on-a-phone/README.md`, on the pages that spike has live. A
+     reproduction is coming back on different content, hundreds of pixels away. A difference of about the height of the browser's
+     address bar at the very end of a page is not one (the second reviewer's note; training knowledge, not measured).
+  2. **A reload landing elsewhere here with the pointer coarse and no touch emulation**: the audit's reload pass, as changed below,
+     failing on landing. (The second review adds: or someone showing a real device whose pointer type changes as a page navigates.)
+
+### What the second review required of the author, and what was done
+
+| Required | Done | Where |
+|---|---|---|
+| The audit's reload pass makes its 400 px pointer coarse in Blink, not by touch emulation, with a guard (its recommendation 1, appendix B) | Yes | `tools/audit.mjs`: for the pass's 400 px layout the first browser is closed and one is launched with `--blink-settings=primaryPointerType=2,availablePointerTypes=2,primaryHoverType=1,availableHoverTypes=1`; contexts with `isMobile` and without `hasTouch`; a new finding kind, `pointer`, if `(pointer: coarse)` does not match on the page as opened, on the page served without script, or on the reloaded page. One browser at a time. Every other pass keeps touch emulation |
+| The same pass counts every layout-shift entry, marked or not (recommendation 2) | Yes | `tools/audit.mjs`: the jump's and the reload's entries are summed apart, unmarked and marked `hadRecentInput`, printed in two columns each and in the `--json` rows (`jumpShiftMarked`, `reloadShiftMarked`); the pass fails when their **sum** is 0.05 or more, which fails on either alone and also when only the two together reach the budget. A failing reload prints its entries |
+| Check `tools/speed.mjs` for the same | Yes: it only recorded them. Changed | Below |
+| Keep the text true: how the pass's pointer is made, and why | Yes | `project/README.md` (Responsiveness and feedback), `README.md` (the tools table, review history, "Not done yet"), the header of `tools/audit.mjs` |
+| The two changes and T3.audit's survival at 400 px in the mutants' record | Yes | B1, "What guards it now" (corrected in place), "Mutant record" below, `tools/mutants-corpus.mjs` (T3.audit's description; T8.audit and T9.audit added) |
+| The spike's README: the synthetic gesture, the fling, this result | Yes | `spikes/s12-reload-on-a-phone/README.md`. The Worker is not deleted: the pages stay up until the owner has run the phone test or decided not to |
+| The waiver and its residual uncertainty recorded here and in the pull request | Here: this section. The pull request is the lead's to write | — |
+
+### The reload pass after the change
+
+Measured here, 26 Nov, on the tree: Playwright 1.63.0, `chromium_headless_shell` 157.0.8103.78 (what the audit uses), 4 cores shared
+with another session's browser jobs. "Elsewhere" is more than 1 px. Layout shift is judged at any load.
+
+| Run | Reloads | Landed elsewhere, 1500 px | Landed elsewhere, 400 px coarse | Largest shift, unmarked | Largest shift, marked | Findings | Exit | Load |
+|---|---|---|---|---|---|---|---|---|
+| `node tools/audit.mjs --reload-only`, first | 106 on 9 pages | 0 of 53 | **0 of 53** | 0.0000 | 0.0000 | 0 | 0 | 1.3 to 2.4 |
+| the same, second | 106 on 9 pages | 0 of 53 | **0 of 53** | 0.0000 | 0.0000 | 0 | 0 | 2.4 to 1.7 |
+| `npm run audit`, the full audit (its reload pass) | 106 on 9 pages | 0 of 53 | **0 of 53** | 0.0000 | 0.0000 | 0 on system pages | 0 | 1.3 to 2.2 |
+
+The largest shift is over the reload and the jump, at both layouts; no chart moved after a jump in any run. `(pointer: coarse)`
+matched on every page of the 400 px layout (no `pointer` finding). This reproduces the second reviewer's 0 of 53, exit 0, twice
+(their E10). With every entry counted, every sum is exactly 0 in both runs: v9's reloaded documents have no layout-shift entry, marked
+or not. One reload in the first run, the claims composition at 1500 px, landed 1 px away, which is within the tolerance; every
+other one landed at 0 px.
+`evidence/second-review-reload-two-runs.txt`, `second-review-reload-run1.json`, `-run2.json`, `second-review-audit-full.txt`.
+
+**The full audit**, run as the README says (`npm run audit`): 56 pages × 14 configurations, the reduced-motion pass, then the reload
+pass; 12.4 min. **System pages: 0 findings; exit 0.** Flow screens (read only, reported apart): 122 findings, the same count and
+the same three kinds as in "Final runs" above (`press`, `fold-scroll`, `sentence-link`). The two full audits of v9 before this one
+each failed on one landing miss at 400 px coarse; this is the first to pass, and it passes because the pass no longer measures the
+emulator, not because a limit was put on a rate.
+
+Three passes over every chart is 159 reloads at 400 px with the pointer coarse and no touch emulation, 0 elsewhere, and 159 at
+1500 px, 0 elsewhere. That is the same finding as the second reviewer's 0 of 204, by the same means, and it does not stand in for a
+phone.
+
+### Teeth: a shift early in a reload, the shipped pass against the changed one
+
+On a scratch copy, never the tree: the Chart preview, on a reload only, adds a quarter of the window at the top of the page 300 ms
+after its script runs and takes it away 150 ms later, scroll anchoring off (the second reviewer's 0.25 shift at 300 ms is the model;
+taking it away again means the page ends where it began, so nothing but the layout shift can show it). Each pass run twice with
+`--reload-only dist/preview/Chart.html`: every chart, 10 reloads a layout. Measured here.
+
+| Pass | 1500 px | 400 px coarse |
+|---|---|---|
+| As shipped (touch emulation; unmarked entries only) | 0.1922 on 10 of 10, both runs: 10 findings each | **0.0000 on 10 of 10, both runs: 0 findings in 20 reloads** |
+| Changed (coarse in Blink; every entry) | 0.1922 unmarked on 10 of 10, both runs: 10 findings each | **0.0000 unmarked and 0.4400 marked on 10 of 10, both runs: 10 findings each, exit 1** |
+
+So at 400 px the shipped pass read 0.0000 for a shift of 0.44 and passed it; the changed pass fails it on every reload. No reload
+landed elsewhere in these 80. `evidence/second-review-teeth-late-shift.txt`.
+
+**How blind the 400 px figures were.** A page that is not viz, 200 px added at its top N ms after its script runs, jumped to 3,000 and
+reloaded, two tries each (`evidence/second-review-mark-probe.txt`, with the probe): with `isMobile`, whether the pointer is coarse by
+touch emulation or in Blink, the entry is marked `hadRecentInput` at 100, 300 and 450 ms (read at 110 to 462 ms after the reload
+began) and unmarked at 600 and 1,000 ms (610 ms on). At 1500 px fine, at 400 px fine, and at 400 px coarse in Blink without
+`isMobile`, it is never marked. So under `isMobile` any sum of unmarked entries is blind for about the first half second of a load.
+Why the browser marks them was not established.
+
+### `tools/speed.mjs`
+
+**What it did.** It summed unmarked entries into the figure it judged and kept the marked ones in a variable (`shiftAfterInput`) that
+it never printed, wrote out or judged. Its phone layout uses `isMobile`, so both of its layout-shift measures were blind for the first
+half second of a load, which is where a load's shifts are.
+
+**What the budget requires.** "Layout shift stays under 0.05 at both layouts, including a page that loads already scrolled to a chart."
+A shift that follows no input is a layout shift whatever the browser marks, so the marked entries of a load have to be judged. The
+exclusion that is right, a shift within 500 ms of the harness's own press or tap, is kept.
+
+**What it does now.**
+- `load-shift` (a load opened scrolled to a region, given no input): every entry counts.
+- `shift` (the whole run): every unmarked entry, and every marked entry from **before the harness's first input** as the page
+  receives it. Marked entries after that are left out, as before.
+- Under the table it prints, per row, how much of the judged figure came from marked entries and how much was left out after input;
+  both go to `--out` (`markedCounted`, `markedAfterInputLeftOut`).
+- The phone layout keeps touch emulation: it needs touch events, and it measures no document across a navigation.
+
+**Teeth**, on a scratch copy whose fixture page adds a quarter of the window at its top 300 ms after its last script runs; the shipped
+scenarios with only their layout-shift rows, 3 runs each, CPU 4x, Fast 4G. Measured here:
+
+| Harness | Phone layout, six rows | Desktop layout, two rows |
+|---|---|---|
+| As shipped | **0.0000 on all six, "within", exit 0** | 0.1566 and 0.1565, over, exit 1 |
+| Changed | **0.2500 to 0.2688 on all six, over, exit 1** | 0.1566 and 0.1565, over, exit 1 |
+
+**v9 with the changed harness**, the tree's fixture page (a floor, not the application), the shipped scenarios whole. 5 runs on the
+phone and 3 on the desktop, not the 20 the budgets ask for: only the layout-shift rows are reported from them (judged at any load).
+
+| Layout shift, p75 = median = worst | Budget | Phone, 5 runs | Desktop, 3 runs |
+|---|---|---|---|
+| Load and run | 0.05 | **0.0015**, all of it from marked entries before any input (0.0008 more left out after input) | 0.0004 (none marked before input; 0.0001 left out after) |
+| Loaded scrolled to CPU by pod | 0.05 | 0.0000 | 0.0002 |
+| Loaded scrolled to Latency by route | 0.05 | 0.0001, marked | — |
+| Loaded scrolled to Request rate | 0.05 | 0.0000 | — |
+| Loaded scrolled to CPU by pod, every namespace | 0.05 | 0.0000 | — |
+| Loaded scrolled to the backtest | 0.05 | **0.0188**, all of it marked | — |
+
+All within the budget. **But the phone column of the Speed section above, "0.0000 everywhere", was partly blind and is not what the
+page does**: opened scrolled to the backtest, the fixture shifts 0.0188 in its first half second, in every one of 5 runs. I did not
+look for what moves, v8's fixture was not measured this way, and the app's measurements, if they filter the same way, have the same
+blind spot.
+
+**A timing row that was over, said plainly.** In the 3-run desktop sample "Change theme (to dark)" came out at 101 ms against 100 (the
+p75 of three samples is the largest of them; median 96; load 1.6, judged), so that run exited 1. That row alone, 20 samples with each
+harness in alternating blocks of 10, on a clean copy whose `dist/` is byte for byte the tree's:
+
+| Change theme (to dark), desktop, 20 samples | Budget | p75 | Median | Worst | Samples over 100 ms | Load (median, range) | |
+|---|---|---|---|---|---|---|---|
+| The harness as shipped | 100 | 97 ms | 87 | 129 | 5 | 1.9 (1.1 to 2.4) | judged, within |
+| The changed harness | 100 | 89 ms | 82 | 169 | 5 | 1.8 (1.6 to 2.0) | judged, within |
+
+Within, and the harness change does not move it beyond its spread. The margin is thinner than the 81 and 72 ms of the Speed section
+and the first reviewer's 82, on a page that is byte for byte the same. I do not know why; another session's timing runs shared the
+machine, and the calibration task took 331 to 373 ms (238 to 300 in the Speed section, 330 to 375 for the first reviewer). The
+phone's 5-run sample had it at 88 ms. `evidence/second-review-speed.txt`.
+
+### Mutant record
+
+The corpus is now **178**: T8.audit and T9.audit were added for the two changes.
+
+| Mutant | Broken | Killed by | Where it survives |
+|---|---|---|---|
+| **T3.audit** | Four charts of the Chart preview with no reservation in their markup | **`reserve` only** (the served page's reservation, no script), at both layouts: 6 of 6 runs here, and in the corpus runs | **The reload pass's own measures, layout shift and landing, at both layouts, in some runs.** Changed pass: a reload finding at 400 px in 2 of 4 runs and at 1500 px in 2 of 4. Shipped pass: at 400 px in 0 of 2 runs (its shifts are marked there and were not counted), at 1500 px in 2 of 2. No landing miss in 88 reloads |
+| **T8.audit** (new) | On a reload of the Chart preview, a quarter of the window added at the top 300 ms after its script runs and taken away 150 ms later | `reload-shift` at 400 px coarse, by the marked entries (0.4400), and at 1500 px by the unmarked ones (0.1922). It expects the 400 px finding | Run against the audit as shipped, by the corpus runner on a scratch tree: **not as expected**: caught at 1500 px only, no finding at 400 px. That is the survivor the change removes |
+| **T9.audit** (new) | The switch that makes the reload pass's 400 px pointer coarse removed from `tools/audit.mjs`, as if Chromium had dropped it | `pointer`: "the pointer is not coarse at this layout" | Nowhere found. Without the guard nothing would fail: the pass would read a fine-pointer layout and call it the phone's |
+
+**Re-run after the change**: the 48 mutants that run `tools/audit.mjs`, each on a fresh copy outside the tree
+(`node tools/mutants.mjs <scratch> --only …`, 10.4 min, load 1.6 to 1.1): **48 of 48 as expected, 48 caught, 0 survived** (Y 8, Z 6,
+W 8, U 12, Q 4, T 6, A 4). `evidence/second-review-mutants-audit.txt`. `npm test`: 199 tests, **139 pass, 0 fail**, 60 skipped (they need a browser; 48 of them are the 48 above), 65 s. **Not re-run:** the 12 mutants that
+need `check.mjs`'s rendered audit, and the corpus as one run; nothing they exercise changed.
+
+A survivor, reported: **T3.audit still survives the reload pass's reloads in about half the runs at either layout.** It is killed
+because `reserve` reads the served page, not because a reload shows it.
+
+### Statements above that were false or partly blind
+
+| Where | Statement | What holds |
+|---|---|---|
+| The findings table, B1; "Over every load" | v9 "0.0000 on every load" at 400 px coarse | Those passes summed unmarked entries only, which under `isMobile` cannot see the first half second. With every entry counted it is still 0.0000, unmarked and marked, on 53 of 53 at 400 px in each run above. The claim holds, and is now measured |
+| B1, "Not fixed, open" | "cause not found"; "three in about 330 reloads" | The cause is the measuring tool (second review). The rate under touch emulation is anything from 0 of 12 to 9 of 9 |
+| B1, "What guards it now"; "Final runs" | T3.audit "first caught by the reloads, landing 1,178 px away" | Not a catch: the emulator's landing miss. Corrected in place |
+| Speed, the phone table | "Layout shift … 0.0000 everywhere" | 0.0015 on load and run and 0.0188 loaded scrolled to the backtest, in marked entries; within 0.05 |
+| "How it was checked", `tools/shots.mjs` | The `reload` step's printed shift and its coarse images | The step uses touch emulation and sums unmarked entries: its 400 px coarse shift figures are blind for the first half second, and a coarse capture of a reload can show the emulator's miss (one capture landed 369 px short, which fits it: `evidence/missed-reload-memory-400-coarse-light.png`). Not changed here |
+
+### Final runs after these changes
+
+All measured here on 26 Nov, on the tree as it is now, one job at a time.
+
+| Run | Result | Exit |
+|---|---|---|
+| `npm run audit` (the full audit) | System pages: 0 findings. Flow screens: 122, as before, reported apart. Reload pass: 0 of 53 elsewhere at each layout, every shift 0.0000 | **0** |
+| `node tools/audit.mjs --reload-only`, twice | 0 findings; 0 of 53 elsewhere at each layout; every shift 0.0000, unmarked and marked | **0, 0** |
+| `node tools/check.mjs` (with its rendered audit) | 873 of 873 checks; 30 previews in both themes at rest, hover, press and a finger's press, 0 failures; 11 charts reserved = drawn at 1200, 400 and 320 px; 0 literal values | **0** |
+| `node tools/check.mjs --no-render project/components reviews/system-v9/compositions` | 759 of 759; 0 literal values in 43 files | **0** |
+| `node tools/check.mjs --no-render tools/speed.mjs` | 0 literal values | **0** |
+| `node tools/check.mjs --no-render tools/audit.mjs` | 13 literal values, the same 13 as before the change (colours and `0px` the audit sets or compares in order to measure) | 1, as before |
+| `node tools/check.mjs --no-render tools/mutants-corpus.mjs` | 33 literal values; 31 before. The corpus is a file of planted violations; the two new ones are T8.audit's `25vh` | 1, as before |
+| `npm test` | 199 tests: 139 pass, 0 fail, 60 skipped (need a browser) | **0** |
+| `node tools/mutants.mjs <scratch> --only` the 48 that run the audit | 48 of 48 as expected | **0** |
+| `node tools/speed.mjs fixtures/speed-phone.json --runs 5` | Every row within, layout shift included (0.0188 at most); 5 runs, so the timing rows are not the budgets' 20 | **0** |
+| `node tools/speed.mjs fixtures/speed.json --runs 3` | Layout shift within (0.0004, 0.0002). **"Change theme (to dark)" over: 101 ms as the p75 of 3 samples.** At 20 samples: 89 ms, within (above) | **1** |
+
+The lint is a gate for the component CSS, the previews, the compositions and application code; it is run on the tools here so that
+what it says about the changed files is on record. `evidence/second-review-audit-full.txt`, `second-review-check.txt`,
+`second-review-npm-test.txt`.
+
+### Not done
+
+- **A real phone.** The one check the first reviewer asked for. The spike's Worker is still deployed for it and was not touched.
+- **`tools/shots.mjs`'s `reload` step** still makes its coarse pointer by touch emulation and sums unmarked entries (the second
+  review's recommendation 3 covers it). It was not edited: another change was running it during this session. It should get the
+  audit's pointer and count before a coarse reload is imaged again.
+- **`review.md`'s two minors** (m1: the legend grows 45 px when a refresh makes "Colour the eight largest" appear; m2: the rate) are
+  not addressed by this change. m2 is answered by the second review.
+- **What moves 0.0188** when the fixture opens scrolled to the backtest on the phone layout: not looked for.
+- The full speed scenarios at 20 runs were not re-run; the corpus was not re-run as one run; the reference and the published design
+  page were not republished; the waiver is not yet in a pull request (the lead's).
+- Not checked, as before: Firefox and WebKit, a screen reader by ear, real touch hardware.
+
+### Files changed in this step
+
+- `tools/audit.mjs` (the reload pass: its pointer, the guard, every entry counted, the table, a count by layout, the header).
+- `tools/speed.mjs` (marked entries given no input are judged and reported; the header).
+- `tools/mutants-corpus.mjs` (T3.audit's description and note; T8.audit, T9.audit; the header).
+- `project/README.md` (Responsiveness and feedback), `README.md` (tools, corpus count, review history, "Not done yet").
+- `reviews/system-v9/response.md` (this section; four corrections marked in place; the status line), `evidence/second-review-*`.
+- `spikes/s12-reload-on-a-phone/README.md`.
+- Not edited: `review.md`, `second-review.md`, `src/`, `project/tokens.json`, `project/components/`, `dist/`, `tools/shots.mjs`,
+  `app/`, `reviews/app-v9/`.
+
+### Housekeeping for this step
+
+- Every mutant and every deliberate breakage ran on copies under the session scratchpad (`ds-v9-waiver/`); the tree was never
+  mutated. The mutant runner's copies were deleted by the runner.
+- One browser job of mine at a time. Another session was running browsers for the app throughout, which is the load printed above;
+  its timing runs and mine shared the machine.
+- Each tool starts its own local server and closes it; none is left running, and no browser of mine is running.
+- Git: read-only commands (`status`, `diff`, `log`, `show` of the two tools as committed, to have the shipped versions). Nothing was
+  committed, pushed, stashed or reset. No Cloudflare resource was touched; nothing was deployed or fetched from the spike.

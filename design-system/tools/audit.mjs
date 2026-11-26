@@ -5,7 +5,8 @@
 // only and reported apart, the flow
 // screens (flows/dist/). Configurations: a fine pointer at 320, 400, 560, 640, 800, 1024, 1280 and 1500 px; a coarse pointer with touch at
 // 320, 400 and 768 px; 200% zoom of 1280, 1440 and 1500 px windows (640, 720 and 750 CSS px at twice the scale). --quick: 320, 400 coarse,
-// 720 at 200% and 1500.
+// 720 at 200% and 1500. The coarse pointer is DevTools touch emulation (hasTouch) everywhere but in the reload pass, where it is made coarse
+// in Blink by a command-line switch, with no touch emulation, because touch emulation does not survive a navigation (reload-shift, below).
 // Each page in each configuration fails on:
 //   overflow      the page scrolls sideways (the elements that stick out are named);
 //   escape        something absolutely placed inside a scrolling or clipping box whose containing block is outside it, so the box cannot
@@ -33,7 +34,10 @@
 //                 while scrolled to each chart (--quick: the middle one and the last), and jumped to each after load: a layout shift of
 //                 0.05 or more, or a chart that does not land where it was (v9; the v8 review's B1); and, before the reloads, each
 //                 chart's reservation in the page as served with no script run against what it draws (reserve). --reload-only runs this alone;
-//                 --no-reload leaves it out.
+//                 --no-reload leaves it out. Every layout-shift entry counts, those the browser marks hadRecentInput included and reported
+//                 apart: the pass gives no input (v9, second review);
+//   pointer       in the reload pass, the 400 px layout's pointer not coarse: it is made coarse in Blink by a switch (--blink-settings),
+//                 not by touch emulation, and the switch is a Chromium internal that may change (v9, second review).
 // The guards (each fix the reviews asked for, as rendered; in both themes, at 1500 px with a fine pointer and at 400 px with a coarse one,
 // hit areas at every coarse width; v7 review, M3):
 //   focus         a focused control's ring: stroke wide in the theme's focus, offset by stroke (or drawn inside where its box clips, and then
@@ -505,7 +509,7 @@ function stillness() {
 const types = { '.html': 'text/html; charset=utf-8', '.json': 'application/json', '.css': 'text/css', '.js': 'text/javascript', '.woff2': 'font/woff2', '.png': 'image/png', '.svg': 'image/svg+xml' }
 const server = createServer((req, res) => { const p = join(root, decodeURIComponent(new URL(req.url, 'http://x').pathname)); if (!p.startsWith(root) || !existsSync(p) || statSync(p).isDirectory()) { res.writeHead(404); res.end(); return } res.writeHead(200, { 'content-type': types[extname(p)] ?? 'application/octet-stream' }); res.end(readFileSync(p)) })
 const port = await new Promise((ok) => server.listen(0, '127.0.0.1', () => ok(server.address().port))), urlOf = (p) => `http://127.0.0.1:${port}/${relative(root, p)}`
-const browser = await chromium.launch(), results = [], started = Date.now()
+let browser = await chromium.launch(); const results = [], started = Date.now()
 for (const c of reloadOnly ? [] : configs) {
   const ctx = await browser.newContext({ viewport: { width: c.zoom ? c.w : c.w, height: 900 }, deviceScaleFactor: c.zoom ?? 1, ...(c.coarse ? { hasTouch: true, isMobile: true } : {}) })
   const page = await ctx.newPage(); let errors = []
@@ -551,21 +555,36 @@ for (const rm of reloadOnly ? [] : [{ w: 1500 }, { w: 400, coarse: true }]) { //
 // shift and how far the chart moves after the jump are read 500 ms later; then the page is reloaded, the browser restores the position,
 // and 2 s after the load (as the review read it) the reload's layout shift and where the chart landed are read. Fails at a layout shift of 0.05 or more (the
 // rubric's Narrow and zoom row: judged at any load), or a chart that does not land where it was (more than 1 px).
-const reloads = []
+// The pointer of this pass's 400 px layout (v9, second review, B1) is made coarse in Blink itself, by a command-line switch, in a browser
+// of its own, with isMobile for the phone's viewport and WITHOUT hasTouch. Playwright's hasTouch makes the pointer coarse by DevTools touch
+// emulation, and a document that is being replaced by a reload loses that emulation between its beforeunload and its pagehide: its pointer
+// turns fine, every @media (pointer: coarse) rule stops applying, the page gets shorter, and the browser records and restores the scroll
+// position of that shorter page. The reload then "lands elsewhere" at random on any page that sizes things by pointer type, which is the
+// emulator and not the page (reviews/system-v9/second-review.md). A phone's pointer is a fact about the device that no navigation changes;
+// the switch stands in for that. It is a Chromium internal and may change, so the pass fails (pointer) if (pointer: coarse) does not match.
+// Every other pass keeps touch emulation: they need touch events, and none of them measures a document across a navigation.
+// Layout shift (same review): every layout-shift entry counts here, also those the browser marks hadRecentInput. This pass gives no input,
+// so no entry can follow one; under isMobile the browser marks the shifts of the first moments of a load that way, and summing only the
+// unmarked ones read 0.0000 for a quarter-viewport shift 300 ms after a reload. Marked and unmarked are reported apart and judged together.
+const COARSE_IN_BLINK = '--blink-settings=primaryPointerType=2,availablePointerTypes=2,primaryHoverType=1,availableHoverTypes=1'
+const isCoarse = (pg) => pg.evaluate(() => matchMedia('(pointer: coarse)').matches), notCoarse = 'the pointer is not coarse at this layout: the switch that makes it so (--blink-settings, a Chromium internal) did not take effect, so nothing read here is the phone layout'
+const reloads = [], reloadBrowsers = []
 for (const L of reloadPass ? [{ w: 1500 }, { w: 400, coarse: true }] : []) {
-  const ctx = await browser.newContext({ viewport: { width: L.w, height: 900 }, ...(L.coarse ? { hasTouch: true, isMobile: true } : {}) })
+  if (L.coarse) { await browser.close(); browser = await chromium.launch({ args: [COARSE_IN_BLINK] }) } // one browser at a time
+  reloadBrowsers.push(`${L.w}${L.coarse ? ' coarse (coarse in Blink, isMobile, no touch emulation)' : ''}: Chromium ${browser.version()}`)
+  const ctx = await browser.newContext({ viewport: { width: L.w, height: 900 }, ...(L.coarse ? { isMobile: true } : {}) })
   await ctx.addInitScript(() => { const z = (window.__vzShift = []); try { new PerformanceObserver((l) => { for (const e of l.getEntries()) z.push([e.startTime, e.value, e.hadRecentInput]) }).observe({ type: 'layout-shift', buffered: true }) } catch {}
     const y = (window.__vzY = []), tick = () => { const v = [Math.round(performance.now()), Math.round(scrollY), document.documentElement.scrollHeight]; if (!y.length || v[1] !== y.at(-1)[1] || v[2] !== y.at(-1)[2]) y.push(v); if (performance.now() < 5000) requestAnimationFrame(tick) }; requestAnimationFrame(tick) }) // the scroll position and page height, frame by frame, for a failure's message
   let page = await ctx.newPage(); const settle = async (p, ms) => { await page.evaluate(() => document.fonts.ready); await page.waitForTimeout(/fixture/.test(p) ? 600 : 0); await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))); await page.waitForTimeout(ms) }
-  const lay = `${L.w}${L.coarse ? ' coarse' : ''}`, noJs = await browser.newContext({ javaScriptEnabled: false, viewport: { width: L.w, height: 900 }, ...(L.coarse ? { hasTouch: true, isMobile: true } : {}) })
+  const lay = `${L.w}${L.coarse ? ' coarse' : ''}`, noJs = await browser.newContext({ javaScriptEnabled: false, viewport: { width: L.w, height: 900 }, ...(L.coarse ? { isMobile: true } : {}) })
   for (const p of pages.filter((x) => !/\/flows\//.test(x))) {
-    let n = 0, drawn = []; try { await page.goto(urlOf(p), { waitUntil: 'load', timeout: 60000 }); await settle(p, 200); n = await page.evaluate(() => [...document.querySelectorAll('.vz-chart')].filter((c) => c.getClientRects().length).length)
+    let n = 0, drawn = []; try { await page.goto(urlOf(p), { waitUntil: 'load', timeout: 60000 }); await settle(p, 200); if (L.coarse && !(await isCoarse(page))) results.push({ page: p, config: lay, kind: 'pointer', msg: notCoarse }); n = await page.evaluate(() => [...document.querySelectorAll('.vz-chart')].filter((c) => c.getClientRects().length).length)
       drawn = await page.evaluate(() => [...document.querySelectorAll('.vz-chart')].map((c) => { if (!c.getClientRects().length) return null; c.style.setProperty('content-visibility', 'visible', 'important'); c.style.setProperty('min-height', '0px', 'important'); const h = c.getBoundingClientRect().height; c.style.removeProperty('min-height'); c.style.removeProperty('content-visibility'); return [h, (c.closest('.vz-panel')?.querySelector('.vz-panel-title')?.textContent ?? c.id ?? '').trim().replace(/\s+/g, ' ').slice(0, 48)] })) } catch { continue }
     if (!n) continue
     // the first frame of a load can come before any script has run (a parser-blocking script loading, a slow link): every chart's
     // reservation in the page as served, with no script run, is what it draws. Deterministic, where the reloads below depend on when the
     // browser draws that frame (v9: T3.audit survived one run of the reload pass and was caught in another)
-    { const bare = await noJs.newPage(); try { await bare.goto(urlOf(p), { waitUntil: 'load', timeout: 60000 }); const served = await bare.evaluate(() => [...document.querySelectorAll('.vz-chart')].map((c) => parseFloat(getComputedStyle(c).minHeight) || 0))
+    { const bare = await noJs.newPage(); try { await bare.goto(urlOf(p), { waitUntil: 'load', timeout: 60000 }); if (L.coarse && !(await isCoarse(bare))) results.push({ page: p, config: lay, kind: 'pointer', msg: `the page without script: ${notCoarse}` }); const served = await bare.evaluate(() => [...document.querySelectorAll('.vz-chart')].map((c) => parseFloat(getComputedStyle(c).minHeight) || 0))
         drawn.forEach((d, k) => { if (d && served.length === drawn.length && Math.abs(served[k] - d[0]) > 1) results.push({ page: p, config: lay, kind: 'reserve', msg: `the chart "${d[1]}" reserves ${Math.round(served[k] * 10) / 10} px in the page as served, before any script, and draws ${Math.round(d[0] * 10) / 10} px: a load's first frame is the wrong height, and a reload can land elsewhere` }) })
       } catch (e) { results.push({ page: p, config: lay, kind: 'load', msg: `reload pass, the page without script: ${e.message.split('\n')[0]}` }) } await bare.close() }
     for (const i of quick ? [...new Set([Math.floor(n / 2), n - 1])] : [...Array(n).keys()]) {
@@ -575,12 +594,14 @@ for (const L of reloadPass ? [{ w: 1500 }, { w: 400, coarse: true }] : []) {
         const jump = await page.evaluate((i) => { const c = [...document.querySelectorAll('.vz-chart')].filter((x) => x.getClientRects().length)[i], t0 = performance.now(); scrollTo(0, c.getBoundingClientRect().top + scrollY); window.__vzT = [t0, c.getBoundingClientRect().top]
           return (c.closest('.vz-panel')?.querySelector('.vz-panel-title')?.textContent ?? c.id ?? `chart ${i + 1}`).trim().replace(/\s+/g, ' ').slice(0, 48) }, i)
         await page.waitForTimeout(500)
-        const j = await page.evaluate((i) => { const c = [...document.querySelectorAll('.vz-chart')].filter((x) => x.getClientRects().length)[i]; return { shift: window.__vzShift.filter(([t, , input]) => t >= window.__vzT[0] && !input).reduce((a, [, v]) => a + v, 0), moved: c.getBoundingClientRect().top - window.__vzT[1], top: c.getBoundingClientRect().top } }, i)
+        const j = await page.evaluate((i) => { const c = [...document.querySelectorAll('.vz-chart')].filter((x) => x.getClientRects().length)[i]; const z = window.__vzShift.filter(([t]) => t >= window.__vzT[0]), sum = (marked) => z.filter(([, , input]) => !!input === marked).reduce((a, [, v]) => a + v, 0); return { shift: sum(false), marked: sum(true), moved: c.getBoundingClientRect().top - window.__vzT[1], top: c.getBoundingClientRect().top } }, i)
         await page.reload({ waitUntil: 'load', timeout: 60000 }); await settle(p, 2000)
-        const r = await page.evaluate((i) => { const c = [...document.querySelectorAll('.vz-chart')].filter((x) => x.getClientRects().length)[i]; return { shift: window.__vzShift.filter(([, , input]) => !input).reduce((a, [, v]) => a + v, 0), top: c.getBoundingClientRect().top, y: window.__vzY.slice(0, 8).map((v) => v.join('/')).join(' ') } }, i)
-        const row = { page: p, layout: lay, chart: i + 1, of: n, title: jump, jumpShift: j.shift, jumpMoved: j.moved, reloadShift: r.shift, landed: r.top - j.top }; reloads.push(row)
-        if (j.shift >= 0.05 || Math.abs(j.moved) > 1) results.push({ page: p, config: lay, kind: 'reload-shift', msg: `jumping to chart ${i + 1} of ${n} ("${jump}") shifts the page ${j.shift.toFixed(4)} and the chart moves ${Math.round(j.moved)} px after the jump` })
-        if (r.shift >= 0.05 || Math.abs(row.landed) > 1) results.push({ page: p, config: lay, kind: 'reload-shift', msg: `reloaded while scrolled to chart ${i + 1} of ${n} ("${jump}"): layout shift ${r.shift.toFixed(4)}, and the chart lands ${Math.round(row.landed)} px from where it was (ms/scroll/height by frame: ${r.y})` })
+        const r = await page.evaluate((i) => { const c = [...document.querySelectorAll('.vz-chart')].filter((x) => x.getClientRects().length)[i]; const z = window.__vzShift, sum = (marked) => z.filter(([, , input]) => !!input === marked).reduce((a, [, v]) => a + v, 0); return { shift: sum(false), marked: sum(true), entries: z.map(([t, v, input]) => `${Math.round(t)} ms ${v.toFixed(4)}${input ? ' marked' : ''}`).join('; '), coarse: matchMedia('(pointer: coarse)').matches, top: c.getBoundingClientRect().top, y: window.__vzY.slice(0, 8).map((v) => v.join('/')).join(' ') } }, i)
+        if (L.coarse && !r.coarse) results.push({ page: p, config: lay, kind: 'pointer', msg: `the reloaded page: ${notCoarse}` })
+        const row = { page: p, layout: lay, chart: i + 1, of: n, title: jump, jumpShift: j.shift, jumpShiftMarked: j.marked, jumpMoved: j.moved, reloadShift: r.shift, reloadShiftMarked: r.marked, landed: r.top - j.top }; reloads.push(row)
+        const also = (m) => (m ? `, and ${m.toFixed(4)} more in entries the browser marks as following input (this pass gives none: they count)` : '')
+        if (j.shift + j.marked >= 0.05 || Math.abs(j.moved) > 1) results.push({ page: p, config: lay, kind: 'reload-shift', msg: `jumping to chart ${i + 1} of ${n} ("${jump}") shifts the page ${j.shift.toFixed(4)}${also(j.marked)} and the chart moves ${Math.round(j.moved)} px after the jump` })
+        if (r.shift + r.marked >= 0.05 || Math.abs(row.landed) > 1) results.push({ page: p, config: lay, kind: 'reload-shift', msg: `reloaded while scrolled to chart ${i + 1} of ${n} ("${jump}"): layout shift ${r.shift.toFixed(4)}${also(r.marked)}, and the chart lands ${Math.round(row.landed)} px from where it was (layout-shift entries: ${r.entries || 'none'}; ms/scroll/height by frame: ${r.y})` })
       } catch (e) { results.push({ page: p, config: lay, kind: 'load', msg: `reload pass, chart ${i + 1}: ${e.message.split('\n')[0]}` }) }
     }
     process.stdout.write(`\rreload pass ${lay.padEnd(10)} ${relative(root, p).slice(-40).padEnd(40)} ${Math.round((Date.now() - started) / 1000)} s`)
@@ -588,8 +609,11 @@ for (const L of reloadPass ? [{ w: 1500 }, { w: 400, coarse: true }] : []) {
   await ctx.close(); await noJs.close()
 }
 await browser.close(); server.close()
-if (reloads.length) { console.log(`\n\nReload while scrolled to a chart, and a jump to it after load (${reloads.length} loads; fails at a layout shift of 0.05 or more, or a chart that moves or lands more than 1 px away):\n\n| Page | Layout | Chart | Jump: shift | Jump: moved, px | Reload: shift | Reload: landed, px |\n|---|---|---|---|---|---|---|`)
-  for (const r of reloads) console.log(`| ${relative(root, r.page)} | ${r.layout} | ${r.chart} of ${r.of}, ${r.title} | ${r.jumpShift.toFixed(4)} | ${Math.round(r.jumpMoved)} | ${r.reloadShift.toFixed(4)} | ${Math.round(r.landed)} |`) }
+if (reloads.length) { console.log(`\n\nReload while scrolled to a chart, and a jump to it after load (${reloads.length} loads; fails at a layout shift of 0.05 or more, every entry counted, or a chart that moves or lands more than 1 px away). "Marked" is the sum of the entries the browser marks hadRecentInput; the pass gives no input, so they count:\n\n| Page | Layout | Chart | Jump: shift | Jump: marked | Jump: moved, px | Reload: shift | Reload: marked | Reload: landed, px |\n|---|---|---|---|---|---|---|---|---|`)
+  for (const r of reloads) console.log(`| ${relative(root, r.page)} | ${r.layout} | ${r.chart} of ${r.of}, ${r.title} | ${r.jumpShift.toFixed(4)} | ${r.jumpShiftMarked.toFixed(4)} | ${Math.round(r.jumpMoved)} | ${r.reloadShift.toFixed(4)} | ${r.reloadShiftMarked.toFixed(4)} | ${Math.round(r.landed)} |`)
+  console.log(''); for (const lay of [...new Set(reloads.map((r) => r.layout))]) { const rs = reloads.filter((r) => r.layout === lay), max = (k) => Math.max(...rs.map((r) => r[k])).toFixed(4)
+    console.log(`${lay}: ${rs.length} reloads on ${new Set(rs.map((r) => r.page)).size} page(s); ${rs.filter((r) => Math.abs(r.landed) > 1).length} of ${rs.length} landed elsewhere (more than 1 px); ${rs.filter((r) => Math.abs(r.jumpMoved) > 1).length} moved after the jump; largest reload shift ${max('reloadShift')} unmarked and ${max('reloadShiftMarked')} marked; largest jump shift ${max('jumpShift')} unmarked and ${max('jumpShiftMarked')} marked`) }
+  console.log(`Browsers: ${reloadBrowsers.join('; ')}`) }
 for (const msg of stale) results.unshift({ page: join(root, 'dist'), config: 'build', kind: 'stale', msg })
 const rel = (p) => relative(root, p), flows = (r) => /\/flows\//.test(r.page)
 console.log(`\n\n${pages.length} pages x ${configs.length} configurations (${configs.map(label).join('; ')})`)
@@ -598,5 +622,5 @@ for (const group of [['System pages', (r) => !flows(r)], ['Flow screens (read on
   const byPage = {}; for (const r of rs) (byPage[rel(r.page)] ??= []).push(r)
   for (const [p, list] of Object.entries(byPage)) { console.log(`  ${p}`); const seen = new Set(); for (const r of list) { const k = r.kind + r.msg.replace(/\d+(\.\d+)?/g, '#'); if (seen.has(k)) continue; seen.add(k); console.log(`    ${r.kind.padEnd(13)} ${r.config.padEnd(15)} ${r.msg}${list.filter((x) => x.kind + x.msg.replace(/\d+(\.\d+)?/g, '#') === k).length > 1 ? `  (and at ${list.filter((x) => x.kind + x.msg.replace(/\d+(\.\d+)?/g, '#') === k).slice(1).map((x) => x.config).join(', ')})` : ''}`) } }
 }
-if (opt('--json')) writeFileSync(opt('--json'), JSON.stringify({ at: new Date().toISOString(), root, pages: pages.map(rel), configs: reloadOnly ? [] : configs.map(label), results: results.map((r) => ({ ...r, page: rel(r.page) })), reloads: reloads.map((r) => ({ ...r, page: rel(r.page) })) }, null, 1))
+if (opt('--json')) writeFileSync(opt('--json'), JSON.stringify({ at: new Date().toISOString(), root, pages: pages.map(rel), configs: reloadOnly ? [] : configs.map(label), results: results.map((r) => ({ ...r, page: rel(r.page) })), reloads: reloads.map((r) => ({ ...r, page: rel(r.page) })), reloadBrowsers }, null, 1))
 process.exit(results.some((r) => !flows(r)) ? 1 : 0)

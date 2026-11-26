@@ -1,0 +1,11 @@
+Does Input.synthesizeScrollGesture scroll the page under touch emulation? Measured here, 26 Nov, with the earlier scratch probe (probe-touch-reload.mjs: hasTouch and
+isMobile, 400 x 800, a fresh context per try, up to 40 gestures or drags, 700 ms, reload, read 1.8 s later) with one line changed to print the positions,
+on the copy of the built v9 the spike used. Three tries each.
+
+load 0.77 1.34 1.57
+synthetic gesture (Input.synthesizeScrollGesture), touch emulation:
+full dist/preview/Chart.html 400 coarse: 0 of 3 came back elsewhere (after - before: from 0 to 0, from 0 to 0, from 0 to 0)
+exit 0
+touch drags with a fling (DRAG=1), touch emulation:
+full dist/preview/Chart.html 400 coarse: 3 of 3 came back elsewhere (after - before: from 8859 to 8324, from 8859 to 8324, from 8859 to 8324)
+exit 0

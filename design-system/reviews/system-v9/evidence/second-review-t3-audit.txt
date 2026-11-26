@@ -1,0 +1,254 @@
+T3.audit (four charts of the Chart preview with no reservation in their markup) under the shipped and the changed reload pass. Measured here, 26 Nov,
+on a scratch copy with the corpus mutant applied and its dist/ rebuilt. audit-shipped: tools/audit.mjs as committed before this change; audit: the changed pass.
+Runs 1 and 2 of each: --reload-only dist/preview/Chart.html (every chart). audit-quick: --reload-only --quick (the middle chart and the last, as the corpus runs it).
+
+Summary (from each run's --json): what kills it is reserve, in 6 of 6 runs at both layouts; the reload pass's own measures do not, dependably, at either layout.
+  t3-audit-shipped-run1, 1500: 10 reloads; findings: reserve 4, reload-shift 3, other 0; largest reload shift 0.4005 unmarked, not read marked; landed elsewhere 0 of 10
+  t3-audit-shipped-run1, 400 coarse: 10 reloads; findings: reserve 4, reload-shift 0, other 0; largest reload shift 0.0000 unmarked, not read marked; landed elsewhere 0 of 10
+  t3-audit-shipped-run2, 1500: 10 reloads; findings: reserve 4, reload-shift 2, other 0; largest reload shift 0.4005 unmarked, not read marked; landed elsewhere 0 of 10
+  t3-audit-shipped-run2, 400 coarse: 10 reloads; findings: reserve 4, reload-shift 0, other 0; largest reload shift 0.0000 unmarked, not read marked; landed elsewhere 0 of 10
+  t3-audit-run1, 1500: 10 reloads; findings: reserve 4, reload-shift 0, other 0; largest reload shift 0.0000 unmarked, 0.0000 marked; landed elsewhere 0 of 10
+  t3-audit-run1, 400 coarse: 10 reloads; findings: reserve 4, reload-shift 0, other 0; largest reload shift 0.0000 unmarked, 0.0000 marked; landed elsewhere 0 of 10
+  t3-audit-run2, 1500: 10 reloads; findings: reserve 4, reload-shift 2, other 0; largest reload shift 0.2078 unmarked, 0.0000 marked; landed elsewhere 0 of 10
+  t3-audit-run2, 400 coarse: 10 reloads; findings: reserve 4, reload-shift 2, other 0; largest reload shift 0.0000 unmarked, 0.8565 marked; landed elsewhere 0 of 10
+  t3-audit-quick-run1, 1500: 2 reloads; findings: reserve 4, reload-shift 1, other 0; largest reload shift 0.3764 unmarked, 0.0000 marked; landed elsewhere 0 of 2
+  t3-audit-quick-run1, 400 coarse: 2 reloads; findings: reserve 4, reload-shift 0, other 0; largest reload shift 0.0000 unmarked, 0.0000 marked; landed elsewhere 0 of 2
+  t3-audit-quick-run2, 1500: 2 reloads; findings: reserve 4, reload-shift 0, other 0; largest reload shift 0.0000 unmarked, 0.0000 marked; landed elsewhere 0 of 2
+  t3-audit-quick-run2, 400 coarse: 2 reloads; findings: reserve 4, reload-shift 1, other 0; largest reload shift 0.0000 unmarked, 0.8565 marked; landed elsewhere 0 of 2
+
+The runs as printed:
+
+=== T3.audit, tools/audit-shipped.mjs --reload-only dist/preview/Chart.html, run 1, load 1.97 1.84 1.73
+
+
+Reload while scrolled to a chart, and a jump to it after load (20 loads; fails at a layout shift of 0.05 or more, or a chart that moves or lands more than 1 px away):
+
+| Page | Layout | Chart | Jump: shift | Jump: moved, px | Reload: shift | Reload: landed, px |
+|---|---|---|---|---|---|---|
+| dist/preview/Chart.html | 1500 | 1 of 10, Latency by route, p99 | 0.0000 | 0 | 0.0923 | 0 |
+| dist/preview/Chart.html | 1500 | 2 of 10, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 3 of 10, CPU by pod | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 4 of 10, CPU by pod, against the limit | 0.0000 | 0 | 0.1811 | 0 |
+| dist/preview/Chart.html | 1500 | 5 of 10, CPU by pod, three of Other picked out | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 6 of 10, CPU by pod, the query narrowed to node-b | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 7 of 10, Request rate, change on last week | 0.0000 | 0 | 0.4005 | 0 |
+| dist/preview/Chart.html | 1500 | 8 of 10, Memory by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 9 of 10, Error ratio, if this rule had existed | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 10 of 10, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 1 of 10, Latency by route, p99 | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 2 of 10, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 3 of 10, CPU by pod | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 4 of 10, CPU by pod, against the limit | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 5 of 10, CPU by pod, three of Other picked out | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 6 of 10, CPU by pod, the query narrowed to node-b | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 7 of 10, Request rate, change on last week | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 8 of 10, Memory by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 9 of 10, Error ratio, if this rule had existed | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 10 of 10, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+
+
+1 pages x 14 configurations (320; 400; 560; 640; 800; 1024; 1280; 1500; 320 coarse; 400 coarse; 768 coarse; 640 at 200%; 720 at 200%; 750 at 200%)
+
+System pages: 11 finding(s)
+  dist/preview/Chart.html
+    reserve       1500            the chart "Latency by route, p99" reserves 264.5 px in the page as served, before any script, and draws 365.5 px: a load's first frame is the wrong height, and a reload can land elsewhere  (and at 400 coarse)
+    reserve       1500            the chart "Request rate by service" reserves 264.5 px in the page as served, before any script, and draws 490.5 px: a load's first frame is the wrong height, and a reload can land elsewhere  (and at 400 coarse)
+    reserve       1500            the chart "CPU by pod" reserves 264.5 px in the page as served, before any script, and draws 558.5 px: a load's first frame is the wrong height, and a reload can land elsewhere  (and at 400 coarse)
+    reserve       1500            the chart "CPU by pod, against the limit" reserves 264.5 px in the page as served, before any script, and draws 583.5 px: a load's first frame is the wrong height, and a reload can land elsewhere  (and at 400 coarse)
+    reload-shift  1500            reloaded while scrolled to chart 1 of 10 ("Latency by route, p99"): layout shift 0.0923, and the chart lands 0 px from where it was (ms/scroll/height by frame: 28/127/5657 153/127/6597)
+    reload-shift  1500            reloaded while scrolled to chart 4 of 10 ("CPU by pod, against the limit"): layout shift 0.1811, and the chart lands 0 px from where it was (ms/scroll/height by frame: 33/2145/5657 147/2145/6597)
+    reload-shift  1500            reloaded while scrolled to chart 7 of 10 ("Request rate, change on last week"): layout shift 0.4005, and the chart lands 0 px from where it was (ms/scroll/height by frame: 28/0/5657 102/4800/6597)
+
+Flow screens (read only, reported): 0 finding(s)
+exit status 1
+=== T3.audit, tools/audit.mjs --reload-only dist/preview/Chart.html, run 1, load 1.59 1.78 1.71
+
+
+Reload while scrolled to a chart, and a jump to it after load (20 loads; fails at a layout shift of 0.05 or more, every entry counted, or a chart that moves or lands more than 1 px away). "Marked" is the sum of the entries the browser marks hadRecentInput; the pass gives no input, so they count:
+
+| Page | Layout | Chart | Jump: shift | Jump: marked | Jump: moved, px | Reload: shift | Reload: marked | Reload: landed, px |
+|---|---|---|---|---|---|---|---|---|
+| dist/preview/Chart.html | 1500 | 1 of 10, Latency by route, p99 | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 2 of 10, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 3 of 10, CPU by pod | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 4 of 10, CPU by pod, against the limit | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 5 of 10, CPU by pod, three of Other picked out | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 6 of 10, CPU by pod, the query narrowed to node-b | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 7 of 10, Request rate, change on last week | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 8 of 10, Memory by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 9 of 10, Error ratio, if this rule had existed | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 10 of 10, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 1 of 10, Latency by route, p99 | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 2 of 10, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 3 of 10, CPU by pod | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 4 of 10, CPU by pod, against the limit | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 5 of 10, CPU by pod, three of Other picked out | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 6 of 10, CPU by pod, the query narrowed to node-b | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 7 of 10, Request rate, change on last week | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 8 of 10, Memory by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 9 of 10, Error ratio, if this rule had existed | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 10 of 10, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+
+1500: 10 reloads on 1 page(s); 0 of 10 landed elsewhere (more than 1 px); 0 moved after the jump; largest reload shift 0.0000 unmarked and 0.0000 marked; largest jump shift 0.0000 unmarked and 0.0000 marked
+400 coarse: 10 reloads on 1 page(s); 0 of 10 landed elsewhere (more than 1 px); 0 moved after the jump; largest reload shift 0.0000 unmarked and 0.0000 marked; largest jump shift 0.0000 unmarked and 0.0000 marked
+Browsers: 1500: Chromium 157.0.8103.78; 400 coarse (coarse in Blink, isMobile, no touch emulation): Chromium 157.0.8103.78
+
+
+1 pages x 14 configurations (320; 400; 560; 640; 800; 1024; 1280; 1500; 320 coarse; 400 coarse; 768 coarse; 640 at 200%; 720 at 200%; 750 at 200%)
+
+System pages: 8 finding(s)
+  dist/preview/Chart.html
+    reserve       1500            the chart "Latency by route, p99" reserves 264.5 px in the page as served, before any script, and draws 365.5 px: a load's first frame is the wrong height, and a reload can land elsewhere  (and at 400 coarse)
+    reserve       1500            the chart "Request rate by service" reserves 264.5 px in the page as served, before any script, and draws 490.5 px: a load's first frame is the wrong height, and a reload can land elsewhere  (and at 400 coarse)
+    reserve       1500            the chart "CPU by pod" reserves 264.5 px in the page as served, before any script, and draws 558.5 px: a load's first frame is the wrong height, and a reload can land elsewhere  (and at 400 coarse)
+    reserve       1500            the chart "CPU by pod, against the limit" reserves 264.5 px in the page as served, before any script, and draws 583.5 px: a load's first frame is the wrong height, and a reload can land elsewhere  (and at 400 coarse)
+
+Flow screens (read only, reported): 0 finding(s)
+exit status 1
+=== T3.audit, tools/audit-shipped.mjs --reload-only dist/preview/Chart.html, run 2, load 1.61 1.76 1.71
+
+
+Reload while scrolled to a chart, and a jump to it after load (20 loads; fails at a layout shift of 0.05 or more, or a chart that moves or lands more than 1 px away):
+
+| Page | Layout | Chart | Jump: shift | Jump: moved, px | Reload: shift | Reload: landed, px |
+|---|---|---|---|---|---|---|
+| dist/preview/Chart.html | 1500 | 1 of 10, Latency by route, p99 | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 2 of 10, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 3 of 10, CPU by pod | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 4 of 10, CPU by pod, against the limit | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 5 of 10, CPU by pod, three of Other picked out | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 6 of 10, CPU by pod, the query narrowed to node-b | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 7 of 10, Request rate, change on last week | 0.0000 | 0 | 0.4005 | 0 |
+| dist/preview/Chart.html | 1500 | 8 of 10, Memory by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 9 of 10, Error ratio, if this rule had existed | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 10 of 10, Request rate by service | 0.0000 | 0 | 0.3764 | 0 |
+| dist/preview/Chart.html | 400 coarse | 1 of 10, Latency by route, p99 | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 2 of 10, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 3 of 10, CPU by pod | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 4 of 10, CPU by pod, against the limit | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 5 of 10, CPU by pod, three of Other picked out | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 6 of 10, CPU by pod, the query narrowed to node-b | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 7 of 10, Request rate, change on last week | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 8 of 10, Memory by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 9 of 10, Error ratio, if this rule had existed | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 10 of 10, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+
+
+1 pages x 14 configurations (320; 400; 560; 640; 800; 1024; 1280; 1500; 320 coarse; 400 coarse; 768 coarse; 640 at 200%; 720 at 200%; 750 at 200%)
+
+System pages: 10 finding(s)
+  dist/preview/Chart.html
+    reserve       1500            the chart "Latency by route, p99" reserves 264.5 px in the page as served, before any script, and draws 365.5 px: a load's first frame is the wrong height, and a reload can land elsewhere  (and at 400 coarse)
+    reserve       1500            the chart "Request rate by service" reserves 264.5 px in the page as served, before any script, and draws 490.5 px: a load's first frame is the wrong height, and a reload can land elsewhere  (and at 400 coarse)
+    reserve       1500            the chart "CPU by pod" reserves 264.5 px in the page as served, before any script, and draws 558.5 px: a load's first frame is the wrong height, and a reload can land elsewhere  (and at 400 coarse)
+    reserve       1500            the chart "CPU by pod, against the limit" reserves 264.5 px in the page as served, before any script, and draws 583.5 px: a load's first frame is the wrong height, and a reload can land elsewhere  (and at 400 coarse)
+    reload-shift  1500            reloaded while scrolled to chart 7 of 10 ("Request rate, change on last week"): layout shift 0.4005, and the chart lands 0 px from where it was (ms/scroll/height by frame: 56/0/5657 141/4800/6597)
+    reload-shift  1500            reloaded while scrolled to chart 10 of 10 ("Request rate by service"): layout shift 0.3764, and the chart lands 0 px from where it was (ms/scroll/height by frame: 29/0/5657 124/5697/6597)
+
+Flow screens (read only, reported): 0 finding(s)
+exit status 1
+=== T3.audit, tools/audit.mjs --reload-only dist/preview/Chart.html, run 2, load 1.55 1.71 1.70
+
+
+Reload while scrolled to a chart, and a jump to it after load (20 loads; fails at a layout shift of 0.05 or more, every entry counted, or a chart that moves or lands more than 1 px away). "Marked" is the sum of the entries the browser marks hadRecentInput; the pass gives no input, so they count:
+
+| Page | Layout | Chart | Jump: shift | Jump: marked | Jump: moved, px | Reload: shift | Reload: marked | Reload: landed, px |
+|---|---|---|---|---|---|---|---|---|
+| dist/preview/Chart.html | 1500 | 1 of 10, Latency by route, p99 | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 2 of 10, Request rate by service | 0.0000 | 0.0000 | 0 | 0.2078 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 3 of 10, CPU by pod | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 4 of 10, CPU by pod, against the limit | 0.0000 | 0.0000 | 0 | 0.1811 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 5 of 10, CPU by pod, three of Other picked out | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 6 of 10, CPU by pod, the query narrowed to node-b | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 7 of 10, Request rate, change on last week | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 8 of 10, Memory by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 9 of 10, Error ratio, if this rule had existed | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 10 of 10, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 1 of 10, Latency by route, p99 | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 2 of 10, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.4184 | 0 |
+| dist/preview/Chart.html | 400 coarse | 3 of 10, CPU by pod | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 4 of 10, CPU by pod, against the limit | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 5 of 10, CPU by pod, three of Other picked out | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 6 of 10, CPU by pod, the query narrowed to node-b | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 7 of 10, Request rate, change on last week | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 8 of 10, Memory by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 9 of 10, Error ratio, if this rule had existed | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 10 of 10, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.8565 | 0 |
+
+1500: 10 reloads on 1 page(s); 0 of 10 landed elsewhere (more than 1 px); 0 moved after the jump; largest reload shift 0.2078 unmarked and 0.0000 marked; largest jump shift 0.0000 unmarked and 0.0000 marked
+400 coarse: 10 reloads on 1 page(s); 0 of 10 landed elsewhere (more than 1 px); 0 moved after the jump; largest reload shift 0.0000 unmarked and 0.8565 marked; largest jump shift 0.0000 unmarked and 0.0000 marked
+Browsers: 1500: Chromium 157.0.8103.78; 400 coarse (coarse in Blink, isMobile, no touch emulation): Chromium 157.0.8103.78
+
+
+1 pages x 14 configurations (320; 400; 560; 640; 800; 1024; 1280; 1500; 320 coarse; 400 coarse; 768 coarse; 640 at 200%; 720 at 200%; 750 at 200%)
+
+System pages: 12 finding(s)
+  dist/preview/Chart.html
+    reserve       1500            the chart "Latency by route, p99" reserves 264.5 px in the page as served, before any script, and draws 365.5 px: a load's first frame is the wrong height, and a reload can land elsewhere  (and at 400 coarse)
+    reserve       1500            the chart "Request rate by service" reserves 264.5 px in the page as served, before any script, and draws 490.5 px: a load's first frame is the wrong height, and a reload can land elsewhere  (and at 400 coarse)
+    reserve       1500            the chart "CPU by pod" reserves 264.5 px in the page as served, before any script, and draws 558.5 px: a load's first frame is the wrong height, and a reload can land elsewhere  (and at 400 coarse)
+    reserve       1500            the chart "CPU by pod, against the limit" reserves 264.5 px in the page as served, before any script, and draws 583.5 px: a load's first frame is the wrong height, and a reload can land elsewhere  (and at 400 coarse)
+    reload-shift  1500            reloaded while scrolled to chart 2 of 10 ("Request rate by service"): layout shift 0.2078, and the chart lands 0 px from where it was (layout-shift entries: 106 ms 0.2078; ms/scroll/height by frame: 24/700/5657 104/700/6597)
+    reload-shift  1500            reloaded while scrolled to chart 4 of 10 ("CPU by pod, against the limit"): layout shift 0.1811, and the chart lands 0 px from where it was (layout-shift entries: 105 ms 0.1811; ms/scroll/height by frame: 29/2145/5657 102/2145/6597)
+    reload-shift  400 coarse      reloaded while scrolled to chart 2 of 10 ("Request rate by service"): layout shift 0.0000, and 0.4184 more in entries the browser marks as following input (this pass gives none: they count), and the chart lands 0 px from where it was (layout-shift entries: 145 ms 0.4184 marked; ms/scroll/height by frame: 32/963/8079 142/963/9659)  (and at 400 coarse)
+
+Flow screens (read only, reported): 0 finding(s)
+exit status 1
+=== T3.audit, tools/audit.mjs --reload-only --quick dist/preview/Chart.html, run 1, load 1.88 1.76 1.72
+
+
+Reload while scrolled to a chart, and a jump to it after load (4 loads; fails at a layout shift of 0.05 or more, every entry counted, or a chart that moves or lands more than 1 px away). "Marked" is the sum of the entries the browser marks hadRecentInput; the pass gives no input, so they count:
+
+| Page | Layout | Chart | Jump: shift | Jump: marked | Jump: moved, px | Reload: shift | Reload: marked | Reload: landed, px |
+|---|---|---|---|---|---|---|---|---|
+| dist/preview/Chart.html | 1500 | 6 of 10, CPU by pod, the query narrowed to node-b | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 10 of 10, Request rate by service | 0.0000 | 0.0000 | 0 | 0.3764 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 6 of 10, CPU by pod, the query narrowed to node-b | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 10 of 10, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+
+1500: 2 reloads on 1 page(s); 0 of 2 landed elsewhere (more than 1 px); 0 moved after the jump; largest reload shift 0.3764 unmarked and 0.0000 marked; largest jump shift 0.0000 unmarked and 0.0000 marked
+400 coarse: 2 reloads on 1 page(s); 0 of 2 landed elsewhere (more than 1 px); 0 moved after the jump; largest reload shift 0.0000 unmarked and 0.0000 marked; largest jump shift 0.0000 unmarked and 0.0000 marked
+Browsers: 1500: Chromium 157.0.8103.78; 400 coarse (coarse in Blink, isMobile, no touch emulation): Chromium 157.0.8103.78
+
+
+1 pages x 4 configurations (320 coarse; 400 coarse; 720 at 200%; 1500)
+
+System pages: 9 finding(s)
+  dist/preview/Chart.html
+    reserve       1500            the chart "Latency by route, p99" reserves 264.5 px in the page as served, before any script, and draws 365.5 px: a load's first frame is the wrong height, and a reload can land elsewhere  (and at 400 coarse)
+    reserve       1500            the chart "Request rate by service" reserves 264.5 px in the page as served, before any script, and draws 490.5 px: a load's first frame is the wrong height, and a reload can land elsewhere  (and at 400 coarse)
+    reserve       1500            the chart "CPU by pod" reserves 264.5 px in the page as served, before any script, and draws 558.5 px: a load's first frame is the wrong height, and a reload can land elsewhere  (and at 400 coarse)
+    reserve       1500            the chart "CPU by pod, against the limit" reserves 264.5 px in the page as served, before any script, and draws 583.5 px: a load's first frame is the wrong height, and a reload can land elsewhere  (and at 400 coarse)
+    reload-shift  1500            reloaded while scrolled to chart 10 of 10 ("Request rate by service"): layout shift 0.3764, and the chart lands 0 px from where it was (layout-shift entries: 173 ms 0.3764; ms/scroll/height by frame: 48/0/5657 169/5697/6597)
+
+Flow screens (read only, reported): 0 finding(s)
+exit status 1
+=== T3.audit, tools/audit.mjs --reload-only --quick dist/preview/Chart.html, run 2, load 1.74 1.73 1.71
+
+
+Reload while scrolled to a chart, and a jump to it after load (4 loads; fails at a layout shift of 0.05 or more, every entry counted, or a chart that moves or lands more than 1 px away). "Marked" is the sum of the entries the browser marks hadRecentInput; the pass gives no input, so they count:
+
+| Page | Layout | Chart | Jump: shift | Jump: marked | Jump: moved, px | Reload: shift | Reload: marked | Reload: landed, px |
+|---|---|---|---|---|---|---|---|---|
+| dist/preview/Chart.html | 1500 | 6 of 10, CPU by pod, the query narrowed to node-b | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 10 of 10, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 6 of 10, CPU by pod, the query narrowed to node-b | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 10 of 10, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.8565 | 0 |
+
+1500: 2 reloads on 1 page(s); 0 of 2 landed elsewhere (more than 1 px); 0 moved after the jump; largest reload shift 0.0000 unmarked and 0.0000 marked; largest jump shift 0.0000 unmarked and 0.0000 marked
+400 coarse: 2 reloads on 1 page(s); 0 of 2 landed elsewhere (more than 1 px); 0 moved after the jump; largest reload shift 0.0000 unmarked and 0.8565 marked; largest jump shift 0.0000 unmarked and 0.0000 marked
+Browsers: 1500: Chromium 157.0.8103.78; 400 coarse (coarse in Blink, isMobile, no touch emulation): Chromium 157.0.8103.78
+
+
+1 pages x 4 configurations (320 coarse; 400 coarse; 720 at 200%; 1500)
+
+System pages: 9 finding(s)
+  dist/preview/Chart.html
+    reserve       1500            the chart "Latency by route, p99" reserves 264.5 px in the page as served, before any script, and draws 365.5 px: a load's first frame is the wrong height, and a reload can land elsewhere  (and at 400 coarse)
+    reserve       1500            the chart "Request rate by service" reserves 264.5 px in the page as served, before any script, and draws 490.5 px: a load's first frame is the wrong height, and a reload can land elsewhere  (and at 400 coarse)
+    reserve       1500            the chart "CPU by pod" reserves 264.5 px in the page as served, before any script, and draws 558.5 px: a load's first frame is the wrong height, and a reload can land elsewhere  (and at 400 coarse)
+    reserve       1500            the chart "CPU by pod, against the limit" reserves 264.5 px in the page as served, before any script, and draws 583.5 px: a load's first frame is the wrong height, and a reload can land elsewhere  (and at 400 coarse)
+    reload-shift  400 coarse      reloaded while scrolled to chart 10 of 10 ("Request rate by service"): layout shift 0.0000, and 0.8565 more in entries the browser marks as following input (this pass gives none: they count), and the chart lands 0 px from where it was (layout-shift entries: 88 ms 0.8565 marked; ms/scroll/height by frame: 27/0/8079 86/8759/9659)
+
+Flow screens (read only, reported): 0 finding(s)
+exit status 1
