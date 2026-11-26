@@ -114,7 +114,7 @@ const MUTANTS = [
   ['deploy.sh: a release forward-only for a floor is rolled back automatically', 'deploy.sh', 'f.kind==="format"||f.kind==="floor"', 'f.kind==="format"'],
   ['release: a manifest configured --ids-optional is deployed', 'release.mjs', '(manifest.idsOptional === true ? [', '(false ? ['],
   // Rate Limiting namespace ids (resources.mjs)
-  ['ids: an id a script that is not viz\'s binds is not excluded', 'resources.mjs', '    for (const s of scripts) if (!ourScripts.has(s)) takenBy.set(id, s)', '    for (const s of scripts) if (!ourScripts.has(s) && s.startsWith(\'viz-\')) takenBy.set(id, s)'],
+  ['ids: an id a script that is not viz\'s binds is not excluded', 'resources.mjs', 'for (const s of scripts) if (!ourScripts.has(s)) takenBy.set(id, s)', 'for (const s of scripts) if (!ourScripts.has(s) && s.startsWith(\'viz-\')) takenBy.set(id, s)'],
   ['ids: another deployment\'s recorded ids are not excluded', 'resources.mjs', "  for (const [key, id] of Object.entries(recorded)) if (!mine.has(key) && !takenBy.has(String(id)))", "  for (const [key, id] of Object.entries(recorded)) if (false)"],
   ['ids: a kept id is reused although another script binds it', 'resources.mjs', '      if (free(id)) {\n        kept = id', '      if (inRange(id)) {\n        kept = id'],
   ['ids: the scan reads the serving versions only, not the newest', 'resources.mjs', '    const ids = [...new Set([...serving, ...(newest ? [newest] : [])])]', '    const ids = [...new Set(serving)]'],
