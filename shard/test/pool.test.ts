@@ -1,7 +1,8 @@
 import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
 import { SHARD_NAME } from '../../contracts/ledger'
-import { dedicatedPool, shardName, slotFor, tenantSlots, validPoolName, type PoolMap } from '../src/pool'
+import { TENANT_ID } from '../../contracts/ledger'
+import { dedicatedPool, shardName, signalPool, slotFor, tenantSlots, validBasePool, validPoolName, type PoolMap } from '../src/pool'
 
 const pool: PoolMap = { pool: 'cell-1', slots: 16, spread: 2, epoch: 1 }
 const tenants = Array.from({ length: 400 }, (_, i) => `tenant-${i}`)
@@ -60,6 +61,25 @@ describe('pool routing', () => {
     for (const bad of ['', 'a_b', 'shared/c_1', 'a//b', '/a', 'a/', 'a b', 'a.b', 'x'.repeat(121), 7, null]) expect(validPoolName(bad), String(bad)).toBe(false)
     // Every shard of a valid pool has a valid name, up to the largest slot a map may have.
     expect(SHARD_NAME.test(shardName({ pool: 'x'.repeat(120), slots: 4096, spread: 1, epoch: 1 }, 4095))).toBe(true)
+  })
+
+  // The one rule for a pool map's pool, read by edge and written by control (D66; review M-5).
+  it('a base pool is a valid pool name that does not end in a derived pool\'s suffix (validBasePool)', () => {
+    for (const ok of ['shared/c1', 'tenant/acme-eu', 'traces', 'logs', 'p/traces/5', 'a/tracesx', 'a/xlogs', 'a/traces-1', 'a/Logs', 'x'.repeat(120)]) expect(validBasePool(ok), ok).toBe(true)
+    for (const bad of ['a/traces', 'a/logs', 'shared/c1/traces', 'tenant/traces', 'tenant/logs', 'a_b', 'shared/c_1', 'tenant/acme_eu', 'x'.repeat(121), '', 'a//b', 7, null]) expect(validBasePool(bad), String(bad)).toBe(false)
+    // The derived pools of a valid base pool are what edge and query name its span and log shards; a base pool never is one.
+    for (const base of ['shared/c1', 'tenant/acme-eu']) for (const s of ['traces', 'logs'] as const) expect(validBasePool(signalPool({ pool: base, slots: 1, spread: 1, epoch: 0 }, s)!.pool)).toBe(false)
+  })
+
+  it('the dedicated pool of every tenant id is a valid base pool, except for the ids traces and logs', () => {
+    const ids = ['acme', 'acme_eu', 'acme-eu', '_', '-', 'a__b', 'traces', 'logs', 'Traces', 'my_traces', 'logs_', 'x'.repeat(64), '_'.repeat(64)]
+    for (const id of ids) {
+      expect(TENANT_ID.test(id), id).toBe(true)
+      const { pool: p } = dedicatedPool(id, 4, 0)
+      expect(p, id).toBe(`tenant/${id.replaceAll('_', '-')}`)
+      expect(validPoolName(p), id).toBe(true)
+      expect(validBasePool(p), id).toBe(id !== 'traces' && id !== 'logs')
+    }
   })
 
   it('a shard object addressed by a name outside SHARD_NAME serves nothing', async () => {

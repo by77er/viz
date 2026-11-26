@@ -12,11 +12,11 @@ dedicated tenants run the same code.
 |---|---|
 | `src/shard.ts` | `Shard`: append, seal (and its notification), pending segments and tenants, read segment, recorded, tail read, active-series metering, alarm housekeeping |
 | `src/sketch.ts` | `SeriesWindow`: distinct series in a sliding window: exact set, then HyperLogLog + Bloom filter |
-| `src/tail.ts` | Filtered, paged tail reads (D48): the filter over stored `VZB1` batches, the page cursor, `splitKeyRange` |
-| `src/pool.ts` | Pool maps and routing: which slots a tenant may use, which slot a sender goes to; `validPoolName` |
+| `src/tail.ts` | Filtered, paged tail reads (D48): the filter over stored `VZB1` batches (by signal since stage 2), the page cursor, `splitKeyRange`; `batchTimeBounds`, a span or log batch's time bounds read at append (D72) |
+| `src/pool.ts` | Pool maps and routing: which slots a tenant may use, which slot a sender goes to; `validPoolName`; `validBasePool`, the one rule for a pool map's pool that edge reads maps with and control writes them with (D66); `dedicatedPool`; the derived pools of spans and logs (`signalPool`, `enabledSignals`) |
 | `scripts/mutants.mjs` | Mutation check of the newer properties (runs only on a copy outside the git checkout) |
-| `test/` | 63 tests in 8 files, run inside the Workers runtime |
-| `bench/` | The counterfactual in workerd: this shard against the frozen as-built one (`bench/asbuilt/`, `dc2a1c3`); a 20 MB tail read whole and filtered (`tail.bench.test.ts`, results in `bench/results/tail.txt`) |
+| `test/` | 98 tests in 11 files, run inside the Workers runtime, against the real ledger in the same script (`wrangler.test.jsonc`, `test/worker.ts`), as in viz-ingest |
+| `bench/` | The counterfactual in workerd: this shard against the frozen as-built one (`bench/asbuilt/`, `dc2a1c3`); a 20 MB tail read whole and filtered (`tail.bench.test.ts`, results in `bench/results/tail.txt`); registration before writes (`registration.bench.test.ts`, against the release before it frozen in `bench/prereg/`; results in `bench/results/registration.log`); a span or log query against eight hours of tail, and appends against the release before D72 frozen in `bench/prebounds/` (`signaltail.bench.test.ts`, `walk.node.mjs`; results in `bench/results/signaltail.txt`) |
 
 ## What is implemented
 
@@ -42,8 +42,52 @@ dedicated tenants run the same code.
 - **Discard with a fence.** Payloads are dropped after a retention window; a tail read
   asking about rows below the discard mark is refused rather than answered with a gap.
 - **Tail reads scoped to one tenant.** A caller naming an incarnation the shard does not
-  hold (it has no stream for the tenant) gets `incarnation_mismatch` with incarnation 0,
-  never an empty `ok` (review R-10), so a lost stream shows.
+  hold (it has no stream for the tenant) gets `incarnation_mismatch`, never an empty `ok`
+  (review R-10), so a lost stream shows. Since D61 it names a fresh stream the shard started
+  and registered for that read (below); without a `LEDGER` binding, incarnation 0 as before.
+- **Registration before writes** (D61; spec/README.md "Proposed fixes", R2, with the changes
+  of `design/reviews/registration-before-writes.md`). The shard registers each stream with
+  the tenant's ledger (`env.LEDGER`, `idFromName(tenant)`; in viz-ingest the same script) and,
+  in registration mode `logged`, accepts no write to a NEW stream (first use, or after the
+  shard lost its storage) until the ledger answers the registration as LOGGED
+  (`RegisterResult.logged`, derived by the ledger from its outbox). So every plan names every
+  stream that holds acknowledged rows, whatever the ledger loses (spec F6(b), F1). How:
+  - `append` to a stream that is not confirmed: the stream row is created (fresh incarnation,
+    `registered = 0`), a registration call is started in the background if none is in flight
+    and its backoff is over, and the append is answered at once `{ status: 'backpressure',
+    scope: 'registering', retryAfterMs }` (500–1000 ms, jittered): before any quota, metering
+    or group, with no await; nothing is stored, counted or held (review M-1; D37's bound is
+    unchanged). A stream that already holds acknowledged rows (made by the release before D61,
+    or in `lazy` mode) keeps accepting while it is confirmed in the background: refusing it
+    would remove no exposure.
+  - The registration: at most one call per stream at a time (single-flight), at most
+    `maxRegistrations` (4) calls per shard in flight over all tenants (review m-5: a shard's
+    six outbound connections), each waiting at most `registerTimeoutMs` (5 s), retried with
+    backoff from 250 ms doubling to 30 s by the shard's one alarm (its deadline joins `arm()`;
+    the alarm is set before each call, so a call lost with the instance is made again). On
+    `logged: true` the incarnation is written to `stream.registered` (one row write) and the
+    schedule dropped. What must be registered is rebuilt from storage in `load()`. An answer
+    without `logged` (a ledger of the release before) is not logged.
+  - `tailRead` naming an incarnation the shard has lost: it starts a fresh stream (the row
+    first, before any await, so concurrent reads get the same one; newer than the one named,
+    whatever the clock), awaits one registration call, and answers `incarnation_mismatch`
+    naming it; the next plan names it, read from 0 it is empty (spec F6 liveness, `LIVE_impl`).
+  - `ensureStream(tenant)` (new RPC): what an append does before it is accepted, without a
+    batch: for the janitor (spec F16) and a map change or a new tenant (review m-4).
+  - **Alert** (review m-1): a stream whose registration has not been logged after
+    `registerAlertMs` (60 s) is an error line (`shard <name>: the registration of <tenant>'s
+    stream … has not been logged …`), and `stats()` reports `registering` (streams waiting)
+    and `registeringForMs` (the longest wait) with `refusedRegistering` and `registerCalls`.
+    The ledger's `logStatus()` reports `registrationsPending` and `pendingSince`.
+  - **S5 heals** (review m-7): a registration refused because the ledger has a higher
+    incarnation (a clock stepped back across a storage loss) is checked against
+    `loggedWatermarks()`; a new stream that holds nothing acknowledged is renumbered above
+    the ledger's incarnation and registered. One that holds rows (from before D61) is never
+    renumbered: it stays refused by the ledger, as before, and is reported.
+  - Mode: `ShardConfig.registration` (`lazy` by default), overridden by the Worker var
+    `SHARD_REGISTRATION` (`logged` or `lazy`). Without a `LEDGER` binding the shard is lazy
+    whatever the mode. `lazy` is the append path as before D61; reads and `ensureStream`
+    register in either mode. See "Rollout".
 - **Tail reads filtered and paged** (D48; query/CARDINALITY.md "What is left" 1). `tailRead`
   takes an optional fourth argument, `TailReadOptions` (`v` 1): a time range (`minTs`,
   `maxTs`), `metrics` (`__name__` values), `labels` (exact values; `''` = absent) and a
@@ -61,6 +105,50 @@ dedicated tenants run the same code.
   there. Bad options or a cursor of another read are `invalid`; an unknown `v` is
   `unsupported_version`. **Without options the answer is exactly as before** (no `page`), and
   an older shard ignores the options, so a caller knows the filter was applied only by `page`.
+- **Spans and log records** (stage 2 of traces and logs, 2026-11-19; contracts/BATCH.md
+  "Streams per signal", D57). The shards of the derived pools `{pool}/traces/{slot}` and
+  `{pool}/logs/{slot}` are ordinary shards: `append` stores a span or log batch as it stores a
+  metric one (opaque, at most `MAX_BATCH_BYTES`, sent without `seriesIds` so not metered), and
+  seal, the flush notification, the pending marker, `readSegment`, `recorded`, discard and
+  registration before writes (D61) work on their streams unchanged. `signalPool(map, signal)`
+  is the one derivation of those pool names (edge, flush's sweep and the stack use it).
+  **Tail reads by signal** (`TailFilter.signals`, an additive field of `TailReadOptions` v1):
+  a filtered read keeps only batches whose header's signal byte is listed, without reading
+  further; the series fields select metric rows only, and the time range selects metric rows
+  and (since D72, next item) skips span and log batches by their recorded bounds. A span or log
+  batch the read admits is returned whole, as stored (its times are nanoseconds in columns of their
+  own; the reader filters), unless the filter names `metrics`, `labels` or `keyRange`, which
+  select series such a batch does not have: then it keeps nothing. A batch of any other
+  signal is skipped when `signals` leaves it out and fails the read otherwise (never guessed
+  at). A filter without `signals` has the same canonical text, so the same cursors, as before.
+  A metrics query passes `signals: [1]`; query's span and log reads `[2]` or `[3]`. A shard of
+  an earlier release ignores the field and throws on a span or log batch under a series
+  filter, so callers still read only their signal's shards by name.
+- **Time bounds of span and log batches** (D72, after review m-3 of
+  `design/reviews/signals-end-to-end.md`, revised after its own review
+  `design/reviews/d72-shard-bounds.md`; contracts/BATCH.md "Tail reads of spans and log records
+  by time"). `append` reads a span batch's `start` column or a log batch's `ts` column once
+  (`batchTimeBounds`: the entry table is walked by its length fields to the column, which is
+  scanned as u32 pairs, exactly; no decoding, no strings) and stores the floor in milliseconds of
+  the smallest and largest value in the batch's row (`batch.min_ts`, `batch.max_ts`), which the
+  partial index `batch_time` also holds. The walk accepts only BATCH.md's layout: `flags` and
+  `reserved` zero, at least one entry, zero padding around the `entry` column (review m-1). Any
+  other batch, a metric batch, an empty one and one whose lengths do not lead to a whole column
+  inside it (or that holds a negative time) get NULL and no index entry; the append is never
+  refused for that. A filtered read with `minTs`/`maxTs` skips, in its SQL, every batch whose
+  bounds lie wholly outside the range, **deciding from the index, not the row**
+  (`TIMED_TAIL_SQL`, `INDEXED BY batch_time`): the bounds follow the payload in the row, so reading
+  them there read every skipped batch's payload from storage (review M-1; 33 MB to skip 48 batches,
+  now 20 KB). Every batch with NULL bounds is kept: rows from before schema 3, rows written by the
+  release before after a rollback, rows the walk does not accept. One call considers at most
+  `tailScanMaxBatches` (32,768) batches, skipped ones included, and examines at most
+  `tailScanMaxBytes`; a page may hold no batch and continue. Cursors (the range is part of the
+  filter they are bound to), `through`, the fence and every refusal are D48's; a skipped batch is
+  not examined (`scannedBatches`/`scannedBytes` leave it out); `page_limit` names only a kept batch
+  and carries `last` (review n-1): true when no batch after it up to `through` can be kept by its
+  bounds. A trace query must send the bound it reads spans in (its window widened by
+  `traceMarginMs`, D62) as `floor(lo / 10⁶)`, `floor(hi / 10⁶)`; then every batch holding a span
+  that starts inside the bound is returned (tested, below).
 - **Segment reads bound to what was listed** (spec F12): `readSegment(tenant, seqLo,
   incarnation, seqHi)` answers null unless the stream is still that incarnation and the
   segment is exactly that range.
@@ -80,23 +168,67 @@ dedicated tenants run the same code.
 - **Active-series metering and limit.** See the section below.
 - **One alarm per shard**, set to the earliest deadline and absent when idle. The deadlines
   are: age seal, discard of recorded segments, fingerprint expiry, an unsent seal
-  notification or unwritten pending marker, and an unsaved series window.
+  notification or unwritten pending marker, an unsaved series window, and a registration's
+  next call (D61).
 - **Shuffle-shard routing**: each tenant gets a small subset of the pool by rendezvous
   hashing, so tenants rarely share their whole subset.
 - **Names** (D38, `contracts/TABLES.md`): a shard object whose name does not match
   `SHARD_NAME` (segments of `[A-Za-z0-9-]` joined by `/`) throws in its constructor and so
   serves nothing; `validPoolName` is what `edge` checks maps against; `dedicatedPool`
-  turns a tenant id's `_` into `-`.
+  turns a tenant id's `_` into `-`. `validBasePool` (moved here from `edge/src/route.ts` after
+  review M-5 of `design/reviews/signals-end-to-end.md`): a valid pool name that does not end in
+  `/traces` or `/logs` (`contracts/BATCH.md`, "Streams per signal"). Edge refuses a map whose
+  pool breaks it (503) and control refuses to publish one (422), with this one function, and
+  control's dedicated pool is `dedicatedPool` (D66).
 - **Versioned storage and formats** (`contracts/COMPATIBILITY.md`, D24). `shard.Shard`
-  version 1 through `contracts/schema.ts`: it adopts the pre-versioning schema unchanged
-  and adds `segment.sealed_at` to objects created before it. Storage of a newer release is
+  version 2 through `contracts/schema.ts`: version 1 adopts the pre-versioning schema
+  unchanged and adds `segment.sealed_at` to objects created before it; version 2 (D61) adds
+  `stream.registered` (additive, `readableFrom` 1: the release before ignores it and never
+  changes a stream row's incarnation, so what this release wrote stays true and its 0 is
+  only conservative); version 3 (D72) adds `batch.min_ts` and `batch.max_ts` (nullable, additive,
+  `readableFrom` 1: the release before names its columns when it inserts, so its rows get NULL,
+  which every time range keeps; nothing is backfilled and nothing relies on a value being there)
+  and the partial index `batch_time` over them (review of D72, M-1; SQLite maintains it for every
+  writer, the release before included, whose rows get no entry; built over schema-2 rows it reads
+  their headers and writes nothing). Migration 3 had not shipped when the index was added to it.
+  Storage of a newer release is
   refused: `append` answers retryable `overload`, every other method throws
   `schema_too_new`, nothing is written, the alarm is re-armed. The series-window bucket
   carries a format byte (`SKETCH_FORMAT`); a bucket of an unknown kind or version is not
   read as something else: that tenant's metered appends are refused (retryable) rather than
   counted against an empty window. The flush message carries `v` (`FLUSH_MESSAGE_VERSION`).
-  Goldens: `test/golden/schema/v1.json`, `test/golden/formats/series-window.v1.json`,
+  Goldens: `test/golden/schema/v1.json`, `v2.json`, `v3.json`, `test/golden/formats/series-window.v1.json`,
   `queue.flush.v1.json`.
+
+## Rollout (D61)
+
+Shard, ledger, flush, janitor and edge are one Worker, viz-ingest (`deploy/workers.json`), so
+they deploy together; but Durable Objects take new code lazily (`durable_objects_code_update`:
+"deferred 30s") and a gradual deployment runs two versions, so for a while edge isolates,
+shards and ledgers run mixed releases in every combination (COMPATIBILITY.md §1). What must
+hold, and why each combination is safe:
+
+| Caller (release) | Callee (release) | What happens |
+|---|---|---|
+| shard D61 | ledger before D61 | `registerStream` answers without `logged`: taken as not logged. In mode `lazy` nothing waits on it; in mode `logged` a new stream is refused until the ledger runs D61 (at most the code-update delay). Tested: `registration.test.ts` "a ledger of the release before D61" |
+| shard before D61 | ledger D61 | as before D61 (lazy registration by flush) |
+| janitor D61 | shard before D61 | `ensureStream` is missing: the files are kept, the failure is in `ensured`, the sweep goes on (review m-6). Tested in janitor/ |
+| janitor D61 | ledger before D61 | no `loggedIncarnation`: D30's rule (files kept longer, never deleted on a guess). Tested in janitor/ |
+| edge before the mapping | shard in mode `logged` | `registering` would be answered **429**, which Remote Write senders may drop (review M-2). **Must not happen**: hence the two releases below |
+| shard (either) | storage of the other | schema 2 is additive (compat 1). Rollback and roll-forward on the same storage, with the release before running as the old code, tested: every stream accepts afterwards, a confirmed registration stays confirmed (`registration.test.ts`) |
+
+So the order is two releases (readers before writers, COMPATIBILITY.md §3.3):
+
+1. **Release A** (this code): the ledger answers `logged` and `loggedIncarnation`; the shard
+   registers on reads and `ensureStream`, has the `logged` mode, and runs `lazy` (no new
+   status is sent); the janitor's F16 fix; and **edge maps `registering` to 503** ("Needed
+   changes elsewhere" 1, being done in edge/ by its owner). A is safe to roll back: no format
+   or status reaches a reader that does not know it, and schema 2 is additive.
+2. **Release B**: viz-ingest's vars get `"SHARD_REGISTRATION": "logged"` ("Needed changes
+   elsewhere" 3). Only once A is live everywhere and is the rollback floor (D46): a rollback
+   below A would put an edge that answers 429 in front of shards that may still run B for the
+   code-update delay. Rolling B back to A is safe at any time (the var goes; streams keep
+   their `registered` value; appends are lazy again).
 
 ## Flush triggering
 
@@ -171,14 +303,220 @@ per shard on an even share, so an unevenly spread tenant is refused before its w
 
 ```
 npm install
-npx vitest run --maxWorkers=2   # 63 tests in workerd, 8 files
+npx vitest run --maxWorkers=2   # 109 tests in workerd, 12 files (2026-11-26, after the review of D72)
 npx tsc --noEmit                # clean
 node scripts/mutants.mjs        # on a copy outside the git checkout (see the script)
 npm run bench                   # the workerd counterfactual (bench/)
 BENCH=tail npm run bench        # a 20 MB tail, read whole and filtered
+BENCH=registration npm run bench  # registration before writes (D61)
+BENCH=signaltail npm run bench    # a span or log query against eight hours of tail; appends (D72)
+node --experimental-strip-types --no-warnings bench/walk.node.mjs   # the bounds walk alone (Node)
+node --experimental-strip-types --no-warnings bench/skipread.node.mjs  # where the bounds are kept: bytes read to skip, rows written (workerd)
 ```
 
-Last run, 2026-11-19: **63 passed, 0 failed**; `tsc --noEmit` clean.
+**Last run, 2026-11-26, after the review of D72: 109 passed, 0 failed (12 files); `tsc --noEmit`
+clean.** Run on the working tree at commit `76e065b` with this change's later edits to
+`src/tail.ts` (comments), `README.md`, `bench/` and `scripts/mutants.mjs` uncommitted; `shard/`'s
+code and tests are as in `76e065b`, whose snapshot carries them (review m-7: the runs below this one
+are tied to no commit). Stack, same tree: `npx tsc --noEmit` clean; `npx vitest run --maxWorkers=2`
+50 passed, 1 skipped (11 files); the gateway suite 4 of 4.
+
+- **The review of D72** (`design/reviews/d72-shard-bounds.md`; 2026-11-26):
+  - *M-1, deciding a skip* (`bounds.test.ts` "deciding a skip, and what one call reads"): the
+    index `batch_time` holds the bounds of exactly the span and log batches that have them (not a
+    metric batch, not one the walk refuses) and is partial; the read's plan uses it as a covering
+    index, and `TIMED_TAIL_SQL` never names the payload in its WHERE (there it would read every
+    row's record: 140 KB instead of 20 KB, measured below). With `tailScanMaxBatches` 3 a hull
+    read and an unranged read return the same batches as one call, each page only from its own
+    three batches, some pages empty and still moving on.
+  - *n-1*: `page_limit` carries `last` true when only skipped batches follow, false when a kept one
+    does, false without a range unless the batch is `through`, false when the look stops at the
+    batch window.
+  - *m-1* (`bounds.test.ts` "a batch of a layout the walk does not know…", and
+    `bounds.edge.test.ts` R2): flags 1, reserved 0x80 at 6 and 7, a non-zero byte in the padding
+    before and after the `entry` column, `n_entries` 0 with rows (twice, once with every other
+    byte zero): no bounds, the engine's strict decoder refuses each too, stored and kept by a range
+    holding none of their times. The review's modelled later layout (flag 1, a u64 after the entry
+    table): no bounds, and a read of exactly its last row's millisecond returns it (it returned
+    nothing before); the same bytes with the flag cleared still get wrong bounds, which is why
+    BATCH.md requires a later layout to signal itself.
+  - *m-6* (`bounds.edge.test.ts`, adopted from the review's R1 and R5b): 180 random OTLP/JSON
+    traces, OTLP/JSON logs and Loki push requests with adversarial content, decoded and encoded by
+    edge's own code: the walk equals the engine's flush on every batch, none unbounded; a batch at
+    the entry limits; the most expensive shapes edge builds for the walk (every span its own
+    resource of 128 attributes; every record its own stream), near 1 MiB.
+
+- **Time bounds of span and log batches** (`test/bounds.test.ts`, 11, D72). Span and log batches
+  come from the engine's test encoder (no code shared with the shard or edge; a resource
+  attribute of type 5 is patched in, which that encoder cannot write), and bounds are checked
+  against the engine's flush (`encodeSpans`/`encodeLogs`: the files' `minNs`/`maxNs`), an
+  independent reader:
+  - *recorded at append*: six span and six log batches of up to 40 rows over an hour each, plus
+    one whose times lie in one millisecond and one straddling a millisecond by a nanosecond:
+    the stored bounds equal the flush's floors, after an eviction; a metric batch has none; 150
+    random batches (1 to 3 entries, every attribute type, times from 0 to 2^63 − 1, on and next
+    to millisecond edges) give the flush's bounds; a batch cut inside its entry table, one with a
+    negative start, one whose `n_rows` the batch cannot hold and an empty one are stored with
+    none, accepted, and kept by a hull that holds none of their times;
+  - *read by a hull*: a six-hour span tail of twelve batches of this release and two written by
+    the release before (frozen) in between: for 161 hulls (each bounded batch at both edges,
+    touching and one millisecond off, 60 random ones, open-ended ones, far ones) the read returns
+    exactly the overlapping batches and every unbounded one, in order, byte for byte;
+  - *traces (D62)*: 200 random nanosecond bounds (on, one below and one above span starts, and
+    anywhere), passed as `msRange` passes them: every span starting inside a bound is in a
+    returned batch (the test requires more than 500 such span and bound pairs);
+  - *logs*: 100 random bounds over ten batches: every record inside is in a returned batch, and
+    the batches returned are exactly the overlapping ones; without a range every batch;
+  - *signals with a hull*: in a stream mixing the three signals, `[2]`, `[3]` and `[2, 3]` keep
+    only their overlapping batches; `[1]` keeps metric rows by `ts`, which the engine selects as
+    from the metric batches alone; no `signals` applies each rule to its own signal;
+  - *pages and refusals*: the same batches at page sizes of one and two batches; skipped batches
+    are not counted as scanned; the scan budget (one batch a call) continues correctly; a cursor
+    of another hull, or of no hull, is `invalid`; the same after eviction; `page_limit` names the
+    first KEPT batch, not a larger skipped one; a discard between pages is `stale_watermark`, as
+    is a read below the fence; another incarnation is `incarnation_mismatch`;
+  - *rollback*: storage this release wrote (schema 3) is opened by the release before D72
+    (frozen, `bench/prebounds/`, at `fd4b75a`) on the same storage without lowering its version;
+    it serves every span batch whole whatever the hull, takes appends, seals and serves the
+    segment to flush; after the roll-forward its batches have no bounds and every hull keeps
+    them, this release's are still skipped by bounds, and new appends are bounded again;
+    *upgrade*: storage at schema 2 made by that release migrates to 3 once (rows unchanged,
+    bounds NULL, served, kept by every hull; not migrated again on the next open).
+  - The D61 rollback test now expects the current schema version (3), and the adoption test checks
+    that adopted rows have no bounds.
+  - **Stack** (which bundles the shard), 2026-11-19 after this change: `npx vitest run
+    --maxWorkers=2` 50 passed, 1 skipped (11 files); the gateway suite 4 of 4. Its `tsc --noEmit`
+    failed in the shared tree on two lines of `publisher/src/log.ts`, which another builder had
+    uncommitted edits in at the time; on a scratch copy with the committed publisher and this
+    shard it was clean.
+- **Measured here** (local workerd, 2026-11-19, three runs at load average 3.0 to 3.9;
+  `bench/results/signaltail.txt`): eight hours of tail, one batch per ten minutes of start time,
+  48 batches; spans 18.74 MB (1,500 spans a batch, about 300 B each), logs 16.79 MB (2,000
+  records a batch). Before any bytes were compared, each read held, byte for byte, every batch
+  in which the engine's flush finds a row inside the read's nanosecond bound, and only batches of
+  the tail. Times are medians of five reads around the RPC calls, in one process.
+
+  | One-hour query (04:00 to 05:00) | Batches | Bytes the shard returns | Read (median, three runs) |
+  |---|---|---|---|
+  | spans, before: what query sends today (`signals` only) | 48 | 18,736,064 (over `maxFetchBytes`, 16 MiB: refused) | 25–35 ms |
+  | spans, after: span-local query (tags, span-local metrics), the hour | 6 | 2,343,888 | 8 ms |
+  | spans, after: search, whole-trace metrics, by ID with a hint: the hour ± 2 h margin | 30 | 11,719,440 | 19–22 ms |
+  | spans, after: an hour a day before the tail | 0 | 0 | 5–6 ms |
+  | logs, before | 48 | 16,791,072 (over 16 MiB: refused) | 19–31 ms |
+  | logs, after: the hour | 6 | 2,100,928 | 8 ms |
+  | logs, after: an hour a day before the tail | 0 | 0 | 4–5 ms |
+
+  Appends, as a counterfactual: the same 96 batches (35.5 MB) appended one after another to this
+  release and to the release before (frozen), three runs alternating which goes first, each
+  checked to have stored exactly what it was sent: 362–457 ms against 369–497 ms for the 96,
+  median 3 ms each on both; no difference beyond the spread. Nothing was tuned. The walk alone,
+  timed in Node 22 (workerd's clock does not move during synchronous work): 7.5–35 µs per batch of
+  0.4 to 1 MB, 0.3–1 µs for a one-row batch (typical shapes only: up to 1.5 ms for edge's worst,
+  review m-4, below). What these do not show: the bytes and times are for a
+  tail whose batches each cover ten minutes; batches whose spans span hours (late senders, long
+  spans) skip less. On Cloudflare the reads and the walk over SQLite's overflow pages to the
+  bounds are not measured (experiment: the same tail and reads against a shard on Cloudflare, from
+  a query Worker).
+- **Measured here after the review of D72** (2026-11-26):
+  - *Where the bounds are kept* (`bench/skipread.node.mjs`, local workerd through a Durable
+    Object, three runs, identical in bytes, `bench/results/skipread.txt`; every layout returned the
+    same batches for every read). Bytes: what the workerd process read (`rchar`) during one read
+    after SQLite's page cache was filled with other pages. 48 batches of 0.4 to 1 MB:
+
+    | Layout | Rows written per append (bounded / not) | Skip all 48 | One hour (8 kept) | Everything |
+    |---|---|---|---|---|
+    | as first built: in the row, after the payload | 3 / 3 | 33,004 KB, 7–10 ms | 37,532 KB | 65,870 KB |
+    | **partial index `batch_time` (built)** | **4 / 3** | **20 KB, under 1 ms** (0.05–0.09 warm) | 4,568 KB | 33,006 KB |
+    | the same, `payload IS NOT NULL` in the WHERE | 4 / 3 | 140 KB | 4,668 KB | 33,006 KB |
+    | full covering index | 4 / 4 | 16 KB | 4,564 KB | 33,002 KB |
+    | table of bounds | 4 / 3, and 2 rows per discard | 20 KB | 4,568 KB | 33,007 KB |
+    | bounds before the payload (table rebuilt) | 3 / 3 | 136 KB | 4,664 KB | 33,002 KB |
+
+    2,000 batches of about 200 B: skipping all read 580 KB as first built and 176 KB as built now,
+    but took 1.3 ms warm against 0.3–0.7 ms (about 0.65 µs per batch for the index lookup). Why the
+    partial index: D72 in `design/DECISIONS.md`. Billed: one more row written per span or log
+    append (modelled at list price: $1.00 per million such appends past the included 50 million
+    rows a month); none per metric append.
+  - *End to end* (`BENCH=signaltail`, this change against the first build from a scratch copy at
+    `cd41a86`, alternating, two runs each, load average 8 to 11; `bench/results/signaltail.txt`):
+    an hour a day before the tail 4–9 ms → 1 ms; the hour 6–10 → 3 ms; the hour with the margin
+    20–26 → 15–18 ms; appends of the 96 batches against the release before D72: 582–737 ms against
+    455–1,004 ms, no difference beyond the spread. Each read held every needed batch, byte for byte.
+  - *The walk* (`bench/walk.node.mjs`, Node 22, three runs; review m-4): 10–25 µs for typical 0.4 to
+    1 MB batches; **1.27–1.49 ms** for the worst shape edge builds (1,289 resources of 128
+    attributes, a span each, 1 MiB) and 0.19–0.23 ms for 12,465 one-label streams; shapes edge never
+    builds up to 2.4 ms. Linear, paid once per append by the sender's own bytes: documented, not
+    capped (a cap would only switch skipping off for such senders; D72 (i)).
+
+Last run, 2026-11-19: **78 passed, 0 failed**; `tsc --noEmit` clean. The suite now runs with
+the ledger in the same script (`wrangler.test.jsonc`; its drain only when a test asks).
+
+- **Stage 2, spans and logs** (`test/signals.test.ts`, 7, 2026-11-19; batches written by the
+  engine's test encoders `engine/wasm/test/signal.ts` and `vzb1.ts`, metric pages read back by
+  the engine): a `…/traces/0` and a `…/logs/0` shard store, deduplicate, seal, list, serve
+  (`readSegment`, unfiltered and filtered reads) and record span and log batches; a filtered
+  read with their signal returns them whole and in order whatever the time range, one with
+  `signals: [1]` or a series filter returns nothing; registration before writes (D61) refuses a
+  new `…/traces/1` stream until the ledger has logged it, then accepts; in a stream mixing all
+  three signals (not what edge writes) a metrics read gets only metric rows, which the engine
+  selects exactly as from the metric batches alone, with and without a time range, a metric
+  name and small pages, and a metric filter without `signals` drops the span and log batches;
+  several signals at once and pages; a cursor bound to its signals; malformed `signals` refused
+  `invalid`; a filter without `signals` keeps its pre-stage-2 cursor binding; a batch of an
+  unknown signal (9) skipped by `signals: [1, 2, 3]` and failing a read that admits it, after
+  eviction too, while the unfiltered form returns it as before.
+  **Last run (2026-11-19): 85 passed, 0 failed (10 files); `tsc --noEmit` clean.**
+- `test/registration.test.ts` (16, D61), each tied to a trace of the protocol model or a
+  finding of `design/reviews/registration-before-writes.md`:
+  - **spec test 1, shard half** (`R1_safety`): a new stream's appends are refused
+    `registering`, nothing stored, while the ledger has only committed the registration; the
+    retry is accepted once it is logged; the shard and the ledger are evicted between every
+    step; a ledger rebuild that rolls a committed registration back is re-registered and still
+    refused until logged; after the shard is accepted the ledger, emptied and rebuilt, still
+    names the stream.
+  - **review M-1**: with one tenant's ledger hanging (3 s per call), 40 appends of that tenant
+    are all refused within 1.5 s and 40 appends of another tenant of the same shard are all
+    acknowledged meanwhile; one ledger call for the 40; nothing in flight, pending or stored. A
+    sender hammering a new stream with the default backoff makes at most 2 calls in 100 appends;
+    concurrent reads after a loss and concurrent `ensureStream` calls share one call.
+  - **review M-2, the shard's side**: the refusal is `backpressure` / `registering` with a
+    `Retry-After` of 500–1000 ms, never a scope edge answers 429.
+  - **spec test 3, shard half** (`LIVE_R2`): after a storage loss a read naming the lost
+    stream is answered with a fresh, newer stream that the ledger already has; concurrent reads
+    get the same one; read from 0 it is empty; once logged it takes writes. A registration call
+    lost with the instance is made again by the alarm, from storage.
+  - **review m-1** (alert), **m-5** (at most `maxRegistrations` calls in flight), **m-7** (S5
+    heals a stream holding nothing; one holding rows is never renumbered).
+  - **skew and rollback**: a ledger of the release before D61 (frozen,
+    `ledger/bench/prereg/`) answers without `logged` and is never taken as logged; the shard
+    release before D61 (frozen, `bench/prereg/`) run on the same storage (schema 2 opened by
+    code that knows 1), then the roll-forward: every stream accepts, a confirmed registration
+    stays confirmed. Without a `LEDGER` binding the shard is lazy and answers as before.
+- The integration traces (shard + ledger + flush + a reader following the coordinator's
+  protocol) are in `flush/test/registration.test.ts`; the F16 and F15 traces with the janitor
+  in `janitor/test/registration.test.ts`; the soak in `stack/test/soak.test.ts` runs the
+  shards in mode `logged` (400 steps, seeds 20261118, 1, 7, 42: passed).
+
+**Measured here** (local workerd, 2026-11-19, load average 2.6–3.4 on 4 cores;
+`bench/results/registration.log`):
+
+- **A new stream's first acknowledgement**, from the sender's first send, the ledger draining
+  on its own (200 ms after a commit), 30 streams each: with the shard's `Retry-After`
+  (500–1000 ms), **519–1007 ms, median 702** (one refusal each); with it rounded up to whole
+  seconds, as edge writes the header, **1006–1013 ms** (one refusal each). Local R2 PUTs take
+  milliseconds, so these are lower bounds for Cloudflare: the spec's **modelled** 0.5–1.5 s
+  assumed a 180–494 ms segment PUT and a 0.5 s Retry-After; with edge's whole seconds the
+  modelled figure is **1–2 s** (review m-9), each refusal one shard→ledger round trip that is
+  **not measured from a shard** (15–47 ms Worker→ledger on Cloudflare, s4). The experiment that
+  settles it: fresh streams started on Cloudflare, first send to first acknowledgement, n ≥ 30,
+  idle ledger and one under eight writers (spec "What remains unproven").
+- **Appends per second of established streams**, this release in mode `logged` (streams
+  confirmed) against the release before (frozen, `bench/prereg/`), same clients and batches,
+  4 s, three runs each, every run storing exactly what it acknowledged: 1 client 748 / 771 /
+  703 against 767 / 806 / 708; 16 clients 2,866 / 2,815 / 2,525 against 2,788 / 2,838 / 2,742;
+  64 clients 3,452 / 2,977 / 3,035 against 3,427 / 3,025 / 3,027. No difference beyond the
+  run-to-run spread (the path adds one boolean test per append). Nothing was tuned: no
+  parameter of this release touches that path.
 
 - `test/tail.test.ts` (8): a tail of 24 random batches written with the engine's own test
   encoder (`engine/wasm/test/vzb1.ts`), with duplicate `(series, ts)` and staleness markers,
@@ -279,11 +617,121 @@ copy): V8 keeps a NaN's bits through that path, signalling NaNs included, so the
 staleness marker cannot tell; the byte copy is what BATCH.md asks for and is right by reading.
 In all: **30 of 32 killed**, R-12 and this one surviving.
 
+**Run of 2026-11-19, stage 2 of traces and logs** (a scratch copy of the tree; against
+`test/signals.test.ts`): **"metrics tail reads returning span batches"** (the `signals` check
+removed from `filterBatch`, so a read with `signals: [1]` keeps span and log batches) is
+**killed** by "a metrics read (`signals: [1]`) gets only metric rows…" and by both derived-pool
+tests ("a traces shard … like a metrics shard", "a logs shard …"). 1 of 1.
+
+**Run of 2026-11-19, registration before writes (D61)**, on a copy of `contracts/`, `shard/`,
+`ledger/`, `flush/`, `janitor/`, `compact/`, `publisher/` and `engine/wasm/` in a scratch
+directory, each mutant against the registration tests of the components named (the shard's are
+in `scripts/mutants.mjs` as `D61:`; the others in `ledger/` and `janitor/`'s scripts):
+
+| Mutant | Killed by |
+|---|---|
+| acknowledge before logged: a committed registration taken as logged | shard spec test 1 (both); flush "spec R1" |
+| acknowledge before logged: a new stream accepted unregistered | shard spec test 1; flush "spec R1", "spec F6(b)" |
+| an append parks on the registration instead of being refused | shard M-1 (both) |
+| 429 instead of a retryable scope (`tenant`) | shard spec test 1, M-2 |
+| a read naming a lost stream does not start and register a fresh one (as before D61) | shard spec test 3; flush "spec R1", "spec F6(b)" |
+| an answer without `logged` (an older ledger) taken as logged | shard skew |
+| no single-flight | **survived** the first run (appends alone cannot see it: `kick` has its own guard); killed after adding "concurrent reads … share one ledger call" |
+| no cap on registration calls in flight (m-5) | shard m-5 |
+| S5 not healed (m-7) | shard m-7 |
+| the alarm does not retry registrations | shard spec test 1 (both) |
+| a new stream's registration not rebuilt from storage | shard spec test 1, spec test 3 |
+| R-10's pattern, updated for the new code (a read of a lost stream answers an empty `ok`) | shard.test.ts |
+
+**11 of 11 D61 mutants killed** (one after a test was added), plus R-10 re-checked. The
+ledger's and the janitor's D61 mutants are listed in their READMEs.
+
+**Run of 2026-11-19, review M-5 (the base-pool rule shared with edge and control)**, on a copy of
+the tree in a scratch directory outside git whose unmutated suite passed 87 of 87, against
+`test/pool.test.ts` (`node scripts/mutants.mjs "names:"`): **3 of 3 new mutants killed**, and
+the two older `names:` mutants run again, killed. "A base pool ending in /logs is valid" (the
+suffix check narrowed to `/traces`): killed by "a base pool is a valid pool name that does not
+end in a derived pool's suffix" and "the dedicated pool of every tenant id is a valid base pool,
+except for the ids traces and logs". "A base pool may contain `_`" (`POOL_NAME` dropped from the
+rule): killed by the first. "`dedicatedPool` keeps `_`": killed by "treats a dedicated tenant as a
+pool of its own" and the second. The same rule is mutated from control's suite (control README,
+94–97 and 144–145) and from edge's: edge's three base-pool mutants, pointed at
+`../shard/src/pool.ts` in the copy, were killed by edge's own tests (a pool outside `POOL_NAME`,
+and a base pool ending in `/traces` or `/logs`, refused with 503).
+
+**Run of 2026-11-19, time bounds of span and log batches (D72)**, on a copy of `contracts/`,
+`shard/`, `ledger/{src,bench}` and `engine/wasm/{js,test}` in the session's scratch directory
+(outside git) whose unmutated suite passed 98 of 98; `node scripts/mutants.mjs "D72:"`, each
+against `test/bounds.test.ts` (the migration's against `test/compat.test.ts`): **13 of 13
+killed**.
+
+| Mutant | Killed by (`bounds.test.ts` unless named) |
+|---|---|
+| hull lower edge off by one (`max_ts > minTs`) | "returns exactly the batches whose bounds overlap the hull…"; "traces (D62): every span that starts inside a nanosecond bound…" |
+| hull upper edge off by one (`min_ts < maxTs`) | the same two |
+| recorded min one ms late | "a span or log batch's row holds the floor in ms…"; "random batches…: the walk agrees with the flush" |
+| recorded max one ms early | the same two |
+| recorded bounds rounded up, not floored | the same two |
+| old rows (no bounds) dropped instead of kept (`min_ts IS NULL OR …` removed) | "a batch the walk cannot follow is stored without bounds…"; "returns exactly the batches…" |
+| the signal filter ignored (`signals` check removed from `filterBatch`) | "signals still choose batches when the read has a hull…" |
+| span bounds read from `end`, not `start` | "a span or log batch's row holds the floor…"; "a batch the walk cannot follow…" |
+| log bounds read from `observed_ts`, not `ts` | "a span or log batch's row holds the floor…"; "random batches…" |
+| a type-5 resource attribute not walked | the same two |
+| a batch the walk cannot follow refuses the append (throws) | "a batch the walk cannot follow is stored without bounds, and accepted…" |
+| bounds computed but not stored (nothing skipped) | "a span or log batch's row holds the floor…"; "returns exactly the batches…" |
+| migration 3 adds no column | `compat.test.ts` "a fresh shard records shard.Shard at the latest version…", "adopts dc2a1c3 storage…" |
+
+Run again on the same copy because their code moved: the twelve `tail:` mutants (11 killed; "values
+copied as numbers" survives, as before, equivalent: above), "group commit: an append is answered
+before its group commits" (its pattern re-anchored to the new `Pending` field; killed) and the three
+`versions:` mutants (killed). The other mutants of the script were not re-run for this change.
+
+**Run of 2026-11-26, the review of D72** (`design/reviews/d72-shard-bounds.md`), on a copy of
+`contracts/`, `ledger/`, `edge/src/` and `engine/wasm/{js,test}` at `e90eee1` and this `shard/`, in
+the session's scratch directory (outside git), whose unmutated suite passed 109 of 109;
+`node scripts/mutants.mjs "D72"`, each against `test/bounds.test.ts` and, where named,
+`test/bounds.edge.test.ts` or `test/compat.test.ts`. The thirteen D72 mutants above, three of them
+re-anchored to the new SQL (both hull edges and "old rows dropped": now `t.max_ts <= ?`,
+`t.min_ts >= ?`, and `b.min_ts IS NOT NULL` added to `TIMED_TAIL_SQL`): **13 of 13 killed**. The
+review's: **13 of 13 killed**, one after a test was added.
+
+| Mutant | Killed by (`bounds.test.ts` unless named) |
+|---|---|
+| M-1: migration 3 creates no index `batch_time` | `compat.test.ts` golden; every ranged read ("a batch the walk cannot follow…", others: `no such index`) |
+| M-1: the index not partial (metric appends write an entry) | `compat.test.ts` golden; "the decision is made from the partial index…" |
+| M-1: the skip decided from the row, as first built | "the decision is made from the partial index…" (the plan) |
+| M-1: `payload IS NOT NULL` in the timed WHERE | the same (its WHERE) |
+| M-1: no per-call batch window | "one call considers at most tailScanMaxBatches batches…" |
+| M-1: a call ending at its window does not continue the read | the same |
+| m-1: flags and reserved not checked | "a batch of a layout the walk does not know…"; `bounds.edge.test.ts` R2 (both) |
+| m-1: reserved not checked (flags only) | the same |
+| m-1: padding before the `entry` column not checked | "a batch of a layout the walk does not know…" |
+| m-1: padding after the `entry` column not checked | the same |
+| m-1: a batch with rows and no entry walked | **survived** the first run (the test's only such batch was also caught by the padding check); killed after adding one whose other bytes are all zero |
+| n-1: `page_limit` always says `last` | "page_limit says whether its batch is the last…" |
+| n-1: a look that stops before `through` says `last` | the same |
+
+The twelve `tail:` mutants (one re-anchored to the new `page_limit`) and the three `versions:`
+ones, run again on the same copy because `tailPage` and migration 3 changed: 11 of 12 and 3 of 3
+killed; "values copied as numbers" survives, equivalent, as before. The other mutants of the
+script were not re-run for this change (no code they target moved).
+
 ## Not implemented yet
 
-- **Skipping stored batches without scanning them.** A filtered read decodes the series table
-  of every batch above the watermark. Per-batch time bounds and metric names, written at append
-  (a schema change and work on the append path), would let it skip batches outside the range.
+- **`last` on `page_limit` is not read by query yet** ("Needed changes elsewhere"): until it is, a
+  422 for a tail whose later batches are all skipped says "at least N bytes" where N is exact
+  (review n-1). Query sends the time range now (its owner's change).
+- **Filtering rows inside span and log batches**: a batch the range keeps is returned whole, with
+  any rows it holds outside the range (the reader selects rows). Batches whose spans spread over
+  hours (late senders, long spans) are kept whole for any range they touch.
+- **Bounds of stored rows**: nothing is backfilled; rows from before schema 3, and rows the release
+  before writes after a rollback, are read by every range until they leave the tail.
+
+- **Skipping metric batches without scanning them.** A filtered metrics read decodes the series
+  table of every batch above the watermark. The same columns could hold a metric batch's time
+  bounds (its `ts` column is found from the end of the batch) and let a read skip batches outside
+  the range; not done (D72 (g): D48 measured that metric batches span most of a tail's times).
+  Metric names per batch are not recorded either.
 - **Key ranges of a split that leaves labels out** (`sum without (…)`): the split key is then a
   hash of the other labels, not `series_id`; a filtered read cannot select it, and the
   coordinator keeps cutting such tails itself (`engine.splitTails`).
@@ -291,10 +739,32 @@ In all: **30 of 32 killed**, R-12 and this one surviving.
   of what a query with `=~` selects (the engine still applies the query's matchers).
 
 - **Map-epoch handover**: draining shards and moving fingerprints on a map change.
-- **Registration before writes** (spec F1). The shard only reports a new incarnation;
-  `flush/` registers it with the ledger at its first flush. Until then queries naming the old
-  incarnation are refused, indefinitely for a stream that gets no new writes (spec F6;
-  `ledger/README.md`, "Known risks").
+- **Registration before writes is OFF in production until release B** ("Rollout"): the
+  default mode is `lazy`, so F6(b) stays possible for appends until edge maps `registering`
+  and `SHARD_REGISTRATION` is `logged`. What IS on in every mode: reads and the janitor
+  register a lost stream's fresh incarnation (spec F6 liveness, F16).
+- **A forgotten registration is not re-registered** (review m-2). `stream.registered` is kept
+  for ever; it can be wrong only if the ledger forgets a LOGGED registration, which the
+  protocol never does: only a lost or replaced log (a tenant deleted and created again under
+  the same id, a point-in-time restore of the ledger, a log looked for under another cell).
+  None is built. Re-registering the same incarnation would not recover (the ledger would
+  start it at 0 against the shard's recorded prefix: `not_contiguous` for ever), and starting a
+  fresh incarnation drops the stream's unrecorded rows, a declared loss for an operator to
+  decide. Out of scope, stated in DESIGN §4.3; the code before D61 is stuck the same way.
+- **Streams are never retired** (review m-3). A read naming a lost stream, and the janitor,
+  create a stream row and a ledger registration; nothing drops a stream. After a pool is
+  retired the first query of each tenant that wrote there creates a stream in the retired
+  shard, and every query wakes it. Not built because pool retirement and tenant deletion are
+  not built; the fix is a stream-retirement change in the ledger (a new `LedgerChange` kind:
+  a log format change, readers first, two releases), after which the read path no longer
+  creates anything for a stream the ledger has dropped, and deletion must fence both paths.
+- **Registration ahead of map changes and at tenant creation** (review m-4): `ensureStream`
+  exists for it; the callers (the map-change procedure and tenant creation, in control/ and
+  edge/) do not call it yet ("Needed changes elsewhere" 4). Until they do, every (tenant, new
+  slot) pair is refused for about a second when senders first write to it.
+- **Long-poll** (the review's suggestion that the ledger answer once logged): not done. The
+  shard's backoff (250 ms, doubling) already makes one or two calls per stream, and the
+  sender's `Retry-After` dominates the first acknowledgement.
 - **CPU fairness.** Byte budgets and the in-flight limit are per shard; a tenant sending many
   tiny requests still shares the object's single thread with its neighbours. Not measured.
 - **Tuning on Cloudflare.** The in-flight limit (64), pending bytes (16 MB) and group window
@@ -302,20 +772,26 @@ In all: **30 of 32 killed**, R-12 and this one surviving.
 
 ## Known risks
 
-- **A filtered read costs the shard CPU in proportion to its whole tail** (above), once per
-  query per shard, on the object that acknowledges appends. 22 MB took 30–140 ms here. A tenant
+- **Span and log bounds are only as good as the walk** (D72). The shard derives them from the
+  bytes every reader decodes, and a batch it does not accept gets none (kept by every range). It
+  accepts only the layout BATCH.md defines up to the time column, with flags and reserved zero; a
+  later revision that changes that layout WITHOUT signalling it in the header would get wrong
+  bounds and skipped rows (BATCH.md requires the signal, or the shard updated first; the reader
+  list in COMPATIBILITY §3.3 does not name the shard yet: "Needed changes elsewhere"). Tested
+  against the engine's flush on 150 random batches of the engine's test encoder and 284 of edge's.
+  The walk does not check label or attribute contents (empty names, UTF-8): a batch edge never
+  builds can get bounds from a layout the strict decoder refuses, which then refuses it at flush.
+- **Rows written and SQLite's reads are measured in local workerd only.** On Cloudflare neither the
+  extra index row per span or log append nor the bytes read to skip are measured (experiment:
+  appends and reads against a deployed shard, rows written from the analytics API).
+- **A tail of many tiny span or log batches is decided about 1 ms per 2,000 batches slower** than
+  as first built (the index lookup per batch), while reading a third of the bytes; bounded per call
+  by `tailScanMaxBatches` (about 21 ms at most, modelled).
+
+- **A filtered read costs the shard CPU in proportion to its whole tail** (above; for a span or
+  log read with a time range, the batches it keeps, D72, plus the index entries of those it skips), once per query per shard, on the object
+  that acknowledges appends. 22 MB took 30–140 ms here. A tenant
   with many concurrent queries over a large tail adds that much to its shard's thread each.
-- **Concurrent paged reads have no memory bound together** (review of D47, D48 and D55, P-10).
-  A page holds up to `maxBytes` (default and at most `TAIL_PAGE_MAX_BYTES`, 16 MiB) until the
-  RPC result is serialized. `tailPage` is synchronous, but answers to concurrent reads (eight
-  split leaves per query, several queries) can be alive at once: the default is an eighth of the
-  isolate per read. It is still better than before D48, when every read returned the whole
-  unpaged tail. Not changed: a smaller default (the measured selective read was 0.7 MB) or a
-  per-shard budget across reads in flight would bound it.
-- **A cursor can be refused for a filter given in another order** (review N-4). The cursor's
-  filter binding sorts label pairs with the default `sort()`, which compares `"name,value"`
-  strings (`src/tail.ts`). With commas in names or values, two orders of the same filter give
-  different canonical texts, and a valid cursor is answered `invalid`. It fails closed.
 
 - **A sealing group's acknowledgement waits for the queue send**, and once per marker
   period for a KV write (`deliver` runs before the answers go out). Neither is R2; the S3
@@ -323,10 +799,122 @@ In all: **30 of 32 killed**, R-12 and this one surviving.
   measure slow.
 - **The early refusal limit is per object, not per tenant**: a tenant flooding a shared
   shard gets other tenants refused as `overload` too (byte budgets stay per tenant).
+- **A ledger that cannot log refuses its tenant's new streams without bound** (D61, mode
+  `logged`): a new tenant cannot write, a shard that lost its storage takes nothing for that
+  tenant, a map change stops the moved keys. Fails closed and retryable, reported (the alert
+  after 60 s; `logStatus().registrationsPending`), and after R2 recovers the drain's backoff
+  (up to 60 s) is added. Existing streams keep accepting, as before.
+- **Whether concurrent calls into one Durable Object share its six outbound connections is
+  not measured** (review m-5). The cap of 4 registration calls per shard keeps them within six
+  with the seal notification (one queue send) and the marker (one KV write) either way.
+- **The registration's round trip from a pooled shard to a ledger elsewhere is not
+  measured**: a pooled shard serves tenants whose ledgers may be on another continent.
 
 ## Needed changes elsewhere
 
-**`query/`** (done by D54: the coordinator and leaves pass filters and follow pages; an unpaged answer mid-read is refused retryably). What makes a query read only
+### Time bounds of span and log batches (D72; review m-3, and the review of D72)
+
+1. **`query/`: done by its owner** (not edited here). `readSignalTail` sends each read's
+   nanosecond bound as the shard's time range (`msRange`); the review's query-side findings (m-2,
+   de-duplicate after the window; m-3, an empty range reads no tail) are that builder's. The
+   proposal that stood here (2026-11-19) is in this file's history.
+2. **`query/`: read `last` from `page_limit`** (review of D72, n-1; not done). In
+   `query/src/tail.ts` `readPages`, where `page_limit` is handled:
+
+   ```ts
+   // The batch that did not fit is the last the read keeps: its bytes complete the read. A shard
+   // before the review of D72 sends no `last`: then only the tail's last batch is known to be.
+   out.overLast = typeof (r as { last?: unknown }).last === 'boolean' ? (r as { last: boolean }).last || r.seq === out.through : out.through !== null && r.seq === out.through
+   ```
+
+   and in `query/src/coordinator.ts` (line 585 at `76e065b`), keep `r.overLast` when a read's
+   `page_limit` set it instead of recomputing it from `through`. Then the 422 says the exact size
+   when every later batch is skipped. Test: a tail whose large kept batch is followed only by
+   batches outside the range: the 422 has no "at least". Release order: none (the field is
+   additive; an older shard sends none and the old rule applies).
+3. **`contracts/COMPATIBILITY.md` §3.3** (not this component's): add the shard to the readers a
+   `VZB1` signal 2 or 3 layout change must update first, unless the change signals itself in the
+   header (BATCH.md, "The one layout a shard reads").
+
+### Registration before writes (D61)
+
+1. **Done (edge/README.md, "Registration before writes").** **`edge/`: answer `registering` with 503, never 429** (review M-2; must ship in release A,
+   before anything sets `SHARD_REGISTRATION`). In `edge/src/route.ts`, where the per-shard
+   results are folded (the loop over `results` that reads `scope === 'overload'`):
+
+   ```ts
+   // An overloaded shard, or a stream whose registration is not yet logged (D61), is a 5xx:
+   // Remote Write senders MUST retry 5xx and MAY drop 429. A full buffer stays 429.
+   if ((r as { scope: string }).scope === 'overload' || (r as { scope: string }).scope === 'registering') overloadMs = Math.max(overloadMs, r.retryAfterMs, 1)
+   else retryAfterMs = Math.max(retryAfterMs, r.retryAfterMs, 1)
+   ```
+
+   and do NOT call `noteOverload` for `registering` (it is one stream, not the shard: the
+   early refusal of the tenant's next request must stay keyed to overload). The answer is then
+   `edge/src/index.ts`'s 503 with `Retry-After` (whole seconds, `retryAfter`), and the ruler's
+   entrypoint (`edge/src/recorded.ts`) refuses it as `overloaded` (retryable). A message of its
+   own ("ingest stream is being registered; retry the whole request") is better than
+   "overloaded" if the outcome gets its own status. **Test** (`edge/test/overload.test.ts`):
+
+   ```ts
+   it('a stream being registered (D61) is 503 with Retry-After, never 429; nothing is stored; the retry once registered is stored once', async () => {
+     const t = await tenant()
+     const proto = Shard.prototype as unknown as { append: Shard['append'] }
+     const real = proto.append
+     let refuse = true
+     proto.append = async function (this: Shard, req) { return refuse ? { status: 'backpressure', scope: 'registering', retryAfterMs: 700 } : real.call(this, req) }
+     try {
+       for (const res of [await postWrite(t.key, series(3)), await postOtlp(t.key, otlp(), 'application/x-protobuf')]) {
+         expect(res.status).toBe(503)
+         expect(res.headers.get('Retry-After')).toBe('1')
+       }
+       expect((await tailOfSlot(t.map, 0, t.tenant)).batches).toEqual([])
+       refuse = false
+       clearCaches()
+       expect((await postWrite(t.key, series(3))).status).toBe(204)
+       expect((await postWrite(t.key, series(3))).status).toBe(204) // a retry: stored once
+       expect((await tailOfSlot(t.map, 0, t.tenant)).batches).toHaveLength(1)
+     } finally {
+       proto.append = real
+     }
+   })
+   ```
+
+   (in the file's `describe('an overloaded shard', …)`, whose `tenant()`, `series()` and
+   `otlp()` it uses). Mutant: map `registering` like `tenant` (429): the test fails on the
+   status. A Remote Write request split over two shards of which one refuses `registering`
+   is refused whole (503) after the other stored its batch; the sender's retry is deduplicated
+   by fingerprint, as for any partial refusal (contracts/BATCH.md).
+2. **`query/`: no code change for R2.** The coordinator as built already learns a newer
+   incarnation from `incarnation_mismatch`, re-plans, and reads a learned stream from 0; it
+   answers a shard that names a LOWER incarnation as "behind the ledger" (503), which a fresh
+   stream never is (it is started above the incarnation the read names). **Tests to add** in
+   `query/test/fence.test.ts`, against the real coordinator (the same traces run in
+   `flush/test/registration.test.ts` against a reader that follows `readTail`):
+   - *spec F6(b)*: shard configured `{ registration: 'logged' }`; ingest (retry the request
+     until 204); seal; `hooks.afterPlan` on the first attempt: flush the tenant until logged
+     (`flushAll` and the ledger's `drain()`), then `deleteAll` and evict the shard; expect the
+     exact answer, `Plan-Attempts` 2. Mutant: shard in mode `lazy`: the answer lacks the rows.
+   - *spec F6 liveness*: ingest (registered, logged), do not flush, `deleteAll` and evict the
+     shard; the query answers 200 (without those rows: the declared loss) with `Plan-Attempts`
+     2, and the next query 1. Mutant: the shard's read path answering `incarnation_mismatch(0)`
+     (as before D61): 503 after 4 attempts.
+   The existing test "a shard whose stream was recreated … a shard behind the ledger is 503"
+   is unchanged by D61 (it rewrites an existing stream's incarnation in memory; the read path
+   creates a stream only when the shard holds none).
+3. **Release B** (`stack/wrangler.jsonc` `vars`, or `deploy/workers.json` for viz-ingest):
+   `"SHARD_REGISTRATION": "logged"`, only once release A (with item 1) is live everywhere and
+   is the rollback floor (D46). Its release record must say that a rollback below A is
+   refused.
+4. **`control/` (or wherever pool maps are written) and tenant creation** (review m-4): call
+   `ensureStream(tenant)` on every slot of the tenant's new pool map, and publish the map's new
+   epoch only once each answers `registered: true` (retry while it does not; the shard's own
+   backoff paces the ledger calls). Then a refusal happens only after a shard loses its
+   storage.
+
+### Filtered and paged tail reads (D48)
+
+**`query/`** (the coordinator and the leaves; not edited here). What makes a query read only
 the tail it needs, and split leaves fetch only their key range:
 
 1. **Coordinator, `readTail`** (`query/src/coordinator.ts`). Call
@@ -346,15 +934,7 @@ the tail it needs, and split leaves fetch only their key range:
    comes from a shard that predates this; its batches are the whole tail, unfiltered and
    unpaged, and the coordinator uses them as it does today (the engine applies the matchers and
    ranges anyway; for a split, `engine.splitTails` still cuts them). Do not rely on `page`
-   until every `viz-ingest` version running sends it. **An answer without `page` in the middle
-   of a paged read** (a rollback or a gradual deployment between two pages; review of D47, D48
-   and D55, P-9): it is still the whole tail, so drop the pages already read and use that
-   answer alone. Appending it would count every row twice against `maxFetchBytes` and the
-   sample budgets. The engine's de-duplication by `(series_id, ts)` would keep the result
-   right, but the query could be refused. **A new filter field** comes with `v` 2. A `v` 1 shard
-   ignores fields it does not know (COMPATIBILITY.md §3.2) and still answers with `page`, so
-   only a new `v` makes it answer `unsupported_version` instead of a superset that looks
-   filtered.
+   until every `viz-ingest` version running sends it.
 2. **Split leaves** (`query/src/leaf.ts`, `runSplit`). When the split key has no `without`
    labels, each leaf reads the tail itself: the coordinator passes each shard's
    `(shard, incarnation, above)` it planned (including what `known` learned) to the leaf, and
