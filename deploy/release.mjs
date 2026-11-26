@@ -50,7 +50,14 @@
 //   later), viz-query and viz-ingest (stamped VIZ_FLOORS) are each at their floor in this release and
 //   as they serve now, a floor Worker this release does not deploy included; once any kept viz-ingest
 //   version set it (as a var of any type, or a secret), a release or a rollback that would leave one
-//   of them below its floor is refused, and a release is refused while the switch is a secret.
+//   of them below its floor is refused, and a release is refused while the switch is a secret. The
+//   rule `oauth-public` (OAUTH_PUBLIC on viz-control, set by configure on every production
+//   viz-control) does the same for viz-control, except that a serving viz-control below its floor
+//   makes the release FORWARD-ONLY for it (kind `floor`) instead of refused (D69 point 6).
+// - D70's gate: a manifest configured with --ids-optional is not deployed (its namespace ids are
+//   placeholders); OAUTH_CLIENT_KEY is not created or rotated on a viz-control whose generated config
+//   lacks its rate limits (lib/secrets.mjs keyGateProblems), refused before anything is uploaded; the
+//   record says which bindings and ids viz-control has, and whether a stage left them out as asked.
 import { randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -60,7 +67,7 @@ import { DEPLOY_DIR, GENERATED_DIR, REPO_ROOT, checkStage, log, parseArgs, readJ
 import { floorDeployProblems, floorRollbackProblems, floorRules, floorsOfVersion } from './lib/floors.mjs'
 import { formatsMap, formatsOfVersion, readersOf, recordReaders } from './lib/formats.mjs'
 import { schemasOfVersion } from './lib/schemas.mjs'
-import { GENERATED_SECRETS, ROTATE_ENV, RUN_VAR, SecretRefused, ensureSecrets, parseRotate, planSecrets, rotateProblems, secretFacts, secretRollbackProblems, secretsNow, secretsOfManifest } from './lib/secrets.mjs'
+import { GENERATED_SECRETS, ROTATE_ENV, RUN_VAR, SecretRefused, ensureSecrets, keyGateProblems, parseRotate, planSecrets, rotateProblems, secretFacts, secretRollbackProblems, secretsNow, secretsOfManifest } from './lib/secrets.mjs'
 import { versionIdFrom, wrangler } from './lib/wrangler.mjs'
 
 export const EXIT_REFUSED = 3
@@ -458,6 +465,21 @@ async function restore(manifest, workers, reason) {
 
 /** The vars of a manifest Worker's generated config (what its versions are uploaded with). */
 const varsOfGenerated = (w) => readJsonc(join(REPO_ROOT, w.config)).vars ?? {}
+/** A manifest Worker's generated config. */
+const configOfGenerated = (w) => readJsonc(join(REPO_ROOT, w.config))
+
+/** A manifest configured with --ids-optional has placeholder ids: never deployed (D70's gate needs allocated ids). */
+const idsOptionalProblems = (manifest) => (manifest.idsOptional === true ? [`the manifest was configured with --ids-optional: its KV and Rate Limiting namespace ids are placeholders, so it is not deployed. Run deploy/resources.mjs ensure, then deploy/configure.mjs without --ids-optional`] : [])
+
+/**
+ * D70's gate on the generated key, up front: refusals for each key this release would put (create or
+ * rotate) on a Worker whose generated config lacks its rate limits. A key that is kept is not refused.
+ */
+const keyGateRefusals = (gate, planned) => gate.filter((g) => planned.some((p) => p.worker === g.worker && p.name === g.name && p.action !== 'keep')).map((g) => g.problem)
+
+/** What the record says of each Worker with an OAuth gate (D70): its bindings' ids, and whether a stage left them out as asked. */
+const oauthOfManifest = (manifest) =>
+  manifest.order.map((n) => manifest.workers.find((w) => w.name === n)).filter((w) => w?.oauth).map((w) => ({ worker: w.name, ratelimits: w.oauth.ratelimits, withoutRateLimits: w.oauth.withoutRateLimits === true, public: w.oauth.public === true }))
 
 /**
  * The Workers a deploy reads the live state of: this release's, every other Worker of the manifest
@@ -481,19 +503,21 @@ export async function deploy({ stage, ackText = '', rotateText = '' }) {
   const previous = recordOf(manifest, before, { release: servingRelease(manifest, before), kind: 'previous', schemas: schemasOfLive(manifest, before), formats: formatsOfLive(manifest, before), formatsComplete: true })
   const previousFile = writeRecord(stage, 'previous.json', previous)
   const plan = planRelease(manifest, before, parseAcks(ackText))
-  const forwardOnly = forwardOnlyReasons(manifest, before)
   const floors = await floorDeployProblems(rules, manifest, before, FLOOR_API, varsOfGenerated)
+  const forwardOnly = [...forwardOnlyReasons(manifest, before), ...floors.forwardOnly]
   const specs = secretsOfManifest(manifest)
   const rotate = parseRotate(rotateText)
   const secretsBefore = await secretsNow(specs, before, SECRET_API)
+  const planned = planSecrets(secretsBefore, rotate, plan.steps)
+  const gate = keyGateProblems(manifest, configOfGenerated)
   log(`run ${run}`)
-  printPlan(manifest, plan, planSecrets(secretsBefore, rotate, plan.steps))
+  printPlan(manifest, plan, planned)
   for (const f of forwardOnly) log(`  FORWARD-ONLY: ${f.why}`)
-  const refusals = [...plan.problems, ...floors.problems, ...rotateProblems(rotate, specs)]
+  const refusals = [...idsOptionalProblems(manifest), ...plan.problems, ...floors.problems, ...rotateProblems(rotate, specs), ...keyGateRefusals(gate, planned)]
   if (refusals.length) {
     log('\nrelease: REFUSED before uploading or promoting anything:')
     for (const p of refusals) log(`  - ${p}`)
-    log('  See deploy/README.md, "Durable Object migrations", "Rollback floors" and "Worker secrets the deploy generates".')
+    log('  See deploy/README.md, "Durable Object migrations", "Rollback floors", "Worker secrets the deploy generates" and "Rate limits in front of OAuth".')
     return { exit: EXIT_REFUSED, plan }
   }
   const secretActions = []
@@ -501,7 +525,7 @@ export async function deploy({ stage, ackText = '', rotateText = '' }) {
     const mine = specs.filter((s) => s.worker === step.name)
     if (mine.length === 0) return null
     // `deployed`: the version wrangler deploy made in phase 2 serves already, so a refusal there comes after promotion (m-5).
-    return ensureSecrets({ worker: step.name, versionId, specs: mine, now: secretsBefore, rotate, release, run, tag, message, api: SECRET_API, deployed: step.via === 'deploy', log })
+    return ensureSecrets({ worker: step.name, versionId, specs: mine, now: secretsBefore, rotate, release, run, tag, message, api: SECRET_API, deployed: step.via === 'deploy', gate, log })
   }
 
   // Phase 1: upload (or, where a version cannot be uploaded, bundle). Nothing serves yet.
@@ -603,6 +627,9 @@ export async function deploy({ stage, ackText = '', rotateText = '' }) {
     secrets: secretActions.map(({ worker, name, action, versionId }) => ({ worker, name, action, versionId })),
     // The VIZ_DEPLOY_RUN every version this run uploaded carries.
     run,
+    // D70: viz-control's Rate Limiting bindings (ids), and whether a stage left them out as asked (--oauth-without-rate-limits).
+    oauth: oauthOfManifest(manifest),
+    oauthWithoutRateLimits: manifest.oauthWithoutRateLimits === true,
   })
   for (const w of record.workers) if (w.versionId !== uploaded[w.name]) log(`  warning: ${w.name} serves ${w.versionId}, expected ${uploaded[w.name]}`)
   const file = writeRecord(stage, 'release.json', record)
@@ -699,8 +726,8 @@ export async function planOnly({ stage, ackText = '', rotateText = '' }) {
   const rotate = parseRotate(rotateText)
   const secrets = planSecrets(await secretsNow(specs, live, SECRET_API), rotate, plan.steps)
   const floors = await floorDeployProblems(rules, manifest, live, FLOOR_API, varsOfGenerated)
-  const forwardOnly = forwardOnlyReasons(manifest, live)
-  const problems = [...plan.problems, ...floors.problems, ...rotateProblems(rotate, specs)]
+  const forwardOnly = [...forwardOnlyReasons(manifest, live), ...floors.forwardOnly]
+  const problems = [...idsOptionalProblems(manifest), ...plan.problems, ...floors.problems, ...rotateProblems(rotate, specs), ...keyGateRefusals(keyGateProblems(manifest, configOfGenerated), secrets)]
   printPlan(manifest, plan, secrets)
   for (const f of forwardOnly) log(`  FORWARD-ONLY: ${f.why}`)
   for (const p of problems) log(`  - ${p}`)

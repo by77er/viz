@@ -16,7 +16,7 @@ import { join, relative } from 'node:path'
 import { after, beforeEach, test } from 'node:test'
 import { GENERATED_DIR, REPO_ROOT } from '../lib/common.mjs'
 import { deploy, rollback } from '../release.mjs'
-import { callsLike, captured, cmd, installFakeAccount, serving } from './fake-account.mjs'
+import { callsLike, captured, cmd, installFakeAccount, oauthGated, serving } from './fake-account.mjs'
 
 const STAGE = 'rvtest'
 const N = (w) => `viz-${STAGE}-${w}`
@@ -59,8 +59,9 @@ function release(name, { publisher = 5, query = true, ingest = true, signals = n
   const workers = []
   const add = (worker, canonical, vars, extra) => {
     const config = join(dir, `${canonical}.jsonc`)
-    writeFileSync(config, JSON.stringify({ name: worker, vars: { VIZ_RELEASE: name, VIZ_WORKER: canonical, ...vars }, ...(extra.migrationTag ? { migrations: [{ tag: extra.migrationTag }] } : {}) }))
-    workers.push({ name: worker, canonical, component: canonical, config: relative(REPO_ROOT, config), deploy: true, migrationTags: extra.migrationTag ? [extra.migrationTag] : [], migrationTag: null, schemas: [], formats: [], floors: [], ...extra })
+    const { ratelimits, ...summary } = extra
+    writeFileSync(config, JSON.stringify({ name: worker, vars: { VIZ_RELEASE: name, VIZ_WORKER: canonical, ...vars }, ...(ratelimits ? { ratelimits } : {}), ...(extra.migrationTag ? { migrations: [{ tag: extra.migrationTag }] } : {}) }))
+    workers.push({ name: worker, canonical, component: canonical, config: relative(REPO_ROOT, config), deploy: true, migrationTags: extra.migrationTag ? [extra.migrationTag] : [], migrationTag: null, schemas: [], formats: [], floors: [], ...summary })
   }
   const declared = (map) =>
     map === null
@@ -75,7 +76,11 @@ function release(name, { publisher = 5, query = true, ingest = true, signals = n
   add(INGEST, 'viz-ingest', { ...(ingest ? { VIZ_FLOORS: stamp } : {}), ...(signals ? { INGEST_SIGNALS: signals } : {}), ...ing.vars }, { floors: ingest ? ['signal-data'] : [], formats: ing.formats })
   if (control) {
     const ctl = declared({ 'kv.settings': { w: controlWrites, r: controlReads ?? [controlWrites] } })
-    add(CONTROL, 'viz-control', { VIZ_SCHEMAS: JSON.stringify({ v: 1, classes: { 'control.Tenant': { latest: 1, compat: 1, by: null } } }), ...ctl.vars }, {
+    // A stage's viz-control as configure.mjs writes it since D70's gate: its rate limits, stamped at oauth-public.
+    const gated = oauthGated()
+    add(CONTROL, 'viz-control', { VIZ_SCHEMAS: JSON.stringify({ v: 1, classes: { 'control.Tenant': { latest: 1, compat: 1, by: null } } }), ...ctl.vars, ...gated.config.vars }, {
+      ...gated.manifest,
+      ratelimits: gated.config.ratelimits,
       migrationTag: 'v1',
       schemas: [{ component: 'control.Tenant', latest: 1, compat: 1, migrations: migrations(1) }],
       formats: ctl.formats,

@@ -133,7 +133,7 @@ test('floors: once a release at every floor has served, INGEST_SIGNALS goes on; 
   await shipped('r0', { publisher: 3, query: false, ingest: false })
   await shipped('r1')
   const r2 = await shipped('r2', { signals: 'traces,logs' })
-  assert.deepEqual(r2.floors, [{
+  assert.deepEqual(r2.floors.filter((f) => f.name === 'signal-data'), [{
     name: 'signal-data', writer: INGEST, var: 'INGEST_SIGNALS', value: 'traces,logs', on: true,
     workers: [PUB, QUERY, INGEST].map((worker) => ({ worker, atFloor: true, servingAtFloor: true })),
   }])

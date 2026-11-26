@@ -10,7 +10,7 @@ import { after, beforeEach, test } from 'node:test'
 import { GENERATED_DIR, REPO_ROOT } from '../lib/common.mjs'
 import { GENERATED_SECRETS, generateSecretValue, secretNamesOf } from '../lib/secrets.mjs'
 import { deploy, planOnly, rollback } from '../release.mjs'
-import { callsLike, captured, cmd, installFakeAccount, promotions, serving } from './fake-account.mjs'
+import { callsLike, captured, cmd, installFakeAccount, oauthGated, promotions, serving } from './fake-account.mjs'
 
 const STAGE = 'oauthkeytest'
 const CONTROL = `viz-${STAGE}-control`
@@ -27,7 +27,9 @@ const controlCfg = join(tmp, 'control.jsonc')
 const gatewayCfg = join(tmp, 'gateway.jsonc')
 /** What configure.mjs puts on every viz-control version, so that a rollback can judge it (D46, D69). */
 const DECLARED = { VIZ_SCHEMAS: JSON.stringify({ v: 1, classes: { 'control.Tenant': { latest: 1, compat: 1, by: null } } }), VIZ_FORMATS: JSON.stringify({ v: 1, formats: {} }) }
-writeFileSync(controlCfg, JSON.stringify({ name: CONTROL, vars: { VIZ_RELEASE: RELEASE, ...DECLARED }, migrations: [{ tag: 'v1' }] }))
+// As configure.mjs writes a stage's viz-control that passed D70's gate: its six rate limits with ids, stamped at oauth-public (OAUTH_PUBLIC off: not asked).
+const GATED = oauthGated()
+writeFileSync(controlCfg, JSON.stringify({ name: CONTROL, ratelimits: GATED.config.ratelimits, vars: { VIZ_RELEASE: RELEASE, ...DECLARED, ...GATED.config.vars }, migrations: [{ tag: 'v1' }] }))
 writeFileSync(gatewayCfg, JSON.stringify({ name: GATEWAY, vars: { VIZ_RELEASE: RELEASE } }))
 
 const manifest = {
@@ -38,7 +40,7 @@ const manifest = {
   order: [CONTROL, GATEWAY],
   releaseFrom: CONTROL,
   workers: [
-    { name: CONTROL, canonical: 'viz-control', component: 'control', config: relative(REPO_ROOT, controlCfg), deploy: true, migrationTags: ['v1'], migrationTag: 'v1', schemas: [] },
+    { name: CONTROL, canonical: 'viz-control', component: 'control', config: relative(REPO_ROOT, controlCfg), deploy: true, migrationTags: ['v1'], migrationTag: 'v1', schemas: [], ...GATED.manifest },
     { name: GATEWAY, canonical: 'viz-gateway', component: 'deploy/gateway', config: relative(REPO_ROOT, gatewayCfg), deploy: true, public: true, migrationTags: [], migrationTag: null, schemas: [] },
   ],
 }
@@ -417,7 +419,7 @@ test('S9: a failed promotion after viz-control got a rotated key leaves viz-cont
 
 test('a serving version that cannot be read stops the release: whether the key is set is unknown, so none is made', async () => {
   const s = { ...existing({ key: true }), inherit: 'none' }
-  s.workers[CONTROL].versions[0].lag = 2 // read by liveState, then by the secret check: both 404
+  s.workers[CONTROL].versions[0].lag = 3 // read by liveState, by the oauth-public floor's look for a secret switch, then by the secret check: all 404
   writeState(s)
   const { error, log } = await captured(() => deploy({ stage: STAGE }))
   assert.match(String(error?.message), /serving version 00000000-0000-4000-8000-00000000000a could not be read, so whether OAUTH_CLIENT_KEY is set is unknown/, log)

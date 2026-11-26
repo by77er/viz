@@ -7,6 +7,7 @@
 // observability, deployment-wide vars, and `main` (so wrangler bundles from the component).
 //
 //   node deploy/configure.mjs [--stage <name>] [--release <sha>] [--expires <ISO time>] [--ids-optional] [--quiet]
+//                             [--oauth-without-rate-limits] [--oauth-public]      (a stage only)
 //
 // --expires (a stage only): sets VIZ_STAGE_EXPIRES_AT in every Worker; the ruler's alarms and
 // cron stop at that time by themselves (AGENTS.md: anything on a timer stops at a deadline).
@@ -27,6 +28,20 @@
 // would take it to read version 1 of every format (review of D69, M-1 (c)). Rollback floors (`rollback_floors`, lib/floors.mjs): a Worker whose
 // floor is declared on evidence is checked to have it and stamped with `VIZ_FLOORS`.
 //
+// OAuth's rate limits (D70; review of D70, M-2): a Worker with an `oauth` block in workers.json
+// (viz-control) declares the Rate Limiting bindings its source names (`LIMITERS`, read from
+// control/src/ratelimit.ts) in its wrangler.jsonc `ratelimits`, each with a positive integer limit and
+// the period the source assumes (`RATE_PERIOD_S`, 60). Each placeholder namespace_id is replaced with
+// the id deploy/resources.mjs allocated for `<deployed worker>/<binding>` (resources.json
+// `ratelimit_namespaces`); a placeholder that survives, an id outside viz's range, two bindings with one
+// id, a name the source does not list, or a period it does not assume is refused. A production config
+// without every binding is refused, naming the missing ones; a stage only with
+// --oauth-without-rate-limits, which drops them and is recorded in the manifest and the release
+// record. Every production config that passes sets `OAUTH_PUBLIC=1` (a stage only with --oauth-public),
+// the switch of the `oauth-public` rollback floor; no component or VIZ_STAGE_VARS may set it.
+// `placement` is refused on a Worker workers.json marks `no_placement` (viz-control, viz-mcp: D70
+// counts per location; review of D70, m-8).
+//
 // Durable Object classes of another Worker (by script_name) are bound only where workers.json
 // lists them under the binding Worker's `binds_classes`: such a binding can call every method of
 // every object of the class, for any tenant.
@@ -46,13 +61,91 @@ import { pathToFileURL } from 'node:url'
 import { DEPLOY_DIR, GENERATED_DIR, REPO_ROOT, checkStage, log, parseArgs, readJson, readJsonc, releaseId, stagedName, targetName } from './lib/common.mjs'
 import { FLOORS_VAR, floorRules, floorsVar, stampedFloors } from './lib/floors.mjs'
 import { FORMATS_VAR, formatSources, formatsVar, readFormats } from './lib/formats.mjs'
-import { SCHEMAS_VAR, readSchemas, schemaSources, schemasVar } from './lib/schemas.mjs'
+import { SCHEMAS_VAR, evaluateExports, parseSource, readSchemas, schemaSources, schemasVar } from './lib/schemas.mjs'
 
 const KNOWN_KEYS = new Set([
   'name', 'main', 'compatibility_date', 'compatibility_flags', 'durable_objects', 'migrations', 'r2_buckets', 'kv_namespaces',
-  'queues', 'triggers', 'vars', 'services', 'placement', 'observability', 'limits', 'rules', 'routes', 'route', 'workers_dev', 'preview_urls',
+  'queues', 'triggers', 'vars', 'services', 'placement', 'observability', 'limits', 'rules', 'routes', 'route', 'workers_dev', 'preview_urls', 'ratelimits',
 ])
 const PLACEHOLDER_ID = /^0+$/
+const RATELIMIT_KEYS = new Set(['name', 'namespace_id', 'simple'])
+const ALLOCATED_ID = /^[1-9][0-9]*$/
+
+/**
+ * The OAuth gate of each Worker that declares `oauth` in workers.json, read from its component's
+ * source: `Map(canonical name → { required: [binding names], period, publicVar })`. A Worker whose
+ * component is not in this checkout is left out (it is not configured either).
+ */
+export function readOAuthGates(plan) {
+  const out = new Map()
+  for (const w of plan.workers) {
+    if (w.oauth === undefined) continue
+    const where = `deploy/workers.json ${w.name}.oauth`
+    if (!existsSync(join(REPO_ROOT, w.component, 'wrangler.jsonc'))) continue
+    for (const k of ['ratelimits', 'period', 'public_var']) if (typeof w.oauth[k] !== 'string' || w.oauth[k] === '') throw new Error(`${where}: "${k}" must be a non-empty string`)
+    const refs = [parseSource(w.oauth.ratelimits, `${where}.ratelimits`), parseSource(w.oauth.period, `${where}.period`)]
+    const { values: [required, period] } = evaluateExports(refs)
+    if (!Array.isArray(required) || required.length === 0 || !required.every((n) => typeof n === 'string' && /^[A-Z][A-Z0-9_]*$/.test(n)) || new Set(required).size !== required.length) throw new Error(`${where}: ${w.oauth.ratelimits} must be a list of distinct binding names`)
+    if (period !== 10 && period !== 60) throw new Error(`${where}: ${w.oauth.period} is ${period}; a Rate Limiting binding's period is 10 or 60`)
+    if (!/^[A-Z][A-Z0-9_]*$/.test(w.oauth.public_var)) throw new Error(`${where}: public_var ${w.oauth.public_var} is not a variable name`)
+    out.set(w.name, { required: [...required], period, publicVar: w.oauth.public_var })
+  }
+  return out
+}
+
+/**
+ * The `ratelimits` of one generated config (mutated in place), checked against the Worker's OAuth gate
+ * and given this deployment's namespace ids. Returns the manifest's `oauth` summary of the Worker.
+ */
+function configureRateLimits({ out, worker, gate, stage, ids, range, idsOptional, withoutRateLimits, where }) {
+  const list = out.ratelimits
+  if (list !== undefined && !Array.isArray(list)) throw new Error(`${where}: "ratelimits" must be a list`)
+  if (!gate) {
+    if (list?.length) throw new Error(`${where}: "ratelimits", but deploy/workers.json declares no "oauth" gate for ${worker.name}: only the bindings a component's source names are deployed (D70)`)
+    return null
+  }
+  if (withoutRateLimits) {
+    if (!stage) throw new Error('--oauth-without-rate-limits is for a stage only: a production viz-control serves OAuth only behind its rate limits (D70; review of D70, M-2)')
+    delete out.ratelimits
+    return { required: gate.required, period: gate.period, ratelimits: {}, withoutRateLimits: true, public: false }
+  }
+  const bound = {}
+  const seenIds = new Map()
+  for (const [i, r] of (list ?? []).entries()) {
+    const at = `${where} ratelimits[${i}]`
+    if (typeof r !== 'object' || r === null || Array.isArray(r)) throw new Error(`${at}: a binding object`)
+    for (const k of Object.keys(r)) if (!RATELIMIT_KEYS.has(k)) throw new Error(`${at}: "${k}" is not something configure.mjs knows how to deploy (name, namespace_id, simple)`)
+    if (!gate.required.includes(r.name)) throw new Error(`${at}: ${JSON.stringify(r.name)} is not one of ${worker.name}'s rate-limit bindings (${gate.required.join(', ')}, from its source)`)
+    if (Object.hasOwn(bound, r.name)) throw new Error(`${at}: ${r.name} is bound twice`)
+    const simple = r.simple
+    if (typeof simple !== 'object' || simple === null || Object.keys(simple).some((k) => k !== 'limit' && k !== 'period')) throw new Error(`${at} (${r.name}): "simple" must be { limit, period }`)
+    if (!Number.isInteger(simple.limit) || simple.limit < 1) throw new Error(`${at} (${r.name}): limit must be a positive integer, not ${JSON.stringify(simple.limit)}`)
+    if (simple.period !== gate.period) throw new Error(`${at} (${r.name}): period must be ${gate.period}, not ${JSON.stringify(simple.period)}: the Worker's Retry-After and its limits assume ${gate.period} s (RATE_PERIOD_S)`)
+    const key = `${out.name}/${r.name}`
+    const id = ids[key]
+    if (id === undefined) {
+      if (!idsOptional) throw new Error(`no namespace_id recorded for ${key}; run deploy/resources.mjs ensure${stage ? ` --stage ${stage}` : ''} first`)
+      r.namespace_id = '0'
+    } else {
+      if (typeof id !== 'string' || !ALLOCATED_ID.test(id) || Number(id) < range.from || Number(id) > range.to) throw new Error(`${key}: recorded namespace_id ${JSON.stringify(id)} is not in viz's range ${range.from}–${range.to} (deploy/workers.json resources.ratelimit_ids)`)
+      r.namespace_id = id
+    }
+    if (typeof r.namespace_id !== 'string' || (PLACEHOLDER_ID.test(r.namespace_id) && !idsOptional)) throw new Error(`${at} (${r.name}): a placeholder namespace_id survived`)
+    if (!PLACEHOLDER_ID.test(r.namespace_id)) {
+      if (seenIds.has(r.namespace_id)) throw new Error(`${at}: ${r.name} and ${seenIds.get(r.namespace_id)} have the same namespace_id ${r.namespace_id}: they would share one counter`)
+      seenIds.set(r.namespace_id, r.name)
+    }
+    bound[r.name] = PLACEHOLDER_ID.test(r.namespace_id) ? null : r.namespace_id
+  }
+  const missing = gate.required.filter((n) => !Object.hasOwn(bound, n))
+  if (missing.length) {
+    throw new Error(
+      `${where}: ${stage ? `stage ${stage}` : 'production'} ${worker.name} without the rate-limit binding${missing.length > 1 ? 's' : ''} ${missing.join(', ')}: OAuth is not served without D70's first layer (review of D70, M-2). ` +
+        `Add ${missing.length > 1 ? 'them' : 'it'} to ${worker.component}/wrangler.jsonc "ratelimits"${stage ? ', or configure the stage with --oauth-without-rate-limits (recorded in its release record)' : ''}.`,
+    )
+  }
+  return { required: gate.required, period: gate.period, ratelimits: bound, withoutRateLimits: false, public: false }
+}
 
 export function loadPlan() {
   return { plan: readJson(join(DEPLOY_DIR, 'workers.json')), resources: readJson(join(DEPLOY_DIR, 'resources.json')) }
@@ -140,10 +233,14 @@ export function stageVars(raw, stage) {
  * formats, `floors` the rollback floors its code is stamped at (lib/floors.mjs). Pure: no I/O, so
  * the tests can call it with any component config.
  */
-export function generateWorker({ worker, cfg, componentDir, plan, stage, release, ids, outDir, idsOptional = false, expires = null, schemas = [], formats = [], formatsDeclared = worker.formats !== undefined || formats.length > 0, floors = [], extraVars = {} }) {
+export function generateWorker({ worker, cfg, componentDir, plan, stage, release, ids, outDir, idsOptional = false, expires = null, schemas = [], formats = [], formatsDeclared = worker.formats !== undefined || formats.length > 0, floors = [], extraVars = {}, gate = null, ratelimitIds = {}, oauthWithoutRateLimits = false, oauthPublic = false }) {
   const where = `${worker.component}/wrangler.jsonc`
   const warnings = []
   for (const k of Object.keys(cfg)) if (!KNOWN_KEYS.has(k)) throw new Error(`${where}: "${k}" is not something configure.mjs knows how to deploy; extend it rather than drop it`)
+  // Per-location limits assume each request is counted where it arrives (D70; review of D70, m-8).
+  if (worker.no_placement !== undefined && cfg.placement !== undefined) throw new Error(`${where}: "placement" is refused on ${worker.name}: ${worker.no_placement}. Remove it (deploy/workers.json no_placement)`)
+  // The switch of the oauth-public floor means "this config passed the gate": only configure sets it.
+  if (gate && (Object.hasOwn(cfg.vars ?? {}, gate.publicVar) || Object.hasOwn(extraVars, gate.publicVar))) throw new Error(`${where}: ${gate.publicVar} is set by deploy/configure.mjs only (every production ${worker.name} that passes the rate-limit gate; a stage with --oauth-public), never by a component or VIZ_STAGE_VARS`)
   // Every class this Worker defines has its storage schema declared, or is declared to keep none.
   for (const cls of durableObjectsOf(cfg).classes) {
     const declared = Object.hasOwn(worker.schemas ?? {}, cls) || Object.hasOwn(worker.unversioned ?? {}, cls)
@@ -216,6 +313,10 @@ export function generateWorker({ worker, cfg, componentDir, plan, stage, release
     if (s.props !== undefined && (typeof s.props !== 'object' || s.props === null || Array.isArray(s.props))) throw new Error(`${at}: props must be an object (what the binding carries to the callee as ctx.props)`)
     crossScript.push(`${s.binding} → ${s.service}${s.entrypoint ? `#${s.entrypoint}` : ''}`)
   }
+  // Rate Limiting bindings (D70): checked, given this deployment's ids, and required where the gate says.
+  const oauth = configureRateLimits({ out, worker, gate, stage, ids: ratelimitIds, range: plan.resources.ratelimit_ids ?? { from: 1, to: 0 }, idsOptional, withoutRateLimits: oauthWithoutRateLimits, where })
+  if (oauthPublic && !stage) throw new Error('--oauth-public is for a stage only: every production viz-control that passes the gate sets it')
+  if (oauthPublic && oauth?.withoutRateLimits) throw new Error(`--oauth-public and --oauth-without-rate-limits together: ${gate.publicVar} says the config passed the rate-limit gate`)
 
   // vars: deployment-wide values where the component declares them; the release; the stage.
   const vars = { ...(out.vars ?? {}) }
@@ -246,6 +347,10 @@ export function generateWorker({ worker, cfg, componentDir, plan, stage, release
   if (floors.length > 0) vars[FLOORS_VAR] = floorsVar(floors)
   if (stage) vars.VIZ_STAGE_PREFIX = `viz-${stage}-`
   for (const [k, v] of Object.entries(extraVars)) vars[k] = v
+  if (oauth && (!stage || oauthPublic)) {
+    vars[gate.publicVar] = '1'
+    oauth.public = true
+  }
   if (expires !== null) {
     if (!stage) throw new Error('--expires is for a stage only: production does not stop by itself')
     vars.VIZ_STAGE_EXPIRES_AT = expires
@@ -275,6 +380,7 @@ export function generateWorker({ worker, cfg, componentDir, plan, stage, release
       // null: the Worker declares nothing (a rollback takes it to read version 1 of every format).
       formats: formatsDeclared ? formats.map(({ format, writes, reads }) => ({ format, writes, reads })) : null,
       floors,
+      oauth,
       crossScript,
       entrypoints,
       queues: queuesOf(out),
@@ -317,14 +423,21 @@ export function checkEntrypoints(workerName, entrypoints, mains) {
   }
 }
 
-/** `plan` replaces deploy/workers.json (the tests' way to configure a plan that must be refused). */
-export function configure({ stage, release = releaseId(), idsOptional = false, quiet = false, expires = null, plan: planOverride } = {}) {
+/**
+ * `plan` replaces deploy/workers.json and `resources` deploy/resources.json (the tests' way to
+ * configure a plan that must be refused, or a deployment with ids of its own).
+ */
+export function configure({ stage, release = releaseId(), idsOptional = false, quiet = false, expires = null, plan: planOverride, resources: resourcesOverride, oauthWithoutRateLimits = false, oauthPublic = false } = {}) {
   checkStage(stage)
   if (expires !== null && !(Number.isFinite(Date.parse(expires)) && /^\d{4}-\d{2}-\d{2}T/.test(expires))) throw new Error(`--expires must be an ISO 8601 time: ${expires}`)
-  const loaded = loadPlan()
+  if ((oauthWithoutRateLimits || oauthPublic) && !stage) throw new Error(`${oauthWithoutRateLimits ? '--oauth-without-rate-limits' : '--oauth-public'} is for a stage only: a production viz-control always has its rate limits and OAUTH_PUBLIC (D70)`)
+  const loaded = resourcesOverride ? { plan: planOverride ?? loadPlan().plan, resources: resourcesOverride } : loadPlan()
   const plan = planOverride ?? loaded.plan
   const resources = loaded.resources
   const ids = resources.kv_namespaces ?? {}
+  const ratelimitIds = resources.ratelimit_namespaces ?? {}
+  const gates = readOAuthGates(plan)
+  if ((oauthWithoutRateLimits || oauthPublic) && gates.size === 0) throw new Error('--oauth-without-rate-limits and --oauth-public need a Worker with an "oauth" gate in deploy/workers.json')
   const extra = stageVars(process.env.VIZ_STAGE_VARS, stage)
   for (const w of Object.keys(extra)) if (!plan.workers.some((x) => x.name === w)) throw new Error(`VIZ_STAGE_VARS names ${w}, which is not a Worker in deploy/workers.json`)
   const outDir = join(GENERATED_DIR, targetName(stage))
@@ -343,6 +456,7 @@ export function configure({ stage, release = releaseId(), idsOptional = false, q
   const workers = []
   /** Main module of each Worker configured so far, for the entrypoint check of the ones after it. */
   const mains = new Map()
+  const deploymentIds = new Map()
   for (const worker of plan.workers) {
     const componentDir = join(REPO_ROOT, worker.component)
     const cfgPath = join(componentDir, 'wrangler.jsonc')
@@ -359,7 +473,18 @@ export function configure({ stage, release = releaseId(), idsOptional = false, q
       formats: formats.filter((f) => f.worker === worker.name),
       floors: stampedFloors(rules, worker.name, exportedNames),
       extraVars: extra[worker.name] ?? {},
+      gate: gates.get(worker.name) ?? null,
+      ratelimitIds,
+      oauthWithoutRateLimits,
+      oauthPublic,
     })
+    // Two bindings of one deployment with one namespace id would share a counter.
+    for (const [name, id] of Object.entries(g.summary.oauth?.ratelimits ?? {})) {
+      if (id === null) continue
+      const other = deploymentIds.get(id)
+      if (other) throw new Error(`${worker.name} ${name} and ${other} have the same namespace_id ${id}: they would share one counter`)
+      deploymentIds.set(id, `${worker.name} ${name}`)
+    }
     checkEntrypoints(worker.name, g.summary.entrypoints, mains)
     mains.set(worker.name, g.mainAbs)
     const file = join(outDir, `${worker.name}.jsonc`)
@@ -375,6 +500,10 @@ export function configure({ stage, release = releaseId(), idsOptional = false, q
     release,
     generatedAt: new Date().toISOString(),
     expires,
+    // Placeholder ids (--ids-optional): release.mjs refuses to deploy this manifest.
+    idsOptional,
+    // --oauth-without-rate-limits (a stage only), carried into the release record.
+    oauthWithoutRateLimits,
     domain: stage ? null : plan.domain,
     durableObjectsCodeUpdate: plan.durable_objects_code_update,
     order: workers.filter((w) => w.deploy).map((w) => w.name),
@@ -396,6 +525,7 @@ export function configure({ stage, release = releaseId(), idsOptional = false, q
       const split = (w.formats ?? []).filter((f) => f.reads.length > 1 || f.writes === null)
       if (w.formats?.length) log(`         formats: ${w.formats.length}${split.length ? `; ${split.map((f) => `${f.format} writes ${f.writes ?? '-'}, reads ${f.reads.join(',')}`).join('; ')}` : ''}`)
       for (const f of w.floors ?? []) log(`         at the rollback floor of ${f} (${FLOORS_VAR})`)
+      if (w.oauth) log(`         OAuth: ${w.oauth.withoutRateLimits ? 'WITHOUT rate limits, as asked (--oauth-without-rate-limits)' : `rate limits ${Object.entries(w.oauth.ratelimits).map(([n, id]) => `${n}=${id ?? 'placeholder'}`).join(', ')}`}${w.oauth.public ? '; OAUTH_PUBLIC=1' : ''}`)
       for (const warn of w.warnings ?? []) log(`         note: ${warn}`)
     }
   }
@@ -404,8 +534,8 @@ export function configure({ stage, release = releaseId(), idsOptional = false, q
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    const args = parseArgs(process.argv.slice(2), { flags: ['ids-optional', 'quiet'], options: ['stage', 'release', 'expires'] })
-    const m = configure({ stage: args.stage, release: args.release, idsOptional: args['ids-optional'], quiet: args.quiet, expires: args.expires ?? null })
+    const args = parseArgs(process.argv.slice(2), { flags: ['ids-optional', 'quiet', 'oauth-without-rate-limits', 'oauth-public'], options: ['stage', 'release', 'expires'] })
+    const m = configure({ stage: args.stage, release: args.release, idsOptional: args['ids-optional'], quiet: args.quiet, expires: args.expires ?? null, oauthWithoutRateLimits: Boolean(args['oauth-without-rate-limits']), oauthPublic: Boolean(args['oauth-public']) })
     console.log(join(GENERATED_DIR, m.target, 'manifest.json'))
   } catch (e) {
     log(`configure: ${e.message}`)

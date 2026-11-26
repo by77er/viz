@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { checkEntrypoints, checkFloorSchemas, configure, durableObjectsOf, exportedNames, generateWorker, loadPlan, queuesOf, stageVars } from '../configure.mjs'
+import { checkEntrypoints, checkFloorSchemas, configure, durableObjectsOf, exportedNames, generateWorker, loadPlan, queuesOf, readOAuthGates, stageVars } from '../configure.mjs'
 import { GENERATED_DIR, REPO_ROOT, checkStage, parseJsonc, readJsonc, stagedName } from '../lib/common.mjs'
 import { FLOORS_VAR, floorRules, stampedFloors } from '../lib/floors.mjs'
 import { FORMATS_VAR, formatSources, formatsVar, readFormats } from '../lib/formats.mjs'
@@ -12,10 +12,14 @@ import { SCHEMAS_VAR, evaluateExports, parseSource, readSchemas, schemaSources, 
 const { plan } = loadPlan()
 const worker = (name) => plan.workers.find((w) => w.name === name)
 const ids = { 'viz-config': 'a'.repeat(32), 'viz-trial-config': 'b'.repeat(32) }
-const gen = (name, stage, cfg) => {
+const gates = readOAuthGates(plan)
+const RL = gates.get('viz-control').required
+/** Rate Limiting namespace ids as deploy/resources.mjs records them (production 7000…, the trial stage 7100…). */
+const ratelimitIds = Object.fromEntries(RL.flatMap((n, i) => [[`viz-control/${n}`, String(7000 + i)], [`viz-trial-control/${n}`, String(7100 + i)]]))
+const gen = (name, stage, cfg, opts = {}) => {
   const w = worker(name)
   const componentDir = join(REPO_ROOT, w.component)
-  return generateWorker({ worker: w, cfg: cfg ?? readJsonc(join(componentDir, 'wrangler.jsonc')), componentDir, plan, stage, release: 'abc123', ids, outDir: join(GENERATED_DIR, stage ? `stage-${stage}` : 'production') })
+  return generateWorker({ worker: w, cfg: cfg ?? readJsonc(join(componentDir, 'wrangler.jsonc')), componentDir, plan, stage, release: 'abc123', ids, outDir: join(GENERATED_DIR, stage ? `stage-${stage}` : 'production'), gate: gates.get(name) ?? null, ratelimitIds, ...opts })
 }
 
 test('JSONC: comments and trailing commas go, strings stay', () => {
@@ -457,8 +461,9 @@ test('floors: viz-query and viz-ingest are stamped at the floor of INGEST_SIGNAL
   const m = configure({ stage: 'citest', release: 'r1', idsOptional: true, quiet: true })
   for (const w of m.workers.filter((x) => x.deploy)) {
     const stamped = ['viz-query', 'viz-ingest'].includes(w.canonical)
-    assert.deepEqual(w.floors, stamped ? ['signal-data'] : [], w.name)
-    assert.equal(readJsonc(join(REPO_ROOT, w.config)).vars[FLOORS_VAR], stamped ? '{"v":1,"at":["signal-data"]}' : undefined, w.name)
+    const at = stamped ? ['signal-data'] : w.canonical === 'viz-control' ? ['oauth-public'] : []
+    assert.deepEqual(w.floors, at, w.name)
+    assert.equal(readJsonc(join(REPO_ROOT, w.config)).vars[FLOORS_VAR], at.length ? JSON.stringify({ v: 1, at }) : undefined, w.name)
   }
   // Evidence missing: an error at configure, never a stamp.
   const bad = floorRules({ ...plan, rollback_floors: [{ ...plan.rollback_floors[0], floors: { ...plan.rollback_floors[0].floors, 'viz-query': { evidence: ['query/src/shards.ts#noSuchExport'], why: 'x' } } }] }, 'citest')

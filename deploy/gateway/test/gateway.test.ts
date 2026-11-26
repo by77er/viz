@@ -70,6 +70,8 @@ describe('routing', () => {
     ['/api/v2/search/tag/span.http%2Froute/values', 'query'],
     ['/api/metrics/query_range', 'query'],
     ['/api/metrics/query', 'query'],
+    // Tempo's echo (D62; query review m-4): a Grafana Tempo data source's check. viz-query answers `echo`, behind the key.
+    ['/api/echo', 'query'],
     ['/loki/api/v1/query', 'query'],
     ['/loki/api/v1/query_range', 'query'],
     ['/loki/api/v1/labels', 'query'],
@@ -95,7 +97,7 @@ describe('routing', () => {
     '/v1/traces/', '/v1/tracesx', '/v1/trace', '/v1/logs/', '/v1/logsx', '/v1/log', '/v1', '/loki/api/v1/push/', '/loki/api/v1/pushx', '/otlp/v1/logs', '/api/prom/push',
     '/api/traces', '/api/traces/', '/api/traces/abc/x', '/api/v2/traces', '/api/v2/traces/', '/api/v3/traces/abc', '/api/tracesx/abc', '/api/v1/traces/abc', '/querier/api/traces/abc',
     '/api/search/', '/api/searchx', '/api/v2/search', '/api/search/tagsx', '/api/search/tag', '/api/search/tag/x', '/api/search/tag//values', '/api/search/tag/x/valuesx', '/api/search/tag/x/y/values', '/api/v3/search/tags',
-    '/api/metrics', '/api/metrics/', '/api/metrics/query_rangex', '/api/metrics/queryx', '/api/echo', '/api/status/buildinfo', '/api/overrides',
+    '/api/metrics', '/api/metrics/', '/api/metrics/query_rangex', '/api/metrics/queryx', '/api/echo/', '/api/echox', '/api/echo/x', '/api/v2/echo', '/api/status/buildinfo', '/api/overrides',
     '/loki', '/loki/api/v1', '/loki/api/v1/', '/loki/api/v1/queryx', '/loki/api/v1/query_range/', '/loki/api/v1/labelsx', '/loki/api/v1/label', '/loki/api/v1/label/', '/loki/api/v1/label//values', '/loki/api/v1/label/x',
     '/loki/api/v1/label/x/values/y', '/loki/api/v1/seriesx', '/loki/api/v1/tail', '/loki/api/v1/index/stats', '/loki/api/v1/index/volume', '/loki/api/v1/patterns', '/loki/api/v1/detected_fields',
     '/loki/api/v1/rules', '/loki/api/v1/delete', '/loki/api/v1/format_query', '/loki/api/v1/status/buildinfo', '/api/prom/query', '/api/prom/label',
@@ -113,6 +115,14 @@ describe('routing', () => {
     expect(res.headers.get('x-fake-backend')).toBeNull()
     const body = (await res.json()) as { entrypoints: typeof ENTRYPOINTS }
     expect(body.entrypoints).toEqual(ENTRYPOINTS)
+  })
+
+  it('GET /api/echo (a Grafana Tempo data source\'s check) reaches viz-query with its key, exactly as sent', async () => {
+    const res = await call('/api/echo', { headers: { Authorization: 'Bearer viz_k_test.secret' } })
+    expect(res.status).toBe(200)
+    expect(res.headers.get('x-viz-route')).toBe('query')
+    const seen = (await res.json()) as Echo
+    expect([seen.backend, seen.method, seen.url, seen.headers.authorization]).toEqual(['query', 'GET', `${BASE}/api/echo`, 'Bearer viz_k_test.secret'])
   })
 
   it('routeOf agrees with the table and never routes an unknown path', () => {

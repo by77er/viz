@@ -201,16 +201,22 @@ The changes are D62's second rewrite (`design/DECISIONS.md`) and `query/README.m
 - Answers of search, metrics, tags and labels are charged by their exact length before they are
   written (`json_len` in `engine/traceql`; a length pass here).
 
-**Tested natively** (`cargo test -j 2 --lib`, `src/sigtests.rs`, 22 tests): the review's
-reproductions with a heap counter around each call (a `#[global_allocator]` in the test binary
-that counts this thread's bytes): every refused call peaked within the budget (32 MiB) plus 8 MiB
-beyond its request, on the 64-bit target (structures are smaller on wasm32). Peaks measured
-(bytes beyond the request): `/series` of 300 fat streams 31.5 M (refused), `/labels` 11.5 M;
-histogram 2.5 M and quantiles 2.1 M (refused before their series exist); `rate() by` 10.7 M
-(refused at the answer); tag values 32.7 M (refused); the LogQL `label_format` query 32.6 M
-(refused); the extent pass at 12 traces/s 3.6 M (answers); trace by ID in a 20,000-span row group
-2.4 M (answers). In WASM, through the binding with the reviewer's scripts: `query/README.md` "The
-re-review". `tools/check.mjs` passes; the module is ABI 8.
+**Tested natively** (`cargo test -j 2 --lib`, `src/sigtests.rs`, 22 tests, all passing): the
+review's reproductions, and the cases the per-call measurement and the mutants found, with a heap
+counter around each call (a `#[global_allocator]` in the test binary that counts this thread's
+bytes): every call peaked within the budget (32 MiB) plus 8 MiB beyond its request, on the 64-bit
+target (structures are smaller on wasm32). Peaks (bytes beyond the request): `/series` of 300 fat
+streams 31.5 M and of 60 15–21 M (both refused, the second at its answer), `/labels` 11.5 M;
+histogram 2.5 M and 100 quantiles 2.1 M (refused before their series exist); `rate() by` 10.7 M
+(refused at the answer); tag values of one trace's 500 × 60 KB 33.4 M and tag names of 400 × 60 KB
+33.4 M (refused as the sets grow); a search echoing 250 and 500 × 60 KB 30.2 and 33.5 M (refused
+at the answer and as results are made; 60.3 M before the results were charged); 150 log lines of
+200 KB kept 33.4 M (refused); the LogQL `label_format` query 32.6 M (refused); a log query over
+30,000 lines with a label set each 23.3 M (answers); the extent pass at 12 traces/s 3.6 M
+(answers); trace by ID in a 20,000-span row group 2.4 M (answers); and D72 review m-2 (tags, tag
+values and a span-local count the same with and without a later copy outside the window). In
+WASM, through the binding with the reviewer's scripts: `query/README.md` "The re-review".
+`tools/check.mjs` passes; the module is ABI 8.
 
 ## What is not implemented
 

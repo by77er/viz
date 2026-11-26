@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url'
 
 export const DEPLOY_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 export const REPO_ROOT = resolve(DEPLOY_DIR, '..')
-export const GENERATED_DIR = join(DEPLOY_DIR, 'generated')
+/** Build output. VIZ_GENERATED_DIR moves it (tests only: a test that configures production must not overwrite a real generated/production/). */
+export const GENERATED_DIR = process.env.VIZ_GENERATED_DIR ? resolve(process.env.VIZ_GENERATED_DIR) : join(DEPLOY_DIR, 'generated')
 
 /**
  * JSONC → value: line and block comments and trailing commas removed, strings untouched.

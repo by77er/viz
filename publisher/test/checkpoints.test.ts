@@ -99,6 +99,16 @@ async function checkpointsOf(cell: string, t: string, inc: number) {
   return { manifests, parts }
 }
 
+/** Publish one tenant until it is done (a re-base kept across publishes takes a few). */
+async function settled(p: PublisherStub, t: string) {
+  const out = [await p.publish([t])]
+  while (out.at(-1)!.tenants[0]!.status !== 'ok') {
+    expect(out.length, JSON.stringify(out.at(-1)!.tenants[0])).toBeLessThan(6)
+    out.push(await p.publish([t]))
+  }
+  return out
+}
+
 /** Nothing of the tenant committed; its stage empty, or (`kept`) holding that many parts staged before the read stopped, kept for the next publish. */
 const nothingPublished = async (cell: string, p: PublisherStub, t: string, kept = 0) => {
   for (const table of TABLES) expect(await metadataVersions(cell, table), table).toEqual([])
@@ -420,8 +430,12 @@ describe('eviction and concurrency', () => {
     expect(kept.done).toBeLessThanOrEqual(WINDOW + 1)
     for (const table of TABLES) expect(await metadataVersions(cell, table)).toEqual([])
     await q.r2()
-    const r = await q.publish([t])
-    expect(r.tenants[0]).toMatchObject({ status: 'ok', rebase: { source: 'checkpoint', format: 2, objects: 1 + parts.length - kept.done, resumedAt: kept.done } })
+    // The re-base goes on in steps: the rest of the parts, then its commit in a publish of its own, then
+    // the tenant read from its cursors.
+    const rs = await settled(q, t)
+    expect(rs.at(-1)!.tenants[0]).toMatchObject({ status: 'ok' })
+    expect(rs.flatMap((r) => r.tenants.map((x) => x.step?.phase))).toContain('committed')
+    expect(rs.find((r) => r.tenants[0]!.rebase)!.tenants[0]).toMatchObject({ rebase: { source: 'checkpoint', format: 2 } })
     // The parts staged before the eviction are not read again.
     const gets = (await q.r2()).gets
     expect(gets.filter((k) => parts.includes(k))).toEqual(parts.slice(kept.done))
@@ -442,7 +456,11 @@ describe('eviction and concurrency', () => {
     expect((await p.tryPublish([t])).error).toMatch(/injected: R2 failed/)
     await nothingPublished(cell, p, t, WINDOW + 1)
     await evictDurableObject(p)
-    expect((await p.publish([t])).tenants[0]).toMatchObject({ status: 'ok', rebase: { source: 'checkpoint', format: 2, resumedAt: WINDOW + 1, objects: 1 + parts.length - (WINDOW + 1) } })
+    await p.r2()
+    const rs = await settled(p, t)
+    expect(rs.at(-1)!.tenants[0]).toMatchObject({ status: 'ok' })
+    expect(rs.flatMap((r) => r.tenants.map((x) => x.step?.phase))).toContain('committed')
+    expect((await p.r2()).gets.filter((k) => parts.includes(k))).toEqual(parts.slice(WINDOW + 1))
     expect(await p.steps()).toEqual({})
     await expectLedger(cell, t)
     await expectVerified(p)

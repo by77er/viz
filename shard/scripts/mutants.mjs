@@ -30,10 +30,14 @@ const T = {
   pool: `npx vitest run ${W} test/pool.test.ts`,
   registration: `npx vitest run ${W} test/registration.test.ts`,
   bounds: `npx vitest run ${W} test/bounds.test.ts`,
+  boundsAll: `npx vitest run ${W} test/bounds.test.ts test/bounds.edge.test.ts`,
+  boundsCompat: `npx vitest run ${W} test/bounds.test.ts test/compat.test.ts`,
   all: `npx vitest run ${W}`,
 }
 const TT = 'src/tail.ts'
-const HULL = '           AND (min_ts IS NULL OR max_ts IS NULL OR (max_ts >= ? AND min_ts <= ?)) ORDER BY seq`,'
+// The skip, decided from the index batch_time (review of D72, M-1): src/tail.ts SKIPPED_BY_BOUNDS and TIMED_TAIL_SQL.
+const SKIP = '(t.max_ts < ? OR t.min_ts > ?))`'
+const NOT_SKIPPED = 'AND NOT ${SKIPPED_BY_BOUNDS} ORDER BY b.seq`'
 // [name, file, from, to, tests]
 const mutants = [
   // ── early refusal ──
@@ -63,7 +67,7 @@ const mutants = [
   ['tail: a wanted label the series lacks does not exclude it', 'src/tail.ts', '    if (ok && matched !== f.present) ok = false', '    void matched', T.tail],
   ['tail: values copied as numbers', 'src/tail.ts', '    out.set(payload.subarray(valAt + 8 * i, valAt + 8 * i + 8), oVal + 8 * k)', '    ov.setFloat64(oVal + 8 * k, dv.getFloat64(valAt + 8 * i, true), true)', T.tail],
   ['tail: a page may pass its budget', F, '      if (bytes + kept.bytes.byteLength > limit) {', '      if (false) {', T.tail],
-  ['tail: a batch that does not fit an empty page is dropped (truncation), not refused', F, "        if (batches.length === 0) return { status: 'page_limit', seq, bytes: kept.bytes.byteLength, maxBytes: limit }", '        if (batches.length === 0) break', T.tail],
+  ['tail: a batch that does not fit an empty page is dropped (truncation), not refused', F, "        if (batches.length === 0) return { status: 'page_limit', seq, bytes: kept.bytes.byteLength, maxBytes: limit, last: this.lastKept(tenant, f, seq, through) }", '        if (batches.length === 0) break', T.tail],
   ['tail: a cursor is not bound to its filter', F, ' || c.f !== binding.f || ', ' || ', T.tail],
   ['tail: a paged read does not check the discard fence', F, "    if (aboveSeq < s.discardedThrough) return { status: 'stale_watermark', incarnation, discardedThrough: s.discardedThrough }", "    if (opts === undefined && aboveSeq < s.discardedThrough) return { status: 'stale_watermark', incarnation, discardedThrough: s.discardedThrough }", T.tail],
   ['tail: a later page reads to the current end, not the first page\'s through', F, '      through = c.through\n', '', T.tail],
@@ -82,12 +86,12 @@ const mutants = [
   ['D61: the alarm does not retry registrations', F, '    const due = [...this.regs].filter(([, r]) => r.inFlight === null && r.at <= now)', '    const due = [...this.regs].filter(() => false)', T.registration],
   ["D61: a new stream's registration is not rebuilt from storage", F, '        if (!s.registered && s.nextSeq === 1 && !this.regs.has(tenant)) this.regs.set(tenant, this.newRegistration(s.incarnation, at))', '', T.registration],
   // ── time bounds of span and log batches (D72; review m-3 of design/reviews/signals-end-to-end.md) ──
-  ['D72: hull lower edge off by one (a batch whose last start is exactly minTs is skipped)', F, HULL, HULL.replace('max_ts >= ?', 'max_ts > ?'), T.bounds],
-  ['D72: hull upper edge off by one (a batch whose first start is exactly maxTs is skipped)', F, HULL, HULL.replace('min_ts <= ?', 'min_ts < ?'), T.bounds],
+  ['D72: hull lower edge off by one (a batch whose last start is exactly minTs is skipped)', TT, SKIP, SKIP.replace('t.max_ts < ?', 't.max_ts <= ?'), T.bounds],
+  ['D72: hull upper edge off by one (a batch whose first start is exactly maxTs is skipped)', TT, SKIP, SKIP.replace('t.min_ts > ?', 't.min_ts >= ?'), T.bounds],
   ['D72: recorded min one ms late', TT, '  return { minTs: ms(minHi, minLo), maxTs: ms(maxHi, maxLo) }', '  return { minTs: ms(minHi, minLo) + 1, maxTs: ms(maxHi, maxLo) }', T.bounds],
   ['D72: recorded max one ms early', TT, '  return { minTs: ms(minHi, minLo), maxTs: ms(maxHi, maxLo) }', '  return { minTs: ms(minHi, minLo), maxTs: ms(maxHi, maxLo) - 1 }', T.bounds],
   ['D72: recorded bounds rounded up, not floored', TT, '((BigInt(hi) << 32n) | BigInt(lo)) / NS_PER_MS)', '(((BigInt(hi) << 32n) | BigInt(lo)) + NS_PER_MS - 1n) / NS_PER_MS)', T.bounds],
-  ['D72: old rows (no bounds) dropped instead of kept', F, HULL, HULL.replace('(min_ts IS NULL OR max_ts IS NULL OR (max_ts >= ? AND min_ts <= ?))', '(max_ts >= ? AND min_ts <= ?)'), T.bounds],
+  ['D72: old rows (no bounds) dropped instead of kept', TT, NOT_SKIPPED, NOT_SKIPPED.replace('AND NOT', 'AND b.min_ts IS NOT NULL AND NOT'), T.bounds],
   ['D72: the signal filter ignored', TT, '  if (f.signals && !f.signals.has(signal)) return null\n', '', T.bounds],
   ['D72: span bounds read from `end`, not `start`', TT, '  if (signal === 2) col += 32 * n', '  if (signal === 2) col += 40 * n', T.bounds],
   ['D72: log bounds read from `observed_ts`, not `ts`', TT, '  if (signal === 2) col += 32 * n', '  col += signal === 2 ? 32 * n : 8 * n', T.bounds],
@@ -95,6 +99,20 @@ const mutants = [
   ['D72: a batch the walk cannot follow refuses the append', TT, '    if (hi >= 0x80000000) return null // negative', "    if (hi >= 0x80000000) throw new Error('negative') // negative", T.bounds],
   ['D72: bounds computed but not stored (nothing is skipped)', F, 'p.bounds?.minTs ?? null, p.bounds?.maxTs ?? null,', 'null, null,', T.bounds],
   ['D72: migration 3 adds no columns', F, "      if (!have.has('min_ts')) sql.exec(`ALTER TABLE batch ADD COLUMN min_ts INTEGER`)", '', T.compat],
+  // ── review of D72 (design/reviews/d72-shard-bounds.md) ──
+  ['D72 M-1: migration 3 creates no index batch_time', F, "      sql.exec(`CREATE INDEX IF NOT EXISTS batch_time ON batch (tenant, seq, min_ts, max_ts) WHERE min_ts IS NOT NULL AND max_ts IS NOT NULL`)\n", '', T.boundsCompat],
+  ['D72 M-1: the index is not partial (every append, metrics too, writes an entry)', F, 'ON batch (tenant, seq, min_ts, max_ts) WHERE min_ts IS NOT NULL AND max_ts IS NOT NULL`)', 'ON batch (tenant, seq, min_ts, max_ts)`)', T.boundsCompat],
+  ['D72 M-1: the skip decided from the row (bounds after the payload, as built)', TT, 'AND NOT ${SKIPPED_BY_BOUNDS} ORDER BY b.seq`', 'AND (? IS NOT NULL) AND (b.min_ts IS NULL OR b.max_ts IS NULL OR (b.max_ts >= ? AND b.min_ts <= ?)) ORDER BY b.seq`', T.bounds],
+  ['D72 M-1: payload IS NOT NULL in the timed WHERE (reads every row\'s record)', TT, 'AND NOT ${SKIPPED_BY_BOUNDS} ORDER BY b.seq`', 'AND NOT ${SKIPPED_BY_BOUNDS} AND b.payload IS NOT NULL ORDER BY b.seq`', T.bounds],
+  ['D72 M-1: no per-call batch window (skipped batches unbounded per call)', F, '    const upto = Math.min(through, from + Math.max(1, this.cfg.tailScanMaxBatches) - 1)', '    const upto = through', T.bounds],
+  ['D72 M-1: a call that ends at its window does not continue the read', F, '    if (next === null && upto < through) next = upto + 1\n', '', T.bounds],
+  ['D72 m-1: flags and reserved bytes not checked', TT, '  if (payload[5] !== 0 || payload[6] !== 0 || payload[7] !== 0) return null\n', '', T.boundsAll],
+  ['D72 m-1: reserved bytes not checked (flags only)', TT, '  if (payload[5] !== 0 || payload[6] !== 0 || payload[7] !== 0) return null', '  if (payload[5] !== 0) return null', T.boundsAll],
+  ['D72 m-1: padding before the entry column not checked', TT, '  for (let i = p; i < entryAt; i++) if (payload[i] !== 0) return null\n', '', T.boundsAll],
+  ['D72 m-1: padding after the entry column not checked', TT, '  for (let i = entryEnd; i < col; i++) if (payload[i] !== 0) return null\n', '', T.boundsAll],
+  ['D72 m-1: a batch with rows and no entry is walked', TT, '  if (n === 0 || entries === 0 || n > len / 8', '  if (n === 0 || n > len / 8', T.boundsAll],
+  ['D72 n-1: page_limit always says last', F, 'last: this.lastKept(tenant, f, seq, through) }', 'last: true }', T.bounds],
+  ['D72 n-1: a look that stops before through says last', F, '    return kept.length === 0 && upto === through', '    return kept.length === 0', T.bounds],
   // ── names, versions ──
   ['names: a shard addressed outside SHARD_NAME serves', F, '    if (ctx.id.name !== undefined && !SHARD_NAME.test(ctx.id.name)) throw', '    if (false) throw', T.pool],
   ['names: a pool name with `_` is valid', 'src/pool.ts', "export const validPoolName = (pool: unknown): pool is string => typeof pool === 'string' && POOL_NAME.test(pool)", "export const validPoolName = (pool: unknown): pool is string => typeof pool === 'string' && pool !== ''", T.pool],

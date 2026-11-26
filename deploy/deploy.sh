@@ -11,6 +11,10 @@
 #   VIZ_WASM_PREBUILT=1    use the .wasm modules already in place (CI: built and tested by the checks)
 #   VIZ_SKIP_NPM_CI=1      use node_modules as they are (a shared checkout where others are working)
 #   VIZ_STAGE_EXPIRES_AT   a stage only: ISO time after which its ruler stops evaluating by itself
+#   VIZ_OAUTH_WITHOUT_RATE_LIMITS=1   a stage only: viz-control without D70's rate limits (recorded in the
+#                          release record; the key is then put without them); production never
+#   VIZ_OAUTH_PUBLIC=1     a stage only: set OAUTH_PUBLIC on viz-control (raises the oauth-public
+#                          rollback floor); every production viz-control has it
 #   VIZ_ROTATE_SECRETS     generated Worker secrets to REPLACE in this release, e.g. "OAUTH_CLIENT_KEY"
 #                          (invalidates every registered OAuth client; see deploy/README.md). Without
 #                          it a generated secret is created only where it is missing, never replaced.
@@ -96,9 +100,11 @@ node deploy/resources.mjs ensure ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"}
 note "resources: present"
 
 step "configure"
-EXPIRES_ARGS=()
-if [ -n "${VIZ_STAGE_EXPIRES_AT:-}" ]; then EXPIRES_ARGS=(--expires "$VIZ_STAGE_EXPIRES_AT"); fi
-node deploy/configure.mjs ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"} ${EXPIRES_ARGS[@]+"${EXPIRES_ARGS[@]}"} --release "$VIZ_RELEASE_SHA" > /dev/null
+CONFIGURE_ARGS=()
+if [ -n "${VIZ_STAGE_EXPIRES_AT:-}" ]; then CONFIGURE_ARGS=(--expires "$VIZ_STAGE_EXPIRES_AT"); fi
+if [ "${VIZ_OAUTH_WITHOUT_RATE_LIMITS:-0}" = 1 ]; then CONFIGURE_ARGS+=(--oauth-without-rate-limits); fi
+if [ "${VIZ_OAUTH_PUBLIC:-0}" = 1 ]; then CONFIGURE_ARGS+=(--oauth-public); fi
+node deploy/configure.mjs ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"} ${CONFIGURE_ARGS[@]+"${CONFIGURE_ARGS[@]}"} --release "$VIZ_RELEASE_SHA" > /dev/null
 note "configure: deploy/generated/$TARGET"
 
 step "release: upload, then promote"
@@ -115,11 +121,11 @@ SECRETS=$(node -e 'const r=require(process.argv[1]);console.log((r.secrets||[]).
 if [ -n "$SECRETS" ]; then note "secrets: $SECRETS"; fi
 # shellcheck disable=SC2016  # the single quotes hold JavaScript, not shell
 MIGRATED=$(node -e 'const r=require(process.argv[1]);console.log((r.migrations||[]).map(m=>`${m.worker} ${m.from??"(none)"}→${m.to}`).join(", "))' "$OUT/release.json")
-# Forward-only for a schema or a format (contracts/COMPATIBILITY.md §6): a class's storage may already
+# Forward-only for a schema, a format (contracts/COMPATIBILITY.md §6) or a rollback floor (D69 point 6): a class's storage may already
 # be in a shape, or a format at a version, the previous release cannot read; release.mjs would
 # refuse the rollback anyway.
 # shellcheck disable=SC2016
-FORWARD_ONLY=$(node -e 'const r=require(process.argv[1]);console.log((r.forwardOnlyBecause||[]).filter(f=>f.kind==="schema"||f.kind==="format").map(f=>f.kind==="schema"?`${f.component} readable from ${f.compat}`:`${f.format} written at ${f.writes}`).join(", "))' "$OUT/release.json")
+FORWARD_ONLY=$(node -e 'const r=require(process.argv[1]);console.log((r.forwardOnlyBecause||[]).filter(f=>f.kind==="schema"||f.kind==="format"||f.kind==="floor").map(f=>f.kind==="schema"?`${f.component} readable from ${f.compat}`:f.kind==="floor"?`${f.worker} below the ${f.rule} floor before it`:`${f.format} written at ${f.writes}`).join(", "))' "$OUT/release.json")
 
 if [ $SMOKE -eq 0 ]; then note "smoke: skipped (--skip-smoke)"; exit 0; fi
 step "smoke test"

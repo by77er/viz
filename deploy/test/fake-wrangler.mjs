@@ -26,7 +26,7 @@
 // secrets it inherited for its first n reads, as S9 saw a fresh version shown without a secret it
 // carried) and `keep: n` (Cloudflare keeps only the n newest versions of a Worker, 100 in
 // production, and never drops one serving now).
-// Every version keeps its `--message` (the API's `workers/message`).
+// Every version keeps its `--message` (the API's `workers/message`), and its config's `ratelimits` (D70).
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 
 const statePath = process.env.VIZ_FAKE_WRANGLER_STATE
@@ -107,7 +107,7 @@ if (a === 'versions' && b === 'upload') {
   const cfg = readConfig(opt('config'))
   const w = state.workers[cfg.name]
   if (!w) fail(`This Worker does not exist on your account. [code: 10007]`)
-  const v = lagged({ id: newId(), number: (w.versions.at(-1)?.number ?? 0) + 1, tag: opt('tag') ?? null, message: opt('message') ?? null, vars: { ...(cfg.vars ?? {}), ...cliVars() }, secrets: inherited(w) })
+  const v = lagged({ id: newId(), number: (w.versions.at(-1)?.number ?? 0) + 1, tag: opt('tag') ?? null, message: opt('message') ?? null, vars: { ...(cfg.vars ?? {}), ...cliVars() }, secrets: inherited(w), ...(cfg.ratelimits ? { ratelimits: cfg.ratelimits } : {}) })
   // `uploadSecretLag`: the upload is shown without the first secret it inherited for its first n reads.
   if (state.uploadSecretLag && Object.keys(v.secrets).length) Object.assign(v, { secretLag: state.uploadSecretLag, lagSecret: Object.keys(v.secrets)[0] })
   w.versions.push(v)
@@ -150,7 +150,7 @@ if (a === 'versions' && b === 'upload') {
 } else if (a === 'deploy') {
   const cfg = readConfig(opt('config'))
   const w = (state.workers[cfg.name] ??= { migrationTag: null, versions: [], deployment: [] })
-  const v = lagged({ id: newId(), number: (w.versions.at(-1)?.number ?? 0) + 1, tag: opt('tag') ?? null, message: opt('message') ?? null, vars: { ...(cfg.vars ?? {}), ...cliVars() }, secrets: inherited(w) })
+  const v = lagged({ id: newId(), number: (w.versions.at(-1)?.number ?? 0) + 1, tag: opt('tag') ?? null, message: opt('message') ?? null, vars: { ...(cfg.vars ?? {}), ...cliVars() }, secrets: inherited(w), ...(cfg.ratelimits ? { ratelimits: cfg.ratelimits } : {}) })
   w.versions.push(v)
   w.active = [...new Set([...(w.active ?? []), ...w.deployment.map((d) => d.version_id), v.id])]
   w.deployment = [{ version_id: v.id, percentage: 100 }]

@@ -40,6 +40,8 @@ const MUTANTS = [
   ['the Tempo and Loki read paths are not routed', "  if (SIGNAL_QUERY_PATHS.has(path) || SIGNAL_QUERY_PATTERNS.some((p) => p.test(path))) return 'query'\n", ''],
   ['a trace id matched as a prefix (/api/traces/abc/x reaches query)', 'traces\\/[^/]+$/', 'traces\\//'],
   ['/api/v1/plan is not routed (the plan-only endpoint is unreachable from outside)', "'/api/v1/metadata', '/api/v1/plan'])", "'/api/v1/metadata'])"],
+  ['Tempo\'s /api/echo is not routed (a Grafana data source\'s check gets 404)', "  '/api/echo',\n", ''],
+  ['/api/echo matched as a prefix (/api/echo/x, /api/echox reach query)', "  if (SIGNAL_QUERY_PATHS.has(path) || SIGNAL_QUERY_PATTERNS", "  if (path.startsWith('/api/echo') || SIGNAL_QUERY_PATHS.has(path) || SIGNAL_QUERY_PATTERNS"],
   ['every /loki/ path goes to query (/loki/api/v1/tail, index, rules reach it)', "  if (SIGNAL_QUERY_PATHS.has(path) || SIGNAL_QUERY_PATTERNS", "  if (path.startsWith('/loki/') || SIGNAL_QUERY_PATHS.has(path) || SIGNAL_QUERY_PATTERNS"],
 ]
 

@@ -26,6 +26,12 @@
 //   a rollback to a version without the key serves without it until the next deploy, and Cloudflare
 //   refuses (10220) a rollback to a version whose value differs. `release.mjs rollback` refuses both
 //   up front, before any Worker is moved (`secretRollbackProblems`).
+// - D70's gate, as defence in depth (review of D70, M-2): the key is what turns OAuth on (without it
+//   registration answers 503 and no code or token is issued), so it is not put (created or rotated) on
+//   a viz-control whose generated config lacks any of the Rate Limiting bindings configure.mjs recorded
+//   as required, with their period, a positive limit and an allocated namespace id; a stage only when
+//   its manifest says it was configured --oauth-without-rate-limits (`keyGateProblems`). A key that is
+//   already there is kept either way (nothing is put).
 import { randomBytes } from 'node:crypto'
 
 export const GENERATED_SECRETS = [
@@ -34,6 +40,8 @@ export const GENERATED_SECRETS = [
     name: 'OAUTH_CLIENT_KEY',
     bytes: 32,
     why: 'signs the OAuth client registrations of MCP clients (HMAC-SHA-256; control/src/oauth.ts, D44). Without it /oauth/register answers 503; replacing it invalidates every registered client',
+    // Not put on a version without D70's rate limits (keyGateProblems).
+    gate: 'oauth',
   },
 ]
 
@@ -109,6 +117,42 @@ export function secretsOfManifest(manifest) {
   for (const name of manifest.order) {
     const w = manifest.workers.find((x) => x.name === name)
     for (const s of GENERATED_SECRETS) if (s.worker === (w?.canonical ?? name)) out.push({ ...s, worker: name, canonical: s.worker })
+  }
+  return out
+}
+
+/**
+ * D70's gate on the key (review of D70, M-2), for each generated secret with `gate: "oauth"`: what is
+ * wrong with the generated config of the Worker it would go on. `configOf(manifestWorker)` reads that
+ * Worker's generated config. Pure given it. A Worker the manifest records no gate for (`oauth`, which
+ * configure.mjs writes) is refused too: which bindings it needs is unknown. A stage passes without
+ * the bindings only when its manifest and its Worker both say --oauth-without-rate-limits; production
+ * never does.
+ */
+export function keyGateProblems(manifest, configOf) {
+  const out = []
+  for (const spec of secretsOfManifest(manifest)) {
+    if (spec.gate !== 'oauth') continue
+    const w = manifest.workers.find((x) => x.name === spec.worker)
+    const why = `${spec.name} turns OAuth on (without it /oauth/register answers 503 and nothing is issued), and OAuth is served only behind D70's rate limits (review of D70, M-2)`
+    if (manifest.stage && manifest.oauthWithoutRateLimits === true && w?.oauth?.withoutRateLimits === true) continue
+    const required = w?.oauth?.required
+    if (!Array.isArray(required) || required.length === 0) {
+      out.push({ worker: spec.worker, name: spec.name, problem: `${spec.worker}: the manifest does not say which rate-limit bindings it needs (no "oauth" record from configure.mjs), so ${spec.name} is not put on it: ${why}` })
+      continue
+    }
+    const list = configOf(w)?.ratelimits ?? []
+    const good = (r) => Number.isInteger(r?.simple?.limit) && r.simple.limit > 0 && r.simple.period === w.oauth.period && /^[1-9]\d*$/.test(String(r.namespace_id ?? ''))
+    const missing = required.filter((n) => !list.some((r) => r?.name === n && good(r)))
+    const ids = list.filter(good).map((r) => String(r.namespace_id))
+    const shared = ids.filter((id, i) => ids.indexOf(id) !== i)
+    if (missing.length || shared.length) {
+      out.push({
+        worker: spec.worker,
+        name: spec.name,
+        problem: `${spec.worker}: its generated config ${missing.length ? `lacks the rate-limit binding${missing.length > 1 ? 's' : ''} ${missing.join(', ')} (each with period ${w.oauth.period}, a positive limit and an allocated namespace_id)` : ''}${missing.length && shared.length ? ', and ' : ''}${shared.length ? `binds namespace_id ${[...new Set(shared)].join(', ')} twice` : ''}, so ${spec.name} is not put on it: ${why}. Configure with deploy/configure.mjs after deploy/resources.mjs ensure${manifest.stage ? ', or a stage with --oauth-without-rate-limits' : ''}`,
+      })
+    }
   }
   return out
 }
@@ -195,7 +239,7 @@ export function planSecrets(now, rotate, steps) {
  * another run (m-11: that run uploaded between the check and the put). `api`: { wrangler,
  * versionInfo, listVersions }.
  */
-export async function ensureSecrets({ worker, versionId, specs, now, rotate, release, run, tag, message, api, deployed = false, log = () => {} }) {
+export async function ensureSecrets({ worker, versionId, specs, now, rotate, release, run, tag, message, api, deployed = false, gate = [], log = () => {} }) {
   let current = versionId
   // What a refusal leaves: an upload serves nothing; a version wrangler deploy made in phase 2 serves already (m-5).
   const left = deployed
@@ -224,6 +268,9 @@ export async function ensureSecrets({ worker, versionId, specs, now, rotate, rel
     } else toPut.push({ spec, action: 'created' })
   }
   if (!run) throw new Error(`${worker}: no run id to check the keyed version against`)
+  // D70's gate (keyGateProblems), at the put itself: never on a version without the rate limits.
+  const refused = gate.filter((g) => g.worker === worker && toPut.some((t) => t.spec.name === g.name))
+  if (refused.length) throw new SecretRefused(`${refused.map((g) => g.problem).join('; ')}; ${left}`)
   for (const { spec, action } of toPut) {
     // `versions secret put` patches the NEWEST version. It must be this run's upload, or the keyed
     // version could carry code nobody reviewed for this release, or another run's version.

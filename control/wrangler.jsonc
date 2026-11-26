@@ -8,6 +8,19 @@
   // The same namespace edge reads: `key:<keyId>`, `pool:<tenant>`, `limits:<tenant>`,
   // `retention:<tenant>`, `revocation:<tenant>`. The id is a placeholder; never deploy with it.
   "kv_namespaces": [{ "binding": "CONFIG", "id": "00000000000000000000000000000000" }],
+  // Rate limits in front of OAuth (D70, src/ratelimit.ts). namespace_id: placeholders, replaced by
+  // deploy/configure.mjs with ids deploy/resources.mjs allocated for this deployment; never deploy with
+  // them. The limits (per Cloudflare location, per 60 s) are modelled, not measured on real traffic
+  // (control/README.md, "Rate limits in front of OAuth (D70)"). deploy/configure.mjs refuses a
+  // production config without all six, a period other than 60 and a placeholder that survives.
+  "ratelimits": [
+    { "name": "OAUTH_RL_SOURCE", "namespace_id": "0", "simple": { "limit": 120, "period": 60 } },
+    { "name": "OAUTH_RL_SOURCE_48", "namespace_id": "0", "simple": { "limit": 1200, "period": 60 } },
+    { "name": "OAUTH_RL_CREDENTIAL", "namespace_id": "0", "simple": { "limit": 5, "period": 60 } },
+    { "name": "OAUTH_RL_TENANT", "namespace_id": "0", "simple": { "limit": 6000, "period": 60 } },
+    { "name": "OAUTH_RL_BEARER", "namespace_id": "0", "simple": { "limit": 1200, "period": 60 } },
+    { "name": "OAUTH_RL_BEARER_TENANT", "namespace_id": "0", "simple": { "limit": 30000, "period": 60 } }
+  ],
   "vars": {
     // Comma-separated origins that may call the API from a browser. Empty: none.
     "CORS_ALLOW_ORIGINS": "https://vis.bitcru.sh",

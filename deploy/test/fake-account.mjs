@@ -41,7 +41,9 @@ export function installFakeAccount(tmp) {
       annotations: { 'workers/tag': v.tag, ...(v.message ? { 'workers/message': v.message } : {}) },
       // Secrets are listed by name and type only, as Cloudflare does.
       // A var whose value is not a string is a JSON var, as Cloudflare shows it.
-      resources: { bindings: [...Object.entries(v.vars).map(([n, x]) => (typeof x === 'string' ? { type: 'plain_text', name: n, text: x } : { type: 'json', name: n, json: x })), ...Object.keys(v.secrets).filter((n) => n !== hide).map((n) => ({ type: 'secret_text', name: n }))] },
+      resources: { bindings: [...Object.entries(v.vars).map(([n, x]) => (typeof x === 'string' ? { type: 'plain_text', name: n, text: x } : { type: 'json', name: n, json: x })), ...Object.keys(v.secrets).filter((n) => n !== hide).map((n) => ({ type: 'secret_text', name: n })),
+        // Rate Limiting bindings as the version API lists them (training knowledge of the shape: type ratelimit, namespace_id, simple).
+        ...(v.ratelimits ?? []).map((r) => ({ type: 'ratelimit', name: r.name, namespace_id: r.namespace_id, simple: r.simple }))] },
     })
     if (sub === 'deployments') return ok({ deployments: [{ id: 'd1', created_on: '2026-11-19T00:00:00Z', versions: w.deployment }] })
     if (sub === 'versions' && id) {
@@ -108,3 +110,20 @@ export const cmd = (call) => call.argv.join(' ')
 export const callsLike = (state, prefix) => state.calls.filter((c) => cmd(c).startsWith(prefix))
 export const serving = (state, name) => state.workers[name].versions.find((v) => v.id === state.workers[name].deployment[0].version_id)
 export const promotions = (state) => state.calls.filter((c) => (c.argv[0] === 'versions' && c.argv[1] === 'deploy') || c.argv[0] === 'triggers' || (c.argv[0] === 'deploy' && !c.argv.includes('--dry-run')))
+
+/** viz-control's Rate Limiting bindings (D70; control/src/ratelimit.ts LIMITERS), as control/wrangler.jsonc declares them. */
+export const RATE_LIMITS = [['OAUTH_RL_SOURCE', 120], ['OAUTH_RL_SOURCE_48', 1200], ['OAUTH_RL_CREDENTIAL', 5], ['OAUTH_RL_TENANT', 6000], ['OAUTH_RL_BEARER', 1200], ['OAUTH_RL_BEARER_TENANT', 30000]]
+
+/**
+ * What configure.mjs writes for a viz-control that passed D70's gate, for a test's hand-built release:
+ * `config` (the generated config's `ratelimits` and its oauth-public stamp, and OAUTH_PUBLIC when
+ * `public`) and `manifest` (the manifest Worker's `oauth` and `floors`). `without`: a stage configured
+ * --oauth-without-rate-limits (no bindings; the manifest must say so too).
+ */
+export function oauthGated({ base = 7000, public: pub = false, without = false, drop = [] } = {}) {
+  const ratelimits = without ? [] : RATE_LIMITS.filter(([n]) => !drop.includes(n)).map(([name, limit], i) => ({ name, namespace_id: String(base + i), simple: { limit, period: 60 } }))
+  return {
+    config: { ...(without ? {} : { ratelimits }), vars: { VIZ_FLOORS: JSON.stringify({ v: 1, at: ['oauth-public'] }), ...(pub ? { OAUTH_PUBLIC: '1' } : {}) } },
+    manifest: { floors: ['oauth-public'], oauth: { required: RATE_LIMITS.map(([n]) => n), period: 60, ratelimits: Object.fromEntries(ratelimits.map((r) => [r.name, r.namespace_id])), withoutRateLimits: without, public: pub } },
+  }
+}

@@ -11,7 +11,7 @@
  *   Tempo: /api/traces/<id>, /api/v2/traces/<id>, /api/search,
  *   /api/search/tags, /api/v2/search/tags,
  *   /api/search/tag/<tag>/values, /api/v2/search/tag/<tag>/values,
- *   /api/metrics/query_range, /api/metrics/query                → QUERY   (viz-query serves them only with
+ *   /api/metrics/query_range, /api/metrics/query, /api/echo     → QUERY   (viz-query serves them only with
  *   Loki: /loki/api/v1/query, /query_range, /labels,                        QUERY_SIGNALS, else 404)
  *   /label/<name>/values, /series                               → QUERY
  *   /api/v1/control, /api/v1/control/…                          → CONTROL (viz-control)
@@ -65,8 +65,10 @@ const QUERY_PREFIXES = ['/api/v1/label/', '/api/v1/status/']
  * Tempo's and Loki's read paths that viz-query serves (behind `QUERY_SIGNALS`; query/src/sigroutes.ts),
  * as their documentation writes them (grafana.com/docs/tempo/latest/api_docs/, "Query" section;
  * grafana.com/docs/loki/latest/reference/loki-http-api/, "Query"; read 2026-11-19). Exact paths;
- * a path parameter (`<traceid>`, `<tag>`, `<name>`) is exactly one non-empty segment. Their other
- * paths (Tempo's `/api/echo`, `/api/status/buildinfo`, `/api/overrides`; Loki's index, volume,
+ * a path parameter (`<traceid>`, `<tag>`, `<name>`) is exactly one non-empty segment. Tempo's
+ * `/api/echo` ("Returns status code 200 and body `echo` when the query frontend is up", a data
+ * source's check: D62, query review m-4) is one of them. Their other
+ * paths (Tempo's `/api/status/buildinfo`, `/api/overrides`; Loki's index, volume,
  * patterns, tail, detected fields, rules, delete, `/otlp/v1/logs`, the deprecated `/api/prom/…`)
  * are not served and stay 404 here.
  */
@@ -76,6 +78,7 @@ const SIGNAL_QUERY_PATHS = new Set([
   '/api/v2/search/tags',
   '/api/metrics/query_range',
   '/api/metrics/query',
+  '/api/echo',
   '/loki/api/v1/query',
   '/loki/api/v1/query_range',
   '/loki/api/v1/labels',
@@ -132,7 +135,7 @@ export const ENTRYPOINTS = {
     'GET /api/v1/metadata',
     'GET /api/v1/status/buildinfo',
     'GET|POST /api/v1/plan (what a query would read, without running it)',
-    'GET /api/traces/<id>, /api/v2/traces/<id>, /api/search, /api/search/tags, /api/v2/search/tags, /api/search/tag/<tag>/values, /api/v2/search/tag/<tag>/values, /api/metrics/query_range, /api/metrics/query (Tempo; when the deployment enables traces)',
+    'GET /api/traces/<id>, /api/v2/traces/<id>, /api/search, /api/search/tags, /api/v2/search/tags, /api/search/tag/<tag>/values, /api/v2/search/tag/<tag>/values, /api/metrics/query_range, /api/metrics/query, /api/echo (Tempo; when the deployment enables traces)',
     'GET|POST /loki/api/v1/query, /loki/api/v1/query_range, /loki/api/v1/labels, /loki/api/v1/label/<name>/values, /loki/api/v1/series (Loki; when the deployment enables logs)',
   ],
   control: [
