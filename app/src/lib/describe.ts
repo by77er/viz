@@ -1,14 +1,14 @@
 import type { QueryWindow } from './step'
-import { describeRange, type TimeSpec } from './time'
+import type { TimeSpec } from './time'
 import { inferUnit, isUnitId, type UnitId } from './units'
 
 /**
  * A result describes itself (design review B1).
  *
  * While a new query waits, or after it was cancelled or stopped, the previous result stays
- * on screen. Everything written about the data on screen (the unit, the axis format, the
- * chart's name, the digest's title, the range, the age) must then come from the result that
- * is on screen, never from the query in the editor or in the URL. So a result carries the
+ * on screen. Everything written about the data on screen (the query, the unit, the range, the
+ * step, the age, and through them the chart's name and its text form) must then come from the
+ * result that is on screen, never from the query in the editor or in the URL. So a result carries the
  * request it answers, and `describeResult` is the only place that turns a result into words.
  * It is given the current request for one purpose only: to say whether the result is still
  * the answer to it.
@@ -41,14 +41,10 @@ export interface ResultDescription {
   q: string
   /** The unit the values on screen are shown in. */
   unit: UnitId
-  /** The range of the data on screen: "Last 1h", or the absolute span. */
-  range: string
   /** Null when the result answers the current request. */
   stale: 'query' | 'range' | null
   /** Plain words for the panel head while stale. */
   staleText: string | null
-  digestTitle: string
-  chartLabel: (seriesCount: number) => string
 }
 
 /**
@@ -64,10 +60,7 @@ export function describeResult(result: ResultIdentity, display: { unit: string }
   return {
     q: request.q,
     unit,
-    range: describeRange(request.from, request.to, result.receivedAt / 1000),
     stale,
     staleText: stale === 'query' ? 'Showing the previous query' : stale === 'range' ? 'Showing the previous time range' : null,
-    digestTitle: `Query: ${request.q}`,
-    chartLabel: (n) => `Chart of ${n} series for the query ${request.q}. Arrow keys move the cursor. The text form has the same data.`,
   }
 }

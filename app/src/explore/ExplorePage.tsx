@@ -128,10 +128,10 @@ export function ExplorePage() {
 
   // ---- time window: resolved when the range, the step, the width or the run counter changes.
   const [runId, setRunId] = useState(0)
-  const panelRef = useRef<HTMLDivElement>(null)
+  const toolsRef = useRef<HTMLDivElement>(null)
   const [widthBucket, setWidthBucket] = useState<number | null>(null)
   useLayoutEffect(() => {
-    const el = panelRef.current
+    const el = toolsRef.current
     if (!el) return
     const measure = () => setWidthBucket(bucketWidth(el.clientWidth))
     measure()
@@ -690,7 +690,7 @@ function StartState({ mock }: { mock: boolean }) {
       <p>The answer to a PromQL query appears here as a chart, with a table, a text form and the API's JSON beside it.</p>
       <ol className="vz-steps">
         <li>
-          <p>Type a query in the field above. Metric names, label names and label values complete from the data of the last hour.</p>
+          <p>Type a query in the field above. Metric names, label names and label values complete from the data in the time range.</p>
         </li>
         <li>
           <p>

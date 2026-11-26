@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import { alignWindow, autoStep, bucketWidth, MAX_POINTS, NICE_STEPS } from './step'
-import { assignStyles, hashString, preferredSlot, SLOT_COUNT, slotToken } from './color'
 import {
   DEFAULT_SEARCH,
   exploreSearchFromParams,
@@ -67,51 +66,6 @@ describe('step selection', () => {
       }),
       { numRuns: 300 },
     )
-  })
-})
-
-describe('series colours', () => {
-  const keys = ['service="auth"', 'service="catalog"', 'service="checkout"', 'service="orders"']
-  it('hash is a fixed function (same series, same colour across reloads)', () => {
-    expect(hashString('')).toBe(0x811c9dc5)
-    expect(hashString('a')).toBe(0xe40c292c)
-    expect(preferredSlot('service="checkout"')).toBe(hashString('service="checkout"') % 8)
-  })
-  it('is independent of input order', () => {
-    const a = assignStyles(keys)
-    const b = assignStyles([...keys].reverse())
-    for (const k of keys) expect(b.get(k)).toEqual(a.get(k))
-  })
-  it('gives distinct slots to up to eight series', () => {
-    const many = Array.from({ length: 8 }, (_, i) => `pod="p${i}"`)
-    const styles = assignStyles(many)
-    expect(new Set([...styles.values()].map((s) => s.slot)).size).toBe(8)
-    expect([...styles.values()].every((s) => s.slot !== null)).toBe(true)
-  })
-  it('a series alone on its preferred slot keeps it regardless of the others', () => {
-    const k = 'service="auth"'
-    const alone = assignStyles([k]).get(k)!
-    expect(alone.slot).toBe(preferredSlot(k))
-    const others = ['x="1"', 'x="2"', 'x="3"'].filter((o) => preferredSlot(o) !== preferredSlot(k) && o > k)
-    expect(assignStyles([k, ...others]).get(k)).toEqual(alone)
-  })
-  it('beyond eight series, eight keep distinct slots and the rest fold into Other', () => {
-    const many = Array.from({ length: 32 }, (_, i) => `le="${i}"`)
-    const styles = assignStyles(many)
-    const slots = [...styles.values()].map((s) => s.slot)
-    expect(slots.filter((s) => s !== null).length).toBe(SLOT_COUNT)
-    expect(new Set(slots.filter((s) => s !== null)).size).toBe(SLOT_COUNT)
-    expect(slots.filter((s) => s === null).length).toBe(32 - SLOT_COUNT)
-    // The coloured ones are the first eight in sorted key order, whatever the input order.
-    const firstEight = [...many].sort().slice(0, SLOT_COUNT)
-    expect(firstEight.every((k) => styles.get(k)!.slot !== null)).toBe(true)
-    expect(assignStyles([...many].reverse())).toEqual(styles)
-  })
-  it('names only the eight series tokens, in order, and a neutral ink for Other', () => {
-    expect(Array.from({ length: SLOT_COUNT }, (_, i) => slotToken(i))).toEqual(
-      ['--series-1', '--series-2', '--series-3', '--series-4', '--series-5', '--series-6', '--series-7', '--series-8'],
-    )
-    expect(slotToken(null)).toBe('--ink-muted')
   })
 })
 

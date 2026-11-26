@@ -66,6 +66,8 @@ export function CommandPalette() {
     >
       {/* The design system's menu with a field above it. Groups are divided by separators, not headings. */}
       <div className="vz-menu">
+        <label className="vz-field">
+          <span className="vz-label">Command</span>
         <input
           ref={inputRef}
           value={query}
@@ -90,12 +92,13 @@ export function CommandPalette() {
           aria-expanded="true"
           aria-controls="cmdk-list"
           aria-activedescendant={ordered[activeIndex] ? `cmd-${ordered[activeIndex].id}` : undefined}
-          aria-label="Search commands"
-          placeholder="Run query, Last 24 h, Open settings"
+          placeholder="last 24 h"
           className="vz-input"
           autoComplete="off"
           spellCheck={false}
+          data-testid="palette-input"
         />
+        </label>
         <div ref={listRef} id="cmdk-list" role="menu" aria-label="Commands" className="palette-list">
           {ordered.length === 0 && (
             <div className="palette-none" role="presentation">

@@ -1,84 +1,96 @@
-import { MOD } from './commands'
-import { useBackendInfo } from './AppShell'
+import { MOD, useCommandsContext } from './commands'
 
 const SHORTCUTS: [string[], string][] = [
-  [[MOD, 'Enter'], 'Run the query (in the editor or anywhere on Explore)'],
+  [[MOD, 'Enter'], 'Run the query, from the editor or anywhere on Explore'],
   [[MOD, 'K'], 'Open the command palette'],
-  [['/'], 'Focus the query editor'],
-  [['T'], 'Switch between the chart and the text form'],
+  [['/'], 'Put the cursor in the query editor'],
+  [['T'], 'Switch between the chart and its text form'],
   [['Ctrl', 'Space'], 'Open autocomplete in the query editor'],
-  [['←', '→'], 'Move the cursor along the focused chart (with Shift, 10 steps)'],
-  [['Esc'], 'Close a dialog, a popover or the chart cursor'],
+  [['←', '→'], 'On the chart: move the crosshair one value (with Shift, ten)'],
+  [['Home', 'End'], 'On the chart: go to the start or the end of the range'],
+  [['+', '−'], 'On the chart: zoom in and out'],
+  [['↑', '↓'], 'In the legend: move between series; Space or Enter shows or hides one'],
+  [['Esc'], 'Close the command palette; on the chart, remove the crosshair'],
 ]
 
 export function HelpPage() {
-  const info = useBackendInfo()
+  const { setPaletteOpen } = useCommandsContext()
   return (
-    <div className="page" data-prose="">
-      <h1 className="vz-text-title">Keyboard shortcuts and help</h1>
-      <section className="vz-panel" aria-labelledby="help-keys">
-        <div className="vz-panel-head">
-          <h2 className="vz-panel-title" id="help-keys">
-            Keyboard shortcuts
+    <div className="vz-page">
+      <header className="vz-page-head">
+        <div>
+          <h1 className="vz-page-title">Help</h1>
+        </div>
+      </header>
+      <div className="vz-sections">
+        <section className="vz-section" aria-labelledby="help-explore">
+          <h2 className="vz-section-title" id="help-explore">
+            Explore
           </h2>
-        </div>
-        <div className="vz-table-wrap">
-          <table className="vz-table">
-            <thead>
-              <tr>
-                <th scope="col" className="vz-label">
-                  Keys
-                </th>
-                <th scope="col" className="vz-label">
-                  What it does
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {SHORTCUTS.map(([keys, text]) => (
-                <tr key={text}>
-                  <td>
-                    <span className="keys">
-                      {keys.map((k) => (
-                        <span key={k} className="vz-kbd">
-                          {k}
-                        </span>
-                      ))}
-                    </span>
-                  </td>
-                  <td className="cell-wrap">{text}</td>
+          <p className="vz-text">
+            Explore runs a PromQL range query against this tenant's metrics. The query, the time range, the step, the unit and the form of the result are in the
+            address, so the address bar is always a link you can share. The API key never is.
+          </p>
+          <p className="vz-text">
+            A result has four forms: the chart, a table of the latest value of each series, the chart's facts as sentences, and the API's answer as JSON. The eight
+            largest series are drawn in colour; the rest are one grey band, Other, which the legend opens. A series keeps its colour while it stays on screen.
+            Missing samples are drawn as gaps.
+          </p>
+          <p className="vz-text">
+            Drag across the chart, or use Zoom in, to look closer at what was fetched. To fetch that range itself, at a finer step, press Query the chart's range.
+            Times are typed as "18 Nov 09:16", "09:16" for today, "now" or "now - 6 h", and read in this device's time zone, which the time range states.
+          </p>
+        </section>
+        <section className="vz-section" aria-labelledby="help-keys">
+          <h2 className="vz-section-title" id="help-keys">
+            Keyboard
+          </h2>
+          <div className="vz-table-wrap">
+            <table className="vz-table">
+              <thead>
+                <tr>
+                  <th scope="col" className="vz-label">
+                    Keys
+                  </th>
+                  <th scope="col" className="vz-label">
+                    What they do
+                  </th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
-      <section className="prose" aria-label="About Explore">
-        <h2>Explore</h2>
-        <p>
-          Explore runs a PromQL range query against a Prometheus-compatible API. The query, the time range, the step and the form of the
-          result are all in the URL, so the address bar is always a link you can share. Drag across the chart to zoom into a time range;
-          the browser's Back button undoes it. Select a legend row to show only that series ({MOD}-click to add or remove more).
-        </p>
-        <p>
-          Every result has four forms: the chart, a table of the latest values, a text digest (last, min, max, mean and trend per series)
-          for screen readers and agents, and the raw response as JSON.
-        </p>
-        <p>
-          When more samples are returned than the chart has pixel columns, each column draws its minimum and maximum, so spikes are never
-          averaged away. Missing samples are drawn as gaps, not interpolated. A chart colours at most eight series; the rest are drawn in
-          grey and named Other.
-        </p>
-        <h2>Backend</h2>
-        <p>
-          {info.data
-            ? `Connected to ${info.data.version}${info.data.mock ? ', the development mock: synthetic data and a subset of PromQL.' : '.'}`
-            : info.isError
-              ? 'The backend did not report build information.'
-              : 'Checking the backend.'}{' '}
-          The API URL and token are set in Settings and kept only in this browser.
-        </p>
-      </section>
+              </thead>
+              <tbody>
+                {SHORTCUTS.map(([keys, text]) => (
+                  <tr key={text}>
+                    <td>
+                      <span className="keys">
+                        {keys.map((k) => (
+                          <span key={k} className="vz-kbd">
+                            {k}
+                          </span>
+                        ))}
+                      </span>
+                    </td>
+                    <td className="cell-wrap">{text}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="vz-controls">
+            <button className="vz-button" onClick={() => setPaletteOpen(true)} aria-keyshortcuts="Control+K Meta+K" data-testid="open-commands">
+              Open the command palette
+            </button>
+          </div>
+        </section>
+        <section className="vz-section" aria-labelledby="help-key">
+          <h2 className="vz-section-title" id="help-key">
+            API keys
+          </h2>
+          <p className="vz-text">
+            Signing in takes one of the tenant's API keys with the read scope. A key is made by someone who holds an admin key of the tenant, through the control
+            API. The key is kept in the tab it was pasted into and nowhere else; Settings shows whose it is and signs out.
+          </p>
+        </section>
+      </div>
     </div>
   )
 }

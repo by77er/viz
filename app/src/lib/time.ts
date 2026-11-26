@@ -34,10 +34,6 @@ export function formatDuration(seconds: number): string {
  */
 export type TimeSpec = string
 
-export function isRelative(spec: TimeSpec): boolean {
-  return spec.startsWith('now')
-}
-
 export function isValidTimeSpec(spec: string): boolean {
   if (spec === 'now') return true
   if (spec.startsWith('now-')) return parseDuration(spec.slice(4)) !== null
@@ -53,35 +49,6 @@ export function resolveTimeSpec(spec: TimeSpec, nowSec: number): number {
 
 export function absoluteSpec(epochSec: number): TimeSpec {
   return String(Math.round(epochSec * 1000))
-}
-
-const pad = (n: number) => String(n).padStart(2, '0')
-
-/** Local `YYYY-MM-DD HH:MM:SS`. */
-export function formatDateTime(epochSec: number): string {
-  const d = new Date(epochSec * 1000)
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-}
-
-/** Value for an `<input type="datetime-local">`. */
-export function toDateTimeLocal(epochSec: number): string {
-  return formatDateTime(epochSec).replace(' ', 'T')
-}
-
-export function fromDateTimeLocal(value: string): number | null {
-  const ms = new Date(value).getTime()
-  return Number.isFinite(ms) ? ms / 1000 : null
-}
-
-/** Human label for a from/to pair: "Last 1h" or an absolute span. */
-export function describeRange(from: TimeSpec, to: TimeSpec, nowSec: number): string {
-  if (to === 'now' && from.startsWith('now-')) return `Last ${from.slice(4)}`
-  const a = resolveTimeSpec(from, nowSec)
-  const b = resolveTimeSpec(to, nowSec)
-  const fa = formatDateTime(a)
-  const fb = formatDateTime(b)
-  // Same day: do not repeat the date.
-  return fa.slice(0, 10) === fb.slice(0, 10) ? `${fa} – ${fb.slice(11)}` : `${fa} – ${fb}`
 }
 
 /** "15s" is typed; "15 s" and "2 min" are read: a number, a space, and a unit that cannot be taken for metres. */

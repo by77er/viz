@@ -26,22 +26,23 @@ export const JsonView = memo(function JsonView({ data, elapsedMs }: { data: Pars
   const text = useMemo(() => cachedResponse(data), [data])
   const truncated = text.length > MAX_CHARS
   return (
-    <div data-testid="result-json" className="region-part">
-      <div className="caption-row">
-        <p className="vz-panel-desc">
-          The response of <span className="app-num">/api/v1/query_range</span>, <span className="app-num">{(text.length / 1024).toFixed(1)}</span> KiB
-          {elapsedMs !== undefined && (
-            <>
-              , answered in <span className="app-num">{elapsedMs < 10 ? elapsedMs.toFixed(1) : Math.round(elapsedMs).toLocaleString('en-US')}</span> ms
-            </>
-          )}
-          {truncated ? `. Showing the first ${Math.round(MAX_CHARS / 1024)} KiB; Copy JSON copies all of it.` : '.'}
-        </p>
-        <CopyButton text={() => text} label="Copy JSON" />
-      </div>
-      <pre className="vz-query code-scroll code-wrap" tabIndex={0} aria-label="Raw JSON response">
+    <div data-testid="result-json">
+      <p className="vz-table-caption">
+        What <span className="vz-qty">/api/v1/query_range</span> answered: <span className="vz-qty">{(text.length / 1024).toFixed(1)} KiB</span>
+        {elapsedMs !== undefined && (
+          <>
+            {' '}
+            in <span className="vz-qty">{elapsedMs < 10 ? elapsedMs.toFixed(1) : Math.round(elapsedMs).toLocaleString('en-US')} ms</span>
+          </>
+        )}
+        {truncated ? `. The first ${Math.round(MAX_CHARS / 1024)} KiB are shown; Copy JSON copies all of it.` : '.'}
+      </p>
+      <pre className="vz-query code-scroll" tabIndex={0} aria-label="Raw JSON response">
         {truncated ? `${text.slice(0, MAX_CHARS)}\n…` : text}
       </pre>
+      <div className="vz-controls">
+        <CopyButton text={() => text} label="Copy JSON" />
+      </div>
     </div>
   )
 })

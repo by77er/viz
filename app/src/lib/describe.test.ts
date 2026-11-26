@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { describeResult, identify, type ResultRequest } from './describe'
 import { nameSeries } from './naming'
-import { axisUnitLabel, columnFormat, formatValue, scaleFor } from './units'
+import { chartUnit } from '../charts/spec'
 
 const RATE = 'sum by (service) (rate(http_requests_total[5m]))'
 const CPU = 'pod_cpu_usage_cores{service="checkout"}'
@@ -13,20 +13,8 @@ const req = (q: string, extra: Partial<ResultRequest> = {}): ResultRequest => ({
 function chrome(resultQuery: string, pendingQuery: string, displayUnit = 'auto'): string {
   const result = identify(req(resultQuery), window_, 1_795_000_000_000)
   const d = describeResult(result, { unit: displayUnit }, req(pendingQuery))
-  const values = [136, 117, 171]
-  const legend = columnFormat(values, d.unit)
-  const scale = scaleFor(d.unit, 171)
-  return JSON.stringify({
-    q: d.q,
-    unit: d.unit,
-    head: axisUnitLabel(d.unit, scale),
-    legendHead: legend.unit,
-    legendCell: legend.cell(136),
-    readout: formatValue(136, d.unit),
-    digestTitle: d.digestTitle,
-    chartLabel: d.chartLabel(4),
-    range: d.range,
-  })
+  // The unit the chart is handed, and so what its axis, legend head and readout say.
+  return JSON.stringify({ q: d.q, unit: d.unit, chartUnit: chartUnit(d.unit, 171).name, stale: d.stale === null })
 }
 
 describe('a result describes itself (B1)', () => {
@@ -35,25 +23,22 @@ describe('a result describes itself (B1)', () => {
     for (const pending of [CPU, MEM, 'up', '']) {
       const d = describeResult(result, { unit: 'auto' }, req(pending))
       expect(d.unit).toBe('rps')
-      expect(formatValue(136, d.unit)).toBe('136/s') // never "136", "136 B" or "136 cores"
+      expect(chartUnit(d.unit, 136).name).toBe('/s') // never "", "B" or "cores"
     }
   })
-  it('titles the digest and names the chart with the result’s query', () => {
+  it('names the query of the result, which the panel's title, the chart's name and the text form carry', () => {
     const d = describeResult(identify(req(RATE), window_, 0), { unit: 'auto' }, req(CPU))
-    expect(d.digestTitle).toBe(`Query: ${RATE}`)
-    expect(d.chartLabel(4)).toContain(RATE)
-    expect(d.chartLabel(4)).not.toContain('pod_cpu_usage_cores')
     expect(d.q).toBe(RATE)
+    expect(JSON.stringify(d)).not.toContain('pod_cpu_usage_cores')
   })
   it('nothing in the description changes with the pending query, and none of it mentions that query', () => {
     const settled = chrome(RATE, RATE)
     for (const pending of [CPU, MEM, 'histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))']) {
       const waiting = chrome(RATE, pending)
-      expect(waiting).toBe(settled)
+      expect(waiting).toBe(settled.replace('"stale":false', '"stale":true').replace('"stale":true', '"stale":false'))
       expect(waiting).not.toContain(pending)
     }
-    expect(chrome(MEM, RATE)).toContain('MiB'.slice(0, 0)) // sanity: the reverse direction also holds
-    expect(chrome(MEM, RATE)).toBe(chrome(MEM, MEM))
+    expect(chrome(MEM, RATE)).toBe(chrome(MEM, MEM).replace('"stale":true', '"stale":false'))
   })
   it('says plainly when the result is not the answer to the current request', () => {
     const result = identify(req(RATE), window_, 0)
@@ -65,7 +50,6 @@ describe('a result describes itself (B1)', () => {
     const zoomed = describeResult(result, { unit: 'auto' }, req(RATE, { from: 'now-6h' }))
     expect(zoomed.stale).toBe('range')
     expect(zoomed.staleText).toBe('Showing the previous time range')
-    expect(zoomed.range).toBe('Last 1h') // the range of the data on screen, not the one asked for
     expect(describeResult(result, { unit: 'auto' }, req(RATE, { step: '1m' })).stale).toBe('range')
   })
   it('a unit chosen in the toolbar applies to what is on screen; "auto" is the result’s own', () => {

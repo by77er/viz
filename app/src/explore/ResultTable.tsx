@@ -1,101 +1,98 @@
 import { memo, useMemo, useState } from 'react'
 import { countRender } from '../lib/renders'
-import { formatDateTime } from '../lib/time'
-import { columnFormat, headWithUnit, type UnitId } from '../lib/units'
-import type { LegendRow } from './Legend'
-import { SortHead } from './Legend'
+import { momentText } from '../lib/timeInput'
 
-interface Row extends LegendRow {
+export interface TableRow {
+  id: string
+  /** The series' full name, for a result of one series with no label to tell it by. */
+  full: string
   labels: Record<string, string>
+  /** The latest value in the range, and when it was sampled (epoch seconds). */
+  last: number | null
+  lastAt: number | null
+  /** `last` in the chart's unit and number format (charts/spec.ts, `figureFormat`): the legend's figure. */
+  text: string
 }
 
 /** Rows rendered at once; the rest come with "Show more", so a 200-series result costs what a 50-series one does. */
 export const TABLE_PAGE = 50
 
 interface Props {
-  rows: Row[]
-  unit: UnitId
+  rows: TableRow[]
+  /** The unit of the value column, said once in its head. Empty for plain numbers. */
+  unit: string
   /** Labels that differ between the series, most distinguishing first: the columns, in this order. */
   columns: string[]
-  /** Labels every series shares: said once above the table, not repeated in a column. */
+  /** Labels every series shares: said once under the table, not repeated in a column. */
   common: Record<string, string>
+  nowMs: number
 }
 
-/** Instant value per series: the last sample of each series in the window, by label. */
-export const ResultTable = memo(function ResultTable({ rows, unit, columns, common }: Props) {
+type Sort = { key: string; dir: 1 | -1 }
+const VALUE = '#value'
+
+/** The order as the caption states it (Table: "how many rows of how many and in what order"). */
+export function orderWords(sort: Sort): string {
+  if (sort.key === VALUE) return sort.dir === -1 ? 'highest value first' : 'lowest value first'
+  return `by ${sort.key === '__name__' ? 'metric' : sort.key}, ${sort.dir === 1 ? 'A to Z' : 'Z to A'}`
+}
+
+export function sortRows(rows: readonly TableRow[], sort: Sort): TableRow[] {
+  const out = [...rows]
+  out.sort((a, b) => {
+    if (sort.key === VALUE) {
+      // A series with no value in the range comes last, whichever way the column is sorted.
+      if (a.last == null) return b.last == null ? 0 : 1
+      if (b.last == null) return -1
+      return sort.dir * (a.last - b.last)
+    }
+    return sort.dir * (a.labels[sort.key] ?? '').localeCompare(b.labels[sort.key] ?? '', undefined, { numeric: true })
+  })
+  return out
+}
+
+/** The latest value of each series in the range, one column per label that tells the series apart. */
+export const ResultTable = memo(function ResultTable({ rows, unit, columns, common, nowMs }: Props) {
   countRender('ResultTable')
-  const [sort, setSort] = useState<{ key: string; dir: 1 | -1 }>({ key: '', dir: 1 })
+  const [sort, setSort] = useState<Sort>({ key: VALUE, dir: -1 })
   const [limit, setLimit] = useState(TABLE_PAGE)
-
-  const sorted = useMemo(() => {
-    if (!sort.key) return rows
-    const out = [...rows]
-    out.sort((a, b) => {
-      if (sort.key === '#value') {
-        const av = a.stats.last
-        const bv = b.stats.last
-        if (av == null) return bv == null ? 0 : 1
-        if (bv == null) return -1
-        return sort.dir * (av - bv)
-      }
-      const av = a.labels[sort.key] ?? ''
-      const bv = b.labels[sort.key] ?? ''
-      return sort.dir * av.localeCompare(bv, undefined, { numeric: true })
-    })
-    return out
-  }, [rows, sort])
-
-  // The unit goes in the head once when the column has one scale; otherwise each value keeps it.
-  const value = useMemo(() => columnFormat(rows.map((r) => r.stats.last), unit), [rows, unit])
+  const sorted = useMemo(() => sortRows(rows, sort), [rows, sort])
+  const visible = sorted.slice(0, limit)
   // One timestamp for every row is said once, in the caption; a column only when they differ.
   const at = useMemo(() => {
-    const first = rows.find((r) => r.stats.lastAt != null)?.stats.lastAt ?? null
-    return rows.every((r) => r.stats.lastAt == null || r.stats.lastAt === first) ? first : undefined
+    const first = rows.find((r) => r.lastAt != null)?.lastAt ?? null
+    return rows.every((r) => r.lastAt == null || r.lastAt === first) ? first : undefined
   }, [rows])
-  const shared = Object.keys(common).sort()
+  const shared = Object.keys(common)
+    .filter((k) => k !== '__name__')
+    .sort()
 
   const head = (key: string, label: string, numeric = false) => {
     const active = sort.key === key
     return (
-      <SortHead
-        key={key}
-        label={label}
-        active={active}
-        dir={sort.dir}
-        numeric={numeric}
-        onSort={() => setSort({ key, dir: active ? (sort.dir === 1 ? -1 : 1) : numeric ? -1 : 1 })}
-      />
+      <th key={key} scope="col" className={numeric ? 'vz-label vz-right' : 'vz-label'} aria-sort={active ? (sort.dir === 1 ? 'ascending' : 'descending') : undefined}>
+        <button className="vz-sort" onClick={() => setSort({ key, dir: active ? (sort.dir === 1 ? -1 : 1) : numeric ? -1 : 1 })}>
+          {label}
+        </button>
+      </th>
     )
   }
 
   return (
-    <div data-testid="result-table" className="region-part">
-      <p className="vz-panel-desc" data-testid="table-caption">
-        The latest value of each series in the range
+    <div data-testid="result-table">
+      <p className="vz-table-caption" data-testid="table-caption">
+        <span className="vz-qty">{visible.length}</span> of <span className="vz-qty">{sorted.length}</span> series, {orderWords(sort)}
         {at != null ? (
           <>
-            , at <span className="app-num">{formatDateTime(at)}</span>
+            . The latest value of each, at <span className="vz-qty">{momentText(at, nowMs)}</span>
           </>
-        ) : null}
-        .
-        {shared.length > 0 && columns.length > 0 && (
-          <>
-            {' '}
-            Every series has{' '}
-            {shared.map((k, i) => (
-              <span key={k}>
-                {i > 0 ? ', ' : ''}
-                <span className="app-num">{k === '__name__' ? common[k] : `${k}=${JSON.stringify(common[k])}`}</span>
-              </span>
-            ))}
-            .
-          </>
+        ) : (
+          '. The latest value of each in the range'
         )}
-        {sorted.length > limit ? ` Showing ${limit} of ${sorted.length} series.` : ''}
+        .
       </p>
       <div className="vz-table-wrap">
         <table className="vz-table">
-          <caption className="sr-only">Latest value of each series in the selected time range</caption>
           <thead>
             <tr>
               {columns.length === 0 && (
@@ -104,39 +101,38 @@ export const ResultTable = memo(function ResultTable({ rows, unit, columns, comm
                 </th>
               )}
               {columns.map((c) => head(c, c === '__name__' ? 'Metric' : c))}
-              {head('#value', headWithUnit('Value', value.unit), true)}
+              {head(VALUE, unit ? `Value, ${unit}` : 'Value', true)}
               {at === undefined && (
-                <th scope="col" className="vz-label vz-right">
+                <th scope="col" className="vz-label">
                   At
                 </th>
               )}
             </tr>
           </thead>
           <tbody>
-            {sorted.slice(0, limit).map((r) => (
+            {visible.map((r) => (
               <tr key={r.id}>
                 {columns.length === 0 && <td className="vz-num">{r.full}</td>}
                 {columns.map((c) => (
                   <td key={c} className="vz-num">
-                    {r.labels[c] ?? <span className="cell-quiet">none</span>}
+                    {r.labels[c] ?? 'none'}
                   </td>
                 ))}
-                <td className="vz-num vz-right">{value.cell(r.stats.last)}</td>
-                {at === undefined && <td className="vz-num vz-right cell-quiet">{r.stats.lastAt == null ? 'none' : formatDateTime(r.stats.lastAt)}</td>}
+                <td className="vz-num vz-right">{r.text}</td>
+                {at === undefined && <td className="vz-num">{r.lastAt == null ? 'no value' : momentText(r.lastAt, nowMs)}</td>}
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+      {shared.length > 0 && columns.length > 0 && (
+        <p className="vz-secondary" data-size="sm" data-testid="table-common">
+          All series: <span className="vz-qty">{shared.map((k) => `${k}=${JSON.stringify(common[k])}`).join(', ')}</span>
+        </p>
+      )}
       {sorted.length > limit && (
-        <div className="caption-row">
-          <button
-            className="vz-button"
-            data-size="sm"
-            onClick={() => setLimit((n) => n + TABLE_PAGE)}
-            data-focus-after="[data-testid=result-table] .th-button"
-            data-testid="table-more"
-          >
+        <div className="vz-controls">
+          <button className="vz-button" data-size="sm" onClick={() => setLimit((n) => n + TABLE_PAGE)} data-focus-after="[data-testid=result-table] .vz-sort" data-testid="table-more">
             Show {Math.min(TABLE_PAGE, sorted.length - limit)} more of {sorted.length}
           </button>
         </div>

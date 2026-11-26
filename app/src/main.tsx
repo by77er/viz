@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider } from '@tanstack/react-router'
 import { router } from './router'
 import { CommandsProvider } from './shell/commands'
-import { SettingsProvider } from './shell/settings'
+import { SessionProvider } from './shell/session'
 import { ThemeProvider } from './shell/theme'
 // The design system first (tokens, components, fonts), then the app's own layout.
 import '../../design-system/dist/viz.css'
@@ -18,11 +18,12 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
-        <SettingsProvider>
+        {/* Signing out drops everything that was fetched with the key. */}
+        <SessionProvider onChange={() => queryClient.clear()}>
           <CommandsProvider>
             <RouterProvider router={router} />
           </CommandsProvider>
-        </SettingsProvider>
+        </SessionProvider>
       </ThemeProvider>
     </QueryClientProvider>
   </StrictMode>,
