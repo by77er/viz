@@ -824,6 +824,40 @@ the fetched bytes and the answer: about 100 MiB with the module, against an isol
 (modelled; the trial of "What remains" measures it). Memory per span is mostly its own
 attributes, kept whole: projection by the plan's columns would cut it, and is not built.
 
+#### After the re-review (R2-M2, R2-m3; 2026-11-19, ABI 8)
+
+The caps above were derived on search alone (R2-m3). Every call type at the caps, the same
+realistic generator, the final module (`f29e583a…`): `qe/r3/mem-calls.mjs` in this work's scratch
+area, Node 22 through the binding, one fresh engine instance per call; "charged" is the smallest
+budget that answers (bisection to 1 %), "peak" the WASM memory answering under no limit. Measured
+here, load average 3 to 6 (engine times are indicative only).
+
+| Rows | Call | Engine ms | Handed in | Peak WASM | Charged |
+|---|---|---:|---:|---:|---:|
+| 18,000 spans | search `{ }` | 1,061 | 1.06 MiB | 32.7 MiB | 30.6 MiB |
+| | search `{ status = error }` | 705 | | 32.7 | 30.6 |
+| | `rate() by (resource.service.name)`, 1 h at 60 s | 627 | | 32.7 | 30.6 |
+| | `histogram_over_time(duration) by (resource.service.name)`, 1 h at 60 s | 644 | | 32.7 | 30.6 |
+| | `quantile_over_time(duration, .5, .9, .99) by (name)`, 1 h at 15 s | 650 | | 32.7 | **35.8** (refused at 32) |
+| | trace by ID (12 spans) | 265 | | 7.3 | 0.3 |
+| | tags v2 | 675 | | 36.4 | 34.8 |
+| | tag values `span.url.path` | 701 | | 36.4 | 35.1 |
+| | extent, 1 h window | 27 | 0.03 MiB | 1.8 | 0.1 |
+| 30,000 log rows | `{namespace="shop-prod"}`, limit 100 | 290 | 1.2 MiB | 28.1 | 25.6 |
+| | `… \| logfmt \| status="500"`, limit 1000 | 251 | | 28.1 | 28.3 |
+| | `/series`, `/label/pod/values` | 14–26 | | 3.1 | 0.1 |
+
+What the table changed: tags and tag values held 2.5 KiB a span against 1.7 charged (46.6 MiB
+peak at 18,000 spans before; now the records are collected in place, 36.4 MiB, and each is
+charged 256 bytes more); a log query over rows whose structured metadata differs per line (a
+trace id) kept a label set per line to the end, uncounted (36.1 MiB peak, 46.3 MiB charged once
+counted; now let go when the `limit` cuts their entries: 28.1 and 25.6). Every peak is within the
+budget plus what was handed in plus 3.3 MiB. The two LogQL metric queries of the generator are
+refused by `maxSeries` (10,000): its structured metadata makes a series per line, as in Loki
+(training knowledge), so they say nothing about memory and are not in the table. Natively, the
+review's cases each peak within the budget plus 8 MiB beyond their request
+(`engine/wasm-query/README.md`, "ABI 8").
+
 ### Completeness (review M-1)
 
 **The finding** (reproduced here before the change, `search-hull.mjs`): a search read the

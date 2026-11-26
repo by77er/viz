@@ -2488,10 +2488,12 @@ fresh engine instance; `query/README.md` "Memory" has the per-call table). Befor
   9,002 rows in 5 (its child's unit and the unit over the same minutes).
 - R2-M4(a), trace by ID in a 20,000-span row group: 422 before any fetch → 200 at 3.4 MiB.
 - The first review's inputs: 4.2, 4.7 and 38.7 MiB (422) as before.
-- Per call type at the caps, realistic rows (the shape is training knowledge; R2-m3): 18,000
-  spans, search 33.4 MiB peak / 30.6 MiB charged, metrics 32.7–33.4 / 30.6, tags and tag values
-  36.4 / 30.3 before the record charge (now charged 4.4 MiB more), trace by ID 7.3 / 0.3; 30,000
-  log rows, a log query 36.1 MiB before label sets were let go on trim.
+- Per call type at the caps, realistic rows (the shape is training knowledge; R2-m3), peak WASM
+  / charged: 18,000 spans, search 32.7 / 30.6 MiB, metrics 32.7 / 30.6 (35.8 for three quantiles
+  at 15 s, refused at the default budget), tags and tag values 36.4 / 34.8–35.1 (46.6 / 30.3
+  before), trace by ID 7.3 / 0.3; 30,000 log rows with per-line structured metadata, a log query
+  28.1 / 25.6 (36.1 / 46.3 before label sets were let go on trim), the label calls 3.1 / 0.1.
+  Every peak is within the budget plus the 1.1 to 1.2 MiB handed in plus 3.3 MiB.
 
 **Cost of it.**
 - *Reads.* Each trace query reads `trace_index` over the window and twice the margin (not measured on

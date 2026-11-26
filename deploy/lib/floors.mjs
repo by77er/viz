@@ -53,7 +53,9 @@ import { parseSource, schemasOfVersion } from './schemas.mjs'
 
 export const FLOORS_VAR = 'VIZ_FLOORS'
 export const FLOORS_VAR_VERSION = 1
-const RULE_KEYS = new Set(['$comment', 'name', 'writer', 'var', 'why', 'floors'])
+const RULE_KEYS = new Set(['$comment', 'name', 'writer', 'var', 'why', 'floors', 'serving_below_floor'])
+/** What a release that sets the switch does about a floor Worker serving below its floor: refuse (D69), or go out forward-only for it (D69 point 6). */
+const SERVING_BELOW = new Set(['refuse', 'forward-only'])
 const FLOOR_KEYS = new Set(['$comment', 'schema', 'at_least', 'evidence', 'why'])
 
 /**
@@ -73,6 +75,8 @@ export function floorRules(plan, stage) {
     names.add(r.name)
     if (!/^[A-Z][A-Z0-9_]*$/.test(r.var)) throw new Error(`${where}: var ${r.var} is not a variable name`)
     if (!plan.workers.some((w) => w.name === r.writer)) throw new Error(`${where}: writer ${r.writer} is not a Worker in deploy/workers.json`)
+    const servingBelow = r.serving_below_floor ?? 'refuse'
+    if (!SERVING_BELOW.has(servingBelow)) throw new Error(`${where}: serving_below_floor is "refuse" (the default) or "forward-only", not ${JSON.stringify(r.serving_below_floor)}`)
     if (typeof r.floors !== 'object' || r.floors === null || Object.keys(r.floors).length === 0) throw new Error(`${where}: floors names at least one Worker`)
     const floors = Object.entries(r.floors).map(([worker, f]) => {
       const at = `${where}.floors.${worker}`
@@ -89,7 +93,7 @@ export function floorRules(plan, stage) {
       if (!Array.isArray(f.evidence) || f.evidence.length === 0) throw new Error(`${at}: "evidence" lists exports ("<path>.ts#<EXPORT>") the code at the floor has`)
       return { worker: stagedName(worker, stage), canonical: worker, evidence: f.evidence.map((e) => parseSource(e, `${at}.evidence`)), why: f.why }
     })
-    return { name: r.name, writer: stagedName(r.writer, stage), var: r.var, why: r.why, floors }
+    return { name: r.name, writer: stagedName(r.writer, stage), var: r.var, why: r.why, servingBelow, floors }
   })
 }
 
@@ -210,7 +214,7 @@ export function deployFloorProblems(rule, s) {
       if (w.now && !atFloor(rule, w.floor, w.now)) {
         problems.push(`${rule.writer}: this release sets ${rule.var}=${s.value}, and its own ${w.floor.worker} is below its floor (${describeFloor(rule, w.floor, w.now)}; ${w.floor.why}) (${label}). Release ${w.floor.worker} at or above it without the switch first.`)
       }
-      if (w.serving && !atFloor(rule, w.floor, w.serving)) {
+      if (w.serving && !atFloor(rule, w.floor, w.serving) && !(w.now && rule.servingBelow === 'forward-only')) {
         problems.push(
           w.now
             ? `${rule.writer}: this release sets ${rule.var}=${s.value}, and the ${w.floor.worker} serving now is below its floor (${describeFloor(rule, w.floor, w.serving)}; ${w.floor.why}). That is what an automatic rollback of this release would put back. Deploy ${w.floor.worker} at or above its floor without the switch first, let it serve, then set ${rule.var} (design/DECISIONS.md D64, D69).`
@@ -225,6 +229,26 @@ export function deployFloorProblems(rule, s) {
     }
   }
   return problems
+}
+
+/**
+ * A rule whose `serving_below_floor` is "forward-only" (D69 point 6): when this release sets the switch
+ * and deploys a floor Worker that serves below its floor now, the release goes out FORWARD-ONLY for
+ * that Worker (kind `floor`) instead of being refused: deploy.sh does not roll it back, a failed
+ * promotion does not put that Worker back, and `release.mjs rollback` refuses the serving version
+ * anyway once this release's writer version exists (a kept version with the switch). Pure; `s` as
+ * for deployFloorProblems.
+ */
+export function floorForwardOnly(rule, s) {
+  if (rule.servingBelow !== 'forward-only' || namesIn(s.value).length === 0) return []
+  return s.workers
+    .filter((w) => w.now && w.serving && !atFloor(rule, w.floor, w.serving))
+    .map((w) => ({
+      worker: w.floor.worker,
+      kind: 'floor',
+      rule: rule.name,
+      why: `${rule.name}: this release sets ${rule.var}=${s.value}, and the ${w.floor.worker} serving now is below its floor (${describeFloor(rule, w.floor, w.serving)}; ${w.floor.why}). The release is forward-only for ${w.floor.worker}: nothing puts that version back automatically, and a rollback to it is refused once this release's ${rule.writer} is uploaded (${rule.name}: serving_below_floor forward-only, D69 point 6)`,
+    }))
 }
 
 /**
@@ -270,11 +294,12 @@ export async function switchAsSecret(rule, live, api) {
  * not deploy). `varsOf(worker)` gives a manifest Worker's generated vars. The writer's history is
  * read only when the switch is off here and a Worker of this release is below its floor (never,
  * normally); its serving and newest versions are read for a secret switch every time. Returns {
- * problems, seen: [per rule, for the record] }.
+ * problems, seen: [per rule, for the record], forwardOnly: [floorForwardOnly's reasons] }.
  */
 export async function floorDeployProblems(rules, manifest, live, api, varsOf) {
   const problems = []
   const seen = []
+  const forwardOnly = []
   for (const rule of rules) {
     const workers = rule.floors
       .map((floor) => {
@@ -289,6 +314,7 @@ export async function floorDeployProblems(rules, manifest, live, api, varsOf) {
     const s = { value, workers, secret: await switchAsSecret(rule, live, api) }
     if (namesIn(value).length === 0 && workers.some((w) => w.now && !atFloor(rule, w.floor, w.now))) s.seen = await switchSeen(rule, api)
     problems.push(...deployFloorProblems(rule, s))
+    forwardOnly.push(...floorForwardOnly(rule, s))
     seen.push({
       name: rule.name,
       writer: rule.writer,
@@ -298,7 +324,7 @@ export async function floorDeployProblems(rules, manifest, live, api, varsOf) {
       workers: workers.map((w) => ({ worker: w.floor.worker, atFloor: w.now ? atFloor(rule, w.floor, w.now) : null, servingAtFloor: w.serving ? atFloor(rule, w.floor, w.serving) : null })),
     })
   }
-  return { problems, seen }
+  return { problems, seen, forwardOnly }
 }
 
 /**
