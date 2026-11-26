@@ -21,7 +21,9 @@ const ratelimitIds = Object.fromEntries(RL.flatMap((n, i) => [[`viz-control/${n}
 const gen = (name, stage, cfg, opts = {}) => {
   const w = worker(name)
   const componentDir = join(REPO_ROOT, w.component)
-  return generateWorker({ worker: w, cfg: cfg ?? readJsonc(join(componentDir, 'wrangler.jsonc')), componentDir, plan, stage, release: 'abc123', ids, outDir: join(GENERATED_DIR, stage ? `stage-${stage}` : 'production'), gate: gates.get(name) ?? null, ratelimitIds, ...opts })
+  return generateWorker({ worker: w, cfg: cfg ?? readJsonc(join(componentDir, 'wrangler.jsonc')), componentDir, plan, stage, release: 'abc123', ids, outDir: join(GENERATED_DIR, stage ? `stage-${stage}` : 'production'), gate: gates.get(name) ?? null, ratelimitIds,
+    // The Worker that serves the web app is generated here without it (test/app.test.mjs covers the app, D74).
+    ...(w.app !== undefined ? { app: { withoutApp: true } } : {}), ...opts })
 }
 
 test('JSONC: comments and trailing commas go, strings stay', () => {

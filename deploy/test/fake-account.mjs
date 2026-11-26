@@ -4,8 +4,9 @@
 // Cloudflare API from the same state file. Nothing here reaches Cloudflare: the token is a dummy
 // and any request the fake does not know is answered 400.
 import { chmodSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { DEPLOY_DIR } from '../lib/common.mjs'
+import { dirname, join, relative } from 'node:path'
+import { APP_FILES_VAR, APP_VAR, appSummary, appWorker, assetsConfig, hashSources, listSources, stagedDir, stampBuild } from '../lib/app.mjs'
+import { DEPLOY_DIR, GENERATED_DIR, REPO_ROOT, targetName } from '../lib/common.mjs'
 
 /**
  * Installs the fake: writes the wrangler wrapper under `tmp`, points the deploy at it and at the
@@ -125,5 +126,37 @@ export function oauthGated({ base = 7000, public: pub = false, without = false, 
   return {
     config: { ...(without ? {} : { ratelimits }), vars: { VIZ_FLOORS: JSON.stringify({ v: 1, at: ['oauth-public'] }), ...(pub ? { OAUTH_PUBLIC: '1' } : {}) } },
     manifest: { floors: ['oauth-public'], oauth: { required: RATE_LIMITS.map(([n]) => n), period: 60, ratelimits: Object.fromEntries(ratelimits.map((r) => [r.name, r.namespace_id])), withoutRateLimits: without, public: pub } },
+  }
+}
+
+/** A small build of the web app, as `npm run build` in app/ lays one out (index.html, hashed files under assets/, the icon). */
+export const APP_FIXTURE = join(DEPLOY_DIR, 'test', 'fixtures', 'app-build')
+
+/**
+ * For a test's hand-built release of a STAGE that is not about the web app: what configure.mjs writes
+ * for a stage configured --without-app (D74). `manifest` goes on the manifest, `worker` on its
+ * viz-gateway entry; the gateway's config carries nothing.
+ */
+export const WITHOUT_APP = Object.freeze({ manifest: { withoutApp: true }, worker: { app: { withoutApp: true } } })
+
+/**
+ * What deploy/app.mjs and configure.mjs write for a viz-gateway with the web app (D74), for a test's
+ * hand-built release or before a test runs the real configure.mjs: stages a build (`dist`, default
+ * the fixture) for `release` under this test's generated/<target>/, stamped with the hash of the
+ * checkout's real app sources, as a build made here (`via: export`). Returns `stamp`, and for a
+ * hand-built release `config` (the generated config's `assets` and vars, for the config file
+ * `configFile`) and `manifest` (the manifest Worker's `app`).
+ */
+export function appBuilt({ stage = null, release, configFile = null, dist = APP_FIXTURE, via = 'export', kept = [], plan = JSON.parse(readFileSync(join(DEPLOY_DIR, 'workers.json'), 'utf8')), repoRoot = REPO_ROOT }) {
+  const { app } = appWorker(plan)
+  const target = targetName(stage ?? undefined)
+  const targetDir = join(GENERATED_DIR, target)
+  const listed = listSources(repoRoot, app)
+  const sources = { hash: hashSources(repoRoot, listed.files), files: listed.files.length, commit: listed.commit, dirty: listed.dirty, by: listed.by }
+  const stamp = stampBuild({ targetDir, repoRoot, release, target, serveFile: join(repoRoot, app.serve), dist, sources, via, kept })
+  return {
+    stamp,
+    config: { assets: assetsConfig(relative(dirname(configFile ?? join(targetDir, 'x.jsonc')), stagedDir(targetDir))), vars: { [APP_VAR]: stamp.vars[APP_VAR], [APP_FILES_VAR]: stamp.vars[APP_FILES_VAR] } },
+    manifest: { app: appSummary(stamp) },
   }
 }

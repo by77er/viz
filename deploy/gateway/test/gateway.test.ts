@@ -108,13 +108,27 @@ describe('routing', () => {
     '/.well-known/oauth-protected-resource/x', '/.well-known/oauth-protected-resource/mcp/x', '/.well-known/oauth-protected-resourcex',
   ]
   it.each(notFound)('%s is a JSON 404 listing the entry points, not a page', async (path) => {
-    const res = await call(path)
+    // `/` is the web app's document where a version serves the app (D74; app.test.ts). Without the
+    // app it is the 404 it always was: this table is the gateway with no VIZ_APP.
+    const res = await handle(new Request(`${BASE}${path}`), { ...(env as unknown as Env), VIZ_APP: undefined })
     expect(res.status).toBe(404)
     expect(res.headers.get('x-viz-route')).toBe('gateway')
     expect(res.headers.get('Content-Type')).toMatch(/^application\/json/)
     expect(res.headers.get('x-fake-backend')).toBeNull()
     const body = (await res.json()) as { entrypoints: typeof ENTRYPOINTS }
     expect(body.entrypoints).toEqual(ENTRYPOINTS)
+  })
+
+  it('with the web app served (D74), every path of that table but the app\'s own documents is still the JSON 404', async () => {
+    const documents = new Set((JSON.parse(env.VIZ_APP!) as { documents: string[] }).documents)
+    expect(documents.has('/')).toBe(true)
+    for (const path of notFound.filter((p) => !documents.has(p))) {
+      const res = await call(path)
+      expect(res.status, path).toBe(404)
+      expect(res.headers.get('x-viz-route'), path).toBe('gateway')
+      expect(res.headers.get('Content-Type'), path).toMatch(/^application\/json/)
+      expect(((await res.json()) as { entrypoints: typeof ENTRYPOINTS }).entrypoints, path).toEqual(ENTRYPOINTS)
+    }
   })
 
   it('GET /api/echo (a Grafana Tempo data source\'s check) reaches viz-query with its key, exactly as sent', async () => {

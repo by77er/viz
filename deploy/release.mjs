@@ -58,10 +58,19 @@
 //   placeholders); OAUTH_CLIENT_KEY is not created or rotated on a viz-control whose generated config
 //   lacks its rate limits (lib/secrets.mjs keyGateProblems), refused before anything is uploaded; the
 //   record says which bindings and ids viz-control has, and whether a stage left them out as asked.
+// - The web app (lib/app.mjs, D74): the Worker that declares `app` in deploy/workers.json (viz-gateway)
+//   is released only with the build deploy/app.mjs staged for this release: its stamp names this
+//   release, the sources and app/serve.json are unchanged since it was built, the staged directory
+//   is what was stamped, and the generated config uploads exactly that directory and those vars.
+//   Anything else (missing, stale, altered, a build handed in for production) is refused before
+//   anything is uploaded; a stage may go without the app only when configured so, and the record
+//   says so. The record names the build; a rollback says which build, or none, each restored
+//   version serves (it never refuses for the app: a version's assets come back with it).
 import { randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { APP_FILES_VAR, APP_VAR, appWorker, assetsConfig, parseAppFiles, stagedDir, stampProblems } from './lib/app.mjs'
 import { currentDeployment, listScripts, listVersions, versionInfo } from './lib/cf.mjs'
 import { DEPLOY_DIR, GENERATED_DIR, REPO_ROOT, checkStage, log, parseArgs, readJsonc, stagedName, targetName } from './lib/common.mjs'
 import { floorDeployProblems, floorRollbackProblems, floorRules, floorsOfVersion } from './lib/floors.mjs'
@@ -113,6 +122,51 @@ export function recordedFormats(release) {
   if (r.release !== release || r.formatsComplete !== true || typeof r.formats !== 'object' || r.formats === null) throw new Error(`${file}: not a formats record of ${release}`)
   return r.formats
 }
+
+/** The build a version serves the web app from (its VIZ_APP_FILES var), or null: a version without the app. */
+export const appOfVersion = (info) => parseAppFiles(plainVarOf(info, APP_FILES_VAR))?.build ?? null
+
+/**
+ * Why this manifest's web app may not be released (D74); empty when it may. `plan` is
+ * deploy/workers.json. Checked before anything is uploaded, whatever configure.mjs checked: the
+ * generated directory may be from another run, and the sources may have changed since.
+ */
+export function appProblems(manifest, plan, { repoRoot = REPO_ROOT, readConfig = (w) => readJsonc(join(repoRoot, w.config)) } = {}) {
+  const found = appWorker(plan)
+  if (!found) return []
+  const w = manifest.workers.find((x) => x.canonical === found.worker.name && x.deploy !== false && manifest.order.includes(x.name))
+  if (!w) return []
+  const stage = manifest.stage ?? undefined
+  const cfg = readConfig(w)
+  const carries = [cfg.assets !== undefined ? '"assets"' : null, ...[APP_VAR, APP_FILES_VAR].map((k) => (Object.hasOwn(cfg.vars ?? {}, k) ? k : null))].filter(Boolean)
+  if (w.app?.withoutApp === true) {
+    if (!stage || manifest.withoutApp !== true) return [`${w.name}: its manifest entry says "without the app", which only a stage configured --without-app may be: production serves the web app (D74)`]
+    return carries.length ? [`${w.name}: configured --without-app, but its generated config carries ${carries.join(', ')}`] : []
+  }
+  if (!w.app || w.app.notBuilt === true || typeof w.app.build !== 'string') {
+    return [`${w.name} serves the web app, and its manifest ${w.app?.notBuilt ? `left the build out (${w.app.why ?? 'not built'})` : 'says nothing of a build'}. Build the app (node deploy/app.mjs build${stage ? ` --stage ${stage}` : ''} --release ${manifest.release}) and configure again; deploy.sh does both${stage ? '. A stage may be configured --without-app' : ''}`]
+  }
+  const targetDir = join(GENERATED_DIR, manifest.target)
+  const { stamp, problems } = stampProblems({ targetDir, repoRoot, release: manifest.release, target: manifest.target, app: found.app, stage })
+  const out = problems.map((p) => `${w.name}: ${p}`)
+  if (!stamp) return out
+  if (stamp.build.hash !== w.app.build) out.push(`${w.name}: the manifest was configured with app build ${w.app.build.slice(0, 12)}, and the staged one is ${stamp.build.hash.slice(0, 12)}: configure again`)
+  // The config uploads exactly the stamped directory, by the rules of lib/app.mjs, with the stamped vars.
+  const want = assetsConfig(relative(dirname(join(repoRoot, w.config)), stagedDir(targetDir)))
+  if (JSON.stringify(cfg.assets ?? null) !== JSON.stringify(want)) out.push(`${w.name}: its generated config's "assets" is not the staged app build served asset-first by exact path (${JSON.stringify(cfg.assets ?? null)}): configure again`)
+  for (const k of [APP_VAR, APP_FILES_VAR]) if ((cfg.vars ?? {})[k] !== stamp.vars[k]) out.push(`${w.name}: its generated config's ${k} is not the staged build's: configure again`)
+  return out
+}
+
+/** What the record says of the web app (D74): the build each app Worker serves, or that a stage went without. */
+const appOfManifest = (manifest) =>
+  manifest.order
+    .map((n) => manifest.workers.find((w) => w.name === n))
+    .filter((w) => w?.app)
+    .map((w) => (w.app.withoutApp ? { worker: w.name, withoutApp: true } : typeof w.app.build !== 'string' ? { worker: w.name, notBuilt: true } : { worker: w.name, build: w.app.build, document: w.app.document, files: w.app.files, bytes: w.app.bytes, kept: w.app.kept, dropped: w.app.dropped, via: w.app.via, sources: w.app.sources, carry: w.app.carry }))
+
+/** The app build each Worker serves now, for `previous.json` and the plan: `[{ worker, build }]` of those that serve one. */
+const appOfLive = (manifest, live) => manifest.order.filter((n) => live[n]?.app).map((n) => ({ worker: n, build: live[n].app }))
 
 /** The canonical name of a deployed Worker (`viz-trial-query` → `viz-query`). */
 const canonicalOf = (name, stage) => (stage && name.startsWith(`viz-${stage}-`) ? `viz-${name.slice(`viz-${stage}-`.length)}` : name)
@@ -166,9 +220,9 @@ export function planRelease(manifest, live, acks) {
 /**
  * Live state of each Worker: exists, migration tag in force, the versions serving now, their
  * release tag, and what the serving version declares it knows of each class (`schemas`, from
- * its VIZ_SCHEMAS var), of each format (`formats`, from VIZ_FORMATS) and which rollback floors its
- * code is stamped at (`floors`, from VIZ_FLOORS); each null when it declares nothing or more than
- * one version serves.
+ * its VIZ_SCHEMAS var), of each format (`formats`, from VIZ_FORMATS), which rollback floors its
+ * code is stamped at (`floors`, from VIZ_FLOORS) and which build of the web app it serves (`app`,
+ * from VIZ_APP_FILES); each null when it declares nothing or more than one version serves.
  */
 export async function liveState(names, stage) {
   const scripts = await listScripts()
@@ -176,7 +230,7 @@ export async function liveState(names, stage) {
   for (const name of names) {
     const s = scripts.find((x) => x.id === name)
     if (!s) {
-      out[name] = { exists: false, migrationTag: null, versions: [], release: null, schemas: null, formats: null, floors: null }
+      out[name] = { exists: false, migrationTag: null, versions: [], release: null, schemas: null, formats: null, floors: null, app: null }
       continue
     }
     const dep = await currentDeployment(name)
@@ -185,14 +239,16 @@ export async function liveState(names, stage) {
     let schemas = null
     let formats = null
     let floors = null
+    let app = null
     if (versions.length === 1) {
       const v = await versionInfo(name, versions[0].version_id)
       release = annotation(v, 'workers/tag')
       schemas = schemasOfVersion(v)
       formats = formatsOfVersionOrRecord(v, name, stage)
       floors = floorsOfVersion(v)
+      app = appOfVersion(v)
     }
-    out[name] = { exists: true, migrationTag: s.migration_tag ?? null, versions, release, schemas, formats, floors }
+    out[name] = { exists: true, migrationTag: s.migration_tag ?? null, versions, release, schemas, formats, floors, app }
   }
   return out
 }
@@ -541,7 +597,7 @@ export async function deploy({ stage, ackText = '', rotateText = '' }) {
   const rules = floorRules(loadWorkersPlan(), stage)
   const before = await liveState(liveNames(manifest, rules), stage)
   // formatsComplete: each entry is what that version declared (with lib/formats.mjs ANY where its declaration was incomplete).
-  const previous = recordOf(manifest, before, { release: servingRelease(manifest, before), kind: 'previous', schemas: schemasOfLive(manifest, before), formats: formatsOfLive(manifest, before), formatsComplete: true })
+  const previous = recordOf(manifest, before, { release: servingRelease(manifest, before), kind: 'previous', schemas: schemasOfLive(manifest, before), formats: formatsOfLive(manifest, before), formatsComplete: true, app: appOfLive(manifest, before) })
   const previousFile = writeRecord(stage, 'previous.json', previous)
   const plan = planRelease(manifest, before, parseAcks(ackText))
   const floors = await floorDeployProblems(rules, manifest, before, FLOOR_API, varsOfGenerated)
@@ -552,13 +608,13 @@ export async function deploy({ stage, ackText = '', rotateText = '' }) {
   const planned = planSecrets(secretsBefore, rotate, plan.steps)
   const gate = keyGateProblems(manifest, configOfGenerated)
   log(`run ${run}`)
-  printPlan(manifest, plan, planned)
+  printPlan(manifest, plan, planned, before)
   for (const f of forwardOnly) log(`  FORWARD-ONLY: ${f.why}`)
-  const refusals = [...idsOptionalProblems(manifest), ...plan.problems, ...floors.problems, ...rotateProblems(rotate, specs), ...keyGateRefusals(gate, planned)]
+  const refusals = [...idsOptionalProblems(manifest), ...plan.problems, ...floors.problems, ...rotateProblems(rotate, specs), ...keyGateRefusals(gate, planned), ...appProblems(manifest, loadWorkersPlan())]
   if (refusals.length) {
     log('\nrelease: REFUSED before uploading or promoting anything:')
     for (const p of refusals) log(`  - ${p}`)
-    log('  See deploy/README.md, "Durable Object migrations", "Rollback floors", "Worker secrets the deploy generates" and "Rate limits in front of OAuth".')
+    log('  See deploy/README.md, "Durable Object migrations", "Rollback floors", "Worker secrets the deploy generates", "Rate limits in front of OAuth" and "The web app".')
     return { exit: EXIT_REFUSED, plan }
   }
   const secretActions = []
@@ -671,6 +727,9 @@ export async function deploy({ stage, ackText = '', rotateText = '' }) {
     // D70: viz-control's Rate Limiting bindings (ids), and whether a stage left them out as asked (--oauth-without-rate-limits).
     oauth: oauthOfManifest(manifest),
     oauthWithoutRateLimits: manifest.oauthWithoutRateLimits === true,
+    // D74: the web app's build (its hash, its document, its files and those kept from earlier builds), or that a stage went without it (--without-app).
+    app: appOfManifest(manifest),
+    withoutApp: manifest.withoutApp === true,
   })
   for (const w of record.workers) if (w.versionId !== uploaded[w.name]) log(`  warning: ${w.name} serves ${w.versionId}, expected ${uploaded[w.name]}`)
   const file = writeRecord(stage, 'release.json', record)
@@ -739,20 +798,33 @@ export async function rollback({ stage, recordFile, record, reason = 'requested'
     return { exit: EXIT_REFUSED, problems }
   }
   log(`rollback to ${target.release} (${reason}), callers first:`)
+  // The web app comes back with its Worker's version (a version holds its own static assets): say which build, or none (D74).
+  const appName = appWorker(plan)?.worker.name
+  const appNotes = target.workers
+    .filter((w) => appName && stagedName(appName, stage) === w.name)
+    .map((w) => ({ worker: w.name, build: appOfVersion(targetInfo[w.name]), was: now[w.name]?.app ?? null }))
+  for (const a of appNotes) {
+    if (a.build === null && a.was !== null) log(`  NOTE: ${a.worker} goes back to a version WITHOUT the web app (it serves build ${a.was.slice(0, 12)} now): every page and asset path answers 404 until a release with the app serves again; the API is not affected. Pages already open keep working until they load another chunk or are reloaded.`)
+    else if (a.build !== a.was) log(`  note: ${a.worker} goes back to web app build ${a.build?.slice(0, 12) ?? 'none'} (it serves ${a.was?.slice(0, 12) ?? 'none'} now). A page opened under the newer build gets 404 for a chunk it has not loaded yet, until it is reloaded.`)
+  }
   await api.restore(manifest, target.workers, `${reason}; to ${target.release}`)
   const after = await api.liveState(names, stage)
-  const done = { ...recordOf({ ...target, order: names }, after, { kind: 'rollback', release: target.release, reason, schemas: target.schemas, formats: target.formats ?? null, formatsComplete: target.formatsComplete === true }), target: target.target, stage: target.stage }
+  const done = { ...recordOf({ ...target, order: names }, after, { kind: 'rollback', release: target.release, reason, schemas: target.schemas, formats: target.formats ?? null, formatsComplete: target.formatsComplete === true, app: appNotes.map(({ worker, build }) => ({ worker, build })) }), target: target.target, stage: target.stage }
   writeRecord(stage, 'rollback.json', done)
   summary(done, null)
   return { exit: 0, record: done }
 }
 
-function printPlan(manifest, plan, secrets = []) {
+function printPlan(manifest, plan, secrets = [], live = {}) {
   log(`release ${manifest.release} → ${manifest.target}`)
   for (const s of plan.steps) {
     log(`  ${s.name.padEnd(22)} ${s.via === 'versions' ? 'upload, then promote' : 'wrangler deploy     '} ${s.migration ? `MIGRATION ${s.migration.from ?? '(none)'} → ${s.migration.to}` : s.exists ? '' : '(new Worker)'}`)
   }
   for (const s of secrets) log(`  ${s.line}`)
+  for (const a of appOfManifest(manifest)) {
+    const was = live[a.worker]?.app ?? null
+    log(`  web app on ${a.worker}: ${a.withoutApp ? 'NONE (a stage configured --without-app)' : a.notBuilt ? 'NOT BUILT' : `build ${a.build.slice(0, 12)}, ${a.files} files${a.kept.length ? ` and ${a.kept.length} kept from earlier builds` : ''}${a.via === 'prebuilt' ? ' (PREBUILT: not tied to the sources)' : ''}`}; serving now: ${was === null ? 'no app' : was === a.build ? 'the same build' : `build ${was.slice(0, 12)}`}`)
+  }
 }
 
 /**
@@ -769,8 +841,8 @@ export async function planOnly({ stage, ackText = '', rotateText = '' }) {
   const secrets = planSecrets(await secretsNow(specs, live, SECRET_API), rotate, plan.steps)
   const floors = await floorDeployProblems(rules, manifest, live, FLOOR_API, varsOfGenerated)
   const forwardOnly = [...forwardOnlyReasons(manifest, live), ...floors.forwardOnly]
-  const problems = [...idsOptionalProblems(manifest), ...plan.problems, ...floors.problems, ...rotateProblems(rotate, specs), ...keyGateRefusals(keyGateProblems(manifest, configOfGenerated), secrets)]
-  printPlan(manifest, plan, secrets)
+  const problems = [...idsOptionalProblems(manifest), ...plan.problems, ...floors.problems, ...rotateProblems(rotate, specs), ...keyGateRefusals(keyGateProblems(manifest, configOfGenerated), secrets), ...appProblems(manifest, loadWorkersPlan())]
+  printPlan(manifest, plan, secrets, live)
   for (const f of forwardOnly) log(`  FORWARD-ONLY: ${f.why}`)
   for (const p of problems) log(`  - ${p}`)
   return { exit: problems.length ? EXIT_REFUSED : 0, plan, secrets: secrets.map(({ worker, name, action }) => ({ worker, name, action })), forwardOnly, problems }
@@ -790,6 +862,8 @@ function summary(record, previous) {
     record.forwardOnly ? `**Forward-only**: no rollback may cross this release. ${record.forwardOnlyBecause.map((f) => f.why).join('; ')}` : record.kind === 'release' ? 'Not forward-only: the previous release can open everything this one writes.' : '',
     '',
     record.secrets?.length ? `Generated secrets: ${record.secrets.map((s) => `${s.name} on ${s.worker} ${s.action}${s.action === 'kept' ? '' : ` (version \`${s.versionId}\`)`}`).join(', ')}` : '',
+    '',
+    record.app?.length ? `Web app: ${record.app.map((a) => `${a.worker} ${a.withoutApp ? 'without it (a stage)' : a.build ? `build \`${a.build.slice(0, 12)}\`${a.files !== undefined ? `, ${a.files} files${a.kept?.length ? `, ${a.kept.length} kept from earlier builds` : ''}` : ''}` : 'no app'}`).join(', ')}` : '',
     '',
     '| Worker | Version | Migration tag in force | Previous version |',
     '|---|---|---|---|',

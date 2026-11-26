@@ -7,7 +7,7 @@
 // observability, deployment-wide vars, and `main` (so wrangler bundles from the component).
 //
 //   node deploy/configure.mjs [--stage <name>] [--release <sha>] [--expires <ISO time>] [--ids-optional] [--quiet]
-//                             [--oauth-without-rate-limits] [--oauth-public]      (a stage only)
+//                             [--oauth-without-rate-limits] [--oauth-public] [--without-app]      (a stage only)
 //
 // --expires (a stage only): sets VIZ_STAGE_EXPIRES_AT in every Worker; the ruler's alarms and
 // cron stop at that time by themselves (AGENTS.md: anything on a timer stops at a deadline).
@@ -42,6 +42,15 @@
 // `placement` is refused on a Worker workers.json marks `no_placement` (viz-control, viz-mcp: D70
 // counts per location; review of D70, m-8).
 //
+// The web app (D74; lib/app.mjs): the Worker that declares `app` in workers.json (viz-gateway) gets
+// the build deploy/app.mjs staged for this release: `assets` (the staged directory, asset-first by
+// exact path, no HTML handling and no fallback page) and the vars VIZ_APP (the document and its
+// headers, which the Worker serves) and VIZ_APP_FILES (the files of the version). A missing, stale
+// or altered build is refused here and again by release.mjs; a stage may be configured
+// --without-app (recorded in the manifest and the release record), production never. With
+// --ids-optional (a manifest that is never deployed) a build that is not there is left out. No
+// component's own config may carry `assets`.
+//
 // Durable Object classes of another Worker (by script_name) are bound only where workers.json
 // lists them under the binding Worker's `binds_classes`: such a binding can call every method of
 // every object of the class, for any tenant.
@@ -58,6 +67,7 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { APP_FILES_VAR, APP_VAR, appSummary, appWorker, assetsConfig, stagedDir, stampProblems } from './lib/app.mjs'
 import { DEPLOY_DIR, GENERATED_DIR, REPO_ROOT, checkStage, log, parseArgs, readJson, readJsonc, releaseId, stagedName, targetName } from './lib/common.mjs'
 import { FLOORS_VAR, floorRules, floorsVar, stampedFloors } from './lib/floors.mjs'
 import { FORMATS_VAR, formatSources, formatsVar, readFormats } from './lib/formats.mjs'
@@ -234,12 +244,16 @@ export function stageVars(raw, stage) {
  * formats, `floors` the rollback floors its code is stamped at (lib/floors.mjs). Pure: no I/O, so
  * the tests can call it with any component config.
  */
-export function generateWorker({ worker, cfg, componentDir, plan, stage, release, ids, outDir, idsOptional = false, expires = null, schemas = [], formats = [], formatsDeclared = worker.formats !== undefined || formats.length > 0, floors = [], extraVars = {}, gate = null, ratelimitIds = {}, oauthWithoutRateLimits = false, oauthPublic = false }) {
+export function generateWorker({ worker, cfg, componentDir, plan, stage, release, ids, outDir, idsOptional = false, expires = null, schemas = [], formats = [], formatsDeclared = worker.formats !== undefined || formats.length > 0, floors = [], extraVars = {}, gate = null, ratelimitIds = {}, oauthWithoutRateLimits = false, oauthPublic = false, app = null }) {
   const where = `${worker.component}/wrangler.jsonc`
   const warnings = []
   for (const k of Object.keys(cfg)) if (!KNOWN_KEYS.has(k)) throw new Error(`${where}: "${k}" is not something configure.mjs knows how to deploy; extend it rather than drop it`)
   // Per-location limits assume each request is counted where it arrives (D70; review of D70, m-8).
   if (worker.no_placement !== undefined && cfg.placement !== undefined) throw new Error(`${where}: "placement" is refused on ${worker.name}: ${worker.no_placement}. Remove it (deploy/workers.json no_placement)`)
+  // The app's vars say what a version serves: only configure sets them, from the stamped build.
+  for (const k of [APP_VAR, APP_FILES_VAR]) if (Object.hasOwn(cfg.vars ?? {}, k) || Object.hasOwn(extraVars, k)) throw new Error(`${where}: ${k} is set by deploy/configure.mjs only, from the app build staged for the release (deploy/app.mjs), never by a component or VIZ_STAGE_VARS`)
+  if (worker.app === undefined && app !== null) throw new Error(`${where}: an app build was given for ${worker.name}, which declares no "app" in deploy/workers.json`)
+  if (worker.app !== undefined && app === null) throw new Error(`${where}: ${worker.name} declares "app" in deploy/workers.json, and no app build, --without-app or --ids-optional says what it serves`)
   // The switch of the oauth-public floor means "this config passed the gate": only configure sets it.
   if (gate && (Object.hasOwn(cfg.vars ?? {}, gate.publicVar) || Object.hasOwn(extraVars, gate.publicVar))) throw new Error(`${where}: ${gate.publicVar} is set by deploy/configure.mjs only (every production ${worker.name} that passes the rate-limit gate; a stage with --oauth-public), never by a component or VIZ_STAGE_VARS`)
   // Every class this Worker defines has its storage schema declared, or is declared to keep none.
@@ -348,6 +362,12 @@ export function generateWorker({ worker, cfg, componentDir, plan, stage, release
   if (floors.length > 0) vars[FLOORS_VAR] = floorsVar(floors)
   if (stage) vars.VIZ_STAGE_PREFIX = `viz-${stage}-`
   for (const [k, v] of Object.entries(extraVars)) vars[k] = v
+  // The web app (D74): the staged directory as this version's static assets, and what the Worker serves documents from.
+  if (app?.stamp) {
+    out.assets = assetsConfig(relative(outDir, app.dir))
+    vars[APP_VAR] = app.stamp.vars[APP_VAR]
+    vars[APP_FILES_VAR] = app.stamp.vars[APP_FILES_VAR]
+  }
   if (oauth && (!stage || oauthPublic)) {
     vars[gate.publicVar] = '1'
     oauth.public = true
@@ -382,6 +402,8 @@ export function generateWorker({ worker, cfg, componentDir, plan, stage, release
       formats: formatsDeclared ? formats.map(({ format, writes, reads }) => ({ format, writes, reads })) : null,
       floors,
       oauth,
+      // null: the Worker serves no app. { withoutApp }: a stage configured without it. { notBuilt }: left out of a manifest that is never deployed.
+      app: app === null ? null : app.stamp ? appSummary(app.stamp) : { ...(app.withoutApp ? { withoutApp: true } : { notBuilt: true, why: app.why ?? null }) },
       crossScript,
       entrypoints,
       queues: queuesOf(out),
@@ -428,7 +450,7 @@ export function checkEntrypoints(workerName, entrypoints, mains) {
  * `plan` replaces deploy/workers.json and `resources` deploy/resources.json (the tests' way to
  * configure a plan that must be refused, or a deployment with ids of its own).
  */
-export function configure({ stage, release = releaseId(), idsOptional = false, quiet = false, expires = null, plan: planOverride, resources: resourcesOverride, oauthWithoutRateLimits = false, oauthPublic = false } = {}) {
+export function configure({ stage, release = releaseId(), idsOptional = false, quiet = false, expires = null, plan: planOverride, resources: resourcesOverride, oauthWithoutRateLimits = false, oauthPublic = false, withoutApp = false, repoRoot = REPO_ROOT } = {}) {
   checkStage(stage)
   if (expires !== null && !(Number.isFinite(Date.parse(expires)) && /^\d{4}-\d{2}-\d{2}T/.test(expires))) throw new Error(`--expires must be an ISO 8601 time: ${expires}`)
   if ((oauthWithoutRateLimits || oauthPublic) && !stage) throw new Error(`${oauthWithoutRateLimits ? '--oauth-without-rate-limits' : '--oauth-public'} is for a stage only: a production viz-control always has its rate limits and OAUTH_PUBLIC (D70)`)
@@ -443,6 +465,20 @@ export function configure({ stage, release = releaseId(), idsOptional = false, q
   for (const w of Object.keys(extra)) if (!plan.workers.some((x) => x.name === w)) throw new Error(`VIZ_STAGE_VARS names ${w}, which is not a Worker in deploy/workers.json`)
   const outDir = join(GENERATED_DIR, targetName(stage))
   mkdirSync(outDir, { recursive: true })
+  // The web app (D74): the build staged for this release, verified; or, for a stage, none as asked.
+  const appOf = appWorker(plan)
+  if (withoutApp && !stage) throw new Error('--without-app is for a stage only: production serves the web app (D74)')
+  if (withoutApp && !appOf) throw new Error('--without-app needs a Worker with an "app" block in deploy/workers.json')
+  /** What the app's Worker serves, decided at its turn (it is the last Worker: a refusal of a callee's config comes first). */
+  const appBuildFor = (worker) => {
+    if (appOf?.worker.name !== worker.name) return null
+    if (withoutApp) return { withoutApp: true }
+    const { stamp, problems } = stampProblems({ targetDir: outDir, repoRoot, release, target: targetName(stage), app: appOf.app, stage })
+    if (problems.length === 0) return { stamp, dir: stagedDir(outDir) }
+    // A manifest with placeholder ids is never deployed (release.mjs refuses it): the app may be missing from it.
+    if (idsOptional) return { notBuilt: true, why: problems[0] }
+    throw new Error(`${worker.name} serves the web app, and its build cannot be released:\n${problems.map((p) => `  - ${p}`).join('\n')}${stage ? '\n  (a stage may be configured --without-app; its release record then says so)' : ''}`)
+  }
   // The schemas of every class, read once for all Workers whose component is in this checkout.
   const present = plan.workers.filter((w) => existsSync(join(REPO_ROOT, w.component, 'wrangler.jsonc')))
   const schemas = readSchemas(schemaSources(present))
@@ -477,6 +513,7 @@ export function configure({ stage, release = releaseId(), idsOptional = false, q
       ratelimitIds,
       oauthWithoutRateLimits,
       oauthPublic,
+      app: appBuildFor(worker),
     })
     // Two bindings of one deployment with one id would share a counter: refused within the Worker
     // (configureRateLimits). Only a Worker with an `oauth` block may carry ratelimits (viz-control
@@ -500,6 +537,8 @@ export function configure({ stage, release = releaseId(), idsOptional = false, q
     idsOptional,
     // --oauth-without-rate-limits (a stage only), carried into the release record.
     oauthWithoutRateLimits,
+    // --without-app (a stage only), carried into the release record.
+    withoutApp,
     domain: stage ? null : plan.domain,
     durableObjectsCodeUpdate: plan.durable_objects_code_update,
     order: workers.filter((w) => w.deploy).map((w) => w.name),
@@ -522,6 +561,7 @@ export function configure({ stage, release = releaseId(), idsOptional = false, q
       if (w.formats?.length) log(`         formats: ${w.formats.length}${split.length ? `; ${split.map((f) => `${f.format} writes ${f.writes ?? '-'}, reads ${f.reads.join(',')}`).join('; ')}` : ''}`)
       for (const f of w.floors ?? []) log(`         at the rollback floor of ${f} (${FLOORS_VAR})`)
       if (w.oauth) log(`         OAuth: ${w.oauth.withoutRateLimits ? 'WITHOUT rate limits, as asked (--oauth-without-rate-limits)' : `rate limits ${Object.entries(w.oauth.ratelimits).map(([n, id]) => `${n}=${id ?? 'placeholder'}`).join(', ')}`}${w.oauth.public ? '; OAUTH_PUBLIC=1' : ''}`)
+      if (w.app) log(`         web app: ${w.app.withoutApp ? 'NONE, as asked (--without-app)' : w.app.notBuilt ? `not built (${w.app.why}); left out of this manifest, which is never deployed` : `build ${w.app.build.slice(0, 12)} (${w.app.files} files, ${w.app.bytes} bytes${w.app.kept.length ? `; ${w.app.kept.length} kept from earlier builds` : ''}${w.app.via === 'prebuilt' ? '; PREBUILT' : ''}), documents ${w.app.serve.documents.join(' ')}`}`)
       for (const warn of w.warnings ?? []) log(`         note: ${warn}`)
     }
   }
@@ -530,8 +570,8 @@ export function configure({ stage, release = releaseId(), idsOptional = false, q
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    const args = parseArgs(process.argv.slice(2), { flags: ['ids-optional', 'quiet', 'oauth-without-rate-limits', 'oauth-public'], options: ['stage', 'release', 'expires'] })
-    const m = configure({ stage: args.stage, release: args.release, idsOptional: args['ids-optional'], quiet: args.quiet, expires: args.expires ?? null, oauthWithoutRateLimits: Boolean(args['oauth-without-rate-limits']), oauthPublic: Boolean(args['oauth-public']) })
+    const args = parseArgs(process.argv.slice(2), { flags: ['ids-optional', 'quiet', 'oauth-without-rate-limits', 'oauth-public', 'without-app'], options: ['stage', 'release', 'expires'] })
+    const m = configure({ stage: args.stage, release: args.release, idsOptional: args['ids-optional'], quiet: args.quiet, expires: args.expires ?? null, oauthWithoutRateLimits: Boolean(args['oauth-without-rate-limits']), oauthPublic: Boolean(args['oauth-public']), withoutApp: Boolean(args['without-app']) })
     console.log(join(GENERATED_DIR, m.target, 'manifest.json'))
   } catch (e) {
     log(`configure: ${e.message}`)

@@ -17,7 +17,7 @@ import { after, beforeEach, test } from 'node:test'
 const tmp = mkdtempSync(join(tmpdir(), 'viz-oauth-gate-'))
 process.env.VIZ_GENERATED_DIR = join(tmp, 'generated')
 const { GENERATED_DIR, REPO_ROOT } = await import('../lib/common.mjs')
-const { callsLike, captured, cmd, installFakeAccount, oauthGated, serving } = await import('./fake-account.mjs')
+const { WITHOUT_APP, appBuilt, callsLike, captured, cmd, installFakeAccount, oauthGated, serving } = await import('./fake-account.mjs')
 const { deploy, planOnly, rollback } = await import('../release.mjs')
 const { SecretRefused, ensureSecrets, keyGateProblems } = await import('../lib/secrets.mjs')
 
@@ -46,13 +46,16 @@ function release(name, { stage = 'gatetest', gated = {}, manifest: extra = {} } 
   const ctl = join(dir, 'control.jsonc')
   writeFileSync(ctl, JSON.stringify({ name: N('control'), ...(g?.config.ratelimits ? { ratelimits: g.config.ratelimits } : {}), vars: { VIZ_RELEASE: name, ...DECLARED, ...(g?.config.vars ?? {}) }, migrations: [{ tag: 'v1' }] }))
   const gw = join(dir, 'gateway.jsonc')
-  writeFileSync(gw, JSON.stringify({ name: N('gateway'), vars: { VIZ_RELEASE: name, VIZ_FORMATS: DECLARED.VIZ_FORMATS } }))
+  // The web app (D74) is not this file's subject: a stage goes without it, as configured --without-app;
+  // production serves the fixture build, staged as deploy/app.mjs stages one.
+  const app = stage ? { config: { vars: {} }, manifest: WITHOUT_APP.worker } : appBuilt({ release: name, configFile: gw })
+  writeFileSync(gw, JSON.stringify({ name: N('gateway'), ...(app.config.assets ? { assets: app.config.assets } : {}), vars: { VIZ_RELEASE: name, VIZ_FORMATS: DECLARED.VIZ_FORMATS, ...app.config.vars } }))
   const target = stage ? `stage-${stage}` : 'production'
   const workers = [
     { name: N('control'), canonical: 'viz-control', component: 'control', config: relative(REPO_ROOT, ctl), deploy: true, migrationTags: ['v1'], migrationTag: 'v1', schemas: [{ component: 'control.Tenant', latest: 1, compat: 1, migrations: [{ version: 1, readableFrom: 1, name: 't1' }] }], formats: [], floors: [], ...(g?.manifest ?? {}) },
-    { name: N('gateway'), canonical: 'viz-gateway', component: 'deploy/gateway', config: relative(REPO_ROOT, gw), deploy: true, public: true, migrationTags: [], migrationTag: null, schemas: [], formats: [], floors: [] },
+    { name: N('gateway'), canonical: 'viz-gateway', component: 'deploy/gateway', config: relative(REPO_ROOT, gw), deploy: true, public: true, migrationTags: [], migrationTag: null, schemas: [], formats: [], floors: [], ...app.manifest },
   ]
-  const m = { target, stage: stage ?? null, release: name, durableObjectsCodeUpdate: 'deferred 30s', order: workers.map((w) => w.name), releaseFrom: N('control'), workers, ...extra }
+  const m = { target, stage: stage ?? null, release: name, durableObjectsCodeUpdate: 'deferred 30s', order: workers.map((w) => w.name), releaseFrom: N('control'), workers, ...(stage ? WITHOUT_APP.manifest : {}), ...extra }
   mkdirSync(join(GENERATED_DIR, target), { recursive: true })
   writeFileSync(join(GENERATED_DIR, target, 'manifest.json'), JSON.stringify(m))
   return { control: N('control'), gateway: N('gateway'), stage: stage ?? undefined }
