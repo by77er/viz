@@ -72,7 +72,9 @@ export const Chart = memo(function Chart({ spec, shiftMs, stepWords, view, textF
   live.current.stepWords = stepWords
   live.current.onShownRange = onShownRange
 
-  // ---- once per element: the observers and listeners around the chart.
+  const wasFailed = useRef<string | null>(null)
+
+  // ---- once per element: the observers around the chart.
   useLayoutEffect(() => {
     const root = rootRef.current!
     const unitless = () => live.current.spec.unit === ''
@@ -105,8 +107,31 @@ export const Chart = memo(function Chart({ spec, shiftMs, stepWords, view, textF
     const textObserver = new MutationObserver(fixForm)
     if (text) textObserver.observe(text, { childList: true })
 
-    // A zoom (the foot's buttons, a drag, plus and minus) changes the range the chart shows,
-    // within the result. These run after the chart's own handlers.
+    return () => {
+      chartObserver.disconnect()
+      textObserver.disconnect()
+    }
+  }, [textFormId])
+
+  // ---- a result: drawn before the frame that shows it.
+  useLayoutEffect(() => {
+    const root = rootRef.current!
+    live.current.spec = spec
+    handle.current = drawChart(root, spec)
+    remember(view, root)
+    // A new result is drawn whole; the chart cleared any error with it.
+    wasFailed.current = null
+    if (live.current.shown) {
+      live.current.shown = false
+      live.current.onShownRange?.(null)
+    }
+  }, [spec, view])
+
+  // ---- the range the chart shows. A zoom (the foot's buttons, a drag, plus and minus) changes
+  // it within the result. These listeners are added after the chart's own (the effect above
+  // made the chart), so they run after it has acted.
+  useLayoutEffect(() => {
+    const root = rootRef.current!
     const report = () => {
       const h = handle.current
       if (!h) return
@@ -119,27 +144,12 @@ export const Chart = memo(function Chart({ spec, shiftMs, stepWords, view, textF
     }
     for (const type of ['click', 'pointerup', 'keydown'] as const) root.addEventListener(type, report)
     return () => {
-      chartObserver.disconnect()
-      textObserver.disconnect()
       for (const type of ['click', 'pointerup', 'keydown'] as const) root.removeEventListener(type, report)
     }
-  }, [textFormId])
-
-  // ---- a result: drawn before the frame that shows it.
-  useLayoutEffect(() => {
-    const root = rootRef.current!
-    live.current.spec = spec
-    handle.current = drawChart(root, spec)
-    remember(view, root)
-    if (live.current.shown) {
-      live.current.shown = false
-      live.current.onShownRange?.(null)
-    }
-  }, [spec, view])
+  }, [])
 
   // ---- an error after the result was drawn, and its end.
   const failed = error?.title ?? null
-  const wasFailed = useRef<string | null>(null)
   useLayoutEffect(() => {
     if (failed === wasFailed.current) return
     wasFailed.current = failed

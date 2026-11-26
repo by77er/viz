@@ -21,11 +21,12 @@ const underline = (color: string) => ({
 })
 
 const theme = EditorView.theme({
-  '&': { color: 'var(--ink)', backgroundColor: 'transparent', font: 'var(--text-code)' },
+  // The type is the query well's (vz-query: the code style, and body size with a coarse pointer); the editor inherits it.
+  '&': { color: 'var(--ink)', backgroundColor: 'transparent', font: 'inherit' },
   '&.cm-focused': { outline: 'none' },
-  '.cm-content': { padding: '0', caretColor: 'var(--ink)', font: 'var(--text-code)' },
+  '.cm-content': { padding: '0', caretColor: 'var(--ink)', font: 'inherit' },
   '.cm-line': { padding: '0' },
-  '.cm-scroller': { font: 'var(--text-code)', overflowX: 'auto' },
+  '.cm-scroller': { font: 'inherit', overflowX: 'auto' },
   '.cm-placeholder': { color: 'var(--ink-muted)' },
   '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--ink)' },
   '&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection': {

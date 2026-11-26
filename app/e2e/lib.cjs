@@ -183,12 +183,53 @@ async function startMock(port, args = []) {
   return stop
 }
 
-/** A browser context whose app sends `key` (Settings, in localStorage), as a person who pasted it would. */
+/**
+ * A browser context signed in with `key`: the key is in the tab's sessionStorage before the
+ * app starts (shell/session.tsx, KEY_STORE), as it is after a person signs in and reloads.
+ * It is put there once per tab, so that signing out in a test stays signed out.
+ */
 async function contextWithKey(browser, key, options = {}) {
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: 'light', ...options })
-  await ctx.addInitScript((k) => { if (!sessionStorage.getItem('viz.e2e.keyed')) { localStorage.setItem('viz.settings', JSON.stringify({ baseUrl: '', token: k })); sessionStorage.setItem('viz.e2e.keyed', '1') } }, key)
+  await ctx.addInitScript((k) => { if (!sessionStorage.getItem('viz.e2e.keyed')) { sessionStorage.setItem('viz.key', k); sessionStorage.setItem('viz.e2e.keyed', '1') } }, key)
   return ctx
 }
+
+/**
+ * What a finger can reach, for every control in the viewport: found by asking the page which
+ * element is at each point (as design-system/tools/shots.mjs measures it), so an area clipped
+ * by a scrolling strip or covered by a neighbour is measured as it behaves. Returns the
+ * controls under 44 px, those covered at their centre, and whether the pointer is coarse.
+ */
+const hitAreas = (page) => page.evaluate(() => {
+  const sel = 'a[href], button, input, select, textarea, summary, [role^="menuitem"], label.vz-check, [tabindex="0"]'
+  const owner = (x, y) => { const e = document.elementFromPoint(x, y); return e && e.closest(sel) }
+  const name = (el) => (el.getAttribute('data-testid') || el.getAttribute('aria-label') || el.textContent || el.value || el.tagName).trim().replace(/\s+/g, ' ').slice(0, 32)
+  const out = { count: 0, small: [], covered: [], coarse: matchMedia('(pointer: coarse)').matches }
+  const modal = document.querySelector('dialog:modal')
+  for (const el of document.querySelectorAll(sel)) {
+    if (el.disabled || el.closest('[inert], [aria-hidden="true"]') || getComputedStyle(el).visibility !== 'visible') continue
+    if (modal && !modal.contains(el)) continue
+    if (el.matches('input[type="checkbox"]') && el.closest('label')) continue
+    if (el.matches('a') && el.closest('p')) continue // a link inside a sentence is text
+    const r = el.getBoundingClientRect()
+    if (r.width <= 1 || r.height <= 1 || r.bottom < 0 || r.top > innerHeight - 22) continue
+    let strip = el.parentElement
+    while (strip && strip !== document.body && !/(auto|scroll)/.test(getComputedStyle(strip).overflowX)) strip = strip.parentElement
+    if (strip && strip !== document.body) { const s = strip.getBoundingClientRect(); if (r.left < s.left - 0.5 || r.right > s.right + 0.5) continue }
+    const cx = Math.min(innerWidth - 1, Math.max(0, r.left + r.width / 2)), cy = r.top + r.height / 2
+    if (owner(cx, cy) !== el) { out.covered.push(name(el)); continue }
+    let top = cy, bottom = cy, left = cx, right = cx
+    const q = 0.25
+    while (top > cy - 60 && owner(cx, top - q) === el) top -= q
+    while (bottom < cy + 60 && owner(cx, bottom + q) === el) bottom += q
+    while (left > cx - 60 && owner(left - q, cy) === el) left -= q
+    while (right < cx + 60 && owner(right + q, cy) === el) right += q
+    out.count++
+    const w = right - left + q, h = bottom - top + q
+    if (h < 44 || w < 44) out.small.push(`${name(el)} ${w.toFixed(0)}x${h.toFixed(0)}`)
+  }
+  return out
+})
 
 const overflow = (page) => page.evaluate(() => ({ sw: document.documentElement.scrollWidth, iw: window.innerWidth }))
 
@@ -207,5 +248,5 @@ async function axe(page, label, check) {
 module.exports = {
   chromium, ROOT, APP, MOCK, T0, T1, Q_RATE, Q_CPU, Q_P95, Q_MANY, Q_BAD, url, TOKENS, tokenValue, tokenRgb, seriesHex, allowedColours,
   makeChecker, startServers, setMockDelay, setMockFailure, overflow, axe, ping, waitFor,
-  REAL, realUp, ensureRealStack, realKeys, realKv, startPreview, startMock, contextWithKey,
+  REAL, realUp, ensureRealStack, realKeys, realKv, startPreview, startMock, contextWithKey, hitAreas, APP_PORT, MOCK_PORT,
 }
