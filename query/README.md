@@ -586,15 +586,17 @@ before the flag".
 
 ### What remains before the flag
 
-1. **A narrow re-check of R2-M1 to R2-M4(a)** by the re-reviewer (`design/reviews/signals-end-to-end-r2.md`
-   asks for one, not a full re-review). The fixes, with their evidence: "The re-review", below. Not done.
-2. **A Cloudflare trial** (nothing here ran on Cloudflare): the margin's `trace_index` reads
+1. ~~A narrow re-check of R2-M1 to R2-M4(a)~~: done 2026-11-26, D62 approved
+   (`design/reviews/signals-end-to-end-r3.md`: 0 blockers, 0 majors, 4 minors, all corrections to
+   D62's stated ceilings, made there under "Corrections from the narrow re-check").
+2. **A Cloudflare trial of this build** (S10, below, ran on the ABI 7 build; nothing of ABI 8 ran
+   on Cloudflare): the margin's `trace_index` reads
    (a search over a tenant with S span shards and uncompacted recent hours, at `traceMarginMs`
    0, 1 and 2 hours: files read, bytes, wall time, and the extent call's time at 10 to 70 traces a
    second), and the peak memory of every call type in a real 128 MB isolate
    (`X-Viz-Wasm-Memory-Bytes` against "Memory" below, the review's inputs and the per-call table).
-3. **A Grafana run** against a staged deployment ("Grafana", below), with the gateway routing
-   `/api/echo` (R2-m4; "Needed changes elsewhere", 5). Not done.
+3. **A Grafana run** against a staged deployment ("Grafana", below). Not done. The gateway routes
+   `/api/echo` since 2026-11-26 (R2-m4; `deploy/README.md`).
 4. ~~The contract~~: done. `contracts/engine.ts` has `SignalBudget` (ABI 7) and, changed before the
    code this time (R2-m2), its widening for ABI 8.
 5. **The tail's limit** ("The tail") is now only a backlog of more than `maxFetchBytes` inside one
@@ -2242,7 +2244,7 @@ the whole path). What is left, for its owners:
    log batch's time bounds at append and skips batches outside a read's range; this Worker sends
    the range ("The tail"), with the two corrections the review of D72 asked for (m-2, m-3). Was:
    **`shard/` (review m-3)**: time bounds per span and log batch, kept at append.
-5. **The gateway (`deploy/gateway/`, review m-4)**: route `GET /api/echo` to viz-query, exactly,
+5. **Done by `deploy/` (2026-11-26).** Was: **the gateway (`deploy/gateway/`, review m-4)**: route `GET /api/echo` to viz-query, exactly,
    like the other Tempo paths (this Worker answers it behind `QUERY_SIGNALS`).
 
 ## Needed changes in other components
