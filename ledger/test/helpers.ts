@@ -1,6 +1,6 @@
 import { evictDurableObject, runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
-import { decodeLedgerSegment, parseLedgerLogKey, type FileEntry, type FlushUnit, type LedgerChange, type Plan, type Table } from '../../contracts/ledger'
+import { decodeLedgerSegment, parseLedgerLogKey, type FileEntry, type FlushUnit, type LedgerChange, type LedgerTable, type Plan, type Table } from '../../contracts/ledger'
 import type { Ledger } from '../src/ledger'
 
 export type Stub = DurableObjectStub<Ledger>
@@ -21,7 +21,7 @@ export const open = (tenant = tenantName()): { tenant: string; l: Stub } => {
 }
 
 /** The data-file prefix a ledger accepts (contracts/ledger.ts `FileEntry.key`). */
-export const prefixOf = (tenant: string, table: Table, day: string) => `${env.CELL}/data/${table}/tenant=${tenant}/day=${day}/`
+export const prefixOf = (tenant: string, table: LedgerTable, day: string) => `${env.CELL}/data/${table}/tenant=${tenant}/day=${day}/`
 const registry = new Map<string, string>()
 
 /**
@@ -51,7 +51,7 @@ export const pair = (seqLo: number, seqHi: number, ts = T0, shard = S, incarnati
     file(`series-${shard.replaceAll('/', '_')}-${incarnation}-${seqLo}-${seqHi}`, { minTs: ts, table: 'metric_series' }),
   ], shard, incarnation)
 
-export const everything = async (l: Stub, table: Table = 'metric_samples') => l.plan({ table, minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })
+export const everything = async (l: Stub, table: LedgerTable = 'metric_samples') => l.plan({ table, minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })
 export const keys = (p: Plan) => p.files.map((f) => nm(f.key))
 export const seqOf = async (l: Stub, shard = S) => (await everything(l)).watermarks.find((w) => w.shard === shard)?.seq
 export const loggedOf = async (l: Stub, shard = S) => (await l.loggedWatermarks()).find((w) => w.shard === shard)?.seq

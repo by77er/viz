@@ -13,10 +13,13 @@
       // own (empty) storage, reading the same R2 log.
       { "name": "LEDGER_REPLICA", "class_name": "LedgerReplica" },
       // The release before checkpoints in parts, reading the same R2 log.
-      { "name": "LEDGER_BEFORE", "class_name": "LedgerBefore" }
+      { "name": "LEDGER_BEFORE", "class_name": "LedgerBefore" },
+      // The release before registration before writes (D61). Its tests run it on the Ledger's
+      // own storage (a rollback); the binding only puts the class in the script.
+      { "name": "LEDGER_PREREG", "class_name": "LedgerPrereg" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Ledger", "LedgerAsBuilt", "LedgerReplica"] }, { "tag": "v2", "new_sqlite_classes": ["LedgerBefore"] }],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Ledger", "LedgerAsBuilt", "LedgerReplica"] }, { "tag": "v2", "new_sqlite_classes": ["LedgerBefore"] }, { "tag": "v3", "new_sqlite_classes": ["LedgerPrereg"] }],
   "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "viz-lake" }],
   "vars": { "CELL": "cell-0" }
 }
