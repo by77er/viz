@@ -140,6 +140,71 @@ export const DEFAULT_CONFIG: ShardConfig = {
 }
 
 /**
+ * What each field of `ShardConfig` may hold (re-check of D72, r2-m-3). A value outside its rule is
+ * never used: `configure` refuses the whole call and changes nothing, and a stored configuration
+ * is read with the default in place of any such field (`storedConfig`). Before this the object
+ * used whatever it was given, and a `tailScanMaxBatches` that was not a number (`undefined`, `NaN`)
+ * made every filtered read answer a complete, empty `ok` over a tail that held rows.
+ *
+ *   `positive`     a safe integer of at least 1: a size or a count that 0 would make meaningless
+ *   `nonNegative`  a safe integer of at least 0: a duration in milliseconds, or a limit whose 0 has
+ *                  a meaning tests use and that never answers `ok` for rows it did not return:
+ *                  `maxInFlight` and `maxPendingBytes` 0 refuse every append (`overload`,
+ *                  retryable); `tailScanMaxBytes` 0 examines nothing per call, so every page says
+ *                  there is more (`page.next` is never null while batches remain)
+ *   `registration` `lazy` or `logged`
+ */
+const CONFIG_RULES: { [K in keyof ShardConfig]: 'positive' | 'nonNegative' | 'registration' } = {
+  maxBatchBytes: 'positive',
+  sealBytes: 'positive',
+  sealAgeMs: 'nonNegative',
+  tenantMaxBytes: 'positive',
+  shardMaxBytes: 'positive',
+  retainRecordedMs: 'nonNegative',
+  fingerprintTtlMs: 'nonNegative',
+  notifyRetryMs: 'nonNegative',
+  seriesWindowMs: 'positive',
+  seriesExactMax: 'positive',
+  seriesPersistMs: 'nonNegative',
+  maxInFlight: 'nonNegative',
+  maxPendingBytes: 'nonNegative',
+  overloadRetryMs: 'nonNegative',
+  groupWindowMs: 'nonNegative',
+  maxGroupBytes: 'positive',
+  tailScanMaxBytes: 'nonNegative',
+  tailScanMaxBatches: 'positive',
+  registration: 'registration',
+  registerRetryAfterMs: 'nonNegative',
+  registerBackoffMs: 'nonNegative',
+  registerBackoffMaxMs: 'nonNegative',
+  registerTimeoutMs: 'positive',
+  maxRegistrations: 'positive',
+  registerAlertMs: 'nonNegative',
+}
+
+/** Why `value` may not be the configuration field `key`, or null when it may (`CONFIG_RULES`). */
+export function configFault(key: string, value: unknown): string | null {
+  if (!Object.hasOwn(CONFIG_RULES, key)) return `${JSON.stringify(key.slice(0, 64))} is not a configuration field`
+  const rule = CONFIG_RULES[key as keyof ShardConfig]
+  const shown = typeof value === 'number' || value === undefined ? String(value) : (JSON.stringify(value) ?? typeof value).slice(0, 64)
+  if (rule === 'registration') return value === 'lazy' || value === 'logged' ? null : `registration must be 'lazy' or 'logged', not ${shown}`
+  const least = rule === 'positive' ? 1 : 0
+  return Number.isSafeInteger(value) && (value as number) >= least ? null : `${key} must be an integer of at least ${least}, not ${shown}`
+}
+
+/**
+ * The configuration a stored `cfg` row gives: the defaults, then the stored fields, except that a
+ * known field whose stored value breaks its rule keeps the default (a release that stored whatever
+ * it was given may have written one: `NaN` is stored as `null`). Fields this release does not know
+ * are carried as they are, so a rollback does not drop what a later release stored.
+ */
+function storedConfig(stored: unknown): ShardConfig {
+  const cfg: Record<string, unknown> = { ...DEFAULT_CONFIG, ...(typeof stored === 'object' && stored !== null && !Array.isArray(stored) ? stored : {}) }
+  for (const k of Object.keys(CONFIG_RULES) as (keyof ShardConfig)[]) if (configFault(k, cfg[k]) !== null) cfg[k] = DEFAULT_CONFIG[k]
+  return cfg as unknown as ShardConfig
+}
+
+/**
  * The shard's storage, versioned (contracts/COMPATIBILITY.md §2). Version 1 is the schema
  * as the code before versioning created it, with IF NOT EXISTS, so it adopts such storage;
  * an object created before `segment.sealed_at` existed gets that column (0), which `CREATE
@@ -203,8 +268,13 @@ export const SHARD_SCHEMA: SchemaSpec = {
     // the payload. PARTIAL: only rows with bounds have an entry, so a span or log append writes one
     // more row (billed) and a metric append none. SQLite maintains it for every writer, the release
     // before included (its rows have NULL bounds: no entry, kept by every range), so it can never
-    // disagree with the row it indexes. Built here over rows that all have NULL bounds: it reads
-    // each row's header, not its payload, and writes no entry.
+    // disagree with the row it indexes. Built here over rows that all have NULL bounds, it writes
+    // no entry, and reads each row's header, which lies in the table's leaf page. For a batch larger
+    // than a page that is all it reads (the payload's overflow pages are not followed); a batch
+    // under about 4 KB sits whole in the leaf page with its header, so over such batches the build
+    // reads the table (re-check of D72, r2-n-2: 0.15 MB of a 34 MB tail of 0.4 to 1 MB batches, all
+    // of a 40 MB tail of 2 KB ones, in 10 to 85 ms; measured with Python's SQLite, not workerd's:
+    // shard/README.md).
     version: 3,
     name: 'batch.min_ts, batch.max_ts: a span or log batch\'s time bounds, NULL when unknown, and their index batch_time (D72)',
     readableFrom: 1,
@@ -505,7 +575,7 @@ export class Shard extends DurableObject<ShardEnv> {
     }
     const sql = ctx.storage.sql
     const row = sql.exec(`SELECT v FROM config WHERE k = 'cfg'`).toArray()[0]
-    if (row) this.cfg = { ...DEFAULT_CONFIG, ...JSON.parse(row.v as string) }
+    if (row) this.cfg = storedConfig(JSON.parse(row.v as string))
     this.marked = sql.exec(`SELECT v FROM config WHERE k = 'marker'`).toArray()[0]?.v === '1'
     this.load()
   }
@@ -658,8 +728,19 @@ export class Shard extends DurableObject<ShardEnv> {
     return n
   }
 
+  /**
+   * Changes the given fields of the configuration and stores it. Refused whole, with nothing changed
+   * or stored, when a field is unknown or its value breaks its rule (`CONFIG_RULES`; `undefined`
+   * breaks every rule): a limit is never left holding something the code would have to guess at
+   * (re-check of D72, r2-m-3).
+   */
   async configure(cfg: Partial<ShardConfig>): Promise<ShardConfig> {
     if (this.refusal) this.refused()
+    if (typeof cfg !== 'object' || cfg === null || Array.isArray(cfg)) throw new Error('shard: configure: the configuration must be an object of fields')
+    for (const [k, v] of Object.entries(cfg)) {
+      const fault = configFault(k, v)
+      if (fault !== null) throw new Error(`shard: configure: ${fault}; nothing was changed`)
+    }
     this.cfg = { ...this.cfg, ...cfg }
     this.ctx.storage.sql.exec(`INSERT OR REPLACE INTO config (k, v) VALUES ('cfg', ?)`, JSON.stringify(this.cfg))
     return this.cfg

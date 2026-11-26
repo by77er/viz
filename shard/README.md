@@ -12,10 +12,10 @@ dedicated tenants run the same code.
 |---|---|
 | `src/shard.ts` | `Shard`: append, seal (and its notification), pending segments and tenants, read segment, recorded, tail read, active-series metering, alarm housekeeping |
 | `src/sketch.ts` | `SeriesWindow`: distinct series in a sliding window: exact set, then HyperLogLog + Bloom filter |
-| `src/tail.ts` | Filtered, paged tail reads (D48): the filter over stored `VZB1` batches (by signal since stage 2), the page cursor, `splitKeyRange`; `batchTimeBounds`, a span or log batch's time bounds read at append (D72) |
+| `src/tail.ts` | Filtered, paged tail reads (D48): the filter over stored `VZB1` batches (by signal since stage 2), the page cursor, `splitKeyRange`; `batchTimeBounds`, a span or log batch's time bounds read at append (D72); the two statements a filtered read runs (`PLAIN_TAIL_SQL`, and `TIMED_TAIL_SQL` for a ranged read that admits spans or logs) |
 | `src/pool.ts` | Pool maps and routing: which slots a tenant may use, which slot a sender goes to; `validPoolName`; `validBasePool`, the one rule for a pool map's pool that edge reads maps with and control writes them with (D66); `dedicatedPool`; the derived pools of spans and logs (`signalPool`, `enabledSignals`) |
 | `scripts/mutants.mjs` | Mutation check of the newer properties (runs only on a copy outside the git checkout) |
-| `test/` | 98 tests in 11 files, run inside the Workers runtime, against the real ledger in the same script (`wrangler.test.jsonc`, `test/worker.ts`), as in viz-ingest |
+| `test/` | 120 tests in 13 files, run inside the Workers runtime, against the real ledger in the same script (`wrangler.test.jsonc`, `test/worker.ts`), as in viz-ingest |
 | `bench/` | The counterfactual in workerd: this shard against the frozen as-built one (`bench/asbuilt/`, `dc2a1c3`); a 20 MB tail read whole and filtered (`tail.bench.test.ts`, results in `bench/results/tail.txt`); registration before writes (`registration.bench.test.ts`, against the release before it frozen in `bench/prereg/`; results in `bench/results/registration.log`); a span or log query against eight hours of tail, and appends against the release before D72 frozen in `bench/prebounds/` (`signaltail.bench.test.ts`, `walk.node.mjs`; results in `bench/results/signaltail.txt`) |
 
 ## What is implemented
@@ -139,16 +139,38 @@ dedicated tenants run the same code.
   bounds lie wholly outside the range, **deciding from the index, not the row**
   (`TIMED_TAIL_SQL`, `INDEXED BY batch_time`): the bounds follow the payload in the row, so reading
   them there read every skipped batch's payload from storage (review M-1; 33 MB to skip 48 batches,
-  now 20 KB). Every batch with NULL bounds is kept: rows from before schema 3, rows written by the
+  now 20 KB). **Only a read that can skip something runs that statement** (re-check of D72, r2-m-2):
+  one with a time range that admits span or log batches (no `signals`, or 2 or 3 listed;
+  `CompiledFilter.byBounds`). A ranged read that admits only metric batches (a metrics query's
+  `signals: [1]`) runs the statement every filtered read ran before D72 (`PLAIN_TAIL_SQL`): no
+  metric batch has bounds, so it could skip nothing, it examines every batch as before, and it
+  reads one row per batch, not two (the cost in rows read is under "How it was verified"). It does
+  not use the index at all. Every batch with NULL bounds is kept: rows from before schema 3, rows
+  written by the
   release before after a rollback, rows the walk does not accept. One call considers at most
   `tailScanMaxBatches` (32,768) batches, skipped ones included, and examines at most
   `tailScanMaxBytes`; a page may hold no batch and continue. Cursors (the range is part of the
   filter they are bound to), `through`, the fence and every refusal are D48's; a skipped batch is
   not examined (`scannedBatches`/`scannedBytes` leave it out); `page_limit` names only a kept batch
   and carries `last` (review n-1): true when no batch after it up to `through` can be kept by its
-  bounds. A trace query must send the bound it reads spans in (its window widened by
+  bounds (for a read that admits only metric batches, which looks at no bounds: only when it is the
+  tail's last batch; "Contract issues" 2). A trace query must send the bound it reads spans in
+  (its window widened by
   `traceMarginMs`, D62) as `floor(lo / 10⁶)`, `floor(hi / 10⁶)`; then every batch holding a span
   that starts inside the bound is returned (tested, below).
+- **Configuration is checked** (re-check of D72, r2-m-3). `configure` refuses the whole call
+  (it throws, naming the field; nothing is changed or stored) when a field is unknown or its value
+  breaks its rule: sizes and counts (`maxBatchBytes`, `sealBytes`, `tenantMaxBytes`,
+  `shardMaxBytes`, `seriesWindowMs`, `seriesExactMax`, `maxGroupBytes`, `tailScanMaxBatches`,
+  `registerTimeoutMs`, `maxRegistrations`) are safe integers of at least 1; durations and the three
+  limits whose 0 has a meaning (`maxInFlight` and `maxPendingBytes`: refuse every append,
+  retryably; `tailScanMaxBytes`: examine nothing per call) are safe integers of at least 0;
+  `registration` is `lazy` or `logged`. `undefined`, `NaN`, an infinity, a non-integer, a negative
+  and a non-number break every numeric rule. A stored configuration is read the same way: a known
+  field whose stored value breaks its rule takes the default (a field this release does not know
+  is carried unchanged). Before this the object used whatever it was given, and
+  `tailScanMaxBatches: undefined` or `NaN` made every filtered read answer a complete, empty `ok`
+  over a tail that held rows.
 - **Segment reads bound to what was listed** (spec F12): `readSegment(tenant, seqLo,
   incarnation, seqHi)` answers null unless the stream is still that incarnation and the
   segment is exactly that range.
@@ -181,7 +203,7 @@ dedicated tenants run the same code.
   pool breaks it (503) and control refuses to publish one (422), with this one function, and
   control's dedicated pool is `dedicatedPool` (D66).
 - **Versioned storage and formats** (`contracts/COMPATIBILITY.md`, D24). `shard.Shard`
-  version 2 through `contracts/schema.ts`: version 1 adopts the pre-versioning schema
+  version 3 through `contracts/schema.ts`: version 1 adopts the pre-versioning schema
   unchanged and adds `segment.sealed_at` to objects created before it; version 2 (D61) adds
   `stream.registered` (additive, `readableFrom` 1: the release before ignores it and never
   changes a stream row's incarnation, so what this release wrote stays true and its 0 is
@@ -189,8 +211,11 @@ dedicated tenants run the same code.
   `readableFrom` 1: the release before names its columns when it inserts, so its rows get NULL,
   which every time range keeps; nothing is backfilled and nothing relies on a value being there)
   and the partial index `batch_time` over them (review of D72, M-1; SQLite maintains it for every
-  writer, the release before included, whose rows get no entry; built over schema-2 rows it reads
-  their headers and writes nothing). Migration 3 had not shipped when the index was added to it.
+  writer, the release before included, whose rows get no entry). Built over schema-2 rows it writes
+  nothing and reads each row's header, which lies in the table's leaf page: for batches larger than
+  a page that is all it reads, but a batch under about 4 KB sits whole in that page, so over a tail
+  of small batches the build reads the table (re-check of D72, r2-n-2; the figures are under "How
+  it was verified"). Migration 3 had not shipped when the index was added to it.
   Storage of a newer release is
   refused: `append` answers retryable `overload`, every other method throws
   `schema_too_new`, nothing is written, the alarm is re-armed. The series-window bucket
@@ -303,7 +328,7 @@ per shard on an even share, so an unevenly spread tenant is refused before its w
 
 ```
 npm install
-npx vitest run --maxWorkers=2   # 109 tests in workerd, 12 files (2026-11-26, after the review of D72)
+npx vitest run --maxWorkers=2   # 120 tests in workerd, 13 files (2026-11-26, after the re-check of D72)
 npx tsc --noEmit                # clean
 node scripts/mutants.mjs        # on a copy outside the git checkout (see the script)
 npm run bench                   # the workerd counterfactual (bench/)
@@ -314,8 +339,107 @@ node --experimental-strip-types --no-warnings bench/walk.node.mjs   # the bounds
 node --experimental-strip-types --no-warnings bench/skipread.node.mjs  # where the bounds are kept: bytes read to skip, rows written (workerd)
 ```
 
-**Last run, 2026-11-26, after the review of D72: 109 passed, 0 failed (12 files); `tsc --noEmit`
-clean.** Run on the working tree at commit `76e065b` with this change's later edits to
+**Last run, 2026-11-26, after the re-check of D72
+(`design/reviews/d72-shard-bounds-r2.md`): 120 passed, 0 failed (13 files); `tsc --noEmit` clean.**
+Run on the working tree after commit `cb527dc`, with this change not yet committed as a whole
+(snapshot commits made while it was written carry parts of it: `cb527dc` has `src/tail.ts` and the
+read's choice of statement, not the configuration check, the tests, `scripts/mutants.mjs` or this
+file). Before the change, same tree: 109 of 109. The components that call the shard's tail read or
+`configure`, same tree after the change, one suite at a time with `npx vitest run --maxWorkers=2`:
+**query 173 passed (20 files); stack 50 passed, 1 skipped (11 files)**; edge 133 (13 files); flush
+59 (7 files); janitor 33 (5 files); `npx tsc --noEmit` clean in stack and in query. Not run: the
+gateway suite, the benches (`npm run bench`, `BENCH=…`), and anything on Cloudflare.
+
+- **The re-check of D72** (`test/bounds.recheck.test.ts`, 11 tests; 2026-11-26):
+  - *r2-m-1, tenants in one shard* (2; the first adopted from the reviewer's block C): two tenants
+    in one traces shard with the same sequence numbers and opposite times. Each ranged read
+    returns its own batches only (`A` hour 0: 1 and 3; `A` hour 5: 2; `B` hour 0: 2; `B` hour 5:
+    1), with and without `signals`; `page_limit.last` counts only the reader's own batches; the
+    index holds five entries and agrees with the rows; the same after an eviction. The same shape
+    for log batches, and for a metrics-only ranged read of a shared metrics shard (the plain
+    statement).
+  - *r2-m-2, rows read* (2): the table below. The count is the `rowsRead` of every cursor the read
+    itself opened (the test wraps the object's `sql.exec` for the length of one `tailRead`, on the
+    live instance and on the release before D72 run over the same storage), and the test also
+    checks which statement ran.
+  - *r2-m-2, a read that admits only metric batches* (4), in a stream mixing the three signals
+    (not what edge writes): a `signals: [1]` ranged read examines all 18 batches and returns what
+    the release before D72 returns on the same storage, the whole page compared (batches byte for
+    byte, `through`, `scannedBatches`, `scannedBytes`, `next`); a range that cuts a batch keeps
+    only the rows inside; a read that admits spans or logs as well (`[1, 2]`, `[1, 3]`, `[2, 3]`,
+    `[2]`, `[3]`, none) still skips the eight bounded batches outside the range unexamined; 84
+    paged reads (batch windows of 1, 2, 5, 17, 18, 19 and 32,768; a scan budget of 1 byte and of
+    32 MiB; three page sizes; with and without an eviction between pages) return the same rows,
+    every cursor naming a later batch, `through` fixed, no call examining more than its window; a
+    cursor of another range or of other signals is `invalid`; a later append is not in the read;
+    `page_limit` says `last` only for the tail's last batch; with the index `batch_time` dropped
+    the metrics-only read answers the same, while a span read with a range throws (`no such index`)
+    and never falls back to the rows.
+  - *r2-m-3, configuration* (3): `tailScanMaxBatches` given as `undefined`, `NaN`, 0, −1, 1.5, ±∞,
+    2^53, a string, `null`, `true` or an object is refused each time, and after each a ranged read,
+    a filtered read without a range and the unfiltered read all return the three batches (the
+    review's reproduction returned none), also after an eviction; a call with one bad field
+    applies none of its fields; an unknown field and a configuration that is not an object are
+    refused. Every one of the 24 numeric fields refuses those eleven values, the ten sizes and
+    counts refuse 0 as well, and `registration` refuses seven values that are not `lazy` or
+    `logged` (281 refusals, nothing changed by any). The fourteen fields that take 0 take it, and
+    0 does what the README says: `tailScanMaxBytes` 0 answers an `ok` without a batch whose `next`
+    is not null, `maxInFlight` 0 refuses an append as `overload`. A stored configuration holding
+    `null` (what `NaN` was stored as), 0, a negative, a non-integer, a string, an object, an array
+    or `true` for the window is read with the default; a valid stored value and an unknown stored
+    field are kept.
+- **Rows read by a ranged read, measured here** (local workerd, 2026-11-26, the cursor's
+  `rowsRead`, one run; the numbers are counts, the same on every run of the test; tails of 200
+  batches of one row each). How Cloudflare counts and bills these lookups is **not measured**.
+
+  | Read of a 200-batch tail | The release before D72 (frozen, same storage) | As reviewed at `afd0deb` | This change |
+  |---|---|---|---|
+  | metrics, `signals: [1]`, a range holding every batch (200 returned) | 200 | 400 | **200** |
+  | metrics, `signals: [1]`, a range a day before the tail (0 returned, 200 examined) | 200 | 400 | **200** |
+  | metrics, `signals: [1]`, no range | 200 | 200 | 200 |
+  | the same metric tail, `signals: [1, 2]` or no `signals`, a range | not run | 400 | 400 |
+  | spans `[2]` or logs `[3]`, no range (200 returned) | not run | 200 | 200 |
+  | spans or logs, a range holding every batch (200 returned) | 200 | 599 | 599 |
+  | spans or logs, a range holding the first 100 (100 returned) | not run | 500 | 500 |
+  | spans or logs, a range a day before the tail (0 returned) | 200 (it returns all 200, reading every payload) | 400 | 400 |
+
+  The `afd0deb` column: for the metric tail it is `TIMED_TAIL_SQL`, which that commit ran for
+  every ranged read, run over the same batches in the same test (the re-check's block K measured
+  the same 400); for spans and logs it is this change's own figure, whose span and log path is the
+  reviewed one (block K: 599 and 400). So: **a metrics-only read reads one row per batch, as before
+  D72. A span or log read with a time range reads 2 rows per batch it skips and 3 per batch it
+  keeps** (2 for a kept batch without bounds: workerd counts the lookup in `batch_time` also when
+  it finds no entry), where it read 1 per batch before D72 and reads 1 without a range; one call considers at most
+  `tailScanMaxBatches` batches, so at most about 98,000 rows (modelled: 3 × 32,768). What it buys
+  is in the tables below: the skipped batches' payloads are not read (20 KB instead of 33 MB to
+  skip 48 batches) or returned. **Modelled**, at the list price recorded in
+  `research/02-cloudflare-compute-platform.md` ($0.001 per million rows read past 25 billion a
+  month): one more row per batch considered is $1 per billion batches considered. The re-check's
+  example (its workload is invented: 100 queries a second over 4 shards of 100 tail batches, 104
+  billion batches considered a month) is about $104 a month, which is what metrics queries no
+  longer pay and what span or log queries of that volume would pay once or twice over. The
+  experiment that settles it: the same reads against a deployed shard, rows read taken from
+  Cloudflare's analytics API (`design/VERIFICATION.md` §4).
+- **What migration 3 reads when it builds `batch_time`** (re-check of D72, r2-n-2; the reviewer's
+  `migrate.py`, Python's SQLite 3.53.1, **not workerd's**; bytes are the process's `rchar` and were
+  identical in the reviewer's run and in one run here, times are the range of the two; tails at
+  schema 2, all rows without bounds, so no entry is written):
+
+  | Tail at schema 2 | Read by the migration | Time |
+  |---|---|---|
+  | 48 batches of 0.4 to 1 MB (34.5 MB) | 0.15 MB | 7–18 ms |
+  | 2,000 of 20 KB (40 MB) | 8.2 MB (one page per row) | 10–16 ms |
+  | 20,000 of 2 KB (40 MB) | 41.1 MB (the whole table) | 17–23 ms |
+  | 200,000 of 200 B (40 MB) | 48.2 MB | 32–85 ms |
+
+  So "it reads the rows' headers, not their payloads" holds only for batches larger than a page;
+  a payload under about 4 KB sits in the page with its row's header. **Modelled** from those
+  rows (linear in the tail, the file in the operating system's cache): `shardMaxBytes` (512 MiB)
+  of such small batches takes about 0.2 to 1.1 s, inside the 30 s of COMPATIBILITY §2.2. Not
+  measured in workerd or on Cloudflare.
+
+**The run before it, 2026-11-26, after the review of D72: 109 passed, 0 failed (12 files); `tsc
+--noEmit` clean.** Run on the working tree at commit `76e065b` with this change's later edits to
 `src/tail.ts` (comments), `README.md`, `bench/` and `scripts/mutants.mjs` uncommitted; `shard/`'s
 code and tests are as in `76e065b`, whose snapshot carries them (review m-7: the runs below this one
 are tied to no commit). Stack, same tree: `npx tsc --noEmit` clean; `npx vitest run --maxWorkers=2`
@@ -436,7 +560,10 @@ are tied to no commit). Stack, same tree: `npx tsc --noEmit` clean; `npx vitest 
     but took 1.3 ms warm against 0.3–0.7 ms (about 0.65 µs per batch for the index lookup). Why the
     partial index: D72 in `design/DECISIONS.md`. Billed: one more row written per span or log
     append (modelled at list price: $1.00 per million such appends past the included 50 million
-    rows a month); none per metric append.
+    rows a month); none per metric append. Rows READ, which are billed too: one or two more per
+    batch a span or log read with a time range considers, none more for a metrics read (measured
+    here and modelled above, "Rows read by a ranged read"; the bench's own `rowsRead` in
+    `bench/results/skipread.txt` shows the same: 50 as first built, 100 and 147 as built).
   - *End to end* (`BENCH=signaltail`, this change against the first build from a scratch copy at
     `cd41a86`, alternating, two runs each, load average 8 to 11; `bench/results/signaltail.txt`):
     an hour a day before the tail 4–9 ms → 1 ms; the hour 6–10 → 3 ms; the hour with the margin
@@ -716,11 +843,50 @@ ones, run again on the same copy because `tailPage` and migration 3 changed: 11 
 killed; "values copied as numbers" survives, equivalent, as before. The other mutants of the
 script were not re-run for this change (no code they target moved).
 
+**Run of 2026-11-26, the re-check of D72** (`design/reviews/d72-shard-bounds-r2.md`), on a copy of
+`contracts/`, `ledger/`, `edge/src/`, `engine/wasm/{js,test}` and this `shard/` in the session's
+scratch directory (outside git; the shared tree was never mutated), whose unmutated suite passed
+120 of 120 and whose sources equalled the tree's before and after. `node scripts/mutants.mjs`, the
+whole script, on the final code: **87 mutants, 84 killed, 3 survived, all three equivalent** (R-12
+and "values copied as numbers", as in every run above, and one of the new ones, below). Of those:
+the 26 D72 mutants of the two runs above, **26 of 26 killed** again, by the same tests; the
+re-check's 16 new ones, each against `test/bounds.recheck.test.ts` (four with
+`test/bounds.test.ts` as well), **15 of 16 killed, 1 survived (equivalent)**:
+
+| Mutant | Killed by (`bounds.recheck.test.ts` unless named) |
+|---|---|
+| r2-m-1: the skip's subquery does not name the tenant (one tenant's batch hides another's rows; survived the 109 tests before) | "two tenants with the same sequence numbers and opposite times…"; "the same for log batches…" |
+| r2-m-1: the ranged read does not name the tenant (survived the shard's 109 tests before) | the same two |
+| r2-m-1: the look for `last` does not name the tenant in its outer WHERE | **survived, equivalent** (run against the whole suite): the subquery names the tenant and decides every row the outer WHERE would add, because a stream's sequence numbers are contiguous up to `through`, so the tenant has a batch of its own at each one looked at. Right by reading; listed so that it is reported |
+| r2-m-2: a metrics-only ranged read runs the timed statement again (`byBounds = timed`) | "a metrics-only ranged read reads the rows it read before D72 (one per batch), not two…"; "skips nothing: every batch above the watermark is examined…" (also "does not need the index…") |
+| r2-m-2: an unranged read runs the timed statement | "a span or log read with a time range reads 2 rows per batch it skips…" (the statement and the rows read without a range); "does not need the index batch_time…" |
+| r2-m-2: no read skips by bounds (`byBounds = false`) | `bounds.test.ts` "returns exactly the batches whose bounds overlap the hull…", "logs: the same, by `ts`…" |
+| r2-m-2: a log read does not skip by bounds | `bounds.test.ts` "logs: the same, by `ts`…", "signals still choose batches when the read has a hull…" |
+| r2-m-2: a span read does not skip by bounds | `bounds.test.ts` "returns exactly the batches…", "signals still choose batches…" |
+| r2-m-2: a read without `signals` does not skip by bounds | `bounds.test.ts` "signals still choose batches…"; "two tenants with the same sequence numbers…" |
+| r2-m-3: `configure` stores whatever it is given | "tailScanMaxBatches that is not a positive integer… is refused and changes nothing…"; "the sibling limits…" |
+| r2-m-3: a field given as `undefined` is skipped by the check and stored | the same two |
+| r2-m-3: a stored value that breaks its rule is used | "a stored configuration with a value that breaks its rule… is read with the default in its place…" |
+| r2-m-3: `tailScanMaxBatches` may be 0 | "tailScanMaxBatches that is not a positive integer…"; "the sibling limits…" |
+| r2-m-3: a non-integer or an infinite number passes | the same two |
+| r2-m-3: a negative number passes | the same two |
+
+Not mutated: the look for `last` in a read that admits only metric batches (`lastKept`'s
+`!f.byBounds`). Looking in the index there too would change no answer in a stream of one signal,
+and in a mixed stream both answers are allowed ("Contract issues" 2), so no test pins it.
+
 ## Not implemented yet
 
-- **`last` on `page_limit` is not read by query yet** ("Needed changes elsewhere"): until it is, a
-  422 for a tail whose later batches are all skipped says "at least N bytes" where N is exact
-  (review n-1). Query sends the time range now (its owner's change).
+- **Rows read are not measured on Cloudflare** (re-check of D72, r2-m-2): the counts above are
+  local workerd's `rowsRead`. Whether Cloudflare counts an index lookup that finds no entry, and
+  what a span or log read with a time range is billed, needs the experiment named there.
+- **A read that admits only metric batches consults no bounds at all**, `page_limit`'s `last`
+  included: in a stream that mixes signals (edge writes none) it says `last` only for the tail's
+  last batch, where BATCH.md's wording would allow `true` earlier ("Contract issues" 2).
+- **Configuration is checked field by field only** (r2-m-3): no rule ties fields together
+  (`registerBackoffMs` may exceed `registerBackoffMaxMs`, `sealBytes` may exceed `tenantMaxBytes`),
+  and there is no upper bound below 2^53. `configure` has no caller outside tests.
+
 - **Filtering rows inside span and log batches**: a batch the range keeps is returned whole, with
   any rows it holds outside the range (the reader selects rows). Batches whose spans spread over
   hours (late senders, long spans) are kept whole for any range they touch.
@@ -777,13 +943,23 @@ script were not re-run for this change (no code they target moved).
   accepts only the layout BATCH.md defines up to the time column, with flags and reserved zero; a
   later revision that changes that layout WITHOUT signalling it in the header would get wrong
   bounds and skipped rows (BATCH.md requires the signal, or the shard updated first; the reader
-  list in COMPATIBILITY §3.3 does not name the shard yet: "Needed changes elsewhere"). Tested
+  list in COMPATIBILITY §3.3 does not name the shard yet: "Contract issues" 1). Tested
   against the engine's flush on 150 random batches of the engine's test encoder and 284 of edge's.
   The walk does not check label or attribute contents (empty names, UTF-8): a batch edge never
   builds can get bounds from a layout the strict decoder refuses, which then refuses it at flush.
-- **Rows written and SQLite's reads are measured in local workerd only.** On Cloudflare neither the
-  extra index row per span or log append nor the bytes read to skip are measured (experiment:
-  appends and reads against a deployed shard, rows written from the analytics API).
+- **Rows written, rows read and SQLite's reads are measured in local workerd only.** On Cloudflare
+  neither the extra index row per span or log append, nor the rows a ranged span or log read is
+  billed (2 to 3 per batch considered here, against 1 before D72), nor the bytes read to skip are
+  measured (experiment: appends and reads against a deployed shard, rows written and read from the
+  analytics API).
+- **A span or log read with a time range fails if the index `batch_time` is missing** (it throws:
+  `INDEXED BY` never falls back to the rows). Migration 3 creates it; storage at version 3 without
+  it does not exist by the repository's records (the first build of migration 3 never shipped).
+  Metrics reads no longer depend on it (re-check of D72, r2-m-2).
+- **`configure` now throws where it used to store** (r2-m-3): a caller that passes an unknown
+  field, or a field as `undefined`, is refused whole. No component calls `configure`; the tests of
+  query, stack, edge, flush and janitor that do were run and pass. A stored value the check would
+  refuse is read as the default without a log line.
 - **A tail of many tiny span or log batches is decided about 1 ms per 2,000 batches slower** than
   as first built (the index lookup per batch), while reading a third of the bytes; bounded per call
   by `tailScanMaxBatches` (about 21 ms at most, modelled).
@@ -810,7 +986,94 @@ script were not re-run for this change (no code they target moved).
 - **The registration's round trip from a pooled shard to a ledger elsewhere is not
   measured**: a pooled shard serves tenants whose ledgers may be on another continent.
 
+## Contract issues
+
+Texts in `contracts/` that this component may not edit (AGENTS.md, "Contracts first"). Each is
+the exact text proposed; none changes what the shard does.
+
+1. **`contracts/COMPATIBILITY.md` §3.3 does not name the shard as a reader of the span and log
+   batch layout** (review of D72, m-1; re-check r2-n-1; still open). `BATCH.md` ("The one layout a
+   shard reads") carries the rule and points at §3.3, whose list of readers has no line for it.
+   Add, after the sentence "A new R2 or KV format: every reader (publisher, ledger rebuild, query,
+   janitor, edge) before the writer.":
+
+   > A change to the `VZB1` layout of spans (signal 2) or log records (signal 3) up to the
+   > `start` or `ts` column: every reader of that layout before the writer (edge), and since D72
+   > the shard is one of them, with the engine in flush and in query: at append it walks the entry
+   > table by its length fields and reads that column (`batchTimeBounds`). The one exception is a
+   > change that signals itself in the header (a new magic, a new signal number, or a non-zero
+   > `flags` or `reserved` byte): a shard of this release records no bounds for such a batch and
+   > keeps it by every time range, so it needs no shard release first (`BATCH.md`, "The one layout
+   > a shard reads, and how a later one must say so").
+
+2. **`contracts/BATCH.md`, "Pages": `last` for a read that admits only metric batches** (new with
+   the re-check's r2-m-2). The text says `last` is "`true` when no batch after it, up to
+   `through`, can hold a row the read keeps by its time bounds". A read that admits neither spans
+   nor logs no longer consults bounds, so the shard answers `last: true` for such a read only when
+   the batch is the tail's last (`seq = through`). In a stream that holds one signal, which is
+   every stream edge writes ("Streams per signal"), the two rules give the same answer (no metric
+   batch has bounds); they differ only in a stream mixing signals, where the shard now says
+   `false` ("one may") for a metric batch followed only by span or log batches outside the range.
+   `false` never overstates: a reader treats it as "at least this many bytes". Add after the
+   sentence that ends "`false` when one may.":
+
+   > A read that admits only metric batches (`signals` without 2 and 3) consults no bounds: it
+   > examines every batch above its watermark, as before D72, and its `page_limit` says `last`
+   > only for the tail's last batch.
+
 ## Needed changes elsewhere
+
+### The re-check of D72 (2026-11-26)
+
+Not edited here (only `shard/` is this change's); the exact text for each owner.
+
+1. **`design/DECISIONS.md`, D72, "Cost of it", its sentence on `last`** (r2-n-1). It reads
+   "`last` on `page_limit` is used only once query reads it (`shard/README.md`, "Needed changes
+   elsewhere")." Query reads it. Replace with:
+
+   > `last` on `page_limit` is read by query (`query/src/tail.ts` `readPages`, which sets
+   > `overLast` from it; `query/src/coordinator.ts` keeps it), so a 422 for a tail whose later
+   > batches are all skipped gives the exact size (`query/test/review-r2.test.ts`, "n-1").
+
+2. **`design/DECISIONS.md`, D72, "Cost of it": rows read** (r2-m-2; the lead's decision to keep
+   metrics reads on the statement from before D72 belongs in the entry). Add after the sentence
+   that ends "rows written read from the analytics API).":
+
+   > Rows read are billed too. Deciding from the index costs a ranged read 2 rows per batch it
+   > skips and 3 per batch it keeps, where a read before D72 read 1 per batch (the cursor's
+   > `rowsRead` in local workerd, `shard/test/bounds.recheck.test.ts`: 400 and 599 rows for 200
+   > span batches skipped and kept, against 200; Cloudflare's count and bill are not measured). So
+   > only a read that can skip something pays it: a read with a time range that admits spans or
+   > logs. A read that admits only metric batches, which every metrics query sends, runs the
+   > statement from before D72 and reads 1 row per batch as before (re-check r2-m-2; as first
+   > reviewed every ranged read ran the index statement, which doubled the rows read of every
+   > metrics query: 400 against 200). Modelled at the list price of $0.001 per million rows read
+   > past 25 billion a month: $1 to $2 per billion span or log batches considered by ranged reads.
+
+   in "Would change if", add: "rows read show in the bill (then (c2), the full covering index,
+   which `shard/bench/results/skipread.txt` measured at 1 row read per batch, at the price of a
+   row written on every append);". And in "Decision", replace "A filtered tail read with
+   `minTs`/`maxTs` skips, in its SQL, a batch whose bounds lie wholly outside them" with:
+
+   > A filtered tail read with `minTs`/`maxTs` that admits span or log batches (no `signals`, or
+   > 2 or 3 listed) skips, in its SQL, a batch whose bounds lie wholly outside them
+
+   and add after "A batch with NULL bounds has no entry and is always kept.": "A read that admits
+   only metric batches runs the statement from before D72 and consults no bounds (re-check
+   r2-m-2)."
+3. **`design/REVIEW.md`, the row of `reviews/d72-shard-bounds-r2.md`**: its last cell says "Fix in
+   progress in `shard/`". When this change is committed, replace that sentence with: "Fixed in
+   `shard/`: r2-m-1 the reviewer's two-tenant test adopted, both mutants killed by it (the third,
+   in the look for `last`, is equivalent); r2-m-2 a metrics-only ranged read runs the statement
+   from before D72 (200 rows read for 200 batches, as the release before D72; a span or log read
+   with a range 2 to 3 per batch, measured in local workerd, not on Cloudflare); r2-m-3 `configure`
+   refuses a value that breaks its field's rule and a stored one reads as the default; r2-n-1 and
+   r2-n-2 corrected in `shard/README.md` (the D72 sentence and the COMPATIBILITY §3.3 line are
+   proposed there, not applied)".
+4. **`design/artifact/viz-design.html`, the "Paged tail reads" row** says "The query service does
+   not read it that way yet; that change is in progress". Query reads the tail in pages
+   (`readPages`) and sends each span or log read's time range (D72); the row's owner should say
+   so, or say what remains.
 
 ### Time bounds of span and log batches (D72; review m-3, and the review of D72)
 
@@ -818,23 +1081,11 @@ script were not re-run for this change (no code they target moved).
    nanosecond bound as the shard's time range (`msRange`); the review's query-side findings (m-2,
    de-duplicate after the window; m-3, an empty range reads no tail) are that builder's. The
    proposal that stood here (2026-11-19) is in this file's history.
-2. **`query/`: read `last` from `page_limit`** (review of D72, n-1; not done). In
-   `query/src/tail.ts` `readPages`, where `page_limit` is handled:
-
-   ```ts
-   // The batch that did not fit is the last the read keeps: its bytes complete the read. A shard
-   // before the review of D72 sends no `last`: then only the tail's last batch is known to be.
-   out.overLast = typeof (r as { last?: unknown }).last === 'boolean' ? (r as { last: boolean }).last || r.seq === out.through : out.through !== null && r.seq === out.through
-   ```
-
-   and in `query/src/coordinator.ts` (line 585 at `76e065b`), keep `r.overLast` when a read's
-   `page_limit` set it instead of recomputing it from `through`. Then the 422 says the exact size
-   when every later batch is skipped. Test: a tail whose large kept batch is followed only by
-   batches outside the range: the 422 has no "at least". Release order: none (the field is
-   additive; an older shard sends none and the old rule applies).
-3. **`contracts/COMPATIBILITY.md` §3.3** (not this component's): add the shard to the readers a
-   `VZB1` signal 2 or 3 layout change must update first, unless the change signals itself in the
-   header (BATCH.md, "The one layout a shard reads").
+2. **`query/`: reads `last` from `page_limit`: done by its owner** (review of D72, n-1; found done
+   by the re-check at `afd0deb`: `query/src/tail.ts` `readPages`, `query/src/coordinator.ts`, and
+   the test "n-1" in `query/test/review-r2.test.ts`). The proposal that stood here is in this
+   file's history.
+3. **`contracts/COMPATIBILITY.md` §3.3**: still open; the exact line is "Contract issues" 1.
 
 ### Registration before writes (D61)
 

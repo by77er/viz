@@ -51,9 +51,10 @@ export const SKIPPED_BY_BOUNDS = `EXISTS (SELECT 1 FROM batch AS t INDEXED BY ba
  * bench/skipread.node.mjs (Node) run this very statement.
  *
  * Its cost in rows read (re-check of D72, r2-m-2; measured here in local workerd, the cursor's
- * `rowsRead`, test/bounds.recheck.test.ts; how Cloudflare bills it is not measured): the lookup in
- * `batch_time` is one more row per batch considered, so 2 per batch skipped and 3 per batch kept,
- * where `PLAIN_TAIL_SQL` reads 1 per batch. Hence only reads that can skip something run it.
+ * `rowsRead`, test/bounds.recheck.test.ts; how Cloudflare counts and bills it is not measured): 2
+ * per batch skipped, 3 per batch with bounds that is kept, 2 per batch without bounds (the lookup
+ * in `batch_time` that finds no entry counts too), where `PLAIN_TAIL_SQL` reads 1 per batch. Hence
+ * only reads that can skip something run it.
  */
 export const TIMED_TAIL_SQL = `SELECT b.seq AS seq, b.rows AS rows, b.payload AS payload FROM batch AS b
   WHERE b.tenant = ? AND b.seq BETWEEN ? AND ? AND NOT ${SKIPPED_BY_BOUNDS} ORDER BY b.seq`
