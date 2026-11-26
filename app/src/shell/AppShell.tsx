@@ -1,10 +1,11 @@
 import { useEffect, type ReactNode } from 'react'
-import { Link, Outlet, useNavigate } from '@tanstack/react-router'
+import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import { PromApiError } from '../api/client'
 import { useWaiting } from '../explore/waiting'
 import { installFocusKeeper } from '../lib/focusKeeper'
 import { CommandPalette } from './CommandPalette'
+import { ErrorBoundary } from './ErrorBoundary'
 import { useCommands, useCommandsContext } from './commands'
 import { useSession } from './session'
 import { SignIn } from './SignIn'
@@ -60,6 +61,8 @@ export function RequireKey({ children }: { children: ReactNode }) {
 
 export function AppShell() {
   const navigate = useNavigate()
+  // The page the outlet is showing (the match it renders, which follows the address a moment later): a page that stopped is left behind with it.
+  const page = useRouterState({ select: (s) => s.matches[s.matches.length - 1]?.id ?? '' })
   const { setPref } = useTheme()
   const { session, signOut } = useSession()
   const { setPaletteOpen } = useCommandsContext()
@@ -138,7 +141,10 @@ export function AppShell() {
       )}
 
       <main id="main">
-        <Outlet />
+        {/* Something that throws in a page (the chart's script on a result it cannot draw) shows what happened, not an empty document. */}
+        <ErrorBoundary resetKey={page}>
+          <Outlet />
+        </ErrorBoundary>
       </main>
 
       <CommandPalette />

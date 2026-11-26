@@ -1,0 +1,69 @@
+Mutants of the move to design system v9 (e2e/mutants.cjs), applied to a copy in the session's scratch area.
+2026-11-26T22:31:36.150Z
+
+KILLED    sign-in: the key is kept in localStorage
+            checks run: signin; caught by 1: e2e: the key is kept in sessionStorage only: not in localStorage, a cookie, the address or the page
+KILLED    sign-in: the key field has a name and the form is a GET
+            checks run: signin; caught by 1: e2e: the key field is masked and has no name, and the form posts: a key cannot reach an address even without script
+KILLED    sign-in: the token an earlier version left in localStorage stays
+            checks run: signin; caught by 1: e2e: a token an earlier version of the app left in localStorage is removed on start, and never sent
+KILLED    sign-in: Explore is shown without a key
+            checks run: signin; caught by 1: e2e: the run stopped (page.waitForSelector: Timeout 30000ms exceeded.)
+KILLED    sign-in: a refused key stays in the tab
+            checks run: signin; caught by 1: e2e: a key the API no longer accepts is removed from the tab, and the form says so
+KILLED    sign-in: Sign out leaves the key in the tab
+            checks run: signin; caught by 1: e2e: the run stopped (page.waitForFunction: Timeout 30000ms exceeded.)
+KILLED    time: the chart reads UTC in every zone (no shift)
+            checks run: zone; caught by 1: e2e: in New York the axis, the head, the fields and the text form all read local time, and the zone is stated once
+KILLED    chart: a gap is 0, not a break in the line
+            checks run: unit, chart; caught by 2: unit: a gap, NaN and an infinity are null: the chart breaks the line there | e2e: missing samples are drawn as a gap: the line is broken, not joined
+KILLED    chart: a series with no labels has no name
+            checks run: unit, chart; caught by 2: unit: a series with no labels is named by the query it is the value of | e2e: a series with no labels is named by the query it is the value of, and its row has an accessible name
+KILLED    text form: the step stays "every 0.25 min, instant"
+            checks run: unit, flow; caught by 4: unit: a step is said as it is, not as a fraction of a minute, and a range query has no aggregate | unit: a result with no unit leaves no empty place for one | e2e: text form: the chart's own sentences, titled with the result's query, the step said as it is | e2e: a link to the text form opens it with its sentences, though the chart was never shown
+KILLED    chart: a result with no unit keeps "Last, "
+            checks run: chart; caught by 1: e2e: a result with no unit leaves no empty place for one: "Last", the chart's name and the text form read whole
+KILLED    legend: a row is named by its label set only, not the words it shows
+            checks run: unit, axe; caught by 3: unit: a legend row is named by the words it shows, then its full label set | e2e: axe (chart, 36 series, light): no serious/critical violations | e2e: axe (chart, 36 series, dark): no serious/critical violations
+KILLED    B1: the panel names the query that is waiting, not the one drawn
+            checks run: b1; caught by 2: e2e: B1 waiting: the unit, the legend head, the chart's name, the query line, the unit select and the text form still describ | e2e: B1 cancelled: the labels and the note stay; the line says the previous result is shown
+KILLED    B1: the head does not say "Showing the previous query"
+            checks run: unit, b1; caught by 4: unit: says plainly when the result is not the answer to the current request | e2e: B1 waiting: the head says "Showing the previous query", then the range and age of what is drawn | e2e: B1 cancelled: the labels and the note stay; the line says the previous result is shown | e2e: B1 after an error: the message lies over the plot; the legend keeps the previous figures and unit, inert; the head says 
+KILLED    B1: after an error nothing of the result that was drawn is kept
+            checks run: b1; caught by 1: e2e: the run stopped (page.waitForSelector: Timeout 30000ms exceeded.)
+KILLED    B1: the chart is not told of the error (the plot stays as if current)
+            checks run: b1; caught by 1: e2e: the run stopped (page.waitForSelector: Timeout 30000ms exceeded.)
+KILLED    nothing reserved for the query line: the chart moves when a result lands
+            checks run: shift; caught by 1: e2e: a first visit to a result shifts nothing (layout shift under 0.005; the budget is 0.05)
+KILLED    the chart's height is not remembered for the next load
+            checks run: shift; caught by 1: e2e: a reload reserves the chart's height from its last result before the data arrives, to the pixel, and shows the waiting l
+KILLED    "Query the chart's range" is always offered
+            checks run: zoom; caught by 1: e2e: "Query the chart's range" is offered only while the chart is zoomed, in a place kept for it, so nothing moves
+KILLED    a zoom on the chart is not noticed
+            checks run: zoom; caught by 1: e2e: "Query the chart's range" is offered only while the chart is zoomed, in a place kept for it, so nothing moves
+KILLED    the waiting line is shown after 100 ms
+            checks run: waiting; caught by 3: e2e: a 150 ms wait shows no waiting line; Run query is busy meanwhile | e2e: an 800 ms wait shows the line only after 400 ms | e2e: an 800 ms wait: the line stays until the answer
+KILLED    the waiting line is not held for 300 ms
+            checks run: waiting; caught by 1: e2e: a line that was shown is kept at least 300 ms, also when the answer comes 80 ms after it appeared
+KILLED    a second press while the query runs sends it again
+            checks run: waiting; caught by 1: e2e: a second press while the query runs is ignored: one request was sent
+KILLED    Cancel does not abort the request
+            checks run: waiting; caught by 1: e2e: Cancel is offered from 2 s and aborts the request
+KILLED    B2: the editor keeps its own type size in the touch-height well
+            checks run: touch; caught by 1: e2e: B2: with a coarse pointer the query well is 44 px tall with body-size text, as the system sets a text input
+KILLED    a literal colour in the app's CSS
+            checks run: colour; caught by 1: e2e: light: no computed colour outside the tokens, in every state (text, fills, borders, outlines, SVG paint, shadows)
+KILLED    a second blue button in Explore (Show earlier)
+            checks run: colour; caught by 2: e2e: light: at most one blue button in every view (14 states) | e2e: dark: at most one blue button in every view (14 states)
+KILLED    no focus ring on the query editor
+            checks run: keyboard; caught by 1: e2e: keyboard: the ring is drawn at every stop, and focus never falls to the document
+KILLED    the palette's field has no visible label
+            checks run: keyboard; caught by 1: e2e: m10: the command palette's field has a visible label, and takes the focus
+KILLED    a page in which something throws is left empty
+            checks run: flow; caught by 1: e2e: the run stopped (page.waitForSelector: Timeout 30000ms exceeded.)
+KILLED    an empty page box stands while the API is asked who the key is (the banner then moves it)
+            checks run: shift; caught by 1: e2e: a first visit to a result shifts nothing (layout shift under 0.005; the budget is 0.05)
+KILLED    the theme is applied by an inline script
+            checks run: prod; caught by 2: prod: index.html has no inline script and no inline style | prod: under the policy: no content security policy violation, no console error, no uncaught error
+
+32 of 32 killed, 0 survived, 0 not applied

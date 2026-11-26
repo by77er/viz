@@ -88,7 +88,8 @@ export interface SpecInput {
 }
 
 export function toSpec({ data, start, step, unit, query, shiftMs }: SpecInput): { spec: ChartSpec; unit: ChartUnit } {
-  const u = chartUnit(unit, largest(data))
+  // Only bytes per second are scaled by size here (the chart scales bytes and seconds itself): no pass over the values for the others.
+  const u = chartUnit(unit, unit === 'bytes/s' ? largest(data) : 0)
   const series: SpecSeries[] = data.series.map((s) => {
     const src = s.values
     const values = new Array<number | null>(src.length)

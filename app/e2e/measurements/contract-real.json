@@ -1,5 +1,5 @@
 {
-  "when": "2026-11-26T19:57:22.717Z",
+  "when": "2026-11-26T22:36:32.914Z",
   "real": "real/stack.mjs (wrangler dev --local: deploy/gateway, stack, query, control)",
   "cases": [
     {
@@ -122,7 +122,7 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "4784",
         "x-viz-cache-hits": "1",
-        "x-viz-engine-ms": "6",
+        "x-viz-engine-ms": "17",
         "x-viz-execution": "single",
         "x-viz-files-listed": "2",
         "x-viz-files-read": "1",
@@ -154,7 +154,7 @@
         "x-viz-tail-batches": "17",
         "x-viz-tail-bytes": "5251136",
         "x-viz-tail-mode": "filtered",
-        "x-viz-wasm-memory-bytes": "18939904"
+        "x-viz-wasm-memory-bytes": "11206656"
       },
       "body": "{\"status\":\"success\",\"data\":[\"__name__\",\"instance\",\"job\",\"le\",\"node\",\"pod\",\"route\",\"service\",\"status\"]}"
     },
@@ -174,7 +174,7 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "4784",
         "x-viz-cache-hits": "1",
-        "x-viz-engine-ms": "0",
+        "x-viz-engine-ms": "1",
         "x-viz-execution": "single",
         "x-viz-files-listed": "2",
         "x-viz-files-read": "1",
@@ -206,7 +206,7 @@
         "x-viz-tail-batches": "8",
         "x-viz-tail-bytes": "105880",
         "x-viz-tail-mode": "filtered",
-        "x-viz-wasm-memory-bytes": "18939904"
+        "x-viz-wasm-memory-bytes": "11206656"
       },
       "body": "{\"status\":\"success\",\"data\":[\"__name__\",\"instance\",\"job\",\"service\"]}"
     },
@@ -226,7 +226,7 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "4784",
         "x-viz-cache-hits": "1",
-        "x-viz-engine-ms": "2",
+        "x-viz-engine-ms": "4",
         "x-viz-execution": "single",
         "x-viz-files-listed": "2",
         "x-viz-files-read": "1",
@@ -258,7 +258,7 @@
         "x-viz-tail-batches": "8",
         "x-viz-tail-bytes": "1880120",
         "x-viz-tail-mode": "filtered",
-        "x-viz-wasm-memory-bytes": "18939904"
+        "x-viz-wasm-memory-bytes": "11206656"
       },
       "body": "{\"status\":\"success\",\"data\":[\"http_request_duration_seconds_bucket\",\"http_request_duration_seconds_count\",\"http_request_duration_seconds_sum\",\"http_requests_total\",\"pod_cpu_usage_cores\",\"pod_memory_working_set_bytes\",\"up\",\"viz_synthetic_series\"]}"
     },
@@ -310,7 +310,7 @@
         "x-viz-tail-batches": "0",
         "x-viz-tail-bytes": "0",
         "x-viz-tail-mode": "filtered",
-        "x-viz-wasm-memory-bytes": "18939904"
+        "x-viz-wasm-memory-bytes": "11206656"
       },
       "body": "{\"status\":\"success\",\"data\":[]}"
     },
@@ -362,7 +362,7 @@
         "x-viz-tail-batches": "8",
         "x-viz-tail-bytes": "105880",
         "x-viz-tail-mode": "filtered",
-        "x-viz-wasm-memory-bytes": "18939904"
+        "x-viz-wasm-memory-bytes": "11206656"
       },
       "body": "{\"status\":\"success\",\"data\":[\"auth\",\"catalog\",\"checkout\",\"orders\"]}"
     },
@@ -382,7 +382,7 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "4784",
         "x-viz-cache-hits": "1",
-        "x-viz-engine-ms": "0",
+        "x-viz-engine-ms": "1",
         "x-viz-execution": "single",
         "x-viz-files-listed": "2",
         "x-viz-files-read": "1",
@@ -414,7 +414,7 @@
         "x-viz-tail-batches": "7",
         "x-viz-tail-bytes": "45168",
         "x-viz-tail-mode": "filtered",
-        "x-viz-wasm-memory-bytes": "18939904"
+        "x-viz-wasm-memory-bytes": "11206656"
       },
       "body": "{\"status\":\"success\",\"data\":[{\"__name__\":\"up\",\"instance\":\"auth-5f8a1-k7rwd\",\"job\":\"kubelet\",\"service\":\"auth\"},{\"__name__\":\"up\",\"instance\":\"auth-5f8a1-q9xgc\",\"job\":\"kubelet\",\"service\":\"auth\"},{\"__name__\":\"up\",\"instance\":\"auth-5f8a1-t2vbm\",\"job\":\"kubelet\",\"service\":\"auth\"}]}"
     },
@@ -570,7 +570,7 @@
         "x-viz-tail-batches": "8",
         "x-viz-tail-bytes": "561536",
         "x-viz-tail-mode": "filtered",
-        "x-viz-wasm-memory-bytes": "18939904"
+        "x-viz-wasm-memory-bytes": "11206656"
       },
       "body": "{\"status\":\"success\",\"data\":{\"resultType\":\"matrix\",\"result\":[{\"metric\":{\"service\":\"auth\"},\"values\":[[1794994200,\"117.259649122807\"],[1794994260,\"121.64912280701752\"],[1794994320,\"122.55087719298244\"],[1794994380,\"123.84210526315789\"],[1794994440,\"124.26315789473684\"],[1794994500,\"121.99999999999999\"],[1794994560,\"119.49122807017542\"],[1794994620,\"122.74035087719297\"],[1794994680,\"125.42105263157893\"],[1794994740,\"127.87368421052629\"],[1794994800,\"130.61052631578946\"],[1794994860,\"134.45614035087718\"],[1794994920,\"134.1614035087719\"],[1794994980,\"133.08070175438596\"],[1794995040,\"132.69824561403507\"],[1794995100,\"136.7157894736842\"],[1794995160,\"136.1438596491228\"],[1794995220,\"141.08070175438596\"],[1794995280,\"145.4035087719298\"],[1794995340,\"145.66666666666666\"],[1794995400,\"144.4315789473684\"],[1794995460,\"144.03508771929822\"],[1794995520,\"142.16842105263157\"],[1794995580,\"140.89824561403506\"],[1794995640,\"144.68070175438595\"],[1794995700,\"149.2877192982456\"],[1794995760,\"154.77894736842103\"],[1794995820,\"157.77192982456137\"],[1794995880,\"158.3754385964912\"],[1794995940,\"156.6912280701754\"],[1794996000,\"152.22807017543857\"],[1794996060,\"147.21403508771928\"],[1794996120,\"147.91228070175436\"],[1794996180,\"150.09473684210525\"],[1794996240,\"154.25964912280702\"],[1794996300,\"156.6421052631579\"],[1794996360,\"159.44912280701755\"],[1794996420,\"157.38947368421051\"],[1794996480,\"152.17192982456137\"],[1794996540,\"149.97543859649122\"],[1794996600,\"146.2736842105263\"],[1794996660,\"145.62456140350875\"],[1794996720,\"146.52631578947367\"],[1794996780,\"147.8771929824561\"],[1794996840,\"145.1859649122807\"],[1794996900,\"142.63508771929824\"],[1794996960,\"141.0280701754386\"],[1794997020,\"135.9438596491228\"],[1794997080,\"133.82456140350874\"],[1794997140,\"133.17894736842103\"],[1794997200,\"136.2771929824561\"],[1794997260,\"134.35438596491227\"],[1794997320,\"136.84912280701752\"],[1794997380,\"134.39649122807015\"],[1794997440,\"133.02456140350876\"],[1794997500,\"129.3298245614035\"],[1794997560,\"12… (24319 bytes)"
     },
@@ -590,7 +590,7 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "0",
         "x-viz-cache-hits": "0",
-        "x-viz-engine-ms": "3",
+        "x-viz-engine-ms": "5",
         "x-viz-execution": "single",
         "x-viz-files-listed": "2",
         "x-viz-files-read": "0",
@@ -622,7 +622,7 @@
         "x-viz-tail-batches": "3",
         "x-viz-tail-bytes": "111576",
         "x-viz-tail-mode": "filtered",
-        "x-viz-wasm-memory-bytes": "18939904"
+        "x-viz-wasm-memory-bytes": "11206656"
       },
       "body": "{\"status\":\"success\",\"data\":{\"resultType\":\"matrix\",\"result\":[{\"metric\":{\"route\":\"/cart\",\"service\":\"checkout\",\"status\":\"200\"},\"values\":[[1794994200,\"54.63157894736842\"],[1794994215,\"54.964912280701746\"],[1794994230,\"55.133333333333326\"],[1794994245,\"54.614035087719294\"],[1794994260,\"54.39649122807017\"],[1794994275,\"53.91578947368421\"],[1794994290,\"52.98947368421052\"],[1794994305,\"52.533333333333324\"],[1794994320,\"52.108771929824556\"],[1794994335,\"52.3859649122807\"],[1794994350,\"52.277192982456135\"],[1794994365,\"51.47368421052631\"],[1794994380,\"51.743859649122804\"],[1794994395,\"51.51929824561403\"],[1794994410,\"51.926315789473676\"],[1794994425,\"52.39999999999999\"],[1794994440,\"52.21754385964912\"],[1794994455,\"52.18947368421052\"],[1794994470,\"52.46315789473684\"],[1794994485,\"52.536842105263155\"],[1794994500,\"52.80350877192982\"],[1794994515,\"53.080701754385956\"],[1794994530,\"52.98947368421052\"],[1794994545,\"52.873684210526314\"],[1794994560,\"53.017543859649116\"],[1794994575,\"53.68070175438596\"],[1794994590,\"53.63508771929824\"],[1794994605,\"53.873684210526314\"],[1794994620,\"53.740350877192974\"],[1794994635,\"53.89824561403508\"],[1794994650,\"54.09122807017543\"],[1794994665,\"53.561403508771924\"],[1794994680,\"53.88771929824561\"],[1794994695,\"53.55438596491228\"],[1794994710,\"53.08771929824561\"],[1794994725,\"53.084210526315786\"],[1794994740,\"52.7719298245614\"],[1794994755,\"52.8\"],[1794994770,\"52.50175438596491\"],[1794994785,\"52.10175438596491\"],[1794994800,\"51.20350877192982\"],[1794994815,\"51.1298245614035\"],[1794994830,\"51.07368421052631\"],[1794994845,\"51.28070175438596\"],[1794994860,\"50.88070175438596\"],[1794994875,\"51.214035087719296\"],[1794994890,\"51.329824561403505\"],[1794994905,\"51.41403508771929\"],[1794994920,\"51.08771929824561\"],[1794994935,\"51.22807017543859\"],[1794994950,\"51.094736842105256\"],[1794994965,\"50.72280701754386\"],[1794994980,\"50.72631578947368\"],[1794994995,\"50.7859649122807\"],[1794995010,\"51.08070175438596\"],[1794995025,\"51.31929824561403\"],[1794995040,\"50.… (150563 bytes)"
     },
@@ -641,8 +641,8 @@
         "content-type": "application/json",
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "1331315",
-        "x-viz-cache-hits": "2",
-        "x-viz-engine-ms": "80",
+        "x-viz-cache-hits": "1",
+        "x-viz-engine-ms": "69",
         "x-viz-execution": "single",
         "x-viz-files-listed": "2",
         "x-viz-files-read": "2",
@@ -656,7 +656,7 @@
         "x-viz-ledger-version": "3",
         "x-viz-plan-attempts": "1",
         "x-viz-pruning": "fragments",
-        "x-viz-r2-gets": "0",
+        "x-viz-r2-gets": "1",
         "x-viz-reader-calls": "0",
         "x-viz-route": "query",
         "x-viz-rows-decoded": "0",
@@ -694,7 +694,7 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "0",
         "x-viz-cache-hits": "0",
-        "x-viz-engine-ms": "2",
+        "x-viz-engine-ms": "3",
         "x-viz-execution": "single",
         "x-viz-files-listed": "2",
         "x-viz-files-read": "0",
@@ -746,7 +746,7 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "0",
         "x-viz-cache-hits": "0",
-        "x-viz-engine-ms": "0",
+        "x-viz-engine-ms": "1",
         "x-viz-execution": "single",
         "x-viz-files-listed": "2",
         "x-viz-files-read": "0",
@@ -798,7 +798,7 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "0",
         "x-viz-cache-hits": "0",
-        "x-viz-engine-ms": "0",
+        "x-viz-engine-ms": "1",
         "x-viz-execution": "single",
         "x-viz-files-listed": "2",
         "x-viz-files-read": "0",
@@ -855,12 +855,12 @@
         "x-viz-files-listed": "2",
         "x-viz-files-read": "2",
         "x-viz-files-skipped": "0",
-        "x-viz-leaf-calls": "3",
+        "x-viz-leaf-calls": "2",
         "x-viz-leaf-max-samples": "0",
         "x-viz-leaf-peak-wasm-bytes": "0",
         "x-viz-leaf-reruns": "0",
         "x-viz-leaf-rounds": "1",
-        "x-viz-leaves-used": "3",
+        "x-viz-leaves-used": "2",
         "x-viz-ledger-version": "3",
         "x-viz-plan-attempts": "1",
         "x-viz-pruning": "fragments",
@@ -1006,17 +1006,17 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "606315",
         "x-viz-cache-hits": "3",
-        "x-viz-engine-ms": "2",
+        "x-viz-engine-ms": "1",
         "x-viz-execution": "single",
         "x-viz-files-listed": "2",
         "x-viz-files-read": "2",
         "x-viz-files-skipped": "0",
-        "x-viz-leaf-calls": "3",
+        "x-viz-leaf-calls": "2",
         "x-viz-leaf-max-samples": "0",
         "x-viz-leaf-peak-wasm-bytes": "0",
         "x-viz-leaf-reruns": "0",
         "x-viz-leaf-rounds": "1",
-        "x-viz-leaves-used": "3",
+        "x-viz-leaves-used": "2",
         "x-viz-ledger-version": "3",
         "x-viz-plan-attempts": "1",
         "x-viz-pruning": "fragments",
@@ -1115,12 +1115,12 @@
         "x-viz-files-listed": "2",
         "x-viz-files-read": "2",
         "x-viz-files-skipped": "0",
-        "x-viz-leaf-calls": "3",
+        "x-viz-leaf-calls": "2",
         "x-viz-leaf-max-samples": "0",
         "x-viz-leaf-peak-wasm-bytes": "0",
         "x-viz-leaf-reruns": "0",
         "x-viz-leaf-rounds": "1",
-        "x-viz-leaves-used": "3",
+        "x-viz-leaves-used": "2",
         "x-viz-ledger-version": "3",
         "x-viz-plan-attempts": "1",
         "x-viz-pruning": "fragments",
@@ -1162,17 +1162,17 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "606315",
         "x-viz-cache-hits": "3",
-        "x-viz-engine-ms": "2",
+        "x-viz-engine-ms": "1",
         "x-viz-execution": "single",
         "x-viz-files-listed": "2",
         "x-viz-files-read": "2",
         "x-viz-files-skipped": "0",
-        "x-viz-leaf-calls": "2",
+        "x-viz-leaf-calls": "3",
         "x-viz-leaf-max-samples": "0",
         "x-viz-leaf-peak-wasm-bytes": "0",
         "x-viz-leaf-reruns": "0",
         "x-viz-leaf-rounds": "1",
-        "x-viz-leaves-used": "2",
+        "x-viz-leaves-used": "3",
         "x-viz-ledger-version": "3",
         "x-viz-plan-attempts": "1",
         "x-viz-pruning": "fragments",
@@ -1266,7 +1266,7 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "606315",
         "x-viz-cache-hits": "3",
-        "x-viz-engine-ms": "6",
+        "x-viz-engine-ms": "10",
         "x-viz-execution": "single",
         "x-viz-files-listed": "2",
         "x-viz-files-read": "2",
@@ -1318,7 +1318,7 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "0",
         "x-viz-cache-hits": "0",
-        "x-viz-engine-ms": "4",
+        "x-viz-engine-ms": "2",
         "x-viz-execution": "single",
         "x-viz-files-listed": "0",
         "x-viz-files-read": "0",
@@ -1422,7 +1422,7 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "0",
         "x-viz-cache-hits": "0",
-        "x-viz-engine-ms": "1",
+        "x-viz-engine-ms": "0",
         "x-viz-execution": "single",
         "x-viz-files-listed": "0",
         "x-viz-files-read": "0",
@@ -1635,12 +1635,12 @@
         "x-viz-files-listed": "2",
         "x-viz-files-read": "2",
         "x-viz-files-skipped": "0",
-        "x-viz-leaf-calls": "3",
+        "x-viz-leaf-calls": "2",
         "x-viz-leaf-max-samples": "0",
         "x-viz-leaf-peak-wasm-bytes": "0",
         "x-viz-leaf-reruns": "0",
         "x-viz-leaf-rounds": "1",
-        "x-viz-leaves-used": "3",
+        "x-viz-leaves-used": "2",
         "x-viz-ledger-version": "3",
         "x-viz-plan-attempts": "1",
         "x-viz-pruning": "fragments",
@@ -2306,17 +2306,17 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "606315",
         "x-viz-cache-hits": "3",
-        "x-viz-engine-ms": "1",
+        "x-viz-engine-ms": "2",
         "x-viz-execution": "single",
         "x-viz-files-listed": "2",
         "x-viz-files-read": "2",
         "x-viz-files-skipped": "0",
-        "x-viz-leaf-calls": "2",
+        "x-viz-leaf-calls": "3",
         "x-viz-leaf-max-samples": "0",
         "x-viz-leaf-peak-wasm-bytes": "0",
         "x-viz-leaf-reruns": "0",
         "x-viz-leaf-rounds": "1",
-        "x-viz-leaves-used": "2",
+        "x-viz-leaves-used": "3",
         "x-viz-ledger-version": "3",
         "x-viz-plan-attempts": "1",
         "x-viz-pruning": "fragments",
@@ -2548,7 +2548,7 @@
         "x-viz-tail-mode": "",
         "x-viz-wasm-memory-bytes": "18939904"
       },
-      "body": "{\"status\":\"success\",\"data\":{\"resultType\":\"scalar\",\"result\":[1795723012.334,\"1\"]}}"
+      "body": "{\"status\":\"success\",\"data\":{\"resultType\":\"scalar\",\"result\":[1795732565.61,\"1\"]}}"
     },
     {
       "name": "no key",
@@ -2782,7 +2782,7 @@
         "x-viz-tail-mode": "",
         "x-viz-wasm-memory-bytes": "18939904"
       },
-      "body": "{\"status\":\"success\",\"data\":{\"resultType\":\"scalar\",\"result\":[1795723012.411,\"1\"]}}"
+      "body": "{\"status\":\"success\",\"data\":{\"resultType\":\"scalar\",\"result\":[1795732565.673,\"1\"]}}"
     },
     {
       "name": "an unreadable limits record (real), /__mock/fail?kind=config (mock)",

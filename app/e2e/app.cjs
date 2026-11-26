@@ -187,6 +187,19 @@ async function main() {
       await ready(page)
       check('an example link runs its query', new URL(page.url()).searchParams.get('q') === Q_RATE)
       await ctx.close()
+
+      // Something in a page throws (here: the chart's script, replaced by one that fails): the page says so; it is not left empty.
+      const broken = await newPage()
+      pageErrors.length = 0
+      await broken.ctx.addInitScript(() => { window.vzChart = () => { throw new Error('the chart could not draw this') } })
+      await broken.page.goto(url(Q_RATE))
+      await broken.page.waitForSelector('[data-testid=page-error]')
+      const stopped = await broken.page.evaluate(() => ({ text: document.querySelector('[data-testid=page-error]').textContent.replace(/\s+/g, ' '), nav: !!document.querySelector('.vz-nav a[href="/help"]'), button: document.querySelector('[data-testid=page-error] button').textContent }))
+      await broken.page.click('.vz-nav a[href="/help"]')
+      await broken.page.waitForSelector('h1')
+      check('a page in which something throws says what happened and offers to load it again; the navigation stays, and another page works', stopped.text.includes('This page stopped working') && stopped.text.includes('the chart could not draw this') && stopped.nav && stopped.button === 'Load the page again' && (await text(broken.page, 'h1')) === 'Help', JSON.stringify(stopped))
+      pageErrors.length = 0 // that error was the test's own
+      await broken.ctx.close()
     }
 
     // ------------------------------------------------ colour, both themes, every state
@@ -327,7 +340,15 @@ async function main() {
       await page.waitForSelector('[data-testid=progress]', { state: 'detached' })
       const w = await page.evaluate(() => window.__wait)
       check('an 800 ms wait shows the line only after 400 ms', w.shown - w.press >= 395 && w.shown - w.press < 700, `${Math.round(w.shown - w.press)} ms`)
-      check('a line that was shown is kept at least 300 ms', w.gone - w.shown >= 295, `${Math.round(w.gone - w.shown)} ms`)
+      check('an 800 ms wait: the line stays until the answer', w.gone - w.shown >= 295, `${Math.round(w.gone - w.shown)} ms`)
+      // 480 ms: the answer comes just after the line appeared; the line is kept 300 ms all the same, so it never flashes.
+      await setMockDelay(480)
+      await page.evaluate(() => Object.assign(window.__wait, { press: 0, shown: 0, gone: 0 }))
+      await page.click('[data-testid=run]')
+      await page.waitForFunction(() => document.querySelector('[data-testid=run]').getAttribute('aria-busy') === 'false')
+      await page.waitForFunction(() => window.__wait.shown === 0 || window.__wait.gone > 0, null, { timeout: 5000 })
+      const brief = await page.evaluate(() => window.__wait)
+      check('a line that was shown is kept at least 300 ms, also when the answer comes 80 ms after it appeared', brief.shown > 0 && brief.gone - brief.shown >= 295, `shown ${Math.round(brief.shown - brief.press)} ms after the press, kept ${Math.round(brief.gone - brief.shown)} ms`)
       // 3 s: Cancel from 2 s, which aborts the request.
       await setMockDelay(3000)
       const aborted = []
@@ -512,7 +533,7 @@ async function main() {
       // The command palette (m10).
       await page.keyboard.press('Control+k')
       await page.waitForSelector('dialog.palette[open]')
-      const palette = await page.evaluate(() => ({ label: document.querySelector('dialog.palette .vz-label')?.textContent, visible: document.querySelector('dialog.palette .vz-label')?.getClientRects().length > 0, focus: document.activeElement.getAttribute('data-testid') }))
+      const palette = await page.evaluate(() => ({ label: document.querySelector('dialog.palette .vz-label')?.textContent, visible: (() => { const r = document.querySelector('dialog.palette .vz-label')?.getBoundingClientRect(); return !!r && r.width > 8 && r.height > 8 })(), focus: document.activeElement.getAttribute('data-testid') }))
       check('m10: the command palette\'s field has a visible label, and takes the focus', palette.label === 'Command' && palette.visible && palette.focus === 'palette-input', JSON.stringify(palette))
       await page.keyboard.type('text form')
       await page.keyboard.press('Enter')
@@ -635,7 +656,7 @@ async function main() {
       await sleep(600)
       const drawn = await page.evaluate(() => ({ h: document.querySelector('[data-testid=chart]').getBoundingClientRect().height, shift: window.__shift }))
       await setMockDelay(0)
-      check('a first visit to a result shifts nothing (layout shift under 0.05)', first < 0.05, first.toFixed(4))
+      check('a first visit to a result shifts nothing (layout shift under 0.005; the budget is 0.05)', first < 0.005, first.toFixed(4))
       check('a reload reserves the chart\'s height from its last result before the data arrives, to the pixel, and shows the waiting line over it', /--legend-rows:\s*10/.test(reserved.style) && Math.abs(reserved.h - drawn.h) < 1 && drawn.shift < 0.05, JSON.stringify([reserved, drawn]))
       await ctx.close()
     }

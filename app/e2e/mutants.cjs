@@ -99,9 +99,11 @@ const LIST = [
   m('Cancel does not abort the request', ['waiting'], 'src/explore/ExplorePage.tsx', 'void queryClient.cancelQueries({ queryKey: keyRef.current })', 'void 0'),
   m('B2: the editor keeps its own type size in the touch-height well', ['touch'], 'src/editor/PromqlEditor.tsx', "'.cm-content': { padding: '0', caretColor: 'var(--ink)', font: 'inherit' },", "'.cm-content': { padding: '0', caretColor: 'var(--ink)', font: 'var(--text-code)' },"),
   m('a literal colour in the app\'s CSS', ['colour'], 'src/app.css', '.palette-none { padding: var(--space-2); color: var(--ink-secondary); }', '.palette-none { padding: var(--space-2); color: var(--ink-secondary); }\n.vz-page-title { color: #333333; }'),
-  m('a second blue button (Sign out)', ['colour'], 'src/shell/SettingsPage.tsx', '<button className="vz-button" onClick={() => signOut(\'left\')} data-testid="sign-out">\n                  Sign out', '<button className="vz-button" data-tone="blue" onClick={() => signOut(\'left\')} data-testid="sign-out">\n                  Sign out'),
+  m('a second blue button in Explore (Show earlier)', ['colour'], 'src/explore/TimeRangeField.tsx', '<button className="vz-button" data-size="sm" onClick={() => shift(-1)}', '<button className="vz-button" data-size="sm" data-tone="blue" onClick={() => shift(-1)}'),
   m('no focus ring on the query editor', ['keyboard'], 'src/app.css', '.query-well:focus-within { outline: var(--stroke) solid var(--focus); outline-offset: var(--stroke); }', ''),
   m('the palette\'s field has no visible label', ['keyboard'], 'src/shell/CommandPalette.tsx', '<span className="vz-label">Command</span>', '<span className="vz-label vz-sr">Command</span>'),
+  m('a page in which something throws is left empty', ['flow'], 'src/shell/ErrorBoundary.tsx', 'if (!error) return this.props.children\n    return (', 'if (!error) return this.props.children\n    if (error) return null\n    return ('),
+  m('an empty page box stands while the API is asked who the key is (the banner then moves it)', ['shift'], 'src/shell/AppShell.tsx', 'if (!wait.shown) return null', 'if (!wait.shown) return <div className="vz-page" />'),
   // ---- what the gateway serves
   m('serve.json: /settings is not a document (a reload there would be a 404)', U, 'serve.json', '"documents": ["/", "/explore", "/help", "/settings"]', '"documents": ["/", "/explore", "/help"]'),
   m('serve.json: the policy allows inline scripts', U, 'serve.json', "script-src 'self';", "script-src 'self' 'unsafe-inline';"),

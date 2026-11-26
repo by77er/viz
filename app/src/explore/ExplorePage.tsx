@@ -269,10 +269,16 @@ export function ExplorePage() {
   )
   const [shownRange, setShownRange] = useState<ShownRange | null>(null)
 
+  // ---- keyboard & commands
+  // The form of the result is local: it changes in this render and the URL follows.
+  const [view, setViewState] = useState<ResultView>(search.view)
+
   // ---- the table: the latest value of each series, in the chart's unit and number format.
-  const naming = useMemo(() => nameSeries((aligned?.series ?? []).map((s) => s.labels)), [aligned])
+  // Prepared when the table is the form shown, not with every result: the names and the
+  // statistics of 200 series are 10 ms at 4x CPU that the chart's first paint does not need.
   const table = useMemo(() => {
-    if (!aligned || !chart) return null
+    if (view !== 'table' || !aligned || !chart) return null
+    const naming = nameSeries(aligned.series.map((s) => s.labels))
     const stats = aligned.series.map((s) => seriesStats(aligned.xs, s.values))
     let lo = 0
     let hi = 0
@@ -291,13 +297,10 @@ export function ExplorePage() {
       common = {}
     }
     return { rows, unit: format.unit, columns, common }
-  }, [aligned, chart, naming])
+  }, [view, aligned, chart])
 
   const onRange = useCallback((from: string, to: string) => setSearch({ from, to }), [setSearch])
 
-  // ---- keyboard & commands
-  // The form of the result is local: it changes in this render and the URL follows.
-  const [view, setViewState] = useState<ResultView>(search.view)
   /** The form last chosen here whose URL update is still on its way; the URL must not undo it. */
   const pushedView = useRef<ResultView | null>(null)
   useEffect(() => {
