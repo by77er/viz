@@ -400,7 +400,9 @@ under D48 when a filter kept nothing). A skipped batch is not examined: it count
 as before; the time range is part of the filter a cursor is bound to. A `page_limit` names only
 a batch the read keeps, and carries **`last`** (added with this revision): `true` when no batch
 after it, up to `through`, can hold a row the read keeps by its time bounds, so that its `bytes`
-plus what the read holds is the whole answer; `false` when one may. A shard of an earlier release
+plus what the read holds is the whole answer; `false` when one may. A read that admits only metric batches
+(`signals` without 2 and 3) consults no bounds: it examines every batch above its watermark, as
+before D72, and its `page_limit` says `last` only for the tail's last batch. A shard of an earlier release
 sends no `last` (read it as unknown).
 
 **What a caller passes.** A reader that needs every span starting (or record stamped) in the
