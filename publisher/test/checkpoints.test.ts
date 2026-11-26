@@ -39,6 +39,8 @@ import {
   pairUnit,
   publisher,
   putObjects,
+  opsOf,
+  publishSettled,
   type LedgerStub,
   type PublisherStub,
 } from './helpers'
@@ -97,11 +99,23 @@ async function checkpointsOf(cell: string, t: string, inc: number) {
   return { manifests, parts }
 }
 
-const nothingPublished = async (cell: string, p: PublisherStub, t: string) => {
+/** Publish one tenant until it is done (a re-base kept across publishes takes a few). */
+async function settled(p: PublisherStub, t: string) {
+  const out = [await p.publish([t])]
+  while (out.at(-1)!.tenants[0]!.status !== 'ok') {
+    expect(out.length, JSON.stringify(out.at(-1)!.tenants[0])).toBeLessThan(6)
+    out.push(await p.publish([t]))
+  }
+  return out
+}
+
+/** Nothing of the tenant committed; its stage empty, or (`kept`) holding that many parts staged before the read stopped, kept for the next publish. */
+const nothingPublished = async (cell: string, p: PublisherStub, t: string, kept = 0) => {
   for (const table of TABLES) expect(await metadataVersions(cell, table), table).toEqual([])
   expect(await p.cursors('metric_samples')).toEqual({})
   expect(await p.pending()).toEqual([t])
-  expect(await p.scratch()).toEqual({ stage: 0, liveNext: 0 })
+  if (kept === 0) expect(await p.scratch()).toEqual({ stage: 0, liveNext: 0 })
+  else expect((await p.steps())[t]).toMatchObject({ done: kept, target: null })
 }
 
 /** The tenant's files in the published tables are exactly its ledger's live files. */
@@ -251,7 +265,7 @@ describe('a ledger that writes its checkpoints in parts', () => {
       await s.storage.deleteAll()
     })
     await evictDurableObject(p)
-    expect((await p.publish()).ops.put).toBe(0) // resync from R2; nothing new to commit
+    expect(opsOf(await publishSettled(p)).put).toBe(0) // resync from R2, a table per publish; nothing new to commit
     expect(await rows()).toEqual(before)
     expect(await p.scratch()).toEqual({ stage: 0, liveNext: 0 })
   })
@@ -388,7 +402,9 @@ describe('a part that is not there, or not what its manifest says, stops the re-
 })
 
 describe('eviction and concurrency', () => {
-  it('an eviction mid-stream: what was staged is never used, and the next publish reads it all again', async () => {
+  it('an eviction mid-stream: nothing is committed, the parts staged before it are kept with their progress, and the next publish reads only the rest', async () => {
+    // Since the re-base is kept across invocations (README, "Re-bases and rebuilds in steps"): before
+    // it, what was staged was thrown away and the next publish read every part again.
     const { cell, tenant } = fresh()
     const t = tenant('evict')
     await scenario(cell, t, 'parts')
@@ -407,18 +423,30 @@ describe('eviction and concurrency', () => {
     expect(await p.abortNow().then(() => 'returned', () => 'reset')).toBe('reset')
     expect(await done).toMatch(/^failed/)
     const q = publisher(cell) // a stub to the object as constructed afresh (the old one is broken by the reset)
-    // Some parts reached SQLite before the eviction; none of it was committed.
+    // Some parts reached SQLite before the eviction, with how far they got; none of it was committed.
     expect((await q.scratch()).stage).toBeGreaterThan(0)
+    const kept = (await q.steps())[t]!
+    expect(kept.done).toBeGreaterThan(0)
+    expect(kept.done).toBeLessThanOrEqual(WINDOW + 1)
     for (const table of TABLES) expect(await metadataVersions(cell, table)).toEqual([])
-    const r = await q.publish([t])
-    expect(r.tenants[0]).toMatchObject({ status: 'ok', rebase: { source: 'checkpoint', format: 2, objects: 1 + parts.length } })
+    await q.r2()
+    // The re-base goes on in steps: the rest of the parts, then its commit in a publish of its own, then
+    // the tenant read from its cursors.
+    const rs = await settled(q, t)
+    expect(rs.at(-1)!.tenants[0]).toMatchObject({ status: 'ok' })
+    expect(rs.flatMap((r) => r.tenants.map((x) => x.step?.phase))).toContain('committed')
+    expect(rs.find((r) => r.tenants[0]!.rebase)!.tenants[0]).toMatchObject({ rebase: { source: 'checkpoint', format: 2 } })
+    // The parts staged before the eviction are not read again.
+    const gets = (await q.r2()).gets
+    expect(gets.filter((k) => parts.includes(k))).toEqual(parts.slice(kept.done))
     expect(await q.scratch()).toEqual({ stage: 0, liveNext: 0 })
+    expect(await q.steps()).toEqual({})
     for (const table of TABLES) expect(await metadataVersions(cell, table)).toEqual([1])
     await expectLedger(cell, t)
     await expectVerified(q)
   })
 
-  it('a read that fails at a part, then an eviction: nothing published, the next publish reads it all again', async () => {
+  it('a read that fails at a part, then an eviction: nothing published, the parts before it kept, and the next publish reads from the failed one on', async () => {
     const { cell, tenant } = fresh()
     const t = tenant('crash')
     await scenario(cell, t, 'parts')
@@ -426,9 +454,14 @@ describe('eviction and concurrency', () => {
     const p = publisher(cell)
     await p.failOnGet(parts[WINDOW + 1]!.slice(parts[0]!.lastIndexOf('/', parts[0]!.lastIndexOf('/') - 1)))
     expect((await p.tryPublish([t])).error).toMatch(/injected: R2 failed/)
-    await nothingPublished(cell, p, t)
+    await nothingPublished(cell, p, t, WINDOW + 1)
     await evictDurableObject(p)
-    expect((await p.publish([t])).tenants[0]).toMatchObject({ status: 'ok', rebase: { source: 'checkpoint', format: 2 } })
+    await p.r2()
+    const rs = await settled(p, t)
+    expect(rs.at(-1)!.tenants[0]).toMatchObject({ status: 'ok' })
+    expect(rs.flatMap((r) => r.tenants.map((x) => x.step?.phase))).toContain('committed')
+    expect((await p.r2()).gets.filter((k) => parts.includes(k))).toEqual(parts.slice(WINDOW + 1))
+    expect(await p.steps()).toEqual({})
     await expectLedger(cell, t)
     await expectVerified(p)
   })
@@ -455,6 +488,46 @@ describe('eviction and concurrency', () => {
     const order = seen.gets.filter((k) => all.includes(k)).map((k) => /tenant=([^/]+)\//.exec(k)![1]!)
     const runs = order.filter((t, i) => i === 0 || order[i - 1] !== t)
     expect(runs).toHaveLength(ts.length)
+    for (const t of ts) await expectLedger(cell, t)
+    await expectVerified(p)
+  })
+})
+
+describe('re-bases found while reading from a cursor', () => {
+  it('six tenants whose ledgers started new incarnations, read from their cursors at once: still one tenant\'s parts at a time, never more than six R2 operations in flight', async () => {
+    // Since review M-6 the re-bases a publish knows of from SQLite run one after another; these are
+    // found only once each tenant's incarnations are listed, six tenants at a time, and take turns.
+    const { cell, tenant } = fresh()
+    const ts = Array.from({ length: 6 }, (_, i) => tenant(`n${i}`))
+    const p = publisher(cell)
+    for (const t of ts) {
+      for (let i = 1; i <= 2; i++) await addUnit(t, pairUnit(cell, t, i, i, T0 + i * 1000), { drain: true })
+      await mirror(t, cell)
+      await dropCheckpoints(cell, t)
+    }
+    expect((await p.publish(ts)).tenants.map((x) => x.status)).toEqual(ts.map(() => 'ok'))
+    for (const t of ts) {
+      await loseLedgerStorage(t)
+      const l = ledger(t)
+      await l.plan({ table: 'metric_samples', minTs: 0, maxTs: 0 })
+      await knobs(l, { checkpointEvery: 1e9, checkpointByLogBytes: false, checkpointOneObjectBytes: -1, checkpointPartBytes: 500 })
+      for (let i = 3; i <= 5; i++) await addUnit(t, pairUnit(cell, t, i, i, T0 + i * 1000), { drain: true })
+      await knobs(l, { checkpointEvery: 1 })
+      await addUnit(t, pairUnit(cell, t, 6, 6, T0 + 6000), { drain: true })
+      await knobs(l, { checkpointEvery: 1e9 })
+      await mirror(t, cell)
+      expect((await checkpointsOf(cell, t, 2)).parts.length).toBeGreaterThan(1)
+    }
+    await p.r2()
+    const r = await p.publish(ts)
+    expect(r.tenants.map((x) => [x.status, x.rebase?.source, x.cursors.metric_samples?.ledgerIncarnation])).toEqual(ts.map(() => ['ok', 'checkpoint', 2]))
+    const seen = await p.r2()
+    expect(seen.max).toBeLessThanOrEqual(CONNECTIONS)
+    const all: string[] = []
+    for (const t of ts) all.push(...(await checkpointsOf(cell, t, 2)).parts)
+    const order = seen.gets.filter((k) => all.includes(k)).map((k) => /tenant=([^/]+)\//.exec(k)![1]!)
+    expect(order).toHaveLength(all.length)
+    expect(order.filter((t, i) => i === 0 || order[i - 1] !== t)).toHaveLength(ts.length)
     for (const t of ts) await expectLedger(cell, t)
     await expectVerified(p)
   })

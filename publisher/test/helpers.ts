@@ -1,10 +1,10 @@
 import { evictDurableObject, runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { expect } from 'vitest'
-import { encodeLedgerSegment, ledgerSegmentKey, parseLedgerLogKey, type FileEntry, type FlushUnit, type LedgerChange, type Table } from '../../contracts/ledger'
+import { encodeLedgerSegment, ledgerSegmentKey, parseLedgerLogKey, type FileEntry, type FlushUnit, type LedgerChange, type LedgerTable, type Table } from '../../contracts/ledger'
 import type { Ledger } from '../../ledger/src/ledger'
 import { readAvro } from '../src/avro'
-import type { ManifestEntryRecord, ManifestListRecord, TableMetadata } from '../src/iceberg'
+import { CURSORS_KEY, type AnyPartition, type ManifestEntryRecord, type ManifestListRecord, type TableMetadata } from '../src/iceberg'
 import type { TestPublisher } from './worker'
 
 export type LedgerStub = DurableObjectStub<Ledger>
@@ -139,7 +139,7 @@ export const putSegment = async (cell: string, tenant: string, incarnation: numb
   return key
 }
 
-export const liveKeys = async (tenant: string, table: Table): Promise<string[]> =>
+export const liveKeys = async (tenant: string, table: LedgerTable): Promise<string[]> =>
   (await ledger(tenant).plan({ table, minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })).files.map((f) => f.key).sort()
 
 export const ledgerVersion = async (tenant: string) => {
@@ -161,7 +161,7 @@ export const keyOf = (uri: string, prefix = PREFIX) => {
   return uri.slice(prefix.length + 1)
 }
 
-export const metaDir = (cell: string, table: Table) => `${cell}/iceberg/${table}/metadata/`
+export const metaDir = (cell: string, table: LedgerTable) => `${cell}/iceberg/${table}/metadata/`
 
 export const listKeys = async (prefix: string): Promise<string[]> => {
   const out: string[] = []
@@ -175,14 +175,14 @@ export const listKeys = async (prefix: string): Promise<string[]> => {
 }
 
 /** Metadata versions present in R2 for a table, ascending. */
-export const metadataVersions = async (cell: string, table: Table): Promise<number[]> =>
+export const metadataVersions = async (cell: string, table: LedgerTable): Promise<number[]> =>
   (await listKeys(metaDir(cell, table)))
     .map((k) => /\/v(\d+)\.metadata\.json$/.exec(k)?.[1])
     .filter((v): v is string => v !== undefined)
     .map(Number)
     .sort((a, b) => a - b)
 
-export const readMetadata = async (cell: string, table: Table, version?: number): Promise<TableMetadata> => {
+export const readMetadata = async (cell: string, table: LedgerTable, version?: number): Promise<TableMetadata> => {
   const v = version ?? (await metadataVersions(cell, table)).at(-1)
   const o = await env.BUCKET.get(`${metaDir(cell, table)}v${v}.metadata.json`)
   if (!o) throw new Error(`no metadata v${v} for ${table} in ${cell}`)
@@ -200,16 +200,19 @@ export interface ReadEntry {
   status: number
   key: string
   tenant: string | null
+  /** The `day` partition value, or for `spans` the day of its hour. */
   day: number | null
+  /** `spans`: the `start_time_hour` partition value. */
+  hour: number | null
   rows: number
   bytes: number
   /** Data sequence number: the entry's own, or inherited from the manifest list. */
   seq: number
-  entry: ManifestEntryRecord
+  entry: ManifestEntryRecord<AnyPartition>
 }
 
 /** Every manifest entry (any status) reachable from one snapshot of a table. */
-export const snapshotEntries = async (cell: string, table: Table, snapshotId?: number, prefix = PREFIX): Promise<ReadEntry[]> => {
+export const snapshotEntries = async (cell: string, table: LedgerTable, snapshotId?: number, prefix = PREFIX): Promise<ReadEntry[]> => {
   const meta = await readMetadata(cell, table)
   const id = snapshotId ?? meta['current-snapshot-id']
   const snap = meta.snapshots.find((s) => s['snapshot-id'] === id)
@@ -217,13 +220,16 @@ export const snapshotEntries = async (cell: string, table: Table, snapshotId?: n
   const out: ReadEntry[] = []
   for (const m of await readAvroKey<ManifestListRecord>(keyOf(snap['manifest-list'], prefix))) {
     const manifest = keyOf(m.manifest_path, prefix)
-    for (const e of await readAvroKey<ManifestEntryRecord>(manifest)) {
+    for (const e of await readAvroKey<ManifestEntryRecord<AnyPartition>>(manifest)) {
+      const p = e.data_file.partition
+      const hour = 'start_time_hour' in p ? p.start_time_hour : null
       out.push({
         manifest,
         status: e.status,
         key: keyOf(e.data_file.file_path, prefix),
-        tenant: e.data_file.partition.tenant,
-        day: e.data_file.partition.day,
+        tenant: p.tenant,
+        day: 'start_time_hour' in p ? (hour === null ? null : Math.floor(hour / 24)) : p.day,
+        hour,
         rows: e.data_file.record_count,
         bytes: e.data_file.file_size_in_bytes,
         seq: e.sequence_number ?? m.sequence_number,
@@ -235,10 +241,10 @@ export const snapshotEntries = async (cell: string, table: Table, snapshotId?: n
 }
 
 /** Keys of the live data files (status ADDED or EXISTING) of a snapshot, sorted. */
-export const icebergLive = async (cell: string, table: Table, snapshotId?: number, prefix = PREFIX): Promise<string[]> =>
+export const icebergLive = async (cell: string, table: LedgerTable, snapshotId?: number, prefix = PREFIX): Promise<string[]> =>
   (await snapshotEntries(cell, table, snapshotId, prefix)).filter((e) => e.status !== 2).map((e) => e.key).sort()
 
-export const manifestList = async (cell: string, table: Table, prefix = PREFIX): Promise<ManifestListRecord[]> => {
+export const manifestList = async (cell: string, table: LedgerTable, prefix = PREFIX): Promise<ManifestListRecord[]> => {
   const meta = await readMetadata(cell, table)
   const snap = meta.snapshots.find((s) => s['snapshot-id'] === meta['current-snapshot-id'])
   return readAvroKey<ManifestListRecord>(keyOf(snap!['manifest-list'], prefix))
@@ -249,4 +255,40 @@ export const expectVerified = async (p: PublisherStub) => {
     const v = await p.verify(table)
     expect(v, `verify(${table})`).toMatchObject({ ok: true, missingFromIceberg: [], extraInIceberg: [], mismatched: [], missingObjects: [], sizeMismatch: [], problems: [] })
   }
+}
+
+type Published = Awaited<ReturnType<PublisherStub['publish']>>
+
+/**
+ * Publish until no tenant is left for a later publish by a per-publish cap (`deferred`): after a
+ * lost storage each publish first rebuilds one table from R2 (review M-6). Returns every result.
+ */
+export const publishSettled = async (p: PublisherStub, tenants?: string[], limit = 12): Promise<Published[]> => {
+  const out: Published[] = []
+  for (;;) {
+    const r = await p.publish(tenants)
+    out.push(r)
+    if (!r.tenants.some((t) => t.status === 'deferred')) return out
+    expect(out.length, `still deferred after ${out.length} publishes: ${JSON.stringify(r.tenants)}`).toBeLessThan(limit)
+  }
+}
+
+/** R2 operations of several publishes, added up. */
+export const opsOf = (rs: Published[]) => rs.reduce((a, r) => ({ list: a.list + r.ops.list, get: a.get + r.ops.get, head: a.head + r.ops.head, put: a.put + r.ops.put, delete: a.delete + r.ops.delete }), { list: 0, get: 0, head: 0, put: 0, delete: 0 })
+
+/**
+ * What a reader of a table's current snapshot sees, with nothing that depends on how many commits
+ * made it: every live data file (its whole `data_file`: path, partition, counts, sizes, bounds,
+ * offsets), the snapshot's totals, the cursor object it points at, and the table's metadata without
+ * its history, ids and location (the cell's name is replaced).
+ */
+export async function readerView(cell: string, table: LedgerTable): Promise<unknown> {
+  const meta = await readMetadata(cell, table)
+  const current = meta.snapshots.find((s) => s['snapshot-id'] === meta['current-snapshot-id'])!
+  const files = (await snapshotEntries(cell, table)).filter((e) => e.status !== 2).map((e) => [e.key, e.entry.data_file] as const)
+  files.sort(([a], [b]) => (a < b ? -1 : 1))
+  const totals = Object.fromEntries(Object.entries(current.summary).filter(([k]) => k.startsWith('total-')))
+  const cursors = (await (await env.BUCKET.get(keyOf(current.summary[CURSORS_KEY] as string)))!.json<{ cursors: unknown }>()).cursors
+  const { 'table-uuid': _u, location: _l, 'last-updated-ms': _m, 'current-snapshot-id': _c, snapshots: _s, 'snapshot-log': _sl, 'metadata-log': _ml, 'last-sequence-number': _q, refs: _r, ...rest } = meta as unknown as Record<string, unknown>
+  return JSON.parse(JSON.stringify({ files, totals, cursors, rest }, (_k, v: unknown) => (v instanceof Uint8Array ? [...v] : v)).replaceAll(cell, 'CELL'))
 }

@@ -22,10 +22,16 @@
  *                   it advances over whole segments only. A re-base (no cursor in the newest
  *                   incarnation) streams the state it starts from into a `BaseSink` (the
  *                   publisher's SQLite), a part or a few hundred files at a time: nothing here
- *                   holds a state, whatever its size.
+ *                   holds a state, whatever its size. The sink may stop a checkpoint in parts at a
+ *                   part boundary (its budget) and resume it at a later invocation from the parts
+ *                   it kept (`BaseSink.begin`, `part`; README, "Re-bases and rebuilds in steps").
  *   replayAt        what `verify` uses: the ledger's whole live set at a cursor, rebuilt from
  *                   the incarnation's base with every change checked against the state before it.
  *                   It holds that set in memory (README, "Not implemented").
+ *
+ * Tables. Every table the ledger lists (`LedgerTable`) is known here and published
+ * (`PUBLISHED_TABLES`): the metric pair, and since design/DECISIONS.md D67 the span and log tables.
+ * A re-base stages the files of every table.
  *
  * Refuse, never guess (contracts/COMPATIBILITY.md §3.2): a segment header `v` or `kind`, a change
  * `v` or `kind`, or a file table this code does not know stops the tenant BEFORE that segment
@@ -50,6 +56,8 @@ import {
   type FileEntry,
   type LedgerChange,
   type LedgerSegmentHeader,
+  type LedgerTable,
+  type SignalTable,
   type Table,
 } from '../../contracts/ledger'
 
@@ -188,11 +196,17 @@ export type LogStatus =
    * publish lists the checkpoints again.
    */
   | 'incomplete'
+  /**
+   * The tenant needs a re-base and the publisher did not give it a turn in this publish (its
+   * per-publish cap on re-bases is spent: `BaseSink.turn` returned null). Nothing of the
+   * checkpoint, base or changes was read; the tenant waits for a later publish.
+   */
+  | 'deferred'
 
 /** A removed key with its table: from `LedgerChange.removedFiles`, or from the key layout for logs written before it (null if the key does not follow it). */
 export interface RemovedFile {
   key: string
-  table: Table | null
+  table: LedgerTable | null
 }
 
 /** A change as this reader hands it on: checked, with `removedFiles` always present. */
@@ -217,6 +231,8 @@ export interface TenantLog {
   /** Contiguous: `changes[i].version === start + 1 + i`. */
   changes: LogChange[]
   gapAt?: number
+  /** `deferred` because the re-base stopped at a part boundary (the publisher's budget), its progress kept: continued at a later publish. */
+  paused?: boolean
 }
 
 /**
@@ -228,14 +244,73 @@ export interface BaseSink {
   reset(tenant: string): void
   /** Live files at the base's version. Throws if a key repeats. */
   files(tenant: string, files: FileEntry[]): void
-  /** Removed files whose objects may still exist (tombstones), removed at or below that version. */
-  tombstones(tenant: string, tombstones: { key: string; table: Table }[]): void
   /**
-   * Waits for this tenant's turn to read a checkpoint or base, and returns its release. The
-   * publisher gives one turn at a time, so tenants re-basing in the same publish hold one window
-   * of parts between them, not one each. Absent: no turns.
+   * Removed files whose objects may still exist (tombstones), removed at or below that version:
+   * of every table this code knows, published or not.
    */
-  turn?(): Promise<() => void>
+  tombstones(tenant: string, tombstones: { key: string; table: LedgerTable }[]): void
+  /**
+   * Waits for this tenant's turn to read a checkpoint or base of `incarnation`, and returns its
+   * release, or null when the tenant may not re-base in this publish (then nothing is read:
+   * `deferred`). The publisher gives one turn at a time, so tenants re-basing in the same publish
+   * hold one window of parts between them, not one each, and it decides each admission knowing what
+   * the re-bases before it staged. A tenant may ask more than once in one read (the segment path,
+   * then the first layout's); the answer is the same. Absent: no turns, every re-base admitted.
+   */
+  turn?(tenant: string, incarnation: number): Promise<(() => void) | null>
+  /**
+   * The key of the checkpoint a re-base of this tenant and incarnation kept from an earlier
+   * invocation is reading, if any: read first, so that it is continued while its parts are there
+   * rather than started over from a newer one. Absent or null: newest first.
+   */
+  resumeKey?(tenant: string, incarnation: number): string | null
+  /**
+   * A checkpoint in parts is about to be read (its manifest read and checked). Returns where to start:
+   * after the parts a re-base kept from earlier invocations staged, with its running totals and last
+   * keys, if it is this checkpoint (same key, attempt and parts); else null, and the sink has forgotten
+   * whatever it held for the tenant and recorded a re-base of this checkpoint at part 0. Absent: part 0,
+   * after `reset`.
+   */
+  begin?(tenant: string, checkpoint: CheckpointRef): Resume | null
+  /**
+   * One part read and checked, with the running totals after it: the sink stages its files and
+   * tombstones and records how far the re-base got, in one transaction, so an invocation cut off after
+   * it keeps it. Returns false to stop after this part (the publisher's budget for the invocation is
+   * spent); the re-base continues from the next part at a later publish. Absent: `files` and
+   * `tombstones`, never stopping.
+   */
+  part?(tenant: string, part: StagedPart): boolean
+}
+
+/** A checkpoint in parts, as its manifest names it. */
+export interface CheckpointRef {
+  incarnation: number
+  version: number
+  /** The manifest's key. */
+  key: string
+  attempt: string
+  parts: number
+  files: number
+  tombstones: number
+  bytes: number
+}
+
+/** How far a re-base of a checkpoint in parts got: the next part to read, and what the parts before it held. */
+export interface Resume {
+  part: number
+  files: number
+  tombstones: number
+  bytes: number
+  lastFile: string | null
+  lastTombstone: string | null
+}
+
+/** One part's records, and the re-base's progress once it is staged. */
+export interface StagedPart {
+  index: number
+  files: FileEntry[]
+  tombstones: { key: string; table: LedgerTable }[]
+  after: Resume
 }
 
 /** What a re-base started from. Its files are in the `BaseSink`, not here. */
@@ -246,6 +321,7 @@ export interface BaseInfo {
   source: 'base' | 'checkpoint'
   /** For a checkpoint: format 1 (one object) or 2 (a manifest and parts). */
   format: 1 | 2 | null
+  /** Live files it holds, of every table. */
   files: number
   tombstones: number
   /** Log objects read for it: 1, or a manifest and its parts. */
@@ -254,10 +330,29 @@ export interface BaseInfo {
   window: number
   /** Checkpoints passed over because this code does not read their format, newest first. */
   passedOver: string[]
+  /** Parts staged by earlier invocations that this read continued after (a re-base kept across invocations). */
+  resumedAt?: number
 }
 
-/** The tables a ledger file may belong to, as far as this publisher knows (contracts/ledger.ts `Table`). */
-const TABLES: ReadonlySet<string> = new Set<Table>(['metric_samples', 'metric_series'])
+// ───────────────────────────── the tables this code knows ─────────────────────────────
+//
+// Pinned here, not taken from contracts/ledger.ts `TABLES`, like the versions below: a table the
+// contract adds stays unknown to this reader (and stops a tenant whose log names it) until this
+// reader is taught it; `test/signals.test.ts` fails until then (readers first, §3.3).
+
+/**
+ * Tables this publisher publishes as Iceberg tables: every table the ledger lists. The metric pair
+ * since the first release; the span and log tables since design/DECISIONS.md D67 (the release
+ * before, D64, read them and did not publish them).
+ */
+export const PUBLISHED_TABLES: readonly LedgerTable[] = ['metric_samples', 'metric_series', 'spans', 'trace_index', 'logs']
+/** Tables the ledger lists that this publisher reads and does not publish: none since D67 (D64 had the span and log tables here). */
+export const UNPUBLISHED_TABLES: readonly SignalTable[] = []
+const PUBLISHED: ReadonlySet<string> = new Set<string>(PUBLISHED_TABLES)
+/** Every table a ledger file may belong to, as far as this publisher knows. A file of any other table stops the tenant (`unsupported`). */
+const TABLES: ReadonlySet<string> = new Set<string>([...PUBLISHED_TABLES, ...UNPUBLISHED_TABLES])
+/** Whether this publisher publishes `table`. */
+export const isPublished = (table: string): table is LedgerTable => PUBLISHED.has(table)
 const CHANGE_OBJECT = /\/(\d{12,})\.json$/
 /** `{cell}/data/{table}/…` (contracts/TABLES.md): the table of a removed key in a log written before `removedFiles`. */
 const KEY_TABLE = /^[^/]+\/data\/([^/]+)\//
@@ -330,7 +425,7 @@ function check(c: LedgerChange): Checked {
   if (c.removedFiles === undefined) {
     removedFiles = c.removed.map((key) => {
       const t = KEY_TABLE.exec(key)?.[1]
-      return { key, table: t !== undefined && TABLES.has(t) ? (t as Table) : null }
+      return { key, table: t !== undefined && TABLES.has(t) ? (t as LedgerTable) : null }
     })
   } else {
     if (!Array.isArray(c.removedFiles) || c.removedFiles.length !== c.removed.length) return { corrupt: `change ${c.version}: removedFiles does not list the keys of removed` }
@@ -356,7 +451,8 @@ export async function inBatches<T, R>(items: readonly T[], size: number, fn: (it
 
 const tenantPrefix = (cell: string, tenant: string) => `${cell}/ledger/tenant=${tenant}/`
 
-async function latestIncarnation(store: Store, cell: string, tenant: string): Promise<number | null> {
+/** The newest ledger incarnation of a tenant in R2 (one list), or null when it has no log. */
+export async function latestIncarnation(store: Store, cell: string, tenant: string): Promise<number | null> {
   const prefix = tenantPrefix(cell, tenant)
   let latest: number | null = null
   let cursor: string | undefined
@@ -479,17 +575,17 @@ function fileOf(x: unknown, where: string): FileEntry {
   return f
 }
 
-function tombstoneOf(x: unknown, where: string): { key: string; table: Table } {
+function tombstoneOf(x: unknown, where: string): { key: string; table: LedgerTable } {
   const t = x as { key?: unknown; table?: unknown }
   if (typeof t !== 'object' || t === null || typeof t.key !== 'string') throw new Stop('corrupt', `${where}: a malformed tombstone`)
   if (typeof t.table !== 'string' || !TABLES.has(t.table)) throw new Stop('unsupported', `${where}: a tombstone of table ${JSON.stringify(t.table)}, which this publisher does not know`)
-  return { key: t.key, table: t.table as Table }
+  return { key: t.key, table: t.table as LedgerTable }
 }
 
-/** Files and tombstones on their way to the sink, `BASE_BATCH` per transaction. */
+/** Files and tombstones on their way to the sink, `BASE_BATCH` per transaction: of every table, since every table is published (D67). */
 class Batches {
   private f: FileEntry[] = []
-  private t: { key: string; table: Table }[] = []
+  private t: { key: string; table: LedgerTable }[] = []
   files = 0
   tombstones = 0
   constructor(
@@ -497,11 +593,11 @@ class Batches {
     private readonly tenant: string,
   ) {}
   file(f: FileEntry): void {
-    this.f.push(f)
     this.files++
+    this.f.push(f)
     if (this.f.length >= BASE_BATCH) this.flush()
   }
-  tombstone(t: { key: string; table: Table }): void {
+  tombstone(t: { key: string; table: LedgerTable }): void {
     this.t.push(t)
     this.tombstones++
     if (this.t.length >= BASE_BATCH) this.flush()
@@ -594,13 +690,15 @@ type CheckpointRead =
   | { status: 'ok'; info: BaseInfo }
   /** No checkpoint this code reads: start from the base. */
   | { status: 'none'; passedOver: string[] }
-  | { status: 'corrupt' | 'unsupported' | 'incomplete'; reason: string }
+  /** Stopped at a part boundary because the sink's budget is spent; continued at a later publish. */
+  | { status: 'corrupt' | 'unsupported' | 'incomplete' | 'paused'; reason: string }
 
 /**
  * The newest checkpoint of an incarnation that this code reads, into the sink. One list (with a
  * delimiter, so each checkpoint's parts are one prefix, not a key each), then the manifests,
  * newest first: one of a format this code does not read is passed over (the base is always
- * there); one that is corrupt, or names a part that is not there, stops the re-base.
+ * there); one that is corrupt, or names a part that is not there, stops the re-base. The one a
+ * re-base kept from an earlier invocation is reading (`BaseSink.resumeKey`) is read first.
  */
 async function readNewestCheckpoint(store: Store, cell: string, tenant: string, incarnation: number, sink: BaseSink): Promise<CheckpointRead> {
   const prefix = `${cell}/${ledgerIncarnationPrefix(tenant, incarnation)}ckpt-`
@@ -615,6 +713,9 @@ async function readNewestCheckpoint(store: Store, cell: string, tenant: string, 
     cursor = page.truncated ? page.cursor : undefined
   } while (cursor)
   manifests.sort((a, b) => b.version - a.version)
+  const kept = sink.resumeKey?.(tenant, incarnation) ?? null
+  const at = kept === null ? -1 : manifests.findIndex((m) => m.key === kept)
+  if (at > 0) manifests.unshift(...manifests.splice(at, 1))
   const passedOver: string[] = []
   for (const m of manifests) {
     const r = await readCheckpoint(store, cell, tenant, incarnation, m, sink)
@@ -623,7 +724,7 @@ async function readNewestCheckpoint(store: Store, cell: string, tenant: string, 
       continue
     }
     if (r.status === 'ok') return { status: 'ok', info: { ...r.info, passedOver } }
-    return r as { status: 'corrupt' | 'unsupported' | 'incomplete'; reason: string }
+    return r as { status: 'corrupt' | 'unsupported' | 'incomplete' | 'paused'; reason: string }
   }
   return { status: 'none', passedOver }
 }
@@ -635,6 +736,11 @@ async function readNewestCheckpoint(store: Store, cell: string, tenant: string, 
  * then tombstones in strictly ascending key order across parts, and in total the files, the
  * tombstones and the bytes the manifest names. Any disagreement stops it (`corrupt`); a missing
  * part too (`incomplete`); either way the caller gets no base, so nothing of it is published.
+ *
+ * Format 2 across invocations: the sink says where to start (`BaseSink.begin`: after the parts a
+ * kept re-base staged, with its totals and last keys, so every check above still spans all parts),
+ * stages each part with its progress (`BaseSink.part`), and may stop the read after any part
+ * (`paused`); the next read continues from there.
  */
 async function readCheckpoint(
   store: Store,
@@ -643,11 +749,10 @@ async function readCheckpoint(
   incarnation: number,
   m: { key: string; version: number },
   sink: BaseSink,
-): Promise<{ status: 'ok'; info: BaseInfo } | { status: 'corrupt' | 'unsupported' | 'incomplete' | 'passed_over'; reason: string }> {
+): Promise<{ status: 'ok'; info: BaseInfo } | { status: 'corrupt' | 'unsupported' | 'incomplete' | 'passed_over' | 'paused'; reason: string }> {
   const where = `checkpoint ${m.version} of incarnation ${incarnation}`
   const o = await store.get(m.key)
   if (!o) return { status: 'incomplete', reason: `${where} was listed and is gone (superseded meanwhile)` }
-  sink.reset(tenant)
   const out = new Batches(sink, tenant)
   let format = 0 as 0 | 1 | 2
   let header: LedgerSegmentHeader | null = null
@@ -671,6 +776,8 @@ async function readCheckpoint(
         if (h.v > LEDGER_CHECKPOINT_VERSION) throw new Stop('passed_over', `${where}: format ${h.v}; this publisher reads up to ${LEDGER_CHECKPOINT_VERSION}`)
         header = h
         format = h.v as 1 | 2
+        // Format 1 streams its files next, into a stage emptied for them; format 2 starts once its manifest is checked.
+        if (format === 1) sink.reset(tenant)
       },
     )
     out.flush()
@@ -687,20 +794,25 @@ async function readCheckpoint(
     if (d.status === 'unsupported') throw new Stop('passed_over', `${where}: ${d.reason}`)
     if (d.status === 'corrupt') throw new Stop('corrupt', `${where}: ${d.reason}`)
     const man = d.manifest
+    // Where to start: after what a kept re-base of this very checkpoint staged, or at part 0 with nothing staged.
+    const ref: CheckpointRef = { incarnation, version: m.version, key: m.key, attempt: man.attempt, parts: man.parts, files: man.files, tombstones: man.tombstones, bytes: man.bytes }
+    const from = sink.begin ? sink.begin(tenant, ref) : null
+    if (!from) sink.reset(tenant)
     const fetchPart = async (part: number): Promise<{ size: number; text: string } | null> => {
       const p = await store.get(`${cell}/${ledgerCheckpointPartKey(tenant, incarnation, m.version, man.attempt, part)}`)
       return p ? { size: p.size, text: await p.text() } : null
     }
     // Parts in order; the next few are requested while one is applied.
     const ahead: Promise<{ size: number; text: string } | null>[] = []
-    let next = 0
+    const first = from?.part ?? 0
+    let next = first
     let window = 0
-    let bytes = 0
-    let files = 0
-    let tombstones = 0
-    let lastFile: string | null = null
-    let lastTombstone: string | null = null
-    for (let part = 0; part < man.parts; part++) {
+    let bytes = from?.bytes ?? 0
+    let files = from?.files ?? 0
+    let tombstones = from?.tombstones ?? 0
+    let lastFile: string | null = from?.lastFile ?? null
+    let lastTombstone: string | null = from?.lastTombstone ?? null
+    for (let part = first; part < man.parts; part++) {
       while (next < man.parts && ahead.length < PART_WINDOW) {
         const read = fetchPart(next++)
         read.catch(() => undefined) // awaited below, in order
@@ -714,7 +826,7 @@ async function readCheckpoint(
       if (p.status === 'corrupt') throw new Stop('corrupt', `${where}, part ${part}: ${p.reason}`)
       bytes += got.size
       const fs: FileEntry[] = []
-      const ts: { key: string; table: Table }[] = []
+      const ts: { key: string; table: LedgerTable }[] = []
       for (const r of p.records) {
         if ('file' in r) {
           if (lastTombstone !== null) throw new Stop('corrupt', `${where}, part ${part}: a file after the tombstones`)
@@ -731,21 +843,38 @@ async function readCheckpoint(
       }
       files += fs.length
       tombstones += ts.length
-      if (fs.length > 0) sink.files(tenant, fs)
-      if (ts.length > 0) sink.tombstones(tenant, ts)
+      let more = true
+      if (sink.part) more = sink.part(tenant, { index: part, files: fs, tombstones: ts, after: { part: part + 1, files, tombstones, bytes, lastFile, lastTombstone } })
+      else {
+        if (fs.length > 0) sink.files(tenant, fs)
+        if (ts.length > 0) sink.tombstones(tenant, ts)
+      }
+      if (!more && part + 1 < man.parts) {
+        // The budget is spent: what is staged is kept with its progress. The parts requested ahead are
+        // read to their end (their slots freed) and dropped; the next read requests them again.
+        await Promise.allSettled(ahead)
+        return { status: 'paused', reason: `${where}: ${part + 1} of ${man.parts} parts staged (attempt ${man.attempt}); the re-base continues at a later publish` }
+      }
     }
     if (files !== man.files || tombstones !== man.tombstones) {
       throw new Stop('corrupt', `${where}: its parts hold ${files} files and ${tombstones} tombstones, its manifest says ${man.files} and ${man.tombstones}`)
     }
     // The only size the format gives: the manifest's total of the parts' bytes, as R2 stored them.
     if (bytes !== man.bytes) throw new Stop('corrupt', `${where}: its parts are ${bytes} bytes, its manifest says ${man.bytes}`)
-    return { status: 'ok', info: { version: m.version, source: 'checkpoint', format: 2, files, tombstones, objects: 1 + man.parts, window, passedOver: [] } }
+    const info: BaseInfo = { version: m.version, source: 'checkpoint', format: 2, files, tombstones, objects: 1 + man.parts - first, window, passedOver: [] }
+    if (first > 0) info.resumedAt = first
+    return { status: 'ok', info }
   } catch (e) {
     if (e instanceof Stop) return { status: e.status === 'no_base' ? 'corrupt' : e.status, reason: e.message }
     if (malformed(e)) return { status: 'corrupt', reason: `${where}: ${e.message}` }
     throw e
   }
 }
+
+/** A re-base the publisher did not admit in this publish: nothing read past the incarnations. */
+const deferred = (tenant: string, incarnation: number): TenantLog => ({
+  tenant, status: 'deferred', detail: 'needs a re-base; this publish has started as many as it may (the per-publish cap)', incarnation, layout: null, base: null, start: 0, changes: [],
+})
 
 /**
  * The segment path of `readTenantLog`. `from` is null to re-base: start from the newest
@@ -768,9 +897,12 @@ async function readSegmentLog(store: Store, cell: string, tenant: string, incarn
   let cursor = from
   if (from === null) {
     // One tenant's checkpoint or base at a time (the publisher's turns): released on every way out.
-    const done = (await sink.turn?.()) ?? (() => {})
+    const done = sink.turn ? await sink.turn(tenant, incarnation) : () => {}
+    if (done === null) return deferred(tenant, incarnation)
     try {
       const ck = await readNewestCheckpoint(store, cell, tenant, incarnation, sink)
+      // Staged as far as this publish may: kept, and continued at a later one. Nothing of it is used yet.
+      if (ck.status === 'paused') return { ...deferred(tenant, incarnation), layout: 'segments', detail: ck.reason, paused: true }
       if (ck.status === 'corrupt' || ck.status === 'unsupported' || ck.status === 'incomplete') {
         // Never a partial publish: no base, so nothing read from it is used.
         if (await hasObjectBase(store, cell, tenant, incarnation)) return result('corrupt', { detail: `incarnation ${incarnation} has both segments and a base.json` })
@@ -976,7 +1108,15 @@ async function readObjectLog(store: Store, cell: string, tenant: string, incarna
   let base: BaseInfo | null = null
   let start: number
   if (from === null) {
-    const b = await streamObjectBase(store, cell, tenant, incarnation, sink)
+    // The first layout's base takes a turn too (the same tenant was admitted on the segment path already).
+    const done = sink.turn ? await sink.turn(tenant, incarnation) : () => {}
+    if (done === null) return deferred(tenant, incarnation)
+    let b: BaseInfo | Stop | null
+    try {
+      b = await streamObjectBase(store, cell, tenant, incarnation, sink)
+    } finally {
+      done()
+    }
     if (b === null) return none('no_base', `incarnation ${incarnation} has neither a base segment nor a base.json`)
     if (b instanceof Stop) return b.status === 'unsupported' ? { ...none('unsupported', b.message), gapAt: 0 } : none('corrupt', b.message)
     base = b

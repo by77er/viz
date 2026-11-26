@@ -3,6 +3,7 @@ import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
 import type { FileEntry, Table } from '../../contracts/ledger'
 import { writeAvro } from '../src/avro'
+import { ledgerSegmentKey } from '../../contracts/ledger'
 import { CURSORS_KEY, MANIFEST_ENTRY_SCHEMA, manifestHeader, type ManifestEntryRecord } from '../src/iceberg'
 import type { CommitStep } from '../src/publisher'
 import {
@@ -35,6 +36,8 @@ import {
   putSegment,
   readMetadata,
   snapshotEntries,
+  opsOf,
+  publishSettled,
   type PublisherStub,
 } from './helpers'
 
@@ -82,7 +85,9 @@ describe('version order and gaps', () => {
     const p = publisher(cell)
     const r = await p.publish()
     // The first publication re-bases: from the base segment (two segments, no checkpoint yet).
-    expect(r.tenants).toEqual([{ tenant: a, status: 'ok', cursors: { metric_samples: await ledgerVersion(a), metric_series: await ledgerVersion(a) }, rebase: expect.objectContaining({ source: 'base', version: 0 }) }])
+    // Every table's cursor moves, those of the span and log tables too: the changes read did not touch them (D67).
+    const v = await ledgerVersion(a)
+    expect(r.tenants).toEqual([{ tenant: a, status: 'ok', cursors: { metric_samples: v, metric_series: v, spans: v, trace_index: v, logs: v }, rebase: expect.objectContaining({ source: 'base', version: 0 }) }])
     await expectPublished(cell, [a])
     expect(await icebergLive(cell, 'metric_samples')).not.toContain(merged.key)
     await expectVerified(p)
@@ -306,8 +311,12 @@ describe('idempotence', () => {
     await runInDurableObject(p, async (_i, state) => { await state.storage.deleteAll() })
     await evictDurableObject(p)
     expect((await p.verify('metric_samples')).ok).toBe(false) // empty state, table at v2: reported
-    const r = await p.publish()
-    expect(r.ops.put).toBe(0)
+    // One table rebuilt from R2 per publish (the two metric tables have metadata), then a publish
+    // from the cursors found there (it re-bases the tenant for the span and log tables, which have
+    // no metadata, so their cursors were in the lost storage only). Nothing is written.
+    const rs = await publishSettled(p)
+    expect(rs.map((r) => r.tenants[0]!.status)).toEqual(['deferred', 'deferred', 'ok'])
+    expect(opsOf(rs).put).toBe(0)
     for (const table of TABLES) expect(await metadataVersions(cell, table)).toEqual([1, 2])
     expect(await p.status('metric_samples')).toMatchObject({ version: 2, files: 2 })
     await expectPublished(cell, [a])
@@ -629,15 +638,15 @@ describe('snapshot expiry and the orphan sweep', () => {
       await p.publish()
     }
     expect((await readMetadata(cell, 'metric_samples')).snapshots.length).toBe(4)
-    expect((await p.maintain()).expired).toEqual({ metric_samples: 0, metric_series: 0 })
+    expect((await p.maintain()).expired).toEqual({ metric_samples: 0, metric_series: 0, spans: 0, trace_index: 0, logs: 0 })
     await p.advanceClock(2 * HOUR)
     const m = await p.maintain()
-    expect(m.expired).toEqual({ metric_samples: 2, metric_series: 2 }) // never fewer than two are kept
+    expect(m.expired).toEqual({ metric_samples: 2, metric_series: 2, spans: 0, trace_index: 0, logs: 0 }) // never fewer than two are kept; the span and log tables of a metric-only cell have no metadata
     const meta = await readMetadata(cell, 'metric_samples')
     expect(meta.snapshots.length).toBe(2)
     expect(await metadataVersions(cell, 'metric_samples')).toEqual([1, 2, 3, 4, 5])
     expect(meta['current-snapshot-id']).toBe((await p.status('metric_samples')).snapshotId)
-    expect((await p.maintain()).expired).toEqual({ metric_samples: 0, metric_series: 0 })
+    expect((await p.maintain()).expired).toEqual({ metric_samples: 0, metric_series: 0, spans: 0, trace_index: 0, logs: 0 })
     await expectPublished(cell, [a])
     await expectVerified(p)
   })
@@ -765,6 +774,30 @@ describe('a new ledger incarnation', () => {
     expect(again.ops.put).toBe(0)
     expect((await p.cursors('metric_samples'))[a]!.ledgerIncarnation).toBe(3)
     await expectVerified(p)
+  })
+
+  it('re-bases on a new incarnation whose versions start again below the cursor (a base version the contract allows, which the ledger never writes)', async () => {
+    const { cell, tenant } = fresh()
+    const a = tenant('a')
+    const u1 = await addUnit(a, pairUnit(cell, a, 1, 1))
+    const u2 = await addUnit(a, pairUnit(cell, a, 2, 2, T0 + DAY_MS))
+    await mirror(a, cell)
+    const p = publisher(cell)
+    await p.publish()
+    const at = await ledgerVersion(a)
+    expect(at.version).toBeGreaterThan(1)
+    // Incarnation 2 in R2, forged: its base at version 1 holds u2's files and a file u1 never had.
+    const extra = fileFor(cell, a, 'metric_samples', 'L1-extra', { minTs: T0 + 2 * DAY_MS })
+    await putObjects([extra])
+    const added = [...u2.files, extra].map((f, i) => ({ ...f, precedence: i, precedenceLow: i }))
+    const header = { v: 1, kind: 'viz.ledger.segment', tenant: a, ledgerIncarnation: at.ledgerIncarnation + 1, firstVersion: 1, lastVersion: 1, changes: 1 }
+    const base = { ledgerIncarnation: at.ledgerIncarnation + 1, version: 1, at: 0, kind: 'base', added, removed: [], watermarks: [] }
+    await env.BUCKET.put(`${cell}/${ledgerSegmentKey(a, at.ledgerIncarnation + 1, 1, 1)}`, `${JSON.stringify(header)}\n${JSON.stringify(base)}\n`)
+    const r = await p.publish()
+    expect(r.tenants[0]).toMatchObject({ status: 'ok', rebase: { source: 'base', version: 1 }, cursors: { metric_samples: { ledgerIncarnation: at.ledgerIncarnation + 1, version: 1 } } })
+    expect(r.tables.metric_samples).toMatchObject({ added: 1, removed: 1 })
+    expect(await icebergLive(cell, 'metric_samples')).toEqual([u2.files[0]!.key, extra.key].sort())
+    expect(await icebergLive(cell, 'metric_samples')).not.toContain(u1.files[0]!.key)
   })
 
   it('refuses a cursor from an incarnation newer than anything in R2', async () => {

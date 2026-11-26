@@ -9,7 +9,9 @@
     "fixtures": "cd tools/fixtures && CARGO_TARGET_DIR=../../target cargo run -j2 -- ../../test/fixtures/fixture.json",
     "readers": "python3 tools/verify_readers.py export",
     "mutants": "node tools/mutants.mjs",
-    "bench": "vitest run -c vitest.bench.config.ts"
+    "bench": "vitest run -c vitest.bench.config.ts",
+    "readers:signals": "python3 tools/verify_signal_readers.py export/signals",
+    "fixtures:signals": "node tools/signal_fixture.mjs"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.8.4",

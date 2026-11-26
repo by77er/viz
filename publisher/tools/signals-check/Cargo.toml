@@ -1,0 +1,20 @@
+[package]
+name = "viz-publisher-signals-check"
+version = "0.1.0"
+license = "Apache-2.0"
+edition = "2021"
+description = "Compares what PyIceberg and DuckDB read from the publisher's span and log tables with what viz-storage's readers, viz-traceql and viz-logql read from the same files. A test tool, never shipped."
+publish = false
+
+[dependencies]
+viz-storage = { path = "../../../engine/storage" }
+viz-traceql = { path = "../../../engine/traceql" }
+viz-logql = { path = "../../../engine/logql" }
+serde_json = "1"
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-perl", "unicode-case"] }
+
+[profile.release]
+opt-level = 2
+debug = false
+
+[workspace]

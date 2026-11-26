@@ -169,10 +169,13 @@ describe('golden: real segment bytes from the ledger', () => {
     const p = publisher(cell)
     const last = g.stages.at(-1)!
     const r = await p.publish()
-    expect(r.tenants).toEqual([{ tenant: g.tenant, status: 'ok', cursors: { metric_samples: last.cursor, metric_series: last.cursor }, rebase: expect.objectContaining({ source: 'base', format: null, objects: 1 }) }])
+    expect(r.tenants).toEqual([{ tenant: g.tenant, status: 'ok', cursors: { metric_samples: last.cursor, metric_series: last.cursor, spans: last.cursor, trace_index: last.cursor, logs: last.cursor }, rebase: expect.objectContaining({ source: 'base', format: null, objects: 1 }) }])
     for (const table of TABLES) expect(await icebergLive(cell, table)).toEqual(last.live[table])
     // Incarnation 2's base segment and one more: the older incarnation and the checkpoint are not read.
-    expect(r.ops.get).toBeLessThanOrEqual(2 + 2 * 2) // two segments, then per table: current metadata (none yet) and the hint
+    // Two segments, then per metric table the current metadata (none yet) and the hint; the span and
+    // log tables commit nothing. And, as the publisher has no table yet and a tenant to re-base, each
+    // table's hint once before anything is read: a lost storage is rebuilt from R2, not re-based (review M-6).
+    expect(r.ops.get).toBeLessThanOrEqual(2 + 2 * 2 + 5)
     await expectVerified(p)
   })
 })
