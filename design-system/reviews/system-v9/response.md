@@ -357,7 +357,15 @@ offered the legend is one 25 px row taller than v8's. No regression found.
   unchanged from v8).
 - **`npm test`**: 197 tests, **139 pass, 0 fail**, 58 skipped (they need a browser and ran in the corpus run): the 21 chart tests and
   the 118 corpus mutants that need none (80 s; `evidence/npm-test.txt`).
-- **`tools/mutants.mjs`**, the whole corpus on copies: CORPUS
+- **`tools/mutants.mjs`**, the whole corpus on copies: **176 of 176 as expected** (170 caught, the 6 harmless edits pass,
+  C15 among them), 22 min at a load of 9.1 to 10.2 on 26 Nov (`evidence/mutants.txt`): R 18, N 13, X 32, V 17, Y 20, Z 8, W 13, U 15,
+  Q 8, T 8, C 16, A 4, H 4. The first whole run, on 19 Nov, had one mutant not as expected: **T3.audit survived**
+  (`evidence/mutants-first-run-19-nov.txt`); it had been caught in the run of new mutants an hour before. Whether a reload shows a
+  missing markup reservation depends on whether the browser draws a frame before the chart script, so the reload pass alone was not a
+  dependable guard. The audit now also reads every chart's reservation in the page as served with no script run (B1, "What guards
+  it"), which catches T3.audit every time; T3.audit expects that finding. The session was stopped by a usage limit after that first run
+  and resumed on 26 Nov; the served-page check, the last reload pass, this corpus run and `npm test` (197 tests, 139 pass, 0 fail, 58
+  skipped) are from 26 Nov.
 
 ## Migration (for the flows and the app, to be re-imaged on v9)
 
@@ -416,7 +424,7 @@ offered the legend is one 25 px row taller than v8's. No regression found.
   Responsiveness: the reservation in the markup and the reload check; Motion: what the checks read; Layout: `hidden`), `project/review.md`
   (Many series: the offer; Narrow and zoom: reloaded scrolled to each chart), `project/method.md` (step 7), Chart README (rules 3, 5, 6, 7;
   "Reserved height"; "Off screen"; the legend's heads), Nav README (the ring's room), `fixtures/README.md` (what the page draws changed).
-- Tools: `audit.mjs` (`reserve`, `skip`, `font`, the reload pass with `--reload-only` and `--no-reload`, eased colours as computed at rest
+- Tools: `audit.mjs` (`reserve`, `skip`, `font`, the reload pass with `--reload-only` and `--no-reload` and each chart's reservation in the page as served with no script, eased colours as computed at rest
   and hovered, colour transitions on a change of theme, the ring against the ink of its words, the header), `check.mjs` (every chart's
   reservation in its markup, once drawn and after the legend grows, at three widths; `content-visibility`), `lib/structure.mjs` (colour
   properties of every spelling, no `var()` property list, no duration without a list, no rule undoing a chart's skipping),
@@ -443,4 +451,6 @@ offered the legend is one 25 px row taller than v8's. No regression found.
   it was not touched.
 - The scratch copies (v8 as handed off, v9 without the `hidden` rule, the mutant copies), the raw captures and the probes were deleted at
   the end; the probes' results that this file uses are in `evidence/`.
+- The session stopped on 19 Nov at a usage limit while the corpus was running, and resumed on 26 Nov; no one else edited `design-system/`
+  in between. The background runs of 19 Nov were gone; the corpus was run again (above).
 - No Cloudflare resource was touched; nothing was published.

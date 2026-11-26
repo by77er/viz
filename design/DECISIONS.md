@@ -3229,6 +3229,44 @@ and point 5 is new; each change says "review of D69". The entry as first written
    again either as a recorded release (`rollback_to`, judged by main's tooling) or as a new commit on
    main that restores it, which main's tooling judges like any release. `deploy.sh` run by hand from an
    older checkout cannot be refused from here.
+6. **A second switch: `OAUTH_PUBLIC` holds viz-control at D70's third round** (added 2026-11-26 for
+   the second review of D70, m-3; `deploy/workers.json` rule `oauth-public`). Rolling viz-control back
+   to `3cbabb8` or earlier (PR #8, what production first served, among them) once OAuth is public
+   would mint credentials without an expiry the Worker can see and bring B-1 back; to a release with
+   D70's second round but not its third, R3-B1 (a thief's way round reuse detection).
+   - **What raises it**: the first viz-control version that carries `OAUTH_PUBLIC`, a plain var that
+     `configure.mjs` sets to `"1"` on every production viz-control that passes D70's gate (all six
+     Rate Limiting bindings, each with an allocated id) and on a stage only when asked
+     (`--oauth-public`); no component or `VIZ_STAGE_VARS` may set it. In production that is every
+     release from this change on, which is every release that carries or will carry
+     `OAUTH_CLIENT_KEY` (the deploy creates the key wherever it is missing, D53). The key itself is
+     not the switch: point 2 refuses a secret as a switch (its value cannot be read).
+   - **The floor**: viz-control by evidence: `contracts/oauth.ts#CREDENTIAL_LAYOUT`,
+     `#DEAD_INACTIVE_REASONS`, `control/src/deadlist.ts#recordDead` (D70's second round) and
+     `control/src/ratelimit.ts#LISTED` (its third); configure stamps every viz-control version
+     `VIZ_FLOORS` naming `oauth-public`. The writer is its own floor Worker.
+   - **Over a viz-control serving below the floor: forward-only, not refused**
+     (`"serving_below_floor": "forward-only"`, a rule option; `signal-data` keeps the default,
+     `refuse`). Point 2 refuses a switch-on while a floor Worker serves below its floor, and its
+     remedy is "release it at its floor without the switch first". For `signal-data` that is
+     possible: a person sets the switch. For `oauth-public` it is not: production's configure sets
+     the switch on every release, so over an unstamped viz-control every release would be refused,
+     for ever. That is production as deployed on 2026-11-19 from main at fb77292 with that commit's
+     tooling (before D69): viz-control serves OAuth with its key, no rate limits and no stamp. Such a
+     release goes out marked FORWARD-ONLY for viz-control (kind `floor` in `forwardOnlyBecause`):
+     `deploy.sh` does not roll it back automatically and a failed promotion does not put that
+     viz-control back, the two ways back the refusal guarded; and from the moment this release's
+     viz-control is uploaded, `release.mjs rollback` refuses the older one as any rollback below a
+     floor. The serving version is no worse than what serves already; the mark prevents going back
+     to it after credentials of the new layout were issued. A floor Worker the release does not
+     deploy is still judged as it serves and refused.
+   - Otherwise point 2 applies unchanged: once a kept viz-control version had the switch, a release
+     or a rollback that would leave viz-control below its floor is refused (exit 3), and so is a
+     release while the switch is a secret on viz-control.
+   - With it, D70's gate (`deploy/README.md`, "Rate limits in front of OAuth"): configure refuses a
+     production viz-control without the six bindings, and `placement` on viz-control and viz-mcp;
+     `lib/secrets.mjs` does not create or rotate the key on a version without them; a manifest with
+     placeholder ids (`--ids-optional`) is not deployed.
 
 **How the floor is expressed: the alternatives.** (a) In the publisher's own spec: make migration
 4 forward-only (`readableFrom` 4): rejected in D64 (e), it refuses every tenant's storage on a
@@ -3283,6 +3321,21 @@ back through a commit on main. Floors: (t) carry the switch's evidence forward i
 version (m-1) and (u) re-check the floors before each restore step (m-4): not built, recorded as
 known risks with the review's scenarios.
 
+**Alternatives for point 6.** (v) The key as the switch (`"on": "present"`, which `control/README.md`
+names): `deployFloorProblems` would skip its secret refusal for one rule, and a switch would have two
+meanings. (w) Refuse over an unstamped serving viz-control, as point 2 does, with a one-off configure
+flag for production that leaves `OAUTH_PUBLIC` off for one release: the first release over the
+2026-11-19 production would fail in CI until someone ran a release by hand from a workstation, and
+the flag would be a standing way to release a public OAuth without raising the floor. (x) Mark every
+switch-on over a below-floor serving Worker forward-only, for both rules: for `signal-data` the
+refusal costs one release without the switch and keeps the automatic rollback of the release that
+sets it, so there is no reason to give that up. (y) Raise the floor only from the first release with
+the rate limits whose viz-control already had the key (the lead's example): the same releases in
+production, since every production release from this change has both; the var says it without a
+second condition. Chosen: the var, set by configure, and forward-only over an unstamped viz-control
+for this rule only. This replaces `control/README.md`'s "a release setting it while the serving
+viz-control is unstamped is refused", which would have stranded production.
+
 **Alternatives for the rest.** Formats: (f) record only the formats whose read and write sets differ
 (the gate): a later bump of any other format would go unjudged; recording every `FORMATS` map, with a
 test that no map in a deployed component is left out, costs a var of under 1 KB per Worker. (g)
@@ -3331,7 +3384,9 @@ viz-query and viz-ingest rests on the declaration in `workers.json`, added with 
 D62 and D63. A forced rollback outside the tool (wrangler, the dashboard) is not checked.
 
 **Would change if.** Components declare their own floors or read versions (then `workers.json`
-points at them, and evidence and `reads_v1` go); a second switch appears (another rule); Cloudflare
+points at them, and evidence and `reads_v1` go); a further switch appears (another rule; point 6 is
+the second); OAuth can be turned off in production (then `OAUTH_PUBLIC` follows that setting rather
+than every gated release); Cloudflare
 keeps deployment history the tool can read (then "the switch was on" need not be found among
 versions, and m-1 goes); the key can be rotated with overlap (D53); GitHub lets a repository refuse a
 ref for every workflow file, old ones included (then the environment rule is not the only guard of
@@ -3573,8 +3628,14 @@ person's admin key and was already bounded exactly (20 a tenant an hour).
       would also block revocations, which a client sends to end access.
   - **The exact limits** in layer 2 cannot fail open: they are statements in the request's own
     transaction.
-  - **The deploy enforces that the bindings exist**, not the Worker: it is to refuse a production
-    viz-control without them (a needed change, restated in `control/README.md`).
+  - **The deploy enforces that the bindings exist**, not the Worker (done 2026-11-26,
+    `deploy/README.md`, "Rate limits in front of OAuth"): `configure.mjs` refuses a production
+    viz-control without all six (naming the missing ones), with a period other than 60, a limit that
+    is not a positive integer, a name `src/ratelimit.ts` `LIMITERS` does not list, or a namespace id
+    that is a placeholder, outside viz's range or shared; `lib/secrets.mjs` does not create or rotate
+    `OAUTH_CLIENT_KEY` on a version whose generated config lacks them; a stage leaves them out only
+    with `--oauth-without-rate-limits`, which its release record says. `deploy/resources.mjs` gives
+    each deployment ids of its own from 7000–7999, never one another script of the account binds.
 - **Layer 2, exact, in the tenant's object, where rows are written:** at most 6 refresh tokens per
   grant in any 60 s (`OAUTH_LIMITS.refreshesPerGrantPerMinute`, the code exchange's included).
   - It is counted from the `oauth_tokens` rows the object already keeps: no new state, one read.
@@ -3610,14 +3671,16 @@ person's admin key and was already bounded exactly (20 a tenant an hour).
   authorization page).
 - **Assumed**: viz-control and viz-mcp run without Smart Placement (m-8). With placement their
   invocations gather in a few locations, and the per-location budgets become nearly global, the
-  fuses with them. A control test checks both Workers' `wrangler.jsonc`. A check in the deploy's
-  configure is a needed change.
+  fuses with them. A control test checks both Workers' `wrangler.jsonc`, and the deploy's
+  `configure.mjs` refuses `placement` on both (done 2026-11-26).
 - **Rollback floor** (second review, m-3; OAuth is public already, since PR #8): rolling viz-control
   back to a release before the first rewrite (`3cbabb8` or earlier, PR #8 among them) would mint
   credentials without an expiry and serve without layer 1; one with the second rewrite but not this
-  revision would bring R3-B1 back, a thief's way round reuse detection. D69's `rollback_floors` should
-  hold viz-control at this revision from the first release that carries it (the deploy change, with
-  evidence exports only this revision has, is in `control/README.md`, "Needed changes elsewhere").
+  revision would bring R3-B1 back, a thief's way round reuse detection. D69's `rollback_floors` holds
+  viz-control at this revision from the first release that carries it (done 2026-11-26: rule
+  `oauth-public`, its evidence `LISTED` with the three of round 2, the var `OAUTH_PUBLIC` set by
+  configure on every production viz-control; D69, point 6, also says why that first release, over
+  PR #8's viz-control, is forward-only rather than refused).
 
 **What an attacker can still do** (modelled unless marked):
 - **Someone holding dead credentials of a tenant that have not expired** (a former client's; a
@@ -4089,3 +4152,20 @@ the extra row write shows in the bill (then (c4) at a release that can afford th
 only for shards that are read with ranges); the walk shows on a shard's CPU (then (i)); Cloudflare's
 SQLite reads or bills differently from workerd's here (the experiments above).
 
+
+## D73. "Colour the eight largest" is offered only when pressing it would change a colour
+
+**Decision** (2026-11-19, the lead; built in design system v9). A chart offers "Colour the eight
+largest" only when one of the eight largest series on screen is not coloured. The review rubric
+(`design-system/project/review.md`) and the Chart rules say so, and a property check (P8) tests it.
+
+**Alternatives.** (a) Offer it wherever a series on screen is in Other, as the rubric said through
+v8: the v8 review found it offered at load, where pressing it changes nothing and nothing says why.
+(b) Keep offering it and add a note, "the eight largest are coloured": one more line of text on
+every chart for a control that does nothing.
+
+**Why.** The design system's feedback rule, every response meaningful, outranks a rule about where
+a control appears: a control that can do nothing is not offered.
+
+**Would change if** people look for the control to confirm that the largest are coloured (then (b),
+as a state of the legend, not a button).

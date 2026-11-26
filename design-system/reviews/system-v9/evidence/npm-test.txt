@@ -6,1183 +6,1183 @@ TAP version 13
 # Subtest: B2, sequence D: a pod comes back while its slot is held only by a hidden series: it takes its slot back
 ok 1 - B2, sequence D: a pod comes back while its slot is held only by a hidden series: it takes its slot back
   ---
-  duration_ms: 19.616557
+  duration_ms: 24.14545
   type: 'test'
   ...
 # Subtest: B2, sequence D as the reviewer ran it (36 pods): hiding the newcomer gives its slot to the largest grey pod at once; the returning pod finds it held on screen
 ok 2 - B2, sequence D as the reviewer ran it (36 pods): hiding the newcomer gives its slot to the largest grey pod at once; the returning pod finds it held on screen
   ---
-  duration_ms: 6.557262
+  duration_ms: 11.553925
   type: 'test'
   ...
 # Subtest: B2, sequence E: "Without the three largest", a larger pod arrives, "Colour the eight largest", clear: each step follows what is on screen
 ok 3 - B2, sequence E: "Without the three largest", a larger pod arrives, "Colour the eight largest", clear: each step follows what is on screen
   ---
-  duration_ms: 7.145796
+  duration_ms: 14.15962
   type: 'test'
   ...
 # Subtest: Rubric blocker: a readout naming a smaller series as highest
 ok 4 - Rubric blocker: a readout naming a smaller series as highest
   ---
-  duration_ms: 2.04892
+  duration_ms: 2.446824
   type: 'test'
   ...
 # Subtest: Rubric blocker: a series on screen changing colour while it stays on screen (deploy churn, a filter, a query edit)
 ok 5 - Rubric blocker: a series on screen changing colour while it stays on screen (deploy churn, a filter, a query edit)
   ---
-  duration_ms: 3.927628
+  duration_ms: 4.537758
   type: 'test'
   ...
 # Subtest: Rubric blocker: the largest series on screen grey while a slot is open (here held only by a hidden series)
 ok 6 - Rubric blocker: the largest series on screen grey while a slot is open (here held only by a hidden series)
   ---
-  duration_ms: 2.272939
+  duration_ms: 3.385829
   type: 'test'
   ...
 # Subtest: Rubric blocker: a series coming back grey or in another colour while no series on screen holds its slot
 ok 7 - Rubric blocker: a series coming back grey or in another colour while no series on screen holds its slot
   ---
-  duration_ms: 1.166362
+  duration_ms: 1.262391
   type: 'test'
   ...
 # Subtest: v8: a pod that misses one result while pods are grey: its slot goes to the largest grey pod; it comes back in Other, offered the recolour
 ok 8 - v8: a pod that misses one result while pods are grey: its slot goes to the largest grey pod; it comes back in Other, offered the recolour
   ---
-  duration_ms: 3.478872
+  duration_ms: 4.380461
   type: 'test'
   ...
 # Subtest: Rubric blocker: a query edited to series it does not share and edited back not returning every colour (v5 review, image 02)
 ok 9 - Rubric blocker: a query edited to series it does not share and edited back not returning every colour (v5 review, image 02)
   ---
-  duration_ms: 4.916781
+  duration_ms: 5.904557
   type: 'test'
   ...
 # Subtest: v5 image 01 under v7: filter out the three largest, a larger pod arrives, clear: the three take colours back only where nothing on screen holds them
 ok 10 - v5 image 01 under v7: filter out the three largest, a larger pod arrives, clear: the three take colours back only where nothing on screen holds them
   ---
-  duration_ms: 5.644052
+  duration_ms: 9.802914
   type: 'test'
   ...
 # Subtest: A filter round trip with nothing grey on screen returns every colour (eight services, filter in the query)
 ok 11 - A filter round trip with nothing grey on screen returns every colour (eight services, filter in the query)
   ---
-  duration_ms: 1.263093
+  duration_ms: 1.349838
   type: 'test'
   ...
 # Subtest: Flow screen 5: one series, a query that returns 36 pods, and back: the one series returns in slot 1
 ok 12 - Flow screen 5: one series, a query that returns 36 pods, and back: the one series returns in slot 1
   ---
-  duration_ms: 1.353661
+  duration_ms: 5.314636
   type: 'test'
   ...
 # Subtest: M1 (v7 review), image 03: a query narrowed to node-b colours the eight largest on screen, as the same dashboard filter does
 ok 13 - M1 (v7 review), image 03: a query narrowed to node-b colours the eight largest on screen, as the same dashboard filter does
   ---
-  duration_ms: 6.721192
+  duration_ms: 17.723355
   type: 'test'
   ...
 # Subtest: m3 (v8 review), image 02: "Colour the eight largest" is offered only when pressing it would change a colour
 ok 14 - m3 (v8 review), image 02: "Colour the eight largest" is offered only when pressing it would change a colour
   ---
-  duration_ms: 8.706782
+  duration_ms: 16.188831
   type: 'test'
   ...
 # Subtest: v8 twins: 300 random sequences of 30 steps narrowing and widening by query edit and by dashboard filter, with legend toggles: the same colours, every property held
 ok 15 - v8 twins: 300 random sequences of 30 steps narrowing and widening by query edit and by dashboard filter, with legend toggles: the same colours, every property held
   ---
-  duration_ms: 2926.195429
+  duration_ms: 5234.449173
   type: 'test'
   ...
 # Subtest: Random sequences of arrivals, departures, filters, query edits, Other opened and picked, recolouring (400 of 30 steps)
 ok 16 - Random sequences of arrivals, departures, filters, query edits, Other opened and picked, recolouring (400 of 30 steps)
   ---
-  duration_ms: 2569.757155
+  duration_ms: 4209.14526
   type: 'test'
   ...
 # Subtest: M2: values below zero: the axis extends below zero and every value lies on the plot
 ok 17 - M2: values below zero: the axis extends below zero and every value lies on the plot
   ---
-  duration_ms: 0.693033
+  duration_ms: 0.588765
   type: 'test'
   ...
 # Subtest: M2: a threshold is on the axis and does not inflate it
 ok 18 - M2: a threshold is on the axis and does not inflate it
   ---
-  duration_ms: 0.143167
+  duration_ms: 0.192566
   type: 'test'
   ...
 # Subtest: M2: precision is one decimal place finer than the place of the step's leading digit
 ok 19 - M2: precision is one decimal place finer than the place of the step's leading digit
   ---
-  duration_ms: 1.941111
+  duration_ms: 0.321815
   type: 'test'
   ...
 # Subtest: M2: negative values keep their sign, and a small one says which side of zero it is
 ok 20 - M2: negative values keep their sign, and a small one says which side of zero it is
   ---
-  duration_ms: 0.313729
+  duration_ms: 0.318708
   type: 'test'
   ...
 # Subtest: M1 (v5), image 06: a member of Other above the threshold is in the text form
 ok 21 - M1 (v5), image 06: a member of Other above the threshold is in the text form
   ---
-  duration_ms: 2.309515
+  duration_ms: 3.846898
   type: 'test'
   ...
 # Subtest: R1: swatch ring removed
 ok 22 - R1: swatch ring removed
   ---
-  duration_ms: 317.852419
+  duration_ms: 534.887152
   type: 'test'
   ...
 # Subtest: R2: pressed equal to hover (light)
 ok 23 - R2: pressed equal to hover (light)
   ---
-  duration_ms: 211.782614
+  duration_ms: 429.28647
   type: 'test'
   ...
 # Subtest: R3: series-4 back to v3 \#eda100 (light)
 ok 24 - R3: series-4 back to v3 \#eda100 (light)
   ---
-  duration_ms: 244.739924
+  duration_ms: 368.046494
   type: 'test'
   ...
 # Subtest: R4: crosshair dot edge to rule
 ok 25 - R4: crosshair dot edge to rule
   ---
-  duration_ms: 294.775217
+  duration_ms: 351.718906
   type: 'test'
   ...
 # Subtest: R5: status-info equal to blue (light)
 ok 26 - R5: status-info equal to blue (light)
   ---
-  duration_ms: 223.080966
+  duration_ms: 349.595592
   type: 'test'
   ...
 # Subtest: R6: two near-identical neighbours (series-3 a copy of series-2, light)
 ok 27 - R6: two near-identical neighbours (series-3 a copy of series-2, light)
   ---
-  duration_ms: 224.49055
+  duration_ms: 387.110462
   type: 'test'
   ...
 # Subtest: R7: a literal 3px
 ok 28 - R7: a literal 3px
   ---
-  duration_ms: 262.024253
+  duration_ms: 408.378747
   type: 'test'
   ...
 # Subtest: R8: series-other near white (light)
 ok 29 - R8: series-other near white (light)
   ---
-  duration_ms: 264.282677
+  duration_ms: 367.469374
   type: 'test'
   ...
 # Subtest: R9: swatch ring overridden on hover
 ok 30 - R9: swatch ring overridden on hover
   ---
-  duration_ms: 237.870584
+  duration_ms: 399.699975
   type: 'test'
   ...
 # Subtest: R10: ink-muted on pressed in the legend (the pressed override removed)
 ok 31 - R10: ink-muted on pressed in the legend (the pressed override removed) # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.297205
+  duration_ms: 0.367055
   type: 'test'
   ...
 # Subtest: R11: ink-muted on rule in the legend (the chosen override removed)
 ok 32 - R11: ink-muted on rule in the legend (the chosen override removed) # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.087898
+  duration_ms: 0.107795
   type: 'test'
   ...
 # Subtest: R12: the plot filled with hover on hover
 ok 33 - R12: the plot filled with hover on hover
   ---
-  duration_ms: 267.295622
+  duration_ms: 439.49359
   type: 'test'
   ...
 # Subtest: R13: series-8 set to status-critical (light)
 ok 34 - R13: series-8 set to status-critical (light)
   ---
-  duration_ms: 282.159095
+  duration_ms: 488.006574
   type: 'test'
   ...
 # Subtest: R14: a literal angle (deg)
 ok 35 - R14: a literal angle (deg)
   ---
-  duration_ms: 265.948042
+  duration_ms: 404.038486
   type: 'test'
   ...
 # Subtest: R15: a literal percentage
 ok 36 - R15: a literal percentage
   ---
-  duration_ms: 223.239193
+  duration_ms: 550.546273
   type: 'test'
   ...
 # Subtest: R16: a literal unitless weight
 ok 37 - R16: a literal unitless weight
   ---
-  duration_ms: 305.784896
+  duration_ms: 497.553492
   type: 'test'
   ...
 # Subtest: R17: an opaque scrim (light)
 ok 38 - R17: an opaque scrim (light)
   ---
-  duration_ms: 246.018208
+  duration_ms: 546.492609
   type: 'test'
   ...
 # Subtest: R18: harmless: the swatch rule reformatted onto two lines
 ok 39 - R18: harmless: the swatch rule reformatted onto two lines
   ---
-  duration_ms: 214.067861
+  duration_ms: 442.545524
   type: 'test'
   ...
 # Subtest: N1: swatch ring removed on a pressed row only
 ok 40 - N1: swatch ring removed on a pressed row only
   ---
-  duration_ms: 251.989029
+  duration_ms: 585.941471
   type: 'test'
   ...
 # Subtest: N2: neighbours at one lightness (series-2 as dark as series-1, light)
 ok 41 - N2: neighbours at one lightness (series-2 as dark as series-1, light)
   ---
-  duration_ms: 252.246001
+  duration_ms: 470.721247
   type: 'test'
   ...
 # Subtest: N3: slot 7 drawn solid (its dash removed)
 ok 42 - N3: slot 7 drawn solid (its dash removed)
   ---
-  duration_ms: 251.219522
+  duration_ms: 654.546689
   type: 'test'
   ...
 # Subtest: N4: lines that step back drawn in rule
 ok 43 - N4: lines that step back drawn in rule
   ---
-  duration_ms: 235.357684
+  duration_ms: 583.085193
   type: 'test'
   ...
 # Subtest: N5: a breakpoint that is not a token (800px)
 ok 44 - N5: a breakpoint that is not a token (800px)
   ---
-  duration_ms: 228.386697
+  duration_ms: 375.612505
   type: 'test'
   ...
 # Subtest: N6: token-lint-ignore without a reason
 ok 45 - N6: token-lint-ignore without a reason
   ---
-  duration_ms: 238.511743
+  duration_ms: 518.406373
   type: 'test'
   ...
 # Subtest: N7: a series in the dark theme below 3:1 on rule
 ok 46 - N7: a series in the dark theme below 3:1 on rule
   ---
-  duration_ms: 344.934519
+  duration_ms: 471.371886
   type: 'test'
   ...
 # Subtest: N8: chosen legend row text in ink-muted
 ok 47 - N8: chosen legend row text in ink-muted # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.069906
+  duration_ms: 0.080437
   type: 'test'
   ...
 # Subtest: N9: a waterfall bar drawn in rule
 ok 48 - N9: a waterfall bar drawn in rule # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.035225
+  duration_ms: 0.044148
   type: 'test'
   ...
 # Subtest: N10: the legend row's ring back to an outline on the row
 ok 49 - N10: the legend row's ring back to an outline on the row
   ---
-  duration_ms: 352.647211
+  duration_ms: 425.4544
   type: 'test'
   ...
 # Subtest: N11: a matched search term in ink-muted
 ok 50 - N11: a matched search term in ink-muted # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.075848
+  duration_ms: 0.0751
   type: 'test'
   ...
 # Subtest: N12: "3 spans inside" in ink-muted
 ok 51 - N12: "3 spans inside" in ink-muted # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.051559
+  duration_ms: 0.040583
   type: 'test'
   ...
 # Subtest: N13: a literal line count for a cut log message
 ok 52 - N13: a literal line count for a cut log message
   ---
-  duration_ms: 299.182012
+  duration_ms: 412.58229
   type: 'test'
   ...
 # Subtest: X1: a named colour
 ok 53 - X1: a named colour
   ---
-  duration_ms: 282.771601
+  duration_ms: 418.153736
   type: 'test'
   ...
 # Subtest: X2: RGB(255,0,0), upper case
 ok 54 - X2: RGB(255,0,0), upper case
   ---
-  duration_ms: 311.159864
+  duration_ms: 377.161524
   type: 'test'
   ...
 # Subtest: X3: a tinted table head from color-mix of tokens at 50%
 ok 55 - X3: a tinted table head from color-mix of tokens at 50%
   ---
-  duration_ms: 244.629924
+  duration_ms: 397.592118
   type: 'test'
   ...
 # Subtest: X4: 3PX, upper case
 ok 56 - X4: 3PX, upper case
   ---
-  duration_ms: 316.200199
+  duration_ms: 630.85497
   type: 'test'
   ...
 # Subtest: X5: 1ex, 2vmin, 0.5lh, 3cqi
 ok 57 - X5: 1ex, 2vmin, 0.5lh, 3cqi
   ---
-  duration_ms: 266.467243
+  duration_ms: 431.50309
   type: 'test'
   ...
 # Subtest: X6: font-weight: bold
 ok 58 - X6: font-weight: bold
   ---
-  duration_ms: 225.887555
+  duration_ms: 352.043505
   type: 'test'
   ...
 # Subtest: X7: a breakpoint in em
 ok 59 - X7: a breakpoint in em
   ---
-  duration_ms: 244.779031
+  duration_ms: 406.635171
   type: 'test'
   ...
 # Subtest: X8: border-radius: 50% (fully rounded)
 ok 60 - X8: border-radius: 50% (fully rounded)
   ---
-  duration_ms: 294.563647
+  duration_ms: 347.983466
   type: 'test'
   ...
 # Subtest: X9: a gradient built from tokens
 ok 61 - X9: a gradient built from tokens
   ---
-  duration_ms: 274.866645
+  duration_ms: 320.153901
   type: 'test'
   ...
 # Subtest: X10: a second shadow built from tokens
 ok 62 - X10: a second shadow built from tokens
   ---
-  duration_ms: 264.083355
+  duration_ms: 376.463748
   type: 'test'
   ...
 # Subtest: X11: capitals and tracking on labels
 ok 63 - X11: capitals and tracking on labels
   ---
-  duration_ms: 238.941561
+  duration_ms: 436.486152
   type: 'test'
   ...
 # Subtest: X12: an off-scale calc(var(--space-1) * 1.5)
 ok 64 - X12: an off-scale calc(var(--space-1) * 1.5)
   ---
-  duration_ms: 232.204928
+  duration_ms: 411.339185
   type: 'test'
   ...
 # Subtest: X13: filter: opacity(0.5) and filter: brightness(0.9)
 ok 65 - X13: filter: opacity(0.5) and filter: brightness(0.9)
   ---
-  duration_ms: 267.401256
+  duration_ms: 349.525422
   type: 'test'
   ...
 # Subtest: X14: linear and ease-in-out
 ok 66 - X14: linear and ease-in-out
   ---
-  duration_ms: 218.053062
+  duration_ms: 404.033058
   type: 'test'
   ...
 # Subtest: X15: a press that eases
 ok 67 - X15: a press that eases
   ---
-  duration_ms: 227.930069
+  duration_ms: 495.245348
   type: 'test'
   ...
 # Subtest: X16: selection in blue
 ok 68 - X16: selection in blue
   ---
-  duration_ms: 263.07627
+  duration_ms: 483.726982
   type: 'test'
   ...
 # Subtest: X17: a series colour on a panel rule
 ok 69 - X17: a series colour on a panel rule
   ---
-  duration_ms: 279.516278
+  duration_ms: 479.199166
   type: 'test'
   ...
 # Subtest: X18: the reduced-motion block removed
 ok 70 - X18: the reduced-motion block removed
   ---
-  duration_ms: 299.97953
+  duration_ms: 440.817789
   type: 'test'
   ...
 # Subtest: X19: the focus ring removed everywhere
 ok 71 - X19: the focus ring removed everywhere
   ---
-  duration_ms: 219.59907
+  duration_ms: 419.935146
   type: 'test'
   ...
 # Subtest: X20: every coarse-pointer hit area removed
 ok 72 - X20: every coarse-pointer hit area removed
   ---
-  duration_ms: 253.840321
+  duration_ms: 387.638029
   type: 'test'
   ...
 # Subtest: X21: dashed swatches drawn solid
 ok 73 - X21: dashed swatches drawn solid
   ---
-  duration_ms: 278.528085
+  duration_ms: 389.561931
   type: 'test'
   ...
 # Subtest: X22: emphasis removed
 ok 74 - X22: emphasis removed
   ---
-  duration_ms: 243.848207
+  duration_ms: 515.324994
   type: 'test'
   ...
 # Subtest: X23: touch-action removed
 ok 75 - X23: touch-action removed
   ---
-  duration_ms: 237.712879
+  duration_ms: 615.219543
   type: 'test'
   ...
 # Subtest: X24: series-5 a copy of series-1 (light)
 ok 76 - X24: series-5 a copy of series-1 (light)
   ---
-  duration_ms: 230.160862
+  duration_ms: 595.967953
   type: 'test'
   ...
 # Subtest: X25: ink-disabled equal to ink-muted (light)
 ok 77 - X25: ink-disabled equal to ink-muted (light)
   ---
-  duration_ms: 189.682078
+  duration_ms: 531.172641
   type: 'test'
   ...
 # Subtest: X26: series-4 near grey (light)
 ok 78 - X26: series-4 near grey (light)
   ---
-  duration_ms: 234.342587
+  duration_ms: 481.502494
   type: 'test'
   ...
 # Subtest: X27: the chart reservation ignoring the coarse legend row (v4's B2 back)
 ok 79 - X27: the chart reservation ignoring the coarse legend row (v4's B2 back)
   ---
-  duration_ms: 245.859845
+  duration_ms: 512.795737
   type: 'test'
   ...
 # Subtest: X28: a main path moved into a sentence
 ok 80 - X28: a main path moved into a sentence
   ---
-  duration_ms: 433.455231
+  duration_ms: 541.74791
   type: 'test'
   ...
 # Subtest: X29: a single-quoted style='font-weight:600;width:37%' in a preview
 ok 81 - X29: a single-quoted style='font-weight:600;width:37%' in a preview
   ---
-  duration_ms: 417.526155
+  duration_ms: 852.73812
   type: 'test'
   ...
 # Subtest: X30: opacity and weight set from script
 ok 82 - X30: opacity and weight set from script
   ---
-  duration_ms: 459.888681
+  duration_ms: 712.615472
   type: 'test'
   ...
 # Subtest: X31: row actions revealed only on hover
 ok 83 - X31: row actions revealed only on hover
   ---
-  duration_ms: 216.446444
+  duration_ms: 418.543256
   type: 'test'
   ...
 # Subtest: X32: text below micro
 ok 84 - X32: text below micro
   ---
-  duration_ms: 305.362492
+  duration_ms: 399.860112
   type: 'test'
   ...
 # Subtest: V1: the table wrap unpositioned (B2.1)
 ok 85 - V1: the table wrap unpositioned (B2.1)
   ---
-  duration_ms: 238.284905
+  duration_ms: 492.208153
   type: 'test'
   ...
 # Subtest: V2: a state in a kept column no longer wraps (B2.2)
 ok 86 - V2: a state in a kept column no longer wraps (B2.2)
   ---
-  duration_ms: 262.1367
+  duration_ms: 532.613589
   type: 'test'
   ...
 # Subtest: V3: "Actions…" without its place in the folded row (B2.2)
 ok 87 - V3: "Actions…" without its place in the folded row (B2.2)
   ---
-  duration_ms: 218.099128
+  duration_ms: 505.082144
   type: 'test'
   ...
 # Subtest: V4: the two fold forms drift apart
 ok 88 - V4: the two fold forms drift apart
   ---
-  duration_ms: 284.446676
+  duration_ms: 462.098253
   type: 'test'
   ...
 # Subtest: V5: a finger's press: the blue button's [data-pressed] twin removed (M3)
 ok 89 - V5: a finger's press: the blue button's [data-pressed] twin removed (M3)
   ---
-  duration_ms: 261.385342
+  duration_ms: 395.334578
   type: 'test'
   ...
 # Subtest: V6: the caption a flex row again (flows G17)
 ok 90 - V6: the caption a flex row again (flows G17)
   ---
-  duration_ms: 269.452974
+  duration_ms: 437.232864
   type: 'test'
   ...
 # Subtest: V7: links in list items and help lines drawn as controls again (m1)
 ok 91 - V7: links in list items and help lines drawn as controls again (m1)
   ---
-  duration_ms: 331.418495
+  duration_ms: 470.801531
   type: 'test'
   ...
 # Subtest: V8: a cut key link's underline removed (m2)
 ok 92 - V8: a cut key link's underline removed (m2)
   ---
-  duration_ms: 336.167955
+  duration_ms: 342.622555
   type: 'test'
   ...
 # Subtest: V9: the reservation keyed on an inline style attribute again (m7)
 ok 93 - V9: the reservation keyed on an inline style attribute again (m7)
   ---
-  duration_ms: 221.110761
+  duration_ms: 679.043112
   type: 'test'
   ...
 # Subtest: V10: legend rows reserved a hairline taller than drawn (v5)
 ok 94 - V10: legend rows reserved a hairline taller than drawn (v5) # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.073211
+  duration_ms: 0.068502
   type: 'test'
   ...
 # Subtest: V11: after an error, swatches keep their colour (m3)
 ok 95 - V11: after an error, swatches keep their colour (m3)
   ---
-  duration_ms: 238.435426
+  duration_ms: 498.456446
   type: 'test'
   ...
 # Subtest: V12: series-other back to v5 (light \#767676, 1.02:1 from series-4)
 ok 96 - V12: series-other back to v5 (light \#767676, 1.02:1 from series-4)
   ---
-  duration_ms: 199.063446
+  duration_ms: 491.053558
   type: 'test'
   ...
 # Subtest: V13: the scroll edge back to an inset shadow under the cells (m14)
 ok 97 - V13: the scroll edge back to an inset shadow under the cells (m14)
   ---
-  duration_ms: 238.2819
+  duration_ms: 467.843885
   type: 'test'
   ...
 # Subtest: V14: status marks centred across lines, not on the first
 ok 98 - V14: status marks centred across lines, not on the first
   ---
-  duration_ms: 336.489381
+  duration_ms: 437.947592
   type: 'test'
   ...
 # Subtest: V15: a kept column narrower than its phrase
 ok 99 - V15: a kept column narrower than its phrase
   ---
-  duration_ms: 301.247391
+  duration_ms: 541.257337
   type: 'test'
   ...
 # Subtest: V17: a status's words and its time side by side, not one run (the time leaves the line)
 ok 100 - V17: a status's words and its time side by side, not one run (the time leaves the line)
   ---
-  duration_ms: 474.937709
+  duration_ms: 550.949502
   type: 'test'
   ...
 # Subtest: V16: a shadow-overlay on a panel (the one shadow off an overlay)
 ok 101 - V16: a shadow-overlay on a panel (the one shadow off an overlay)
   ---
-  duration_ms: 326.084252
+  duration_ms: 390.208166
   type: 'test'
   ...
 # Subtest: Y1: red written with a CSS escape (\\72 ed)
 ok 102 - Y1: red written with a CSS escape (\\72 ed)
   ---
-  duration_ms: 283.162954
+  duration_ms: 454.98584
   type: 'test'
   ...
 # Subtest: Y2: a system colour (AccentColor)
 ok 103 - Y2: a system colour (AccentColor)
   ---
-  duration_ms: 330.706864
+  duration_ms: 399.237603
   type: 'test'
   ...
 # Subtest: Y3: a keyword width (thick)
 ok 104 - Y3: a keyword width (thick)
   ---
-  duration_ms: 329.528325
+  duration_ms: 381.197603
   type: 'test'
   ...
 # Subtest: Y4: small capitals by font-variant
 ok 105 - Y4: small capitals by font-variant
   ---
-  duration_ms: 406.793296
+  duration_ms: 349.72977
   type: 'test'
   ...
 # Subtest: Y5: a looping animation on the progress bar (a spinner)
 ok 106 - Y5: a looping animation on the progress bar (a spinner)
   ---
-  duration_ms: 305.614477
+  duration_ms: 415.077308
   type: 'test'
   ...
 # Subtest: Y6: @property with a literal initial value
 ok 107 - Y6: @property with a literal initial value
   ---
-  duration_ms: 268.424095
+  duration_ms: 446.301982
   type: 'test'
   ...
 # Subtest: Y7: a literal inside a nested rule
 ok 108 - Y7: a literal inside a nested rule
   ---
-  duration_ms: 261.538185
+  duration_ms: 442.77262
   type: 'test'
   ...
 # Subtest: Y8: SVG presentation attributes in a preview (fill="red", stroke-width="3")
 ok 109 - Y8: SVG presentation attributes in a preview (fill="red", stroke-width="3")
   ---
-  duration_ms: 494.500477
+  duration_ms: 615.396774
   type: 'test'
   ...
 # Subtest: Y9: style from script: Object.assign(el.style, …), el.animate(…, { iterations: Infinity }), setAttribute("style", …)
 ok 110 - Y9: style from script: Object.assign(el.style, …), el.animate(…, { iterations: Infinity }), setAttribute("style", …)
   ---
-  duration_ms: 430.56912
+  duration_ms: 583.586767
   type: 'test'
   ...
 # Subtest: Y10: the focus ring made transparent by a later rule
 ok 111 - Y10: the focus ring made transparent by a later rule # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.115757
+  duration_ms: 0.093934
   type: 'test'
   ...
 # Subtest: Y11: coarse hit areas removed by a later rule
 ok 112 - Y11: coarse hit areas removed by a later rule # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.046781
+  duration_ms: 0.037087
   type: 'test'
   ...
 # Subtest: Y12: the table wrap unpositioned by a later rule (v5 B2.1 back)
 ok 113 - Y12: the table wrap unpositioned by a later rule (v5 B2.1 back) # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.030842
+  duration_ms: 0.031651
   type: 'test'
   ...
 # Subtest: Y13: a dashed swatch filled solid by a later rule
 ok 114 - Y13: a dashed swatch filled solid by a later rule # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.032627
+  duration_ms: 0.037686
   type: 'test'
   ...
 # Subtest: Y14: a transition put back under reduced motion
 ok 115 - Y14: a transition put back under reduced motion # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.030502
+  duration_ms: 0.029765
   type: 'test'
   ...
 # Subtest: Y15: emphasis undone by a later rule of the same weight
 ok 116 - Y15: emphasis undone by a later rule of the same weight # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.063244
+  duration_ms: 0.0254
   type: 'test'
   ...
 # Subtest: Y16: the chart's reservation overridden (min-height: 0)
 ok 117 - Y16: the chart's reservation overridden (min-height: 0) # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.035106
+  duration_ms: 0.023998
   type: 'test'
   ...
 # Subtest: Y17: a kept state made nowrap again by a later !important rule (v5 B2.2 back)
 ok 118 - Y17: a kept state made nowrap again by a later !important rule (v5 B2.2 back) # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.023632
+  duration_ms: 0.025744
   type: 'test'
   ...
 # Subtest: Y18: a finger's press painted as rest by a later rule
 ok 119 - Y18: a finger's press painted as rest by a later rule # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.028173
+  duration_ms: 0.024566
   type: 'test'
   ...
 # Subtest: Y19: a breakpoint in a style element's media attribute
 ok 120 - Y19: a breakpoint in a style element's media attribute
   ---
-  duration_ms: 464.855582
+  duration_ms: 698.574685
   type: 'test'
   ...
 # Subtest: Y20: an emoji in generated content
 ok 121 - Y20: an emoji in generated content
   ---
-  duration_ms: 315.02639
+  duration_ms: 492.579579
   type: 'test'
   ...
 # Subtest: Z1: the folded key without its minimum (key-min) (v6 review, B1)
 ok 122 - Z1: the folded key without its minimum (key-min) (v6 review, B1)
   ---
-  duration_ms: 258.589066
+  duration_ms: 447.061005
   type: 'test'
   ...
 # Subtest: Z2: v6's arrangement of a list with one kept column: "Actions…" on the key's line and no key minimum (v6 review, B1)
 ok 123 - Z2: v6's arrangement of a list with one kept column: "Actions…" on the key's line and no key minimum (v6 review, B1) # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.097671
+  duration_ms: 0.076172
   type: 'test'
   ...
 # Subtest: Z3: a cut name capped at half the measure but not at its cell, and the key link unable to shrink (v6 B1, image 01)
 ok 124 - Z3: a cut name capped at half the measure but not at its cell, and the key link unable to shrink (v6 B1, image 01) # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.048939
+  duration_ms: 0.046845
   type: 'test'
   ...
 # Subtest: Z4: two kept columns beside the key below breakpoint-narrow (the key's own line removed)
 ok 125 - Z4: two kept columns beside the key below breakpoint-narrow (the key's own line removed)
   ---
-  duration_ms: 344.658247
+  duration_ms: 480.68685
   type: 'test'
   ...
 # Subtest: Z5: the chosen segment's fill outranks a press again (rule order)
 ok 126 - Z5: the chosen segment's fill outranks a press again (rule order) # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.113654
+  duration_ms: 0.070733
   type: 'test'
   ...
 # Subtest: Z6: the legend's action rows drawn shorter than a legend row with a coarse pointer: a button's hit area reaches the row above
 ok 127 - Z6: the legend's action rows drawn shorter than a legend row with a coarse pointer: a button's hit area reaches the row above # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.038279
+  duration_ms: 0.042777
   type: 'test'
   ...
 # Subtest: Z7: the CSS changed after the build: dist/ stale (v6 review, m6)
 ok 128 - Z7: the CSS changed after the build: dist/ stale (v6 review, m6) # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.031193
+  duration_ms: 0.03106
   type: 'test'
   ...
 # Subtest: Z8: v6's fold, whole: the key squeezed, the cut uncapped, the actions on the key's line (v6 review, B1, images 01 and 02)
 ok 129 - Z8: v6's fold, whole: the key squeezed, the cut uncapped, the actions on the key's line (v6 review, B1, images 01 and 02) # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.029303
+  duration_ms: 0.040257
   type: 'test'
   ...
 # Subtest: W1: the focus ring made transparent with a coarse pointer only (a tablet with a keyboard)
 ok 130 - W1: the focus ring made transparent with a coarse pointer only (a tablet with a keyboard) # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.025599
+  duration_ms: 0.029865
   type: 'test'
   ...
 # Subtest: W2: a row of controls that clips its overflow with a fine pointer: the ring loses its top and bottom (image 07)
 ok 131 - W2: a row of controls that clips its overflow with a fine pointer: the ring loses its top and bottom (image 07) # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.02451
+  duration_ms: 0.024681
   type: 'test'
   ...
 # Subtest: W3: a dashed swatch filled solid with a coarse pointer only
 ok 132 - W3: a dashed swatch filled solid with a coarse pointer only # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.024328
+  duration_ms: 0.028295
   type: 'test'
   ...
 # Subtest: W4: emphasis undone in the dark theme only
 ok 133 - W4: emphasis undone in the dark theme only # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 8.019878
+  duration_ms: 5.530576
   type: 'test'
   ...
 # Subtest: W5: a mouse's press painted as rest with a fine pointer only
 ok 134 - W5: a mouse's press painted as rest with a fine pointer only # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.060196
+  duration_ms: 0.090622
   type: 'test'
   ...
 # Subtest: W6: a menu that transitions with reduced motion and a coarse pointer
 ok 135 - W6: a menu that transitions with reduced motion and a coarse pointer # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.026169
+  duration_ms: 0.100464
   type: 'test'
   ...
 # Subtest: W7: the waiting line moved down over the plot
 ok 136 - W7: the waiting line moved down over the plot # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.024928
+  duration_ms: 0.037011
   type: 'test'
   ...
 # Subtest: W8: a weight off the scale through a custom property
 ok 137 - W8: a weight off the scale through a custom property
   ---
-  duration_ms: 428.506501
+  duration_ms: 457.412752
   type: 'test'
   ...
 # Subtest: W9: a second easing through a custom property
 ok 138 - W9: a second easing through a custom property
   ---
-  duration_ms: 404.405385
+  duration_ms: 357.193703
   type: 'test'
   ...
 # Subtest: W10: a weight set on a variation axis
 ok 139 - W10: a weight set on a variation axis
   ---
-  duration_ms: 344.65394
+  duration_ms: 369.787736
   type: 'test'
   ...
 # Subtest: W17: the third picked member of Other drawn solid: its line's dots and its swatch's dots removed
 ok 140 - W17: the third picked member of Other drawn solid: its line's dots and its swatch's dots removed # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.073126
+  duration_ms: 0.074753
   type: 'test'
   ...
 # Subtest: W23: rule-control redefined to rule in a row of controls: a border at 1.61:1 (image 08)
 ok 141 - W23: rule-control redefined to rule in a row of controls: a border at 1.61:1 (image 08)
   ---
-  duration_ms: 349.970627
+  duration_ms: 419.331104
   type: 'test'
   ...
 # Subtest: W24: focus redefined to rule in a row of controls: the ring at 1.27:1 (image 08)
 ok 142 - W24: focus redefined to rule in a row of controls: the ring at 1.27:1 (image 08)
   ---
-  duration_ms: 362.222638
+  duration_ms: 424.087315
   type: 'test'
   ...
 # Subtest: U1: rule-control and focus redefined from script at run time (the lint reads no value built at run time): the rendered checks catch it
 ok 143 - U1: rule-control and focus redefined from script at run time (the lint reads no value built at run time): the rendered checks catch it # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.058805
+  duration_ms: 0.073454
   type: 'test'
   ...
 # Subtest: U2: a single-unit number column left-aligned (the v7 review's M2, image 05)
 ok 144 - U2: a single-unit number column left-aligned (the v7 review's M2, image 05) # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.031431
+  duration_ms: 0.9931
   type: 'test'
   ...
 # Subtest: U3: right-aligned number columns made left-aligned at the fine pointer by a later rule
 ok 145 - U3: right-aligned number columns made left-aligned at the fine pointer by a later rule # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.027187
+  duration_ms: 0.090853
   type: 'test'
   ...
 # Subtest: U4: a token redefined in a style attribute of a composition
 ok 146 - U4: a token redefined in a style attribute of a composition
   ---
-  duration_ms: 452.684888
+  duration_ms: 591.515848
   type: 'test'
   ...
 # Subtest: U5: a folded row's name with no room above it (its 44 px around the name reach the row above)
 ok 147 - U5: a folded row's name with no room above it (its 44 px around the name reach the row above) # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.068275
+  duration_ms: 0.067799
   type: 'test'
   ...
 # Subtest: U6: the folded row no longer the key's target (the key's line is its link's only area: 28 px)
 ok 148 - U6: the folded row no longer the key's target (the key's line is its link's only area: 28 px) # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.030143
+  duration_ms: 0.041955
   type: 'test'
   ...
 # Subtest: U7: the navigation's focus ring outside its links again: cut by the strip with a coarse pointer
 ok 149 - U7: the navigation's focus ring outside its links again: cut by the strip with a coarse pointer # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.02528
+  duration_ms: 0.073154
   type: 'test'
   ...
 # Subtest: U8: a wrapped segmented control's rows without their gap with a coarse pointer (v7 review, m3: drawn at its own height)
 ok 150 - U8: a wrapped segmented control's rows without their gap with a coarse pointer (v7 review, m3: drawn at its own height) # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.02819
+  duration_ms: 0.033815
   type: 'test'
   ...
 # Subtest: U9: strong words at the browser's 700 again
 ok 151 - U9: strong words at the browser's 700 again # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.031173
+  duration_ms: 0.027172
   type: 'test'
   ...
 # Subtest: U10: a stacked folded row's key line ending at the line "Actions…" is on: its hit area takes the key's last words
 ok 152 - U10: a stacked folded row's key line ending at the line "Actions…" is on: its hit area takes the key's last words # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.026161
+  duration_ms: 0.02612
   type: 'test'
   ...
 # Subtest: U11: "Other" in the legend allowed to shrink: cut beside a wide range at 320 px
 ok 153 - U11: "Other" in the legend allowed to shrink: cut beside a wide range at 320 px # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.078095
+  duration_ms: 0.021648
   type: 'test'
   ...
 # Subtest: U12: charts restyled off screen again: content-visibility removed from .vz-chart (the theme change restyles every chart)
 ok 154 - U12: charts restyled off screen again: content-visibility removed from .vz-chart (the theme change restyles every chart)
   ---
-  duration_ms: 290.114773
+  duration_ms: 534.588901
   type: 'test'
   ...
 # Subtest: U13: a chart's clip margin removed: rings and small controls' hit areas at its edges cut by its paint containment
 ok 155 - U13: a chart's clip margin removed: rings and small controls' hit areas at its edges cut by its paint containment # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.217588
+  duration_ms: 0.067298
   type: 'test'
   ...
 # Subtest: U14: the press script marking every ancestor again (body included: every table cell restyled on each press and release)
 ok 156 - U14: the press script marking every ancestor again (body included: every table cell restyled on each press and release) # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.038931
+  duration_ms: 0.034015
   type: 'test'
   ...
 # Subtest: U15: a hover that eases a colour again (a change of theme would then start a transition on every control)
 ok 157 - U15: a hover that eases a colour again (a change of theme would then start a transition on every control)
   ---
-  duration_ms: 324.218079
+  duration_ms: 494.381772
   type: 'test'
   ...
 # Subtest: Q2b: a colour eased through a custom property in transition-property (the v8 review's V2b): check.mjs
 ok 158 - Q2b: a colour eased through a custom property in transition-property (the v8 review's V2b): check.mjs
   ---
-  duration_ms: 422.447628
+  duration_ms: 372.703548
   type: 'test'
   ...
 # Subtest: Q2b.audit: the same, as rendered: the audit reads what each control eases, computed, and counts the transitions a change of theme starts
 ok 159 - Q2b.audit: the same, as rendered: the audit reads what each control eases, computed, and counts the transitions a change of theme starts # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.059019
+  duration_ms: 0.05922
   type: 'test'
   ...
 # Subtest: Q3: logical border colours eased on an input (the v8 review's V3): check.mjs
 ok 160 - Q3: logical border colours eased on an input (the v8 review's V3): check.mjs
   ---
-  duration_ms: 410.964268
+  duration_ms: 365.333614
   type: 'test'
   ...
 # Subtest: Q3.audit: the same, as rendered on the Field preview (the fixture has no input)
 ok 161 - Q3.audit: the same, as rendered on the Field preview (the fixture has no input) # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.067701
+  duration_ms: 0.072737
   type: 'test'
   ...
 # Subtest: Q4: the skipping of charts off screen undone by a later rule (the v8 review's V4): check.mjs, as written
 ok 162 - Q4: the skipping of charts off screen undone by a later rule (the v8 review's V4): check.mjs, as written
   ---
-  duration_ms: 289.117998
+  duration_ms: 411.692559
   type: 'test'
   ...
 # Subtest: Q4.render: the same, as computed by check.mjs's rendered pass
 ok 163 - Q4.render: the same, as computed by check.mjs's rendered pass # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.067393
+  duration_ms: 0.063138
   type: 'test'
   ...
 # Subtest: Q4.audit: the same, as computed on the Chart preview by the audit
 ok 164 - Q4.audit: the same, as computed on the Chart preview by the audit # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.042217
+  duration_ms: 0.035814
   type: 'test'
   ...
 # Subtest: Q10: the navigation's side padding removed: its ring, drawn inside, over the first pixels of "Explore" (the v8 review's V10)
 ok 165 - Q10: the navigation's side padding removed: its ring, drawn inside, over the first pixels of "Explore" (the v8 review's V10) # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.064165
+  duration_ms: 0.033111
   type: 'test'
   ...
 # Subtest: T1: the chart script no longer keeps its reservation: a legend that grows after load ("Show 20 more of Other") reserves its first height
 ok 166 - T1: the chart script no longer keeps its reservation: a legend that grows after load ("Show 20 more of Other") reserves its first height # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.03215
+  duration_ms: 0.027802
   type: 'test'
   ...
 # Subtest: T2: the legend's two actions back in one row: at 320 px they wrap, 44 px past what the rows reserve
 ok 167 - T2: the legend's two actions back in one row: at 320 px they wrap, 44 px past what the rows reserve # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.029841
+  duration_ms: 0.039847
   type: 'test'
   ...
 # Subtest: T3: a chart of the Chart preview with no reservation in its markup (as v8's were): check.mjs
 ok 168 - T3: a chart of the Chart preview with no reservation in its markup (as v8's were): check.mjs # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.025239
+  duration_ms: 0.02779
   type: 'test'
   ...
 # Subtest: T3.audit: four charts of the Chart preview with no reservation in their markup: reloaded while scrolled to the middle chart, the page moves
 ok 169 - T3.audit: four charts of the Chart preview with no reservation in their markup: reloaded while scrolled to the middle chart, the page moves # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.023823
+  duration_ms: 0.025932
   type: 'test'
   ...
 # Subtest: T4: the legend heads' sort buttons without their room: a ring drawn inside on the descenders again
 ok 170 - T4: the legend heads' sort buttons without their room: a ring drawn inside on the descenders again # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.027028
+  duration_ms: 0.023189
   type: 'test'
   ...
 # Subtest: T5: the navigation links without their room above and below: a ring drawn inside on the descender of "Explore"
 ok 171 - T5: the navigation links without their room above and below: a ring drawn inside on the descender of "Explore" # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.019877
+  duration_ms: 0.023147
   type: 'test'
   ...
 # Subtest: T6: the font no longer preloaded by the pages tools/reference.mjs builds
 ok 172 - T6: the font no longer preloaded by the pages tools/reference.mjs builds # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.025208
+  duration_ms: 0.022557
   type: 'test'
   ...
 # Subtest: T7: a colour eased by a duration alone, whose property list is the initial all
 ok 173 - T7: a colour eased by a duration alone, whose property list is the initial all
   ---
-  duration_ms: 339.113748
+  duration_ms: 423.292043
   type: 'test'
   ...
 # Subtest: C1: a series that leaves the screen forgets its slot (it never comes back in its colour; the query round trip breaks)
 ok 174 - C1: a series that leaves the screen forgets its slot (it never comes back in its colour; the query round trip breaks)
   ---
-  duration_ms: 314.10213
+  duration_ms: 433.21791
   type: 'test'
   ...
 # Subtest: C2: v7's asymmetry: a series coming back takes its slot from a hidden owner, not from one that left the result (the query round trip breaks)
 ok 175 - C2: v7's asymmetry: a series coming back takes its slot from a hidden owner, not from one that left the result (the query round trip breaks)
   ---
-  duration_ms: 512.82426
+  duration_ms: 508.814954
   type: 'test'
   ...
 # Subtest: C3: a returning series never gets its slot back (v5 image 02)
 ok 176 - C3: a returning series never gets its slot back (v5 image 02)
   ---
-  duration_ms: 390.496846
+  duration_ms: 546.738905
   type: 'test'
   ...
 # Subtest: C4: v7's rule 4: a slot whose owner left the result is not given to a grey series on screen (the v7 review's M1, image 03)
 ok 177 - C4: v7's rule 4: a slot whose owner left the result is not given to a grey series on screen (the v7 review's M1, image 03)
   ---
-  duration_ms: 459.253485
+  duration_ms: 443.812446
   type: 'test'
   ...
 # Subtest: C5: "highest" over the coloured lines only (v4 B1)
 ok 178 - C5: "highest" over the coloured lines only (v4 B1)
   ---
-  duration_ms: 526.119025
+  duration_ms: 456.645647
   type: 'test'
   ...
 # Subtest: C6: the threshold's series over coloured lines only (M1, image 06)
 ok 179 - C6: the threshold's series over coloured lines only (M1, image 06)
   ---
-  duration_ms: 4631.709232
+  duration_ms: 5835.084786
   type: 'test'
   ...
 # Subtest: C7: the note counted over the whole result, not the legend (Other counted with the series the filter hides)
 ok 180 - C7: the note counted over the whole result, not the legend (Other counted with the series the filter hides)
   ---
-  duration_ms: 4061.721681
+  duration_ms: 5472.757031
   type: 'test'
   ...
 # Subtest: C8: a negative value loses its sign
 ok 181 - C8: a negative value loses its sign
   ---
-  duration_ms: 5964.791352
+  duration_ms: 9513.514607
   type: 'test'
   ...
 # Subtest: C9: the axis starts at zero whatever the data (image 07)
 ok 182 - C9: the axis starts at zero whatever the data (image 07)
   ---
-  duration_ms: 7526.267747
+  duration_ms: 8762.393852
   type: 'test'
   ...
 # Subtest: C10: v6's rule: no open slot is ever given to a series already on screen (the v6 review's sequences D and E)
 ok 183 - C10: v6's rule: no open slot is ever given to a series already on screen (the v6 review's sequences D and E)
   ---
-  duration_ms: 317.851953
+  duration_ms: 314.352625
   type: 'test'
   ...
 # Subtest: C11: open slots go to the smallest grey series on screen first
 ok 184 - C11: open slots go to the smallest grey series on screen first
   ---
-  duration_ms: 359.537806
+  duration_ms: 406.095396
   type: 'test'
   ...
 # Subtest: C12: a hidden series is placed as if on screen (it takes a slot nobody sees)
 ok 185 - C12: a hidden series is placed as if on screen (it takes a slot nobody sees)
   ---
-  duration_ms: 5240.958069
+  duration_ms: 5217.858508
   type: 'test'
   ...
 # Subtest: C13: "Colour the eight largest" ranks the whole result, hidden series included (the v6 review's other fix for E, not taken)
 ok 186 - C13: "Colour the eight largest" ranks the whole result, hidden series included (the v6 review's other fix for E, not taken)
   ---
-  duration_ms: 5478.378409
+  duration_ms: 4628.759402
   type: 'test'
   ...
 # Subtest: C14: a returning series takes its slot back from a series on screen (a colour on screen changes)
 ok 187 - C14: a returning series takes its slot back from a series on screen (a colour on screen changes)
   ---
-  duration_ms: 476.616588
+  duration_ms: 258.029187
   type: 'test'
   ...
 # Subtest: C15: harmless under v9: v7's offer, only when a member of Other is larger than a coloured series (equivalent to v9's rule but for ties)
 ok 188 - C15: harmless under v9: v7's offer, only when a member of Other is larger than a coloured series (equivalent to v9's rule but for ties)
   ---
-  duration_ms: 7132.344132
+  duration_ms: 7424.288377
   type: 'test'
   ...
 # Subtest: C16: "Colour the eight largest" offered whenever Other has members, also when pressing it would change nothing (v8; the v8 review's m3)
 ok 189 - C16: "Colour the eight largest" offered whenever Other has members, also when pressing it would change nothing (v8; the v8 review's m3)
   ---
-  duration_ms: 254.501723
+  duration_ms: 276.628844
   type: 'test'
   ...
 # Subtest: A1: the hidden "Actions" head escapes the table (B2.1, image 03)
 ok 190 - A1: the hidden "Actions" head escapes the table (B2.1, image 03) # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.07716
+  duration_ms: 0.089477
   type: 'test'
   ...
 # Subtest: A2: "Burning budget" over "Actions…" in a kept column (B2.2, image 04): the status nowrap again, and the wrap and the minimum width removed from both fold forms, as in v5
 ok 191 - A2: "Burning budget" over "Actions…" in a kept column (B2.2, image 04): the status nowrap again, and the wrap and the minimum width removed from both fold forms, as in v5 # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.075097
+  duration_ms: 0.04238
   type: 'test'
   ...
 # Subtest: A3: "Actions…" off screen in a folded row (B2.2, image 04)
 ok 192 - A3: "Actions…" off screen in a folded row (B2.2, image 04) # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.027217
+  duration_ms: 0.033889
   type: 'test'
   ...
 # Subtest: A4: a link in a help line drawn as a control (m1, image 08)
 ok 193 - A4: a link in a help line drawn as a control (m1, image 08) # SKIP needs a browser: VIZ_SLOW=1
   ---
-  duration_ms: 0.031024
+  duration_ms: 0.041631
   type: 'test'
   ...
 # Subtest: H1: harmless: a rule reformatted across lines
 ok 194 - H1: harmless: a rule reformatted across lines
   ---
-  duration_ms: 343.961007
+  duration_ms: 365.26379
   type: 'test'
   ...
 # Subtest: H2: harmless: a comment added
 ok 195 - H2: harmless: a comment added
   ---
-  duration_ms: 268.714723
+  duration_ms: 326.813393
   type: 'test'
   ...
 # Subtest: H3: harmless: a new rule written in tokens only
 ok 196 - H3: harmless: a new rule written in tokens only
   ---
-  duration_ms: 264.273545
+  duration_ms: 314.812883
   type: 'test'
   ...
 # Subtest: H4: harmless: a data custom property in a style attribute
 ok 197 - H4: harmless: a data custom property in a style attribute
   ---
-  duration_ms: 547.104629
+  duration_ms: 468.381709
   type: 'test'
   ...
 1..197
@@ -1193,8 +1193,8 @@ ok 197 - H4: harmless: a data custom property in a style attribute
 # cancelled 0
 # skipped 58
 # todo 0
-# duration_ms 79675.397354
+# duration_ms 107489.855596
 
-real	1m19.836s
-user	1m4.326s
-sys	0m7.496s
+real	1m47.748s
+user	1m14.339s
+sys	0m7.997s
