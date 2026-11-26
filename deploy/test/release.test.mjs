@@ -361,3 +361,29 @@ test('floors: rollback rule, pure: refused for each Worker it would leave below 
   assert.match(p[0], /^viz-publisher: this rollback would restore version viz-publisher-v .*schema 3, floor 4/)
   assert.match(p[1], /^viz-query: this rollback would leave serving version viz-query-v/)
 })
+
+// ───────────────────────────── a release from before format records (review of D69, round 2, M2-1) ─────────────────────────────
+
+test('fb77292\'s formats record: every deployed Worker, its ingest writing r2.dead-letters 2 and reading 1 and 2; a record and a recordless version of that release read it, by VIZ_RELEASE or tag; another release still reads version 1', async () => {
+  const { recordedFormats, formatsOfVersionOrRecord, withRecordedFormats } = await import('../release.mjs')
+  const sha = 'fb7729280d79f41e4f9fa40be1867c0fd2491352'
+  const rec = recordedFormats(sha)
+  assert.deepEqual(Object.keys(rec).sort(), plan.workers.filter((w) => w.deploy !== false).map((w) => w.name).sort())
+  assert.deepEqual(rec['viz-ingest']['r2.dead-letters'], { writes: 2, reads: [1, 2] })
+  assert.deepEqual(rec['viz-gateway'], {})
+  assert.equal(recordedFormats('0'.repeat(40)), null)
+  assert.equal(recordedFormats('fb77292'), null, 'only a full sha')
+  const v = (vars, tag) => ({ annotations: tag ? { 'workers/tag': tag } : {}, resources: { bindings: Object.entries(vars).map(([name, text]) => ({ type: 'plain_text', name, text })) } })
+  assert.deepEqual(formatsOfVersionOrRecord(v({ VIZ_RELEASE: sha, VIZ_WORKER: 'viz-ingest' }), 'viz-ingest'), rec['viz-ingest'])
+  // A version `wrangler secret put` made (bootstrap's, on the gateway) may carry no tag: its vars say the release.
+  assert.deepEqual(formatsOfVersionOrRecord(v({ VIZ_RELEASE: sha, VIZ_WORKER: 'viz-gateway' }), 'viz-gateway'), {})
+  assert.deepEqual(formatsOfVersionOrRecord(v({ VIZ_WORKER: 'viz-query' }, sha), 'viz-s13-query', 's13'), rec['viz-query'])
+  assert.deepEqual(formatsOfVersionOrRecord(v({}, sha), 'viz-s13-query', 's13'), rec['viz-query'], 'no VIZ_WORKER: the name, stage removed')
+  assert.equal(formatsOfVersionOrRecord(v({ VIZ_RELEASE: 'a'.repeat(40) }), 'viz-query'), null)
+  // A version that declares formats keeps its own declaration.
+  assert.deepEqual(formatsOfVersionOrRecord(v({ VIZ_RELEASE: sha, VIZ_FORMATS: '{"v":1,"complete":true,"formats":{}}' }), 'viz-ingest'), {})
+  const r = withRecordedFormats({ release: sha, workers: [] }, 's13')
+  assert.deepEqual(Object.keys(r.formats).sort(), Object.keys(rec).map((w) => `viz-s13-${w.slice(4)}`).sort())
+  assert.equal(r.formatsComplete, true)
+  assert.equal(withRecordedFormats({ release: 'b'.repeat(40), workers: [] }, undefined).formats, undefined)
+})

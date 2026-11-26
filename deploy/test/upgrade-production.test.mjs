@@ -134,7 +134,9 @@ test('the first release over the 2026-11-19 production (fb77292): ids allocated 
   assert.equal(plan.result.exit, 0, plan.log)
   assert.deepEqual(plan.result.plan.migrations, [])
   assert.deepEqual(plan.result.secrets, [{ worker: 'viz-control', name: KEY, action: 'keep' }])
-  assert.deepEqual(plan.result.forwardOnly.map((f) => [f.worker, f.kind, f.format ?? f.rule]).sort(), [['viz-control', 'floor', 'oauth-public'], ['viz-ingest', 'format', 'r2.dead-letters']])
+  // Forward-only by the oauth-public floor only: fb77292's Workers read every format version this release
+  // writes (deploy/records/fb77292….formats.json, from its own sources; r2.dead-letters 2 is read by its ingest).
+  assert.deepEqual(plan.result.forwardOnly.map((f) => [f.worker, f.kind, f.format ?? f.rule]), [['viz-control', 'floor', 'oauth-public']])
   assert.equal(readState().calls.length, 0, 'plan changes nothing')
 
   // 4. deploy: every Worker uploaded, then promoted; the record says why it is forward-only.
@@ -145,7 +147,7 @@ test('the first release over the 2026-11-19 production (fb77292): ids allocated 
   const rec = r.result.record
   assert.deepEqual(Object.values(rec.via), FB.workers.map(() => 'versions'))
   assert.equal(rec.forwardOnly, true)
-  assert.deepEqual(rec.forwardOnlyBecause.map((f) => [f.worker, f.kind]).sort(), [['viz-control', 'floor'], ['viz-ingest', 'format']])
+  assert.deepEqual(rec.forwardOnlyBecause.map((f) => [f.worker, f.kind]), [['viz-control', 'floor']])
   assert.deepEqual(rec.secrets.map((x) => [x.worker, x.name, x.action]), [['viz-control', KEY, 'kept']])
   assert.deepEqual(rec.oauth, [{ worker: 'viz-control', ratelimits: control.oauth.ratelimits, withoutRateLimits: false, public: true }])
   assert.deepEqual(rec.floors.find((f) => f.name === 'oauth-public'), { name: 'oauth-public', writer: 'viz-control', var: 'OAUTH_PUBLIC', value: '1', on: true, workers: [{ worker: 'viz-control', atFloor: true, servingAtFloor: false }] })
@@ -159,15 +161,15 @@ test('the first release over the 2026-11-19 production (fb77292): ids allocated 
   for (const w of FB.workers) assert.equal(serving(s, w.name).vars.VIZ_RELEASE, 'rel-a', w.name)
   const recordFile = join(process.env.VIZ_GENERATED_DIR, 'production', 'release.json')
   // deploy.sh would not roll it back after a failed smoke test.
-  assert.match(deployShForwardOnly(recordFile), /r2\.dead-letters written at 2.*viz-control below the oauth-public floor before it|viz-control below the oauth-public floor before it.*r2\.dead-letters written at 2/)
+  assert.equal(deployShForwardOnly(recordFile), 'viz-control below the oauth-public floor before it')
 
-  // 5. The way back to fb77292 is refused, before anything moves: by format, and by the floor.
+  // 5. The way back to fb77292, whole, is refused before anything moves: by viz-control's floor, and by nothing else.
   for (const target of [r.result.previous, fb]) {
     const back = await captured(() => rollback({ stage: undefined, record: target, reason: 'test' }))
     show(`rollback to ${target.kind} ${target.release}`, back)
     assert.equal(back.result?.exit, 3, back.log)
-    assert.match(back.log, /r2\.dead-letters: release rel-a .* wrote version 2, and \S+ reads only 1/)
-    assert.match(back.log, /viz-control: this rollback would restore version \S+ \(release \S+\), below its floor .* viz-control version \S+ \(release rel-a\) set OAUTH_PUBLIC=1/)
+    assert.equal(back.result.problems.length, 1, back.log)
+    assert.match(back.result.problems[0], /^viz-control: this rollback would restore version \S+ \(release \S+\), below its floor .* viz-control version \S+ \(release rel-a\) set OAUTH_PUBLIC=1/)
   }
   assert.deepEqual(callsLike(readState(), 'versions deploy').filter((c) => c.argv.includes('--name')), [], 'nothing restored')
 
@@ -187,4 +189,43 @@ test('the first release over the 2026-11-19 production (fb77292): ids allocated 
   assert.equal(toA.result?.exit, 0, toA.log)
   assert.equal(serving(readState(), 'viz-control').vars.VIZ_RELEASE, 'rel-a')
   void cmd
+})
+
+/** Production as fb77292 left it, then the first release of this tree over it: { fb (its record), r (the deploy) }. */
+async function firstRelease() {
+  const wanted = wantedRateLimits(undefined)
+  const natural = Object.values(allocateRateLimitIds({ wanted, range: JSON.parse(readFileSync(join(DEPLOY_DIR, 'workers.json'), 'utf8')).resources.ratelimit_ids, inUse: { used: new Map(), byScript: new Map() } }).ids)
+  writeState(fb77292Production([natural[0], natural[1]]))
+  writeFileSync(process.env.VIZ_RESOURCES_FILE, JSON.stringify({ kv_namespaces: { 'viz-config': 'c'.repeat(32) }, ratelimit_namespaces: {} }))
+  const fb = fb77292Record(readState())
+  await ensureRateLimitIds(undefined, cfApi)
+  configure({ release: 'rel-a', quiet: true })
+  const r = await captured(() => deploy({ stage: undefined, ackText: ACK }))
+  assert.equal(r.result?.exit, 0, r.log)
+  return { fb, r }
+}
+
+// The review of D69, round 2, RV2-1 (design/reviews/d69-deploy-safety-r2.md, M2-1): it showed every one of
+// these refused by r2.dead-letters, which fb77292 itself writes at 2 and reads at 1 and 2. With fb77292's
+// formats from its own sources (deploy/records/), only viz-control stays refused: by its oauth-public floor.
+test('RV2-1, fixed: after the first release, each Worker but viz-control can go back to fb77292 alone (--only), to its record and to previous.json; viz-control stays refused by its floor', async () => {
+  const open = ['viz-query', 'viz-gateway', 'viz-mcp', 'viz-ruler', 'viz-ingest', 'viz-publisher']
+  for (const [i, only] of open.entries()) {
+    const { fb, r } = await firstRelease()
+    for (const target of i === 0 ? [fb, r.result.previous] : [i % 2 ? fb : r.result.previous]) {
+      const back = await captured(() => rollback({ stage: undefined, record: target, only, reason: 'rv2-1' }))
+      show(`--only ${only} to ${target.kind}`, back)
+      assert.equal(back.result?.exit, 0, `${only} to ${target.kind}: ${back.log}`)
+      assert.equal(serving(readState(), only).vars.VIZ_RELEASE, FB.release, only)
+    }
+    for (const other of ['viz-control', ...open.filter((n) => n !== only)]) assert.equal(serving(readState(), other).vars.VIZ_RELEASE, 'rel-a', `${other} is left as it serves`)
+  }
+  const { fb, r } = await firstRelease()
+  for (const target of [fb, r.result.previous]) {
+    const back = await captured(() => rollback({ stage: undefined, record: target, only: 'viz-control', reason: 'rv2-1' }))
+    assert.equal(back.result?.exit, 3, back.log)
+    assert.deepEqual(back.result.problems.map((p) => p.split(':')[0]), ['viz-control'])
+    assert.match(back.result.problems[0], /below its floor .* set OAUTH_PUBLIC=1/)
+  }
+  assert.equal(serving(readState(), 'viz-control').vars.VIZ_RELEASE, 'rel-a')
 })

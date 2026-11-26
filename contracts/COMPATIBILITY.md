@@ -277,7 +277,13 @@ latest, compat }`, and per format the versions it reads and writes.
   rollback may then put one of those readers below its floor. Every release with the switch on is
   refused unless each of them is at its floor in that release and as it serves, one the release
   does not deploy included; the release record names the rule and what it saw (D69;
-  `deploy/workers.json` `rollback_floors`, a hand list).
+  `deploy/workers.json` `rollback_floors`, a hand list). One exception, which a rule must state
+  (`serving_below_floor: forward-only`; D69, point 6): for a switch the deploy sets on every release
+  (viz-control's `OAUTH_PUBLIC`, so no release can first bring a reader to its floor without the
+  switch), a release that brings such a reader to its floor while the one it replaces serves below
+  it is **forward-only** for that reader instead of refused: nothing puts the older reader back
+  automatically, and every later rollback to it is refused as below the floor. A reader the release
+  does not deploy is still refused as it serves.
 - **Bootstrapping.** The first release with versioned storage cannot protect against a
   rollback to code from before it (that code checks nothing). Version 1 equals that code's
   schema, so such a rollback is harmless; but no migration 2 may ship until the first

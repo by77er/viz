@@ -1,0 +1,346 @@
+{
+  "$comment": "The format versions release fb7729280d79f41e4f9fa40be1867c0fd2491352 writes and reads, made on 2026-11-26 by deploy/scripts/record-formats.mjs: this tree's lib/formats.mjs and workers.json declarations, evaluated against that commit's own sources (git archive). Its own deploy tooling predates format records (D69), so neither its record nor its versions say this. release.mjs uses it wherever a record or a version of that release declares no formats (review of D69, round 2, M2-1).",
+  "release": "fb7729280d79f41e4f9fa40be1867c0fd2491352",
+  "formatsComplete": true,
+  "formats": {
+    "viz-publisher": {
+      "iceberg.manifest": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "iceberg.metadata": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "r2.cursors": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      }
+    },
+    "viz-ingest": {
+      "credential.api-key": {
+        "writes": null,
+        "reads": [
+          1
+        ]
+      },
+      "key.compaction-output": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "key.flush-file": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "kv.key": {
+        "writes": null,
+        "reads": [
+          1
+        ]
+      },
+      "kv.maint-marker": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "kv.pool": {
+        "writes": null,
+        "reads": [
+          1
+        ]
+      },
+      "kv.settings": {
+        "writes": null,
+        "reads": [
+          1
+        ]
+      },
+      "queue.flush": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "queue.maint": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "r2.compaction-inputs": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "r2.dead-letters": {
+        "writes": 2,
+        "reads": [
+          1,
+          2
+        ]
+      }
+    },
+    "viz-control": {
+      "credential.api-key": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "credential.oauth": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "cursor.list": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "id.oauth-client": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "id.revision": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "kv.key": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "kv.pool": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "kv.revocation": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "kv.settings": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "oauth.request": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "oauth.sealed": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "rpc.notification-target": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "rpc.oauth": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "rpc.service-key": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      }
+    },
+    "viz-query": {
+      "credential.api-key": {
+        "writes": null,
+        "reads": [
+          1
+        ]
+      },
+      "kv.key": {
+        "writes": null,
+        "reads": [
+          1
+        ]
+      },
+      "kv.pool": {
+        "writes": null,
+        "reads": [
+          1
+        ]
+      },
+      "kv.settings": {
+        "writes": null,
+        "reads": [
+          1
+        ]
+      }
+    },
+    "viz-ruler": {
+      "annotation.anomaly-detail": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "annotation.slo-detail": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "credential.api-key": {
+        "writes": null,
+        "reads": [
+          1
+        ]
+      },
+      "file.rules-yaml": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "http.webhook": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "http.webhook-json": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "id.hashes": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "id.idempotency-key": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "id.placement": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "kv.key": {
+        "writes": null,
+        "reads": [
+          1
+        ]
+      },
+      "rpc.alert-update": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "rpc.notification-target": {
+        "writes": null,
+        "reads": [
+          1
+        ]
+      },
+      "rpc.service-key": {
+        "writes": null,
+        "reads": [
+          1
+        ]
+      },
+      "store.anomaly-rule": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "store.anomaly-state": {
+        "writes": 1,
+        "reads": [
+          1,
+          2
+        ]
+      },
+      "store.slo-rule": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "store.slo-state": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      },
+      "store.warmup": {
+        "writes": 1,
+        "reads": [
+          1
+        ]
+      }
+    },
+    "viz-mcp": {
+      "credential.api-key": {
+        "writes": null,
+        "reads": [
+          1
+        ]
+      },
+      "credential.oauth": {
+        "writes": null,
+        "reads": [
+          1
+        ]
+      },
+      "kv.key": {
+        "writes": null,
+        "reads": [
+          1
+        ]
+      },
+      "rpc.oauth": {
+        "writes": null,
+        "reads": [
+          1
+        ]
+      }
+    },
+    "viz-gateway": {}
+  }
+}

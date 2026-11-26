@@ -97,6 +97,47 @@ export function parseAcks(text) {
 }
 
 const annotation = (v, key) => v?.annotations?.[key] ?? v?.metadata?.annotations?.[key] ?? null
+const plainVarOf = (v, name) => (v?.resources?.bindings ?? v?.bindings ?? []).find((b) => b?.type === 'plain_text' && b.name === name)?.text ?? null
+
+/**
+ * The format versions a release from before format records writes and reads, made from its own
+ * sources (deploy/records/<sha>.formats.json, by scripts/record-formats.mjs; review of D69, round 2,
+ * M2-1): `{ canonical worker: { format: { writes, reads } } }`, or null when there is none. Today one:
+ * fb77292, what production first served.
+ */
+export function recordedFormats(release) {
+  if (typeof release !== 'string' || !/^[0-9a-f]{40}$/.test(release)) return null
+  const file = join(DEPLOY_DIR, 'records', `${release}.formats.json`)
+  if (!existsSync(file)) return null
+  const r = JSON.parse(readFileSync(file, 'utf8'))
+  if (r.release !== release || r.formatsComplete !== true || typeof r.formats !== 'object' || r.formats === null) throw new Error(`${file}: not a formats record of ${release}`)
+  return r.formats
+}
+
+/** The canonical name of a deployed Worker (`viz-trial-query` → `viz-query`). */
+const canonicalOf = (name, stage) => (stage && name.startsWith(`viz-${stage}-`) ? `viz-${name.slice(`viz-${stage}-`.length)}` : name)
+
+/**
+ * What a version declares of formats (VIZ_FORMATS), or, for a version that declares none of a release
+ * with a formats record (by its VIZ_RELEASE var, else its `workers/tag`), that record's entry for its Worker (by its VIZ_WORKER
+ * var, else its name). null: unknown.
+ */
+export function formatsOfVersionOrRecord(info, name, stage) {
+  const own = formatsOfVersion(info)
+  if (own !== null) return own
+  // VIZ_RELEASE names the code (a version made by `wrangler secret put`, as bootstrap's on the gateway, keeps the vars but may carry no tag).
+  const rec = recordedFormats(plainVarOf(info, 'VIZ_RELEASE') ?? annotation(info, 'workers/tag'))
+  if (!rec) return null
+  return rec[plainVarOf(info, 'VIZ_WORKER') ?? canonicalOf(name, stage)] ?? null
+}
+
+/** A record from before format records, given the formats its release's sources declare (deploy/records/), when there is such a file. */
+export function withRecordedFormats(record, stage) {
+  if (record.formats) return record
+  const rec = recordedFormats(record.release)
+  if (!rec) return record
+  return { ...record, formats: Object.fromEntries(Object.entries(rec).map(([w, f]) => [stagedName(w, stage ?? undefined), f])), formatsComplete: true, formatsFrom: `deploy/records/${record.release}.formats.json` }
+}
 
 /**
  * What a deploy of this manifest would do, Worker by Worker, against what the account runs now.
@@ -129,7 +170,7 @@ export function planRelease(manifest, live, acks) {
  * code is stamped at (`floors`, from VIZ_FLOORS); each null when it declares nothing or more than
  * one version serves.
  */
-export async function liveState(names) {
+export async function liveState(names, stage) {
   const scripts = await listScripts()
   const out = {}
   for (const name of names) {
@@ -148,7 +189,7 @@ export async function liveState(names) {
       const v = await versionInfo(name, versions[0].version_id)
       release = annotation(v, 'workers/tag')
       schemas = schemasOfVersion(v)
-      formats = formatsOfVersion(v)
+      formats = formatsOfVersionOrRecord(v, name, stage)
       floors = floorsOfVersion(v)
     }
     out[name] = { exists: true, migrationTag: s.migration_tag ?? null, versions, release, schemas, formats, floors }
@@ -376,7 +417,7 @@ function formatWriters(target, plan) {
  * Cloudflare keeps (a superset of what ran since the target, which only makes the check stricter);
  * its serving versions always. `{ worker, versionId, number, release, formats, serving }`.
  */
-async function versionsLeftServing(full, names, now, api) {
+async function versionsLeftServing(full, names, now, api, stage) {
   const out = []
   for (const name of names) {
     const bound = full.workers.find((w) => w.name === name)?.versionId
@@ -385,7 +426,7 @@ async function versionsLeftServing(full, names, now, api) {
     for (const v of await api.listVersions(name)) {
       if (!serving.has(v.id) && boundNumber !== null && v.number !== undefined && v.number <= boundNumber) continue
       const info = await api.versionInfo(name, v.id)
-      out.push({ worker: name, versionId: v.id, number: v.number, release: annotation(info, 'workers/tag'), formats: formatsOfVersion(info), serving: serving.has(v.id) })
+      out.push({ worker: name, versionId: v.id, number: v.number, release: annotation(info, 'workers/tag'), formats: formatsOfVersionOrRecord(info, name, stage), serving: serving.has(v.id) })
     }
   }
   return out
@@ -402,7 +443,7 @@ async function versionsSince(target, api, names) {
       if (v.id === w.versionId) continue
       if (ownNumber !== null && v.number !== undefined && v.number <= ownNumber) continue
       const info = await api.versionInfo(w.name, v.id)
-      out.push({ worker: w.name, versionId: v.id, number: v.number, release: annotation(info, 'workers/tag'), schemas: schemasOfVersion(info), formats: formatsOfVersion(info), ...secretFacts(info) })
+      out.push({ worker: w.name, versionId: v.id, number: v.number, release: annotation(info, 'workers/tag'), schemas: schemasOfVersion(info), formats: formatsOfVersionOrRecord(info, w.name, target.stage), ...secretFacts(info) })
     }
   }
   return out
@@ -498,7 +539,7 @@ export async function deploy({ stage, ackText = '', rotateText = '' }) {
   const run = newRunId()
   const runVar = ['--var', `${RUN_VAR}:${run}`]
   const rules = floorRules(loadWorkersPlan(), stage)
-  const before = await liveState(liveNames(manifest, rules))
+  const before = await liveState(liveNames(manifest, rules), stage)
   // formatsComplete: each entry is what that version declared (with lib/formats.mjs ANY where its declaration was incomplete).
   const previous = recordOf(manifest, before, { release: servingRelease(manifest, before), kind: 'previous', schemas: schemasOfLive(manifest, before), formats: formatsOfLive(manifest, before), formatsComplete: true })
   const previousFile = writeRecord(stage, 'previous.json', previous)
@@ -608,7 +649,7 @@ export async function deploy({ stage, ackText = '', rotateText = '' }) {
     }
     throw e
   }
-  const after = await liveState(manifest.order)
+  const after = await liveState(manifest.order, stage)
   const record = recordOf(manifest, after, {
     kind: 'release',
     previousRelease: previous.release,
@@ -658,7 +699,8 @@ export function restrictRecord(full, only, stage) {
 export async function rollback({ stage, recordFile, record, reason = 'requested', acceptSecretLoss = '', only = '', api = CLOUDFLARE }) {
   const plan = loadWorkersPlan()
   const manifest = { durableObjectsCodeUpdate: plan.durable_objects_code_update }
-  const full = record ?? JSON.parse(readFileSync(recordFile, 'utf8'))
+  // A record from before format records reads what its release's sources declare, where deploy/records/ has them (M2-1).
+  const full = withRecordedFormats(record ?? JSON.parse(readFileSync(recordFile, 'utf8')), stage)
   if ((full.stage ?? null) !== (stage ?? null)) throw new Error(`the record is for ${full.target}, not ${targetName(stage)}`)
   const target = restrictRecord(full, only, stage)
   const names = target.workers.map((w) => w.name)
@@ -666,7 +708,7 @@ export async function rollback({ stage, recordFile, record, reason = 'requested'
   // Every Worker of the deployment and every Worker a floor rule names too: one the record does not
   // restore keeps what serves now, and is judged as it serves (formats: review of D69, M-1; floors).
   const deployment = plan.workers.map((w) => stagedName(w.name, stage))
-  const now = await api.liveState([...new Set([...names, ...deployment, ...rules.flatMap((r) => r.floors.map((f) => f.worker))])])
+  const now = await api.liveState([...new Set([...names, ...deployment, ...rules.flatMap((r) => r.floors.map((f) => f.worker))])], stage)
   const problems = []
   const targetInfo = {}
   for (const w of target.workers) {
@@ -686,7 +728,7 @@ export async function rollback({ stage, recordFile, record, reason = 'requested'
     problems.push(...schemaRollbackProblems(target, ran.filter((v) => schemaWorkers(target).has(v.worker))))
     // Format versions (§6, D69): the restored Workers read every format version written since the
     // target, and every one that the Workers this rollback leaves serving wrote and write (M-1).
-    const left = await versionsLeftServing(full, [...fw].filter((n) => !names.includes(n) && now[n]?.exists), now, api)
+    const left = await versionsLeftServing(full, [...fw].filter((n) => !names.includes(n) && now[n]?.exists), now, api, stage)
     problems.push(...formatRollbackProblems(target, ran.filter((v) => fw.has(v.worker)), { left }))
     // Rollback floors (D64, D69): no reader below its floor under a writer whose switch was on.
     problems.push(...(await floorRollbackProblems(rules, target, now, api)))
@@ -698,7 +740,7 @@ export async function rollback({ stage, recordFile, record, reason = 'requested'
   }
   log(`rollback to ${target.release} (${reason}), callers first:`)
   await api.restore(manifest, target.workers, `${reason}; to ${target.release}`)
-  const after = await api.liveState(names)
+  const after = await api.liveState(names, stage)
   const done = { ...recordOf({ ...target, order: names }, after, { kind: 'rollback', release: target.release, reason, schemas: target.schemas, formats: target.formats ?? null, formatsComplete: target.formatsComplete === true }), target: target.target, stage: target.stage }
   writeRecord(stage, 'rollback.json', done)
   summary(done, null)
@@ -720,7 +762,7 @@ function printPlan(manifest, plan, secrets = []) {
 export async function planOnly({ stage, ackText = '', rotateText = '' }) {
   const manifest = loadManifest(stage)
   const rules = floorRules(loadWorkersPlan(), stage)
-  const live = await liveState(liveNames(manifest, rules))
+  const live = await liveState(liveNames(manifest, rules), stage)
   const plan = planRelease(manifest, live, parseAcks(ackText))
   const specs = secretsOfManifest(manifest)
   const rotate = parseRotate(rotateText)

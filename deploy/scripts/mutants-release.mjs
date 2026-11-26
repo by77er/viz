@@ -121,6 +121,16 @@ const MUTANTS = [
   ['ids: a Rate Limiting binding whose id cannot be read is skipped', 'resources.mjs', "    if (!(typeof id === 'string' || Number.isInteger(id)) || !/^\\d+$/.test(String(id))) throw", "    if (!(typeof id === 'string' || Number.isInteger(id)) || !/^\\d+$/.test(String(id))) continue\n    if (false) throw"],
   ['ids: the deployment\'s own bound ids are not kept (re-allocated)', 'resources.mjs', '    const bound = inUse.byScript.get(w.worker)?.[w.name]', '    const bound = undefined'],
   ['ids: destroy --stage does not free the stage\'s ids', 'resources.mjs', '  if (keys.length) recordRateLimits(keys, {})\n', ''],
+  // The review of D69, round 2: M2-1 (a release from before format records) and m2-1 (what the scan cannot read)
+  ['M2-1: a rollback target from before format records does not get its release\'s formats record', 'release.mjs', '  const full = withRecordedFormats(record ?? JSON.parse(readFileSync(recordFile, \'utf8\')), stage)', '  const full = record ?? JSON.parse(readFileSync(recordFile, \'utf8\'))'],
+  ['M2-1: a version that declares no formats does not get its release\'s formats record', 'release.mjs', "  const rec = recordedFormats(plainVarOf(info, 'VIZ_RELEASE') ?? annotation(info, 'workers/tag'))", '  const rec = null'],
+  ['M2-1: a recordless version is known by its tag only (bootstrap\'s gateway version is not)', 'release.mjs', "  const rec = recordedFormats(plainVarOf(info, 'VIZ_RELEASE') ?? annotation(info, 'workers/tag'))", "  const rec = recordedFormats(annotation(info, 'workers/tag'))"],
+  ['M2-1: fb77292\'s record says its ingest reads r2.dead-letters 1 only', 'records/fb7729280d79f41e4f9fa40be1867c0fd2491352.formats.json', '"r2.dead-letters": {\n        "writes": 2,\n        "reads": [\n          1,\n          2\n        ]', '"r2.dead-letters": {\n        "writes": 2,\n        "reads": [\n          2\n        ]'],
+  ['m2-1: in doubt, new ids are taken anyway', 'resources.mjs', '  if (doubt.length && pending.length) {', '  if (false) {'],
+  ['m2-1: in doubt, an id only recorded in resources.json is kept', 'resources.mjs', '      if (doubt.length && cand !== bound) {', '      if (false) {'],
+  ['m2-1: an id that cannot be a number is a doubt too (an odd foreign binding refuses again)', 'resources.mjs', '    if (u.distinct) notes.push(', '    if (false) notes.push('],
+  ['m2-1: viz-control\'s own unreadable binding is a doubt (a fix-forward deploy refused)', 'resources.mjs', '    if (ourScripts.has(u.script)) {', '    if (false) {'],
+  ['m2-1: a script whose versions cannot be read stops the scan again', 'resources.mjs', "    } catch (e) {\n      unread.push({ script, binding: '(its versions)'", "    } catch (e) {\n      throw e\n      unread.push({ script, binding: '(its versions)'"],
 ]
 
 try {

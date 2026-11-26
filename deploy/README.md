@@ -27,6 +27,7 @@ changes no component: everything it needs from one is under "Needed changes".
 | `test/fake-wrangler.mjs` | A stand-in for wrangler that the end-to-end tests (`secrets`, `release-checks`, `review-d69`, `workflow`, `oauth-gate`, `upgrade-production`) run as a real child process (`VIZ_WRANGLER_BIN`, tests only), with `test/fake-account.mjs` answering the Cloudflare API from the same state (versions show their vars, secrets and Rate Limiting bindings) |
 | `test/upgrade-production.test.mjs`, `test/fixtures/production-fb77292.json` | The first release this tool makes over production as deployed on 2026-11-19 from fb77292 ("The first release over the 2026-11-19 production"); the fixture holds the vars fb77292's own configure.mjs generates for production |
 | `test/oauth-gate.test.mjs`, `test/resources.test.mjs` | D70's gate on the key and the oauth-public floor, end to end; the rate-limit id allocation |
+| `records/<sha>.formats.json`, `scripts/record-formats.mjs` | The format versions a release from before format records writes and reads, made from its own sources (`git archive`) by this tree's `lib/formats.mjs`; release.mjs uses one wherever a record or version of that release declares none. Today: fb77292 (review of D69, round 2, M2-1) |
 | `resources.json` | KV namespace ids by title (not secret; rewritten by `resources.mjs`) |
 | `generated/` | Build output: configs, manifests, release records. Git-ignored |
 
@@ -346,11 +347,23 @@ name it. So:
 1. **Read the account, read only.** List the scripts, and for each its deployment's serving versions
    and its newest version, and collect every binding of type `ratelimit` (`namespace_id`). One script
    list, then a deployment read, a version list and one to three version reads per script, four
-   scripts at a time: about 80 GET calls for the 20 scripts the account had at Trial 3. A Rate
-   Limiting binding whose id cannot be read, or a binding type that names a rate limit in a shape
-   not known here, stops the allocation (which ids are in use would be unknown). The `ratelimit`
-   type and `namespace_id` field are wrangler's upload shape (training knowledge): **not read from
-   Cloudflare's version API**; the fakes assume it.
+   scripts at a time: about 110 GET calls for the 28 scripts the account had on 2026-11-26. The
+   `ratelimit` type and `namespace_id` field are wrangler's upload shape (training knowledge): **not
+   read from Cloudflare's version API**; the fakes assume it (the stage trial that settles it is
+   prepared, not run). What cannot be read no longer stops every deploy (review of D69, round 2,
+   m2-1), but **no id is ever taken that cannot be proven free**:
+   - an id that is there but cannot be a decimal number (`"abc"`) can equal no viz id: ignored,
+     with a WARNING line;
+   - anything else (no id, a field this does not know, a binding type that names a rate limit in
+     another shape, a script whose versions cannot be read): **in doubt**. Then only ids this
+     deployment's own viz-control already binds are kept (they are in use already; nothing new is
+     taken), with a WARNING; an id only recorded in `resources.json` is not kept, and any new id is
+     refused, naming the script (exit 1 at `resources.mjs`, before configure). So an odd binding of an
+     unrelated script refuses only a deployment's first allocation (a new stage; production's first
+     release) until that script is fixed or gone;
+   - viz-control's own binding unreadable (the shape risk on viz's side, review M2-2) is not a doubt:
+     its ids come from `resources.json`, else the same deterministic pick, with a WARNING, so a
+     fix-forward deploy is not stopped.
 2. **Keep** the id this deployment's own viz-control already binds under that name (its serving
    version, else its newest), else the one recorded in `resources.json`, unless another script binds
    it: an id seen on a script whose name does not start with `viz-` is **refused** (logged, a new one
@@ -527,7 +540,11 @@ API key or an OAuth credential, or call control's RPCs, without the Worker decla
     Worker that writes none (viz-query, viz-mcp, viz-gateway) is judged only as a reader.
 - **Old records** (no `formats`), a record's Worker without an entry, and formats an incomplete
   declaration does not list, are taken to read **version 1 only** (§6 Bootstrapping): the side that
-  refuses more. What it costs today: viz-ingest writes `r2.dead-letters` 2, so the first release with
+  refuses more. **Except a release with a formats record** (`deploy/records/<sha>.formats.json`,
+  made by `scripts/record-formats.mjs` from that commit's own sources: its `FORMATS` maps, `READS`
+  lists and version constants, read through this tree's declarations): its record, and every version
+  that declares nothing but carries its `VIZ_RELEASE` (or tag), read what the file says. Today one,
+  fb77292, what production first served (review of D69, round 2, M2-1). What it costs today: viz-ingest writes `r2.dead-letters` 2, so the first release with
   format records over a deployment without them is forward-only, and a rollback to a record from
   before them across a viz-ingest upload is refused (tested). The same holds once more for this
   change: over a deployment whose viz-query, viz-mcp and viz-gateway versions declare nothing (all
@@ -721,7 +738,10 @@ that happens, dispatch it again.
    the account). The only resource-like choice is the range, in
    `workers.json` `resources.ratelimit_ids`; if a script that is not viz's ever binds an id in it, the
    next deploy moves viz off it (logged).
-1. **Repository secrets** (Settings → Secrets and variables → Actions):
+1. **Before this tree is merged to main**, set the `production` environment's rule below (main only,
+   with the two Cloudflare secrets as its own): main's workflow until then (fb77292's) has no
+   main-only step (review of D69, round 2, m2-4).
+   **Repository secrets** (Settings → Secrets and variables → Actions):
    `CLOUDFLARE_API_TOKEN` (Workers Scripts edit, Workers R2 Storage edit, Workers KV edit,
    Queues edit, and Workers custom domains on the bitcru.sh zone; no DNS permission is
    needed) and `CLOUDFLARE_ACCOUNT_ID`. The workflow uses the GitHub environment
@@ -797,34 +817,52 @@ deploy, rollback), twice. What it shows, step by step:
 | Schemas | additive only: `publisher.Publisher` 3 → 7 and `shard.Shard` 1 → 3, both readable from 1; `ledger.Ledger` 3/2, `control.Tenant` 3/1 and the ruler's three unchanged |
 | `resources.mjs ensure` | six ids for `viz-control/OAUTH_RL_*`, none bound by the unrelated scripts or the spike; only GET calls |
 | `configure.mjs` | **the gate passes** with the six bindings and their ids; viz-control gets `OAUTH_PUBLIC=1` and is stamped `oauth-public` |
-| `release.mjs plan` | not refused; the key `set (serving version …); kept`; **FORWARD-ONLY** twice: `r2.dead-letters` (viz-ingest writes 2, and every serving Worker declares no format versions, so it is taken to read 1), and `oauth-public` (the serving viz-control is below the floor) |
-| `release.mjs deploy` | exit 0; **the key is kept** (no put; the same value serves, so every registered client stays registered); viz-control serves with the six bindings and `OAUTH_PUBLIC`; the record says `forwardOnly: true`, `oauth-public` on, viz-control at the floor, serving one not |
-| Automatic rollback | **not attempted**: `deploy.sh`'s own forward-only expression, run on the record, names `r2.dead-letters written at 2` and `viz-control below the oauth-public floor before it` |
-| Rollback to `previous.json` or to fb77292's record | **refused**, nothing moved: `r2.dead-letters` (that record predates format versions) and `viz-control … below its floor … set OAUTH_PUBLIC=1` |
+| Format versions | fb77292's Workers declare none, so their reads come from `deploy/records/fb7729280d79f41e4f9fa40be1867c0fd2491352.formats.json`, made from fb77292's own sources (review of D69, round 2, M2-1): every format version this tree writes is one fb77292 reads (its ingest already wrote `r2.dead-letters` 2 and read 1 and 2) |
+| `release.mjs plan` | not refused; the key `set (serving version …); kept`; **FORWARD-ONLY** once: `oauth-public` (the serving viz-control is below the floor), and by nothing else |
+| `release.mjs deploy` | exit 0; **the key is kept** (no put; the same value serves, so every registered client stays registered); viz-control serves with the six bindings and `OAUTH_PUBLIC`; the record says `forwardOnly: true` (viz-control, kind `floor`), `oauth-public` on, viz-control at the floor, serving one not |
+| Automatic rollback | **not attempted**: `deploy.sh`'s own forward-only expression, run on the record, gives `viz-control below the oauth-public floor before it` |
+| A failed promotion | puts back what it promoted before viz-control (viz-publisher, viz-ingest), and nothing once viz-control is promoted |
+| Rollback of the whole release, to `previous.json` or to fb77292's record | **refused**, nothing moved, by one problem: `viz-control … below its floor … set OAUTH_PUBLIC=1` |
+| Rollback of one Worker (`--only`, the workflow's `rollback_only`), to either record | **allowed** for viz-publisher, viz-ingest, viz-query, viz-ruler, viz-mcp and viz-gateway, each alone, the others left as they serve; **refused** for viz-control (its floor). Several of the six together are judged the same way (each by its schemas, formats and floors, the others as they serve) |
 | The next release | ids kept (bound by viz-control); not forward-only; viz-control at its floor here and serving; the key kept; a rollback to the first release is allowed |
 
 Before this change's forward-only option, the same run is **refused at the plan** (exit 3: "this
 release sets OAUTH_PUBLIC=1, and the viz-control serving now is below its floor"), and every later
 release with it: production could not have taken any release of this tree. That is the mutant
-"oauth-public: workers.json no longer says forward-only", which the test kills.
+"oauth-public: workers.json no longer says forward-only", which the test kills. Before fb77292's
+formats record (round 2 of the review of D69, M2-1, RV2-1), the release was also forward-only for
+viz-ingest, and every rollback to fb77292, `--only` any Worker included, was refused by
+`r2.dead-letters`, which fb77292's ingest itself writes at 2 and reads at 1 and 2.
 
 **What the owner must know or do before merging this to main:**
 
-1. **It is forward-only.** If its smoke test fails, `deploy.sh` does not roll back: the job fails, the
-   new release keeps serving, and the way out is a fix in a new commit. A rollback to fb77292's record
-   is refused (formats, and the floor). Nothing else in the path refuses: no migration to acknowledge
-   (no `acknowledge_migrations`, no `Migration:` trailer), no secret to set, nothing to create.
+0. **First: the `production` environment must allow `main` only, and hold the two Cloudflare
+   secrets** (one-time setup, 1), before this tree is merged. fb77292's workflow, which is main's
+   until then, has no main-only step, so until the rule is set a dispatch on another ref runs that
+   ref's own tooling; and from this release on, an older commit's tooling would not judge the
+   `oauth-public` floor or the gate either. Nothing in the repository can check the setting.
+1. **It is forward-only, for viz-control only.** If its smoke test fails, `deploy.sh` does not roll
+   back: the job fails, the new release keeps serving. A rollback of the whole release, or of
+   viz-control, to fb77292 is refused (viz-control's floor: fb77292's viz-control mints credentials
+   without an expiry and has none of D70's fixes). **Every other Worker can go back alone**:
+   `rollback_to: fb7729280d79f41e4f9fa40be1867c0fd2491352` with `rollback_only: viz-query` (or
+   viz-gateway, viz-mcp, viz-ruler, viz-ingest, viz-publisher; locally `release.mjs rollback --record
+   <its release.json, or previous.json> --only viz-query`). The workflow finds fb77292's record only
+   if fb77292's deploy run uploaded its `release-<sha>` artifact (90 days); `previous.json` of the
+   first release is in that release's artifact. Nothing else in the path refuses: no migration to
+   acknowledge (no `acknowledge_migrations`, no `Migration:` trailer), no secret to set, nothing to
+   create.
 2. **OAuth's key is kept.** Codes and tokens fb77292's viz-control issued (layout 1, no expiry the
    Worker can see) keep working until they expire at their objects; new ones carry their expiry.
 3. **The rate-limit ids** come from the real account at that deploy, through the GETs above. The
-   binding shape the scan reads (`type: ratelimit`, `namespace_id`) is training knowledge: if the
-   account shows a rate-limit binding in a shape the scan does not know, `resources.mjs` stops and
-   nothing is deployed; if it shows one under an unrelated name, a collision with an unrelated
-   script would go unseen ("Known risks").
-4. **The `production` environment must allow `main` only, and hold the two Cloudflare secrets**
-   (one-time setup, 1). This tree's workflow refuses any other ref, but fb77292's workflow has no such
-   step, and from this release on an older commit's tooling would also not judge the `oauth-public`
-   floor or the gate. Nothing in the repository can check the setting.
+   binding shape the scan reads (`type: ratelimit`, `namespace_id`) is training knowledge. This is a
+   first allocation: if any other script shows a rate-limit binding whose id cannot be read,
+   `resources.mjs` refuses to allocate (it cannot prove an id free), names the script, and nothing is
+   deployed; if one shows under an unrelated type name, a collision with an unrelated script would go
+   unseen ("Known risks").
+4. **Not yet run on Cloudflare** (review of D69, round 2, M2-2): whether Cloudflare accepts the six
+   bindings at upload, and the field names its version API lists them under. The stage trial that
+   settles both, `spikes/s13-upgrade-trial/`, is prepared and not run.
 5. After it, every production release carries the six bindings and `OAUTH_PUBLIC`, and viz-control
    cannot go back below D70's third round.
 
@@ -1579,7 +1617,7 @@ Workers and the gateway cost nothing while unused; the hourly cron reads KV only
 (`stack/README.md`, "Idle means free"); storage is whatever `viz-lake` and the queues hold.
 Per deploy: about 8 to 12 API calls and 4 to 8 version uploads; no charge beyond requests. Since
 D70's ids, `resources.mjs ensure` also reads the account's scripts' bindings: about 4 GET calls per
-script (about 80 for the 20 scripts counted at Trial 3), modelled, not counted on Cloudflare. The Rate
+script (about 110 for the 28 scripts on the account on 2026-11-26), modelled, not counted on Cloudflare. The Rate
 Limiting binding itself has no price on its page (read 2026-11-19): worst case of the bindings,
 unknown and not modelled.
 The trial (below) was stated before it ran as under US$1 worst case: at most 30 minutes of
@@ -1782,13 +1820,16 @@ deployment and nothing here needs it: the gateway has no page and no static asse
 
 ## Known risks
 
-- **The Rate Limiting binding's shape in Cloudflare's version API is not verified** (D70's ids). The
-  scan reads bindings of type `ratelimit` with `namespace_id`, wrangler's upload shape (training
-  knowledge; the fakes assume it). Another type that names a rate limit stops the allocation; a shape
-  under an unrelated name would make other scripts' ids invisible, so a collision with an unrelated
-  script would go unseen and the counters would be shared. Allocation stays deterministic for an
-  account state, so viz's own ids would still be stable across CI runs. The experiment: read one
-  version of a staged viz-control through the API and compare its bindings with the config.
+- **The Rate Limiting binding's shape in Cloudflare's version API is not verified** (D70's ids; review
+  of D69, round 2, M2-2). The scan reads bindings of type `ratelimit` with `namespace_id` (or
+  `namespaceId`), wrangler's upload shape (training knowledge; the fakes assume it). Since round 2
+  an unreadable binding on viz-control itself no longer stops later deploys, and one elsewhere stops
+  only a first allocation; but a shape under an unrelated type name would make other scripts' ids
+  invisible, so a collision with an unrelated script would go unseen and the counters would be
+  shared. Whether Cloudflare accepts the six bindings at upload is unknown too (if not, phase 1 fails
+  before anything is promoted, and production can take no release of this tree until code changes).
+  The experiment: `spikes/s13-upgrade-trial/` (prepared; not run, the session's permission check
+  refused deploying to Cloudflare).
 - **Two allocations at once can pick the same id.** Two stages ensured at the same time from different
   checkouts see the same free ids; the start each name picks makes a clash unlikely, not impossible.
   The next `ensure` of either sees the other's bound id and moves off it (the counters reset).

@@ -3321,6 +3321,35 @@ back through a commit on main. Floors: (t) carry the switch's evidence forward i
 version (m-1) and (u) re-check the floors before each restore step (m-4): not built, recorded as
 known risks with the review's scenarios.
 
+**After the review's second round** (`design/reviews/d69-deploy-safety-r2.md`, approve with changes;
+2026-11-26):
+- **M2-1, a release from before format records gets its real reads.** fb77292's record and versions
+  declare no formats, so point 1 took them to read version 1 of everything, and after the first release
+  every rollback to fb77292, `--only` any Worker included, was refused by `r2.dead-letters`, which
+  fb77292's own ingest writes at 2 and reads at 1 and 2. `deploy/records/<sha>.formats.json`, made by
+  `deploy/scripts/record-formats.mjs` from that commit's own sources (`git archive`: its `FORMATS` maps,
+  `READS` lists and version constants, read through this tree's declarations), now stands in for the
+  missing declarations: for that record, and for any version that declares nothing and carries that
+  release's `VIZ_RELEASE` (else its tag). Today one, fb77292. Every format version this tree writes is
+  one fb77292 reads, so the first release is forward-only by point 6 alone, and every Worker but
+  viz-control can be rolled back to fb77292 alone. Alternatives: deriving a recordless target's reads
+  from its commit at rollback time (the rollback job would need the history and esbuild over an old
+  tree on every rollback); keeping "version 1" and documenting it (refuses the one per-Worker way back
+  the owner has on a release with no automatic rollback). Chosen: a file per such release, checked in,
+  made by a script, and its use tested (the upgrade test, RV2-1, and a unit test of the file).
+- **m2-1, what the account scan cannot read.** Before, one unreadable Rate Limiting binding of any
+  script stopped every deploy. Now an id that cannot be a decimal number is ignored (it can equal no viz
+  id); anything else is a doubt, under which ids this deployment's viz-control already binds are kept
+  and no new id is taken (refused, naming the script); viz-control's own unreadable binding is not a
+  doubt (its ids from `resources.json`, else the deterministic pick). Alternative: an explicit override
+  naming a script to ignore, recorded: it would take an id that cannot be proven free, which the
+  allocation must never do. Chosen: skip with a warning only where nothing new is taken.
+- **m2-2**: COMPATIBILITY §6 states the `forward-only` option. **m2-3**: the credential layout's early
+  expiry rate is corrected in `contracts/oauth.ts` and D70. **m2-4**: the README's owner notes put the
+  environment rule first, before the merge.
+- **M2-2** (the Rate Limiting binding's shape and acceptance on Cloudflare) needs a stage trial,
+  `spikes/s13-upgrade-trial/`, prepared and not run here.
+
 **Alternatives for point 6.** (v) The key as the switch (`"on": "present"`, which `control/README.md`
 names): `deployFloorProblems` would skip its secret refusal for one rule, and a switch would have two
 meanings. (w) Refuse over an unstamped serving viz-control, as point 2 does, with a one-off configure
@@ -3823,8 +3852,12 @@ billed as a request).
     asks for at most 2^-128, and the 16-character tag, which only `OAUTH_CLIENT_KEY` makes, adds to
     it for anyone without the key.
   - A layout 1 body begins with `e` one time in 62 and is then read with an expiry uniform over 28
-    years. So about 1 in 13,000 layout 1 credentials could be refused as expired early, in the month
-    they can live after the change.
+    years. So about 1 in 11,600 layout 1 credentials could be refused as expired early by 2026-12-26
+    (1/62 × the share of 62^4 minutes already past then; corrected from "1 in 13,000" by the review of
+    D69, round 2, m2-3). Production has issued layout 1 since 2026-11-19 (fb77292), so this applies
+    to whatever it issued before the first release with layout 2: such a client is approved again by a
+    person. Accepted, against a reader that stops trusting an expiry beyond the layout's start plus 30
+    days, which would need a control change.
 - (l) **An issue time instead of an expiry**: every reader would need the lifetimes, which a later
   release may change. Rejected.
 - (m) **A 1 s timeout per check** (the first version): a brownout added 3 s to each refresh and 2 s

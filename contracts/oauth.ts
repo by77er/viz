@@ -147,8 +147,9 @@ export interface RateLimited {
  *   and before any object is asked (`credentialExpiresAt`; D70).
  * A layout 1 body begins with `e` one time in 62 and is then read as layout 2 with an expiry
  * uniform over 28 years; layout 1 credentials live 30 days at most, so in the month after the
- * change about 1 in 13,000 of them could be read as expired early (none had been issued in
- * production when layout 2 began).
+ * change about 1 in 11,600 of them could be read as expired early (by 2026-12-26, if layout 2
+ * reaches production in 2026-11). Production has served layout 1 since 2026-11-19 (fb77292, PR #8),
+ * so any credential it issued is such a credential; one refused early this way is re-approved by a person.
  */
 export const OAUTH_CREDENTIAL = /^(vzc|vza|vzr)1\.([A-Za-z0-9_-]{1,64})\.([A-Za-z0-9]{43})$/
 export const CREDENTIAL_PREFIX = { code: 'vzc1', access: 'vza1', refresh: 'vzr1' } as const

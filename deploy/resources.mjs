@@ -67,49 +67,67 @@ export function wantedRateLimits(stage, plan = readJson(join(DEPLOY_DIR, 'worker
   return out
 }
 
-/** A Rate Limiting binding of a version as the API lists it: `{ name, id }`; throws when its namespace id cannot be read (refuse rather than guess). */
-function rateLimitsOf(version, script) {
+/** The fields a Rate Limiting binding's namespace id may be listed under (NAMESPACE_FIELDS[0]: as measured on Cloudflare; see deploy/README.md). */
+export const NAMESPACE_FIELDS = ['namespace_id', 'namespaceId']
+
+/**
+ * The Rate Limiting bindings of a version as the API lists it: `{ name, id }` for each one whose id
+ * reads as a decimal number, and `{ name, raw, distinct }` in `unread` for one that does not:
+ * `distinct` when the id is there but cannot be a decimal number (so it can equal no viz id), not when
+ * it is missing or looks numeric under another shape. A binding of another type that names a rate
+ * limit is unread too (a shape this does not know).
+ */
+function rateLimitsOf(version) {
   const out = []
+  const unread = []
   for (const b of version?.resources?.bindings ?? version?.bindings ?? []) {
-    // `ratelimit` is the type wrangler uploads (training knowledge; not read from Cloudflare): any other type that names a rate limit is a shape this does not know.
     if (b?.type !== 'ratelimit') {
-      if (/rate.?limit/i.test(String(b?.type ?? ''))) throw new Error(`${script}: a binding ${b.name ?? '(no name)'} of type ${b.type}, which resources.mjs does not know how to read: which Rate Limiting ids are in use is unknown, so none is allocated`)
+      if (/rate.?limit/i.test(String(b?.type ?? ''))) unread.push({ name: b.name ?? '(no name)', raw: `a binding of type ${b.type}`, distinct: false })
       continue
     }
-    const id = b.namespace_id ?? b.namespaceId
-    if (!(typeof id === 'string' || Number.isInteger(id)) || !/^\d+$/.test(String(id))) throw new Error(`${script}: a Rate Limiting binding ${b.name ?? '(no name)'} whose namespace id cannot be read (${JSON.stringify(id)}): which ids are in use is unknown, so none is allocated`)
-    out.push({ name: b.name, id: String(id) })
+    const field = NAMESPACE_FIELDS.find((f) => b[f] !== undefined && b[f] !== null)
+    const id = field ? b[field] : undefined
+    if ((typeof id === 'string' || Number.isInteger(id)) && /^\d+$/.test(String(id))) out.push({ name: b.name, id: String(id) })
+    else unread.push({ name: b.name ?? '(no name)', raw: JSON.stringify(id), distinct: typeof id === 'string' && !/^\s*[+-]?\d+(\.0*)?\s*$/.test(id) && id !== '' })
   }
-  return out
+  return { out, unread }
 }
 
 /**
  * Every Rate Limiting namespace id the account's scripts bind, READ ONLY: for each script, its serving
  * versions and its newest version (a deployment list, a version list and one to three version reads
  * per script, four scripts at a time). Returns { used: Map(id → Set(script)), byScript: Map(script →
- * { binding name → id }) } (the serving version's id, else the newest's). `api`: { listScripts,
- * currentDeployment, listVersions, versionInfo } (lib/cf.mjs).
+ * { binding name → id }) (the serving version's id, else the newest's), unread: [{ script, binding,
+ * raw, distinct }] } (review of D69, round 2, m2-1: what could not be read no longer stops the scan;
+ * allocateRateLimitIds decides). A script whose versions cannot be read at all is one unread entry.
+ * `api`: { listScripts, currentDeployment, listVersions, versionInfo } (lib/cf.mjs).
  */
 export async function rateLimitIdsInUse(api) {
   const used = new Map()
   const byScript = new Map()
+  const unread = []
   const scripts = (await api.listScripts()).map((s) => s.id)
   const one = async (script) => {
-    const serving = ((await api.currentDeployment(script))?.versions ?? []).map((v) => v.version_id)
-    const newest = (await api.listVersions(script))[0]?.id
-    const ids = [...new Set([...serving, ...(newest ? [newest] : [])])]
     const names = {}
-    for (const id of ids) {
-      for (const r of rateLimitsOf(await api.versionInfo(script, id), script)) {
-        if (!used.has(r.id)) used.set(r.id, new Set())
-        used.get(r.id).add(script)
-        names[r.name] ??= r.id // serving versions are read first
+    try {
+      const serving = ((await api.currentDeployment(script))?.versions ?? []).map((v) => v.version_id)
+      const newest = (await api.listVersions(script))[0]?.id
+      for (const id of [...new Set([...serving, ...(newest ? [newest] : [])])]) {
+        const r = rateLimitsOf(await api.versionInfo(script, id))
+        for (const x of r.out) {
+          if (!used.has(x.id)) used.set(x.id, new Set())
+          used.get(x.id).add(script)
+          names[x.name] ??= x.id // serving versions are read first
+        }
+        for (const u of r.unread) unread.push({ script, binding: u.name, raw: u.raw, distinct: u.distinct })
       }
+    } catch (e) {
+      unread.push({ script, binding: '(its versions)', raw: `not read: ${e.message}`, distinct: false })
     }
     byScript.set(script, names)
   }
   for (let i = 0; i < scripts.length; i += 4) await Promise.all(scripts.slice(i, i + 4).map(one))
-  return { used, byScript }
+  return { used, byScript, unread }
 }
 
 /** FNV-1a of a string, 32 bits. */
@@ -137,6 +155,22 @@ export function allocateRateLimitIds({ wanted, range, inUse, recorded = {} }) {
   const given = new Set()
   const notes = []
   const free = (id) => inRange(id) && !takenBy.has(id) && !given.has(id)
+  // What could not be read (m2-1). An id that is there but cannot be a decimal number can equal no viz
+  // id: ignored, loudly. Anything else (missing, another shape, a script not read) is in doubt: no id can
+  // be proven free of it, so ids this deployment's own viz-control already binds are kept (taking
+  // nothing new), and any new id is refused.
+  const doubt = []
+  for (const u of inUse.unread ?? []) {
+    if (ourScripts.has(u.script)) {
+      notes.push(`WARNING: ${u.script} (this deployment's own) has a Rate Limiting binding ${u.binding} whose id cannot be read (${u.raw}): its ids are taken from what resources.json records or allocated afresh`)
+      continue
+    }
+    if (u.distinct) notes.push(`WARNING: ${u.script}, binding ${u.binding}: namespace id ${u.raw} is not a decimal number, so it can equal no viz id; ignored`)
+    else {
+      doubt.push(`${u.script} (binding ${u.binding}: ${u.raw})`)
+      notes.push(`WARNING: ${u.script}, binding ${u.binding}: namespace id cannot be read (${u.raw}); no new id can be proven free of it`)
+    }
+  }
   const pending = []
   for (const w of wanted) {
     const bound = inUse.byScript.get(w.worker)?.[w.name]
@@ -144,6 +178,11 @@ export function allocateRateLimitIds({ wanted, range, inUse, recorded = {} }) {
     for (const [cand, from] of [[bound, `bound by ${w.worker}`], [recorded[w.key], 'recorded in resources.json']]) {
       if (cand === undefined || cand === null) continue
       const id = String(cand)
+      // In doubt, only an id this deployment's viz-control already binds is kept: a recorded one was never in use, so keeping it would take it.
+      if (doubt.length && cand !== bound) {
+        notes.push(`${w.key}: not keeping ${id} (${from}): something could not be read, so it cannot be proven free`)
+        continue
+      }
       if (free(id)) {
         kept = id
         notes.push(`${w.key}: ${id} kept (${from})`)
@@ -157,6 +196,12 @@ export function allocateRateLimitIds({ wanted, range, inUse, recorded = {} }) {
       ids[w.key] = kept
       given.add(kept)
     } else pending.push(w)
+  }
+  if (doubt.length && pending.length) {
+    throw new Error(
+      `cannot allocate a Rate Limiting namespace id for ${pending.map((w) => w.key).join(', ')}: ${doubt.join('; ')} binds a rate limit whose id cannot be read, so no id can be proven free of it. ` +
+        `Nothing is taken. Ids this deployment's viz-control already binds are kept; a new one needs that binding readable (or that script gone).`,
+    )
   }
   const size = range.to - range.from + 1
   for (const w of pending) {

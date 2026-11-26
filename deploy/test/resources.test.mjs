@@ -91,7 +91,7 @@ test('allocation: deterministic for an account state (CI starts from an empty re
   assert.throws(() => allocateRateLimitIds({ wanted, range: { from: 0, to: 9 }, inUse: none() }), /ratelimit_ids/)
 })
 
-test('the account scan reads the serving and newest versions of every script, only with GET, and refuses a Rate Limiting binding whose id it cannot read', async () => {
+test('the account scan reads the serving and newest versions of every script, only with GET, and reports (no longer throws on) a Rate Limiting binding whose id it cannot read, or a script it cannot read', async () => {
   const methods = []
   const api = {
     listScripts: async () => [{ id: 'unrelated-app' }, { id: 'viz-control' }],
@@ -107,8 +107,14 @@ test('the account scan reads the serving and newest versions of every script, on
   assert.deepEqual([...r.used.keys()].sort(), ['7000', '7010', '7776', '7777'], 'a Durable Object namespace id is not a Rate Limiting one')
   assert.deepEqual(r.byScript.get('viz-control'), { OAUTH_RL_SOURCE: '7000' }, 'the serving version first')
   assert.equal(methods.length, 4)
-  await assert.rejects(rateLimitIdsInUse({ ...api, versionInfo: async () => ({ resources: { bindings: [{ type: 'ratelimit', name: 'L' }] } }) }), /a Rate Limiting binding L whose namespace id cannot be read/)
-  await assert.rejects(rateLimitIdsInUse({ ...api, versionInfo: async () => ({ resources: { bindings: [{ type: 'rate_limiting', name: 'L', id: 5 }] } }) }), /of type rate_limiting, which resources\.mjs does not know how to read/)
+  // What cannot be read no longer stops the scan (review of D69, round 2, m2-1): it is reported, and the allocation decides.
+  const missing = await rateLimitIdsInUse({ ...api, versionInfo: async () => ({ resources: { bindings: [{ type: 'ratelimit', name: 'L' }] } }) })
+  assert.deepEqual(missing.unread.map((u) => [u.binding, u.distinct]), [['L', false], ['L', false], ['L', false], ['L', false]])
+  const other = await rateLimitIdsInUse({ ...api, versionInfo: async () => ({ resources: { bindings: [{ type: 'rate_limiting', name: 'L', id: 5 }, { type: 'ratelimit', name: 'M', namespace_id: 'abc' }] } }) })
+  assert.deepEqual([...new Set(other.unread.map((u) => `${u.binding} ${u.distinct}`))], ['L false', 'M true'])
+  const failing = await rateLimitIdsInUse({ ...api, listVersions: async (sc) => { if (sc === 'unrelated-app') throw new Error('Cloudflare API 500'); return api.listVersions(sc) } })
+  assert.deepEqual(failing.unread.map((u) => [u.script, u.distinct]), [['unrelated-app', false]])
+  assert.match(failing.unread[0].raw, /not read: Cloudflare API 500/)
 })
 
 test('ensure against the fake account: records the ids, reads only (no write to Cloudflare), keeps them next time; destroy --stage frees a stage\'s ids', async () => {
@@ -135,4 +141,46 @@ test('ensure against the fake account: records the ids, reads only (no write to 
   } finally {
     globalThis.fetch = fetch
   }
+})
+
+// The review of D69, round 2, m2-1 (RV2-4): one unrelated script with an unreadable Rate Limiting binding stopped every deploy.
+test('m2-1: an unreadable binding of another script: an id that cannot be a number is ignored with a warning; one in doubt keeps only ids viz-control already binds and refuses any new id, naming the script', () => {
+  const wanted = wantedRateLimits(undefined)
+  const unread = (raw, distinct, script = 'someone-elses-app') => [{ script, binding: 'L', raw, distinct }]
+  const base = (extra) => ({ ...none(), unread: [], ...extra })
+  // Not a number: it can equal no viz id. A first allocation goes ahead, with a warning.
+  const ok = allocateRateLimitIds({ wanted, range: RANGE, inUse: base({ unread: unread('"abc"', true) }) })
+  assert.equal(new Set(ids(ok)).size, 6)
+  assert.match(ok.notes.join('\n'), /WARNING: someone-elses-app, binding L: namespace id "abc" is not a decimal number, so it can equal no viz id; ignored/)
+  // Missing, or a script not read: a first allocation (production's first release) is refused, naming it; nothing is taken.
+  for (const u of [unread('undefined', false), unread('not read: Cloudflare API 500', false)]) {
+    assert.throws(() => allocateRateLimitIds({ wanted, range: RANGE, inUse: base({ unread: u }) }), /cannot allocate a Rate Limiting namespace id for viz-control\/OAUTH_RL_SOURCE, .*: someone-elses-app \(binding L: [^)]*\) binds a rate limit whose id cannot be read, so no id can be proven free of it\. Nothing is taken/)
+  }
+  // Once viz-control binds its six, the same doubt keeps them (it takes nothing new) and the deploy goes on, with a warning.
+  const own = Object.fromEntries(wanted.map((w, i) => [w.name, String(7400 + i)]))
+  const kept = allocateRateLimitIds({ wanted, range: RANGE, inUse: { ...inUse({ 'viz-control': own }), unread: unread('undefined', false) } })
+  assert.deepEqual(ids(kept), Object.values(own))
+  assert.match(kept.notes.join('\n'), /WARNING: someone-elses-app, binding L: namespace id cannot be read/)
+  // An id only recorded in resources.json (never bound) is not kept in doubt: keeping it would take it.
+  const recorded = Object.fromEntries(wanted.map((w, i) => [w.key, String(7400 + i)]))
+  assert.throws(() => allocateRateLimitIds({ wanted, range: RANGE, inUse: base({ unread: unread('undefined', false) }), recorded }), /cannot allocate/)
+  // viz-control's own binding unreadable (M2-2's shape risk): not a doubt; its recorded ids, else a fresh deterministic pick.
+  const self = allocateRateLimitIds({ wanted, range: RANGE, inUse: base({ unread: unread('undefined', false, 'viz-control') }), recorded })
+  assert.deepEqual(self.ids, recorded)
+  assert.match(self.notes.join('\n'), /WARNING: viz-control \(this deployment's own\) has a Rate Limiting binding L whose id cannot be read/)
+  assert.deepEqual(allocateRateLimitIds({ wanted, range: RANGE, inUse: base({ unread: unread('undefined', false, 'viz-control') }) }).ids, allocateRateLimitIds({ wanted, range: RANGE, inUse: none() }).ids)
+})
+
+test('m2-1 (RV2-4) against the fake account: a script that is not viz\'s, with a binding listed without a readable id, refuses production\'s first allocation and nothing else; once viz-control binds its ids, ensure passes', async () => {
+  const v = (id, ratelimits) => ({ id, number: 1, tag: null, vars: {}, secrets: {}, ratelimits })
+  const odd = [{ name: 'L', namespace: '7300', simple: { limit: 1, period: 60 } }]
+  account.writeState({ calls: [], workers: { 'someone-elses-app': { versions: [v('o1', odd)], deployment: [{ version_id: 'o1', percentage: 100 }] } } })
+  await assert.rejects(ensureRateLimitIds(undefined, cfApi), /someone-elses-app \(binding L: undefined\) binds a rate limit whose id cannot be read/)
+  assert.deepEqual(JSON.parse(readFileSync(process.env.VIZ_RESOURCES_FILE, 'utf8')).ratelimit_namespaces, {}, 'nothing recorded')
+  const own = wantedRateLimits(undefined).map((w, i) => ({ name: w.name, namespace_id: String(7500 + i), simple: { limit: 5, period: 60 } }))
+  const s = account.readState()
+  s.workers['viz-control'] = { versions: [v('c1', own)], deployment: [{ version_id: 'c1', percentage: 100 }] }
+  account.writeState(s)
+  const r = await ensureRateLimitIds(undefined, cfApi)
+  assert.deepEqual(ids(r), own.map((x) => x.namespace_id))
 })
