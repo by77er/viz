@@ -1,5 +1,6 @@
 // Mutation check for the shard's newer safety properties (early refusal, group commit, review
-// fixes R-6, R-10, R-11(a), R-12, spec F12, names, versioned storage and messages): break one at
+// fixes R-6, R-10, R-11(a), R-12, spec F12, names, versioned storage and messages, tail reads,
+// registration before writes, time bounds of span and log batches and their reviews): break one at
 // a time, run the tests that should notice, expect them to FAIL, restore the file. The older
 // trigger and limit mutants are in stack/scripts/mutants.mjs.
 //   node scripts/mutants.mjs [substring of a mutant name]       (from shard/, in a COPY)
@@ -32,12 +33,16 @@ const T = {
   bounds: `npx vitest run ${W} test/bounds.test.ts`,
   boundsAll: `npx vitest run ${W} test/bounds.test.ts test/bounds.edge.test.ts`,
   boundsCompat: `npx vitest run ${W} test/bounds.test.ts test/compat.test.ts`,
+  recheck: `npx vitest run ${W} test/bounds.recheck.test.ts`,
+  boundsRecheck: `npx vitest run ${W} test/bounds.test.ts test/bounds.recheck.test.ts`,
   all: `npx vitest run ${W}`,
 }
 const TT = 'src/tail.ts'
 // The skip, decided from the index batch_time (review of D72, M-1): src/tail.ts SKIPPED_BY_BOUNDS and TIMED_TAIL_SQL.
 const SKIP = '(t.max_ts < ? OR t.min_ts > ?))`'
 const NOT_SKIPPED = 'AND NOT ${SKIPPED_BY_BOUNDS} ORDER BY b.seq`'
+// Which reads decide by bounds at all (re-check of D72, r2-m-2): src/tail.ts compileFilter.
+const BY_BOUNDS = '  const byBounds = timed && (!signals || signals.has(2) || signals.has(3))'
 // [name, file, from, to, tests]
 const mutants = [
   // ── early refusal ──
@@ -113,6 +118,24 @@ const mutants = [
   ['D72 m-1: a batch with rows and no entry is walked', TT, '  if (n === 0 || entries === 0 || n > len / 8', '  if (n === 0 || n > len / 8', T.boundsAll],
   ['D72 n-1: page_limit always says last', F, 'last: this.lastKept(tenant, f, seq, through) }', 'last: true }', T.bounds],
   ['D72 n-1: a look that stops before through says last', F, '    return kept.length === 0 && upto === through', '    return kept.length === 0', T.bounds],
+  // ── re-check of D72 (the review's file is d72-shard-bounds-r2.md): tenant terms, rows read, configuration ──
+  ['D72 r2-m-1: the skip subquery does not name the tenant (one tenant\'s batch hides another\'s rows)', TT, 'WHERE t.tenant = ? AND t.seq = b.seq', 'WHERE (? IS NOT NULL) AND t.seq = b.seq', T.recheck],
+  ['D72 r2-m-1: the ranged read does not name the tenant', TT, 'WHERE b.tenant = ? AND b.seq BETWEEN ? AND ? AND NOT', 'WHERE (? IS NOT NULL) AND b.seq BETWEEN ? AND ? AND NOT', T.recheck],
+  // Equivalent, listed so that it is reported: the subquery, which names the tenant, decides every row the outer WHERE would add
+  // (a stream's sequence numbers are contiguous up to `through`, so the tenant has a batch of its own at each one looked at).
+  ['D72 r2-m-1: the look for `last` does not name the tenant in its outer WHERE (equivalent: expected to survive)', F, 'FROM batch AS b WHERE b.tenant = ? AND b.seq > ? AND b.seq <= ?', 'FROM batch AS b WHERE (? IS NOT NULL) AND b.seq > ? AND b.seq <= ?', T.all],
+  ['D72 r2-m-2: a metrics-only ranged read runs the timed statement again (a second row read per batch)', TT, BY_BOUNDS, '  const byBounds = timed', T.recheck],
+  ['D72 r2-m-2: an unranged read runs the timed statement', TT, BY_BOUNDS, '  const byBounds = !signals || signals.has(2) || signals.has(3)', T.recheck],
+  ['D72 r2-m-2: no read skips by bounds (every read runs the plain statement)', TT, BY_BOUNDS, '  const byBounds = false', T.boundsRecheck],
+  ['D72 r2-m-2: a log read does not skip by bounds (only signal 2 counts)', TT, BY_BOUNDS, '  const byBounds = timed && (!signals || signals.has(2))', T.boundsRecheck],
+  ['D72 r2-m-2: a span read does not skip by bounds (only signal 3 counts)', TT, BY_BOUNDS, '  const byBounds = timed && (!signals || signals.has(3))', T.boundsRecheck],
+  ['D72 r2-m-2: a read without `signals` does not skip by bounds', TT, BY_BOUNDS, '  const byBounds = timed && !!signals && (signals.has(2) || signals.has(3))', T.boundsRecheck],
+  ['D72 r2-m-3: configure stores whatever it is given (no refusal)', F, '      if (fault !== null) throw new Error(`shard: configure: ${fault}; nothing was changed`)\n', '      void fault\n', T.recheck],
+  ['D72 r2-m-3: a field given as undefined is skipped by the check and stored (the field becomes undefined)', F, '    for (const [k, v] of Object.entries(cfg)) {\n', '    for (const [k, v] of Object.entries(cfg)) {\n      if (v === undefined) continue\n', T.recheck],
+  ['D72 r2-m-3: a stored value that breaks its rule is used', F, '  for (const k of Object.keys(CONFIG_RULES) as (keyof ShardConfig)[]) if (configFault(k, cfg[k]) !== null) cfg[k] = DEFAULT_CONFIG[k]\n', '', T.recheck],
+  ['D72 r2-m-3: tailScanMaxBatches may be 0', F, "  tailScanMaxBatches: 'positive',", "  tailScanMaxBatches: 'nonNegative',", T.recheck],
+  ['D72 r2-m-3: a non-integer or an infinite number passes', F, 'return Number.isSafeInteger(value) && (value as number) >= least ? null', "return typeof value === 'number' && value >= least ? null", T.recheck],
+  ['D72 r2-m-3: a negative number passes', F, 'return Number.isSafeInteger(value) && (value as number) >= least ? null', 'return Number.isSafeInteger(value) ? null', T.recheck],
   // ── names, versions ──
   ['names: a shard addressed outside SHARD_NAME serves', F, '    if (ctx.id.name !== undefined && !SHARD_NAME.test(ctx.id.name)) throw', '    if (false) throw', T.pool],
   ['names: a pool name with `_` is valid', 'src/pool.ts', "export const validPoolName = (pool: unknown): pool is string => typeof pool === 'string' && POOL_NAME.test(pool)", "export const validPoolName = (pool: unknown): pool is string => typeof pool === 'string' && pool !== ''", T.pool],

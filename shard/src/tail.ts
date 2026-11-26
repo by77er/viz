@@ -43,14 +43,30 @@ export const SKIPPED_BY_BOUNDS = `EXISTS (SELECT 1 FROM batch AS t INDEXED BY ba
   AND t.min_ts IS NOT NULL AND t.max_ts IS NOT NULL AND (t.max_ts < ? OR t.min_ts > ?))`
 
 /**
- * A filtered tail read with a time range (`Shard.tailPage`): the batches `seq BETWEEN ? AND ?` of one
- * tenant that the range does not skip (`SKIPPED_BY_BOUNDS`), in order. Arguments: tenant, first seq,
- * last seq, then `SKIPPED_BY_BOUNDS`'s. `payload IS NOT NULL` is left to the caller (in the WHERE it
- * would read every row's record, skipped ones too). Here, not in shard.ts, so that the plan test and
+ * A filtered tail read with a time range that admits span or log batches (`Shard.tailPage`,
+ * `CompiledFilter.byBounds`): the batches `seq BETWEEN ? AND ?` of one tenant that the range does not
+ * skip (`SKIPPED_BY_BOUNDS`), in order. Arguments: tenant, first seq, last seq, then
+ * `SKIPPED_BY_BOUNDS`'s. `payload IS NOT NULL` is left to the caller (in the WHERE it would read
+ * every row's record, skipped ones too). Here, not in shard.ts, so that the plan test and
  * bench/skipread.node.mjs (Node) run this very statement.
+ *
+ * Its cost in rows read (re-check of D72, r2-m-2; measured here in local workerd, the cursor's
+ * `rowsRead`, test/bounds.recheck.test.ts; how Cloudflare counts and bills it is not measured): 2
+ * per batch skipped, 3 per batch with bounds that is kept, 2 per batch without bounds (the lookup
+ * in `batch_time` that finds no entry counts too), where `PLAIN_TAIL_SQL` reads 1 per batch. Hence
+ * only reads that can skip something run it.
  */
 export const TIMED_TAIL_SQL = `SELECT b.seq AS seq, b.rows AS rows, b.payload AS payload FROM batch AS b
   WHERE b.tenant = ? AND b.seq BETWEEN ? AND ? AND NOT ${SKIPPED_BY_BOUNDS} ORDER BY b.seq`
+
+/**
+ * Every other filtered tail read (`Shard.tailPage`): the stored batches `seq BETWEEN ? AND ?` of one
+ * tenant, in order. Arguments: tenant, first seq, last seq. This is the statement every filtered read
+ * ran before D72, and the one a read that admits only metric batches still runs with a time range
+ * (re-check of D72, r2-m-2): no metric batch has bounds, so nothing could be skipped, and the lookup
+ * would only double the rows read (billed) of every metrics query.
+ */
+export const PLAIN_TAIL_SQL = `SELECT seq, rows, payload FROM batch WHERE tenant = ? AND seq BETWEEN ? AND ? AND payload IS NOT NULL ORDER BY seq`
 
 /**
  * What a filtered tail read keeps. Every field is optional; what is absent does not filter. A row
@@ -74,7 +90,8 @@ export const TIMED_TAIL_SQL = `SELECT b.seq AS seq, b.rows AS rows, b.payload AS
  * smallest and largest span `start` or log `ts`). A filtered read with a time range skips a span
  * or log batch whose bounds lie wholly outside `[minTs, maxTs]`, deciding from an index of the
  * bounds without reading the batch from storage (review of D72, M-1), and returns every other one
- * whole, as before. A batch without bounds (written before schema 3, or by the release before it,
+ * whole, as before. Only a read that admits signal 2 or 3 looks at bounds at all (`byBounds`): one
+ * that admits only metrics reads every batch as before D72, and so never skips one. A batch without bounds (written before schema 3, or by the release before it,
  * or one the walk does not accept) is kept by every time range. So a caller that needs every span
  * starting (or log record stamped) in `[lo, hi]` nanoseconds passes `minTs = floor(lo / 10⁶)`,
  * `maxTs = floor(hi / 10⁶)` and gets every batch that holds one.
@@ -150,8 +167,15 @@ export interface CompiledFilter {
   all: boolean
   /** True when the filter names series (`metrics`, `labels` or `keyRange`): a span or log batch then keeps nothing. */
   series: boolean
-  /** True when the filter has a time range: span and log batches are then chosen by the bounds recorded at append (`batchTimeBounds`; `Shard.tailPage`). */
+  /** True when the filter has a time range: metric rows are then chosen by `ts`, and span and log batches by the bounds recorded at append (`byBounds`). */
   timed: boolean
+  /**
+   * True when the read can skip a batch by the bounds recorded at append (`batchTimeBounds`, D72): it
+   * has a time range AND admits span (2) or log (3) batches (no `signals`, or one of the two listed).
+   * Only then does `Shard.tailPage` run `TIMED_TAIL_SQL`. A read that admits neither (a metrics
+   * query's `signals: [1]`) runs `PLAIN_TAIL_SQL`, as before D72 (re-check of D72, r2-m-2).
+   */
+  byBounds: boolean
 }
 
 const te = new TextEncoder()
@@ -201,8 +225,9 @@ export function compileFilter(f: TailFilter): CompiledFilter | { invalid: string
   })
   const series = !!metrics || labels.length > 0 || !!key
   const timed = f.minTs !== undefined || f.maxTs !== undefined
+  const byBounds = timed && (!signals || signals.has(2) || signals.has(3))
   const all = !signals && !timed && !metrics && labels.length === 0 && !key
-  return { signals, minTs, maxTs, metrics, labels, present: labels.filter((l) => l.value.length > 0).length, key, canonical, all, series, timed }
+  return { signals, minTs, maxTs, metrics, labels, present: labels.filter((l) => l.value.length > 0).length, key, canonical, all, series, timed, byBounds }
 }
 
 const NS_PER_MS = 1_000_000n
