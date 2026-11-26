@@ -140,7 +140,7 @@ async function main() {
       check('the page has one h1, "Explore", and the navigation marks the section', (await text(page, 'h1')) === 'Explore' && (await text(page, '.vz-nav a[aria-current=page]')) === 'Explore')
       check('the tenant of the key is in the navigation, as text', (await text(page, '[data-testid=tenant]')) === 'viz-mock')
       const state = await page.evaluate(() => ({ ls: Object.keys(localStorage), ss: Object.keys(sessionStorage) }))
-      check('nothing but the theme, the mock note, the colour map and the reserved height is stored', state.ls.every((k) => ['viz.theme', 'viz.backend.mock'].includes(k)) && state.ss.every((k) => ['vz-series8:explore', 'viz.chart.reserve:explore', 'viz.key'].includes(k)), JSON.stringify(state))
+      check('nothing but the theme (localStorage) and the key, its identity, the colour map and the reserved height (this tab) is stored', state.ls.every((k) => ['viz.theme'].includes(k)) && state.ss.every((k) => ['vz-series8:explore', 'viz.chart.reserve:explore', 'viz.key', 'viz.identity'].includes(k)), JSON.stringify(state))
 
       // The forms of the result.
       await page.click('[data-testid=view-table]')

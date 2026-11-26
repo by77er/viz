@@ -15,6 +15,11 @@ import type { Identity } from '../api/types'
 
 /** Where the key is kept: `sessionStorage`, this tab only. */
 export const KEY_STORE = 'viz.key'
+/**
+ * Who the API said the key is, kept beside it (it is no secret): a reload shows the tenant and
+ * sends its query at once, while the API is asked again in the background.
+ */
+export const IDENTITY_STORE = 'viz.identity'
 /** Where the app before this one kept the API address and a bearer token, for good: removed on start. */
 const LEGACY_STORE = 'viz.settings'
 /** The scope the query API checks (edge/src/auth.ts, `authenticate(…, 'read')`). */
@@ -24,12 +29,14 @@ export type Session =
   /** Asking the API who the key is; nothing is shown yet. */
   | { status: 'checking' }
   /**
-   * Signed in. `identity` is null when the API could not say who the key is: it has no
-   * sign-in at all (`unchecked: 'no-control'`, HTTP 404: a Prometheus-compatible API that is
-   * not viz), or it did not answer (`unchecked: 'no-answer'`) and the key from this tab is
-   * used as it is; each query then says whether the key is accepted.
+   * Signed in. `identity` is null when the API has not said who the key is: it has no sign-in
+   * at all (`unchecked: 'no-control'`, HTTP 404: a Prometheus-compatible API that is not viz);
+   * it did not answer (`'no-answer'`) and the key from this tab is used as it is, each query
+   * saying whether it is accepted; or it is being asked (`'asking'`): a tab that already holds
+   * a key starts signed in, with the identity it was given at sign-in if it kept one, so a
+   * reload sends its query at once, and a refusal then signs it out.
    */
-  | { status: 'in'; identity: Identity | null; unchecked?: 'no-control' | 'no-answer' }
+  | { status: 'in'; identity: Identity | null; unchecked?: 'no-control' | 'no-answer' | 'asking' }
   /** Not signed in, and why the sign-in form is on screen. */
   | { status: 'out'; reason: SignedOutReason; detail?: string }
 
@@ -107,6 +114,23 @@ function writeKey(key: string): void {
     // Storage is not available (private mode, a policy): the key stays in memory for this page.
   }
 }
+function readIdentity(): Identity | null {
+  try {
+    const v = JSON.parse(sessionStorage.getItem(IDENTITY_STORE) ?? 'null') as Partial<Identity> | null
+    if (!v || typeof v.tenant !== 'string' || !Array.isArray(v.scopes)) return null
+    return { tenant: v.tenant, subject: String(v.subject ?? ''), kind: String(v.kind ?? 'key'), name: typeof v.name === 'string' ? v.name : null, scopes: v.scopes.filter((x): x is string => typeof x === 'string'), ...(v.mock === true ? { mock: true } : {}) }
+  } catch {
+    return null
+  }
+}
+function writeIdentity(identity: Identity | null): void {
+  try {
+    if (identity) sessionStorage.setItem(IDENTITY_STORE, JSON.stringify(identity))
+    else sessionStorage.removeItem(IDENTITY_STORE)
+  } catch {
+    // Not kept: the next load asks before it shows the tenant.
+  }
+}
 function forgetLegacy(): void {
   try {
     localStorage.removeItem(LEGACY_STORE)
@@ -153,7 +177,8 @@ export function SessionProvider({ children, onChange }: { children: ReactNode; o
     return readKey()
   })
   const [version, setVersion] = useState(0)
-  const [session, setSession] = useState<Session>({ status: 'checking' })
+  // A tab that holds a key starts signed in (a reload sends its query at once); a tab without one asks first whether the API needs one.
+  const [session, setSession] = useState<Session>(() => (readKey() !== '' ? { status: 'in', identity: readIdentity(), unchecked: 'asking' } : { status: 'checking' }))
   const client = useMemo(() => new PromClient({ baseUrl: BASE_URL, token: key }), [key])
   const onChangeRef = useRef(onChange)
   onChangeRef.current = onChange
@@ -171,10 +196,14 @@ export function SessionProvider({ children, onChange }: { children: ReactNode; o
       const next = sessionAfter(hasKey, outcome)
       if (next.status === 'out' && hasKey) {
         writeKey('')
+        writeIdentity(null)
         setKey('')
         setVersion((v) => v + 1)
+        onChangeRef.current?.()
       }
-      setSession(next)
+      if (next.status === 'in' && next.identity) writeIdentity(next.identity)
+      // The API did not answer: what the tab was told at sign-in still stands beside the key.
+      setSession(next.status === 'in' && next.unchecked === 'no-answer' ? { ...next, identity: readIdentity() } : next)
     })
   }, [checkId])
 
@@ -185,6 +214,7 @@ export function SessionProvider({ children, onChange }: { children: ReactNode; o
     const result = signInResult(outcome)
     if (result.ok && 'identity' in outcome) {
       writeKey(candidate)
+      writeIdentity(outcome.identity)
       setKey(candidate)
       setVersion((v) => v + 1)
       setSession({ status: 'in', identity: outcome.identity })
@@ -194,6 +224,7 @@ export function SessionProvider({ children, onChange }: { children: ReactNode; o
 
   const signOut = useCallback((reason: 'left' | 'refused' = 'left') => {
     writeKey('')
+    writeIdentity(null)
     setKey('')
     setVersion((v) => v + 1)
     setSession({ status: 'out', reason })
@@ -202,7 +233,7 @@ export function SessionProvider({ children, onChange }: { children: ReactNode; o
   }, [])
 
   const recheck = useCallback(() => {
-    setSession({ status: 'checking' })
+    setSession(readKey() !== '' ? { status: 'in', identity: readIdentity(), unchecked: 'asking' } : { status: 'checking' })
     setCheckId((n) => n + 1)
   }, [])
 

@@ -48,6 +48,8 @@ export interface Identity {
   kind: string
   name: string | null
   scopes: string[]
+  /** Set by the development mock, so the UI can say what it is talking to from its first frame. The real API omits it. */
+  mock?: boolean
 }
 
 export interface MetricMetadata {

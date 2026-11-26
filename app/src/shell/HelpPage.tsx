@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { MOD, useCommandsContext } from './commands'
 
 const SHORTCUTS: [string[], string][] = [
@@ -15,6 +16,9 @@ const SHORTCUTS: [string[], string][] = [
 
 export function HelpPage() {
   const { setPaletteOpen } = useCommandsContext()
+  useEffect(() => {
+    document.title = 'Help · viz'
+  }, [])
   return (
     <div className="vz-page">
       <header className="vz-page-head">

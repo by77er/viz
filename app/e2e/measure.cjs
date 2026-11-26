@@ -38,7 +38,9 @@
 //               (after only: the old app had no busy state)
 //   toggle x→y  pointerup on the segment -> end of the first frame in which the new form is
 //               in the document and visible (for the chart: its canvas, drawn before that frame)
-//   picker      pointerup on the time range button -> the popover is in a painted frame
+//   legendToggle  pointerup on the first legend row -> its chosen state is in a painted frame
+//   picker      pointerup on the time range button -> the popover is in a painted frame (--ui v4
+//               only: the app on v9 types its range in place and has no menu in this view)
 //   response    the query_range body has arrived in the page -> end of the last frame of the
 //               burst of changes to the result panel that follows (see instrument()). "Arrived"
 //               is when this script's copy of the body (res.clone().text()) resolves, and that
@@ -80,7 +82,18 @@ const Q_SYNTH = 'viz_synthetic_series'
 const QUERIES = { 4: Q_RATE, 36: lib.Q_MANY, 200: Q_SYNTH }
 /** --skip typing,crosshair: leave those steps out (for quicker comparisons of candidates). */
 const SKIP = new Set(arg('skip', '').split(',').filter(Boolean))
+/** --extra '&step=1s': more of the address, e.g. a typed step that asks for more samples than the chart has pixel columns. */
+const EXTRA = arg('extra', '')
 const PHONE = process.argv.includes('--phone')
+/**
+ * --ui v4: the app before design system v9 (uPlot canvas, its own legend, a time picker
+ * menu); the default is the app on v9 (the system's chart). What is pressed and what counts
+ * as done is the same act in both; only where it is found differs.
+ */
+const UI = {
+  v4: { rows: '[data-testid=legend] tbody tr', drawn: '[data-testid=chart] canvas', text: '[data-testid=text-view] pre', chartShown: '[data-testid=chart] canvas', plot: '[data-testid=chart] .u-over', row: '[data-testid=legend] tbody tr .series-toggle', rowChosen: '[data-testid=legend] tbody tr .series-toggle[aria-pressed="false"]', picker: ['[data-testid=time-range]', '[role=dialog][aria-label="Time range"]'] },
+  v9: { rows: '[data-testid=chart] tbody tr[data-key]', drawn: '[data-testid=chart] svg.vz-plot .vz-line', text: '[data-testid=text-view]:not([hidden]) li', chartShown: '[data-testid=chart]:not(.is-parked) svg.vz-plot', plot: '[data-testid=chart] svg.vz-plot', row: '[data-testid=chart] tbody tr[data-key] .vz-series', rowChosen: '[data-testid=chart] tbody tr[aria-selected="true"]', picker: null },
+}[arg('ui', 'v9')]
 const LAYOUT = PHONE ? { viewport: { width: 400, height: 800 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 } : { viewport: { width: 1440, height: 900 } }
 const os = require('node:os')
 const CORES = os.cpus().length
@@ -247,9 +260,9 @@ async function measureCase(browser, SERIES) {
       const load1 = os.loadavg()[0]
 
       // ---- first load
-      await page.goto(url(QUERIES[SERIES]))
-      await page.waitForSelector('[data-testid=legend] tbody tr')
-      await page.waitForSelector('[data-testid=chart] canvas')
+      await page.goto(url(QUERIES[SERIES], EXTRA))
+      await page.waitForSelector(UI.rows, { state: 'attached' })
+      await page.waitForSelector(UI.drawn, { state: 'attached' })
       await page.waitForSelector('.cm-content')
       await page.waitForTimeout(1200)
       const r = { load1, clsLoad: await page.evaluate(() => window.__m.shifts.reduce((a, s) => a + s.value, 0)) }
@@ -272,13 +285,20 @@ async function measureCase(browser, SERIES) {
       // ---- local changes
       if (hasTable) {
         r.chartToTable = (await click(page, '[data-testid=view-table]', '[data-testid=result-table] tbody tr', cdp)).done
-        r.tableToText = (await click(page, '[data-testid=view-text]', '[data-testid=text-view] pre', cdp)).done
+        r.tableToText = (await click(page, '[data-testid=view-text]', UI.text, cdp)).done
       } else {
-        r.chartToText = (await click(page, '[data-testid=view-text]', '[data-testid=text-view] pre', cdp)).done
+        r.chartToText = (await click(page, '[data-testid=view-text]', UI.text, cdp)).done
       }
-      r.textToChart = (await click(page, '[data-testid=view-chart]', '[data-testid=chart] canvas', cdp)).done
-      r.picker = (await click(page, '[data-testid=time-range]', '[role=dialog][aria-label="Time range"]', cdp)).done
-      await page.keyboard.press('Escape')
+      r.textToChart = (await click(page, '[data-testid=view-chart]', UI.chartShown, cdp)).done
+      // A legend row chosen: a local change both builds have (press the first row; done when the row's chosen state is painted).
+      r.legendToggle = (await click(page, UI.row, UI.rowChosen, cdp)).done
+      await page.waitForTimeout(150)
+      await click(page, UI.row, UI.row, cdp) // and back, so the crosshair runs over every line
+      // Opening a menu: the app before had the time picker; the app on v9 has no menu in this view (its range is typed in place).
+      if (UI.picker) {
+        r.picker = (await click(page, UI.picker[0], UI.picker[1], cdp)).done
+        await page.keyboard.press('Escape')
+      }
       await page.waitForTimeout(300)
 
       const ev = await page.evaluate(() => window.__m.events)
@@ -294,9 +314,9 @@ async function measureCase(browser, SERIES) {
         continue
       }
       // ---- crosshair: 30 moves across the plot, each waited for (a touch drag on the phone: horizontal, so the page does not scroll)
-      await page.locator('[data-testid=chart] .u-over').scrollIntoViewIfNeeded()
+      await page.locator(UI.plot).scrollIntoViewIfNeeded()
       await page.waitForTimeout(150)
-      const over = await page.locator('[data-testid=chart] .u-over').boundingBox()
+      const over = await page.locator(UI.plot).boundingBox()
       const at = (k) => PHONE ? { x: over.x + over.width * (0.1 + 0.8 * (k / 30)), y: over.y + over.height * 0.5 } : { x: over.x + over.width * (0.1 + 0.8 * (k / 30)), y: over.y + over.height * (0.3 + 0.4 * ((k % 5) / 5)) }
       if (PHONE) await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [at(0)] })
       else await page.mouse.move(at(0).x, at(0).y)
@@ -348,7 +368,7 @@ async function measureCase(browser, SERIES) {
   const prior = process.argv.includes('--append') && fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null
   if (prior) runs.unshift(...prior.raw)
 
-  const keys = ['load1', 'loadEnd', 'press', 'busy', 'runToPaint', 'chartToTable', 'tableToText', 'chartToText', 'textToChart', 'picker', 'response', 'responseFull', 'inp', 'inputDelay', 'crosshair', 'crosshairWorst', 'typing', 'typingWorst', 'typingOver', 'inpAll', 'clsLoad', 'clsRun', 'clsRunAll']
+  const keys = ['load1', 'loadEnd', 'press', 'busy', 'runToPaint', 'chartToTable', 'tableToText', 'chartToText', 'textToChart', 'legendToggle', 'picker', 'response', 'responseFull', 'inp', 'inputDelay', 'crosshair', 'crosshairWorst', 'typing', 'typingWorst', 'typingOver', 'inpAll', 'clsLoad', 'clsRun', 'clsRunAll']
   const summary = {}
   for (const k of keys) {
     const xs = runs.map((r) => r[k])

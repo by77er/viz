@@ -157,6 +157,10 @@ export function ExplorePage() {
   lookupRange.current = window_ ? { start: window_.start, end: window_.end } : null
 
   const q = search.q.trim()
+  // The tab's title is the query, so that several tabs can be told apart.
+  useEffect(() => {
+    document.title = q ? `${q} · Explore · viz` : 'Explore · viz'
+  }, [q])
   /** What the page now wants answered. A result is compared with it, never described by it. */
   const current = useMemo<ResultRequest>(() => ({ q, from: search.from, to: search.to, step: search.step }), [q, search.from, search.to, search.step])
   // The API key is deliberately not part of the query key; connectionId changes when the key does.

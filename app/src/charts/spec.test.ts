@@ -43,6 +43,10 @@ describe('a result as the system\'s chart takes it', () => {
     // Bytes per second in binary steps, which the chart would otherwise give a decimal k.
     expect(chartUnit('bytes/s', 100)).toEqual({ name: 'B/s', scale: 1 })
     expect(chartUnit('bytes/s', 3 * 1024 ** 2)).toEqual({ name: 'MiB/s', scale: 1 / 1024 ** 2 })
+    // The steps are 1024, not 1000: 1000 B/s is still B/s, and a million is 977 KiB/s, not 1 MiB/s.
+    expect(chartUnit('bytes/s', 1000)).toEqual({ name: 'B/s', scale: 1 })
+    expect(chartUnit('bytes/s', 1024)).toEqual({ name: 'KiB/s', scale: 1 / 1024 })
+    expect(chartUnit('bytes/s', 1e6)).toEqual({ name: 'KiB/s', scale: 1 / 1024 })
     expect(chartUnit('bytes/s', 1024 ** 5)).toEqual({ name: 'TiB/s', scale: 1 / 1024 ** 4 })
   })
   it('values are multiplied into the chart\'s unit', () => {

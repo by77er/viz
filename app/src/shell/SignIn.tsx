@@ -28,7 +28,7 @@ const WORDS: Record<SignedOutReason, { title: string; text: string }> = {
  * end up in an address even if the script fails.
  */
 export function SignIn({ reason, detail }: { reason: SignedOutReason; detail?: string }) {
-  const { signIn } = useSession()
+  const { signIn, recheck } = useSession()
   const id = useId()
   const input = useRef<HTMLInputElement>(null)
   const [key, setKey] = useState('')
@@ -110,6 +110,11 @@ export function SignIn({ reason, detail }: { reason: SignedOutReason; detail?: s
               <button type="submit" className="vz-button" data-tone="blue" aria-busy={busy} data-testid="sign-in-submit">
                 Sign in
               </button>
+              {reason === 'no-answer' && (
+                <button type="button" className="vz-button" onClick={recheck} data-testid="sign-in-ask-again">
+                  Ask the API again
+                </button>
+              )}
             </div>
             {problem?.where === 'notice' && (
               <div className="vz-notice" role="alert" data-testid="sign-in-notice">

@@ -4,6 +4,7 @@
 // the same mock, the same data and the same steps for both builds, then composed side by side.
 //
 //   node e2e/v9-shots.cjs <before app dir> <after app dir> <work dir> <compare dir> [only,names]
+//   VIZ_SHOTS_KEEP_BEFORE=1 ...   picture only the after build again; the before images already in <work dir> stand
 //
 // Both app dirs must have a dist/ (each is served by `vite preview` from its own dir). One
 // mock serves both builds, and a second, which requires a key as viz does, serves the
@@ -38,6 +39,7 @@ const A = { plot: 'svg.vz-plot', row: '[data-testid=chart] tbody tr[data-key] .v
 const delay = (ms) => ({ eval: `fetch('${MOCK}/__mock/delay?ms=${ms}')` })
 const typeAndRun = (query) => [{ click: '.query-well .cm-content' }, { key: 'Control+a' }, { type: ['.query-well .cm-content', query] }, { key: 'Escape' }, { key: 'Control+Enter' }]
 const settle = { wait: 900 }
+const prompt = [delay(0), { wait: 150 }, { eval: 'location.reload()' }, { wait: 1500 }]
 // The key as each build keeps it: the app before kept a token in localStorage (Settings), the app after keeps it in the tab.
 const keyBefore = (k) => [{ eval: `localStorage.setItem('viz.settings', JSON.stringify({ baseUrl: '', token: '${k}' })); location.reload()` }, { wait: 1800 }]
 const noKeyBefore = [{ eval: "localStorage.removeItem('viz.settings'); location.reload()" }, { wait: 1800 }]
@@ -51,7 +53,7 @@ const signIn = (k) => [{ wait: 600 }, { type: ['[data-testid=sign-in-key]', k] }
 const STATES = [
   // ---- every view, opened by its address
   { name: 'explore', url: explore(lib.Q_RATE), steps: [settle] },
-  { name: 'many-series-36', url: explore(lib.Q_MANY), steps: [settle] },
+  { name: 'many-series-36', url: explore(lib.Q_MANY), steps: [settle], heights: { 1440: 1100, 400: 1700 } },
   { name: 'many-series-200', url: explore('viz_synthetic_series'), steps: [{ wait: 1500 }] },
   { name: 'gap', url: explore(lib.Q_CPU), steps: [settle] },
   { name: 'bytes', url: explore(Q_MEM), steps: [settle] },
@@ -59,22 +61,22 @@ const STATES = [
   { name: 'no-unit', url: explore('up'), steps: [settle] },
   { name: 'one-series-no-labels', url: explore('sum(rate(http_requests_total[5m]))'), steps: [settle] },
   { name: 'table', url: explore(lib.Q_RATE, '&view=table'), steps: [settle] },
-  { name: 'table-36', url: explore(lib.Q_MANY, '&view=table'), steps: [settle] },
+  { name: 'table-36', url: explore(lib.Q_MANY, '&view=table'), steps: [settle], heights: { 1440: 1780, 400: 2300 } },
   { name: 'text', url: explore(lib.Q_MANY, '&view=text'), steps: [settle] },
   { name: 'json', url: explore(lib.Q_RATE, '&view=json'), steps: [settle] },
   { name: 'empty', url: explore('no_such_metric_total'), steps: [settle] },
   { name: 'error', url: explore(lib.Q_BAD), steps: [settle] },
   { name: 'error-step-too-small', url: explore(lib.Q_RATE, '&step=500ms'), steps: [settle] },
   { name: 'start', url: '/explore', steps: [settle] },
-  { name: 'help', url: '/help', steps: [{ wait: 400 }] },
+  { name: 'help', url: '/help', steps: [{ wait: 400 }], heights: { 1440: 1100, 400: 1700 } },
   { name: 'settings', urls: { before: explore(lib.Q_RATE), after: '/settings' }, steps: { before: [settle, { click: '[data-testid=open-settings]' }, { wait: 300 }], after: [settle] } },
   // ---- what a person does
   { name: 'crosshair', url: explore(lib.Q_RATE), steps: (s) => [settle, { hover: s.plot }, { wait: 300 }], only: 1440 },
   { name: 'crosshair-36', url: explore(lib.Q_MANY), steps: (s) => [settle, { hover: s.plot }, { wait: 300 }] },
-  { name: 'legend-row-chosen', url: explore(lib.Q_RATE), steps: (s) => [settle, { click: s.row }, { wait: 300 }, { hover: 'h1' }] },
+  { name: 'legend-row-chosen', url: explore(lib.Q_RATE), steps: (s) => [settle, { click: s.row }, { wait: 300 }, { hover: '.vz-nav-name' }] },
   { name: 'legend-row-focus', url: explore(lib.Q_RATE), steps: (s) => [settle, { focus: s.row }, { wait: 200 }], only: 1440 },
   { name: 'legend-row-pressed', url: explore(lib.Q_RATE), steps: (s) => [settle, { press: s.row }, { wait: 150 }], only: 1440 },
-  { name: 'other-opened', url: explore(lib.Q_MANY), steps: (s) => [settle, { click: s.other }, { wait: 300 }] },
+  { name: 'other-opened', url: explore(lib.Q_MANY), steps: (s) => [settle, { click: s.other }, { wait: 300 }, { hover: '.vz-nav-name' }, { wait: 150 }], heights: { 1440: 1900, 400: 2300 } },
   { name: 'zoomed-in', url: explore(lib.Q_RATE), steps: (s) => [settle, { click: s.zoomIn }, { wait: 1200 }] },
   { name: 'command-palette', url: explore(lib.Q_RATE), steps: [settle, { key: 'Control+k' }, { wait: 300 }] },
   { name: 'time-range', url: explore(lib.Q_RATE), steps: { before: [settle, { click: '[data-testid=time-range]' }, { wait: 300 }], after: [settle, { focus: '[data-testid=time-from]' }, { wait: 200 }] } },
@@ -85,17 +87,18 @@ const STATES = [
   // ---- touch, zoom, greyscale
   { name: 'touch', url: explore(lib.Q_RATE), steps: [settle], only: 400, opts: { coarse: true } },
   { name: 'touch-hit-areas', url: explore(lib.Q_MANY), steps: [settle], only: 400, opts: { coarse: true, measure: true, outline: true } },
-  { name: 'touch-table', url: explore(lib.Q_MANY, '&view=table'), steps: [settle], only: 400, opts: { coarse: true } },
+  { name: 'touch-table', url: explore(lib.Q_MANY, '&view=table'), steps: [settle], only: 400, opts: { coarse: true }, heights: { 400: 2400 } },
   { name: 'touch-320', url: explore(lib.Q_MANY), steps: [settle], only: 400, opts: { coarse: true, width: 320, measure: true } },
-  { name: 'zoom-200', url: explore(lib.Q_MANY), steps: [settle], only: 1440, opts: { zoom: 2, measure: true } },
+  { name: 'zoom-200', url: explore(lib.Q_MANY), steps: [settle], only: 1440, opts: { zoom: 2, measure: true }, heights: { 1440: 1500 } },
   { name: 'greyscale', url: explore(lib.Q_MANY), steps: [settle], only: 1440, opts: { greyscale: true } },
-  // ---- waiting (the mock answers queries late; each state first makes it prompt again, and ends by leaving it so)
-  { name: 'waiting-1s', url: explore(lib.Q_RATE), steps: [delay(0), settle, delay(3000), { wait: 150 }, { click: '[data-testid=run]' }, { wait: 1000 }] },
-  { name: 'waiting-cancel-offered', url: explore(lib.Q_RATE), steps: [delay(0), settle, delay(4000), { wait: 150 }, { click: '[data-testid=run]' }, { wait: 2500 }] },
-  { name: 'waiting-previous-query', url: explore(lib.Q_RATE), steps: [delay(0), { wait: 1200 }, delay(4000), { wait: 150 }, ...typeAndRun(lib.Q_CPU), { wait: 1200 }] },
-  { name: 'cancelled', url: explore(lib.Q_RATE), steps: [delay(0), { wait: 1200 }, delay(4000), { wait: 150 }, ...typeAndRun(lib.Q_CPU), { wait: 2400 }, { click: '[data-testid=cancel]' }, { wait: 300 }] },
-  { name: 'first-result-waiting', url: explore(lib.Q_MANY), steps: [delay(0), { wait: 1200 }, delay(2500), { wait: 150 }, { eval: 'location.reload()' }, { wait: 1300 }] },
-  { name: 'prompt-again', url: '/help', steps: [delay(0), { wait: 300 }], only: 400, themes: ['light'], skipCompare: true },
+  // ---- waiting (the mock answers queries late). A state before may have left the mock late, and the page's own first query with it:
+  // each of these first makes the mock prompt and loads the page again, and the last state leaves the mock prompt.
+  { name: 'waiting-1s', url: explore(lib.Q_RATE), steps: [...prompt, delay(3000), { wait: 150 }, { click: '[data-testid=run]' }, { wait: 1000 }] },
+  { name: 'waiting-cancel-offered', url: explore(lib.Q_RATE), steps: [...prompt, delay(4000), { wait: 150 }, { click: '[data-testid=run]' }, { wait: 2500 }] },
+  { name: 'waiting-previous-query', url: explore(lib.Q_RATE), steps: [...prompt, delay(4000), { wait: 150 }, ...typeAndRun(lib.Q_CPU), { wait: 1200 }] },
+  { name: 'cancelled', url: explore(lib.Q_RATE), steps: [...prompt, delay(6000), { wait: 150 }, ...typeAndRun(lib.Q_CPU), { wait: 2600 }, { click: '[data-testid=cancel]' }, { wait: 300 }] },
+  { name: 'first-result-waiting', url: explore(lib.Q_MANY), steps: [...prompt, delay(2500), { wait: 150 }, { eval: 'location.reload()' }, { wait: 1300 }] },
+  { name: 'prompt-again', url: '/help', steps: [delay(0), { wait: 300 }], only: 400, themes: ['light'] },
   // ---- sign-in, on an API that requires a key
   { name: 'no-key', keyed: true, url: explore(lib.Q_RATE), steps: { before: noKeyBefore, after: [{ wait: 900 }] } },
   { name: 'key-refused', keyed: true, url: explore(lib.Q_RATE), steps: { before: keyBefore('viz_e2eReadKey0000000_wrongSecret'), after: signIn('viz_e2eReadKey0000000_wrongSecret') } },
@@ -106,7 +109,7 @@ const STATES = [
 ]
 
 /** Stored with a 256-colour palette that holds every token colour exactly (see e2e/encode-review-images.py). */
-function encode(dir) {
+function encode(dir, since) {
   const py = `
 import glob, json, os, re, sys
 import numpy as np
@@ -119,6 +122,7 @@ for t in tokens['color']['tokens']:
             rgb = tuple(int(v[i:i + 2], 16) for i in (1, 3, 5))
             if rgb not in forced: forced.append(rgb)
 for path in sorted(glob.glob(os.path.join(sys.argv[1], '*.png'))):
+    if os.path.getmtime(path) * 1000 < float(sys.argv[3]): continue  # a pair from an earlier run, encoded then
     im = Image.open(path).convert('RGB')
     px = np.asarray(im).reshape(-1, 3)
     uniq, inverse, counts = np.unique(px, axis=0, return_inverse=True, return_counts=True)
@@ -137,14 +141,17 @@ for path in sorted(glob.glob(os.path.join(sys.argv[1], '*.png'))):
     out.putpalette([v for c in colours for v in c] + [0] * (768 - 3 * len(colours)))
     out.save(path, optimize=True)
 `
-  const r = spawnSync('python3', ['-c', py, dir, path.resolve(lib.ROOT, '../design-system/project/tokens.json')], { stdio: 'inherit' })
+  const r = spawnSync('python3', ['-c', py, dir, path.resolve(lib.ROOT, '../design-system/project/tokens.json'), String(since)], { stdio: 'inherit' })
   if (r.status !== 0) throw new Error('encoding the images failed')
 }
 
 async function main() {
+  const started = Date.now() - 1000
   const stops = [await lib.startMock(PORT + 2), await lib.startMock(PORT + 3, ['--require-token', KEY, '--readless-token', WRITE])]
   try {
     for (const [label, dir, port, sel] of [['before', beforeDir, PORT, B], ['after', afterDir, PORT + 1, A]]) {
+      // VIZ_SHOTS_KEEP_BEFORE=1: the before images in <work dir>/before are kept as they are (the build before does not change), and only the after build is pictured again.
+      if (label === 'before' && process.env.VIZ_SHOTS_KEEP_BEFORE && fs.existsSync(path.join(work, 'before')) && fs.readdirSync(path.join(work, 'before')).length > 0) continue
       // Two previews of the build: one on the mock that needs no key, one on the mock that does.
       const stopOpen = await lib.startPreview(port, MOCK, dir)
       const stopKeyed = await lib.startPreview(port + 4, KEYED, dir)
@@ -161,7 +168,9 @@ async function main() {
             const opts = { ...(s.opts || {}) }
             const w = opts.width || width
             delete opts.width
-            states.push({ name: `${s.name}-${opts.zoom || opts.coarse || opts.greyscale ? '' : `${width}`}`.replace(/-$/, ''), url, width: w, scale: 1, steps, ...(s.themes ? { themes: s.themes } : {}), ...opts })
+            // The page grows when its result arrives, after shots.mjs has sized the window to the page: each state is given a window tall enough for it.
+            const height = (s.heights && s.heights[width]) || (opts.coarse ? 1900 : width === 1440 ? 1040 : 1560)
+            states.push({ name: `${s.name}-${opts.zoom || opts.coarse || opts.greyscale ? '' : `${width}`}`.replace(/-$/, ''), url, width: w, height, scale: 1, steps, ...(s.themes ? { themes: s.themes } : {}), ...opts })
           }
         }
         const scenario = { url: `http://127.0.0.1:${port}/explore`, name: 'app-v9', states }
@@ -180,7 +189,7 @@ async function main() {
     for (const dir of ['before', 'after']) for (const f of fs.readdirSync(path.join(work, dir))) if (f.includes('prompt-again')) fs.rmSync(path.join(work, dir, f))
     const r = spawnSync(process.execPath, [SHOTS, 'compare', path.join(work, 'before'), path.join(work, 'after'), compare, 'Before (the app as it was, on v9\'s stylesheet)', 'After (this change)'], { stdio: 'inherit', cwd: lib.ROOT })
     if (r.status !== 0) throw new Error('shots.mjs compare failed')
-    encode(compare)
+    encode(compare, started)
     console.log(`${fs.readdirSync(compare).filter((f) => f.endsWith('.png')).length} pairs in ${compare}`)
   } finally {
     for (const s of stops) s()

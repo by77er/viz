@@ -77,7 +77,7 @@ describe('whoami through the client, against the mock (control\'s route)', () =>
   }
   it('asks /api/v1/control/whoami with the key in the Authorization header and nowhere else', async () => {
     const { client, f } = viaMock({ requireToken: 's3cret' }, 's3cret')
-    expect(await client.whoami()).toEqual({ tenant: 'viz-mock', subject: 'key:read key', kind: 'key', name: 'read key', scopes: ['read'] })
+    expect(await client.whoami()).toEqual({ tenant: 'viz-mock', subject: 'key:read key', kind: 'key', name: 'read key', scopes: ['read'], mock: true })
     const [url, init] = f.mock.calls[0]!
     expect(url).toBe('/api/v1/control/whoami')
     expect(init!.method).toBe('GET')

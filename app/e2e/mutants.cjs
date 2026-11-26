@@ -1,227 +1,173 @@
 /* eslint-disable */
 // "Tests must have teeth" (AGENTS.md, Evidence): break one property at a time in the source,
-// rebuild, run the checks, and record which fail. A mutant that no check catches is reported
-// as SURVIVED.
-// Mutants are applied to a COPY of the app (AGENTS.md: never in place in the shared tree): the
-// app's src, mock, e2e and config are copied to VIZ_MUTANT_DIR (default: a new directory under
-// the system's temporary directory), node_modules and design-system are linked, every mutant
-// is applied, built and checked there, and only the result file is written back to
-// e2e/measurements/. The checkout itself is never written to.
-//   VIZ_E2E_APP_PORT=... VIZ_E2E_MOCK_PORT=... node e2e/mutants.cjs                 the restyle's set: e2e/design.cjs
-//   VIZ_E2E_APP_PORT=... VIZ_E2E_MOCK_PORT=... MUTANTS=fixes node e2e/mutants.cjs   the review fixes' set: unit tests and e2e/fixes.cjs
-//   VIZ_E2E_APP_PORT=... VIZ_E2E_MOCK_PORT=... MUTANTS=real node e2e/mutants.cjs    the real-API change: the typed-array parser and
-//                                                                                     the error states (unit tests and e2e/errors.cjs)
-// ONLY=<substring of a name> runs one mutant and writes no file.
-// The fixes set runs e2e/fixes.cjs without its 60 s stop case (VIZ_E2E_SKIP_STOP=1) to keep each run short.
+// run the checks, and record which fail. A mutant that no check catches is reported as
+// SURVIVED.
+//
+// Mutants are applied to a COPY of the app, never in place in the shared tree: the app's
+// source, mock, e2e and configuration are copied to VIZ_MUTANT_DIR (which must be given: a
+// directory in the session's scratch area), node_modules and design-system are linked, every
+// mutant is applied, checked and undone there, and only the result file is written back to
+// e2e/measurements/mutants-v9.txt.
+//
+//   VIZ_MUTANT_DIR=<scratch dir> node e2e/mutants.cjs            every mutant of the move to design system v9
+//   VIZ_MUTANT_DIR=<scratch dir> ONLY=<part of a name> node e2e/mutants.cjs   some, and no result file
+//   PART=unit | PART=e2e   the mutants that only unit tests are asked to catch, or the others; results in mutants-v9-<part>.txt
+//
+// A mutant names the checks that must catch it: `unit` (vitest, the whole suite) or sections
+// of e2e/app.cjs (the copy is then built and only those sections run), or `prod` (e2e/prod.cjs).
+// Earlier sets (the restyle, the review fixes, the real API) broke code that this change
+// replaced; their results stay in e2e/measurements/mutants{,-fixes,-real}.txt.
 const fs = require('node:fs')
-const os = require('node:os')
 const path = require('node:path')
 const { spawnSync } = require('node:child_process')
 const SOURCE = path.resolve(__dirname, '..')
-/** The copy every mutant is applied to. */
-const ROOT = path.join(process.env.VIZ_MUTANT_DIR || fs.mkdtempSync(path.join(os.tmpdir(), 'viz-mutants-')), 'app')
+if (!process.env.VIZ_MUTANT_DIR) {
+  console.error('VIZ_MUTANT_DIR is required: mutants are applied to a copy outside the shared tree')
+  process.exit(2)
+}
+const ROOT = path.join(path.resolve(process.env.VIZ_MUTANT_DIR), 'app')
+if (ROOT.startsWith(path.resolve(SOURCE, '..') + path.sep)) {
+  console.error('VIZ_MUTANT_DIR is inside the repository: refusing')
+  process.exit(2)
+}
 function makeCopy() {
   fs.rmSync(ROOT, { recursive: true, force: true })
   fs.mkdirSync(ROOT, { recursive: true })
-  for (const f of ['src', 'mock', 'e2e', 'public', 'index.html', 'package.json', 'tsconfig.json', 'vite.config.ts']) fs.cpSync(path.join(SOURCE, f), path.join(ROOT, f), { recursive: true })
+  for (const f of ['src', 'mock', 'e2e', 'public', 'scripts', 'index.html', 'package.json', 'tsconfig.json', 'vite.config.ts', 'serve.json']) fs.cpSync(path.join(SOURCE, f), path.join(ROOT, f), { recursive: true })
   fs.symlinkSync(path.join(SOURCE, 'node_modules'), path.join(ROOT, 'node_modules'))
   const ds = path.join(ROOT, '..', 'design-system')
   if (!fs.existsSync(ds)) fs.symlinkSync(path.resolve(SOURCE, '../design-system'), ds)
 }
 
-// Each mutant: [name, [[file, from, to], ...]]
-const one = (name, file, from, to) => [name, [[file, from, to]]]
-const SETS = {
-  design: {
-    suites: ['design'],
-    out: 'mutants.txt',
-    list: [
-      one('a second blue button (Save settings)', 'src/shell/SettingsPanel.tsx', '<button type="submit" className="vz-button">', '<button type="submit" className="vz-button" data-tone="blue">'),
-      one('a literal colour in app CSS', 'src/app.css', '.cell-quiet { color: var(--ink-secondary); }', '.cell-quiet { color: #777777; }'),
-      one('the second press is not ignored', 'src/explore/ExplorePage.tsx', 'if (loadingRef.current) return', 'if (false) return'),
-      one('progress shown after 100 ms', 'src/explore/waiting.tsx', 'showAfter: 400,', 'showAfter: 100,'),
-      one('progress not held for 300 ms', 'src/explore/waiting.tsx', 'minShown: 300,', 'minShown: 0,'),
-      one('Cancel offered after 500 ms', 'src/explore/waiting.tsx', 'cancelAfter: 2000,', 'cancelAfter: 500,'),
-      one('Cancel does not abort the request', 'src/explore/ExplorePage.tsx', 'void queryClient.cancelQueries({ queryKey: keyRef.current })', 'void 0'),
-      one('rows of controls 4 px apart', 'src/app.css', '.toolbar-group { position: relative; display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-3) var(--space-2); }', '.toolbar-group { position: relative; display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-1) var(--space-2); }'),
-      one('no focus ring on the query editor', 'src/app.css', '.query-well:focus-within { outline: var(--stroke) solid var(--focus); outline-offset: var(--stroke); }', ''),
-      one('toolbar fields do not shrink or wrap (sideways scroll at 400 px)', 'src/app.css', '.toolbar .vz-field { max-width: 100%; }', '.toolbar .vz-field { flex: none; }'),
-      one('the popover does not take focus', 'src/explore/TimeRangePicker.tsx', "(menuRef.current?.querySelector<HTMLElement>('[aria-current]') ?? items?.[0])?.focus()", 'void items'),
-      one('legend rows stay 32 px with a coarse pointer', 'src/app.css', '  .legend-table td, .series-toggle { height: var(--control-touch); }', '  .legend-table td, .series-toggle { height: var(--row); }'),
-    ],
-  },
-  // The fixes to the design review (design-system/reviews/app-restyle/review.md).
-  fixes: {
-    suites: ['unit', 'fixes'],
-    out: 'mutants-fixes.txt',
-    list: [
-      one('B1: the unit comes from the pending query (the editor\'s text), not the result on screen', 'src/lib/describe.ts',
-        "const unit: UnitId = display.unit !== 'auto' && isUnitId(display.unit) ? display.unit : result.inferredUnit",
-        "const unit: UnitId = display.unit !== 'auto' && isUnitId(display.unit) ? display.unit : inferUnit(current.q)"),
-      one('B1: the digest is titled with the pending query', 'src/lib/describe.ts', 'digestTitle: `Query: ${request.q}`,', 'digestTitle: `Query: ${current.q}`,'),
-      one('B1: the chart is named after the pending query (in the page, past the derivation)', 'src/explore/ExplorePage.tsx',
-        'ariaLabel={shown.chartLabel(aligned!.series.length)}',
-        'ariaLabel={`Chart of ${aligned!.series.length} series for the query ${q}. Arrow keys move the cursor. The text form has the same data.`}'),
-      one('B1: the head does not say "Showing the previous query"', 'src/lib/describe.ts',
-        "staleText: stale === 'query' ? 'Showing the previous query' : stale === 'range' ? 'Showing the previous time range' : null,",
-        'staleText: null,'),
-      one('B3: typing re-renders the page (the draft is page state again)', null, null, null),
-      one('B3: the deferred URL update leaves its guard set after a quick round trip (Back is then ignored)', 'src/explore/ExplorePage.tsx',
-        'if (v === urlView.current) pushedView.current = null',
-        'if (v === urlView.current) void 0'),
-      one('B3: the focus keeper reads layout after every DOM change', 'src/lib/focusKeeper.ts',
-        '  if (!watched.isConnected) return true\n  for (const r of records)',
-        '  return true\n  for (const r of records)'),
-      one('M3: focus is left on the body after Cancel (the keeper moves nothing)', 'src/lib/focusKeeper.ts', 'target.focus({ preventScroll: true })', 'void target'),
-      one('M5: duplicate display names (shortening ignores collisions)', 'src/lib/naming.ts', 'if (!unique(candidate)) continue', 'if (false) continue'),
-      one('M7: every cell repeats the unit', 'src/lib/units.ts',
-        'cell: (v) => (v == null || !Number.isFinite(v) ? formatParts(v, unit).value : formatInScale(v, unit, scale, digits)),',
-        'cell: (v) => formatValue(v, unit, digits),'),
-      one('M2: a survivor is repainted (the previous assignment is ignored)', 'src/lib/assign.ts',
-        'const slot = previous && Object.prototype.hasOwnProperty.call(previous, s.key) ? previous[s.key] : undefined',
-        'const slot = undefined as number | undefined'),
-      one('M2: a ninth coloured series', 'src/lib/assign.ts', 'export const SLOTS = 8', 'export const SLOTS = 9'),
-      one('M2: every member of Other is its own legend row', 'src/explore/Legend.tsx', '{open && others.slice(0, limit).map(row)}', '{others.map(row)}'),
-      one('M4: a tap on a legend row does nothing on touch', 'src/explore/Legend.tsx',
-        '          onClick={(e) => {\n            // A tap does not focus',
-        "          onClick={(e) => {\n            if ((e.nativeEvent as PointerEvent).pointerType === 'touch') return\n            // A tap does not focus"),
-      one('M4: a tap isolates instead of toggling (a modifier is needed on touch)', 'src/lib/pointer.ts',
-        "  if (e.pointerType === 'touch' || e.pointerType === 'pen') return true\n  return coarse && e.pointerType !== 'mouse'",
-        '  return false'),
-    ],
-  },
-  // The real-API change: the typed-array parser, and what a person sees when the API refuses or is busy.
-  real: {
-    suites: ['unit', 'errors'],
-    out: 'mutants-real.txt',
-    list: [
-      one('parser: a number is scaled by multiplying by a power of ten below 1 (inexact)', 'src/api/matrix.ts',
-        'const v = scale === 0 ? m : m / POW10[-scale]!', 'const v = scale === 0 ? m : m * Math.pow(10, scale)'),
-      one('parser: digits past 2^53 are computed, not read by Number()', 'src/api/matrix.ts',
-        'if (i !== to || !any || m >= EXACT || scale < -22) return Number(s.slice(from, to))', 'if (i !== to || !any || scale < -22) return Number(s.slice(from, to))'),
-      one('parser: "+Inf" is read as NaN', 'src/api/matrix.ts', "if (s.startsWith('+Inf', from)) return Infinity", "if (s.startsWith('+Inf', from)) return NaN"),
-      one('parser: a sample cut in two by the network loses its first character', 'src/api/matrix.ts',
-        '            if (j >= n) return start\n            const t1 = j', '            if (j >= n) return start + 1\n            const t1 = j'),
-      one('parser: an escaped quote in a label value ends the metric object early', 'src/api/matrix.ts',
-        '        if (d === BACKSLASH) i++\n        else if (d === QUOTE) break', '        if (d === QUOTE) break'),
-      one('parser: a time that is not a JSON number is accepted', 'src/api/matrix.ts',
-        '    if (d >= 0 && d <= 9) return NaN\n  }', '    if (d >= 0 && d <= 9) return Number(s.slice(from, to))\n  }'),
-      one('alignment: a gap is 0, not NaN', 'src/lib/series.ts', 'const values = new Float64Array(n).fill(NaN)', 'const values = new Float64Array(n)'),
-      one('chart: a NaN gap reaches the renderer as a value (and is bridged)', 'src/lib/downsample.ts',
-        'out[i] = v == null || v !== v ? null : v', 'out[i] = v'),
-      one('statistics: a NaN gap counts as a value', 'src/lib/series.ts', 'if (v == null || v !== v) continue\n    if (v < min) min = v', 'if (v == null) continue\n    if (v < min) min = v'),
-      one('errors: the API\'s time limit (503 timeout) is retried as if busy', 'src/api/errors.ts',
-        "  if (errorType === 'timeout') return 'timeout'\n", ''),
-      one('errors: Retry-After is ignored', 'src/api/errors.ts',
-        '  if (error instanceof PromApiError && error.retryAfterMs !== null) return error.retryAfterMs\n', ''),
-      one('errors: retries ignore the 60 s stop', 'src/api/errors.ts', '  return elapsedMs + retryDelayMs(error, failures) < budgetMs', '  return true'),
-      one('errors: the waiting line does not say the API is busy', 'src/explore/ExplorePage.tsx',
-        '{failures > 0 && query.failureReason', '{false && query.failureReason'),
-      one('errors: a refused key is told to change the query', 'src/api/errors.ts',
-        "      return 'The API did not accept the API key. Enter a valid key in Settings.'", '      return `Change the query and press ${mod} Enter to run it again.`'),
-      one('errors: the button of a refused key runs the query again instead of opening Settings', 'src/explore/ExplorePage.tsx',
-        "      ) : kind === 'auth' || kind === 'scope' ? (", "      ) : false ? ("),
-      one('errors: Retry-After as an HTTP date is not read', 'src/api/client.ts',
-        "  const at = /[A-Za-z]/.test(v) ? Date.parse(v) : NaN", '  const at = NaN'),
-      one('warnings: the banner does not say the result may be incomplete', 'src/explore/ExplorePage.tsx', ', so it may be\n        incomplete: {warnings', ': {warnings'),
-      one('autocomplete: lookups are not bounded by the page\'s time range', 'src/editor/promClient.ts',
-        '    const w = lookupWindow(options.range?.())', '    const w = lookupWindow(null)'),
-      // Added with the second pass against the real API (README, "Mock and real API").
-      one('errors: a step too small for the range is advised as a change to the query', 'src/api/errors.ts',
-        "  if (status === 400 && /^exceeded maximum resolution of \\d+ points/.test(message)) return 'resolution'\n", ''),
-      one('errors: every limit is advised as "narrow the time range" (a 16 KiB query too)', 'src/api/errors.ts',
-        '      return limitAdvice(limitName(error))', '      return limitAdvice(null)'),
-      one('errors: a 401 with no key set says the key was refused', 'src/api/errors.ts',
-        "      if (context.keySet === false) return 'No API key is set. Enter a key with the read scope in Settings.'\n", ''),
-      one('errors: an answer that is not the API\'s is reported as "the API answered"', 'src/explore/ExplorePage.tsx',
-        "{api.errorType !== 'network' && api.errorType !== 'http' && api.errorType !== 'parse' && api.status ? (", '{api.status ? ('),
-      one('window: computed in fractional seconds (a 0.1 s step asks for another grid than the API evaluates)', 'src/lib/step.ts',
-        '  const stepMs = Math.max(1, Math.round(step * 1000))\n  const startMs = Math.floor(Math.round(startSec * 1000) / stepMs) * stepMs\n  const endMs = Math.max(startMs + stepMs, Math.floor(Math.round(endSec * 1000) / stepMs) * stepMs)\n  return { start: startMs / 1000, end: endMs / 1000, step: stepMs / 1000 }',
-        '  const start = Math.floor(startSec / step) * step\n  const end = Math.max(start + step, Math.floor(endSec / step) * step)\n  return { start, end, step }'),
-      one('parser: the body text the JSON form reads is the first piece only (the lazy join)', 'src/api/matrix.ts',
-        "return (this.joined ??= this.chunks.join(''))", "return (this.joined ??= this.chunks[0] ?? '')"),
-      one('alignment: the grid tolerance is a fraction of a step (steps of a few milliseconds leave the grid)', 'src/lib/series.ts',
-        '  const tolerance = 5e-6 / step\n', '  const tolerance = 1e-6\n'),
-      one('alignment: the grid\'s points are counted with 1e-9 of a step (a millisecond step can lose the last point)', 'src/lib/series.ts',
-        '  const n = Math.floor((end - start) / step + Math.max(1e-9, tolerance)) + 1', '  const n = Math.floor((end - start) / step + 1e-9) + 1'),
-    ],
-  },
-}
-// The page keeps the draft in state again, as before the fix: the editor reports every change.
-SETS.fixes.list.find(([n]) => n.startsWith('B3: typing'))[1] = [
-  ['src/editor/PromqlEditor.tsx', '          history(),\n',
-    "          history(),\n          EditorView.updateListener.of((u) => { if (u.docChanged) window.dispatchEvent(new CustomEvent('viz-draft', { detail: u.state.doc.toString() })) }),\n"],
-  ['src/explore/ExplorePage.tsx', '  const editorRef = useRef<PromqlEditorHandle | null>(null)\n',
-    "  const editorRef = useRef<PromqlEditorHandle | null>(null)\n  const [, setDraft] = useState('')\n  useEffect(() => { const on = (e: Event) => setDraft((e as CustomEvent<string>).detail); window.addEventListener('viz-draft', on); return () => window.removeEventListener('viz-draft', on) }, [])\n"],
+// Each mutant: [name, checks, [[file, from, to], ...]]
+const m = (name, checks, file, from, to) => [name, checks, [[file, from, to]]]
+const U = ['unit']
+const LIST = [
+  // ---- who gets in (shell/session.tsx)
+  m('session: a 401 for a tab with no key is reported as a refused key', U, 'src/shell/session.tsx', "return { status: 'out', reason: hasKey ? 'refused' : 'none' }", "return { status: 'out', reason: 'refused' }"),
+  m('session: when the API does not answer, a tab without a key is let in', U, 'src/shell/session.tsx', "return hasKey ? { status: 'in', identity: null, unchecked: 'no-answer' } : { status: 'out', reason: 'no-answer', detail: message }", "return { status: 'in', identity: null, unchecked: 'no-answer' }"),
+  m('session: an API without a control plane (404) shows the sign-in form', U, 'src/shell/session.tsx', "if (status === 404) return { status: 'in', identity: null, unchecked: 'no-control' }", ''),
+  m('sign-in: a key without the read scope is accepted', U, 'src/shell/session.tsx', 'if (outcome.identity.scopes.includes(READ_SCOPE)) return { ok: true }', 'if (outcome.identity.scopes.length >= 0) return { ok: true }'),
+  m('sign-in: the admin scope counts as read', U, 'src/shell/session.tsx', 'if (outcome.identity.scopes.includes(READ_SCOPE)) return { ok: true }', "if (outcome.identity.scopes.includes(READ_SCOPE) || outcome.identity.scopes.includes('admin')) return { ok: true }"),
+  m('sign-in: a refused key is reported as "could not be checked"', U, 'src/shell/session.tsx', "if (status === 401 || status === 403) {\n    return { ok: false, where: 'field',", "if (status === 401 || status === 403) {\n    return { ok: false, where: 'notice',"),
+  m('sign-in: the key\'s whole text is shown as its label', U, 'src/shell/session.tsx', "return m ? `${m[1]}_…` : ''", 'return key'),
+  m('whoami: the key is sent in the address', U, 'src/api/client.ts', "const res = await this.send('/api/v1/control/whoami', { method: 'GET' }, opts)", "const res = await this.send('/api/v1/control/whoami?key=' + this.token, { method: 'GET' }, opts)"),
+  m('whoami: any 200 is trusted as an identity', U, 'src/api/client.ts', "if (!v || typeof v.tenant !== 'string' || !Array.isArray(v.scopes)) throw new PromApiError('parse', 'The answer is not an identity', res.status)", "if (!v) throw new PromApiError('parse', 'The answer is not an identity', res.status)\n    v.tenant ??= ''\n    v.scopes ??= ['read']"),
+  m('mock whoami: a key without the read scope is not told who it is', U, 'mock/handler.ts', "if (opts.readlessToken && token === opts.readlessToken) return identity('write-only key', ['write'])", ''),
+  // ---- sign-in on the page
+  m('sign-in: the key is kept in localStorage', ['signin'], 'src/shell/session.tsx', "if (key) sessionStorage.setItem(KEY_STORE, key)", "if (key) { sessionStorage.setItem(KEY_STORE, key); localStorage.setItem(KEY_STORE, key) }"),
+  ['sign-in: the key field has a name and the form is a GET', ['signin'], [['src/shell/SignIn.tsx', 'method="post"', 'method="get"'], ['src/shell/SignIn.tsx', 'data-mono=""\n              type={show', 'data-mono=""\n              name="key"\n              type={show']]],
+  m('sign-in: the token an earlier version left in localStorage stays', ['signin'], 'src/shell/session.tsx', 'localStorage.removeItem(LEGACY_STORE)', 'void LEGACY_STORE'),
+  m('sign-in: Explore is shown without a key', ['signin'], 'src/shell/AppShell.tsx', "if (session.status === 'out') return <SignIn reason={session.reason} detail={session.detail} />", "if (session.status === 'out') return <>{children}</>"),
+  m('sign-in: a refused key stays in the tab', ['signin'], 'src/shell/session.tsx', "      if (next.status === 'out' && hasKey) {\n        writeKey('')", "      if (next.status === 'out' && hasKey) {\n        void writeKey"),
+  m('sign-in: Sign out leaves the key in the tab', ['signin'], 'src/shell/session.tsx', "  const signOut = useCallback((reason: 'left' | 'refused' = 'left') => {\n    writeKey('')", "  const signOut = useCallback((reason: 'left' | 'refused' = 'left') => {\n    void writeKey"),
+  // ---- times as typed and read (lib/timeInput.ts)
+  m('time: "now - 6 h" loses its unit (hours read as minutes)', U, 'src/lib/timeInput.ts', 'h: 3600, d: 86400', 'h: 60, d: 86400'),
+  m('time: a day without a year is always this year', U, 'src/lib/timeInput.ts', 'if (dm[3] === undefined && msOf({ y, mo, d, ...c }, zone) > nowMs + 86_400_000 && realDay(y - 1, mo, d)) y -= 1', ''),
+  m('time: a field shows a day without its year even when it is not this year\'s', U, 'src/lib/timeInput.ts', 'return `${dayText(w, sameYear ? w.y : NaN)} ${clockText(w)}`', 'return `${dayText(w, w.y)} ${clockText(w)}`'),
+  m('time: a clock time is read in UTC whatever the zone', U, 'src/lib/timeInput.ts', 'const first = asUtc - zoneShiftMs(zone, asUtc)\n  return asUtc - zoneShiftMs(zone, first)', 'return asUtc'),
+  m('time: 24:30 is read as a time', U, 'src/lib/timeInput.ts', 'return h < 24 && mi < 60 && s < 60 ? { h, mi, s } : null', 'return h < 25 && mi < 60 && s < 60 ? { h, mi, s } : null'),
+  m('time: 31 Feb is read as a day', U, 'src/lib/timeInput.ts', 'if (!realDay(y, mo, d)) return null', ''),
+  m('time: the zone is not stated', U, 'src/lib/timeInput.ts', 'return { text: `${text}, ${zoneName(zone, endSec * 1000)}`, startSec, endSec }', 'return { text, startSec, endSec }'),
+  m('time: a preset is chosen only when spelt the same ("24 h" is not "1 d")', U, 'src/explore/TimeRangeField.tsx', "return a.startsWith('now-') && b.startsWith('now-') && parseDuration(a.slice(4)) === parseDuration(b.slice(4))", 'return false'),
+  m('time: the chart reads UTC in every zone (no shift)', ['zone'], 'src/explore/ExplorePage.tsx', 'const shiftMs = useMemo(() => (result ? zoneShiftMs(LOCAL, result.window.end * 1000) : 0), [result])', 'const shiftMs = useMemo(() => (result ? 0 * zoneShiftMs(LOCAL, result.window.end * 1000) : 0), [result])'),
+  // ---- the result as the chart takes it (charts/spec.ts, fixups.ts)
+  m('chart: a gap is 0, not a break in the line', ['unit', 'chart'], 'src/charts/spec.ts', 'values[i] = Number.isFinite(v) ? v * u.scale : null', 'values[i] = Number.isFinite(v) ? v * u.scale : 0'),
+  m('chart: times are not moved to the zone', U, 'src/charts/spec.ts', 't0: Math.round(start * 1000) + shiftMs', 't0: Math.round(start * 1000)'),
+  m('chart: a ratio is drawn as a fraction under a % sign', U, 'src/charts/spec.ts', "return { name: '%', scale: 100 }", "return { name: '%', scale: 1 }"),
+  m('chart: bytes per second in decimal steps', U, 'src/charts/spec.ts', 'while (i < BYTE_RATES.length - 1 && maxAbs >= 1024 ** (i + 1)) i++', 'while (i < BYTE_RATES.length - 1 && maxAbs >= 1000 ** (i + 1)) i++'),
+  m('chart: a series with no labels has no name', ['unit', 'chart'], 'src/charts/spec.ts', 'return { query }', 'return labels'),
+  m('table: figures in the raw unit, not the chart\'s', U, 'src/charts/spec.ts', 'const fmt = rules.numberFormat(ax.step, scaled.suffix, scaled.div)', 'const fmt = rules.numberFormat(ax.step, scaled.suffix, 1)'),
+  m('text form: the step stays "every 0.25 min, instant"', ['unit', 'flow'], 'src/charts/fixups.ts', '`, one value every ${step}.`', "'$&'"),
+  m('chart: a result with no unit keeps "Last, "', ['chart'], 'src/charts/fixups.ts', "export const fixHead = (text: string) => (text.endsWith(', ') ? text.slice(0, -2) : text)", 'export const fixHead = (text: string) => text'),
+  m('legend: a row is named by its label set only, not the words it shows', ['unit', 'axe'], 'src/charts/fixups.ts', 'return `${words}: ${name}`', 'return name'),
+  // ---- old data keeps its own labels (B1), and the chart's states
+  m('B1: the panel names the query that is waiting, not the one drawn', ['b1'], 'src/lib/describe.ts', 'q: request.q,', 'q: current.q,'),
+  m('B1: the head does not say "Showing the previous query"', ['unit', 'b1'], 'src/lib/describe.ts', "staleText: stale === 'query' ? 'Showing the previous query'", "staleText: stale === 'query' ? null"),
+  m('B1: after an error nothing of the result that was drawn is kept', ['b1'], 'src/explore/ExplorePage.tsx', '(query.data ?? (query.isError ? lastResult.current : undefined))', '(query.data ?? undefined)'),
+  m('B1: the chart is not told of the error (the plot stays as if current)', ['b1'], 'src/explore/ExplorePage.tsx', "error={view === 'chart' ? chartError : null}", 'error={null}'),
+  m('nothing reserved for the query line: the chart moves when a result lands', ['shift'], 'src/explore/ExplorePage.tsx', '<p className="vz-panel-desc result-query is-reserved" aria-hidden="true">\n              <span className="vz-qty">{\'\\u00a0\'}</span>\n            </p>', '<></>'),
+  m('the chart\'s height is not remembered for the next load', ['shift'], 'src/charts/Chart.tsx', "sessionStorage.setItem(RESERVE + view, JSON.stringify({ rows, notes }))", 'void rows'),
+  m('"Query the chart\'s range" is always offered', ['zoom'], 'src/explore/TimeRangeField.tsx', "className={shown ? 'vz-button' : 'vz-button is-reserved'}", "className=\"vz-button\""),
+  m('a zoom on the chart is not noticed', ['zoom'], 'src/charts/Chart.tsx', 'live.current.onShownRange?.(zoomed ? { fromMs: h.state.t0 - shift, toMs: h.state.t1 - shift } : null)', 'void shift'),
+  m('the table\'s caption says "highest value first" whatever the order', U, 'src/explore/ResultTable.tsx', "if (sort.key === VALUE) return sort.dir === -1 ? 'highest value first' : 'lowest value first'", "if (sort.key === VALUE) return 'highest value first'"),
+  m('the table puts series with no value first', U, 'src/explore/ResultTable.tsx', 'if (a.last == null) return b.last == null ? 0 : 1\n      if (b.last == null) return -1', 'if (a.last == null) return b.last == null ? 0 : -1\n      if (b.last == null) return 1'),
+  // ---- waiting, touch, keyboard
+  m('the waiting line is shown after 100 ms', ['waiting'], 'src/explore/waiting.tsx', 'showAfter: 400,', 'showAfter: 100,'),
+  m('the waiting line is not held for 300 ms', ['waiting'], 'src/explore/waiting.tsx', 'minShown: 300,', 'minShown: 0,'),
+  m('a second press while the query runs sends it again', ['waiting'], 'src/explore/ExplorePage.tsx', 'if (loadingRef.current) return', 'if (false) return'),
+  m('Cancel does not abort the request', ['waiting'], 'src/explore/ExplorePage.tsx', 'void queryClient.cancelQueries({ queryKey: keyRef.current })', 'void 0'),
+  m('B2: the editor keeps its own type size in the touch-height well', ['touch'], 'src/editor/PromqlEditor.tsx', "'.cm-content': { padding: '0', caretColor: 'var(--ink)', font: 'inherit' },", "'.cm-content': { padding: '0', caretColor: 'var(--ink)', font: 'var(--text-code)' },"),
+  m('a literal colour in the app\'s CSS', ['colour'], 'src/app.css', '.palette-none { padding: var(--space-2); color: var(--ink-secondary); }', '.palette-none { padding: var(--space-2); color: var(--ink-secondary); }\n.vz-page-title { color: #333333; }'),
+  m('a second blue button (Sign out)', ['colour'], 'src/shell/SettingsPage.tsx', '<button className="vz-button" onClick={() => signOut(\'left\')} data-testid="sign-out">\n                  Sign out', '<button className="vz-button" data-tone="blue" onClick={() => signOut(\'left\')} data-testid="sign-out">\n                  Sign out'),
+  m('no focus ring on the query editor', ['keyboard'], 'src/app.css', '.query-well:focus-within { outline: var(--stroke) solid var(--focus); outline-offset: var(--stroke); }', ''),
+  m('the palette\'s field has no visible label', ['keyboard'], 'src/shell/CommandPalette.tsx', '<span className="vz-label">Command</span>', '<span className="vz-label vz-sr">Command</span>'),
+  // ---- what the gateway serves
+  m('serve.json: /settings is not a document (a reload there would be a 404)', U, 'serve.json', '"documents": ["/", "/explore", "/help", "/settings"]', '"documents": ["/", "/explore", "/help"]'),
+  m('serve.json: the policy allows inline scripts', U, 'serve.json', "script-src 'self';", "script-src 'self' 'unsafe-inline';"),
+  m('the theme is applied by an inline script', ['prod'], 'vite.config.ts', "return [{ tag: 'script', attrs: { src }, injectTo: 'head-prepend' }]", "return [{ tag: 'script', children: readFileSync(file, 'utf8'), injectTo: 'head-prepend' }]"),
 ]
 
-const SET = SETS[process.env.MUTANTS || 'design']
-if (!SET) throw new Error(`MUTANTS: no set ${process.env.MUTANTS} (design, fixes or real)`)
+const only = process.env.ONLY
+// PART=unit: the mutants only the unit tests are asked to catch (no browser); PART=e2e: the rest. Each part writes its own file.
+const part = process.env.PART
+const unitOnly = ([, checks]) => checks.length === 1 && checks[0] === 'unit'
+const list = (only ? LIST.filter(([name]) => name.includes(only)) : LIST).filter((x) => (part === 'unit' ? unitOnly(x) : part === 'e2e' ? !unitOnly(x) : true))
+const run = (cmd, args, env = {}) => spawnSync(cmd, args, { cwd: ROOT, encoding: 'utf8', env: { ...process.env, ...env }, maxBuffer: 64 * 1024 * 1024 })
+const BASE = Number(process.env.VIZ_MUTANT_PORT || 18860)
+const E2E_ENV = { VIZ_E2E_APP_PORT: String(BASE), VIZ_E2E_MOCK_PORT: String(BASE + 1), VIZ_PROD_PORT: String(BASE + 40) }
+
+function checksOf(checks) {
+  const failed = []
+  if (checks.includes('unit')) {
+    const r = run(process.execPath, ['node_modules/vitest/vitest.mjs', 'run'])
+    for (const l of (r.stdout + r.stderr).split('\n')) { const x = /^\s*(?:×|✗|FAIL)\s+(.+?)(?:\s+\d+ms)?$/.exec(l); if (x && !/^src\/|^mock\//.test(x[1])) failed.push(`unit: ${x[1].trim().slice(0, 110)}`) }
+    if (r.status !== 0 && failed.length === 0) failed.push('unit: the run failed (a type or import error)')
+  }
+  const sections = checks.filter((c) => c !== 'unit' && c !== 'prod')
+  if (sections.length || checks.includes('prod')) {
+    const b = run(process.execPath, ['node_modules/vite/bin/vite.js', 'build'])
+    if (b.status !== 0) return [...failed, `build failed: ${(b.stderr || b.stdout).split('\n').find((l) => /error/i.test(l)) || ''}`.slice(0, 160)]
+  }
+  if (sections.length) {
+    const r = run(process.execPath, ['e2e/app.cjs'], { ...E2E_ENV, VIZ_ONLY: sections.join(',') })
+    for (const l of r.stdout.split('\n')) if (l.startsWith('FAIL')) failed.push(`e2e: ${l.slice(6).split('  — ')[0].slice(0, 120)}`)
+    if (r.status !== 0 && !r.stdout.includes('FAIL')) failed.push(`e2e: the run stopped (${(r.stderr.split('\n').find((l) => /Error|Timeout/.test(l)) || 'no output').slice(0, 100)})`)
+  }
+  if (checks.includes('prod')) {
+    const r = run(process.execPath, ['e2e/prod.cjs'], E2E_ENV)
+    for (const l of r.stdout.split('\n')) if (l.startsWith('FAIL')) failed.push(`prod: ${l.slice(6).split('  — ')[0].slice(0, 120)}`)
+    if (r.status !== 0 && !r.stdout.includes('FAIL')) failed.push('prod: the run stopped')
+  }
+  return failed
+}
+
 makeCopy()
-console.log(`mutants are applied to a copy: ${ROOT}`)
-
-function runSuite(suite) {
-  if (suite === 'unit') {
-    const report = path.join(os.tmpdir(), `viz-app-mutant-${process.pid}.json`)
-    spawnSync(process.execPath, ['node_modules/vitest/vitest.mjs', 'run', '--maxWorkers=2', '--reporter=json', `--outputFile=${report}`], { cwd: ROOT, encoding: 'utf8' })
-    let fails = []
-    try {
-      const r = JSON.parse(fs.readFileSync(report, 'utf8'))
-      for (const f of r.testResults) {
-        for (const a of f.assertionResults) if (a.status === 'failed') fails.push(`unit: ${a.fullName}`)
-        if (f.status === 'failed' && f.assertionResults.length === 0) fails.push(`unit: ${path.basename(f.name)} did not load`)
-      }
-    } catch (e) { fails.push(`unit: no report (${e.message})`) }
-    fs.rmSync(report, { force: true })
-    return fails
-  }
-  const file = { fixes: 'e2e/fixes.cjs', errors: 'e2e/errors.cjs', design: 'e2e/design.cjs' }[suite]
-  const run = spawnSync(process.execPath, [file], { cwd: ROOT, encoding: 'utf8', env: { ...process.env, VIZ_E2E_SKIP_STOP: '1' } })
-  const fails = run.stdout.split('\n').filter((l) => l.startsWith('FAIL')).map((l) => `${suite === 'design' ? 'design' : 'e2e'}: ${l.slice(6).split('  — ')[0]}`)
-  if (run.status !== 0 && fails.length === 0) fails.push(`${file} exited ${run.status}: ${(run.stderr || '').split('\n').filter(Boolean).slice(-1)[0] || ''}`)
-  return fails
-}
-
-// DRY=1: only check that every mutant's source text is there, exactly once.
-if (process.env.DRY) {
-  let bad = 0
-  for (const [name, edits] of SET.list) for (const [file, from] of edits) {
-    const n = fs.readFileSync(path.join(ROOT, file), 'utf8').split(from).length - 1
-    if (n !== 1) { bad++; console.log(`${n === 0 ? 'MISSING' : `${n} TIMES`}  ${name}  (${file})`) }
-  }
-  console.log(`${SET.list.length} mutants, ${bad} with a problem`)
-  if (!process.env.VIZ_MUTANT_DIR) fs.rmSync(path.dirname(ROOT), { recursive: true, force: true })
-  process.exit(bad ? 1 : 0)
-}
-
-const out = []
-const only = process.env.ONLY // a substring of a mutant's name, to run just that one
-for (const [name, edits] of SET.list) {
-  if (only && !name.includes(only)) continue
-  const originals = new Map()
+const lines = []
+let survived = 0
+for (const [name, checks, edits] of list) {
+  const saved = new Map()
   let applied = true
   for (const [file, from, to] of edits) {
     const p = path.join(ROOT, file)
-    if (!originals.has(p)) originals.set(p, fs.readFileSync(p, 'utf8'))
-    const now = fs.readFileSync(p, 'utf8')
-    if (!now.includes(from)) { applied = false; break }
-    fs.writeFileSync(p, now.replace(from, to))
+    const src = saved.get(p) ?? fs.readFileSync(p, 'utf8')
+    if (!saved.has(p)) saved.set(p, src)
+    const cur = fs.readFileSync(p, 'utf8')
+    if (!cur.includes(from)) { applied = false; break }
+    fs.writeFileSync(p, cur.replace(from, to))
   }
-  try {
-    if (!applied) { out.push(`NOT APPLIED  ${name}: source text not found`); continue }
-    const needsBuild = SET.suites.some((s) => s !== 'unit')
-    if (needsBuild) {
-      const build = spawnSync(process.execPath, ['node_modules/vite/bin/vite.js', 'build'], { cwd: ROOT, encoding: 'utf8' })
-      if (build.status !== 0) { out.push(`NOT BUILT    ${name}`); continue }
-    }
-    const fails = SET.suites.flatMap(runSuite)
-    out.push(`${fails.length ? 'KILLED  ' : 'SURVIVED'}  ${name}${fails.length ? `\n            caught by: ${fails.join('; ')}` : ''}`)
-  } finally {
-    for (const [p, text] of originals) fs.writeFileSync(p, text)
+  let line
+  if (!applied) line = `NOT APPLIED  ${name}  (the text to change was not found: the mutant is out of date)`
+  else {
+    const failed = checksOf(checks)
+    if (failed.length === 0) survived++
+    line = failed.length ? `KILLED    ${name}\n            checks run: ${checks.join(', ')}; caught by ${failed.length}: ${failed.slice(0, 4).join(' | ')}` : `SURVIVED  ${name}\n            checks run: ${checks.join(', ')}; none failed`
   }
-  console.log(out[out.length - 1])
+  for (const [p, src] of saved) fs.writeFileSync(p, src)
+  console.log(line)
+  lines.push(line)
 }
-fs.mkdirSync(path.join(SOURCE, 'e2e/measurements'), { recursive: true })
-if (!only) fs.writeFileSync(path.join(SOURCE, 'e2e/measurements', SET.out), out.join('\n') + '\n')
-// The copy is left for inspection only when asked for.
-if (!process.env.VIZ_MUTANT_DIR) fs.rmSync(path.dirname(ROOT), { recursive: true, force: true })
+const summary = `${lines.filter((l) => l.startsWith('KILLED')).length} of ${list.length} killed, ${survived} survived, ${lines.filter((l) => l.startsWith('NOT APPLIED')).length} not applied`
+console.log('\n' + summary)
+if (!only) fs.writeFileSync(path.join(SOURCE, 'e2e', 'measurements', `mutants-v9${part ? `-${part}` : ''}.txt`), `Mutants of the move to design system v9 (e2e/mutants.cjs), applied to a copy in the session's scratch area.\n${new Date().toISOString()}\n\n${lines.join('\n')}\n\n${summary}\n`)
+process.exit(survived ? 1 : 0)

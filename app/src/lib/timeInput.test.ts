@@ -57,7 +57,7 @@ describe('a time field', () => {
     expect(parseTime('1795512960000', NOW, UTC)).toBe('1795512960000')
   })
   it('refuses what is not a time', () => {
-    for (const bad of ['', 'yesterday', '25:00', '09:61', '31 Feb 09:00', '18 Nov 25:00', '18 Xyz 09:00', 'now + 1 h', 'now - soon', '2026-13-01 00:00', '18 No 09:00', '11/18/2026, 09:30:00 AM'])
+    for (const bad of ['', 'yesterday', '25:00', '24:00', '24:30', '09:60', '09:16:60', '09:61', '31 Feb 09:00', '18 Nov 25:00', '18 Xyz 09:00', 'now + 1 h', 'now - soon', '2026-13-01 00:00', '18 No 09:00', '11/18/2026, 09:30:00 AM'])
       expect(parseTime(bad, NOW, UTC), bad).toBeNull()
   })
   it('reads a clock time in the zone it is given, not the machine\'s', () => {

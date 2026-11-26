@@ -204,6 +204,7 @@ export class PromClient {
       kind: typeof v.kind === 'string' ? v.kind : 'key',
       name: typeof v.name === 'string' ? v.name : null,
       scopes: v.scopes.filter((x): x is string => typeof x === 'string'),
+      ...(v.mock === true ? { mock: true } : {}),
     }
   }
 

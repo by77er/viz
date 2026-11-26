@@ -238,7 +238,8 @@ export function createMockApi(opts: MockOptions = {}) {
    * control's `GET /api/v1/control/whoami`: who the key is, for any valid key whatever its
    * scopes (control/README.md). It is not a Prometheus endpoint: the identity itself, or
    * control's problem body with 401. Without `requireToken` the mock needs no key and says so
-   * by answering for a key of its own.
+   * by answering for a key of its own. `mock: true` is the mock's own field, as in its build
+   * information: the UI says what it is talking to.
    */
   function whoami(method: string, headers: Record<string, string | undefined>): MockResponse {
     const problem = (status: number, code: string, title: string, detail: string, fix: string, extra?: Record<string, string>): MockResponse => ({
@@ -247,7 +248,7 @@ export function createMockApi(opts: MockOptions = {}) {
       headers: { 'Content-Type': 'application/problem+json', ...extra },
     })
     if (method !== 'GET') return problem(405, 'method-not-allowed', 'Method not allowed', `${method} is not supported here.`, 'Use one of: GET.', { Allow: 'GET' })
-    const identity = (name: string, scopes: string[]): MockResponse => ({ status: 200, body: { tenant: MOCK_TENANT, subject: `key:${name}`, kind: 'key', name, scopes, mayApply: false } })
+    const identity = (name: string, scopes: string[]): MockResponse => ({ status: 200, body: { tenant: MOCK_TENANT, subject: `key:${name}`, kind: 'key', name, scopes, mayApply: false, mock: true } })
     if (!opts.requireToken) return identity('mock key', ['read'])
     const token = /^Bearer\s+(.+)$/i.exec(headers.authorization ?? '')?.[1]?.trim()
     if (opts.readlessToken && token === opts.readlessToken) return identity('write-only key', ['write'])

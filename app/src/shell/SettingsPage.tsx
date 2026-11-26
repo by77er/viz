@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { useBackendInfo } from './AppShell'
 import { useSession } from './session'
 import { useTheme, type ThemePref } from './theme'
@@ -13,6 +14,9 @@ export function SettingsPage() {
   const { session, keyLabel, signOut } = useSession()
   const { pref, setPref } = useTheme()
   const info = useBackendInfo()
+  useEffect(() => {
+    document.title = 'Settings · viz'
+  }, [])
   const identity = session.status === 'in' ? session.identity : null
   return (
     <div className="vz-page">
@@ -56,6 +60,8 @@ export function SettingsPage() {
             </>
           ) : session.status === 'in' && session.unchecked === 'no-control' ? (
             <p className="vz-text">This API has no sign-in: it answered HTTP 404 to the question of whose key this is. Requests are sent without a key.</p>
+          ) : session.status === 'in' && session.unchecked === 'asking' ? (
+            <p className="vz-text">Asking the API who this tab's key is.</p>
           ) : session.status === 'in' ? (
             <>
               <p className="vz-text">

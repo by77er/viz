@@ -25,27 +25,13 @@ export function useBackendInfo() {
   })
 }
 
-const MOCK_KEY = 'viz.backend.mock'
-
-/**
- * Whether the last backend this browser talked to was the mock. The mock banner is known
- * only after a request, so its space is reserved while that request is pending when the last
- * answer was "the mock"; otherwise everything below would move when it arrives. A browser
- * that has never been told (a first visit to viz) reserves nothing.
- */
-function lastKnownMock(): boolean {
-  try {
-    return localStorage.getItem(MOCK_KEY) === '1'
-  } catch {
-    return false
-  }
-}
-
-function MockSentence({ version }: { version: string }) {
+/** The development mock says what it is: the page shows data that is not a deployment's. */
+function MockBanner() {
   return (
-    <p>
-      This is the development mock (<span className="vz-qty">{version}</span>): synthetic data and a subset of PromQL. It is not a viz deployment.
-    </p>
+    <div role="status" data-testid="mock-banner" className="vz-banner">
+      <span className="vz-mark" data-state="warn" />
+      <p>This is the development mock: synthetic data and a subset of PromQL. It is not a viz deployment.</p>
+    </div>
   )
 }
 
@@ -111,16 +97,9 @@ export function AppShell() {
 
   const unreachable = info.error instanceof PromApiError && info.error.errorType === 'network'
 
-  const mock = info.data?.mock
-  useEffect(() => {
-    if (mock === undefined) return
-    try {
-      localStorage.setItem(MOCK_KEY, mock ? '1' : '0')
-    } catch {
-      // The reservation falls back to its default.
-    }
-  }, [mock])
-  const reserveBanner = signedIn && info.isPending && lastKnownMock()
+  // Known with the identity, which a page that shows data has before its first frame (so the
+  // banner is there from the start and nothing moves); the build information says it too.
+  const mock = signedIn && (session.identity?.mock === true || info.data?.mock === true)
   const tenant = signedIn ? session.identity?.tenant : undefined
 
   return (
@@ -143,20 +122,9 @@ export function AppShell() {
         </Link>
       </nav>
 
-      {(mock || reserveBanner || unreachable) && (
+      {(mock || unreachable) && (
         <div className="vz-page app-notices">
-          {mock && (
-            <div role="status" data-testid="mock-banner" className="vz-banner">
-              <span className="vz-mark" data-state="warn" />
-              <MockSentence version={info.data!.version} />
-            </div>
-          )}
-          {reserveBanner && (
-            <div className="vz-banner is-reserved" aria-hidden="true">
-              <span className="vz-mark" data-state="warn" />
-              <MockSentence version="viz-mock-0.0.0" />
-            </div>
-          )}
+          {mock && <MockBanner />}
           {unreachable && (
             <div role="alert" className="vz-banner" data-testid="offline-banner">
               <span className="vz-mark" data-state="critical" />
