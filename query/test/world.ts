@@ -8,7 +8,7 @@ import { runDurableObjectAlarm } from 'cloudflare:test'
 import { env, exports } from 'cloudflare:workers'
 import { type PrwSeries, STALE_NAN, makeKey, setPool, snappyCompress, writeRequest } from '../../edge/test/helpers'
 import type { Ledger } from '../../ledger/src/ledger'
-import { type PoolMap, shardName } from '../../shard/src/pool'
+import { type PoolMap, shardName, slotFor } from '../../shard/src/pool'
 import type { Shard } from '../../shard/src/shard'
 import expectedJson from './fixtures/expected.json'
 import workloadJson from './fixtures/workload.json'
@@ -46,12 +46,41 @@ export interface World {
   b: Tenant
 }
 
+const tenantName = (which: 'a' | 'b', id: string): string => `tenant-${which}-${id}`
+const mapOf = (id: string, slots: number): PoolMap => ({ pool: `q-${id}`, slots, spread: slots, epoch: 1 })
+
+/** The routing keys of a tenant's workload, as edge builds them (`edge/src/batch.ts`: job and instance). */
+const routingKeys = (which: 'a' | 'b'): string[] => [
+  ...new Set(workload.requests[which].flat().map((s) => `job=${s.labels.job ?? ''}\u0000instance=${s.labels.instance ?? ''}`)),
+]
+
+/**
+ * Whether both tenants' senders reach every shard of a two-shard world made with this id.
+ * A sender's shard is a hash of the tenant's name and the sender's routing key
+ * (`shard/src/pool.ts` `slotFor`), and the name holds the id, which comes from the clock: for
+ * 0.78% of ids (1,558 of 200,000 tried) one tenant's nine senders all land in one shard, and
+ * every test that says "both tenants have a stream in both shards" then fails. That happened
+ * once in CI on pull request #9 (`invariance.test.ts`, `nextSeq` undefined). `world()` skips
+ * such ids. Worlds of one shard, or of more than two, are not constrained.
+ */
+export function reachesBothShards(id: string): boolean {
+  const map = mapOf(id, 2)
+  return (['a', 'b'] as const).every((which) => new Set(routingKeys(which).map((k) => slotFor(map, tenantName(which, id), k))).size === 2)
+}
+
+/** The first of `next()`'s ids a world of `slots` shards may use: for two shards, one that reaches both. */
+export function pickId(next: () => string, slots: number): string {
+  let id = next()
+  while (slots === 2 && !reachesBothShards(id)) id = next()
+  return id
+}
+
 let n = 0
 export async function world(slots = 2): Promise<World> {
-  const id = `${Date.now().toString(36)}${n++}`
-  const map: PoolMap = { pool: `q-${id}`, slots, spread: slots, epoch: 1 }
+  const id = pickId(() => `${Date.now().toString(36)}${n++}`, slots)
+  const map = mapOf(id, slots)
   const mk = async (which: 'a' | 'b'): Promise<Tenant> => {
-    const name = `tenant-${which}-${id}`
+    const name = tenantName(which, id)
     await setPool(name, map) // both tenants: the SAME pool, so they share every shard object
     return { which, name, key: await makeKey(name, { scopes: ['read', 'write'] }) }
   }
