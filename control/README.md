@@ -835,9 +835,9 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
 
 ```
 npm install
-npm test             # 214 tests in 23 files, in workerd (at most 2 workers)
+npm test             # 222 tests in 24 files, in workerd (at most 2 workers)
 npx tsc --noEmit     # clean
-npm run mutants      # 189 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md)
+npm run mutants      # 195 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md)
 npm run gen:openapi  # rewrite openapi.json from src/openapi.ts
 ```
 
@@ -1136,7 +1136,7 @@ What the tests establish:
 
 **Round 3: the third look's findings** (`design/reviews/d70-rate-limits-r3.md`, reject until R3-B1
 is fixed; fixed 2026-11-26). Runs (`npx tsc --noEmit && npx vitest run --maxWorkers=2` in
-`control/`): `tsc` clean; @@FINAL@@. In `mcp/`: @@MCP@@.
+`control/`): `tsc` clean; **222 of 222 in 24 files** (2026-11-26, 29 s). In `mcp/`: `npx tsc --noEmit` clean, `npx vitest run test/oauth.test.ts` 15 of 15 (the contract changed only in its documentation; the entrypoint mcp's tests run changed).
 
 | Finding | Disposition | Evidence |
 |---|---|---|
@@ -1147,11 +1147,11 @@ is fixed; fixed 2026-11-26). Runs (`npx tsc --noEmit && npx vitest run --maxWork
 | m-3 (the residual's conditions) | **Recorded** in D70: about a minute per stock; tripping a location's fuse with a stock of 1,200 needs at least 5 isolates there to meet all of it within the minute, one isolate a stock of 6,000 | modelled |
 | Production served OAuth without limits (the verdict's note) | **Recorded** in D70 and here: since 2026-11-19 (PR #8); "required before public exposure" was not met | |
 
-**Before and after.** `test/ratelimit-review-r3.test.ts` (@@R3N@@ tests) was run against a copy of
-`control/` and `contracts/` at `200f235`, the commit the review read: **5 of 7 fail** (the file as it
-then was: the attack, both R3-M1 tests and both m-1 tests); the 2 that pass there are controls
-(reuse detection with no probe, and a revocation by the client itself). The rotated-and-expired test
-was added after that run. Against this code, all pass.
+**Before and after.** `test/ratelimit-review-r3.test.ts` (8 tests) was run against a copy of
+`control/` and `contracts/` at `200f235`, the commit the review read: **6 of 8 fail** (the attack, the
+rotated-and-expired case, both R3-M1 tests and both m-1 tests); the 2 that pass there are controls
+(reuse detection with no probe, and a revocation by the client itself). Against this code, 8 of 8
+pass.
 
 **Tests changed deliberately**, each because it asserted what this round changes:
 - `ratelimit-review.test.ts` R1 and R2: `[400 × 13]` and `[200 × 13]` in round 2 are round 1's
@@ -1168,7 +1168,23 @@ deploy builder added there (Known risks): with them, every test file ran with pr
 placeholder namespaces, and 22 tests failed on the first run (registrations from the shared `none`
 key refused at 120, "absent" bindings present), none because of this change.
 
-@@MUT3@@
+**Mutants, round 3** (2026-11-26, in a copy of `control/` and `contracts/` from the shared tree
+and the other components at HEAD, in a scratch directory outside git; its unmutated suite passed 222
+of 222; machine load average 6–13 from other builders): the whole D70 set, 72 (114–135, 146–165,
+166–189 and this round's 190–195), and the review of D44's M-2 group, 7. **72 of 72 and 7 of 7
+killed.** Eight anchors that this round moved were re-pointed first (119, 122, 154, 168, 169, 170, 171,
+177); all ran. Afterwards the copy's `control/` and `contracts/oauth.ts` equalled the shared tree
+(only `scripts/mutants.mjs` differs, by a skip count for running in two parts). Not re-run: 1–101,
+104–106, 108–113, 136–145.
+
+| # | Mutant | Caught by (tests failing) |
+|---|---|---|
+| 190 | R3-B1: a rotated refresh token revoked by another client counts as dead again | ratelimit-review-r3 (2) |
+| 191 | R3-B1: a rotated refresh row past its own expiry, revoked by another client, counts as dead | ratelimit-review-r3 (1) |
+| 192 | R3 m-1: the list is read before the per-credential limit | ratelimit-review, ratelimit-review-r2, ratelimit-review-r3 (6) |
+| 193 | R3 m-1: the list is read after the tenant fuse | deadlist, oauth-cost, ratelimit, ratelimit-review-r2, ratelimit-review-r3 (15) |
+| 194 | R3 m-1: the list is not consulted while the narrow limiter is down | deadlist, oauth-cost, ratelimit-review-r2 (8) |
+| 195 | R3 m-2: one slow KV read switches the list off for the whole isolate again | deadlist (1) |
 
 **Round 2: the second review's findings** (`design/reviews/d70-rate-limits-r2.md`, approve with
 changes; fixed 2026-11-19). Runs (`npx tsc --noEmit && npx vitest run --maxWorkers=2` in `control/`):
