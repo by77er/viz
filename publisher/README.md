@@ -15,7 +15,7 @@ and physical deletes wait. Nothing else.
 | `src/iceberg.ts` | Table schemas (the metric pair; the span and log tables with nested types and pinned nested field ids, `SIGNAL_DEFS`), name mappings, partition specs (`hour(start_time)` for `spans`), Avro schemas of v2 manifests and manifest lists, `metadata.json`, per-file statistics |
 | `src/avro.ts` | Avro object container reader and writer (about 300 lines, no dependency) |
 | `src/schema.ts` | The publisher's storage as versioned migrations (`PUBLISHER_SCHEMA`), and `FORMATS`: the versions of what it writes and reads |
-| `test/` | 139 tests in workerd with a simulated R2, against the real `Ledger` class (and the frozen as-built one for the first layout, and the frozen release before checkpoints in parts) |
+| `test/` | 152 tests in workerd with a simulated R2, against the real `Ledger` class (and the frozen as-built one for the first layout, and the frozen release before checkpoints in parts) |
 | `test/steps.test.ts` | Re-bases and rebuilds kept across invocations: twin cells, cut-offs at every R2 operation (three starts), a new ledger incarnation mid-way, the development state before it (`test/m6/`) on storage left mid-way |
 | `test/steps-review.test.ts` | The adversarial review's findings as tests (`design/reviews/publisher-steps.md`): the release in production (`test/n1/`) upgraded, rolled back to mid-way and rolled forward; the commit's publish; a commit cut after its metadata write; the prefix guard; the checks before kept state is reused |
 | `test/steps.helpers.ts` | What both share: tenant logs on the real ledger, twin cells, alarm runs, the twin comparison |
@@ -649,7 +649,7 @@ contract change; see "Contract issues").
 npm install
 npm run fixtures     # Rust: writes test/fixtures/fixture.json (already committed)
 node tools/signal_fixture.mjs <scratch>/sigwork 1 1 6   # writes test/fixtures/signals.json (already committed)
-npm test             # 139 tests in workerd, 17 files, at most 2 workers; fills export/, export/signals/ and export/signals-steps/
+npm test             # 152 tests in workerd, 18 files, at most 2 workers; fills export/, export/signals/ and export/signals-steps/
 npm run typecheck
 # the re-base at scale (Measurements); one size and variant per process for clean memory figures:
 MINIFLARE_WORKERD_V8_FLAGS="--max-old-space-size=32 --max-semi-space-size=4" \
@@ -674,7 +674,16 @@ BENCH_FIRST_CAPPED=1 BENCH_UPGRADE=1x300000@100000 CPU_LOG=<scratch>/cpu.log \
   node bench/cpu.mjs -- npx vitest run -c vitest.bench.config.ts bench/upgrade.bench.test.ts --disableConsoleIntercept > <scratch>/up.out
 ```
 
-**Last run (2026-11-26, re-bases and rebuilds in steps): 139 passed, 0 failed** (17 files, `npx vitest
+**Last run (2026-11-26, after the adversarial review of re-bases in steps,
+`design/reviews/publisher-steps.md`): 152 passed, 0 failed** (18 files, `npx vitest run --maxWorkers=2`,
+84 s at load average 1.5–1.7); `tsc --noEmit` clean. New: `test/steps-review.test.ts` (11) and two cut
+tests (the cut test now runs on all three starts); helpers moved to `test/steps.helpers.ts`; the twin
+and cut tests also compare what is released. The readers on that run's exports: 504 checks, 0 failed;
+1,542, 0 failed on `export/signals/` and on `export/signals-steps/`; every content hash as in the
+tables. `janitor` typecheck clean and 33 passed; `stack` typecheck clean, default suite 50 passed, 1
+skipped (11 files); `compact` and `spikes/s8-managed-catalog` typecheck clean.
+
+Before (2026-11-26, re-bases and rebuilds in steps): **139 passed, 0 failed** (17 files, `npx vitest
 run --maxWorkers=2`, 69 s at load average 5.5–6.5; the run before it, without the last compat test,
 138 passed in 168 s at 10–10.6); `tsc --noEmit` clean. New:
 `test/steps.test.ts` (10: three twin-cell comparisons, the cut at each R2 operation, a new incarnation
@@ -939,7 +948,7 @@ PyIceberg wrote itself (an optional `list<struct>` column with a null row reads 
 map stays null), so it is the reader's, not these tables'. TRACES.md's logical view and viz's
 reader treat a null and an empty `events` or `links` alike.
 
-### Workerd tests (139)
+### Workerd tests (152)
 
 | Area | Tests |
 |---|---|
@@ -979,6 +988,25 @@ reader treat a null and an empty `events` or `links` alike.
 to the copy, runs the suites it names with at most 2 workers, and restores the copy's file.
 The shared tree is only read (AGENTS.md). `DRY=1` only checks that every mutant's text occurs
 exactly once in the source.
+
+**Run on 2026-11-26 after the adversarial review (`design/reviews/publisher-steps.md`): 38 mutants, 38
+killed, 0 survived** (`node tools/mutants.mjs` on a fresh copy under the session's scratch directory).
+Nine new, for the review's findings, and the reviewer's four survivors among them (X7 = P10, X2 = P11,
+X5 = P12, X11 = P13); K7 retargeted at `recordStagedTombstones` itself (it is now called on both sides
+of the commit point); every P, R and K7 mutant and M12, M18, M18b run again on the fixed code, all killed.
+
+| # | Mutation | Result (tests failing) | A test that fails |
+|---|---|---|---|
+| P8 | M-3: the tombstones and transient keys of a commit recorded only after its metadata write | killed (2) | releases the tombstones its checkpoint carried, as the twin does, in steps and whole |
+| P9 | M-1: re-bases admitted after a publish has chosen a re-base in steps to commit | killed (3) | the publish that commits a re-base in steps does no other re-base work, though other tenants wait for theirs |
+| P10 | M-1 (X7): a re-base in steps committed in a publish that has already done bounded work (its own last writes included) | killed (5) | the same |
+| P11 | X2: manifests written ahead only HEADed before the commit, their added files not counted against the stage again | killed (1) | a manifest written ahead whose record is lost: the added files no longer add up, the table is written again, and the cell ends as the twin |
+| P12 | X5: no tombstone staged for a key the changes after a re-base's start remove | killed (1) | files removed after a re-base's checkpoint: released as the twin releases them |
+| P13 | X11: the kept staging's checkpoint not read first (`resumeKey` null): started over from a newer one | killed (1) | a newer checkpoint while a staging is kept, the kept one still readable: the kept one is continued, not started over |
+| P14 | M-2: `locationPrefix` may change while manifests are written ahead | killed (1) | cannot change …; once committed, the snapshot lists data files under the table location |
+| P15 | m-5: a staging kept for a tenant whose log is gone is kept | killed (1) | m-5: a staging kept for a tenant whose log is gone |
+| P16 | m-2: the rows of a rebuild overtaken by a rollback are left | killed (1) | m-2: the development state rebuilds whole over a rebuild left in steps; rolled forward, nothing of it is left |
+| K7 | the tombstones of a checkpoint are not recorded (the files it skipped leak) | killed (1) | files added and removed before the checkpoint, never published, are released once no snapshot can reference them |
 
 **Run on 2026-11-26 on re-bases and rebuilds in steps: 37 mutants (13 new, 7 retargeted), 35 killed at
 first, 2 survived, both then killed by test changes** (`node tools/mutants.mjs` on a fresh copy under the
