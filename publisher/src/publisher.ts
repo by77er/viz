@@ -643,6 +643,9 @@ export class Publisher extends DurableObject<PublisherEnv> {
       const current = this.config().locationPrefix
       const committed = TABLE_NAMES.some((t) => this.state(t).version > 0)
       if (committed && patch.locationPrefix !== current) throw new Error('publisher: locationPrefix cannot change once a table has been committed')
+      // Manifests written ahead of a re-base's commit hold absolute URIs under the prefix they were written with (review M-2).
+      const ahead = (this.sql.exec(`SELECT COUNT(*) AS n FROM rebase_manifest`).one().n as number) > 0
+      if (ahead && patch.locationPrefix !== current) throw new Error('publisher: locationPrefix cannot change while a re-base has manifests written ahead of its commit')
     }
     if (patch.minSnapshots !== undefined && patch.minSnapshots < 2) throw new Error('publisher: minSnapshots must be at least 2')
     if (patch.codec !== undefined && patch.codec !== 'deflate' && patch.codec !== 'null') throw new Error('publisher: codec must be deflate or null')
@@ -926,6 +929,9 @@ export class Publisher extends DurableObject<PublisherEnv> {
     const scratch = () => {
       this.sql.exec(`DELETE FROM rebase_stage WHERE tenant NOT IN (SELECT tenant FROM rebase_step)`)
       this.sql.exec(`DELETE FROM stage`)
+      // A rebuild overtaken (its table rebuilt by a release before this one after a rollback, review m-2): its rows go, the table's stay.
+      this.sql.exec(`DELETE FROM rebuild_manifest WHERE tbl IN (SELECT name FROM tbl)`)
+      this.sql.exec(`DELETE FROM rebuild WHERE tbl IN (SELECT name FROM tbl)`)
     }
     scratch()
     try {
@@ -1051,6 +1057,9 @@ export class Publisher extends DurableObject<PublisherEnv> {
   private admit(cfg: PublisherConfig, budget: RebaseBudget, tenant: string): boolean {
     if (budget.admitted.has(tenant)) return true
     if (budget.closed) return false
+    // A publish that commits a re-base in steps does no other re-base work (review M-1): the commit
+    // comes first in it (`continueRebase`), and nothing is admitted after it.
+    if (budget.finishing !== null) return false
     if (budget.admitted.size > 0 && (budget.admitted.size >= cfg.maxRebasesPerPublish || budget.work >= cfg.maxRebaseFilesPerPublish)) return false
     budget.admitted.add(tenant)
     this.sql.exec(`INSERT INTO rebase (tenant, started) VALUES (?, ?) ON CONFLICT (tenant) DO UPDATE SET started = excluded.started`, tenant, this.now())
@@ -1244,7 +1253,8 @@ export class Publisher extends DurableObject<PublisherEnv> {
       // more: a missing part is listed again next time (from the newest checkpoint), a corrupt or
       // unknown one is refused until the ledger writes another.
       const stopped = log.status === 'incomplete' || log.status === 'corrupt' || log.status === 'unsupported' || log.status === 'no_base'
-      if (step && step.target === null && budget.turned.has(tenant) && stopped) this.dropStep(tenant)
+      // A tenant whose log is gone keeps nothing either (review m-5).
+      if (step && step.target === null && ((budget.turned.has(tenant) && stopped) || log.status === 'no_log')) this.dropStep(tenant)
       return log
     }
     if (!budget.resumed.has(tenant) && budget.work <= cfg.maxRebaseFilesPerPublish) {
@@ -1788,7 +1798,10 @@ export class Publisher extends DurableObject<PublisherEnv> {
    * Tombstones of a re-based tenant (removed files whose objects may remain, from its checkpoint
    * or base) that are neither published nor live in its new state: the publisher may never have
    * seen them (a checkpoint skips the changes before it), so they are recorded as removed by the
-   * snapshot `seq`, and released only once no snapshot older than it is retained.
+   * snapshot `seq`, and released only once no snapshot older than it is retained. Recorded before
+   * the commit's metadata write as well as after it (review M-3: an invocation cut off between the two
+   * left them unrecorded for good, and the files in R2): a record not yet released keeps the highest
+   * sequence number any attempt gave it, so a retried commit at a later one is never released early.
    */
   private recordStagedTombstones(table: LedgerTable, tenant: string, seq: number): void {
     this.sql.exec(
@@ -1797,7 +1810,7 @@ export class Publisher extends DurableObject<PublisherEnv> {
        WHERE s.tenant = ? AND s.tbl = ? AND s.tomb = 1
          AND NOT EXISTS (SELECT 1 FROM live l WHERE l.tbl = s.tbl AND l.key = s.key)
          AND NOT EXISTS (SELECT 1 FROM rebase_stage f WHERE f.tenant = s.tenant AND f.tbl = s.tbl AND f.tomb = 0 AND f.key = s.key)
-       ON CONFLICT (tbl, key) DO NOTHING`,
+       ON CONFLICT (tbl, key) DO UPDATE SET removed_seq = MAX(removed_seq, excluded.removed_seq) WHERE free_at IS NULL`,
       seq, tenant, table,
     )
   }
@@ -2059,6 +2072,17 @@ export class Publisher extends DurableObject<PublisherEnv> {
     report.bytes.cursors = cursorsBody.length
     await this.step('cursors-written', table)
 
+    // What this commit releases that no later step would find again: the tombstones its re-bases
+    // staged (their stage is gone once they leave it) and the keys removed before they were ever
+    // published. Recorded now, before the commit point, so an invocation cut off after the metadata
+    // write and before the transaction below loses none of them (review M-3); recording them early
+    // releases nothing early: a tombstone waits for every snapshot older than `seq`, and the keys are
+    // published by no snapshot.
+    this.ctx.storage.transactionSync(() => {
+      for (const t of plan.transient) this.recordRemoved(table, t.tenant, t.key, 0, now)
+      for (const x of staged) this.recordStagedTombstones(table, x.tenant, seq)
+    })
+
     // ── metadata.json: the commit ──
     const before = prev?.snapshots.find((s) => s['snapshot-id'] === prev['current-snapshot-id'])?.summary
     const total = (k: string) => Number(before?.[k] ?? 0)
@@ -2116,7 +2140,8 @@ export class Publisher extends DurableObject<PublisherEnv> {
       for (const x of staged) {
         if (x.removes.files === 0) continue
         sql.exec(
-          `INSERT INTO removed (tbl, tenant, key, removed_seq, free_at) SELECT l.tbl, l.tenant, l.key, ?, NULL FROM live l WHERE ${Publisher.STAGED_REMOVE} ON CONFLICT (tbl, key) DO NOTHING`,
+          `INSERT INTO removed (tbl, tenant, key, removed_seq, free_at) SELECT l.tbl, l.tenant, l.key, ?, NULL FROM live l WHERE ${Publisher.STAGED_REMOVE}
+           ON CONFLICT (tbl, key) DO UPDATE SET removed_seq = MAX(removed_seq, excluded.removed_seq) WHERE free_at IS NULL`,
           seq, table, x.tenant,
         )
         sql.exec(`DELETE FROM live AS l WHERE ${Publisher.STAGED_REMOVE}`, table, x.tenant)

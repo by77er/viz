@@ -2048,12 +2048,14 @@ continues the same checkpoint, so the per-part and whole-checkpoint checks still
 Once staged, the changes after it are applied for every table in one transaction, all or none, and
 the step records the version reached and the snapshot id its commit will have; the files it adds are
 then written into manifests ahead of that commit, a manifest per transaction, each ADDED entry
-carrying that snapshot id (sequence numbers are inherited); the commit, first in a publish of its own,
+carrying that snapshot id (sequence numbers are inherited); the commit, first in a publish of its own
+and with nothing else admitted to it,
 lists them after HEADing each at its recorded size. Every step re-reads and re-checks the kept state:
 a newer ledger incarnation, another checkpoint, or a re-based table whose cursor moved drops it. A
 re-base read whole within the budget is committed as before, byte for byte. `stage` is left to the
-releases before (they empty it at every attempt); the new tables are storage migration 7, additive,
-which those releases ignore. After a lost storage a table is rebuilt from R2 the same way, a manifest
+older releases (the release in production, `test/n1/` at storage version 3, and the development states
+after it; they empty it at every attempt); the new tables are storage migration 7, additive, which
+those releases ignore. After a lost storage a table is rebuilt from R2 the same way, a manifest
 at a time into `live` with a done mark each. Alternatives: (g) a higher `limits.cpu_ms` alone (up to
 5 minutes): moves the wall, and Durable Objects are billed by wall time so it would not cost more,
 but a tenant past it still never finishes, and S11 saw the per-file cost vary threefold between
@@ -2066,12 +2068,26 @@ id (inherited): readers must support inheritance, and a whole re-base's bytes wo
 resuming inside a base: needs a byte offset at an element boundary and a contract change to
 `readLedgerLogStream`. Measured here (local workerd, `publisher/bench/upgrade.bench.test.ts`): a
 300,000-file tenant's first publication in 7 publishes, at most 4.8–5.4 s of CPU each (19.8 s and
-22.7 s in all, two runs), against 19.8 s in one publish for the release before; from a base the step
+22.7 s in all, two runs), against 19.8 s in one publish for the development state before it (`800b926`); from a base the step
 that stages it whole 7.8–8.4 s. Modelled on Cloudflare from S11's per-file cost: at most about 9–13 s
 per publish. In workerd tests: a re-base over several runs ends exactly as one uncapped re-base for
-three starts; one cut off at each R2 operation in turn (96 cuts) loses nothing committed; a newer
-incarnation mid-way commits nothing of the old; the release before, on storage left mid-way, ignores
+three starts; one cut off at each R2 operation in turn (95, 157 and 181 cuts on the three starts) loses
+nothing committed and releases its removed files as its twin does; a newer
+incarnation mid-way commits nothing of the old; the release in production (`test/n1/`, storage
+version 3, which the first release of this tree upgrades to 7 in one step) and the development state
+before this change (`test/m6/`, never deployed), on storage left mid-way, ignore
 it (`publisher/README.md`, "Re-bases and rebuilds in steps").
+
+**After the adversarial review (2026-11-26, `design/reviews/publisher-steps.md`: approve with
+changes).** M-1: the publish that commits a re-base in steps admitted other re-bases up to the whole
+budget; now nothing is admitted once a commit is chosen, so the commit is the only re-base work of its
+publish (other tenants are still read from their cursors). M-3: a commit cut off between its metadata
+write and its SQLite transaction never recorded the tombstones its re-base staged (whole re-bases too),
+so those files were never released; they are now recorded before the metadata write as well, a record
+not yet released keeping the highest sequence number any attempt gave it. M-2: `locationPrefix` cannot
+change while manifests are written ahead. M-4: tested against the release actually in production
+(`test/n1/`): the upgrade 3 → 7, a rollback in the middle of a staging and of a write ahead, rolled
+forward. M-5: the four checks no test reached now have tests and mutants.
 
 **Would change if.** A publish at the budget, measured on Cloudflare, comes near the limit (then a
 smaller budget: steps commit nothing, so it costs only alarm wakes) or far from it (a larger one);
@@ -2939,7 +2955,14 @@ bounded per publish (`publisher/README.md`, "Bounded work per publish"). This re
 text, under which the first publish after the upgrade re-based every tenant in one invocation.
 Amended again 2026-11-26: (l), a tenant's re-base kept across invocations, is now done (D55's
 amendment), and so is a lost table's rebuild a manifest at a time; this replaces the text that left
-one tenant, or one table's rebuild, whole in one invocation.)
+one tenant, or one table's rebuild, whole in one invocation. Corrected 2026-11-26 after the review of
+that change: the text below names "D64's release" as the upgrade's source and "the rollback floor".
+D64 was never deployed, nor was the state before re-bases in steps (`test/m6/`). Production runs the
+release before D64 (`test/n1/`, main at PR #8, storage version 3, `INGEST_SIGNALS` off): the first
+release of this tree upgrades it 3 → 7 in one step, and it too has no cursor of the span and log
+tables, so every tenant is re-based once as below; a rollback of the publisher alone lands on it, and
+it opens version 7, ignores the new tables and re-bases whole (`publisher/test/steps-review.test.ts`).
+D64's rollout rule applies only once `INGEST_SIGNALS` is on.)
 
 **Decision.** `PUBLISHED_TABLES` is every `LedgerTable`, in commit order `metric_samples`,
 `metric_series`, `spans`, `trace_index`, `logs`; each is one Iceberg v2 table per cell with its
