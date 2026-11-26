@@ -1,34 +1,31 @@
-import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi, Link, useNavigate } from '@tanstack/react-router'
 import { PromApiError } from '../api/client'
 import { answerLine, busyLine, errorAdvice, errorKind, retryDelayMs, shouldRetry } from '../api/errors'
 import type { ParsedMatrix } from '../api/matrix'
 import type { ApiCost } from '../api/types'
-import { TimeSeriesChart, type ChartSeries, type RenderInfo } from '../charts'
+import { Chart, figureFormat, toSpec, type ShownRange } from '../charts'
+import { reservedStyle } from '../charts/Chart'
+import { chartRules } from '../charts/systemChart'
 import type { PromqlEditorHandle } from '../editor/PromqlEditor'
-import { assignSeries, DEFAULT_POLICY, loadAssignment, saveAssignment } from '../lib/assign'
-import { slotToken } from '../lib/color'
 import { describeResult, identify, type ResultIdentity, type ResultRequest } from '../lib/describe'
-import { digestSeries, renderDigest } from '../lib/digest'
 import { nameSeries } from '../lib/naming'
-import { useCoarsePointer } from '../lib/pointer'
 import { countRender } from '../lib/renders'
-import { alignSeries, type AlignedData, seriesStats } from '../lib/series'
+import { alignSeries, seriesStats } from '../lib/series'
 import { alignWindow, autoStep, bucketWidth, type QueryWindow } from '../lib/step'
-import { absoluteSpec, formatDateTime, parseDuration, resolveTimeSpec, stepWords } from '../lib/time'
-import { axisUnitLabel, BINARY_INCREMENTS, formatInScale, formatValue, inferUnit, scaleFor, UNITS } from '../lib/units'
-import { DEFAULT_SEARCH, parseExploreSearch, type ExploreSearch, type ResultView } from '../lib/urlState'
+import { parseDuration, resolveTimeSpec, stepWords } from '../lib/time'
+import { dayPrefix, LOCAL, momentText, zoneShiftMs } from '../lib/timeInput'
+import { inferUnit, UNITS } from '../lib/units'
+import { parseExploreSearch, type ExploreSearch, type ResultView } from '../lib/urlState'
 import { useBackendInfo } from '../shell/AppShell'
-import { MOD, useCommands, useCommandsContext } from '../shell/commands'
-import { useSettings } from '../shell/settings'
-import { useTheme } from '../shell/theme'
+import { MOD, useCommands } from '../shell/commands'
+import { useSession } from '../shell/session'
 import { Age, shorterRange, useWaiting, WAIT } from './waiting'
-import { Legend, type LegendRow } from './Legend'
 import { JsonView } from './JsonView'
-import { ResultTable } from './ResultTable'
+import { ResultTable, type TableRow } from './ResultTable'
 import { TextView } from './TextView'
-import { PRESETS, spacedDuration, TimeRangePicker } from './TimeRangePicker'
+import { PRESETS, presetWords, RangeControls, StepField, TimeRangeField } from './TimeRangeField'
 
 const exploreRoute = getRouteApi('/explore')
 const PromqlEditor = lazy(() => import('../editor/PromqlEditor'))
@@ -48,25 +45,12 @@ const MOCK_EXAMPLES: { title: string; q: string }[] = [
   { title: 'Memory by pod', q: 'pod_memory_working_set_bytes' },
 ]
 
-/** The id of the one series drawn for the Other group when the policy sums its members. */
-const OTHER_ID = '__other__'
-
 /** How long after the last change of form the address bar is brought up to date, in ms. */
 const VIEW_URL_DELAY = 300
 
-/** Text digests by result, then by unit and title: one per result as long as the result is kept. */
-const digests = new WeakMap<object, Map<string, string>>()
-function cachedDigest(aligned: AlignedData, title: string, unit: string, format: (v: number | null) => string): string {
-  let byKey = digests.get(aligned)
-  if (!byKey) digests.set(aligned, (byKey = new Map()))
-  const key = `${unit}\n${title}`
-  let text = byKey.get(key)
-  if (text === undefined) {
-    text = renderDigest(digestSeries({ xs: aligned.xs, series: aligned.series }), { format, title })
-    byKey.set(key, text)
-  }
-  return text
-}
+/** The colour map and the reserved height of this view's chart are kept under this name for the tab's session. */
+const CHART_VIEW = 'explore'
+const TEXT_FORM = 'explore-text'
 
 /**
  * A result carries what is needed to describe it (lib/describe, design review B1): the
@@ -80,12 +64,6 @@ interface RangeResult extends ResultIdentity {
   /** What the API said the query cost (`X-Viz-*`); kept with the result, not shown yet. */
   cost: ApiCost
   elapsedMs: number
-}
-
-const sameSet = (a: ReadonlySet<string>, b: ReadonlySet<string>) => {
-  if (a.size !== b.size) return false
-  for (const x of a) if (!b.has(x)) return false
-  return true
 }
 
 /**
@@ -104,24 +82,22 @@ const QueryRow = memo(function QueryRow({
   committed: string
   loading: boolean
   run: () => void
-  client: ReturnType<typeof useSettings>['client']
+  client: ReturnType<typeof useSession>['client']
   editorRef: React.RefObject<PromqlEditorHandle | null>
   rangeRef: React.RefObject<{ start: number; end: number } | null>
   onEditorReady: () => void
 }) {
   countRender('QueryRow')
   return (
-    <div className="query-row">
-      <div className="vz-query query-well" onClick={() => editorRef.current?.focus()}>
-        <Suspense fallback={<div className={committed ? undefined : 'cell-quiet'}>{committed || 'Loading the query editor'}</div>}>
+    <div className="vz-controls">
+      {/* The editor is a chunk of its own; until it has loaded the well shows the query as text, at the same height. */}
+      <div className="vz-query query-well" onClick={() => editorRef.current?.focus()} data-testid="query-well">
+        <Suspense fallback={<div>{committed || '\u00a0'}</div>}>
           <PromqlEditor value={committed} onRun={run} client={client} handleRef={editorRef} rangeRef={rangeRef} onReady={onEditorReady} />
         </Suspense>
       </div>
       <button className="vz-button" data-tone="blue" onClick={run} aria-busy={loading} data-testid="run" aria-keyshortcuts="Control+Enter Meta+Enter">
         Run query
-        <span className="vz-kbd wide-only" aria-hidden="true">
-          {MOD} ↵
-        </span>
       </button>
     </div>
   )
@@ -133,10 +109,8 @@ export function ExplorePage() {
   const search = useMemo(() => parseExploreSearch(rawSearch), [rawSearch])
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const { client, connectionId, settings } = useSettings()
-  const { resolved: theme } = useTheme()
+  const { client, connectionId, hasKey, signOut } = useSession()
   const backend = useBackendInfo()
-  const coarse = useCoarsePointer()
 
   const setSearch = useCallback(
     (patch: Partial<ExploreSearch>, replace = false) =>
@@ -262,142 +236,55 @@ export function ExplorePage() {
   }, [setSearch])
 
   // ---- the result on screen, and its description. `result` may be the previous query's
-  // (kept while the next one waits, or after Cancel or the 60 s stop): nothing below this
-  // line may read `search.q` or `q` to describe it.
+  // (kept while the next one waits, or after Cancel, the 60 s stop or an error): nothing below
+  // this line may read `search.q` or `q` to describe it.
   const result = q === '' ? undefined : query.data
   const description = useMemo(() => (result ? describeResult(result, { unit: search.unit }, current) : null), [result, search.unit, current])
-  const unit = description?.unit ?? 'none'
   const aligned = useMemo(
     () => (result ? alignSeries(result.matrix.series, result.window.start, result.window.end, result.window.step) : null),
     [result],
   )
-  // Prepared once per result: names, statistics, colours. None of it depends on the view or on what is typed.
-  const naming = useMemo(() => nameSeries((aligned?.series ?? []).map((s) => s.labels)), [aligned])
-  const stats = useMemo(() => (aligned?.series ?? []).map((s) => seriesStats(aligned!.xs, s.values)), [aligned])
-  // Colours: survivors keep their slot, new series take free slots in palette order, and
-  // past eight the largest by mean are coloured and the rest fold into one Other group.
-  const assigned = useMemo(() => assignSeries(aligned?.series ?? [], loadAssignment(), DEFAULT_POLICY), [aligned])
-  useEffect(() => {
-    if (aligned && aligned.series.length > 0) saveAssignment(assigned.assignment)
-  }, [aligned, assigned])
+  const hasData = !!aligned && aligned.series.length > 0
+  const isEmpty = !!result && result.matrix.series.length === 0
 
-  const chartSeries = useMemo<ChartSeries[]>(() => {
-    const all = aligned?.series ?? []
-    const out: ChartSeries[] = all.map((s, i) => {
-      const slot = assigned.assignment[s.key]
-      const n = naming.names[i]!
-      return {
-        id: s.key,
-        label: n.full,
-        shortLabel: n.short,
-        // When one label tells the series apart, its value is the whole name: "checkout".
-        directLabel: naming.valueOnly ? n.name : undefined,
-        colorVar: slotToken(slot ?? null),
-        other: slot === undefined,
-        values: s.values,
-      }
-    })
-    if (assigned.other?.combined) out.push({ id: OTHER_ID, label: 'Other', colorVar: slotToken(null), other: true, values: assigned.other.combined })
-    return out
-  }, [aligned, assigned, naming])
-  const rows = useMemo<(LegendRow & { labels: Record<string, string> })[]>(
+  // ---- the chart: the design system's, given the result as it takes one (charts/spec.ts).
+  // Its clock is UTC; the result's times are moved by the local offset at the window's end, so
+  // it reads local time, the zone the time range fields state.
+  const shiftMs = useMemo(() => (result ? zoneShiftMs(LOCAL, result.window.end * 1000) : 0), [result])
+  const chart = useMemo(
     () =>
-      (aligned?.series ?? []).map((s, i) => ({
-        id: s.key,
-        name: naming.names[i]!.short,
-        full: naming.names[i]!.full,
-        labels: s.labels,
-        colorVar: chartSeries[i]!.colorVar,
-        other: chartSeries[i]!.other === true,
-        stats: stats[i]!,
-      })),
-    [aligned, chartSeries, naming, stats],
+      hasData && result && description
+        ? toSpec({ data: aligned!, start: result.window.start, step: result.window.step, unit: description.unit, query: result.request.q, shiftMs })
+        : null,
+    [hasData, aligned, result, description, shiftMs],
   )
-  // The table's columns: the labels that differ, most distinguishing first. A single series shows every label.
-  const tableColumns = useMemo(() => {
-    if (naming.distinguishing.length > 0) return { columns: naming.distinguishing, common: naming.common }
-    const keys = Object.keys(aligned?.series[0]?.labels ?? {}).sort()
-    return { columns: keys.includes('__name__') ? ['__name__', ...keys.filter((k) => k !== '__name__')] : keys, common: {} }
-  }, [naming, aligned])
+  const [shownRange, setShownRange] = useState<ShownRange | null>(null)
 
-  // ---- which series are drawn. By itself the view draws the coloured ones (and the Other
-  // group's sum when the policy asks for one); members of Other are drawn when selected.
-  const defaultDrawn = useMemo<ReadonlySet<string>>(
-    () => new Set([...assigned.coloured, ...(assigned.other?.combined ? [OTHER_ID] : [])]),
-    [assigned],
-  )
-  const [isolated, setIsolated] = useState<ReadonlySet<string> | null>(null)
-  const visible = useMemo(() => {
-    if (!isolated) return null
-    const keep = new Set(chartSeries.filter((s) => isolated.has(s.id)).map((s) => s.id))
-    return keep.size === 0 || sameSet(keep, defaultDrawn) ? null : keep
-  }, [isolated, chartSeries, defaultDrawn])
-  const drawn = visible ?? defaultDrawn
-  const drawnRef = useRef(drawn)
-  drawnRef.current = drawn
-  const toggleSeries = useCallback((id: string, additive: boolean) => {
-    const cur = drawnRef.current
-    if (additive) {
-      const next = new Set(cur)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      setIsolated(next.size === 0 ? null : next)
-      return
+  // ---- the table: the latest value of each series, in the chart's unit and number format.
+  const naming = useMemo(() => nameSeries((aligned?.series ?? []).map((s) => s.labels)), [aligned])
+  const table = useMemo(() => {
+    if (!aligned || !chart) return null
+    const stats = aligned.series.map((s) => seriesStats(aligned.xs, s.values))
+    let lo = 0
+    let hi = 0
+    for (const s of stats) {
+      if (s.min != null && s.min < lo) lo = s.min
+      if (s.max != null && s.max > hi) hi = s.max
     }
-    // Plain click: isolate; clicking the only visible series shows the default again.
-    setIsolated(cur.size === 1 && cur.has(id) ? null : new Set([id]))
-  }, [])
-
-  // ---- units: one scale for the value axis, from what is drawn. Ticks are numbers in that
-  // scale; the unit is stated once, in the panel head. A value that stands alone (readout,
-  // digest) carries its own unit.
-  const axisScale = useMemo(() => {
-    let max = 0
-    for (const r of rows) {
-      if (!drawn.has(r.id)) continue
-      if (r.stats.max != null) max = Math.max(max, Math.abs(r.stats.max))
-      if (r.stats.min != null) max = Math.max(max, Math.abs(r.stats.min))
+    const format = figureFormat(chartRules(), chart.unit, lo, hi)
+    const rows: TableRow[] = aligned.series.map((s, i) => ({ id: s.key, full: naming.names[i]!.full, labels: s.labels, last: stats[i]!.last, lastAt: stats[i]!.lastAt, text: format.value(stats[i]!.last) }))
+    // The columns: the labels that differ, most distinguishing first. A single series shows every label.
+    let columns = naming.distinguishing
+    let common = naming.common
+    if (columns.length === 0) {
+      const keys = Object.keys(aligned.series[0]?.labels ?? {}).sort()
+      columns = keys.includes('__name__') ? ['__name__', ...keys.filter((k) => k !== '__name__')] : keys
+      common = {}
     }
-    return scaleFor(unit, max)
-  }, [rows, drawn, unit])
-  const formatAxis = useCallback((v: number) => formatInScale(v, unit, axisScale, 4), [unit, axisScale])
-  const formatAlone = useCallback((v: number | null) => formatValue(v, unit), [unit])
-  const yIncrements = unit === 'bytes' || unit === 'bytes/s' ? BINARY_INCREMENTS : undefined
+    return { rows, unit: format.unit, columns, common }
+  }, [aligned, chart, naming])
 
-  const [renderInfo, setRenderInfoState] = useState<RenderInfo | null>(null)
-  const setRenderInfo = useCallback(
-    (info: RenderInfo) =>
-      setRenderInfoState((prev) =>
-        prev && prev.rawPoints === info.rawPoints && prev.drawnPoints === info.drawnPoints && prev.downsampled === info.downsampled ? prev : info,
-      ),
-    [],
-  )
-  // ---- zoom: a drag on the chart, or the Zoom in / Zoom out buttons. The range before the
-  // first zoom is remembered so that Reset zoom can return to it.
-  const rangeRef = useRef({ from: search.from, to: search.to })
-  rangeRef.current = { from: search.from, to: search.to }
-  const zoomBase = useRef<{ from: string; to: string } | null>(null)
-  const zoomTo = useCallback(
-    (from: string, to: string) => {
-      zoomBase.current ??= rangeRef.current
-      setSearch({ from, to })
-    },
-    [setSearch],
-  )
-  const onZoom = useCallback((from: number, to: number) => zoomTo(absoluteSpec(from), absoluteSpec(to)), [zoomTo])
-  const resetZoom = useCallback(() => {
-    const base = zoomBase.current ?? { from: DEFAULT_SEARCH.from, to: DEFAULT_SEARCH.to }
-    zoomBase.current = null
-    setSearch(base)
-  }, [setSearch])
-  const onRange = useCallback(
-    (from: string, to: string) => {
-      zoomBase.current = null
-      setSearch({ from, to })
-    },
-    [setSearch],
-  )
-  const xRange = useMemo<[number, number]>(() => (result ? [result.window.start, result.window.end] : [0, 1]), [result])
+  const onRange = useCallback((from: string, to: string) => setSearch({ from, to }), [setSearch])
 
   // ---- keyboard & commands
   // The form of the result is local: it changes in this render and the URL follows.
@@ -488,7 +375,7 @@ export function ExplorePage() {
       ...PRESETS.map((p) => ({
         id: `t-${p}`,
         group: 'Time range' as const,
-        title: `Show the last ${spacedDuration(p)}`,
+        title: `Show the last ${presetWords(p)}`,
         keywords: 'time range relative',
         run: () => onRange(`now-${p}`, 'now'),
       })),
@@ -496,246 +383,199 @@ export function ExplorePage() {
     'static',
   )
 
-  const showAll = useCallback(() => setIsolated(null), [])
-  // The shell owns the settings dialog; its command opens it.
-  const { commands } = useCommandsContext()
-  const openSettings = useCallback(() => commands.find((c) => c.id === 'settings-open')?.run(), [commands])
-
-  // The digest is computed when the text form is first shown for a result, and kept for that
-  // result: switching away and back does not compute it again. Its title is the result's query.
-  const digestText = useMemo(() => {
-    if (!aligned || !description || view !== 'text') return ''
-    return cachedDigest(aligned, description.digestTitle, unit, formatAlone)
-  }, [aligned, description, unit, formatAlone, view])
-  // ...and prepared ahead, when the browser is idle after a result arrives, so that the first
-  // switch to the text form only renders it (200 series: about 15 ms at 4x CPU, once per
-  // result, whether or not the form is ever shown; README, "Speed").
-  useEffect(() => {
-    if (!aligned || !description || aligned.series.length === 0) return
-    const idle = window.requestIdleCallback
-    const run = () => void cachedDigest(aligned, description.digestTitle, unit, formatAlone)
-    if (!idle) {
-      const t = setTimeout(run, 500)
-      return () => clearTimeout(t)
-    }
-    const id = idle(run, { timeout: 5000 })
-    return () => window.cancelIdleCallback(id)
-  }, [aligned, description, unit, formatAlone])
-
   // ---- render
   const error = q !== '' && query.isError ? query.error : null
-  const isEmpty = !!result && result.matrix.series.length === 0
-  const hasData = !!aligned && aligned.series.length > 0
-  const shownResult = !error && (hasData || isEmpty) ? result : undefined
-  const shown = shownResult && description ? description : null
   const widest = search.to === 'now' && search.from === 'now-24h'
   const alternative = window_ ? shorterRange(window_.end - window_.start) : null
+  /** Something of a result is on screen: its chart (under an error, its legend), its table, its text or its JSON. */
+  const drawn = !!result && !!description && (hasData || isEmpty) && (!error || (hasData && view === 'chart'))
+  const shown = drawn ? description : null
+  const errorNode: ReactNode = error ? (
+    <ErrorState
+      error={error}
+      tries={query.failureCount}
+      elapsedMs={lastWaitMs.current}
+      keySet={hasKey}
+      autoStep={search.step === 'auto'}
+      syntaxErrorAt={() => (editorReady ? (editorRef.current?.syntaxErrorAt(q) ?? null) : null)}
+      onGoTo={(at) => editorRef.current?.focus(at)}
+      onRetry={run}
+      onSignIn={() => signOut('refused')}
+      onAutoStep={() => setSearch({ step: 'auto' })}
+    />
+  ) : null
+  const chartError = useMemo(() => (error && errorNode ? { title: error.message, node: errorNode } : null), [error, errorNode])
+  const now = Date.now()
 
-  const caption = shownResult && shown && hasData && (
-    <p className="vz-panel-desc" data-testid="status">
-      <span className="app-num">{aligned!.series.length}</span> series, one point every{' '}
-      {stepWords(shownResult.window.step)
-        .split(' ')
-        .map((part, i, parts) => (/^\d/.test(part) ? <span key={i} className="app-num">{part}</span> : ` ${part}${i < parts.length - 1 ? ' ' : ''}`))}
-      .
-      {view === 'chart' && renderInfo?.downsampled && (
-        <>
-          {' '}
-          Each pixel column draws its minimum and maximum: <span className="app-num">{renderInfo.rawPoints.toLocaleString('en-US')}</span> points
-          drawn as <span className="app-num">{renderInfo.drawnPoints.toLocaleString('en-US')}</span>.
-        </>
-      )}
-      {shown.stale === 'query' && (
-        <span data-testid="stale-query">
-          {' '}
-          This is the result of the previous query, <span className="app-num">{shown.q}</span>.
-        </span>
-      )}
-      {shown.stale === 'range' && <span data-testid="stale-range"> This is the result for the previous time range, {spacedRange(shown.range)}.</span>}
-    </p>
-  )
+  /** The waiting line: over the strip of words every form of the result starts with (Panel). */
+  const progress =
+    halted && !loading ? (
+      <div className="vz-progress" data-unmeasured="" data-testid="halted">
+        <div className="vz-progress-text">
+          <span role="status">
+            {halted === 'cancelled' ? 'Cancelled.' : 'Stopped after 60 s without an answer.'}
+            {drawn ? ' The previous result is shown.' : ''}
+          </span>
+          <button className="vz-progress-action" onClick={run} data-testid="retry" data-focus-after="[data-testid=run]">
+            Retry
+          </button>
+        </div>
+      </div>
+    ) : wait.shown ? (
+      <div className="vz-progress" data-unmeasured="" data-testid="progress">
+        <div className="vz-progress-text">
+          <span role="status" data-testid="progress-text">
+            {failures > 0 && query.failureReason
+              ? busyLine(query.failureReason, retryClock.current.at > performance.now() ? retryClock.current.at - performance.now() : null)
+              : wait.elapsedMs >= WAIT.alternativeAfter
+                ? 'Still waiting for the query.'
+                : 'Waiting for the query.'}
+          </span>
+          <span className="vz-qty" aria-hidden="true" data-testid="progress-elapsed">
+            {(wait.elapsedMs / 1000).toFixed(1)} s
+          </span>
+          {wait.elapsedMs >= WAIT.alternativeAfter && loading && alternative && (
+            <button className="vz-progress-action" onClick={() => onRange(`now-${alternative.preset}`, 'now')} data-testid="alternative">
+              Show the last {presetWords(alternative.preset)}
+            </button>
+          )}
+          {wait.elapsedMs >= WAIT.cancelAfter && loading && (
+            // When Cancel goes, Retry stands in the same place and takes the focus Cancel had.
+            <button className="vz-progress-action" onClick={() => halt('cancelled')} data-testid="cancel" data-focus-after="[data-testid=retry]">
+              Cancel
+            </button>
+          )}
+        </div>
+      </div>
+    ) : null
 
   return (
-    <div className="page">
-      <h1 className="sr-only">Explore metrics</h1>
-
-      {/* Query row: the one blue button of the view. */}
-      <QueryRow committed={search.q} loading={loading} run={run} client={client} editorRef={editorRef} rangeRef={lookupRange} onEditorReady={onEditorReady} />
-
-      {/* Toolbar: every control carries its label, so the row needs no explanation. */}
-      <div className="toolbar">
-        <TimeRangePicker from={search.from} to={search.to} onChange={onRange} onZoom={zoomTo} onResetZoom={resetZoom} />
-        <StepInput value={search.step} auto={window_ ? stepWords(window_.step) : ''} onChange={(step) => setSearch({ step })} />
-        <div className="vz-field unit-field">
-          <label className="vz-label" htmlFor="unit">
-            Unit
-          </label>
-          <select id="unit" data-testid="unit" className="vz-select" value={search.unit} onChange={(e) => setSearch({ unit: e.target.value }, true)}>
-            {/* "Automatic" names the unit of what is on screen while a result is shown, and of the query otherwise. */}
-            <option value="auto">Automatic: {UNITS.find((u) => u.id === (shownResult ? shownResult.inferredUnit : inferUnit(q)))?.label ?? 'number'}</option>
-            {UNITS.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.label}
-              </option>
-            ))}
-          </select>
+    <div className="vz-page">
+      <header className="vz-page-head">
+        <div>
+          <h1 className="vz-page-title">Explore</h1>
         </div>
-        <div className="vz-field view-field">
-          <span className="vz-label" id="view-label">
-            Show as
-          </span>
-          <div className="vz-segmented" role="group" aria-labelledby="view-label">
-            {VIEWS.map(([v, label]) => (
-              <button key={v} aria-pressed={view === v} onClick={() => setView(v)} data-testid={`view-${v}`}>
-                {label}
-              </button>
-            ))}
+      </header>
+
+      <div className="vz-stack" ref={toolsRef}>
+        {/* The query and the view's one blue button. */}
+        <QueryRow committed={search.q} loading={loading} run={run} client={client} editorRef={editorRef} rangeRef={lookupRange} onEditorReady={onEditorReady} />
+        <RangeControls from={search.from} to={search.to} onChange={onRange} shown={shownRange} />
+        <div className="vz-dashboard">
+          <div className="vz-grid">
+            <TimeRangeField from={search.from} to={search.to} onChange={onRange} />
+            <StepField value={search.step} auto={window_ && search.step === 'auto' ? window_.step : null} onChange={(step) => setSearch({ step })} />
+            <div className="vz-field" data-span="3">
+              <label className="vz-label" htmlFor="unit">
+                Unit
+              </label>
+              <select id="unit" data-testid="unit" className="vz-select" value={search.unit} onChange={(e) => setSearch({ unit: e.target.value }, true)}>
+                {/* "Automatic" names the unit of what is on screen while a result is shown, and of the query otherwise. */}
+                <option value="auto">Automatic: {UNITS.find((u) => u.id === (shown && result ? result.inferredUnit : inferUnit(q)))?.label ?? 'number'}</option>
+                {UNITS.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.label}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Result: a panel whose waiting line and region keep their height with or without data. */}
-      <section ref={panelRef} className="vz-panel result" aria-labelledby="result-title" aria-busy={loading} data-testid="result">
-        <div className="vz-panel-head">
-          <h2 className="vz-panel-title" id="result-title">
-            Query result
-          </h2>
-          {shownResult && shown && (
-            <div className="field-row" data-testid="result-meta">
-              {/* While the result is not the answer to the current query, the head says so; the query's text is in the caption. */}
-              {shown.staleText && (
-                <span className="vz-panel-meta" data-testid="stale" title={shown.stale === 'query' ? shown.q : shown.range}>
-                  {shown.staleText}
+      {q === '' && !result ? (
+        <StartState mock={!!backend.data?.mock} />
+      ) : (
+        <section className="vz-panel" aria-labelledby="result-title" aria-busy={loading} data-testid="result">
+          <div className="vz-panel-head">
+            {/* The chart names itself, and titles its text form, with this element's text: the query is part of it, for a reader who cannot see the editor. */}
+            <h2 className="vz-panel-title" id="result-title">
+              Query result{shown ? <span className="vz-sr">: {shown.q}</span> : null}
+            </h2>
+            {shown && result && (
+              <span className="vz-panel-meta" data-testid="result-meta">
+                {/* While the result is not the answer to the current request, the head says so; everything else stays the result's. */}
+                {shown.staleText && (
+                  <span className="vz-panel-note" data-testid="stale">
+                    {shown.staleText}
+                  </span>
+                )}
+                <span data-testid="result-range">
+                  {shown.staleText ? '· ' : ''}
+                  {dayPrefix(result.window.start, result.window.end, now) ? `${dayPrefix(result.window.start, result.window.end, now)}, ` : ''}
+                  {/* The chart writes the range it shows here, and again when it is zoomed (Chart, draw). */}
+                  <span data-range="" className="vz-qty" />
                 </span>
-              )}
-              <span className="vz-panel-meta" data-testid="result-range">
-                {spacedRange(shown.range)}
+                <span data-testid="result-step">
+                  · every <span className="vz-qty">{stepWords(result.window.step)}</span>
+                </span>
+                <Age at={result.receivedAt} />
               </span>
-              <Age at={shownResult.receivedAt} unit={axisUnitLabel(shown.unit, axisScale)} />
-            </div>
-          )}
-        </div>
-
-        <div className="wait-slot">
-          {halted && !loading ? (
-            <div className="vz-progress" data-unmeasured="" data-testid="halted">
-              <div className="vz-progress-text">
-                <span role="status">
-                  {halted === 'cancelled' ? 'Cancelled.' : 'Stopped after 60 s without an answer.'}
-                  {shownResult ? ' The previous result is shown.' : ''}
-                </span>
-                <button className="vz-progress-action" onClick={run} data-testid="retry" data-focus-after="[data-testid=run]">
-                  Retry
+            )}
+            <div className="vz-segmented" role="group" aria-label="Show the result as">
+              {VIEWS.map(([v, label]) => (
+                <button key={v} aria-pressed={view === v} onClick={() => setView(v)} data-testid={`view-${v}`}>
+                  {label}
                 </button>
-              </div>
+              ))}
             </div>
-          ) : wait.shown ? (
-            <div className="vz-progress" data-unmeasured="" data-testid="progress">
-              <div className="vz-progress-text">
-                <span role="status" data-testid="progress-text">
-                  {failures > 0 && query.failureReason
-                    ? busyLine(query.failureReason, retryClock.current.at > performance.now() ? retryClock.current.at - performance.now() : null)
-                    : wait.elapsedMs >= WAIT.alternativeAfter
-                      ? 'Still waiting.'
-                      : 'Waiting for the query'}
-                </span>
-                <span aria-hidden="true" data-testid="progress-elapsed">
-                  <span className="app-num">{(wait.elapsedMs / 1000).toFixed(1)}</span> s
-                </span>
-                {wait.elapsedMs >= WAIT.alternativeAfter && loading && alternative && (
-                  <button className="vz-progress-action" onClick={() => onRange(`now-${alternative.preset}`, 'now')} data-testid="alternative">
-                    Show the last {spacedDuration(alternative.preset)}
-                  </button>
-                )}
-                {wait.elapsedMs >= WAIT.cancelAfter && loading && (
-                  // When Cancel goes, Retry stands in the same place and takes the focus Cancel had.
-                  <button className="vz-progress-action" onClick={() => halt('cancelled')} data-testid="cancel" data-focus-after="[data-testid=retry]">
-                    Cancel
-                  </button>
-                )}
-              </div>
-            </div>
-          ) : (
-            <div className="vz-progress-text" aria-hidden="true">
-              &nbsp;
-            </div>
+          </div>
+          {shown && (
+            // The query the data on screen answers, which is not always the one in the editor: it may have been edited since, or be waiting.
+            <p className="vz-panel-desc result-query" aria-hidden="true" title={shown.q} data-testid="result-query">
+              <span className="vz-qty">{shown.q}</span>
+            </p>
           )}
-        </div>
+          {shown && result && <Warnings warnings={result.warnings} />}
 
-        <div className="region" data-view={view}>
-          {error ? (
-            <ErrorState
-              error={error}
-              tries={query.failureCount}
-              elapsedMs={lastWaitMs.current}
-              keySet={settings.token.trim() !== ''}
-              autoStep={search.step === 'auto'}
-              syntaxErrorAt={() => (editorReady ? (editorRef.current?.syntaxErrorAt(q) ?? null) : null)}
-              onGoTo={(at) => editorRef.current?.focus(at)}
-              onRetry={run}
-              onOpenSettings={openSettings}
-              onAutoStep={() => setSearch({ step: 'auto' })}
-            />
-          ) : q === '' ? (
-            <StartState mock={!!backend.data?.mock} />
-          ) : isEmpty && shown ? (
-            <div className="vz-empty" data-testid="empty-state" role="status">
-              <h3 className="vz-empty-title">No series matched</h3>
-              <p>
-                Nothing matched <span className="app-num">{shown.q}</span> between <span className="app-num">{formatDateTime(result!.window.start)}</span>{' '}
-                and <span className="app-num">{formatDateTime(result!.window.end)}</span>. Check the metric name and the label matchers, or
-                widen the time range.
-              </p>
-              {!widest && (
-                <button className="vz-button" data-size="sm" onClick={() => onRange('now-24h', 'now')} data-focus-after="[data-testid=time-range]">
-                  Show the last 24 h
-                </button>
-              )}
-            </div>
-          ) : hasData && shown ? (
-            <>
-              <div className={view === 'chart' ? 'region-part' : 'region-part is-parked'} aria-hidden={view === 'chart' ? undefined : true}>
-                <TimeSeriesChart
-                  xs={aligned!.xs}
-                  series={chartSeries}
-                  xRange={xRange}
-                  visible={drawn}
-                  formatValue={formatAxis}
-                  formatReadout={formatAlone}
-                  yIncrements={yIncrements}
-                  onZoom={onZoom}
-                  onRenderInfo={setRenderInfo}
-                  syncKey="explore"
-                  theme={theme}
-                  ariaLabel={shown.chartLabel(aligned!.series.length)}
-                />
-                {view === 'chart' && caption}
-                {view === 'chart' && <Warnings warnings={result!.warnings} />}
-                <Legend rows={rows} drawn={drawn} isDefault={visible === null} onToggle={toggleSeries} onShowAll={showAll} unit={shown.unit} coarse={coarse} />
-              </div>
-              {view !== 'chart' && (
-                <>
-                  {caption}
-                  <Warnings warnings={result!.warnings} />
-                  {view === 'table' ? (
-                    <ResultTable rows={rows} unit={shown.unit} columns={tableColumns.columns} common={tableColumns.common} />
-                  ) : view === 'text' ? (
-                    <TextView text={digestText} />
-                  ) : (
-                    <JsonView data={result!.matrix} elapsedMs={result!.elapsedMs} />
+          <div className="vz-panel-body region" data-view={view}>
+            {progress}
+            {chart && result && (
+              <Chart
+                spec={chart.spec}
+                shiftMs={shiftMs}
+                stepWords={stepWords(result.window.step)}
+                view={CHART_VIEW}
+                textFormId={TEXT_FORM}
+                error={view === 'chart' ? chartError : null}
+                onShownRange={setShownRange}
+                parked={view !== 'chart' || !drawn}
+              />
+            )}
+            {error && !(hasData && view === 'chart') ? (
+              // Nothing of an earlier result is on screen: the error takes the plot's place, at its height.
+              <div className="vz-chart">{errorNode}</div>
+            ) : isEmpty && shown && result ? (
+              <div className="vz-chart">
+                <div className="vz-empty" data-testid="empty-state" role="status">
+                  <p className="vz-empty-title">No series matched</p>
+                  <p>
+                    Nothing matched <span className="vz-qty">{shown.q}</span> between <span className="vz-qty">{momentText(result.window.start, now)}</span> and{' '}
+                    <span className="vz-qty">{momentText(result.window.end, now)}</span>. Check the metric name and the label matchers, or widen the time range.
+                  </p>
+                  {!widest && (
+                    <div className="vz-controls">
+                      <button className="vz-button" data-size="sm" onClick={() => onRange('now-24h', 'now')} data-focus-after="[data-testid=time-from]">
+                        Show the last 24 h
+                      </button>
+                    </div>
                   )}
-                </>
-              )}
-            </>
-          ) : null}
-        </div>
-      </section>
+                </div>
+              </div>
+            ) : !result && !error ? (
+              // Waiting for the first result: the chart's place, at the height its last result had in this tab.
+              <div className="vz-chart" style={reservedStyle(CHART_VIEW)} data-testid="chart-reserved" />
+            ) : null}
+            {drawn && table && view === 'table' && <ResultTable rows={table.rows} unit={table.unit} columns={table.columns} common={table.common} nowMs={now} />}
+            {/* The chart writes its text form into this element whenever it draws, so it is always here. */}
+            <TextView id={TEXT_FORM} hidden={!(drawn && hasData && view === 'text')} />
+            {drawn && hasData && result && view === 'json' && <JsonView data={result.matrix} elapsedMs={result.elapsedMs} />}
+          </div>
+        </section>
+      )}
     </div>
   )
 }
-
-/** "Last 1h" as it is read: "Last 1 h". Absolute spans are already spaced. */
-const spacedRange = (range: string) => (range.startsWith('Last ') ? `Last ${spacedDuration(range.slice(5))}` : range)
 
 /**
  * Prometheus' `warnings`: the API answered, but says the result may not be whole (a partial
@@ -755,54 +595,6 @@ function Warnings({ warnings }: { warnings: string[] }) {
   )
 }
 
-function StepInput({ value, auto, onChange }: { value: string; auto: string; onChange: (v: string) => void }) {
-  const [text, setText] = useState(value === 'auto' ? '' : value)
-  const [invalid, setInvalid] = useState(false)
-  useEffect(() => {
-    setText(value === 'auto' ? '' : value)
-    setInvalid(false)
-  }, [value])
-  const commit = () => {
-    const t = text.trim()
-    if (t === '' || t === 'auto') {
-      setInvalid(false)
-      if (value !== 'auto') onChange('auto')
-    } else if (parseDuration(t)) {
-      setInvalid(false)
-      if (t !== value) onChange(t)
-    } else setInvalid(true)
-  }
-  return (
-    <div className="vz-field step-field">
-      <label className="vz-label" htmlFor="step">
-        Step
-      </label>
-      <input
-        id="step"
-        className="vz-input"
-        data-mono=""
-        value={text}
-        placeholder={auto ? `auto, ${auto}` : 'auto'}
-        aria-invalid={invalid}
-        aria-describedby={invalid ? 'step-help' : undefined}
-        onChange={(e) => setText(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') commit()
-        }}
-        spellCheck={false}
-        data-testid="step"
-      />
-      {invalid && (
-        <span className="vz-help" data-error="" id="step-help">
-          <span className="vz-mark" data-state="critical" />
-          Use a duration such as 30s, 1m or 5m.
-        </span>
-      )}
-    </div>
-  )
-}
-
 function ErrorState({
   error,
   tries,
@@ -812,7 +604,7 @@ function ErrorState({
   syntaxErrorAt,
   onGoTo,
   onRetry,
-  onOpenSettings,
+  onSignIn,
   onAutoStep,
 }: {
   error: Error
@@ -820,7 +612,7 @@ function ErrorState({
   tries: number
   /** How long those tries took, in ms. */
   elapsedMs: number
-  /** Whether Settings holds an API key: a 401 without one asks for a key, not a valid one. */
+  /** Whether this tab holds an API key: a 401 without one asks for a key, not a valid one. */
   keySet: boolean
   /** Whether the step is the automatic one. */
   autoStep: boolean
@@ -828,7 +620,8 @@ function ErrorState({
   syntaxErrorAt: () => number | null
   onGoTo: (at: number) => void
   onRetry: () => void
-  onOpenSettings: () => void
+  /** Back to the sign-in form: the key was refused. */
+  onSignIn: () => void
   /** Clears an explicit step: the fix for a step too small for the range (running it again would be refused again). */
   onAutoStep: () => void
 }) {
@@ -842,10 +635,10 @@ function ErrorState({
   const character = at ? Number(at[1]) : fromEditor !== null ? fromEditor + 1 : null
   return (
     <div className="vz-empty" role="alert" data-testid="error-state" data-kind={kind}>
-      <h3 className="vz-empty-title">
+      <p className="vz-empty-title">
         <span className="vz-mark" data-state="critical" />
         The query could not run
-      </h3>
+      </p>
       <p data-testid="error-message">{error.message}</p>
       {api && (
         <p data-testid="error-advice">
@@ -854,7 +647,7 @@ function ErrorState({
             <>
               The API answered{' '}
               <span data-testid="error-type">
-                <span className="app-num">{api.errorType}</span> with HTTP <span className="app-num">{api.status}</span>
+                <span className="vz-qty">{api.errorType}</span> with HTTP <span className="vz-qty">{api.status}</span>
               </span>
               .
             </>
@@ -864,50 +657,61 @@ function ErrorState({
           {errorAdvice(error, Math.max(1, tries), elapsedMs, MOD, { keySet, autoStep })}
         </p>
       )}
-      {character !== null ? (
-        <button className="vz-button" data-size="sm" onClick={() => onGoTo(character - 1)} data-testid="error-fix">
-          Go to character {character}
-        </button>
-      ) : kind === 'auth' || kind === 'scope' ? (
-        <button className="vz-button" data-size="sm" onClick={onOpenSettings} data-testid="error-fix">
-          Open settings
-        </button>
-      ) : kind === 'resolution' && !autoStep ? (
-        <button className="vz-button" data-size="sm" onClick={onAutoStep} data-testid="error-fix" data-focus-after="[data-testid=run]">
-          Use the automatic step
-        </button>
-      ) : (
-        <button className="vz-button" data-size="sm" onClick={onRetry} data-testid="error-fix" data-focus-after="[data-testid=run]">
-          Run the query again
-        </button>
-      )}
+      <div className="vz-controls">
+        {character !== null ? (
+          <button className="vz-button" data-size="sm" onClick={() => onGoTo(character - 1)} data-testid="error-fix">
+            Go to character {character}
+          </button>
+        ) : kind === 'auth' || kind === 'scope' ? (
+          <button className="vz-button" data-size="sm" onClick={onSignIn} data-testid="error-fix">
+            Sign in again
+          </button>
+        ) : kind === 'resolution' && !autoStep ? (
+          <button className="vz-button" data-size="sm" onClick={onAutoStep} data-testid="error-fix" data-focus-after="[data-testid=run]">
+            Use the automatic step
+          </button>
+        ) : (
+          <button className="vz-button" data-size="sm" onClick={onRetry} data-testid="error-fix" data-focus-after="[data-testid=run]">
+            Run the query again
+          </button>
+        )}
+      </div>
     </div>
   )
 }
 
+/** Before any query in this view: what will appear, and how to ask (FirstRun). */
 function StartState({ mock }: { mock: boolean }) {
   return (
-    <div className="vz-empty" data-testid="start-state">
-      <h3 className="vz-empty-title">No query yet</h3>
-      <p>
-        Type a PromQL query above and press <span className="vz-kbd">{MOD}</span> <span className="vz-kbd">Enter</span>. Metric and label
-        names complete from the connected backend.
-      </p>
+    <section className="vz-start" data-testid="start-state" aria-labelledby="start-title">
+      <h2 className="vz-section-title" id="start-title">
+        No query yet
+      </h2>
+      <p>The answer to a PromQL query appears here as a chart, with a table, a text form and the API's JSON beside it.</p>
+      <ol className="vz-steps">
+        <li>
+          <p>Type a query in the field above. Metric names, label names and label values complete from the data of the last hour.</p>
+        </li>
+        <li>
+          <p>
+            Press Run query, or <span className="vz-kbd">{MOD}</span> <span className="vz-kbd">Enter</span>.
+          </p>
+        </li>
+      </ol>
       {mock && (
         <>
-          <p>Or open an example on the mock data:</p>
-          <ul className="example-list">
+          <p>Or open one of these on the mock's data:</p>
+          <ul className="vz-links">
             {MOCK_EXAMPLES.map((ex) => (
               <li key={ex.q}>
-                <span>{ex.title}</span>
                 <Link to="/explore" search={{ q: ex.q }} className="vz-link" data-focus-after="[data-testid=run]">
-                  {ex.q}
+                  {ex.title}
                 </Link>
               </li>
             ))}
           </ul>
         </>
       )}
-    </div>
+    </section>
   )
 }
