@@ -41,19 +41,19 @@ export function RequireKey({ children }: { children: ReactNode }) {
   const wait = useWaiting(session.status === 'checking')
   if (session.status === 'in') return <>{children}</>
   if (session.status === 'out') return <SignIn reason={session.reason} detail={session.detail} />
-  // Asking who the key is. Nothing under 400 ms; then what is being waited for, and for how long.
+  // Asking who the key is. Nothing under 400 ms, not even an empty page (a box here would be
+  // moved by a banner that arrives with the answer); then what is being waited for, and for how long.
+  if (!wait.shown) return null
   return (
     <div className="vz-page" aria-busy="true" data-testid="checking">
-      {wait.shown && (
-        <div className="vz-progress" data-unmeasured="">
-          <div className="vz-progress-text">
-            <span role="status">Asking the API who this tab's key is.</span>
-            <span className="vz-qty" aria-hidden="true">
-              {(wait.elapsedMs / 1000).toFixed(1)} s
-            </span>
-          </div>
+      <div className="vz-progress" data-unmeasured="">
+        <div className="vz-progress-text">
+          <span role="status">Asking the API who this tab's key is.</span>
+          <span className="vz-qty" aria-hidden="true">
+            {(wait.elapsedMs / 1000).toFixed(1)} s
+          </span>
         </div>
-      )}
+      </div>
     </div>
   )
 }

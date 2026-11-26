@@ -16,12 +16,14 @@ body { margin: 0; }
 .query-well { flex: 1 1 var(--overlay-min); cursor: text; overflow: hidden; }
 .query-well:focus-within { outline: var(--stroke) solid var(--focus); outline-offset: var(--stroke); }
 .query-well .cm-content:focus-visible { outline: none; }
+/* What the well holds is one line tall from the first frame: the editor is a chunk of its own, and for a frame after it arrives it has no line yet. */
+.query-well > * { min-height: var(--text-code-lh); }
 
 /* The query a result answers: one line, so the head is the same height for every result. */
 .result-query { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-/* The chart stays laid out and drawn while another form of the result is shown (its text form is written by it; coming back is a style change): parked, it takes no room and is not seen. */
-.is-parked { position: absolute; inset: 0 0 auto 0; height: 0; overflow: hidden; visibility: hidden; }
+/* The chart stays laid out and drawn while another form of the result is shown (its text form is written by it; coming back is a style change): parked, it takes no room (its reserved height included) and is not seen. */
+.is-parked { position: absolute; inset: 0 0 auto 0; height: 0; min-height: 0; overflow: hidden; visibility: hidden; }
 /* The waiting line starts right of the value axis while the chart is the form shown (Panel: the system's rule looks for a chart directly in the body). */
 .vz-panel-body[data-view="chart"] > .vz-progress { left: var(--axis); }
 
