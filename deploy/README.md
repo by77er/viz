@@ -853,7 +853,7 @@ module proxy and cross-checked against GitHub's tag pages). Rust comes from the 
 All measured here unless it says Cloudflare.
 
 - **D70's gate, the rate-limit ids, the `oauth-public` floor and `/api/echo` (2026-11-26).** Nothing
-  deployed; the Cloudflare API not called. New tests: `test/configure.test.mjs` 11 (the gate's six
+  deployed; the Cloudflare API not called. New tests: `test/configure.test.mjs` 9 (the gate's six
   bindings and period read from control's source and declared by `control/wrangler.jsonc`;
   production with all six passes, ids replaced, `OAUTH_PUBLIC` set, stamped; production without the
   block refused naming all six, each one of the six removed in turn refused naming it, and the
@@ -895,7 +895,32 @@ All measured here unless it says Cloudflare.
   221, the one failure (`ratelimit-review-r2.test.ts`, "the list is shared …") the same with the
   committed `wrangler.jsonc`, 2 runs of 2: round 3 in progress then, not this change.
 
-  MUTANTS_PLACEHOLDER
+  **Mutants**, in scratch copies of the tree (no git; node_modules linked; the copy now also needs
+  `engine/wasm/js` and `engine/wasm-query/js`, which the bundling test resolves), at most 2 test
+  workers. `mutants-release.mjs` now runs `oauth-gate`, `resources` and `upgrade-production` too, and
+  takes `re:<pattern>` to choose mutants; `mutants-secrets.mjs` runs `oauth-gate` too.
+  - **Release, the 30 new** (the gate 10, `OAUTH_PUBLIC` 3, placement 2, one across Workers, the
+    floor 5, `deploy.sh` 1, `--ids-optional` 1, ids 7): first run **27 of 30 killed**. *Two bindings
+    of one deployment with one id, across Workers* survived: unreachable, since only a Worker with an
+    `oauth` block may carry `ratelimits` and only viz-control has one; the check and the mutant were
+    removed. *Another deployment's recorded ids are not excluded* survived: the test recorded ids
+    stage a1 would never pick; it now records exactly the ids a1 would take first. *An id a script
+    that is not viz's binds is not excluded* did not apply (its pattern assumed a line break). On a
+    fresh copy of the final tree, both remaining ones: **2 of 2 killed**. So 29 of 29 in the end.
+  - **Release, the 60 older ones**, on a copy of the final tree: **59 of 60 killed**, one not applied
+    (*the switch goes on while a Worker serving now is below its floor*: its line now carries the
+    forward-only condition); rewritten, **1 of 1 killed**. So 60 of 60.
+  - **Secrets, all 46** (8 new for the gate): **44 of 46 killed**, every new one among them. Two
+    older patterns did not apply (lines this change extended: the refusal list, and the `gate`
+    argument): rewritten, and on a fresh copy **2 of 2 killed**.
+  - **Gateway, all 30** (2 new: `/api/echo` not routed, and matched as a prefix): **30 of 30 killed**.
+
+  Each kill is a named test failing; the lists with the test that killed each are in the scripts'
+  output. **Suites at the end** (`cd deploy`): `npx tsc --noEmit` clean; `npx vitest run
+  --maxWorkers=2` **183 of 183** (5 more: `/api/echo` routed, its GET test, and four near misses in
+  place of `/api/echo` as a 404); `node --test --test-concurrency=2 'test/*.test.mjs'` **131 of 131**
+  (106 before: 25 new); `bash -n deploy.sh` clean (shellcheck not installed here). `cd control && npx
+  tsc --noEmit` clean.
 
 - **The review of D69, its findings fixed (2026-11-19)** (`design/reviews/d69-deploy-safety.md`,
   approve with changes: 2 majors, 9 minors). Nothing deployed; the Cloudflare API not called. The

@@ -3365,6 +3365,13 @@ on their assertions, one, the API timeout, by hanging until the event loop drain
 passes is RV-3's half that already held (the current tool refuses the release `b322599` would make);
 all pass now. Mutants in a scratch copy: release 60 of 60 killed (19 new), secrets 38 of 38 (7
 new), each a named test failing (`deploy/README.md`, "How it was verified").
+Point 6 (2026-11-26; against fakes, nothing deployed): 25 new tests, among them the first release
+over production as fb77292's tool left it (`deploy/test/upgrade-production.test.mjs`): not refused,
+forward-only by format and by this floor, the key kept, the way back to fb77292 refused; with
+`serving_below_floor` removed, the same release is refused at its plan. Mutants: release 29 of 29 new
+killed (after one unreachable check was removed and one test strengthened), the 60 earlier ones again
+(60 of 60, one pattern rewritten), secrets 46 of 46 (8 new; two patterns rewritten), and the
+gateway's 30 of 30 (2 new, for `/api/echo`).
 
 **Cost of it.** Configure bundles more source (the `FORMATS` maps). A rollback reads one more version
 per format-bearing Worker per version since its target; a rollback below a floor, and a release

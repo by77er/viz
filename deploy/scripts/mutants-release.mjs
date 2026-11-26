@@ -54,7 +54,7 @@ const MUTANTS = [
   ['formats: `read.` entries are recorded as written', 'lib/formats.mjs', '      if (format.startsWith(READ_PREFIX)) continue\n', ''],
   ['configure: versions do not carry VIZ_FORMATS', 'configure.mjs', '  if (formatsDeclared) vars[FORMATS_VAR] = formatsVar(formats)\n', ''],
   // Rollback floors of INGEST_SIGNALS (D64, D69; review of traces and logs, M-4)
-  ['floors: the switch goes on while a Worker serving now is below its floor', 'lib/floors.mjs', '      if (w.serving && !atFloor(rule, w.floor, w.serving)) {', '      if (false) {'],
+  ['floors: the switch goes on while a Worker serving now is below its floor', 'lib/floors.mjs', "      if (w.serving && !atFloor(rule, w.floor, w.serving) && !(w.now && rule.servingBelow === 'forward-only')) {", '      if (false) {'],
   ["floors: the switch goes on while one of the release's own Workers is below its floor", 'lib/floors.mjs', '      if (w.now && !atFloor(rule, w.floor, w.now)) {', '      if (false) {'],
   ['floors: with the switch off, the history is never read (older code redeployed under the data)', 'lib/floors.mjs', '    if (namesIn(value).length === 0 && workers.some((w) => w.now && !atFloor(rule, w.floor, w.now))) s.seen = await switchSeen(rule, api)\n', ''],
   ['floors rollback: the floor check is never run', 'release.mjs', '    problems.push(...(await floorRollbackProblems(rules, target, now, api)))\n', ''],
