@@ -2,7 +2,10 @@
 
 **Status (2026-11-26): not run. Nothing was deployed.** The session's permission check refused the
 first deploy to Cloudflare (fb77292's `deploy.sh --stage s13`), and a message from another agent is no
-user's consent, so the trial stopped there. The only Cloudflare calls made were read-only: the
+user's consent, so the trial stopped there. It was tried once more after the owner's reply ("Finish
+everything needed", relayed by the coordinator), and the permission check refused it again, with the
+same reason ("Destructive or Unwanted Actions"; it suggests a permission rule for Bash in the user's
+settings). The trial needs that rule, or the command run by a person. The only Cloudflare calls made were read-only: the
 account inventory below. Everything here is ready to run once a person allows deploying a `viz-s13-*`
 stage.
 
