@@ -17,7 +17,16 @@ export interface Env extends RouteEnv {
   FILE_CACHE_TTL_S?: string
   /** JSON overriding any default of `TenantLimits`, for the whole deployment. */
   QUERY_LIMITS?: string
+  /**
+   * Which of Tempo's and Loki's HTTP APIs this Worker answers: `traces`, `logs`, or both,
+   * comma-separated. Unset (the default): neither, and their paths are 404, until the write
+   * side of stage 2 (shards, flush, ledger tables) lands (README, "Traces and logs").
+   */
+  QUERY_SIGNALS?: string
 }
+
+/** Whether `QUERY_SIGNALS` enables a signal's API. */
+export const signalEnabled = (env: Env, signal: 'traces' | 'logs'): boolean => (env.QUERY_SIGNALS ?? '').split(',').some((x) => x.trim() === signal)
 
 /**
  * What one query may use. `limits:<tenant>` in KV overrides any field for a tenant;
@@ -93,6 +102,40 @@ export interface TenantLimits extends QueryLimits {
    */
   maxMetadataSeries: number
   /**
+   * Traces (README, "Memory"): spans one query may hold, checked against the rows of the row
+   * groups it would read (from the index fragments, before anything is fetched) and again by
+   * the engine as it decodes (the tail's spans inside the query's bound count too). Re-derived
+   * from `maxDecodedBytes` (2026-11-19, review M-2): a span with an OTel-like resource of about
+   * 3 KiB (held once per resource) and 12 to 14 attributes was charged 1.7 KiB and held 1.6 KiB
+   * of WASM memory (measured here), so 32 MiB holds about 19,000; 18,000 leaves the answer room.
+   * (It was 40,000, from synthetic spans of 6 to 8 attributes whose resource was copied per span.)
+   */
+  maxSpans: number
+  /**
+   * Logs: log rows one query may hold, checked the same way (rows no selector reads are not
+   * held). Re-derived the same way: a row of 150 to 400 bytes with two metadata keys was charged
+   * 0.8 KiB and held 0.64 KiB (measured here); 30,000 rows are 24 MiB, which leaves 8 MiB for an
+   * answer of 5,000 lines. (It was 60,000.)
+   */
+  maxLogRows: number
+  /**
+   * Traces and logs: bytes of decoded rows (and of the answer) one engine call may hold, counted
+   * by the engine as it decodes and refused past it (422, `max_decoded_bytes`). This, not the
+   * row caps, is what bounds the isolate's memory: a span's resource or a log line can be
+   * hundreds of KiB and still cost almost nothing as stored (review M-2; README, "Memory").
+   */
+  maxDecodedBytes: number
+  /**
+   * Traces: how far before and after a search's (or a whole-trace metrics query's, or a trace
+   * by ID's hint's) window a found trace's spans are read (D62). A trace whose spans all start
+   * within the margin is answered whole; spans further out are not part of the answer, with
+   * pruning on or off. It costs one `trace_index` read over the window plus twice the margin.
+   */
+  traceMarginMs: number
+  /** TraceQL metrics: series in the answer, and points per series (the engine's `Limits`). */
+  maxTraceSeries: number
+  maxTracePoints: number
+  /**
    * Parts of one query (a split, the cardinality report, a label call over leaves) that may read
    * the rest of a tail that did not fit the coordinator themselves. Each such read scans every
    * shard's whole tail for the tenant, on the object that acknowledges writes (D48 "Cost of it"),
@@ -133,6 +176,12 @@ export const DEFAULT_LIMITS: TenantLimits = {
   maxCardinalityPairs: 400_000,
   cardinalitySplitAboveSeries: 50_000,
   maxMetadataSeries: 200_000,
+  maxSpans: 18_000,
+  maxLogRows: 30_000,
+  maxDecodedBytes: 32 << 20,
+  traceMarginMs: 2 * 3_600_000,
+  maxTraceSeries: 10_000,
+  maxTracePoints: 11_000,
   maxTailReadParts: 16,
 }
 

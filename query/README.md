@@ -2,7 +2,9 @@
 
 The read path as a service: a Worker that answers the Prometheus HTTP API for one
 tenant from that tenant's Parquet files on R2 and the rows still held by its shards, and
-the `Leaf` Durable Object it reads files through.
+the `Leaf` Durable Object it reads files through. Since 2026-11-19 it also answers Tempo's
+and Loki's HTTP APIs over the tenant's span and log tables and shards, behind
+`QUERY_SIGNALS` (off by default: "Traces and logs").
 
 ```
  client ─► query Worker ──plan──► engine (WASM)            which matchers, which time ranges; split or one place
@@ -25,11 +27,22 @@ the `Leaf` Durable Object it reads files through.
 | `src/coordinator.ts` | Plan, one ledger version, pruning, leaf fan-out, tail reads with the fence, evaluation; split execution (`runSplit`); the cardinality report |
 | `src/leaf.ts` | `Leaf`: a stateless Durable Object that reads up to six objects from R2, extracts one part's rows from them (a reader), evaluates one part of a split query (a split leaf), summarises one part's series for the cardinality report, lists one part's series for a label call (`meta`), and reads the rest of a tail too large for its coordinator in its key range |
 | `src/tail.ts` | Tail reads (D48, D54): the filter a read sends (`tailFilter`), pages under a byte budget (`readPages`, resumable), one budget over several shards' reads (`readShared`), the cut of a tail by split key in JavaScript (`cutByKey`; `cutById` for `series_id`), and a part's own reads of the rest to the end the coordinator fixed (`readRests`) |
-| `src/config.ts` | Bindings, per-tenant limits (`limits:<tenant>` in KV) and their defaults |
+| `src/config.ts` | Bindings, per-tenant limits (`limits:<tenant>` in KV) and their defaults; `QUERY_SIGNALS` |
+| `src/sigroutes.ts`, `src/sigparams.ts` | Tempo's and Loki's paths, parameters and defaults (traces and logs, behind `QUERY_SIGNALS`) |
+| `src/signals.ts` | Traces and logs: one ledger version of the span or log tables, file plans from the index fragments, files through the leaves, the signal's shard tails, the engine |
+| `src/shards.ts` | Which signal a shard holds (by name), the header check of every tail batch, and the shard signal filter coded against (off until it lands) |
+| `CLEANROOM.md` | The documentation the Tempo and Loki endpoints were written from |
+| `test/signals.test.ts`, `test/signals-load.ts` | Traces and logs: every endpoint against the engines' in-memory answers over three seeds, pruning on and off, tenancy, caps, signals in tails, the seam, the flag, one byte budget over a signal's shards (21 tests) |
+| `test/signals.e2e.test.ts` | Traces and logs end to end: the corpus's OTLP and Loki push requests through edge, the shards, the real flush and the ledger, then every case against the in-memory answers, with and without the shards' signal filter (2 tests) |
+| `test/completeness.test.ts` | Traces whole within the margin (review M-1): the review's case and six neighbours through edge, four flush units and a tail; pruning on and off; against "every span" |
+| `test/memory.test.ts` | Memory bounded by bytes held (review M-2): the review's fat resource, fat attributes and fat lines through the Worker, the tenant's `maxDecodedBytes` |
+| `test/sigcompat.test.ts` | Loki's timestamps, Loki's plain-text errors, Tempo's `/api/echo` (review m-4) |
+| `test/signals.bench.ts` | The trace and log measurements (`npm run measure -- test/signals.bench.ts`) |
+| `tools/gen-signal-fixtures.sh`, `tools/pack-requests.mjs` | The trace and log fixtures (git-ignored; run before the tests): per seed the corpus's batches, flushed files and cases, and its requests with the cases for the end-to-end test |
 | `wrangler.jsonc` | The production shape (not deployed to production; deployed twice as a staged copy, `deploy/README.md`) |
 | `test/stack.ts`, `test/wrangler.jsonc` | One script for tests: edge + Shard + Ledger + Flush + query + Leaf |
 | `src/meta.ts` | The label endpoints over leaves: the engine's order (code points; label sets pair by pair) and the exact union of listings (`Listing`) |
-| `test/*.test.ts` | 127 tests in workerd, 14 files |
+| `test/*.test.ts` | 163 tests in workerd, 19 files |
 | `test/meta.test.ts` | The label endpoints over leaves (the one-place bytes at the three moments, by themselves, with the tail read by the parts, the cap over parts and waves, code-point order, a missing file) and `limit` |
 | `test/meta.bench.ts` | Their counterfactual, local: 190,000 series over an hour and a 68 MiB tail (`npm run measure -- test/meta.bench.ts`) |
 | `test/tail.test.ts` | Tail reads filtered and paged: the same answers from shards of this release and the previous one, pages followed to the end, refusals on any page, a tail over the cap split with each part reading the rest, release skew of shards and leaves, `tailFilter` and `cutById` against the shard's own filter |
@@ -48,7 +61,8 @@ the `Leaf` Durable Object it reads files through.
 (cd ../engine/wasm && ./build.sh)         # the write path's module (flush needs it; owned by engine/wasm)
 (cd ../engine/wasm-query && ./build.sh)   # the read path's module
 npm install
-npx vitest run --maxWorkers=2              # 127 tests in workerd, 14 files, 1 to 6 minutes on a loaded machine (`npm test` uses every core)
+tools/gen-signal-fixtures.sh               # the trace and log fixtures (test/fixtures/signals/, git-ignored; builds a native example)
+npx vitest run --maxWorkers=2              # 163 tests in workerd, 19 files, 2 to 6 minutes on a loaded machine (`npm test` uses every core)
 npx tsc --noEmit                           # clean
 npm run measure                            # both local measurements (split execution about 2 minutes, cardinality about 3)
 node tools/mutants.mjs                     # the mutation check, on a scratch copy of the tree (never edits this one)
@@ -554,7 +568,627 @@ fails the call (503, the RPC throws twice).
   in the same script, so this needs a `v` on the requests and an `unsupported_version`
   answer before either format changes.
 
+## Traces and logs (2026-11-19, behind `QUERY_SIGNALS`)
+
+Tempo's and Loki's HTTP APIs over a tenant's `spans`, `trace_index` and `logs` files
+(`contracts/TRACES.md`, `contracts/LOGS.md`) and the tails of its `{pool}/traces/{slot}` and
+`{pool}/logs/{slot}` shards (D57). **Off by default**: `QUERY_SIGNALS` (`traces`, `logs`, or
+both) turns the paths on; without it they are 404 as before. The write side (D63) and the
+gateway's routes (stage 3) are built. Written from the APIs' documentation only (`CLEANROOM.md`).
+
+**The adversarial review of this work rejected it as first written**
+(`design/reviews/signals-end-to-end.md`, D62 "Reject as written"): a found trace's spans outside
+the window were never read (M-1), and the caps bounded rows and compressed bytes, not memory
+(M-2); also m-3 (the tail is read whole) and m-4 (Loki and Grafana compatibility). All four are
+dealt with below, each with the review's inputs as tests ("Completeness", "Memory", "The tail",
+"Grafana"); D62 is rewritten. **`QUERY_SIGNALS` may not be turned on yet**: see "What remains
+before the flag".
+
+### What remains before the flag
+
+1. **A narrow re-check of R2-M1 to R2-M4(a)** by the re-reviewer (`design/reviews/signals-end-to-end-r2.md`
+   asks for one, not a full re-review). The fixes, with their evidence: "The re-review", below. Not done.
+2. **A Cloudflare trial** (nothing here ran on Cloudflare): the margin's `trace_index` reads
+   (a search over a tenant with S span shards and uncompacted recent hours, at `traceMarginMs`
+   0, 1 and 2 hours: files read, bytes, wall time, and the extent call's time at 10 to 70 traces a
+   second), and the peak memory of every call type in a real 128 MB isolate
+   (`X-Viz-Wasm-Memory-Bytes` against "Memory" below, the review's inputs and the per-call table).
+3. **A Grafana run** against a staged deployment ("Grafana", below), with the gateway routing
+   `/api/echo` (R2-m4; "Needed changes elsewhere", 5). Not done.
+4. ~~The contract~~: done. `contracts/engine.ts` has `SignalBudget` (ABI 7) and, changed before the
+   code this time (R2-m2), its widening for ABI 8.
+5. **The tail's limit** ("The tail") is now only a backlog of more than `maxFetchBytes` inside one
+   query's range (D72); it refuses, it never misanswers.
+
+**Spike S10 ran on Cloudflare (2026-11-19, the ABI 7 build; `spikes/s10-signals-trial/README.md`).**
+The memory budget held (isolate at most 70.8 MiB; fat shapes refused at 40 to 45 MiB). At realistic
+volume, about 690,000 spans in five minutes, every trace query was refused by `maxFetchBytes` or
+`maxSpans`, trace by ID included, and a margin of 0 did not help. D62 "What volume this serves"
+states the ceiling (trace by ID about 240,000 spans in the trace's hour on ABI 7, narrower on ABI 8
+by time only, modelled; searches about 620,000 spans in the window plus four hours) and the
+follow-up design (bloom filters for trace by ID, `trace_index` read in waves, smaller row groups);
+none of it is built. With these ceilings the flag can serve tenants below them, refused with a 422
+above; whether that is enough to turn it on is the owner's decision, after the re-check and a rerun
+of S10's realistic block on ABI 8.
+
+The re-reviewer's verdict says the flag must not go on merely because the trial and the Grafana
+run pass: neither exercises R2-M1 or R2-M2. With them fixed and tested (below), the order is 1,
+then 2 and 3.
+
+### The re-review (R2) and the review of D72's query side (2026-11-19)
+
+`design/reviews/signals-end-to-end-r2.md`: approve with changes, 0 blockers, 4 majors, 5 minors;
+`design/reviews/d72-shard-bounds.md`: m-2 and m-3 against this Worker's half of D72. Dispositions
+(D62, rewritten a second time, has the decisions; "Memory", "Completeness" and "The tail" below
+the details). Numbers are **measured here**, Node 22 through the binding with the reviewer's own
+scripts (copied to this work's scratch area, the planner mirror updated: `qe/r3/`), and workerd
+through the Worker (`test/review-r2.test.ts`); peaks are WASM memory of a fresh engine instance.
+Nothing ran on Cloudflare.
+
+| Finding | Disposition | Before → after |
+|---|---|---|
+| **R2-M1** label calls without a budget | **Fixed.** `lqLabels` takes the budget (contract first); the engine charges each label text read from a file (released after it), keeps only what the call lists (names for `/labels`, values for `/label/<n>/values`, label sets for `/series`), each charged when first kept, and charges the answer's exact length four times before writing it. Past it 422, never a cut list: Loki's HTTP API reference (read 2026-11-19, **verified**) lists no `limit` for these calls. | `/series`, 100 and 300 fat streams: 200 at **113.3 / 399.1 MiB** → 422 at **33.8 / 36.1 MiB** (workerd: 113.3 MiB, 200 → 29.7 MiB, 422); `/labels` of the 300: 200 at 16.6 MiB; one label's 300 values: 200 at 25.6 MiB |
+| **R2-M2** derived structures charged after | **Fixed.** TraceQL (`viz_traceql::metrics::Meter`, `Limits::max_bytes`): a group's key, accumulator and output series (one per quantile) charged when the group is made; a histogram's output series (every point) when the group first sees the bucket; buckets and exact-sum partials as they grow; arithmetic's series; the answer's exact length (`json_len`) before it is written. Tag names and values charged as the sets grow, answers written by length first. LogQL (`viz_logql::Meter`, `Options::max_bytes`): each label set its pipeline makes, samples, points, an estimate for the vector operations; a log query's entries and label sets released when its `limit` cuts them. | histogram 8 × 60 × 11,000: **513.7 → 2.9 MiB** (422 before and after; now before the series exist); 100 quantiles: **869.8 → 2.9 MiB**; `rate() by` 60 groups: **65 → 11.9 MiB** (422 at the answer); tag values 500 × 60 KB: **107.7 → 35.6 MiB**; LogQL `label_format`: **200 at 221.4 MiB → 422 at 33.9 MiB** |
+| **R2-M2** the README's "at most the budget plus what was fetched" | **Corrected** ("Memory"): the peak is the budget, plus what the call was handed, plus a constant measured under 12 MiB, per call type. | |
+| **R2-M3a** the extent pass held every trace of the bound | **Fixed.** Passes over the pieces' id and time columns: the window's traces and the ids after the window are held, then the traces straddling the window, then their hull, hours and ranges. | one-minute search, 12 traces/s, margin 2 h: **422 → 721 traces at 7.4 MiB**; ceiling measured: 72 traces/s answered (42.6 MiB, 5.7 MiB of `trace_index` handed in); a window ending at the data's end holds no margin ids (2.1 to 5.5 MiB). At 6 traces/s the extent call took 464 ms and 15.1 MiB before, 414 ms and 4.6 MiB after |
+| **R2-M3b** one long trace stretched the span read to the hull | **Fixed.** `tqExtent` returns the ranges the found traces' pieces cover; `spans` row groups are chosen by them (`tqFilePlan` `ranges`). A long trace costs the flush units over its far pieces' minutes. | 5 spans/s, a child 1 h 50 min out: **39,002 rows, 15 files, 422 → 9,002 rows, 5 files, 200**; workerd at a tenth of the scale with `maxSpans` 1,800: 422 → 200 |
+| **R2-M3** refusals advising what cannot help | **Fixed.** A search over `maxSpans` whose window's own files fit says the margin is what does not fit and what would help; the extent call's refusal while it holds the ids after the window names `traceMarginMs` and a window ending nearer now. | |
+| **R2-M3** the margin's cost in D62 | **Stated** in D62 "Cost of it" and DESIGN §6.4: the ceilings above, the passes' CPU, a unit per far piece; the 2-hour margin is kept (D62 "Why"). | |
+| **R2-M4(a)** trace by ID refused above 18,000 spans a row group | **Fixed.** The engine passes over other traces' spans before decoding them (only the trace's are held and counted); the planner checks trace by ID by bytes, not by the rows of other traces. | 20,000-span unit: **422 before fetch → 200 at 3.4 MiB** (workerd: 422 → 200, 20,000 spans read, one held) |
+| **R2-M4(b)** hintless trace by ID reads every uncompacted `trace_index` file | **Stated, not fixed** (D62 "Cost of it", modelled): 2,000 files after about 14 days uncompacted at one span shard; compacted, one ≤ 2 MiB row group a day, so `maxFetchBytes` refuses above about 2.7 spans/s past about 8 days of retention. The refusal says to send `start` and `end`. A newest-first read that stops at the trace was not built: it changes "without a hint, the whole trace" into "within the margin of its newest piece" (a D62 change for its owner to choose). | |
+| **R2-m1** retention edge | **Stated** in D62 "Cost of it": a trace found only through an expired day's fragments is not found; span-local metrics and tags still see its spans. Expiring `trace_index` by `max_end`'s day is the janitor's and the ledger's, not done. | |
+| **R2-m2** contract after code | **Fixed this time**: `contracts/engine.ts` was changed and type-checked in every importing component before any code (snapshotted alone in `514828c`); patch `qe/01-contract.patch`. | |
+| **R2-m3** cap derivation on search only | **Measured** per call type ("Memory", the per-call table). Two findings from it were fixed: tags and tag values held 2.5 KiB a span against 1.7 charged (now 0.2 KiB less held, and 256 bytes more charged per span kept as a record); a log query over rows with per-line structured metadata held a label set per line to the end (now let go when `limit` cuts its entries). | |
+| **R2-m4** `/api/echo` 404 at the gateway | **Open, not this component** ("Needed changes elsewhere", 5). | |
+| **R2-m5** refusal texts | **Fixed** for every span and log refusal: each names what was being held or read and what would help, never "select fewer metrics by name" or "narrow the time range" where it cannot help (hintless trace by ID: send `start`/`end`; the margin: as above; trace by ID's own size: "cannot be answered in one place"). | |
+| **D72 m-3** `minTs > maxTs` | **Fixed.** An empty range (a Loki `query_range` with `start == end`) reads no tail. | workerd test: 200 (503 on every retry with the range sent) |
+| **D72 m-2** skipping changed span-local answers | **Fixed by option (a)**: tags, tag values and span-local metrics are cut to their window before de-duplication, as trace queries are cut to their bound (D62 3.). | workerd test: the same answers whether the later copy's batch is skipped or read; it failed on the code before (tags `[]`) |
+
+### Endpoints
+
+| Endpoint | Supports | Not supported (answered `unsupported`, 422, or as noted) |
+|---|---|---|
+| `GET /api/traces/<id>`, `/api/v2/traces/<id>` | ids of up to 32 hex digits (shorter ones left-padded, Tempo's 64-bit ids); `start`/`end` (seconds) narrow the `trace_index` read to the hint and the margin ("Completeness"); v1 `{"batches":[…]}`, v2 `{"trace":{"batches":[…]}}`; 404 when not found | `q`, `keep_hierarchy`, `match_depth`, `ancestor_depth`, `span_pruning*` (other than `span_pruning=false`); `Accept: application/protobuf` and the LLM format (JSON is always answered) |
+| `GET /api/search` | `q` (TraceQL; default `{ }`), `limit` (20), `spss` (3), `start`/`end` (seconds; default the last hour) | `tags`, `minDuration`, `maxDuration` (tag-based search) |
+| `GET /api/search/tags`, `/api/v2/search/tags` | `scope` (`resource`, `span`, `intrinsic`, `event`, `link`, `instrumentation`), `start`/`end`, `limit` per scope | `maxStaleValues` (ignored), `q` on v2 tags (ignored) |
+| `GET /api/search/tag/<tag>/values`, `/api/v2/search/tag/<tag>/values` | v1: string values of a span or resource attribute; v2: TraceQL identifiers (`.k`, `span.k`, `resource.k`, `event.k`, `link.k`, `instrumentation.k`, `name`, `status`, `kind`, `statusMessage`) with types, and `q` (a filter that does not parse filters nothing, as Tempo documents) | other intrinsics as tags (400), `maxStaleValues` (ignored) |
+| `GET /api/metrics/query_range`, `/api/metrics/query` | `q`, `start`/`end` (seconds, nanoseconds of 13 or more digits, or RFC 3339) or `since` (default 1 h), `step` (Go or Prometheus durations; default the range over 250 points), aligned as Tempo's frontend aligns it | `exemplars` (ignored; none are returned) |
+| `GET /api/echo` | `echo` (`text/plain`), as Tempo documents it; behind the key like every path, so a data source's test also checks its key (since 2026-11-19, review m-4) | |
+| `GET|POST /loki/api/v1/query_range` | `query`, `start`/`end`/`since` (an integer of ten or fewer digits is seconds, a longer one nanoseconds, a float seconds, or RFC 3339; default the last hour), `step` (default as above), `limit` (100, at most 100,000), `direction` | `interval` |
+| `GET|POST /loki/api/v1/query` | `query` (metric queries; a log query is 400 as in Loki), `time` (default now), `limit`, `direction` | |
+| `GET|POST /loki/api/v1/labels`, `/loki/api/v1/label/<name>/values` | `start`/`end`/`since` (default 6 h), `query` (a stream selector) | |
+| `GET|POST /loki/api/v1/series` | `match[]` (at least one; the union), `start`/`end`/`since` | |
+
+Tempo bodies are Tempo's (no envelope) and its errors plain text. Loki's answers are
+`{"status":"success","data":…}` and, since 2026-11-19, its errors are plain text with the status
+("Grafana"). Every answer carries the cost headers, with two new ones: `X-Viz-Scan-Rows` (rows
+of the row groups the fragments say the query reads) and `X-Viz-Rows-Decoded` (spans or log rows
+the engine decoded, the tail's included, whether or not it held them). `X-Viz-Pruning` is
+`fragments`, `hours` (trace by ID) or `off`.
+
+### How a query runs
+
+The same seam as for metrics (design §2): the ledger first, at one version for every table a
+query needs; then files through the leaf pool (at most six reads per leaf call, `fetchFiles`) and
+the shards' tails in parallel, strictly after the plan and above its watermarks
+(`readTails`: a `stale_watermark` or a newer stream sends the query back to the ledger, three
+times per shard at most, then 503; never an empty or partial tail). One place evaluates.
+
+- **Logs.** The engine's `lqPlan` gives each selector's matchers and half-open range; one
+  `plan(logs, hull)`; per file the row groups some selector reads, from the fragment's stream
+  list (labels matched as LogQL matches them) and times (`lqFilePlan`: byte ranges with the
+  footer, or the whole object when they would cover half of it); the engine drops, before it
+  holds them, rows of streams no selector matches and rows outside every selector's range (both
+  are parts of the row key, so de-duplication is unchanged). The per-file token filter
+  (`contracts/LOGS.md` §6, D65: compaction writes it inside each logs file it merges) is not read
+  here: it would skip row groups for line filters (`|= "x"`), which this read path does not
+  push down yet. Not read on purpose for now; it is the next pruning step for logs, not a gap
+  in correctness.
+- **Search, and metrics that are not span-local** ("Completeness"). The bound is the window
+  widened by `traceMarginMs` on each side. `plan(trace_index, bound)`; the row groups whose
+  fragments overlap the bound; with the tail, the engine merges per trace every fragment and
+  tail span inside the bound, finds the traces whose merged extent overlaps the window, and gives
+  the hull of their extents cut to the bound and the ranges their pieces cover (`tqExtent`, in
+  passes that hold the window's traces and the ids after it: R2-M3a); `plan(spans, hull)`, which
+  must be at the same ledger version (else the query starts again); the span row groups whose
+  starts overlap one of the ranges (R2-M3b); the engine call with the bound, which drops every
+  span that starts outside it before de-duplication. A trace's summary (root, duration, per-service counts) is computed
+  from its spans, as the engine's in-memory source computes it (`trace_index` counts are upper
+  bounds, a span retried into two units counted twice; they are used only to plan).
+- **Span-local metrics** (`{…} | rate() by (…)` without structural operators or trace-level
+  intrinsics): `plan(spans, window)` only, and the engine keeps the spans that start in the
+  window, cut BEFORE de-duplication (their window is their bound: review of D72, m-2; before, a
+  later copy outside the window hid an earlier one inside it, so skipping a batch could change
+  the answer).
+- **Trace by ID.** `plan(trace_index, bound)`: all time without `start`/`end`, the hint widened
+  by the margin with them; only the row groups whose `[min_tid, max_tid]` holds the id (from the
+  fragment, before any read); the trace's fragments (and its tail spans) inside the bound give
+  its extent, its `spans` hours and its ranges; `plan(spans, extent)` and of those files only the
+  ones whose hour the fragments name (a flush writes one `spans` file per hour, so a file's hour
+  is that of its `minTs`), their row groups by the ranges; no row check before the fetch (other
+  traces' rows are read and passed over, never held: R2-M4a), the bytes are; the engine call with
+  the bound, holding and counting only the trace's spans.
+- **Tags and tag values**: `plan(spans, window)`, the spans that start in the window, cut before
+  de-duplication (as span-local metrics).
+
+### Which shard holds which signal
+
+A plan's watermarks name every stream the ledger has registered, metric, span and log alike
+(D57 registers the derived pools' streams too). A metric tail read sent to a span shard fails:
+the shard's filter throws on a batch that is not signal 1 (shard/src/tail.ts), and a shard of
+the previous release would hand span bytes to the metrics engine. **Before this change every
+metrics query of a tenant with a span or log stream registered would have failed.** Now:
+
+- every read asks only its signal's shards, by name (`src/shards.ts` `signalOfShard`:
+  `…/traces/{slot}` spans, `…/logs/{slot}` log records, anything else metrics; the tenant's
+  current metric slots are always metrics);
+- **every batch a tail read returns is checked by its header**: a batch of another signal refuses
+  the query with a retryable 503 naming the shard (`WrongSignal`), it is never read as the wrong
+  signal and never dropped;
+- span and log tails are read with paging and the signal only (no time or series fields: those
+  select metric rows), under what the files leave of `maxFetchBytes`, **one budget over the
+  signal's shards** (`readTails`, the same reads as for metrics since the review of D54 was
+  ported here: before, each shard's read had the whole budget, so a tenant's S span or log shards
+  could be held at S times it before the sum was checked). A read that stops at its share goes on
+  in a second round from the page that stopped, with the signal's filter (its cursor is bound to
+  that filter); every page is checked against the query's deadline, and a page that does not
+  advance the read is refused (503). **Unlike a metrics read, a span or log read that does not
+  fit learns no end from the shard** (no `describe` call, review M-1): the end is fixed only for
+  the parts that read a rest, and a span or log tail is never handed to parts; it is refused at
+  once (422, `max_fetch_bytes`);
+
+- **the shard's own signal filter** (`TailFilter.signals`, D63, added to `shard/src/tail.ts` by the
+  write side's engineer on 2026-11-19, while this was built) is sent with every read: `signals: [1]` for
+  metrics, `[2]` or `[3]` for spans and logs (`src/shards.ts` `shardSignalFilter`; a test runs
+  every endpoint without it, as before it existed). A shard of an earlier release ignores the
+  field, which is why the name rule and the header check stay.
+
+### Caps
+
+Checked before anything is fetched, from the ledger's sizes and the fragments' row counts:
+`maxFiles` (both rounds of a trace query together), `maxFetchBytes` (files; then files plus the
+tail, as for metrics), and **`maxSpans` (18,000) / `maxLogRows` (30,000)** on the rows of the row
+groups a query reads (for a search or whole-trace metrics query, its `spans` rows only: a
+fragment is not a span, and the engine holds what it finds in `trace_index` under the byte
+budget, 64 bytes an id; trace by ID: no rows, only files and bytes, since a row group holds
+other traces' spans the engine never holds, R2-M4a). The engine checks the row caps again on the
+rows it HOLDS, the tail's included (`max_spans`, `max_rows`: 422 naming the limit); a span outside
+the query's bound (a span-local call's bound is its window), a span of another trace than trace
+by ID's, or a log row no selector reads, is read and passed over and counts nothing (ABI 7 and 8;
+before, every row decoded counted). **What bounds memory is `maxDecodedBytes` (32 MiB)**, charged
+by the engine before each thing is made ("Memory"), for every call, the label calls included.
+TraceQL: `maxTraceSeries` (10,000), `maxTracePoints` (11,000 per series); LogQL: `maxSeries`,
+`maxSteps`; a metric query's series, buckets and points must also fit what the byte budget leaves.
+Every refusal says what was being held and what would make the query fit (R2-m5). The isolate's byte budget applies as for metrics. A query over
+a cap is refused (422); split execution is not built for traces and logs, so one isolate is the
+bound (D62).
+
+### Memory (review M-2)
+
+**The finding** (reproduced here before the change, Node 22, the review's scripts with the
+committed module `bfcda39f…`): the caps bounded rows and compressed bytes. A resource repeated on
+every span, or a long line, costs almost nothing in a file (dictionary pages, snappy) and was
+copied per row by the engine. 1,000 spans with a 180 KB resource (0.18 MiB of files) took
+**176.1 MiB** of WASM memory, 2,000 took **348.9 MiB**, and 400 log lines of 200 KB (3.77 MiB of
+files) **158.5 MiB** and a 19.1 MiB answer, all answered 200.
+
+**The change** (`engine/wasm-query` ABI 7, `src/sigfiles.rs` `Mem` and `Resources`; D62):
+
+- The engine counts the bytes each span or log call holds and refuses past the tenant's
+  `maxDecodedBytes` (32 MiB): 422 `max_decoded_bytes`, an `execution` error naming the limit.
+  A span is charged 512 bytes plus every string it keeps, with 56 bytes per attribute; a log row
+  192 bytes plus its line and its metadata twice (as stored, and as LogQL sees it); a stream's
+  labels once per file or batch; a metric series 48 bytes a point; an answer four times its
+  length (the text and the result buffer in WASM, and the JavaScript string). The charges were
+  set so that they are at or above what the measured memory grows by (below).
+- A span's resource is held once per distinct resource of the call, from files and tail alike
+  (`Resources`), and in the engine's form once more (`viz_traceql::Span.resource` is now a
+  shared `Resource`), each charged once.
+- Spans outside the query's bound and log rows no selector reads are dropped before they are
+  held, and count against nothing (also "The tail").
+
+**Measured after** (here; Node 22 through the binding, the review's scripts against this
+module, and workerd through the whole Worker, `test/memory.test.ts`; load average 7 to 10):
+
+| Input | Before | After (Node) | After (Worker) |
+|---|---|---|---|
+| 1,000 spans, 180 KB resource | 200, 176.1 MiB | 200, **4.8 MiB** | |
+| 2,000 spans, 180 KB resource | 200, 348.9 MiB | 200, **6.0 MiB** | 200, **6.0 MiB** |
+| 600 spans, each its own 60 KB attribute | (not run) | | 422 `max_decoded_bytes`, **39.4 MiB** (1.8 MB of files fetched) |
+| 400 log lines of 200 KB | 200, 158.5 MiB + 19.1 MiB answer | 422, **38.7 MiB** | 422, **41.5 MiB** |
+| 40 of those lines, `limit` 10 | | | 200, **17.8 MiB** |
+
+~~So the isolate holds at most the budget plus what was fetched plus the engine's few MiB.~~ **That
+claim was false** (re-review R2-M2, reproduced): the budget did not cover the label calls, nor
+what an evaluation derives from its rows (a histogram's series, one series per quantile, tag-value
+sets, LogQL label sets from `regexp` and `label_format`), nor answers until they were written, and
+a few hundred rows grew WASM memory to 0.1 to 0.9 GB before the refusal. **What holds since ABI 8**
+(below, "After the re-review"): every one of those is charged before it is made, so a call's peak
+WASM memory is the budget, plus what it was handed (the files and the tail, once, and one file's
+copy while it is opened), plus a constant measured under 12 MiB (the Parquet reader's pages, one
+row or value before it is charged, the module). A query that does not fit is refused, never
+answered from part of its rows.
+
+**The caps, re-derived** (`src/config.ts`; the resource shape is TRAINING KNOWLEDGE of
+auto-instrumented services on Kubernetes, not measured from a tenant): a generator of spans with
+a resource of 37 attributes (about 3 KiB: service, SDK, process command line, host, container,
+Kubernetes and cloud keys; 50 distinct, 10 services of 5 pods) and 12 to 14 span attributes
+(HTTP, client, user agent, a SQL statement on a third), and of log lines of 150 to 400 bytes with
+two metadata keys in 50 streams (`mem-signals.mjs` in this work's scratch area; one engine
+instance per run, so the memory is that call's peak):
+
+| Rows | Engine ms | Peak WASM, no budget | Charged |
+|---|---:|---:|---:|
+| 10,000 spans | 384 | 20.3 MiB | |
+| 20,000 spans | 757 | 34.3 MiB | 34 MiB |
+| 40,000 spans | 1,790 | 66.3 MiB | 67.5 MiB |
+| 20,000 log rows | 448 | 29.3 MiB | |
+| 60,000 log rows | 902 | 54.4 MiB | 48.5 MiB |
+
+A realistic span grows memory by 1.64 KiB and is charged 1.72 KiB; a log row grows it by
+0.64 KiB and is charged 0.83 KiB. 32 MiB holds about 19,000 such spans: `maxSpans` is
+18,000 (was 40,000), so a realistic query meets the cheap refusal before anything is fetched;
+`maxLogRows` is 30,000 (was 60,000), which leaves 8 MiB for an answer of 5,000 lines. The budget
+is 32 MiB because the worst query then holds, in WASM, its inputs (`maxFetchBytes`, 16 MiB, and
+one file's copy while it is opened) plus the budget plus about 5 MiB, and in the JavaScript heap
+the fetched bytes and the answer: about 100 MiB with the module, against an isolate of 128 MB
+(modelled; the trial of "What remains" measures it). Memory per span is mostly its own
+attributes, kept whole: projection by the plan's columns would cut it, and is not built.
+
+#### After the re-review (R2-M2, R2-m3; 2026-11-19, ABI 8)
+
+The caps above were derived on search alone (R2-m3). Every call type at the caps, the same
+realistic generator, the final module (`f29e583a…`): `qe/r3/mem-calls.mjs` in this work's scratch
+area, Node 22 through the binding, one fresh engine instance per call; "charged" is the smallest
+budget that answers (bisection to 1 %), "peak" the WASM memory answering under no limit. Measured
+here, load average 3 to 6 (engine times are indicative only).
+
+| Rows | Call | Engine ms | Handed in | Peak WASM | Charged |
+|---|---|---:|---:|---:|---:|
+| 18,000 spans | search `{ }` | 1,061 | 1.06 MiB | 32.7 MiB | 30.6 MiB |
+| | search `{ status = error }` | 705 | | 32.7 | 30.6 |
+| | `rate() by (resource.service.name)`, 1 h at 60 s | 627 | | 32.7 | 30.6 |
+| | `histogram_over_time(duration) by (resource.service.name)`, 1 h at 60 s | 644 | | 32.7 | 30.6 |
+| | `quantile_over_time(duration, .5, .9, .99) by (name)`, 1 h at 15 s | 650 | | 32.7 | **35.8** (refused at 32) |
+| | trace by ID (12 spans) | 265 | | 7.3 | 0.3 |
+| | tags v2 | 675 | | 36.4 | 34.8 |
+| | tag values `span.url.path` | 701 | | 36.4 | 35.1 |
+| | extent, 1 h window | 27 | 0.03 MiB | 1.8 | 0.1 |
+| 30,000 log rows | `{namespace="shop-prod"}`, limit 100 | 290 | 1.2 MiB | 28.1 | 25.6 |
+| | `… \| logfmt \| status="500"`, limit 1000 | 251 | | 28.1 | 28.3 |
+| | `/series`, `/label/pod/values` | 14–26 | | 3.1 | 0.1 |
+
+What the table changed: tags and tag values held 2.5 KiB a span against 1.7 charged (46.6 MiB
+peak at 18,000 spans before; now the records are collected in place, 36.4 MiB, and each is
+charged 256 bytes more); a log query over rows whose structured metadata differs per line (a
+trace id) kept a label set per line to the end, uncounted (36.1 MiB peak, 46.3 MiB charged once
+counted; now let go when the `limit` cuts their entries: 28.1 and 25.6). Every peak is within the
+budget plus what was handed in plus 3.3 MiB. The two LogQL metric queries of the generator are
+refused by `maxSeries` (10,000): its structured metadata makes a series per line, as in Loki
+(training knowledge), so they say nothing about memory and are not in the table. Natively, the
+review's cases each peak within the budget plus 8 MiB beyond their request
+(`engine/wasm-query/README.md`, "ABI 8").
+
+### Completeness (review M-1)
+
+**The finding** (reproduced here before the change, `search-hull.mjs`): a search read the
+`trace_index` files of the window only, so the late child of trace `a` (root 09:00 to 09:05 in
+one flush unit, child 11:00 in a later one; window 08:55 to 09:10) was never read: `durationMs`
+300,000 where the engine over every span says 7,260,000, `{ trace:duration > 1h }` empty, and
+`{ name = "root" } >> { name = "late-child" }` empty (the review's `span.name` queries match an
+attribute called `name`, so they were empty either way).
+
+**What Tempo guarantees** (its public documentation, read 2026-11-19; no Tempo source was read,
+`engine/traceql/CLEANROOM.md`): trace by ID with `start` and `end` "includes traces for the
+specified time range only … this can result in trace not being found or partial results"; for
+search the API documentation makes no completeness statement (it "takes the first N results"
+and "even identical searches differs due to things like machine load"), and the TraceQL
+documentation defines `trace:duration` as "max(end) - min(start) time of the spans in the trace".
+
+**The change** (D62): a margin, `traceMarginMs` (2 h by default, a tenant limit). A search, a
+whole-trace metrics query and trace by ID with a hint read `trace_index` over the window widened
+by the margin (the bound); the engine merges every fragment and tail span inside the bound per
+trace, finds the traces whose merged extent overlaps the window and gives their hull cut to the
+bound; the spans of the hull are read; and the engine drops every span that starts outside the
+bound before de-duplication. Every trace the answer names is then evaluated over exactly its
+spans that start inside the bound: all of them when it lies within the margin of the window,
+wherever they were flushed, whether they are still in a tail, and with pruning on or off. A
+trace longer than the margin is answered from its part inside the bound, the same part every
+time. Trace by ID without a hint is bounded by all time. Why one round over the bound and not a
+second round by trace id (the review's other option), and what it costs: D62. In short: a flush
+unit's `trace_index` file is one row group whose random ids span the id space, so a second
+round by id would read the same files; the margin costs `trace_index` over the window and twice
+the margin, about 5 % of the span bytes per hour (measured here on the benchmark data: 180,576 of
+3,569,847 bytes), so about a fifth of an hour's span bytes for a one-hour search at 2 h, and one
+more file per flush unit (modelled: 24 S more R2 reads for S span shards over four hours,
+uncompacted; not measured on Cloudflare).
+
+**After** (the review's script mirrored on the new planner, `search-hull-after.mjs`): all six
+queries, the review's four and the two with the `name` intrinsic, equal the engine over every
+span with the 2-hour margin; with a 1-hour margin the four that depend on the child 1 h 50 min
+after the window differ, as the bound says. In workerd, `test/completeness.test.ts` (below).
+
+**The margin's cost (re-review R2-M3, 2026-11-19).** Two costs the first fix did not state, both
+reproduced and fixed (D62 2., "Why" and "Cost of it"):
+- *Every trace of the bound was held* (an extent of 192 bytes plus 32 an hour each), so a one-minute
+  search was refused at about 10 traces a second whatever its window. `tqExtent` now reads the
+  pieces' id and time columns in passes and holds only the window's traces and, while it looks
+  for traces that straddle the window, the ids of those with a piece after it (64 bytes each).
+  Measured (`qe/r3/extent-ceiling.mjs`, single-span traces, a one-minute window two hours before
+  the data's end): 12, 24, 48 and 72 traces/s answer at 7.4, 12.8, 23.3 and 42.6 MiB of WASM
+  (5.7 MiB of `trace_index` handed in at 72) and 0.5 to 1.6 s; the same window at the data's end
+  holds no margin ids (2.4 to 5.5 MiB, 0.1 to 0.5 s). The charge reaches the budget at about 72
+  traces/s (modelled beyond the 72 measured).
+- *One long trace stretched the span read to the hull.* `tqExtent` now also returns the ranges its
+  found traces' pieces cover, and `spans` row groups are chosen by them: a long trace costs the
+  span files over its far pieces' minutes (one unit per span shard), not every unit between.
+  The review's case: 39,002 rows in 15 files, refused, against 9,002 rows in 5 files, answered.
+- *Refusals.* A search whose window's own files fit `maxSpans` but whose found traces' far pieces
+  do not is refused with a text that says the margin is what does not fit (a shorter window helps
+  only if it leaves those traces out; a smaller `traceMarginMs` reads less around them); the extent
+  call's refusal while it holds the ids after the window says that a shorter window does not help
+  and a window ending nearer now does.
+The default margin stays 2 hours (D62 "Why" (g)). Completeness is unchanged: every answer of
+`test/completeness.test.ts` and `search-hull2.mjs` is the same, pruning on and off.
+
+### The tail (review m-3; D72)
+
+Since D72 (2026-11-19) a span or log read sends the shards the range its engine call selects rows
+in, each end floored to the millisecond (`readSignalTail`, the change `shard/README.md` "Needed
+changes elsewhere" asked for, taken in here): a trace query its bound (the window widened by the
+margin, never the window alone: a found trace's tail spans in the margin must come back), a
+span-local call (tags, tag values, span-local metrics) its window, a log query its selectors'
+hull, a label call its range. The shard skips span and log batches whose recorded time bounds lie
+outside it and returns every other batch whole (`contracts/BATCH.md`, "Tail reads of spans and log
+records by time"); a shard of the release before ignores the range and returns them all. Either
+way the engine selects the same rows:
+- trace queries drop spans outside their bound before de-duplication (D62);
+- span-local calls drop spans outside their window before de-duplication (review of D72, m-2; before
+  this change they de-duplicated first, so a later copy of a span outside the window hid an earlier
+  one inside it only when its batch was read: tags `[]` from a shard of the release before against
+  `["first.copy", "service.name"]` from the new one; `test/review-r2.test.ts` › m-2);
+- an empty range reads no tail (review of D72, m-3: a Loki `query_range` with `start == end` gave
+  `minTs > maxTs`, which the shard refuses `invalid`, and the query was 503 on every retry;
+  `test/review-r2.test.ts` › m-3).
+
+Tail rows outside the query cost no row of `maxSpans` or `maxLogRows` and no byte of the budget
+(`test/signals.test.ts`, "the ones outside the query do not"; a search days before the data now
+takes no tail byte at all). What is left, **a usability limit** (modelled, not measured on
+Cloudflare): the tail inside a query's range counts against `maxFetchBytes` (16 MiB), so a backlog
+of more than that inside one range (five hours of spans for a one-hour search, with the margin) is
+refused 422 `max_fetch_bytes`. It refuses; it never answers in part. Measured by the shard's
+engineer (D72, local workerd, an eight-hour tail): a one-hour span-local read 18.7 → 2.3 MB, a
+search with the 2-hour margin 18.7 → 11.7 MB, logs 16.8 → 2.1 MB.
+
+### `trace_index` counts (compaction's open item)
+
+`trace_index` counts a span retried into two flush units twice (`compact/README.md`,
+`engine/storage/README.md`; D68 kept them). **Decided: the counts are upper bounds, and the query
+de-duplicates** by never answering from them: every summary is computed from the spans, which
+are de-duplicated on `(trace_id, span_id)`. The counts are used only to plan, where an
+over-count only makes a cap fire early. `test/completeness.test.ts` trace `g` (one span sent
+into two units) answers `spanCount` 1.
+
+### Grafana (review m-4)
+
+Fixed from the public documentation (read 2026-11-19):
+- **Loki times**: an integer of ten or fewer digits is seconds, a longer one nanoseconds. Loki's
+  current API reference says "All epoch values will be interpreted as a Unix timestamp in
+  nanoseconds"; its v2.8 reference (archive.grafana.com/docs/loki/v2.8.x/api/, "Timestamp
+  formats") says "An integer with ten or fewer digits is interpreted as a Unix timestamp in
+  seconds. More than ten digits are interpreted as a Unix timestamp in nanoseconds." The two
+  differ only for the first ten seconds of 1970; the second is what a client that sends seconds
+  means (before, such a client got a range in 1970).
+- **Tempo's `/api/echo`**: "Returns status code 200 and body `echo` when the query frontend is up
+  and ready to receive requests." It answers `echo`, behind the key like every path.
+
+Changed on secondary evidence, labelled as such:
+- **Loki errors are plain text** with the status code (they were the Prometheus envelope).
+  Loki's API reference gives no error body; its troubleshooting page quotes parse errors as text
+  ("parse error at line …"), community reports show a plain-text body, and Grafana's Loki client
+  is reported to read a JSON `message` and else the body as text (secondary sources found by
+  search; Grafana's source was not read). Plain text reads correctly either way.
+
+Not done, TRAINING KNOWLEDGE only: Grafana's Tempo data source may call `/api/echo` on "Save &
+test" and `/api/status/buildinfo` to choose features; Grafana's Loki data source tests with a
+labels query. viz answers neither buildinfo path for these APIs (Prometheus' answers), and
+reporting a Tempo or Loki version it is not could switch on features viz does not have.
+
+**No Grafana data source has been pointed at viz.** How one would be (the deploy README's "A
+client run", on a staged deployment with `INGEST_SIGNALS` and `QUERY_SIGNALS` on and a key with
+`read` and `write`): send a corpus through the gateway (`edge/scripts/otel-corpus.mjs
+--requests`); in a Grafana of a current release, add a Tempo data source with URL
+`https://<staged host>` and a custom header `Authorization: Bearer <key>`, and a Loki data
+source the same way; press "Save & test" on each (and record which paths the gateway logged);
+then in Explore run a TraceQL search, open a trace by ID from it, run the trace view's "logs for
+this span" link if configured, a LogQL range query, a metric query, and the label browser; record
+each answer and any error text shown. The gateway must route `/api/echo` first ("Needed changes
+elsewhere", 5).
+
+### Measurements before the review (measured here)
+
+Kept for comparison: these ran before the changes above (the resource copied per span, no byte
+budget, the window-only plan). Local workerd through the whole Worker (`test/signals.bench.ts`): ledger, leaves reading
+miniflare's R2, the shard tail, the engine. Synthetic data of `engine/wasm-query/examples/
+signal_bench.rs` (the generator of `engine/storage/examples/otel_bench.rs`: ~12 spans a trace
+over one hour, 6 to 8 attributes; logfmt lines of 80 to 260 bytes in 50 streams), flushed in
+units of 20,000 rows, the last batch of each signal left in the tail. Three runs per call, each
+on a fresh engine instance (so the memory is that call's peak); caps raised for the tenant.
+**Load average 2 to 3**, 4 shared cores, 2026-11-19 08:32 UTC. Not on Cloudflare.
+
+| Data | Call | Wall ms (median of 3) | Engine ms | Read | Rows decoded | Peak WASM |
+|---|---|---:|---:|---|---:|---:|
+| 20,000 spans, 50,000 log rows | trace by ID (4 ids) | 237–264 | 224–232 | 3 files, 1.8 MiB + 0.2 MiB tail | 20,000 | 21.1 MiB |
+| | LogQL `sum by (service_name) (count_over_time({service_name=~".+"} \| keep service_name [5m]))`, 1 h at 60 s | 402 | 386 | 3 files, 2.7 MiB + 0.4 MiB | 50,000 | 50.6 MiB |
+| | LogQL `{service_name="app-3"} \|= "level=error"`, limit 100 | 196 | 183 | 3 files, 2.7 MiB + 0.4 MiB | 50,000 (4,000 kept) | 11.4 MiB |
+| | TraceQL search `{ status = error }`, 1 h | 372 | 357 | 3 files, 1.8 MiB + 0.2 MiB | 20,000 | 32.0 MiB |
+| 40,000 spans, 80,000 log rows | trace by ID (4 ids) | 478–518 | 446–494 | 6 files, 3.6 MiB + 0.3 MiB | 40,000 | 36.7 MiB |
+| | LogQL metric query above | 596 | 571 | 4 files, 4.4 MiB + 0.4 MiB | 80,000 | 82.8 MiB |
+| | LogQL log query above | 300 | 280 | 4 files, 4.4 MiB + 0.4 MiB | 80,000 | 14.9 MiB |
+| | TraceQL search above | 784 | 753 | 6 files, 3.6 MiB + 0.3 MiB | 40,000 | 62.4 MiB |
+
+What this says: the engine dominates (the files are a few MiB and few: miniflare's reads are
+cheap, Cloudflare's cost about one round trip each, AGENTS.md). **Trace by ID costs the hour, not
+the trace**: a flush unit of 20,000 spans is one row group, and the record-API reader decodes
+every span of it to find one trace (12 µs a span here). Memory was about 1.5 KiB per span held
+and 1 KiB per log row held (every attribute and the resource copied per span), which is what set
+`maxSpans` and `maxLogRows` then; the review showed that this measured synthetic rows, not what a
+row can cost ("Memory"). Two changes measured on the
+way: holding each log row once, its stream's labels shared (106.4 to 82.8 MiB at 80,000 rows,
+800 to 571 ms), and dropping rows no selector reads before holding them (82.8 to 14.9 MiB for the
+one-stream query). Not measured: larger sizes through the Worker (a fixture module over about
+12 MB does not reach the test runner: one message is at most 32 MiB), and anything on Cloudflare.
+
+### Verification
+
+**The re-review (R2) and the review of D72's query side**, on the final code (module SHA-256
+`f29e583a…`, 4,530,674 bytes, 1,446,413 gzip -9), 2026-11-26:
+- `npx tsc --noEmit` clean; `npx vitest run --maxWorkers=2`: **173 of 173** in 20 files (233 s).
+- `test/review-r2.test.ts` (9 tests, new): the re-review's reproductions through edge, the real
+  flush, the ledger and the Worker (R2-M1, R2-M2 histogram, tag values, LogQL `label_format`,
+  R2-M3b with its refusal text, R2-M4a) and D72 review m-3 and m-2. **Run on the code before this
+  change** (`query/` and `engine/wasm-query/js` at `514828c`, the ABI 7 module, everything else
+  linked; `qe/before/`): 7 of 8 fail, with 113.3, 512.8, 105.1 and 221.3 MiB of WASM memory and
+  the 422s of R2-M3b and R2-M4a; m-3 passes there (the code before sent no range: it guards the
+  D72 change, and mutant 115 shows it has teeth). The ninth, the review of D72's n-1 (`page_limit`'s
+  `last`, taken in from `shard/README.md` "Needed changes elsewhere" 2: a refusal gives the exact
+  size when every later batch is skipped), fails on the code before it ("at least 333712 bytes")
+  and passes after.
+- Updated: `signals.test.ts` (the `early` case takes no tail byte; a new test reads the tail inside
+  each query's bound with the filter on, off and from a shard that ignores the range),
+  `engine.test.ts` (ABI 8), `memory.test.ts` and `signals.test.ts` (refusal texts).
+  `completeness.test.ts` unchanged and passing.
+- `engine/wasm-query`: `cargo test -j 2 --lib`, 22 of 22; `./build.sh`; `node tools/check.mjs`, every
+  check passes. `engine/traceql`: `cargo test -j 2`, api 14, props 6, limits 6, regex 1,
+  conformance 1, differential 1 ignored. `engine/logql`: `cargo test -j 2`, every suite passing
+  (22, 9, 1, 5, 8, 10, 1; 2 ignored as before).
+- `contracts/engine.ts` changed first: `npx tsc --noEmit` clean in app, anomaly, engine/wasm, compact,
+  query, publisher, ruler, stack, shard, dashboard, flush and mcp before any code changed.
+- The reviewer's scripts against the final module: `qe/after-final.txt` ("The re-review" table).
+
+**The review's findings (2026-11-19)**, run on the final code (load average 7 to 10, 4 shared
+cores):
+
+- `test/completeness.test.ts` (4 tests): the review's trace and six neighbours, each piece in a
+  flush unit of its own (four units through edge and the real `Flush`, one span left in the
+  tail), window 08:55 to 09:10, margin 2 h: trace `a` lasts 7,260,000 ms with 2 spans; `c`,
+  found by its child, starts at its root's 07:30; `d`, no piece in the window, is found and lasts
+  75 minutes; `e`'s child beyond the margin is not in the answer; `f`'s child in the tail is;
+  `g`, one span sent into two units, counts 1; `{ trace:duration > 1h }` is `a`, `c`, `d`, `f`;
+  a structural query across units matches. Every answer (5 searches, 2 whole-trace metrics
+  queries, 7 trace-by-ID calls) is identical with pruning off; with the margin past all the data
+  and pruning off ("every span") only the four answers that involve `e` differ; pruning reads
+  fewer files than not. Run on the code before this change (mutants 98 to 101 restore it in
+  parts), it fails.
+- `test/memory.test.ts` (3 tests): the review's inputs through the Worker ("Memory"), the
+  tenant's `maxDecodedBytes` reaching the engine, Loki's error as text.
+- `test/sigcompat.test.ts` (4 tests): Loki's timestamps, plain-text errors for Loki and Tempo
+  and the envelope for Prometheus, `/api/echo` with and without a key and with the flag off.
+- `test/signals.test.ts`: the 128 cases of each of the three seeds still equal the in-memory
+  answers, pruning on and off (their traces lie within the margin of their windows, so the
+  in-memory answers over every batch are unchanged); the engine-cap test now runs on a tenant
+  whose data is all in the tail and checks that tail rows outside the query cost nothing.
+- `engine/wasm-query`: `cargo test -j 2 --lib`, 9 of 9 (`src/sigtests.rs`); `./build.sh` and
+  `node tools/check.mjs`, every check passes (module SHA-256 `b3761a9c0b7e52a5…`, 4,469,834
+  bytes, 1,433,476 gzip -9).
+  `engine/traceql`: `cargo test -j 2`, api 14, props 6, limits 6, regex_dialect 1, conformance 1
+  (skips upstream), differential 1 ignored, as before; its probe and `engine/storage/readback`
+  build.
+- The whole suite: `npx vitest run --maxWorkers=2` and `npx tsc --noEmit`: see "How it was
+  verified" for the run on the final code.
+
+`test/signals.test.ts` (21 tests, in workerd) against fixtures from
+`tools/gen-signal-fixtures.sh`: per seed (1, 2, 3), `edge/scripts/otel-corpus.mjs` makes OTLP and
+Loki push requests and decodes them with edge's own decoders into `VZB1` batches (239 to 302
+spans in 45 traces with retries, clamped ends, orphans and every attribute type; 859 to 976 log
+rows over 4 hours across a day boundary); `examples/signal_fixtures.rs` flushes the first 70 % of
+each signal's batches in three units with the stage-1 encoders and computes 128 cases' answers
+with the engines' **in-memory** sources over every batch (no Parquet, none of the read path's
+code; trace by ID, tags and labels written out by hand from the decoded rows). The test appends
+every batch to the tenant's shards, puts each unit's files in R2 and admits them with
+`ledger.addUnit`, so the tail is what lies above the units' watermark; another tenant's data
+(the next seed) shares every shard. (Until the ledger listed the tables, D63, a test-only
+transform applied the two ledger lines to the test bundle; it is gone.)
+
+`test/signals.e2e.test.ts` (2 tests) runs the same seeds' corpora end to end, as the write side's
+end-to-end run does (`stack/tools/signals_readback.mjs`, `otel-corpus.mjs --requests`): the 22
+or 23 OTLP traces, OTLP logs and Loki push requests, as sent, through edge (shards sealing at
+256 KiB); after the first 60 % every span and log shard is sealed and flushed by the real `Flush`
+entrypoint (engine/wasm, ABI 3) into the files the ledger lists (seed 1: 13 `spans`, 8
+`trace_index`, 16 `logs` files; seed 3: 8, 4, 16), the rest stays tail; then all 128 cases equal
+the in-memory engines' answers (1,394 and 947 file reads, 350 and 315 tail batches over the
+cases), again with no signal filter sent and the shards answering unfiltered as the previous
+release does (every other case), and with pruning off (every third).
+
+- every endpoint, 128 cases a seed, both tenants: the answer equals the in-memory one (Tempo
+  bodies byte for byte without their `metrics`, which count what was inspected; Loki bodies byte
+  for byte, `stats` included; trace JSON, tags and labels as JSON values);
+- pruning off (every file whole, every span hour, the span hull all time): the same answers, with
+  files skipped when on; trace by ID reads less than half the bytes with its hours;
+- tenancy: `X-Scope-OrgID`, `X-Viz-Tenant`, `tenant=` and `orgId=` naming the other tenant change
+  nothing; 401 and 403;
+- caps: `max_fetch_bytes`, `max_files`, `max_spans` and `max_log_rows` refused before any R2 read;
+  `max_spans` and `max_rows` by the engine when only the tail takes a query over;
+- signals in tails: a metrics query of a tenant whose ledger names span and log streams answers
+  exactly; a span batch in a metrics read, a span batch in a log read and a log batch in a span
+  read are each 503; the signal field on; shards of the previous release (unpaged);
+- the seam: a shard that refuses a read sends the query back to the ledger and the next attempt
+  answers exactly; one that keeps refusing is 503;
+- the flag: without `QUERY_SIGNALS` every Tempo and Loki path is 404;
+- the signal filter: every endpoint, and metrics queries, without `signals` (as before D63) and
+  through shards answering unfiltered;
+- one byte budget over a signal's shards (the review of D54, ported; seed 1 with each signal's
+  tail spread over its two shards): every fourth case equals the in-memory answer; at the tail's
+  size each of six endpoints answers exactly, one read going on in the second round; one byte
+  under it, and at 0.45 of it, 422 with never more bytes received from the shards than the cap;
+  shards of the previous release (whole answers) that fit one by one but not together, 422; a
+  shard whose pages do not advance, 503 in under 10 calls. Run on the development branch's code
+  before the port, the first and third fail (a search with the cap one byte under its 94,520-byte
+  tail received more than the cap: each shard's read had all of it; the read asked for the same
+  page until the test's valve), the second passes (it guards the new code).
+
+Run 2026-11-19 on the final code (09:25 to 09:27 UTC, load average 5 to 7): the whole suite
+**132 of 132** in 15 files (101 s); `npx tsc --noEmit` clean; `node
+../engine/wasm-query/tools/check.mjs` passes (module SHA-256 `bfcda39f…`). Also in this change, at
+the coordinator's request: `split.test.ts` "a data file missing from R2…" reads whole files
+(`leafHooks.wholeReads`), so a byte range cached by an earlier test cannot answer for the deleted
+object (it failed on PR #5's CI depending on test order); `meta.test.ts` and `fence.test.ts`, the
+other tests that delete an object, use worlds whose keys nothing has read before and needed no
+change. Also added (shard/README.md, "Needed changes
+elsewhere", R2 item 2): `fence.test.ts` "registration before writes (D61)": spec F6(b) (shards in
+mode `logged`; flushed and logged after the plan, then the shards lose their storage: the exact
+answer, `Plan-Attempts` 2) and the F6 liveness trace (never flushed, storage lost: 200 without the
+rows in two attempts, then one), both against the real coordinator.
+
+**Mutants (on a scratch tree, `node tools/mutants.mjs 74 75 76 77 78 79 80`)**: 7 of 7 killed,
+after two findings ("Mutation check", rows 74 to 80). With the review of D54 ported, 74 to 76
+were run again (the reads around them changed), 53, 86 and 96 name the new signal tests too, and
+97 is new (a span or log read going on in the second round without its signal's filter):
+"Mutation check", the port's run.
+
 ## Not implemented
+
+- **Traces and logs, what is left** ("Traces and logs"; D62): the flag itself ("What remains
+  before the flag": the re-review's narrow re-check, a Cloudflare trial, a Grafana run); split
+  execution (a query over `maxSpans`, `maxLogRows`, `maxDecodedBytes`, `maxFetchBytes` or
+  `maxFiles` is refused, never split or answered in part); traces longer than `traceMarginMs`
+  answered whole (they are answered from their part inside the margin); the logs token filter
+  (written by compaction, not read here); `/api/status/buildinfo` for Tempo and
+  `/loki/api/v1/status/buildinfo` (not documented as needed by Grafana; training knowledge says
+  Grafana's Tempo source may read the first); partial results with a cursor; newest-first day
+  waves for trace by ID without a time hint (every day is planned at once, under the caps:
+  D62 "Cost of it" states where that refuses, R2-M4(b)); expiring `trace_index` by the day of its
+  fragments' last end (R2-m1; retention is the janitor's); the trace id bloom filters and page
+  reads inside a unit (trace by ID decodes the unit's row group, holding only the trace's spans);
+  projection by the TraceQL plan's columns (the tag calls hold whole records for their keys or
+  values); an exact count of what LogQL's vector operations hold (they run on viz-promql and are
+  charged by an estimate, D62 1.); tag-based search (`tags`, `minDuration`,
+  `maxDuration`), Tempo's `q` and span pruning on trace by ID, `Accept: application/protobuf`,
+  exemplars, Loki's `interval`, live tail, volume, patterns and the index stats endpoints; the
+  plan-only endpoint for these queries; cost headers specific to them beyond `X-Viz-Scan-Rows`
+  and `X-Viz-Rows-Decoded`. No independent OTLP reader was run on the trace-by-ID JSON (it is
+  compared with an answer written independently from the decoded batches, not decoded by an OTLP
+  implementation). Nothing of it ran on Cloudflare.
 
 - **Split execution, what is left.** Queries that do not decompose (`quantile` or
   `absent` over raw series, binary operators between vectors below an aggregation,
@@ -656,9 +1290,34 @@ All measured here, locally (Linux x86-64, 4 cores shared with other builds, Node
 workerd through `@cloudflare/vitest-plugin` 1.8), on 2026-11-18 and 19. Nothing in this
 section ran on Cloudflare (the Worker itself did, in two staged trials: `deploy/README.md`).
 
-**After the review of D54, D56 and D59 (2026-11-19; 11:00 to 11:03 UTC, load average 3.3 to
-4.6):** `npx vitest run --maxWorkers=2`, twice: **127 tests, all passing** in 14 files (68 s and
-71 s); `npx tsc --noEmit`: clean; `node ../engine/wasm-query/tools/check.mjs`: every check passes;
+**The review of spans and logs end to end, M-1, M-2, m-3, m-4 (2026-11-19, 13:19 to 13:21 UTC,
+load average 2.7 to 6.0):** `npx vitest run --maxWorkers=2`: **163 tests, all passing** in 19
+files (116 s); `npx tsc --noEmit`: clean; the module rebuilt (`b3761a9c…`) and
+`../engine/wasm-query/tools/check.mjs` passing; `cargo test -j 2 --lib` in `engine/wasm-query`
+9 of 9 and `cargo test -j 2` in `engine/traceql` as listed under "Traces and logs",
+"Verification". The fixtures were not regenerated: the seeds' 128 cases each still equal their
+in-memory answers. The mutants are under "Mutation check".
+
+**The review's fixes ported onto the development branch, over D62 (2026-11-19; 11:42 to 11:49 UTC, load average 8.9 to 10.7):**
+`npx vitest run --maxWorkers=2`, twice: **152 tests, all passing** in 16 files (213 s and 201 s; a run at 11:13, load 3.9 to 4.4, also passed all 152 in 133 s);
+`npx tsc --noEmit`: clean. No engine code changed (`engine/wasm-query`'s module was not rebuilt,
+so its `tools/check.mjs` was not rerun). Pull request #7's fix commit (`0fc110d`) was merged file
+by file onto the branch's `query/` (three-way, base `657eef2`): `src/tail.ts`, `src/leaf.ts`,
+`test/tail.test.ts`, `test/tail.bench.ts` and `test/review-d54.test.ts` as they are on #7;
+`src/config.ts` and `test/limits.test.ts` with both lines of limits; `src/coordinator.ts`
+rewritten where D62 had changed it: `readTails` runs `readShared` with the signal's filter in both
+rounds, then the header check of every batch, then `learnEnd` for metrics reads only.
+`test/signals.test.ts` gained three tests (one byte budget over a signal's shards; previous-release
+shards; a page that does not advance), `test/signals-load.ts` a helper to append batches to any
+shard. Run on a copy of the branch's code from before the port (`2eb7020`, local workerd), 15 of
+the 17 tests of `review-d54.test.ts` failed, each on the fault it names, as on #7's reviewed tree
+(R-1: 110 where 80; R-3: 92,128 bytes received under a cap of 47,390; `cutByKey`: absent; …), and
+the two that guard new code passed; of the three new signal tests, two failed and one passed
+("Traces and logs", "Verification").
+
+**After the review of D54, D56 and D59, on pull request #7's tree (2026-11-19; 11:00 to 11:03
+UTC, load average 3.3 to 4.6):** `npx vitest run --maxWorkers=2`, twice: **127 tests, all
+passing** in 14 files (68 s and 71 s); `npx tsc --noEmit`: clean; `node ../engine/wasm-query/tools/check.mjs`: every check passes;
 `engine/query` `cargo test -j 2` (target in a scratch directory, deleted after): 60 passed. No
 engine code changed: `viz_query.wasm` is byte-identical to the reviewed tree's (SHA-256
 `06529eb1…`). New: `test/review-d54.test.ts` (17 tests). Run on a copy of the reviewed tree
@@ -888,23 +1547,130 @@ run against the Worker**, and no response was compared with a running Prometheus
 
 ### Mutation check
 
-**The review of D54, D56 and D59 (2026-11-19, mutants 74 to 89 new, 53 to 55, 57, 58, 60 and 71
-to 73 re-anchored to the changed source, on a scratch tree).** First run 10:27 to 10:46 UTC (load
+**The re-review of D62 (R2) and the review of D72's query side (2026-11-26, on scratch copies).**
+
+*Rust*, 20 mutants of `engine/wasm-query`, `engine/traceql` and `engine/logql`, on scratch copies of
+those three crates (the other engine crates linked), `cargo test -j 2 --lib` against `src/sigtests.rs`
+(the runner `qe/mut/rust-mutants.py` in this work's scratch area): **20 of 20 killed** on the final
+code, the unmutated tests passing first; the shared tree's mutated files hashed the same before and
+after. Five survived earlier runs and were killed by strengthening the cases, each because the case
+was refused at an earlier stage than the one the mutant broke: the label answer's charge (300 fat
+streams are refused at their label sets; a 60-stream case is refused only at its answer); the
+tag-value set's charge (with one span per trace the spans are let go as the set grows, so the peak
+did not depend on it; one trace of 500 spans does); the tag-name set's charge and the search
+answer's charge-after (both cases were refused at their records; retuned so the stage under test
+refuses). Writing the search case also found a gap: `viz_traceql::search` built its whole
+response, with every echoed value copied, before anything was charged (60.3 MB peak); search
+results are now charged per span as they are made (`search_with`). One run's baseline failed for a
+reason of the runner's own (copies kept their source mtimes, so cargo reused a crate built for the
+previous run's last mutant); fixed, and the whole set rerun.
+
+| # | Mutant | Killed by (`sigtests.rs`) |
+|---|---|---|
+| 1 | R2-M1: the label sets `/series` keeps not charged | `r2_m1_…` |
+| 2 | R2-M1: the label texts read from a file not charged | `r2_m1_…` |
+| 3 | R2-M1: the label answer not charged before it is written | `r2_m1_…` (60 streams) |
+| 4 | R2-M2: a TraceQL group's series not charged when made | `r2_m2_one_series_per_quantile…`, `a_trace_metric_query…` |
+| 5 | R2-M2: a histogram bucket's output series not reserved | `r2_m2_histogram_series…` |
+| 6 | R2-M2: quantiles do not multiply the reserved output | `r2_m2_one_series_per_quantile…` |
+| 7 | R2-M2: a metric answer charged after it is written | `r2_m2_a_metric_answer…` |
+| 8 | R2-M2: tag values not charged as the set grows | `r2_m2_tag_values…` |
+| 9 | R2-M2: LogQL series label sets not charged | `r2_m2_label_sets_from_regexp…` |
+| 10 | R2-M2: the budget does not reach LogQL's evaluation | `r2_m2_label_sets_from_regexp…` |
+| 11 | R2-M3: the extent pass holds every trace of the bound | `r2_m3_the_extent_pass…`, `r2_m3_a_long_trace…` |
+| 12 | R2-M3: spans planned by the hull (ranges ignored) | `r2_m3_a_long_trace…` |
+| 13 | R2-M3: a log query keeps every label set to the end | `r2_m3_log_query_lets_go…` |
+| 14 | R2-M4a: trace by ID counts other traces' spans | `r2_m4a_…` |
+| 15 | D72 m-2: tag names de-duplicate over all time again | `d72_m2_…` |
+| 16 | R2-M3: the ids after the window not charged | `r2_m3_the_extent_pass…` |
+| 17 | R2-M2: tag names not charged as the set grows | `r2_m2_tag_names_search_answers…` |
+| 18 | R2-M2: search results not charged as they are made | `r2_m2_tag_names_search_answers…` |
+| 19 | R2-M2: a search answer charged after it is written | `r2_m2_tag_names_search_answers…` |
+| 20 | R2-M2: the lines a log query keeps not charged | `r2_m2_tag_names_search_answers…` |
+
+*TypeScript*, mutants 111 to 117 of `tools/mutants.mjs` (`node tools/mutants.mjs 111 … 117`, scratch
+tree, 2026-11-26): **7 of 7 killed**, the unmutated suite passing first, the shared tree's files
+unchanged (`3065dd00fc9054f9`).
+
+| # | Mutant | Killed by |
+|---|---|---|
+| 111 | R2-M1: the label calls get no budget | `review-r2` › R2-M1 (the tenant's 1 MiB reaches the call) |
+| 112 | R2-M3: spans planned over the hull (ranges not passed) | `review-r2` › R2-M3b |
+| 113 | R2-m5: a margin refusal advises narrowing the time range | `review-r2` › R2-M3b (the refusal text) |
+| 114 | R2-M4a: trace by ID checked by its row groups' rows before the fetch | `review-r2` › R2-M4a |
+| 115 | D72 m-3: an empty range sent to the shards | `review-r2` › m-3 |
+| 116 | D72: a trace query sends its window, not its bound | `completeness` › every trace named is whole … |
+| 117 | D72: a span or log read sends no range | `signals` › … the ones outside the query do not; … read inside each query's bound |
+
+**The review of spans and logs end to end, M-1, M-2, m-3, m-4 (2026-11-19, 12:41 to 13:14 UTC, load
+average 3 to 10, on scratch trees; `node tools/mutants.mjs 98 … 110`): 13 of 13 killed**, the
+unmutated suite passing first (in both runs, the second on the final code).
+
+| # | Mutant | Killed by |
+|---|---|---|
+| 98 | M-1: the margin dropped (a trace query reads the window only, the code before the fix) | `completeness.test.ts`, 3 tests |
+| 99 | M-1: `trace_index` planned over the window, not the bound | `completeness.test.ts`, 2 tests |
+| 100 | M-1: the engine not told the bound | `completeness.test.ts` › every trace named is whole … (trace `h`) |
+| 101 | M-1: trace by ID with a hint reads the hint only | `completeness.test.ts` › … "every span" |
+| 102 | M-1: the engine keeps spans outside the bound (Rust) | `completeness.test.ts` › every trace named is whole … (trace `h`) |
+| 103 | M-2: the tenant's `maxDecodedBytes` does not reach the engine | `memory.test.ts` › a 180 KB resource … |
+| 104 | M-2: a resource held once per span again (Rust) | `memory.test.ts` › a 180 KB resource … |
+| 105 | M-2: span rows not charged (Rust) | `memory.test.ts`, 2 tests |
+| 106 | M-2: log rows not charged (Rust) | `memory.test.ts` › 400 log lines … |
+| 107 | m-3: log rows counted against `max_rows` before the selectors drop them | `signals.test.ts` › … the ones outside the query do not |
+| 108 | m-4: Loki integers of ten or fewer digits read as nanoseconds | `sigcompat.test.ts` |
+| 109 | m-4: Loki errors in the Prometheus envelope | `sigcompat.test.ts`, `memory.test.ts` |
+| 110 | m-4: `/api/echo` not routed | `sigcompat.test.ts` |
+
+100 and 102 **survived the first run**: the corpus had no found trace with a span beyond the bound
+inside a file the hull reads, so dropping the bound in the engine changed nothing. Trace `h` was
+added (its child at 11:30 shares the hour file of `a`'s child at 11:00); both are killed since.
+The first run also reported the shared tree's mutated files changed during it: that was this
+work's own edits (the extents' byte budget, trace `h`), not a mutant.
+
+**Rust mutants of `engine/wasm-query`**, on a scratch copy of `engine/` with `cargo test -j 2 --lib`
+(the vitest mutants cannot see an efficiency-only or boundary property): **15 of 15 killed**, two
+after a test was strengthened. Killed by `src/sigtests.rs`: fragments outside the bound counted;
+tail spans outside the bound counted; the hull's end not cut to the bound; the hull's start not cut
+(survived, then killed by a fragment that starts before the bound); spans outside the bound kept;
+the budget one byte loose (`> max + 1`); the budget refusing at its limit (`>=`); answers charged
+once; resources not interned; span attributes not charged; a LogQL metric query's series not
+bounded by what is left (survived: the answer's charge refused it later; then killed by asserting
+that the refusal comes before the series are made); a TraceQL metric query's series not bounded;
+trace by ID's answer not charged; extents not charged; a log answer not charged.
+
+**The review's fixes ported onto the development branch, over D62 (2026-11-19, 11:16 to 11:41
+UTC, load average 4.8 to 10.6, on a scratch tree; `node tools/mutants.mjs 53 54 55 57 58 60 71
+72 73 74 75 76 81 … 97`): 28 of 29 killed**, the unmutated suite passing first. Run: #7's
+sixteen (renumbered 81 to 96 after D62's 74 to 80), the nine #7 re-anchored (53 to 55, 57, 58, 60,
+71 to 73), D62's 74 to 76 (the reads around them changed), and **97, new**: a span or log read that
+goes on in the second round of the shared budget without its signal's filter (its cursor is bound
+to that filter), killed by `signals.test.ts` › the tail over two shards. 53, 86 and 96 are also
+killed by the new signal tests (whole answers summed; one budget over a signal's shards; a page
+that does not advance). **89 survives**, as on #7: the reads keeping their batches after the cut
+changes memory, not answers. 77 to 80 (D62's pruning, cap, tenancy and the Rust result shape) were
+not rerun: nothing they touch changed. The shared tree's mutated files hashed the same before and
+after (`5e98babf10deff73`). **Not repaired here:** the anchors of 5, 15, 25, 26, 28, 36 and 37 do not
+occur exactly once in the source (also so before the port, at `2eb7020`; 37 since D62 changed
+`index.ts`'s failure path), so `node tools/mutants.mjs` with no arguments stops before running; run
+it with mutant numbers.
+
+**The review of D54, D56 and D59, on pull request #7's tree (2026-11-19, mutants 74 to 89 there,
+81 to 96 here; 53 to 55, 57, 58, 60 and 71 to 73 re-anchored to the changed source, on a scratch
+tree).** First run 10:27 to 10:46 UTC (load
 average 9 to 11), the unmutated suite passing first: **23 of 25 killed**. 53 survived (with one
 budget over the shards, paged reads can no longer pass it together, so the check only guards
-whole answers from shards of the previous release, which no test covered) and 78 survived (the
+whole answers from shards of the previous release, which no test covered) and 85 (78 on #7) survived (the
 m-1 test's last batch was always kept by the part's filter, so the read ended on it and never met
 the `page_limit` past the end). Both tests were strengthened (whole answers that fit one by one but
 not together; a last batch of another metric), and a second run, 10:47 to 10:51 (load 3 to 9),
-killed both. **82 survives**: the coordinator's reads keep their batches after the cut (the tail
+killed both. **89 (82 on #7) survives**: the coordinator's reads keep their batches after the cut (the tail
 held twice) changes memory, not answers, and no test reads the coordinator's heap; it is measured
-instead ("Measurements"). The first run reported 82 killed by `split.test.ts` "a data file missing
+instead ("Measurements"). The first run reported it killed by `split.test.ts` "a data file missing
 from R2 …", a test that depends on the Cache API's state and cannot see this mutant: a flaky kill,
 not counted. The shared tree's mutated files hashed the same before and after both runs
-(`44b91fdefb8dc47d`, `ce6a8fc30a44b79f`). **Not repaired here:** the anchors of mutants 5, 15,
-21, 25, 26, 28 and 36 no longer occur once in the source (they did not on the reviewed tree
-either; earlier changes moved them), so `node tools/mutants.mjs` with no arguments stops before
-running; run it with mutant numbers.
+(`44b91fdefb8dc47d`, `ce6a8fc30a44b79f`). **Not repaired there:** the anchors of mutants 5, 15,
+21, 25, 26, 28 and 36 no longer occurred once in #7's source (earlier changes moved them).
 
 **Series-level pruning and the series-only read (2026-11-19, mutants 44 to 46, on a scratch
 tree, 04:51 to 05:10 UTC, load average 9 to 13): 3 of 3 killed**, the shared tree's files
@@ -941,6 +1707,22 @@ mutant, `foreign` never counted, is killed by `tests/series_ranges.rs`.
 in full, the shared tree's files unchanged (`c011da469efe0f4f` before and after). Two more in
 Rust (`engine/query`, on a scratch copy): the part filter dropped for tail series, and for file
 rows, each killed by both tests of `tests/meta_parts.rs`.
+
+**Traces and logs (2026-11-19, mutants 74 to 80, on a scratch tree, 08:47 to 09:16 UTC, load
+average 4 to 7): 7 of 7 killed in the end, after two findings; 76, 78, 79 and 80 re-run on the final code, 4 of 4.** (1) The first form of the hour
+mutant (the hour computed one too high) **survived**: it made every file's hour unknown, and an
+unknown hour is kept, so it pruned less instead of dropping a match; it was rewritten to keep a
+file only if the fragments name the hour after its own (row 77), which is killed. (2) Row 74
+**survived its first run**: the shard's own signal filter landed in the tree during the run, and
+it skips span batches in a metrics read whose filter names metrics, so asking those shards did
+nothing wrong; the test now also reads through shards of the previous release (unfiltered), where
+only the name rule keeps the span shards out, and the re-run killed it. Row 75 was added for the
+filter (asking for the wrong signal). One run was invalid as a whole: a type error appeared in
+`flush/` (another engineer mid-edit) after the tool's baseline, and every mutant was reported
+INVALID; the tool now counts only type errors in the directories it copies. The shared tree's
+mutated files were unchanged by every run (the tool's hash before and after), except one run
+during which another engineer changed `src/`-adjacent files it hashes (it reports that; it writes
+only to the scratch tree).
 
 `node tools/mutants.mjs` applies one change to the source, runs the whole suite,
 restores the source, and prints the failing tests. It first confirms that every mutant
@@ -1013,7 +1795,7 @@ rebuilt module had the same SHA-256 as before the run.
 | 50 | **a stale watermark on a later page ends the read with the pages so far** | tail › a refusal on a later page… |
 | 51 | a shard that stops paging mid-read is taken as the rest of the tail | tail › a refusal on a later page… |
 | 52 | **`page_limit` is taken as the end of the tail** | tail › a tail over the cap…; previous release next to this one; rolled back; leaf of the previous release; … (7 tests) |
-| 53 | tails that fit one by one but not together are not refused | limits › max_fetch_bytes |
+| 53 | tails that fit one by one but not together are not refused | limits › max_fetch_bytes (before one budget); since: review-d54 › shards of the previous release (whole answers)…; signals › the same for spans and logs |
 | 54 | **a part reads the rest without its key range** | tail › a tail over the cap…; previous release next to this one; rolled back (3 tests) |
 | 55 | **a part does not check for rows of other parts** (a series whose key is not its id is lost) | tail › a series whose split key is not its id |
 | 56 | **a split leaf of the previous release (ignoring the rest) is believed** | tail › a leaf of the previous release… |
@@ -1034,26 +1816,36 @@ rebuilt module had the same SHA-256 as before the run.
 | 71 | **a part that saw a foreign series is ignored** (no second run with whole series files) | tail › a series whose split key is not its id (lake) |
 | 72 | a reader does not report the foreign series it saw (first read) | tail › the same (one such series alone) |
 | 73 | a split leaf does not add up its readers' foreign series | tail › the same |
-| 74 | **B-1: a reader that answers without `foreign` leaves its split leaf's count known** | review-d54 › a reader of the previous release on the stray's id part |
-| 75 | **B-1: the coordinator takes a part's missing `foreign` as 0** (the reviewed code) | review-d54 › the old reader; the old split leaf (2 tests) |
-| 76 | **M-1: a part's rest is not bounded by the end the coordinator fixed** | review-d54 › an append between two parts' calls…; m-1 (2 tests) |
-| 77 | M-1: the end of a read that stopped on its first page is not learned from the shard | review-d54 (6 tests: the rest path refuses without an end) |
-| 78 | m-1: a batch past the end that does not fit a part's budget stops the read as over it | review-d54 › m-1 (second run, after the test gained a last batch of another metric) |
-| 79 | **M-2: each shard's read gets the whole budget in the first round** | review-d54 › bytes received from the shards never pass the cap |
-| 80 | **M-2: the coordinator cuts a tail that fits by `series_id` whatever the key leaves out** | review-d54 › a series whose key is not its id, in the lake and the tail (a rate across the seam) (only it) |
-| 81 | M-2: the FNV hash of a series that carries a `without` label is taken over every label | review-d54 › the seam; `cutByKey` against the engine's `splitTails` |
-| 82 | M-2: the reads keep their batches after the cut (the tail held twice) | **survived** (memory only; measured) |
-| 83 | m-2: a leaf counts a rolled-back shard's whole answer against the part's budget | review-d54 › m-2 |
-| 84 | m-3: the estimate ignores the batches after the one that did not fit | review-d54 › the estimate (unit) |
-| 85 | m-3: a split sized too small is not split again | review-d54 › an uneven part is split again once |
-| 86 | **M-3: the parts that read the rest are not bounded** | review-d54 › past maxTailReadParts… |
-| 87 | m-5: a label call over more series files than `maxFiles` stays in one place | review-d54 › m-5 |
-| 88 | m-5: a label call over leaves counts one copy of the series files | review-d54 › m-5 |
-| 89 | m-7: a page that does not advance the read is asked for again | review-d54 › m-7 |
+| 74 | **wrong signal from the tail**: metrics reads ask every shard the ledger names, span and log shards included | signals › a metrics query of a tenant whose ledger names span and log streams… (with unfiltered shards; see below) |
+| 75 | **wrong signal from the tail**: every tail read asks the shards for signal 1, span and log reads included | signals › every seed; pruning on and off; … (9 tests) |
+| 76 | **wrong signal from the tail**: a batch of another signal is read as the one asked for (no header check) | signals › a batch of another signal in a tail read is refused (503)… (only it) |
+| 77 | **pruning drops a matching hour**: trace by ID keeps a span file only if its fragments name the hour after the file's | signals › every seed; pruning on and off; … (8 tests) |
+| 78 | **a cap not enforced**: the rows the fragments say a span or log query decodes are not checked before fetching | signals › max_spans and max_log_rows from the fragments, before any fetch (only it) |
+| 79 | **tenant from the query string** (Tempo search: `orgId`) | signals › the tenant comes from the key only… (only it) |
+| 80 | **a result shape field renamed**: trace by ID answers `resourceSpans` for `batches` (Rust; rebuilds the module) | signals › every seed; pruning on and off; … (9 tests) |
+| 81 | **B-1: a reader that answers without `foreign` leaves its split leaf's count known** | review-d54 › a reader of the previous release on the stray's id part |
+| 82 | **B-1: the coordinator takes a part's missing `foreign` as 0** (the reviewed code) | review-d54 › the old reader; the old split leaf (2 tests) |
+| 83 | **M-1: a part's rest is not bounded by the end the coordinator fixed** | review-d54 › an append between two parts' calls…; m-1 (2 tests) |
+| 84 | M-1: the end of a read that stopped on its first page is not learned from the shard | review-d54 (6 tests: the rest path refuses without an end) |
+| 85 | m-1: a batch past the end that does not fit a part's budget stops the read as over it | review-d54 › m-1 (second run, after the test gained a last batch of another metric) |
+| 86 | **M-2: each shard's read gets the whole budget in the first round** | review-d54 › bytes received from the shards never pass the cap; signals › the tail over two shards… |
+| 87 | **M-2: the coordinator cuts a tail that fits by `series_id` whatever the key leaves out** | review-d54 › a series whose key is not its id, in the lake and the tail (a rate across the seam) (only it) |
+| 88 | M-2: the FNV hash of a series that carries a `without` label is taken over every label | review-d54 › the seam; `cutByKey` against the engine's `splitTails` |
+| 89 | M-2: the reads keep their batches after the cut (the tail held twice) | **survived** (memory only; measured) |
+| 90 | m-2: a leaf counts a rolled-back shard's whole answer against the part's budget | review-d54 › m-2 |
+| 91 | m-3: the estimate ignores the batches after the one that did not fit | review-d54 › the estimate (unit) |
+| 92 | m-3: a split sized too small is not split again | review-d54 › an uneven part is split again once |
+| 93 | **M-3: the parts that read the rest are not bounded** | review-d54 › past maxTailReadParts… |
+| 94 | m-5: a label call over more series files than `maxFiles` stays in one place | review-d54 › m-5 |
+| 95 | m-5: a label call over leaves counts one copy of the series files | review-d54 › m-5 |
+| 96 | m-7: a page that does not advance the read is asked for again | review-d54 › m-7; signals › a span or log shard whose pages do not advance… |
+| 97 | **a span or log read going on in the second round of the shared budget sends the filter without its signal** (the shard refuses the cursor) | signals › the tail over two shards… (only it) |
 
 Rows 53, 54, 55, 57, 58, 60, 71, 72 and 73 were re-anchored for this change (the same property,
 the new text); in the second run's terms 53 is killed by review-d54 › whole answers that fit one by
-one but not together, the others by the tests named in their rows.
+one but not together (and, since the port, signals › shards of the previous release…), the others
+by the tests named in their rows. Rows 81 to 96 were 74 to 89 on pull request #7; 84's anchor
+gained D62's `signal !== 1`.
 
 **Run 2026-11-19, 01:16 to 01:53 UTC, all 43 mutants on a scratch copy** (load average 7 to
 21): **43 of 43 killed, none survived, none invalid**; the unmutated suite passed first in
@@ -1413,6 +2205,46 @@ is warm); contention when many queries share leaves; the cost of a Cache API rea
 `design/VERIFICATION.md` S1 extended with this Worker: the same two queries on Cloudflare,
 cold and warm.
 
+## Needed changes elsewhere (traces and logs, 2026-11-19)
+
+The write side of stage 2 landed while this was built (D63): the shard's tail filter takes
+`signals` (the shape `query/` was coded against), the ledger lists `spans`, `trace_index` and
+`logs` (`LedgerTable`, a `spans` key under its hour), and flush writes their units with
+millisecond bounds, a span segment's `spans` and `trace_index` files in one unit. `query/` sends
+`signals` with every tail read and plans the new tables directly (`test/signals.e2e.test.ts` runs
+the whole path). What is left, for its owners:
+
+1. **Done (stage 3, 2026-11-19; `deploy/README.md`, "Topology and routes").** The gateway routes
+   these exactly as listed, by exact path with one segment per path parameter, `/api/v1/plan`
+   included, and leaves every other `/loki/…` path 404; tested through the gateway in front of
+   this Worker with `QUERY_SIGNALS` on and off (`stack/README.md`, "Through the gateway"). Was:
+   **the gateway (`deploy/gateway/src/index.ts`)**: route to QUERY `/api/search`,
+   `/api/search/…`, `/api/traces/…`, `/api/v2/traces/…`, `/api/v2/search/…`,
+   `/api/metrics/query`, `/api/metrics/query_range`, `/loki/api/v1/query`,
+   `/loki/api/v1/query_range`, `/loki/api/v1/labels`, `/loki/api/v1/label/…`,
+   `/loki/api/v1/series` (and `/api/v1/plan`, which it does not route today); to INGEST
+   `/v1/traces`, `/v1/logs`, `/loki/api/v1/push`. Every other `/loki/…` path stays 404.
+2. **Done by `edge/` (stage 3, 2026-11-19; `contracts/BATCH.md` "Streams per signal" first).**
+   Edge refuses a pool map whose pool ends in `/traces` or `/logs` with 503 for every signal, and
+   this Worker, which reads pool maps through edge's `poolMap`, refuses that tenant's reads with
+   503 as well (`stack/README.md`, "Through the gateway"). The comment on `signalOfShard` in
+   `src/shards.ts` ("edge allows such a base pool today") is now stale; `src/` was not edited for
+   this. Was: **`edge/` (or wherever pool names are checked): no base pool name ending in
+   `/traces` or `/logs`**, while shards are told apart by name for shards of a release before D63, which
+   ignore `signals` (`signalOfShard`). Such a pool would have its metric shards classified as span
+   shards: their reads would be refused by the header check (503), never misread. Unneeded once
+   every shard running answers `signals` (then `query/` chooses by the filter alone).
+3. **`deploy/`**: `QUERY_SIGNALS` on `viz-query` after 1, and with `INGEST_SIGNALS` (D63: not in a
+   deployment whose publisher does not read these tables yet). Still open: what remains before
+   either flag is set in production is listed in `deploy/README.md` ("Needed changes in
+   components", stage 3), and "What remains before the flag" above.
+4. **Done by `shard/` (D72), and taken in here (2026-11-19).** The shard records each span and
+   log batch's time bounds at append and skips batches outside a read's range; this Worker sends
+   the range ("The tail"), with the two corrections the review of D72 asked for (m-2, m-3). Was:
+   **`shard/` (review m-3)**: time bounds per span and log batch, kept at append.
+5. **The gateway (`deploy/gateway/`, review m-4)**: route `GET /api/echo` to viz-query, exactly,
+   like the other Tempo paths (this Worker answers it behind `QUERY_SIGNALS`).
+
 ## Needed changes in other components
 
 Nothing outside `query/`, `engine/wasm-query/`, `engine/query` and `engine/promql` (an
@@ -1467,6 +2299,11 @@ additive, tested hook: `EvalHooks`) was edited. These are for their owners.
 
 ## Contract issues
 
+Traces and logs (2026-11-19): `contracts/engine.ts` gained, in a change of its own, the TraceQL
+and LogQL result shapes and the span and log operations of the engine (`SignalEngine`), additive.
+`contracts/ledger.ts` was widened by the write side's engineer the same day (`Table` names
+`spans`, `trace_index`, `logs`; `dataKeyPrefix`); `src/signals.ts` uses it. The tail read's
+signal field is in `shard/src/tail.ts`, with the rest of the shard's RPC (item 5 below). Before that, for metrics,
 `contracts/` was not edited.
 
 1. **`contracts/engine.ts` has no place for the read path's needs**: errors with a type,
@@ -1506,6 +2343,40 @@ additive, tested hook: `EvalHooks`) was edited. These are for their owners.
 10. **The cardinality report reads `metric_series` directly** (`engine/query`
     `catalog.rs`), as `contracts/TABLES.md` defines the table; storage has no
     series-only read.
+12. **Closed 2026-11-19, contract first (review r2, R2-m2): ABI 8.** `contracts/engine.ts` was changed and
+    type-checked in every component that imports it before any code: `SignalBudget`'s widened
+    meaning, `lqLabels`' budget, `tqExtent`'s `ranges`, `tqFilePlan`'s `ranges`, and `maxSpans`
+    counting rows held. All additive (optional). The binding's `QueryEngine` no longer redeclares
+    the span and log operations.
+11. **Closed 2026-11-19: `contracts/engine.ts` has `SignalBudget` and the budget argument** (the text below was applied as written). Was: **`SignalEngine` has no budget or bound** (2026-11-19, D62, the review's M-1 and M-2).
+    `contracts/engine.ts` was being edited by another builder, so it was not changed here; the
+    binding (`engine/wasm-query/js/index.ts`) adds an optional last argument, `SignalBudget`, to
+    the span and log operations, and its `QueryEngine` declares them with it. The change the
+    contract needs, in a commit of its own (additive: a caller of today's shape still works):
+
+    ```ts
+    /**
+     * What a span or log call may hold, and (traces) which spans are its data (D62).
+     * `maxBytes`: bytes of decoded rows, metric series and the answer the call may hold, as the
+     * engine counts them (a resource once per distinct resource; an answer four times its
+     * length); past it an `execution` error whose limit is `max_decoded_bytes`. Default: the
+     * engine's (32 MiB). `bound`: a span whose start lies outside `[lo, hi]` (nanoseconds,
+     * inclusive) is not part of the call's data and is dropped before de-duplication; `tqExtent`
+     * counts only fragments that overlap it and tail spans that start in it, and cuts the hull
+     * and hours to it. Default: all time.
+     */
+    export interface SignalBudget {
+      maxBytes?: number
+      bound?: { lo: bigint; hi: bigint }
+    }
+    ```
+
+    and in `SignalEngine`, a last parameter `budget?: SignalBudget` on `tqExtent` (its `bound`
+    only), `tqSearch`, `tqMetrics`, `tqTrace`, `tqTags`, `tqTagValues` (`maxBytes` only) and
+    `lqQuery` (`maxBytes` only); and in the comment above `SignalEngine`, "`maxSpans`/`maxRows`
+    bound the rows decoded" becomes "bound the rows held (a span outside `bound`, or a log row
+    no selector reads, is not held); `budget.maxBytes` bounds their bytes". Then the
+    redeclarations in `QueryEngine` go.
 
 9. **The write path (`edge/`, `flush/`, `contracts/`): somewhere to keep metric metadata**
    (type, unit, help from Remote Write metadata and OTLP descriptions), for
@@ -1545,6 +2416,52 @@ New with split execution, each with its alternative:
   caps, a refusal above.
 
 ## Known risks
+
+- **Traces and logs are tested against fixtures from one generator** (edge's corpus, three
+  seeds, a few hundred spans and about a thousand log rows each), the review's inputs and a
+  seven-trace completeness corpus; memory was measured on generated data whose resource shape is
+  training knowledge. The byte budget's charges were set at or above the measured growth of WASM
+  memory for those shapes; a shape whose overhead per string is larger (many tiny attributes,
+  deep arrays inside "other" values, histogram metrics) could hold more than it is charged. The
+  128 MB isolate model is modelled, not measured on Cloudflare.
+- **The margin's reads are not measured on Cloudflare.** A trace query reads `trace_index` over
+  its window and four more hours by default; for a tenant with many span shards and
+  uncompacted recent hours that is tens of extra R2 reads (modelled). If it costs too much the
+  default goes down (a tenant can set `traceMarginMs`, 0 being the window-only answer).
+- **The engine's charge is an estimate, not an allocator count.** Every structure is charged before
+  it is made, at or above the growth measured on the shapes tested (the native tests count the heap
+  around each call; "Memory"), but one row is decoded before it is charged (up to edge's 256 KiB
+  entry limit), a shape whose overhead per string is larger could hold more than it is charged,
+  and LogQL's vector operations are charged by an estimate (their inputs' size once more per
+  operation, twice for `label_replace`), not counted. The constant above the budget and the inputs
+  was measured under 12 MiB in WASM; it is modelled for a real isolate until the trial.
+- **The margin's ceilings** (measured here, not on Cloudflare): a one-minute search in a window
+  that ended two hours or more ago is refused at about 72 traces a second (the ids after the
+  window); a tenant whose long traces have pieces in many flush units of the margin reads those
+  units, and is refused with a text that says so. The extent call decodes `trace_index`'s id and
+  time columns up to three times (0.4 to 1.6 s here at 6 to 72 traces/s, Node; Cloudflare's CPU
+  not measured).
+- **Charges leave little room for answers at the caps.** At 18,000 realistic spans (30.6 MiB
+  charged) an answer of more than about 0.7 MB (charged four times) is refused: a three-quantile
+  query by span name over an hour at 15 s was charged 35.8 MiB and is refused at the default
+  budget. Before, the same answer was charged after it was written, and refused too.
+- **Shards are told apart by name** while shards of an earlier release (no signal filter) may
+  answer: a metric pool named `…/traces` or `…/logs` would have its reads refused (never misread);
+  since stage 3 edge refuses a pool map naming one, so such a pool is neither written nor read.
+- **A trace longer than the margin** is answered from its spans that start within the margin
+  of the window (D62): deterministic, the same with pruning on or off, but not the whole trace.
+- **Tempo compatibility of trace by ID** rests on Tempo's documentation and Grafana's
+  documented trace JSON (`batches`, base64 ids); no Tempo client was run against it.
+- **A span or log tail held mostly by one of its signal's shards is read in two rounds** (one
+  budget shared in equal parts first, review of D54 M-2): one more shard call per such read, one
+  after another in the second round. Measured only in the test's world (two shards), not timed.
+- **A part's rest is not checked by signal at the part.** The coordinator checks every batch it
+  reads by its header (D62); a split part reads the rest of a metric shard's tail with a key range,
+  and the shard's filter (or, for a shard rolled back since the coordinator's read, the part's
+  copy of it, review m-2) keeps nothing of a span or log batch under a key range: such a batch
+  would be passed over at a part, not refused. A metric-named shard never holds one (D57; edge
+  refuses pools that would blur the names, D66); a header check of the parts' rests would cost
+  nothing and is not built.
 
 - **The series estimate is coarse.** It counts whole row groups of the series files, so for
   a small metric among large ones, or a selector that matches a few series of a large
