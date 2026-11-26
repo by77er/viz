@@ -32,19 +32,20 @@ publisher as committed at `b237b6b`. Everything it created is deleted.
 **Recommendation: lift production's cap to 64 MiB (`LEDGER_STATE_MAX_BYTES` = 67108864), not
 further yet, and not to 300 MiB with the code and limits measured here.** At 64 MiB the slowest
 rebuild measured used 14.2 s of CPU and the first publication 5.6 s, both under half the 30 s
-default, and the rebuild stays under 30 s there even in the worst log mix and with no caller (the worst case modelled from the slowest run is 24 s: the log since the
-checkpoint at the byte rule's maximum, about 31,000 changes against the 18,267 measured, and all
-of the measured CPU scaled with the changes). The review's P-2 condition still holds: the release that lifts it must have a
-rollback floor with D47 and D55, and its record must say what a rollback below it does to a
-tenant above 16 MiB.
+default, and the rebuild stays under 30 s there even with the worst log mix and no caller: 24 s
+modelled from the slowest run (the log since the checkpoint at the byte rule's maximum, about
+31,000 changes against the 18,267 measured, and all of the measured CPU scaled with the
+changes). The review's P-2 condition still holds: the release that lifts it must have a rollback
+floor with D47 and D55, and its record must say what a rollback below it does to a tenant above
+16 MiB.
 
 Why not more:
 
 1. **150 MiB fits as measured, without margin.** The rebuilds used 16.4–18.6 s and the
    publication 14.0 s. But the same work varies a lot between runs here: the 64 MiB rebuild cost
-   0.22 ms of CPU per file of state, the 150 MiB ones 0.11–0.13 ms (its base upload was slower
-   too: 66 MB in 11.1 s against 156 MB in 6.8 s). At the 64 MiB run's rate a 150 MiB rebuild is
-   about 33 s. And the log since the checkpoint was about 0.6 of what the byte rule allows
+   0.22 ms of CPU per file of state, the 150 MiB ones 0.11–0.13 ms (the 64 MiB run's base upload
+   was slower too: 66 MB in 11.1 s, against 156 MB in 6.8–7.8 s). At the 64 MiB run's rate a
+   150 MiB rebuild is about 33 s. And the log since the checkpoint was about 0.6 of what the byte rule allows
    (40,593 changes against about 72,000 at most at 150 MiB, for two-file units): scaled to the
    most, the 150 MiB rebuild is about 33 s at the rates measured. Modelled, both; not measured.
 2. **300 MiB does not fit the default limit.** The publication extrapolates to 28–32 s (the
@@ -67,11 +68,12 @@ Why not more:
 What would let it rise further, measured as this spike did (its `rebuild` and `publish` jobs):
 
 - **Replay the log in batched transactions.** The rebuild applies each logged change in its own
-  SQLite transaction (`applyLogged`); the base and checkpoint loaders already batch 256 rows a
-  transaction, which locally cut a 32,000-file load from 15.6 s to 2.4 s (`ledger/README.md`).
-  The rebuilds put an upper bound of 0.4–0.8 ms of CPU on each change replayed (a rebuild's whole CPU
-divided by its changes),
-  and a rebuild replays tens of thousands. Not measured with the change.
+  SQLite transaction (`applyLogged`); the checkpoint and base loaders already batch rows (a part,
+  or 256 rows of a base, per transaction), which locally cut a 32,000-file load from 15.6 s to
+  2.4 s (`ledger/README.md`).
+  The rebuilds put an upper bound of 0.4–0.8 ms of CPU on each change replayed (a rebuild's
+  whole CPU divided by its changes), and a rebuild replays tens of thousands. Not measured with
+  the change.
 - **`limits.cpu_ms`** on `viz-ingest` and `viz-publisher` (for example 120,000). Durable Objects
   are billed by wall time, not CPU (pricing page, read 2026-11-19), so a higher limit costs
   nothing unless used. It also raises the cap of those Workers' stateless handlers, which are
@@ -96,11 +98,11 @@ All on 2026-11-19 (UTC), one job at a time:
 | 14:24:08 | rebuild in `LedgerR150B` with **no** request after the first (step 5, at 150 MiB) |
 | 14:31:42–14:32:15 | cleanup (below) |
 
-Departures: the top size is 150 MiB, not 300 (the cost rule: the rows per file measured by the analytics read at 14:29 (rebuild 4.3, first
-publication 9.0) projected the 300 MiB step, a fill, a rebuild and a publication, at about $5
-more, over $6 in all), so
-`LedgerR300` and `LedgerR300B` were never used and the no-caller rebuild ran at 150 MiB; the
-fills from 64 MiB on used 16 writers. Everything was deleted before the analytics of the last
+Departures: the top size is 150 MiB, not 300. By the cost rule, the rows per file the analytics
+showed at 14:29 (rebuild 4.3, first publication 9.0) projected the 300 MiB step (a fill, a
+rebuild and a publication) at about $5 more, over $6 in all. So `LedgerR300` and `LedgerR300B`
+were never used and the no-caller rebuild ran at 150 MiB; the fills from 64 MiB on used 16
+writers. Everything was deleted before the analytics of the last
 runs had arrived (Durable Object analytics for a new namespace took 15–20 minutes to appear
 here); they were read afterwards, by namespace id.
 
@@ -125,7 +127,7 @@ S4's shapes, 1,055 bytes of estimated state per file), no other traffic:
 
 At 150 MiB (157,302,228 bytes estimated, 149,152 files, version 74,592) the log was 1,101
 segments, 143.8 MB: 964 bytes of log per file with two-file units (870 with S4's 2,000-file
-units). One R2 PUT of a segment failed with 10043 (service unavailable) during the 64 MiB fill;
+units). At least one R2 PUT of a segment failed with 10043 (service unavailable) during the 64 MiB fill;
 the drain's backoff retried it and nothing was lost (`logStatus().lastError` kept the message).
 
 **Checkpoints in parts.** Every checkpoint G0 wrote, with the fill running:
@@ -177,19 +179,19 @@ estimate and the full file lists of two days of both tables (SHA-256), all equal
   Divided by the changes replayed, a rebuild's whole CPU is 0.69 ms (16 MiB), 0.78 ms (64 MiB)
   and 0.40–0.46 ms (150 MiB) a change; by the files of the state, 0.07, 0.22 and 0.11–0.13 ms.
   The three sizes do not fit one linear model: the 64 MiB run took about 1.8 times what a fit of
-  the other two predicts (its base upload too: 66 MB in 11.1 s, against 156 MB in 6.8–7.8 s at 150 MiB),
-  and the two 150 MiB runs of the same work differed by 14%. Each logged change is applied in a
-  SQLite transaction of its own (`applyLogged`), where the checkpoint's parts and a base are
-  loaded 256 rows a transaction; locally that difference was 15.6 s against 2.4 s for a
+  the other two predicts (its base upload was slow too: 66 MB in 11.1 s, against 156 MB in
+  6.8–7.8 s at 150 MiB), and the two 150 MiB runs of the same work differed by 13%. Each logged change is applied in a
+  SQLite transaction of its own (`applyLogged`), where a checkpoint is loaded a part per
+  transaction and a base 256 rows per transaction; locally that difference was 15.6 s against 2.4 s for a
   32,000-file load (`ledger/README.md`).
 - **The phases** are the R2 calls' times inside the object, whose clock advances only on I/O:
   they bracket the work, they do not measure CPU.
 - **The CPU limit and callers.** Cloudflare resets a Durable Object's CPU budget to 30 s at every
   incoming request ("If you consume more than 30 seconds of compute between incoming network
   requests, there is a heightened chance that the individual Durable Object is evicted and
-  reset", Durable Objects limits, read 2026-11-19). The analytics are consistent with it: with probes, the
-  64 MiB rebuild's 14.2 s was charged across the probes' invocations, the largest 3.9 s. So a
-  rebuild that callers keep calling (flushes retry; queries arrive) gets a fresh budget every
+  reset", Durable Objects limits, read 2026-11-19). The analytics are consistent with it: with
+  probes, the 64 MiB rebuild's 14.2 s was charged across the probes' invocations, the largest
+  3.9 s. So a rebuild that callers keep calling (flushes retry; queries arrive) gets a fresh budget every
   few seconds. The no-caller run is the strict case: nothing after the request that started it;
   at 150 MiB it used 16.4 s and finished (the base in R2 29.7 s after the request, the first plan
   answered at 33.0 s).
@@ -219,8 +221,8 @@ maximum) at 150 MiB.
 ## Cost (measured on Cloudflare)
 
 Read from the analytics API (`analytics.mjs`, window 14:09–14:40 UTC 2026-11-19, read at
-14:41 UTC; every Durable Object namespace and the bucket of this spike), priced at Workers Paid list
-prices **ignoring the included allowances**:
+14:41 UTC; every Durable Object namespace and the bucket of this spike), priced at Workers Paid
+list prices **ignoring the included allowances**:
 
 | Item | Used | At list price |
 |---|---|---|
@@ -234,25 +236,29 @@ prices **ignoring the included allowances**:
 | Workers requests | 252 | < $0.01 |
 | **Total** | | **$4.86** |
 
-By activity (rows written): the fill to 150 MiB 1,146,535 (15.4 per two-file unit, 7.7 per file,
-pre-images included; the model said 13 and 6.5); the four rebuilds 1,613,320 (4.1–4.3 per file; modelled 4.5); the three first publications
-2,059,387 (9.0 per file; modelled 11). The modelled worst case stated before deploying was $9.70 for the whole
-plan; the stop rule kept the spike under $6, and it came to $4.86. All of it falls inside the
+By activity (rows written): the fill to 150 MiB 1,146,535 (15.4 per two-file unit, 7.7 per
+file, pre-images included; modelled 13 and 6.5); the four rebuilds 1,613,320 (4.1–4.3 per file;
+modelled 4.5); the three first publications 2,059,387 (9.0 per file; modelled 11). The modelled
+worst case stated before deploying was $9.70 for the whole plan; the stop rule kept the spike
+under $6, and it came to $4.86. All of it falls inside the
 plan's included allowances (50 M rows written and 400,000 GB-s a month, of which 3.0 M and 53,489
 had been used in November before this spike), so the bill it adds is the R2 operations at most:
 cents.
 
-The periodic dataset's totals for G0 moved between readings (0.90–1.15 M rows written for the
-same window, as late reports arrived and per-minute and whole-window queries disagreed); the
-figure above is the sum of its per-minute rows, the largest reading. The replicas' and
-publishers' figures were the same in every reading.
+**The analytics were not stable within the first half hour.** Durable Object rows for a new
+namespace appeared 15–20 minutes after its first request; G0's rows written read anywhere from
+0.90 M to 1.15 M for the same window as reports arrived (per-minute and whole-window queries
+disagreed); and a reading at 14:44 had lost `LedgerR150`'s row that the 14:41 reading had
+(18,618 ms of CPU, 637,294 rows, 51 MB). Every figure in this README is from the 14:41 reading,
+the only one with every object of the spike in it; where a figure was read more than once it was
+the same each time, except G0's totals.
 
 ## Cleanup
 
 - 14:31:42 UTC: every object of `viz-s11-lake` deleted through the Worker (`driver.mjs purge`:
   1,205 objects, 210 MB: the G0 log, its last checkpoint, the last Iceberg tables, the job
   results); a listing afterwards returned none.
-- 14:32:01 UTC: `wrangler delete viz-s11-ledger`: the Worker and its nine Durable Object
+- 14:32:01 UTC: `wrangler delete viz-s11-ledger`: the Worker and its ten Durable Object
   namespaces with their storage (G0's 150 MiB state, the replicas', the publishers').
 - 14:32:12 UTC: `wrangler r2 bucket delete viz-s11-lake`.
 - 14:32:15 UTC: inventory after (`inventory.mjs`, Workers, R2 buckets, KV namespaces, queues,
@@ -265,12 +271,12 @@ publishers' figures were the same in every reading.
 ## Not measured
 
 - **300 MiB**, and anything between 150 and 300 MiB: stopped by the cost rule (the fill, a
-  rebuild and a first publication at 300 MiB were projected at about $5 more at the measured rows per file).
-  Everything said above 150 MiB is extrapolated.
+  rebuild and a first publication at 300 MiB were projected at about $5 more at the measured
+  rows per file). Everything said above 150 MiB is extrapolated.
 - **A rebuild with the worst log mix.** The byte rule lets the log since the newest checkpoint
   grow to about the checkpoint's size (plus what is logged while checkpoints are written) before
-  the next one; the runs here had about 0.6 of that (by changes: 18,267 at 64 MiB, 40,593 at 150 MiB,
-  against about 31,000 and 72,000 at most). The worst case is modelled above from the measured
+  the next one; the runs here had about 0.6 of that (by changes: 18,267 at 64 MiB and 40,593 at
+  150 MiB, against about 31,000 and 72,000 at most). The worst case is modelled above from the measured
   cost per change, not measured.
 - **A first publication from checkpoint parts** (format 2) rather than a base, and a re-base
   onto a new incarnation of a tenant already published: both lighter than what was measured
