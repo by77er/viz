@@ -137,7 +137,7 @@ describe('R2-M2, N1: refresh tokens farmed while approved, replayed after the gr
     expect(r.status, JSON.stringify(r.body)).toBe(200)
   })
 
-  it('the list is shared: in a new isolate a listed token is refused before any limit and any object, and its KV record expires with the token', async () => {
+  it('the list is shared: in a new isolate a listed token is refused before its tenant\'s fuse and any object (after its own allowance, round 3 m-1), and its KV record expires with the token', async () => {
     const { tenant, admin } = await newTenant('r2n1k')
     const bad = await connect(admin)
     const stock = await farm(bad.clientId, bad.refresh, 1)
@@ -153,14 +153,16 @@ describe('R2-M2, N1: refresh tokens farmed while approved, replayed after the gr
     const credential = counting(env.RL_TEST_CREDENTIAL as RateLimit)
     const tenantFuse = counting(env.RL_TEST_TENANT as RateLimit)
     const fresh = limited({ ...AFTER_TAG, OAUTH_RL_CREDENTIAL: credential.binding, OAUTH_RL_TENANT: tenantFuse.binding })
-    for (let i = 0; i < 5; i++) {
-      const r = await fresh.refresh(bad.clientId, stock[0]!)
-      expect(r.status).toBe(400)
-      expect(r.body.error).toBe('invalid_grant')
-      expect((await fresh.revoke(bad.clientId, stock[0]!)).status).toBe(200)
-    }
+    const r = await fresh.refresh(bad.clientId, stock[0]!)
+    expect(r.status).toBe(400)
+    expect(r.body.error).toBe('invalid_grant')
+    expect((await fresh.revoke(bad.clientId, stock[0]!)).status).toBe(200)
     expect(fresh.gets).toEqual([])
-    expect([credential.keys, tenantFuse.keys]).toEqual([[], []])
+    // Its own allowance counted each (round 3, m-1: the limit before the KV read; the first isolate
+    // spent one of its three); its tenant's fuse none.
+    expect(credential.keys.length).toBe(2)
+    expect((await fresh.refresh(bad.clientId, stock[0]!)).status).toBe(429)
+    expect(tenantFuse.keys).toEqual([])
   })
 })
 
@@ -218,6 +220,8 @@ describe('R2-M1, N2: when a narrow key is skipped, the wider ones are not asked 
       const l = limited({ ...AFTER_TAG, OAUTH_RL_CREDENTIAL: { limit: (o: { key: string }) => (first ? ((first = false), fail()) : realCredential.limit(o)) }, OAUTH_RL_TENANT: tenantFuse.binding })
       vi.spyOn(console, 'error').mockImplementation(() => {})
       for (let i = 0; i < 13; i++) expect((await l.refresh(dead.clientId, dead.refresh)).status).toBe(400)
+      // The list is consulted although the limiter is skipped (round 3): the token reached its object once.
+      expect(l.gets.length).toBe(1)
       expect(ratelimit.limiterStatus(l.e as never).OAUTH_RL_CREDENTIAL).toBe('skipped')
       // While the credential's limiter is skipped, its tenant's fuse counted none of the 13.
       expect(tenantFuse.keys).toEqual([])

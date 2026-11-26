@@ -1,7 +1,7 @@
 import { CLIENT_ID, OAUTH_LIFETIMES, OAUTH_LIMITS, OAUTH_SCOPES, type OAuthScope, type TenantOAuthRpc, type TokenRequest, parseCredential } from '../../contracts/oauth'
 import { type AuthzRequest, CODE_CHALLENGE, type OAuthEnv, callback, canonicalResource, credentialExpired, credentialTagValid, displayName, encodeRequest, isLoopback, oauthConfig, parseScope, redirectProblem, sameResource, signRegistration, verifyClientId, type OAuthConfig } from './oauth'
 import { type DeadListEnv, listedDead, recordDead } from './deadlist'
-import { type RateLimitEnv, type Refusal, limitCredential, limitSource } from './ratelimit'
+import { LISTED, type RateLimitEnv, type Refusal, limitCredential, limitSource } from './ratelimit'
 import type { Tenant } from './tenant'
 import { randomId } from './util'
 
@@ -26,10 +26,11 @@ import { randomId } from './util'
  *
  * Rate limits (src/ratelimit.ts, D70 as rewritten after its two reviews): registration and the
  * authorization page count each request against the client's network before the body is read. The
- * token endpoint and revocation count a credential that carries the tag, has not expired and is not
- * on the list of dead credentials (src/deadlist.ts) against itself, then its tenant, before the
- * tenant's object is asked. A genuine credential past its expiry or on that list is answered as the
- * object would, counted against nothing (round 2, m-2 and R2-M2); a request without a genuine
+ * token endpoint and revocation count a credential that carries the tag and has not expired against
+ * itself, then look it up on the list of dead credentials (src/deadlist.ts), then count it against its
+ * tenant, before the tenant's object is asked. A listed one is answered as the object would, counted
+ * against its own allowance only; one past its expiry is answered so counted against nothing (round
+ * 2, m-2 and R2-M2; round 3, m-1 and R3-M1); a request without a genuine
  * credential (malformed, or no tag) counts against the client's network instead, and a genuine
  * credential never does (review M-1). When the object answers that a refresh token or a revoked
  * token is dead, the Worker lists it. A refusal is 429 `too_many_requests` with `Retry-After`;
@@ -351,12 +352,12 @@ async function token(req: Request, env: OAuthHttpEnv, later: Later): Promise<Res
   // Made by it, and past the expiry the tag vouches for: the object would say the same (D70). Not
   // counted at all, not even by network: it is genuine, and its HMAC is paid (round 2, m-2).
   if (credentialExpired(presented)) return unknownGrant()
-  // A refresh token its object has already called dead: refused the same way, before any limit or
-  // object (R2-M2). (Codes are not listed: src/deadlist.ts.)
-  if (cred.kind === 'refresh' && (await listedDead(env, presented)) !== null) return unknownGrant()
-  // A credential this deployment made and that has not expired: counted against itself, then its
-  // tenant, before the object (D70). Never against the network it came from (review M-1).
-  const limited = await limitCredential(env, cred.tenant, presented)
+  // A credential this deployment made and that has not expired: counted against itself, then, for a
+  // refresh token, looked up on the list of credentials its object has already called dead (R2-M2;
+  // after its own allowance, round 3 m-1: codes are not listed, src/deadlist.ts), then counted against
+  // its tenant, before the object (D70). Never against the network it came from (review M-1).
+  const limited = await limitCredential(env, cred.tenant, presented, cred.kind === 'refresh' ? async () => (await listedDead(env, presented)) !== null : undefined)
+  if (limited === LISTED) return unknownGrant()
   if (limited) return tooMany(limited.why, limited.retryAfterS, 'Nothing was issued, and the credential you sent was not used.')
   const request: TokenRequest = { grant_type: grantType, client_id: form.client_id }
   for (const k of ['code', 'redirect_uri', 'code_verifier', 'refresh_token', 'resource', 'scope'] as const) if (form[k] !== undefined) request[k] = form[k]
@@ -387,13 +388,17 @@ async function revoke(req: Request, env: OAuthHttpEnv, later: Later): Promise<Re
   // RFC 7009 §2.2: an invalid token is not an error. One this deployment did not make reaches no
   // object, and counts against the network it came from.
   if (!cred || cred.kind === 'code' || !(await credentialTagValid(oauthConfig(env).clientKey, form.token))) return refusedHere(req, env, json(200, null))
-  // Nor does one past its expiry (D70; a refresh token's expiry is also its grant's idle end), or one
-  // its object has already called dead (R2-M2): genuine, so counted against nothing (m-2).
-  if (credentialExpired(form.token) || (await listedDead(env, form.token)) !== null) return json(200, null)
-  // A token this deployment made: counted against itself, then its tenant, before the object
-  // (D70). Refused, it stays as it was (RFC 7009 §2.2.1 says the same of a 503); a person can also
+  // Nor does one past its expiry (D70; a refresh token's expiry is also its grant's idle end):
+  // genuine, so counted against nothing (m-2).
+  if (credentialExpired(form.token)) return json(200, null)
+  // A token this deployment made: counted against itself, then looked up on the list of dead
+  // credentials (R2-M2; round 3 m-1), then counted against its tenant, before the object (D70). A
+  // listed or a live one is counted alike, so the answers say nothing of which it is (round 3,
+  // R3-M1). Refused, it stays as it was (RFC 7009 §2.2.1 says the same of a 503); a person can also
   // revoke the grant.
-  const limited = await limitCredential(env, cred.tenant, form.token)
+  const presented = form.token
+  const limited = await limitCredential(env, cred.tenant, presented, async () => (await listedDead(env, presented)) !== null)
+  if (limited === LISTED) return json(200, null)
   if (limited) return tooMany(limited.why, limited.retryAfterS, 'Nothing was revoked.')
   const r = await tenantStub(env, cred.tenant).oauthRevoke(cred.tenant, form.token, form.client_id)
   if (r.status === 'schema_too_new') return oauthError(503, 'temporarily_unavailable', 'A deployment is in progress; retry.', { 'Retry-After': String(Math.ceil(r.retryAfterMs / 1000)) })

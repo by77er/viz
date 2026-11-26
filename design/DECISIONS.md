@@ -2035,11 +2035,51 @@ ledger writes a newer one or an operator removes it. The publisher becomes a rea
 checkpoint format, which `contracts/LEDGER-LOG.md` says only the ledger reads; a newer format
 is passed over, so the ledger still needs no readers-first release to change it.
 
-**Would change if.** A re-base or first publication of the largest tenants exceeds the
-publisher's CPU limit on Cloudflare (then progress kept across invocations, or a higher
-`limits.cpu_ms`); corrupt checkpoints appear in practice (then (e)); the contract orders a base's
-files by key (then (d), no staging); or the manifest gains per-part sizes or digests (then each
-part is checked on its own as it arrives, not only the totals at the end).
+**Amended 2026-11-26: a re-base that does not fit one invocation goes on across invocations.**
+Measured on Cloudflare, 2026-11-19, S11 (`spikes/s11-large-ledger/`): a first publication from the
+base took 14.0 s of CPU at 150 MiB, about 0.09–0.13 ms per file, and 300 MiB extrapolates to 28–32 s
+against the 30 s default limit, so the largest tenants exceed it, the case this entry named as what
+would change it. The streaming re-base above is kept, and a publish's re-base work is now bounded by
+a budget (`maxRebaseFilesPerPublish`, 100,000 units: files staged, added files written ahead,
+manifest entries rebuilt). A checkpoint in parts is staged part by part into `rebase_stage`, each
+part in one transaction with its marker in `rebase_step` (checkpoint key, attempt, parts done,
+running totals, last keys), and stops at the first part boundary past the budget; the next publish
+continues the same checkpoint, so the per-part and whole-checkpoint checks still span every part.
+Once staged, the changes after it are applied for every table in one transaction, all or none, and
+the step records the version reached and the snapshot id its commit will have; the files it adds are
+then written into manifests ahead of that commit, a manifest per transaction, each ADDED entry
+carrying that snapshot id (sequence numbers are inherited); the commit, first in a publish of its own,
+lists them after HEADing each at its recorded size. Every step re-reads and re-checks the kept state:
+a newer ledger incarnation, another checkpoint, or a re-based table whose cursor moved drops it. A
+re-base read whole within the budget is committed as before, byte for byte. `stage` is left to the
+releases before (they empty it at every attempt); the new tables are storage migration 7, additive,
+which those releases ignore. After a lost storage a table is rebuilt from R2 the same way, a manifest
+at a time into `live` with a done mark each. Alternatives: (g) a higher `limits.cpu_ms` alone (up to
+5 minutes): moves the wall, and Durable Objects are billed by wall time so it would not cost more,
+but a tenant past it still never finishes, and S11 saw the per-file cost vary threefold between
+runs; (h) staging resumable but the commit whole: the commit is about half a 300,000-file
+first publication's CPU here (5.8 s of 9.9 s in the upgrade, 13.5 s of 17.9 s in a first
+publication); (i) commits of part of a tenant's files without moving its cursor: a snapshot that is
+no ledger version; (j) one snapshot id reserved per table for the next commit: any other commit of
+the table before it invalidates the manifests written ahead; (k) entries written with a null snapshot
+id (inherited): readers must support inheritance, and a whole re-base's bytes would differ; (l)
+resuming inside a base: needs a byte offset at an element boundary and a contract change to
+`readLedgerLogStream`. Measured here (local workerd, `publisher/bench/upgrade.bench.test.ts`): a
+300,000-file tenant's first publication in 7 publishes, at most 4.8–5.4 s of CPU each (19.8 s and
+22.7 s in all, two runs), against 19.8 s in one publish for the release before; from a base the step
+that stages it whole 7.8–8.4 s. Modelled on Cloudflare from S11's per-file cost: at most about 9–13 s
+per publish. In workerd tests: a re-base over several runs ends exactly as one uncapped re-base for
+three starts; one cut off at each R2 operation in turn (96 cuts) loses nothing committed; a newer
+incarnation mid-way commits nothing of the old; the release before, on storage left mid-way, ignores
+it (`publisher/README.md`, "Re-bases and rebuilds in steps").
+
+**Would change if.** A publish at the budget, measured on Cloudflare, comes near the limit (then a
+smaller budget: steps commit nothing, so it costs only alarm wakes) or far from it (a larger one);
+the step that stages a base whole, the commit of a re-base in steps (both grow with the tenant), or a
+rebuild after a conflict nears the limit (then resuming inside a base, or those in steps too);
+corrupt checkpoints appear in practice (then (e)); the contract orders a base's files by key (then
+(d), no staging); or the manifest gains per-part sizes or digests (then each part is checked on its
+own as it arrives, not only the totals at the end).
 
 ## D56. The label endpoints are counted over leaves by ranges of `series_id`, each part listing its files in waves and counting distinct series by id
 
@@ -2532,6 +2572,53 @@ fresh engine instance; `query/README.md` "Memory" has the per-call table). Befor
   operations are charged by an estimate (above).
 - Without this release's ABI 8 module the query refuses (`EngineLoadError`, 500).
 
+**What volume this serves** (spike S10, `spikes/s10-signals-trial/README.md`, **measured on
+Cloudflare, 2026-11-19**, on the ABI 7 build, before the passes and ranges above). The memory budget
+held: the query isolate peaked at 70.8 MiB, the fat shapes were refused 422 `max_decoded_bytes` at
+40 to 45 MiB or answered at 4.8 to 6.0 MiB, and a search of 17,402 spans answered at 31 MiB of WASM.
+The caps did not: at about 690,000 spans in five minutes every trace query was refused, trace by ID
+included. A search's `trace_index` over the window and both margins was 20.1 MB, and trace by ID
+then read every `spans` file of the trace's hour, 18.0 MB, both over `maxFetchBytes` (16 MiB); a
+10-second rate was over `maxSpans` (235,913 rows in the row groups in range). A margin of 0 did not
+help: each flush unit's files covered about a minute of start times and so overlapped any window.
+At S10's 69 bytes of `spans` and 27 of `trace_index` per span (measured there), **the design serves,
+in one query**:
+- trace by ID up to about 240,000 spans in the trace's hour (S10's figure, modelled from its bytes)
+  on ABI 7; on ABI 8 the span read is cut to the files whose start times overlap the trace's own
+  pieces, so the bound becomes the span bytes of the flush units overlapping those minutes, not the
+  hour (modelled: not run on Cloudflare; for S10's load, whose units each covered about a minute of
+  five, roughly a fifth to a half of 18.0 MB);
+- a search while `trace_index` over the window plus four hours stays under 16 MiB less the tail:
+  about 620,000 spans in those hours (S10's figure; unchanged by ABI 8, which reads the same
+  `trace_index` and holds less of it);
+- a search or span-local metrics query while the span row groups overlapping its window, or its
+  traces' pieces, hold at most 18,000 spans and 16 MiB: about 5 spans a second over a one-hour
+  window, more for shorter windows only once a flush unit's row group covers less time than the
+  window.
+Above that a trace query is refused (422), never misanswered. This is a ceiling of reading one
+place, not of memory.
+
+**Follow-up design (not built; for D62's owner to schedule).** What removes the ceiling, in order:
+1. *Trace by ID by trace id within the hour.* `spans` files carry a bloom filter on `trace_id` per
+   row group (TRACES.md; written by flush, never read). Plan: fetch each candidate file's footer and
+   its row groups' bloom filters (one coalesced range read per file, at most six in flight per leaf),
+   keep the row groups whose filter may hold the id, fetch only those. `maxFetchBytes` then bounds
+   the bloom bytes plus the trace's row groups, not the hour. Flush and compaction should also cut
+   `spans` row groups smaller (2 MiB, as compaction does) so a hit costs a small group. Needs an
+   engine call that reads a bloom filter from a byte range (`viz_storage` has the writer).
+2. *Searches page `trace_index` within the bound.* The extent pass already holds ids only; make it an
+   engine session (as `gatherNew`/`gatherAdd` are for PromQL) that takes `trace_index` files in waves
+   under a per-wave byte cap, so the 16 MiB applies to a wave, not to the bound; the passes then run
+   over waves (pass 1 and 2 over all waves, pass 3 over the waves again). The found traces' spans
+   are then read by ranges as now, also in waves if the engine call can take spans incrementally
+   (it holds the traces under the byte budget anyway).
+3. *Span-local calls and searches over busy hours.* Smaller row groups at flush (time-cut), or split
+   execution by trace-id hash once the engines have exact partials (D62's earlier alternative), so
+   `maxSpans` applies per part.
+4. The log pre-check counts whole row groups (S10): count by stream list and time inside the group
+   where the fragment has a stream list.
+None of this changes answers: each reads a subset that still contains every row the engine selects.
+
 **Would change if.** `trace_index` gains an id-sorted, bloom-filtered layout at flush (then a second
 round by id over a longer reach, and a hintless trace by ID that stops at the newest day holding the
 trace); the engines gain exact partials (split execution); projection by the plan's columns cuts the
@@ -2849,7 +2936,10 @@ tables without publishing them. Replaces D64's "record and release": `publisher/
 "The span and log tables". Amended the same day after review M-6 of the spans-and-logs review: the
 upgrade's re-bases, and everything else a publish does in proportion to the cell's tenants, are
 bounded per publish (`publisher/README.md`, "Bounded work per publish"). This replaces the earlier
-text, under which the first publish after the upgrade re-based every tenant in one invocation.)
+text, under which the first publish after the upgrade re-based every tenant in one invocation.
+Amended again 2026-11-26: (l), a tenant's re-base kept across invocations, is now done (D55's
+amendment), and so is a lost table's rebuild a manifest at a time; this replaces the text that left
+one tenant, or one table's rebuild, whole in one invocation.)
 
 **Decision.** `PUBLISHED_TABLES` is every `LedgerTable`, in commit order `metric_samples`,
 `metric_series`, `spans`, `trace_index`, `logs`; each is one Iceberg v2 table per cell with its
@@ -2917,8 +3007,10 @@ of 100,000 files by the times measured here (modelled), and a publish cut off wa
 nothing, so the alarm could fail for ever and stop metric publication for the whole cell. (j) moves
 the wall without removing it, and is still the answer for one tenant too large for an invocation.
 (k) loses less in a cut-off but writes a snapshot per tenant per table; a publish commits what it
-re-based instead, and the cap bounds what one cut off loses. (l) needs `stage` to record, per tenant
-and table, the version it was diffed to; not done. (m) is simpler but holds every waiting tenant's
+re-based instead, and the cap bounds what one cut off loses. (l) is done since 2026-11-26 (D55's
+amendment): measured on Cloudflare, 2026-11-19, S11, one tenant's first publication reaches the 30 s
+limit near 300 MiB, so a cap on the number of re-bases alone was not enough; a tenant larger than
+the budget goes on in steps under the same cap. (m) is simpler but holds every waiting tenant's
 metrics back for the whole queue, which D64's release did not. The started mark keeps a re-base that
 cannot finish, or keeps failing, from being taken first every time and holding the queue. Metric commits first, and unchanged code paths for
 them, keep metric publication byte-identical, which the counterfactual below requires.
@@ -2953,9 +3045,12 @@ spread over about (the cell's files ÷ 100,000) publishes a second apart, each a
 retained snapshot, about 1 kB of `metadata.json` each for 24 hours) of every span and log table;
 until a tenant's turn its span and log tables are not published. Storage migration 6, additive. A
 publish with a tenant to re-base GETs the version hint of each table SQLite has no metadata for (up
-to five). A lost storage takes a publish per table before tenants are read again; each rebuild reads
-its whole table (about 30 µs of CPU per file here, so about 1,000,000 files per table before it
-alone reaches 30 s, modelled). A publish still gives up after six conflicts (one per table plus one:
+to five). A lost storage takes a publish per table before tenants are read again, more for a table
+larger than the budget: a rebuild reads at most the budget's manifest entries per publish (about
+30–36 µs of CPU per entry here, 1.3 s at most per publish at a budget of 25,000; before, the whole
+table, so about 1,000,000 files per table before it alone reached 30 s, modelled). A re-base larger
+than the budget is a few more publishes, a second apart, and its stage and manifests written ahead
+are kept meanwhile (storage migration 7, additive). A publish still gives up after six conflicts (one per table plus one:
 with three, before the rebuild came first, the first publish after a loss threw at the fourth
 table), which now serves a lost storage whose version hints are gone too.
 External readers that ignore the name mapping, or the projection rule for identity partitions, see
@@ -2967,8 +3062,8 @@ a schema id it did not write, so that needs a release that evolves the schema); 
 `spans` ever merges across hours (then the hour comes from the files' bounds, not the key); or
 readers that matter turn out to ignore the name mapping. For the caps: a capped publish's CPU,
 measured on Cloudflare, far from the limit (then larger caps) or near it (smaller ones, or
-`limits.cpu_ms`); one tenant's re-base, or one table's rebuild from R2, near the limit by itself
-(then (l), or a rebuild a manifest at a time across invocations).
+`limits.cpu_ms`); the parts of a re-base still whole in one invocation (a base staged whole, the
+commit of a re-base in steps) near the limit by themselves (D55, "Would change if").
 
 ## D68. Spans, `trace_index` and logs are compacted by the metric step, each table on its own: spans per hour and never across one, `trace_index` and logs per day; merges stream their inputs and cut row groups at 2 MiB
 
@@ -3248,9 +3343,26 @@ a way out that keeps the key).
 (Written 2026-11-19 for the review of D44, M-2: "a rate limit in front of `/oauth/token`,
 `/oauth/revoke`, `/oauth/register`, `/oauth/authorize` and OAuth bearers before public exposure".
 Rewritten the same day after its adversarial review, `reviews/d70-rate-limits.md`, which rejected
-layer 1 as first built (B-1, M-1, M-2, m-1 to m-8). **Rewritten again the same day after its second
-review, `reviews/d70-rate-limits-r2.md` (approve with changes: R2-M1, R2-M2, m-1 to m-4, n-1, n-2).
-This replaces the version written after the first review.** That version:
+layer 1 as first built (B-1, M-1, M-2, m-1 to m-8), and again after its second review,
+`reviews/d70-rate-limits-r2.md` (approve with changes: R2-M1, R2-M2, m-1 to m-4, n-1, n-2). **Revised
+on 2026-11-26 after its third look, `reviews/d70-rate-limits-r3.md`, which rejected the second
+rewrite until R3-B1 was fixed. This replaces the version written after the second review**, which:
+- counted a rotated refresh token of a live grant as dead when another client revoked it, so a
+  thief could list the owner's copy, the owner's next refresh was refused in the Worker, reuse
+  detection never ran and the stolen grant stayed live (R3-B1, reproduced); and the same path told
+  an unauthenticated caller whether a refresh token was live (R3-M1, reproduced);
+- read the list before any rate limit, so someone cycling more dead credentials than an isolate
+  remembers forced one KV read per request (m-1);
+- switched the list off for a whole isolate for 10 s after one slow KV read (m-2).
+
+**Production has served OAuth without these limits since 2026-11-19**, when the owner deployed
+`main` at PR #8: control's OAuth endpoints are public at `vis.bitcru.sh`, with the tag and the
+object's own checks (reuse detection included) but with no layer 1, no expiry check in the Worker
+and no list. The rule this decision was written for, "required before public exposure" (review of
+D44, M-2), **was not met**. This change, with the deploy's gate (`control/README.md`, "Needed changes
+elsewhere"), is the remedy; until it reaches `main`, the exposure stands as the first review found it.
+
+The version written after the first review:
 - asked the tenant fuse alone whenever the credential's own limiter was absent, failed or skipped,
   so one dead credential spent the fuse again for as long as the narrow binding was down (R2-M1);
 - kept no record of credentials found dead, so refresh tokens collected at the per-grant limit
@@ -3313,9 +3425,22 @@ person's admin key and was already bounded exactly (20 a tenant an hour).
     rotated, of a grant that ended or can no longer issue, or presented by another client, which
     ends the grant); introspection's `inactive` `unknown`, `expired` or `revoked` (never `suspended`
     or `audience`, which can come back); and revocation's new `dead: true` (an additive field of
-    `RevokeResult`: the token was unknown, expired, rotated or of an ended grant, or this call ended
-    it; false for a live token another client presented). Revocation had to say it: it answers 200
-    either way (RFC 7009), and a stock replayed there would otherwise never be listed.
+    `RevokeResult`: the token was unknown or of an ended grant, an unrotated one had expired, or this
+    call ended it; false for any token of a live grant another client presented). Revocation had to
+    say it: it answers 200 either way (RFC 7009), and a stock replayed there would otherwise never be
+    listed.
+  - *The rule that bounds when* (third look, R3-B1): **nothing is listed whose later presentation
+    must still reach the object.** Rotation detects theft only because the other holder of a rotated
+    refresh token presents it again and the object ends the grant; a listed copy would be refused in
+    the Worker first. So a rotated token of a live grant is never dead. Each place that lists keeps
+    the rule: at the token endpoint, `invalid_grant` follows either no row (nothing a later
+    presentation could detect either), or a grant that has ended or cannot issue (a rotated token
+    presented there has just ended its grant by reuse detection), or a token this request spent with
+    nothing issued, which leaves the grant without any unrotated refresh token for another holder to
+    hold; introspection lists access tokens, which reuse detection does not watch; revocation lists
+    only what the call ended or what was already ended (a rotated row past its own expiry included:
+    inside the Worker's 60 s grace it still reaches reuse detection, so it is not dead either). The
+    version this replaces counted "rotated" as dead at revocation by another client, which broke it.
   - *Where.* In the isolate at once (a map of hashes to expiries, at most 10,000, oldest dropped
     first), and in `CONFIG`, the viz KV namespace control already binds, under a prefix of its own:
     `oauth-dead:<tenant>:<SHA-256 of the credential, hex>` → `{"v":1,"reason":…}` (format
@@ -3323,13 +3448,21 @@ person's admin key and was already bounded exactly (20 a tenant an hour).
     the Worker's 60 s of grace. Nothing outlives what the expiry check refuses anyway. Nothing is
     written for layout 1 (no expiry to bound it) or with less than KV's 60 s minimum left.
   - *Check.* At `/oauth/token` (refresh tokens; codes die within 12 minutes and each needs a
-    person's approval), `/oauth/revoke` and introspection, after the tag and the expiry and before
-    any limit: a listed credential is answered as the object answered (`invalid_grant`, 200,
-    `inactive` with the recorded reason) and counts against nothing, its network included.
+    person's approval), `/oauth/revoke` and introspection, after the tag, the expiry and **the
+    credential's own rate limit**, and before its tenant's fuse and the object (third look, m-1): a
+    listed credential is answered as the object answered (`invalid_grant`, 200, `inactive` with the
+    recorded reason), counted against its own allowance like any credential and against nothing
+    else, its network included. So no one forces KV reads faster than 5 a minute per credential per
+    location (1,200 at introspection), however many dead credentials they cycle, and a listed and a
+    live token answer the same counts (R3-M1). The list is consulted whatever the narrow limiter's
+    verdict but a refusal: it does not fail with a limiter.
   - *Reads.* The isolate's map first, then one KV read; a credential KV does not list is remembered
-    as such for 60 s, so a live token costs at most one read per isolate a minute. A read has 100 ms;
-    a read that throws or overruns is treated as not listed, logged once per isolate, and KV reads
-    are skipped for 10 s in that isolate (its own map still applies). `/healthz` says
+    as such for 60 s, so a live token costs at most one read per isolate a minute. A read has 100 ms.
+    A read that overruns affects **its key only**: that credential counts as not listed for 60 s in
+    the isolate, and every other key is still read (third look, m-2: a cold key is slow, and anyone
+    can make keys cold with fresh credentials, so a timeout must not switch the list off). A read that
+    throws is KV failing, which no request can cause: it is logged once and KV reads are skipped for
+    10 s in that isolate (its own map still applies). `/healthz` says
     `OAUTH_DEAD_LIST: bound|absent|skipped`.
   - *Writes.* One per dead credential per isolate: an isolate that has recorded or read one as dead
     never asks the object about it again. Every write is of a credential this deployment minted and
@@ -3479,12 +3612,12 @@ person's admin key and was already bounded exactly (20 a tenant an hour).
   invocations gather in a few locations, and the per-location budgets become nearly global, the
   fuses with them. A control test checks both Workers' `wrangler.jsonc`. A check in the deploy's
   configure is a needed change.
-- **Rollback floor** (second review, m-3): once OAuth is public, rolling viz-control back to a
-  release before the first rewrite (`3cbabb8` or earlier) would mint credentials without an expiry
-  again and bring the first version's keys, and B-1, back; one before this rewrite would bring back
-  R2-M1 and the 30-day stock. D69's `rollback_floors` should hold viz-control at this release from
-  the release that makes OAuth public (the deploy change is in `control/README.md`, "Needed changes
-  elsewhere").
+- **Rollback floor** (second review, m-3; OAuth is public already, since PR #8): rolling viz-control
+  back to a release before the first rewrite (`3cbabb8` or earlier, PR #8 among them) would mint
+  credentials without an expiry and serve without layer 1; one with the second rewrite but not this
+  revision would bring R3-B1 back, a thief's way round reuse detection. D69's `rollback_floors` should
+  hold viz-control at this revision from the first release that carries it (the deploy change, with
+  evidence exports only this revision has, is in `control/README.md`, "Needed changes elsewhere").
 
 **What an attacker can still do** (modelled unless marked):
 - **Someone holding dead credentials of a tenant that have not expired** (a former client's; a
@@ -3495,7 +3628,12 @@ person's admin key and was already bounded exactly (20 a tenant an hour).
   credential is refused at once; elsewhere once KV shows it, about a minute (training knowledge),
   plus up to a minute in an isolate that had read it as not listed before it died.
   - So a stock of N dead refresh tokens can spend at most 5N of each location's token fuse in the
-    minute it is first replayed, and at worst as much again in the next, **once**. Tripping the token
+    minute it is first replayed, and at worst as much again in the next, **once**. More exactly
+    (third look, m-3): each credential reaches the object at most once per isolate that has not met
+    it, so a stock of N trips a location's fuse (6,000 a minute) only if at least 6,000 ÷ N isolates
+    there meet the whole stock within the minute: **at least 5 isolates for a stock of 1,200**, and a
+    single isolate needs a stock of 6,000 (16 h 40 min of rotating at the cap). After about a minute
+    the KV record refuses the stock in every location: a burst of about a minute per stock. Tripping the token
     fuse (6,000) takes N ≥ 1,200, which is 3 hours 20 minutes of rotating at layer 2's limit, and
     lasts one or two minutes in each location replayed at the same time; then the stock is spent.
     Tripping the bearer fuse takes 25 dead access tokens less than an hour old, for the same one or
@@ -3646,6 +3784,14 @@ billed as a request).
   per client refreshing hourly), and a client rotating at the limit would drive writes directly, 6 a
   minute per grant, where listing on the object's answer writes only for credentials someone
   replays. Not chosen.
+- (t) **List a rotated refresh token of a live grant** when another client revokes it (the version
+  after the second review): R3-B1, a thief suppresses reuse detection and keeps a stolen grant; R3-M1,
+  a liveness oracle. Replaced by the rule above.
+- (u) **Read the list before any rate limit** (the same version): someone cycling more dead
+  credentials than an isolate remembers (10,000) forces a KV read per request at their own rate, and
+  a listed token answers differently from a live one. Replaced: the credential's own limit first.
+- (v) **Skip the list for the isolate after a slow read** (the same version): a cold key, which
+  anyone can make, switches the list off for 10 s. Replaced: a slow read affects its key only.
 - (s) **Count a genuine expired credential on a key of its own** (the second review's other option
   for m-2): it keeps a network budget for something that reaches no object and costs one HMAC, the
   same as a forged one, which the source key already counts when no tag verifies. Not chosen.
@@ -3796,32 +3942,54 @@ than 8 MiB, or metrics with wide resources reach 16 MiB decoded (then resource a
 split on 413; a real sender's item passes 65,536 values.
 
 
-## D72. A shard records each span and log batch's time bounds when it appends it, in the batch's row; a filtered tail read with a time range skips a span or log batch whose bounds lie outside it, and keeps every batch without bounds
+## D72. A shard records each span and log batch's time bounds when it appends it, in the batch's row and in a partial index of them; a filtered tail read with a time range skips, deciding from that index, a span or log batch whose bounds lie outside it, and keeps every batch without bounds
 
 (Written 2026-11-19 by the shard engineer, after review finding m-3 of
 `design/reviews/signals-end-to-end.md`. It replaces one part of D63, "the time range and series
 fields select metric rows only, and a span or log batch it admits is returned whole", which was
-D63's alternative (e) at batch granularity, named in its "Would change if".)
+D63's alternative (e) at batch granularity, named in its "Would change if". **Revised 2026-11-26**
+after its adversarial review, `design/reviews/d72-shard-bounds.md` (approve with changes): the
+storage of the bounds (M-1: the decision, as first built, read every skipped batch's payload from
+storage, and this entry claimed it did not), a per-call bound on batches considered (M-1, D48's
+budget), the walk's refusal of layouts it does not know (m-1), its measured cost (m-4), and
+`page_limit`'s `last` (n-1). Migration 3 had not shipped, so its layout was changed in place.)
 
 **Decision.** At append, the shard reads a span batch's `start` column, or a log batch's `ts`
 column, by walking the entry table's length fields (no decoding, no strings), and stores the floor
 in milliseconds of the smallest and largest value in two new nullable columns of the batch's row
-(`batch.min_ts`, `batch.max_ts`, schema 3, additive, `readableFrom` 1). A metric batch, an empty one
-and one the walk cannot follow get NULL, and the append is never refused for it. A filtered tail
-read with `minTs`/`maxTs` skips, in its SQL, a batch whose bounds lie wholly outside them, without
-reading its payload; a batch with NULL bounds is always kept. Everything else of D48 stands:
-pages, cursors (the range is in the filter they are bound to), `through`, the fence, refusals; a
-kept span or log batch is returned whole. The contract text is `contracts/BATCH.md`, "Tail reads
-of spans and log records by time". The batch format does not change.
+(`batch.min_ts`, `batch.max_ts`), which a **partial index** `batch_time (tenant, seq, min_ts,
+max_ts) WHERE min_ts IS NOT NULL AND max_ts IS NOT NULL` also holds (schema 3, additive,
+`readableFrom` 1). The walk accepts only the layout `contracts/BATCH.md` defines: `flags` and
+`reserved` zero, at least one entry, zero padding around the `entry` column; anything else, a metric
+batch, an empty one and one the walk cannot follow get NULL (and so no index entry), and the append
+is never refused for it. A filtered tail read with `minTs`/`maxTs` skips, in its SQL, a batch whose
+bounds lie wholly outside them, deciding from the index (`INDEXED BY batch_time`, a correlated
+`NOT EXISTS`, `shard/src/tail.ts` `TIMED_TAIL_SQL`), never from the row: a skipped batch's payload
+is not read from storage. A batch with NULL bounds has no entry and is always kept. One call
+considers at most `TAIL_SCAN_MAX_BATCHES` (32,768) batches, skipped ones included, and examines at
+most `TAIL_SCAN_MAX_BYTES` (32 MiB) as before, so D48's budget again bounds what one call reads; a
+page may then hold no batch and continue. A `page_limit` says, as `last`, whether no later batch up
+to `through` can be kept by its bounds. Everything else of D48 stands: pages, cursors (the range is
+in the filter they are bound to), `through`, the fence, refusals; a kept span or log batch is
+returned whole. The contract text is `contracts/BATCH.md`, "Tail reads of spans and log records by
+time". The batch format does not change.
 
-**Alternatives.** (a) The bounds in the batch header, written by `edge` (a new `VZB1` field, or the
-reserved bytes): a format change readers must know first (two releases, COMPATIBILITY §3.3), and a
-shard that trusts what edge wrote, where now it derives the bounds from the column every reader
-decodes. (b) The bounds as arguments of `append`, from `edge`, as `seriesIds` are: a contract change
-on the ingest path and a trusted value no reader can check. (c) A table of bounds, one row per batch:
-a second row write on every append (billed per row, AGENTS.md) for what fits in the batch's row.
-(d) A new filter field in nanoseconds (decimal strings) instead of the existing `minTs`/`maxTs`: exact
-to the nanosecond, but the stored bounds are milliseconds either way (a nanosecond does not fit a JS
+**Alternatives.** Where the bounds come from: (a) The bounds in the batch header, written by `edge`
+(a new `VZB1` field, or the reserved bytes): a format change readers must know first (two releases,
+COMPATIBILITY §3.3), and a shard that trusts what edge wrote, where now it derives the bounds from
+the column every reader decodes. (b) The bounds as arguments of `append`, from `edge`, as
+`seriesIds` are: a contract change on the ingest path and a trusted value no reader can check.
+Where they are kept (review M-1; measured, below): (c1) **in the row only, as first built**: `ADD
+COLUMN` puts them after the payload, so testing them walks every overflow page of it. (c2) A full
+covering index, every row: the smallest reads, but a row write on every append, metric ones too,
+for bounds they never have. (c3) A table of bounds, one row per bounded batch: the same reads and
+append cost as the partial index, plus a row on discard, and a table the release before does not
+know, so after a rollback its deletes leave rows behind; the index is maintained by SQLite for
+every writer. (c4) The bounds before the payload, by rebuilding `batch`: no extra row write, but a
+migration copying up to `shardMaxBytes` (512 MiB) of payload in the constructor of every shard, and
+it reads more than the index (below). SQLite cannot reorder columns without a rebuild. Other: (d) A
+new filter field in nanoseconds (decimal strings) instead of the existing `minTs`/`maxTs`: exact to
+the nanosecond, but the stored bounds are milliseconds either way (a nanosecond does not fit a JS
 number or, safely, the SQL API's integers) and the floor is exact for overlap (D63), so it would add a
 second time model and a second canonical form for cursors for no batch kept or skipped differently.
 (e) Filter rows inside span and log batches (D63's (e) as written): rewriting batches with entry tables
@@ -3831,48 +3999,93 @@ rows that leave the tail within minutes; NULL is the safe reading of "unknown".
 (g) The same columns for metric batches (their `ts` column can be found from the end of the batch):
 it would let a metrics read skip batches without scanning their series tables, but D48 measured
 that a metric batch spans most of a tail's times, and the rows are filtered anyway; not done here.
+(h) Count skipped batches against the byte budget at a nominal size instead of a batch cap: the
+same bound with an invented constant. (i) Bound the walk (no bounds past some number of attributes,
+m-4): it would only switch skipping off for senders with many resources; the walk is linear and paid
+once per append, so it is documented instead.
 
 **Why.** Review m-3: a span or log query read the signal's whole tail whatever its window, and the
 tail's bytes count against `maxFetchBytes` (16 MiB), so a tenant with four or more span or log
 shards near the seal size was refused 422 on every trace or log query (modelled). The bounds come
 from the bytes every reader decodes, so they cannot disagree with the rows; skipping is only ever by
-bounds the shard computed itself, and a batch it knows nothing about is kept, so the only effect of
-a wrong or missing value is a read that returns more, never less. One read of a column of at most
-1 MiB costs microseconds at append (below), against milliseconds for the append's transaction.
+bounds the shard computed itself from a layout it knows, and a batch it knows nothing about is kept,
+so the only effect of a wrong or missing value is a read that returns more, never less. The partial
+index is chosen because it reads as little as any layout to decide (16 to 20 KB to skip 48 batches,
+against 33 MB) while adding the row write only to the appends that have bounds, and because SQLite
+keeps it true for every writer, the release before included.
 
 **Correctness for traces.** A query that needs every span starting in the nanosecond bound
 `[lo, hi]` (the window widened by `traceMarginMs`, D62) passes `floor(lo / 10⁶)` and
 `floor(hi / 10⁶)`, as `msRange` already computes. For a span at `t ∈ [lo, hi]`, `floor(t / 10⁶)`
 lies in that range and in its batch's bounds, so the batch overlaps and is returned. Tested over 200
 random nanosecond bounds against six hours of spans, with bounds on and next to span starts and
-millisecond edges (`shard/test/bounds.test.ts`), and killed when either comparison is off by one.
+millisecond edges (`shard/test/bounds.test.ts`), and killed when either comparison is off by one;
+and against 284 batches built by edge's own encoders (`shard/test/bounds.edge.test.ts`, adopted
+from the review).
 
-**Measured** (here, local workerd, 2026-11-19, three runs at load average 3.0 to 3.9;
+**Measured, first build** (here, local workerd, 2026-11-19, three runs at load average 3.0 to 3.9;
 `shard/bench/results/signaltail.txt`). Eight hours of tail, one batch per ten minutes of start time,
 48 batches: spans 18.74 MB, logs 16.79 MB. Bytes a one-hour query takes from the shard: spans, the
-read query makes today, 18,736,064 (over the 16 MiB budget: refused); a span-local hour, 2,343,888
+read query made then, 18,736,064 (over the 16 MiB budget: refused); a span-local hour, 2,343,888
 (6 batches); a search with the 2-hour margin, 11,719,440 (30 batches); an hour a day before the
-tail, 0. Logs: 16,791,072 today (over the budget), 2,100,928 for the hour, 0 a day before. In each
-case the read held, byte for byte, every batch in which the engine's flush finds a row inside the
-bound. Time per read, medians of five: 19 to 35 ms whole, 8 ms for the hour, 19 to 22 ms with the
-margin. Appends, the same 96 batches (35.5 MB) to this release and to the release before (frozen),
-three runs alternating: 362 to 457 ms against 369 to 497 ms in all, no difference beyond the spread;
-the walk alone, timed in Node 22, 7.5 to 35 µs per batch of 0.4 to 1 MB.
+tail, 0. Logs: 16,791,072 (over the budget), 2,100,928 for the hour, 0 a day before. In each case
+the read held, byte for byte, every batch in which the engine's flush finds a row inside the bound.
 
-**Cost of it.** One more pass over one column per span or log append, and two integers in its row.
-Rows written before this release, or by the release before it after a rollback, are read whatever
-the range until they leave the tail. The query does not send a time range for span and log reads
-yet (`query/src/signals.ts` `readSignalTail` passes `{}`; the change is in `shard/README.md`,
-"Needed changes elsewhere"): until it does, nothing is skipped and m-3 stands. A query whose bound
-covers the tail still takes all of it: the 2-hour margin makes a one-hour search read five hours, so
-a backlog of more than about 16 MiB within any five hours still refuses a search (modelled from the
-measurement above: 11.7 MB for five hours here). The two columns follow the payload in SQLite's
-record, so deciding to skip a batch walks the payload's overflow pages without copying it (training
-knowledge of SQLite's record format); here a read that skipped all 48 batches took 4 to 6 ms, the
-RPC included. Not measured on Cloudflare.
+**Measured, the layouts** (review M-1; here, local workerd through a Durable Object,
+`shard/bench/skipread.node.mjs`, 2026-11-26, three runs, identical in bytes; every layout returned
+the same batches for every read). Bytes are what the workerd process read from SQLite's file during
+one read after its page cache was filled with other pages; times in whole milliseconds cold, and
+the mean of a loop warm. Tail of 48 batches of 0.4 to 1 MB (33.7 MB) plus two unbounded:
+
+| Layout | Rows written per append (bounded / unbounded) | Skip all 48: read, cold, warm | One hour (8 kept) | Everything |
+|---|---|---|---|---|
+| (c1) in the row, after the payload (as first built) | 3 / 3 | **33,004 KB**, 7–10 ms, 5.3–7.4 ms | 37,532 KB | 65,870 KB (each page twice) |
+| **partial index, chosen** | **4 / 3** | **20 KB**, <1 ms, 0.05–0.09 ms | 4,568 KB | 33,006 KB |
+| the same with `payload IS NOT NULL` in the WHERE | 4 / 3 | 140 KB | 4,668 KB | 33,006 KB |
+| (c2) full covering index | 4 / 4 | 16 KB | 4,564 KB | 33,002 KB |
+| (c3) table of bounds | 4 / 3 (and 2 rows on discard, not 1) | 20 KB | 4,568 KB | 33,007 KB |
+| (c4) bounds before the payload (rebuilt) | 3 / 3 | 136 KB | 4,664 KB | 33,002 KB |
+
+With 2,000 batches of about 200 B (payloads inside the B-tree leaves), skipping all of them read 580
+KB as first built, 176 KB chosen, 108 KB with (c2), 580 KB with (c4); but took 1.3 ms warm chosen,
+against 0.3 to 0.7 ms as first built (the correlated lookup per batch, about 0.65 µs): for tails of
+tiny batches the chosen statement reads less and costs about 1 ms more per 2,000 batches. Discard
+and fingerprint expiry write one row each in every layout but (c3).
+
+**Measured, end to end** (here, local workerd, 2026-11-26, the eight-hour tail above, this change
+against the first build from a scratch copy, alternating, two runs each, load average 8 to 11 from
+other builds): an hour a day before the tail 4–9 ms → 1 ms; the hour 6–10 ms → 3 ms; the hour with
+the margin 20–26 ms → 15–18 ms, the RPC included. Appends of the same 96 batches (35.5 MB), this
+change against the release before D72 (frozen): 582–737 ms against 455–1,004 ms, no difference
+beyond the spread at that load. The walk alone, Node 22 (`shard/bench/walk.node.mjs`, three runs):
+10 to 25 µs for a 0.4 to 1 MB batch of a few resources or streams, **1.27–1.49 ms** for the worst
+shape edge builds (1,289 resources of 128 attributes in 1 MiB, a span each), 0.19–0.23 ms for 12,465
+one-label log streams; shapes edge never builds up to 2.4 ms per MiB. The first build claimed 7.5 to
+35 µs (review m-4): that held only for batches of few entries.
+
+**Cost of it.** Billed: **one more row written per span or log append** (3 to 4; a batch's life,
+with discard and expiry, 5 to 6 rows), none per metric append; at Cloudflare's list price of $1.00
+per million rows written past the 50 million a month included, **$1.00 per million span or log
+appends** (modelled: e.g. a sustained 100 span or log appends a second is 259 million a month, $259
+more). The row counts are the cursor's `rowsWritten` measured here; on Cloudflare not measured
+(experiment: the same appends on a deployed shard, rows written read from the analytics API). The
+index's storage, tens of bytes per bounded batch of the tail, is negligible. CPU: the walk, up to
+about 1.5 ms per 1 MiB append for the worst shape edge builds, on the object's thread, paid by the
+sender's own bytes. A call of a read with a range reads at most 32 MiB of payload plus up to 32,768
+index entries (about 3 MB and 21 ms at most, modelled from the measurement above). Rows written
+before this release, or by the release before it after a rollback, are read whatever the range until
+they leave the tail. A query whose bound covers the tail still takes all of it: the 2-hour margin
+makes a one-hour search read five hours, so a backlog of more than about 16 MiB within any five
+hours still refuses a search (modelled: 11.7 MB for five hours here). Skipping changes an answer
+that depends on rows outside the range (a later copy of a span outside it hides an earlier copy
+inside it only if read; review m-2): a reader must drop rows outside its range before
+de-duplicating (BATCH.md; query's side). `last` on `page_limit` is used only once query reads it
+(`shard/README.md`, "Needed changes elsewhere"). Not measured on Cloudflare.
 
 **Would change if.** A query needs another time than a span's start or a log's `ts` (then that
 column's bounds too); senders' late spans make most batches span hours, so bounds skip little (then
 per-batch metadata finer than a hull); filtered metric reads show on the shard's CPU (then (g));
-Cloudflare shows deciding to skip a batch costing what reading it did (then the bounds in a table of
-their own, (c), with its row write).
+the extra row write shows in the bill (then (c4) at a release that can afford the rebuild, or bounds
+only for shards that are read with ranges); the walk shows on a shard's CPU (then (i)); Cloudflare's
+SQLite reads or bills differently from workerd's here (the experiments above).
+

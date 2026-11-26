@@ -18,7 +18,25 @@ import { EXPIRY_GRACE_MS } from './oauth'
  * So: **when the tenant's object answers that a presented credential is dead**
  * (contracts/oauth.ts: `invalid_grant` on the `refresh_token` grant, introspection's `inactive` with
  * `DEAD_INACTIVE_REASONS`, revocation's `dead: true`), the Worker records it, and **refuses a
- * recorded credential like an expired one, before any rate limit and before any object**:
+ * recorded credential as its object answered, after the credential's own rate limit and before its
+ * tenant's fuse and any object** (src/ratelimit.ts `firstRefusal`; review of D70, round 3, m-1: a
+ * listed credential spends its own allowance like any other, so nobody can force KV reads faster than
+ * the per-credential limit lets them, and a listed and a live token are counted alike, R3-M1).
+ *
+ * **Nothing is listed whose later presentation must still reach the object** (round 3, R3-B1): above
+ * all, never a rotated refresh token of a live grant, because its other holder presenting it is what
+ * makes reuse detection end the grant. Each place that records is safe by the contract's promises:
+ * - the token endpoint, on `invalid_grant` for a refresh token: either no row (never stored, swept,
+ *   or its grant's rows deleted: no later presentation can be detected either), or the grant has
+ *   ended or cannot issue (rotated tokens included: presenting one has just ended its grant by reuse
+ *   detection), or the token was spent by this request with nothing issued, which leaves the grant
+ *   with no unrotated refresh token at all, so no other holder has anything reuse detection would
+ *   take back;
+ * - introspection, on `unknown`, `expired`, `revoked`: access tokens, which no reuse detection
+ *   watches, and each of those answers is permanent;
+ * - revocation, on `dead: true`: by the client itself the call ends the token or its grant; by
+ *   another client only when the grant has ended, or an unrotated token has expired
+ *   (src/ops-oauth.ts `revokeToken`). Codes are never listed.
  *
  * - **In this isolate, at once**: a map of the credential's hash to its expiry (at most
  *   `ISOLATE_ENTRIES`, oldest dropped first). The next request with it in this isolate is refused
@@ -46,8 +64,11 @@ import { EXPIRY_GRACE_MS } from './oauth'
  *
  * **Fails open**, like the rate limits: without `CONFIG`, or when a read throws or takes longer than
  * `DEAD_READ_MS`, the credential is treated as not listed (the rate limits and the object still
- * apply), the failure is logged once per isolate, and this isolate skips KV reads for
- * `SKIP_READS_AFTER_FAILURE_MS`; its own memory of dead credentials still applies. A failed write is
+ * apply) and the failure is logged once per isolate. A read that takes too long affects its key only,
+ * which counts as not listed for `NOT_LISTED_MS` in this isolate: a cold read is slow for one key,
+ * and anyone can make keys cold (review of D70, round 3, m-2). A read that throws is KV failing, and
+ * this isolate then skips KV reads for `SKIP_READS_AFTER_FAILURE_MS`. Its own memory of dead
+ * credentials still applies either way. A failed write is
  * logged once and not retried: the next isolate that meets the credential writes it. Nothing here
  * logs a key or a credential.
  *
@@ -68,6 +89,8 @@ export const DEAD_READ_MS = 100
 
 /** How long this isolate reads no KV after a failed read: as long as it skips a failed rate limiter (src/ratelimit.ts `SKIP_AFTER_FAILURE_MS`). */
 export const SKIP_READS_AFTER_FAILURE_MS = 10_000
+
+const TIMED_OUT = Symbol('timed out')
 
 /** How long this isolate remembers that KV did not list a credential: at most one read per credential per isolate in this time. */
 export const NOT_LISTED_MS = 60_000
@@ -153,10 +176,19 @@ export async function listedDead(env: DeadListEnv, credential: string, now: numb
   try {
     const value = await Promise.race([
       env.CONFIG.get(key),
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`no answer within ${DEAD_READ_MS} ms`)), DEAD_READ_MS)
+      new Promise<typeof TIMED_OUT>((resolve) => {
+        timer = setTimeout(() => resolve(TIMED_OUT), DEAD_READ_MS)
       }),
     ])
+    if (value === TIMED_OUT) {
+      // Slow for this key only (a cold read of a key this location has not seen, which anyone can
+      // cause with fresh credentials): this key counts as not listed for NOT_LISTED_MS in this
+      // isolate, and the list stays on for every other key (review of D70, round 3, m-2). A dead one
+      // still reaches its object once here and is learnt from the answer.
+      remember(notListed, key, now + NOT_LISTED_MS)
+      logOnce('slow', `control: a read of the OAuth dead-credential list took more than ${DEAD_READ_MS} ms; that credential is served as not listed for ${NOT_LISTED_MS / 1000} s in this isolate (D70)`)
+      return null
+    }
     if (value === null) {
       remember(notListed, key, now + NOT_LISTED_MS)
       return null
@@ -166,6 +198,8 @@ export async function listedDead(env: DeadListEnv, credential: string, now: numb
     remember(dead, key, { until: at === null ? now + NOT_LISTED_MS : at + EXPIRY_GRACE_MS, reason })
     return reason
   } catch (e) {
+    // A read that throws is KV failing, not a key being cold: no request can cause it. Reads are
+    // skipped in this isolate for a while, so a KV outage costs one failed read per isolate per 10 s.
     skipReadsUntil = Date.now() + SKIP_READS_AFTER_FAILURE_MS
     logOnce('read', `control: the OAuth dead-credential list could not be read; requests are served without it, and this isolate skips it for ${SKIP_READS_AFTER_FAILURE_MS / 1000} s after each failure (D70)`, e instanceof Error ? e.message : 'error')
     return null

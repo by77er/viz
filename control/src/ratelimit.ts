@@ -47,8 +47,9 @@ import { resetDeadList } from './deadlist'
  * `SKIP_AFTER_FAILURE_MS`, so a limiter brownout costs one request in each isolate at most
  * `CHECK_BUDGET_MS` that often (review m-1). An absent or failing binding is logged once per
  * isolate (`control: rate limiter …`), never per request, and `/healthz` says which are bound
- * (`limiterStatus`). Before any of this, a credential the tenant's object has already called dead is
- * refused without counting (src/deadlist.ts, R2-M2). Why fail open, per endpoint, is in D70; in
+ * (`limiterStatus`). Between the narrow key and the wide one, a credential the tenant's object has
+ * already called dead is refused, counted against its own allowance only (src/deadlist.ts, R2-M2;
+ * round 3, m-1). Why fail open, per endpoint, is in D70; in
  * short, these are approximate cost throttles, the properties that matter are enforced elsewhere (the tag and the expiry before any
  * object, exact bounds on what is stored inside it), and failing closed would turn a limiter fault
  * into an OAuth outage for every tenant. The deploy, not this code, makes sure the bindings exist
@@ -177,13 +178,21 @@ async function check(env: RateLimitEnv, name: LimitName, key: string, shareMs: n
  * the wider ones either: the chain fails open together. Asking the tenant's fuse alone would count a
  * dead credential, sent again and again, against nothing but that fuse, which is the first version's
  * fault (B-1) come back for as long as the narrow binding is down.
+ *
+ * `listed`, when given, is asked **after the narrowest key and before the wider ones** (review of
+ * D70, round 3, m-1): whether the credential is on the list of dead credentials (src/deadlist.ts).
+ * So a listed credential spends its own allowance, as any credential does, and never its tenant's
+ * fuse; and someone cycling more dead credentials than an isolate remembers pays the per-credential
+ * limit before each KV read it causes. It is asked whatever the narrow key's verdict but a refusal:
+ * the list does not fail with a limiter.
  */
-async function firstRefusal(env: RateLimitEnv, checks: [LimitName, string][]): Promise<LimitName | null> {
+async function firstRefusal(env: RateLimitEnv, checks: [LimitName, string][], listed?: () => Promise<boolean>): Promise<LimitName | 'listed' | null> {
   for (const [name] of checks) noteAbsent(env, name)
   const shareMs = CHECK_BUDGET_MS / checks.length
-  for (const [name, key] of checks) {
+  for (const [i, [name, key]] of checks.entries()) {
     const verdict = await check(env, name, key, shareMs)
     if (verdict === 'refused') return name
+    if (i === 0 && listed !== undefined && (await listed())) return 'listed'
     if (verdict === 'unchecked') return null
   }
   return null
@@ -286,21 +295,31 @@ const WHY: Record<LimitName, string> = {
 
 const refusal = (name: LimitName | null): Refusal | null => (name === null ? null : { limit: name, retryAfterS: RATE_PERIOD_S, why: WHY[name] })
 
+/** A credential the list of dead credentials holds: answered as its object answered, by the caller (src/deadlist.ts). */
+export const LISTED = 'listed' as const
+
 /**
  * The client's network: first thing at `/oauth/register` and `/oauth/authorize`; at `/oauth/token`
  * and `/oauth/revoke`, only for a request the Worker refuses by itself without a genuine credential
  * (review M-1; round 2, m-2).
  */
-export const limitSource = async (env: RateLimitEnv, req: Request): Promise<Refusal | null> => refusal(await firstRefusal(env, sourceKeys(req.headers.get('CF-Connecting-IP'))))
+export const limitSource = async (env: RateLimitEnv, req: Request): Promise<Refusal | null> => refusal((await firstRefusal(env, sourceKeys(req.headers.get('CF-Connecting-IP')))) as LimitName | null)
 
-/** `/oauth/token` and `/oauth/revoke`, after the credential's tag and expiry: the credential, then its tenant. */
-export const limitCredential = async (env: RateLimitEnv, tenant: string, credential: string): Promise<Refusal | null> =>
-  refusal(await firstRefusal(env, [['OAUTH_RL_CREDENTIAL', `k:${digest(credential)}`], ['OAUTH_RL_TENANT', `t:${tenant}`]]))
+/**
+ * `/oauth/token` and `/oauth/revoke`, after the credential's tag and expiry: the credential, then
+ * (`listed`) the list of dead credentials, then its tenant. `LISTED` when the list holds it.
+ */
+export async function limitCredential(env: RateLimitEnv, tenant: string, credential: string, listed?: () => Promise<boolean>): Promise<Refusal | typeof LISTED | null> {
+  const r = await firstRefusal(env, [['OAUTH_RL_CREDENTIAL', `k:${digest(credential)}`], ['OAUTH_RL_TENANT', `t:${tenant}`]], listed)
+  return r === LISTED ? LISTED : refusal(r as LimitName | null)
+}
 
-/** Introspection, after the token's tag and expiry: this token, then its tenant. */
-export async function limitBearer(env: RateLimitEnv, tenant: string, token: string): Promise<RateLimited | null> {
-  const r = refusal(await firstRefusal(env, [['OAUTH_RL_BEARER', `b:${digest(token)}`], ['OAUTH_RL_BEARER_TENANT', `bt:${tenant}`]]))
-  return r === null ? null : { v: 1, status: 'rate_limited', retryAfterMs: r.retryAfterS * 1000 }
+/** Introspection, after the token's tag and expiry: this token, then (`listed`) the list, then its tenant. */
+export async function limitBearer(env: RateLimitEnv, tenant: string, token: string, listed?: () => Promise<boolean>): Promise<RateLimited | typeof LISTED | null> {
+  const r = await firstRefusal(env, [['OAUTH_RL_BEARER', `b:${digest(token)}`], ['OAUTH_RL_BEARER_TENANT', `bt:${tenant}`]], listed)
+  if (r === LISTED) return LISTED
+  const out = refusal(r as LimitName | null)
+  return out === null ? null : { v: 1, status: 'rate_limited', retryAfterMs: out.retryAfterS * 1000 }
 }
 
 /** The exact limit's window, for src/ops-oauth.ts. */

@@ -15,11 +15,14 @@ and physical deletes wait. Nothing else.
 | `src/iceberg.ts` | Table schemas (the metric pair; the span and log tables with nested types and pinned nested field ids, `SIGNAL_DEFS`), name mappings, partition specs (`hour(start_time)` for `spans`), Avro schemas of v2 manifests and manifest lists, `metadata.json`, per-file statistics |
 | `src/avro.ts` | Avro object container reader and writer (about 300 lines, no dependency) |
 | `src/schema.ts` | The publisher's storage as versioned migrations (`PUBLISHER_SCHEMA`), and `FORMATS`: the versions of what it writes and reads |
-| `test/` | 127 tests in workerd with a simulated R2, against the real `Ledger` class (and the frozen as-built one for the first layout, and the frozen release before checkpoints in parts) |
+| `test/` | 138 tests in workerd with a simulated R2, against the real `Ledger` class (and the frozen as-built one for the first layout, and the frozen release before checkpoints in parts) |
+| `test/steps.test.ts` | Re-bases and rebuilds kept across invocations: twin cells, cut-offs at every R2 operation, a new ledger incarnation mid-way, the previous release on storage left mid-way |
+| `test/m6/` | This publisher as committed at `800b926`, frozen: review M-6's release (re-bases capped per publish, each one whole; a table rebuilt from R2 whole), release N-1 of re-bases in steps (`test/steps.test.ts`) |
+| `test/e2e-signals.ts` | The span and log end-to-end scenario, run by `e2e-signals.test.ts` (every publish whole, into `export/signals/`) and `e2e-signals-steps.test.ts` (re-bases in steps, into `export/signals-steps/`) |
 | `test/d64/` | This publisher as committed at `bcfe8db`, frozen: the D64 release, which reads the span and log tables and does not publish them; release N-1 of this one, and by D64's rollout rule the oldest rollback target once `INGEST_SIGNALS` is on (`test/signals.test.ts`) |
 | `test/n1/` | This publisher as committed at `9292abb`, frozen: the release before D64 (N-2 now), which stops at a span or log change; kept for the metric byte-identity counterfactual; one type-only edit, said in the file |
 | `test/fixtures/signals.json` | Real `spans`, `trace_index` and `logs` Parquet files (48 files, 485 kB) made by viz's write path from stack/test's OTLP corpus (`tools/signal_fixture.mjs`) |
-| `bench/` | The re-base at the ledger's state limit (`rebase.bench.test.ts`), the frozen publisher from before it streamed (`before/`, the counterfactual), `phases.mjs` (memory per phase); the D67 upgrade with re-bases capped per publish, and the rebuild after a lost storage (`upgrade.bench.test.ts`), `cpu.mjs` (workerd's CPU per publish) |
+| `bench/` | The re-base at the ledger's state limit (`rebase.bench.test.ts`), the frozen publisher from before it streamed (`before/`, the counterfactual), `phases.mjs` (memory per phase); the D67 upgrade with re-bases capped per publish, and the rebuild after a lost storage (`upgrade.bench.test.ts`; `BENCH_FIRST_CAPPED=1` puts the first publication under the cap too, `BENCH_NO_CHECKPOINT=1` makes every re-base read the base), `cpu.mjs` (workerd's CPU per publish) |
 | `tools/fixtures/` | Rust: real Parquet files made with `viz_storage::encode_segment` and `merge_files` |
 | `tools/verify_readers.py` | PyIceberg and DuckDB read the published metric tables and are compared with the ledgers |
 | `tools/signal_fixture.mjs` | Makes `test/fixtures/signals.json`: edge's OTLP corpus through stack/'s write path in workerd (the corpus mode of `stack/test/signals.test.ts`, run, not changed) |
@@ -154,8 +157,10 @@ ledger incarnation is re-based, and nothing in it grows with the tenant's size:
   reader that listed the older manifest can meet this; the next publish lists again and starts
   from the newer one. A manifest or part that is not what it should be: `corrupt`. Either way
   the reader returns no base: nothing of the tenant is committed, its cursors do not move, it
-  stays pending and the alarm retries every `retryMs`. What was staged is deleted at the end
-  of the attempt, and at the start of the next one if an eviction cut it short.
+  stays pending and the alarm retries every `retryMs`. What was staged is deleted (with its
+  `rebase_step`, if it had one); a read cut off by an eviction or an R2 failure keeps the parts it
+  staged, with their progress, and the next publish reads on from there ("Re-bases and rebuilds in
+  steps").
 - **The difference.** The changes read after the start are applied to `stage`, checked as
   ever (`inconsistent` for a removal of a key not live or an addition of a live one). The commit
   then takes what the tenant adds (`stage` not in `live`) and removes (`live` not in `stage`) in
@@ -171,8 +176,10 @@ ledger incarnation is re-based, and nothing in it grows with the tenant's size:
   commit's snapshot, and released once no older snapshot is retained (the conservative rule,
   since the publisher cannot know whether an earlier publication referenced them). Without this a
   re-base from a checkpoint would never release the files added and removed before it.
-- **Resync** (SQLite rebuilt from R2) fills `live_next` a manifest at a time, two in flight, and
-  swaps it into `live` in one transaction, so an eviction midway leaves SQLite as it was.
+- **Resync** (SQLite rebuilt from R2 when a commit finds it behind: a crash after the metadata
+  write, another writer) fills `live_next` a manifest at a time, two in flight, and swaps it into
+  `live` in one transaction, so an eviction midway leaves SQLite as it was. After a lost storage the
+  table is rebuilt in steps instead (`rebuildStep`, "Re-bases and rebuilds in steps").
 - **What still grows:** `verify` (Not implemented); the changes read per publish from a cursor
   (Risks); one manifest of `manifestTargetEntries` files while it is written.
 
@@ -190,13 +197,12 @@ next alarm, and could be cut off again, so publication could stop for the whole 
   first, then by name (storage migration 6, `rebase`). A re-base found only while reading from a
   cursor (a new ledger incarnation) takes its turn while the budget lasts; past it, the reader stops
   before reading anything of it (`BaseSink.turn` answers null; status `deferred`).
-- **Progress kept.** Each publish commits what it re-based, so earlier publishes' work is never
-  redone; what one publish staged and had not committed is all an invocation cut off can lose, and
-  the cap bounds it. A re-base is recorded as started before anything of it is read: a tenant whose
-  re-base was cut off with its invocation, or keeps failing, goes behind every tenant not yet tried,
-  instead of being tried first again and holding the queue for ever. `stage` stays one scratch table
-  shared by the tenants of an attempt, emptied at its start and end; nothing in it outlives an
-  attempt (keeping a tenant's staged state across invocations: Not implemented). The row is deleted
+- **Progress kept.** Each publish commits what it re-based whole, so earlier publishes' work is never
+  redone; one tenant too large for a publish's budget goes on in steps, its progress kept in SQLite
+  across invocations ("Re-bases and rebuilds in steps", below). A re-base is recorded as started
+  before anything of it is read: a tenant whose re-base was cut off before it made progress, or keeps
+  failing, goes behind every tenant not yet tried, instead of being tried first again and holding the
+  queue for ever; a re-base in steps whose last step made progress goes first. The row is deleted
   once the tenant is published.
 - **Nothing starves behind the queue.** A tenant waiting for its re-base is read from the cursors it
   has: after the upgrade its metric tables keep being committed in every publish, only its span and
@@ -218,7 +224,8 @@ next alarm, and could be cut off again, so publication could stop for the whole 
 - **After a lost storage.** A tenant with no cursor in a table that R2 has metadata for while SQLite
   has none (the table's `version-hint.text`, one GET per such table, only in a publish with a tenant
   to re-base): the publisher's state was lost. The publish rebuilds one such table from R2 first
-  (`resync`: swapped into SQLite in one transaction) and reads no tenant; the next publish (`continueMs` later) the next
+  (`rebuildStep`: a manifest at a time within the budget, so a large table takes several publishes:
+  "Re-bases and rebuilds in steps") and reads no tenant; the next publish (`continueMs` later) goes on, then the next
   table; then the cursors found there make the re-bases unnecessary. Before, the first publish
   re-based every tenant, conflicted on each table in turn, and re-based them all again after each
   rebuild: up to six times over in one invocation. A cell whose span and log tables were never
@@ -227,7 +234,86 @@ next alarm, and could be cut off again, so publication could stop for the whole 
 - **Measured here, not on Cloudflare** (Measurements, "Capped re-bases: time per publish"): a publish
   at the cap (100,000 staged files, half of them span and log files it adds) took 3.3–3.8 s of
   workerd CPU and 4.8–9.5 s of wall time on this loaded machine; a 300,000-file tenant, re-based
-  alone, 10.3 s of CPU; a table rebuilt from R2, about 30 µs of CPU per file.
+  alone and whole by the release before, 10.3–11.2 s of CPU, and in steps at most 5.4 s per publish
+  ("Re-bases in steps: CPU per publish"); a table rebuilt from R2, about 30–36 µs of CPU per file.
+
+**Re-bases and rebuilds in steps** (since 2026-11-26; design/DECISIONS.md D55, D67; storage migration 7).
+Measured on Cloudflare, 2026-11-19, S11 (`spikes/s11-large-ledger/`): the release before this one's first
+publication of one tenant from its base took 2.1 s of CPU at 16 MiB, 5.6 s at 64 MiB and 14.0 s at 150 MiB
+(23.6 s wall), about 0.09–0.13 ms per file; 300 MiB extrapolates to 28–32 s, at the 30 s default limit. A
+re-base ran whole in one invocation, so a tenant that does not fit was cut off, put behind the others
+and tried again from nothing, for ever. Now one that does not fit a publish's budget goes on across
+invocations, with everything it needs in SQLite (the object keeps nothing in memory between them):
+
+- **Staging, part by part.** A checkpoint in parts is staged into `rebase_stage` a part per
+  transaction, and the same transaction advances its marker in `rebase_step`: the checkpoint (its
+  manifest's key, attempt and number of parts), the parts staged, the running totals of files,
+  tombstones and bytes, and the last file and tombstone keys, so every check that spans the parts
+  (key order across parts, the totals against the manifest) still spans all of them. The step also
+  records, when it begins, the tables it re-bases and each one's cursor then (none, or an older
+  incarnation's). After the first part boundary past the budget the read stops (`paused`); the next
+  publish reads the same checkpoint again from there (`BaseSink.resumeKey`, `begin`): same key,
+  attempt and number of parts, or the step is dropped and the re-base starts afresh. A base, or a
+  one-object checkpoint, is one object: staged whole in one step (Not implemented: resuming inside
+  it), then the rest goes on in steps.
+- **The changes after it, applied once.** When all of it is staged, the changes read after its start
+  are applied to the stage for every table in one transaction, all or none (one that does not fit
+  refuses the tenant, `inconsistent`; the stage stays as staged and the next try applies them again),
+  and the step records the version reached (`target`), how the read ended, and the snapshot id its
+  commit will have. A key those changes remove that is staged as no file becomes a tombstone,
+  released by the snapshot rule once the re-base is committed (more conservative than the release a
+  whole re-base gives such keys: one delete grace after the commit).
+- **Writing ahead.** The files the re-base adds (its stage against `live`, for the tables it re-bases)
+  are written into manifests ahead of its commit, `manifestTargetEntries` at a time in (day, key)
+  order, each entry carrying the snapshot id the commit will have (an ADDED entry's sequence numbers
+  are inherited from the manifest list, so they need not be known yet). Each manifest is PUT and then
+  recorded (`rebase_manifest`: path, summary, the range of the stage it holds) with the files'
+  statistics and how far its table got, in one transaction; one cut off in between is written again
+  under another name and the first is an orphan. The sweep treats recorded manifests as referenced.
+- **The commit, in a publish of its own.** Once every table is written, and first in a publish that
+  has done no other bounded work (its cost grows with the files it adds: their `live` rows), the
+  commit lists the manifests written ahead with its sequence number, takes their snapshot id, and
+  writes none of their entries again; one such commit per publish. Before it, each manifest is HEADed
+  at its recorded size and its table's added files counted against the stage again: a table that
+  fails (the release before this one sweeps them as orphans after a rollback, test below) is written
+  again. The tenant is then committed at `target`; if its changes were read by an earlier publish it
+  is reported `more` and read from its cursors next, so no nudge is cleared for a change it did not
+  read.
+- **Re-checked every step.** Storage is the only truth: each step reads the step back. A table whose
+  cursor moved since the re-base began (committed by another way: the release before this one after
+  a rollback, another writer, or this re-base's own commit before its invocation ended) leaves it,
+  with its manifests written ahead; with none left the step is dropped. A newer ledger incarnation
+  drops it before anything is read (`BaseSink.turn`; and one list per step once it is writing ahead),
+  so nothing kept for the old incarnation is used. A stop on the checkpoint (`incomplete`, `corrupt`,
+  `unsupported`) drops it too: the next publish lists the checkpoints again.
+- **A re-base read whole within the budget** in one publish is committed in that publish exactly as
+  before (its stage is that attempt's scratch, its step row deleted once it is read): the published
+  bytes do not change (`test/signals.test.ts` and `test/checkpoints.test.ts`, byte for byte against
+  the frozen releases and across formats; the readers, below).
+- **A table rebuilt after a lost storage** (`rebuildStep`): the manifests of the newest version's
+  current snapshot are recorded in `rebuild_manifest`, then decoded into `live` one at a time, each
+  marked done in a transaction after its last rows; a manifest an invocation did not finish is
+  decoded again from its start (its rows carry its path and are deleted first). Within the budget, at
+  least one manifest per publish. Once all are in, its manifests, cursors, snapshots and version are
+  written in one transaction, as `resync` writes them. Until then the table has no `tbl` row and no
+  tenant is read (the rebuild comes first), so nothing uses its partial `live` rows. A newer version in
+  R2 meanwhile starts it over.
+- **The budget** is `maxRebaseFilesPerPublish`, 100,000 units of work a publish: files and tombstones
+  staged, added files written ahead, manifest entries rebuilt (each counts one). Why 100,000: measured
+  here, a unit costs about 15 µs of CPU staged from parts, 36 µs rebuilt and 40–46 µs written ahead,
+  against about 66 µs per file of a whole first publication of 300,000 files here (19.8 s); on
+  Cloudflare a whole first publication cost 0.09–0.13 ms per file (measured on Cloudflare,
+  2026-11-19, S11), so a publish's 100,000 units are at most about 9–13 s there (modelled: the
+  per-file cost of a whole publication, which every unit is a part of), under half the 30 s default,
+  and a whole re-base admitted within the budget, at most about 100,000 files, the same. The margin
+  covers what S11 saw vary between runs (0.07–0.22 ms per file in its rebuilds). A smaller budget
+  would cost only alarm wakes, a second apart (steps commit nothing); a larger one spends the margin.
+  The rows written are those a whole re-base writes, plus one `rebase_step` update per part or
+  manifest and one `rebase_manifest` row per manifest.
+- **Rollback.** Migration 7 is additive (`readableFrom` 1): the release before this one (`test/m6/`)
+  and D64, the floor, open storage at version 7, never read or write the new tables, and re-base or
+  rebuild whole as they always did. A half-staged re-base is ignored by them; rolled forward, this
+  release continues it, or drops it if one of them published the tenant meanwhile (tests below).
 
 **The span and log tables** (design/DECISIONS.md D67, since 2026-11-19; the D64 release before it
 read them and did not publish them). `PUBLISHED_TABLES` in `src/log.ts` is every `LedgerTable`;
@@ -391,7 +477,7 @@ Default `deflate`. No `eval`, no `new Function`, no Node API, no network.
   sweep deadlines until the next commit by a release that knows them; version 3 adds `stage` and
   `live_next`, the scratch of a re-base and of a resync, `readableFrom` 1: releases 1 and 2 never
   touch them, and each is emptied by the operation that fills it, so they hold rows only while
-  it runs or after an eviction in the middle of it; version 6 (review M-6) adds `rebase`, when each tenant
+  it runs or after an eviction in the middle of it (this release stages into `rebase_stage`, version 7, and only empties `stage`); version 7 adds `rebase_stage`, `rebase_step`, `rebase_manifest`, `rebuild` and `rebuild_manifest`, a re-base's and a rebuild's state kept across invocations ("Re-bases and rebuilds in steps"), `readableFrom` 1: releases 1 to 6 neither read nor write them, and the release before this one is shown, on storage left in the middle of a re-base, to leave them as they are and publish (`test/steps.test.ts`); version 6 (review M-6) adds `rebase`, when each tenant
   waiting for a re-base last had one started, `readableFrom` 1 (releases 1 to 5 neither read nor write it); version 5 (D67) adds `signal_due` and `signal_orphan`, the
   alarm's deadlines and orphan sightings of the span and log tables, kept apart so that the D64
   release, a rollback target, never sees them ("Why migration 5"), `readableFrom` 1; version 4 adds `unpublished`, the record of the
@@ -489,18 +575,26 @@ contract change; see "Contract issues").
   a map, reads the base segment whole, and holds the table's manifest entries: at the ledger's
   limit (300,000 files) that is not expected to fit an isolate. It is an operator's tool, not on
   the publish path; streaming it (into `live_next`, say) is not done.
-- **Re-base progress across invocations, within one tenant.** A publish's re-bases are committed
-  together at its end, and each tenant's re-base is read, staged and diffed in one invocation. One
-  cut off (an eviction, the CPU limit) starts again from its checkpoint or base at a later publish,
-  behind the tenants not yet tried ("Bounded work per publish"); what it staged is thrown away. A
-  tenant whose re-base alone needs more CPU than an invocation has would never finish (then
-  `limits.cpu_ms`, up to 5 minutes, or a tenant's staged state kept across invocations).
-- **A rebuild from R2 in steps.** After a lost storage one table is rebuilt per publish, but each
-  rebuild reads all of its table's manifests in one invocation, so its time grows with the table's
-  files in the cell (Measurements, "Capped re-bases"). Not a cap: a step per manifest, with
-  `live_next` kept across invocations, is not done.
-- **A cap from measured CPU.** The caps are numbers in the configuration, chosen from times
-  measured here; nothing measures a publish's CPU and adjusts them.
+- **Resuming inside one object.** A base segment, or a one-object checkpoint, is staged whole in one
+  step: the stream reader (`readLedgerLogStream`, `contracts/ledger.ts`) has no way to start inside
+  its `added` array. At 300,000 files that step took 7.8–8.4 s of CPU here (Measurements, "Re-bases in
+  steps"), about 9–13 s on Cloudflare modelled from S11; it grows with the base past the ledger's
+  limit. A re-base reads a base only when its incarnation has no checkpoint yet (a ledger storage loss
+  before its first checkpoint: S11's first publication was one). Resuming would need a byte offset at
+  an element boundary and a contract change to the reader.
+- **The commit of a re-base in steps is one invocation.** It is the only work of its publish, but it
+  grows with the files it adds (their `live` rows) and removes (the manifests holding removed files
+  are rewritten whole, as in any commit): 2.3–3.7 s here for 150,000–300,000 added files.
+- **The changes after a re-base's start** are bounded by `maxChangesPerTenant` (2,000), as from a
+  cursor, not by the budget, and a whole re-base's commit writes the files they add: a new tenant's
+  first publication (its first base is empty) is all such changes.
+- **A rebuild after a conflict** (`resync`: SQLite behind R2 at a commit) still reads its table whole
+  in one invocation; only the lost-storage path is in steps.
+- **More than one re-base in steps finishing in a publish.** Its manifests carry its snapshot id, so a
+  publish commits one; another ready waits for the next publish.
+- **A cap from measured CPU.** The budget is a number in the configuration, chosen from times
+  measured here and S11's per-file cost on Cloudflare; nothing measures a publish's CPU and adjusts it
+  (a Worker cannot read its own CPU time).
 - **A fall-back to the base when a checkpoint is corrupt** (D55, alternative (e)): the tenant
   stops instead.
 
@@ -1193,6 +1287,48 @@ name not checked here). Every capped publish must stay well under 30 s, and the 
 tenant's publish is the number that decides between this cap, `limits.cpu_ms`, and keeping a
 tenant's staged state across invocations.
 
+### Re-bases in steps: CPU per publish
+
+Measured here, in local workerd (`bench/upgrade.bench.test.ts`, the cell of "Capped re-bases" with one
+tenant of 300,000 files, the ledger's limit), not on Cloudflare; CPU is workerd's whole process
+(`bench/cpu.mjs`), an upper bound on the publisher's own. `BENCH_FIRST_CAPPED=1`: the first publication
+(every file added to all five tables) under the budget too. Budget 100,000 (the default) unless said.
+
+| Run (load average) | Step | CPU of each publish, in order (s) | Total CPU | Most in one publish |
+|---|---|---|---|---|
+| From parts, 2026-11-19 14:42 (5.4–6.8) | first publication | 1.35, 1.53, 2.01 (staging); 4.82, 4.43, 2.62 (writing ahead); 3.06 (commit) | 19.8 s | 4.82 s |
+| | the D67 upgrade (150,000 files added) | 1.41, 1.53, 1.89; 3.95, 1.35; 2.26 | 12.4 s | 3.95 s |
+| | rebuild after a lost storage (tables of 75,000 files: one per publish) | 2.14, 2.47, 2.25, 0.42, 1.54 | 8.8 s | 2.47 s |
+| From parts, 2026-11-26 04:47 (8.8–10.2) | first publication | 1.61, 1.78, 2.14; 5.41, 5.23, 3.22; 3.32 | 22.7 s | 5.41 s |
+| | the D67 upgrade | 1.53, 1.64, 2.04; 4.98, 1.61; 2.67 | 14.5 s | 4.98 s |
+| From the base (`BENCH_NO_CHECKPOINT=1`), 2026-11-26 04:46 (8.5–8.8) | first publication | 8.44 (the base staged whole, one manifest); 5.37, 5.07, 3.28; 3.65 | 25.8 s | 8.44 s |
+| | the D67 upgrade | 7.80; 4.13, 1.54; 2.42 | 15.9 s | 7.80 s |
+| Budget 25,000, from parts, 2026-11-26 04:55 (9–11) | the D67 upgrade | 11 publishes of 0.44–0.61 (staging), 6 of 0.86–1.53 (the last staging part and writing ahead), 2.40 (commit) | 15.6 s | 2.40 s |
+| | rebuild: each 75,000-file table over 2–3 publishes | 12 publishes of 0.51–1.32, and one reading the tenant from its cursors | 11.3 s | 1.32 s |
+
+**The counterfactual**, the release before this one (`800b926`) on the same cell, 2026-11-19 14:44
+(load average 4.4–6.4): the first publication one publish of **19.8 s** of CPU (27.0 s wall), the upgrade
+one of **11.2 s** (16.0 s wall), the rebuild 2.47, 2.52, 2.59, 0.50 and 1.72 s (whole tables, as here at
+the default budget). Same work in steps: about the same total CPU at similar load (19.8 s against 19.8 s;
+12.4 s against 11.2 s for the upgrade), split so that no publish took more than 4.8 s from parts. The
+output is the same as a whole re-base's (`test/steps.test.ts` twins; the readers on `export/signals-steps/`).
+
+**What a unit costs** (from these runs): staging from parts about 15 µs per file or tombstone, from a
+base about 28 µs (a base is parsed a character at a time), writing ahead 40–46 µs per added file,
+rebuilding 30–36 µs per manifest entry, a commit in steps about 8–11 µs per file it adds. A whole first
+publication cost about 66 µs per file here (the release before) and, measured on Cloudflare, 2026-11-19,
+S11, 0.09–0.13 ms per file on Cloudflare. So, modelled: a publish at the budget is at most about 9–13 s on
+Cloudflare (100,000 units, none dearer than a whole publication's file), the base staged whole at
+300,000 files about 9–13 s too (its share of a whole publication, a third, of 300,000 files), the commit
+at 300,000 added files 3–6 s. Each under half the 30 s default. Not measured on Cloudflare.
+
+**Tuning steps, in order, on the same data:** (1) the commit first written in the publish that finished
+writing ahead: that publish took 5.7–5.8 s (80,000 entries written, then the commit of 300,000 files);
+(2) the commit only in a publish whose budget had room: unchanged here (the last write fit the budget),
+so (3) the commit only first in a publish of its own, which takes it first (a re-base ready to commit
+counts as progress): 3.1 s for that publish, every other one at most 4.8 s. Not tried: weighting a
+written entry above a staged one (they differ about threefold), resuming inside a base.
+
 ### Re-base: memory and time
 
 Measured here, in local workerd (`bench/rebase.bench.test.ts`, 2026-11-19, load average 5–11 on
@@ -1304,9 +1440,9 @@ load 7–8; at 300,000 the capped runs, the range over two or three runs, load 5
   tenant's newest checkpoint or base is read and every live file written to `stage` (about two row
   writes per file, modelled $0.60 per 300,000-file tenant at $1 per million rows, a price from
   training knowledge), spread over publishes of at most 100,000 staged files and 100 tenants each,
-  one second apart ("Bounded work per publish"). A tenant at the ledger's limit is re-based alone,
-  and its publish is the largest (Measurements, "Capped re-bases"; CPU on Cloudflare not measured:
-  "CPU time of a re-base at the limit"). While the queue drains, a waiting tenant's span and log
+  one second apart ("Bounded work per publish"). A tenant larger than the budget is re-based in steps
+  over a few publishes ("Re-bases and rebuilds in steps"; Measurements, "Re-bases in steps: CPU per
+  publish"; CPU on Cloudflare not measured for it: "CPU time of a re-base at the limit"). While the queue drains, a waiting tenant's span and log
   tables are not published; its metric tables are.
 - **External readers depend on the nested name mapping** and on the projection rule for identity
   partitions: PyIceberg 0.12.0 and DuckDB 2.0.0 apply both; a reader that ignores the mapping reads
@@ -1379,17 +1515,20 @@ load 7–8; at 300,000 the capped runs, the range over two or three runs, load 5
   are the files they add (a tenant read from its cursor is planned in memory; a re-based one is
   not). A change is one ledger SQLite value (at most 2 MB), so this is up to the changes' size,
   not the state's; with S4's 2,000-file units it could be large, and it is not measured.
-- **CPU time of a re-base at the limit.** At 300,000 files a re-base took 8–17 s and a first
-  publication 27–38 s here (Measurements), wall time on a loaded machine with a local R2. On
-  Cloudflare a Durable Object invocation (a request or an alarm) has 30 s of CPU by default,
-  configurable to 5 minutes with `limits.cpu_ms` (Cloudflare's documentation, "Durable Objects
-  limits" and "Workers limits", read 2026-11-19). The per-publish cap keeps a publish of many
-  tenants under that (Measurements, "Capped re-bases"), but a single tenant is re-based whole: one
-  whose re-base exceeds the limit is retried behind the others and never finishes (Not
-  implemented). Not measured on Cloudflare. The experiment that settles it: viz-publisher on
-  Cloudflare re-basing a tenant of 300,000 files (the bench's log, written to a `viz-` bucket), and
-  the upgrade bench's cell (`bench/upgrade.bench.test.ts`) at the default caps, the CPU time of each
-  publish read from the analytics API (`cpuTime` of the Durable Object's invocations).
+- **CPU time of a re-base at the limit.** Measured on Cloudflare, 2026-11-19, S11: the release before
+  this one's first publication of a 150 MiB tenant took 14.0 s of CPU, and 300 MiB extrapolates to
+  28–32 s, at the 30 s default limit. In steps, the most one publish did here at 300,000 files was 5.4 s
+  of CPU (8.4 s for the step that stages a base whole), and on Cloudflare a publish at the budget is
+  modelled at 9–13 s. Not measured on Cloudflare. The experiment that settles it: S11's 300 MiB tenant
+  (the step it stopped short of) published by this release, every invocation's CPU read from the
+  analytics API (`durableObjectsInvocationsAdaptiveGroups`), each under 30 s.
+- **A re-base in steps holds its stage for its duration.** About one `rebase_stage` row per file of the
+  tenant, and manifests written ahead in R2, from its first step to its commit (seconds to minutes; longer
+  if it is refused, `inconsistent`, every `retryMs`). Billed as the rows a whole re-base writes, plus a
+  row per part and manifest.
+- **Its other tables wait for it.** While a tenant's own re-base goes on in steps, its tables with
+  cursors are not read (they are published once it commits, from its cursors); tenants waiting their
+  turn are, as before.
 - **A capped backlog wakes the object once a second.** `continueMs` (1 s) between capped publishes:
   an upgrade of a cell of 10,000,000 staged files is about 100 publishes, 100 alarm wakes. A
   publish that leaves only tenants stuck on a hole or a refusal waits `retryMs` as before.
@@ -1415,7 +1554,8 @@ load 7–8; at 300,000 the capped runs, the range over two or three runs, load 5
   passed to it is not a credential check.
 - No adversarial review of the commit protocol, the segment reader, the trigger, the
   streaming re-base (D55: reading checkpoints, the staged diff, the six slots) or the per-publish
-  caps (review M-6's fix: the admission, the started marks, the lease, the rebuild first) has been done
+  caps (review M-6's fix: the admission, the started marks, the lease, the rebuild first) or the re-bases and
+  rebuilds in steps (the marker, the write ahead with a reserved snapshot id, the checks before reusing what was kept) has been done
   (AGENTS.md asks for one before building on it), and the publisher is not in the protocol model
   (spec/README.md, "Not modelled").
 

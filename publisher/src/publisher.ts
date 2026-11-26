@@ -1253,8 +1253,11 @@ export class Publisher extends DurableObject<PublisherEnv> {
       budget.progress.delete(tenant)
       return log
     }
+    const kept = step !== null
     const s = this.catchUp(log, refused)
     if (!s) return { ...log, status: 'deferred', base: null, changes: [] }
+    // A base (or a one-object checkpoint) was staged whole by this publish, outside the part-by-part path.
+    if (!kept) this.progressOf(budget, s).staged += (log.base as BaseInfo).files + (log.base as BaseInfo).tombstones
     return (await this.continueRebase(store, cfg, budget, s, log)) as TenantLog
   }
 

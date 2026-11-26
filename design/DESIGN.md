@@ -409,8 +409,12 @@ links, a fragment's services and hours, structured metadata) carry a field id fo
 value and element and are found in the files through a nested name mapping. The metric tables
 commit first and are byte for byte what they were before. After the upgrade from D64's
 release every tenant is re-based once (the new tables have no cursor), a few per publish: at most
-100 tenants and 100,000 staged files, least recently started first, while waiting tenants keep
-their metric tables published from their cursors (D67, after review M-6). A table no
+100 tenants and 100,000 units of work (files staged, added files written into manifests ahead of
+a commit, entries rebuilt), least recently started first, while waiting tenants keep their metric
+tables published from their cursors (D67, after review M-6). A tenant larger than that budget is
+re-based across publishes, its stage and progress kept in SQLite, and committed once (D55's
+amendment); a table lost with the publisher's storage is rebuilt from R2 the same way, a manifest
+at a time. A table no
 release knows still stops a tenant. A removed
 file is physically deleted only after the removal is published and every snapshot that
 referenced it has expired (the janitor asks the publisher before each purge). Each snapshot
@@ -524,7 +528,12 @@ Loki label calls (R2-M1) and charged after the fact for derived structures and a
 margin's cost larger than stated (R2-M3) and trace by ID refused for ordinary tenants (R2-M4a);
 all four are fixed as D62's second rewrite (2026-11-19) describes, with its reproductions as tests.
 `QUERY_SIGNALS` stays off until the re-review's narrow re-check of those four, and the Cloudflare
-and Grafana runs of `query/README.md` ("Traces and logs", "What remains before the flag").
+and Grafana runs of `query/README.md` ("Traces and logs", "What remains before the flag"). Spike S10 (measured on Cloudflare, 2026-11-19, on the build before those fixes) found the memory
+budget held (isolate at most 70.8 MiB) but every trace query refused at about 690,000 spans in five
+minutes, by `maxFetchBytes` against one hour's bytes: one place serves trace by ID up to about
+240,000 spans in the trace's hour, and searches up to about 620,000 spans in the window plus four
+hours. D62 "What volume this serves" has the ceilings and the follow-up design (bloom filters on
+`spans.trace_id`, `trace_index` read in waves, smaller row groups), not built.
 The write side of stage 2
 (D63) flushes and lists the `spans`, `trace_index` and `logs` tables, and tail reads choose
 batches by signal (`signals`) and, given a time range, skip span and log batches whose time
@@ -709,11 +718,13 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
   is refused in the Worker before any tenant's object is asked, and a request that changes
   nothing writes nothing (M-2). A code or token also carries its expiry under that tag, so the
   Worker refuses an expired one the same way (D70, after its review). When the tenant's object
-  says a token is dead (a rotated or revoked refresh token, an access token of an ended grant),
-  the Worker lists it, in the isolate at once and in KV until the credential expires,
-  and refuses it there afterwards before anything else counts it; so a stock of refresh tokens
-  collected while a grant was live is good for a minute or two after its first replay, not for the
-  30 days they would otherwise last (D70, after its second review). Rate limits sit in front
+  says a token is dead (a refresh or access token of an ended grant, or one it never knew), the
+  Worker lists it, in the isolate at once and in KV until the credential expires, and afterwards
+  refuses it after its own rate limit and before its tenant's fuse or object; so a stock of refresh
+  tokens collected while a grant was live is good for about a minute after its first replay, not for
+  the 30 days they would otherwise last (D70, after its second review). Nothing is listed whose
+  later presentation must still reach the object: never a rotated refresh token of a live grant,
+  whose other holder presenting it is what makes reuse detection end a stolen grant (D70, third look). Rate limits sit in front
   (D70): Cloudflare's Rate Limiting binding, approximate and per location, counts the presented
   credential and then its tenant, as a fuse near what one object serves, before the tenant's
   object, so a credential spends only its own allowance; the tenant's fuse is asked only when the
@@ -723,7 +734,8 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
   Cloudflare Workers shares one address, which is not counted); the object itself bounds refreshes
   per grant exactly, and the grant view shows how many a grant made in its last day; a refusal is
   429 `too_many_requests` with `Retry-After` and spends nothing; a limiter or the list that fails
-  lets requests through within 100 ms (each check its own share) and is reported by `/healthz`. The
+  lets requests through within 100 ms (each check its own share; a slow list read affects its own
+  key only) and is reported by `/healthz`. The
   fuses are per location: floods from several locations add up on one object. These limits assume
   no Smart Placement for control and mcp. Until a sign-in
   exists the consent step is a call to the control API, and only an API key may approve.

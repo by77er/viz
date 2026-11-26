@@ -197,7 +197,7 @@ describe('the upgrade to D67, re-bases capped per publish', () => {
       let t0 = Date.now()
       const firsts: unknown[] = []
       for (let i = 0; ; i++) {
-        expect(i).toBeLessThan(c.tenants * 10 + 2)
+        expect(i).toBeLessThan(c.tenants * (4 + Math.ceil((3 * c.files) / c.cap)) + 2)
         t0 = Date.now()
         const r = await p.publish(ts)
         const s = summary(r, t0, Date.now())
@@ -214,7 +214,7 @@ describe('the upgrade to D67, re-bases capped per publish', () => {
       await p.configure({ maxRebaseFilesPerPublish: c.cap, maxRebasesPerPublish: 100 })
       const upgrade: unknown[] = []
       for (let i = 0; ; i++) {
-        expect(i).toBeLessThan(c.tenants * 10 + 2)
+        expect(i).toBeLessThan(c.tenants * (4 + Math.ceil((3 * c.files) / c.cap)) + 2)
         t0 = Date.now()
         const r = await p.publish(ts)
         const s = summary(r, t0, Date.now())
@@ -231,9 +231,11 @@ describe('the upgrade to D67, re-bases capped per publish', () => {
         await s.storage.deleteAll()
       })
       await evictDurableObject(p)
+      // The lost storage took the configuration with it: the cap again, so the rebuild runs within it.
+      await p.configure({ maxRebaseFilesPerPublish: c.cap, maxRebasesPerPublish: 100 })
       const rebuild: unknown[] = []
       for (let i = 0; ; i++) {
-        expect(i).toBeLessThan(8)
+        expect(i).toBeLessThan(8 + Math.ceil((c.tenants * c.files) / c.cap))
         t0 = Date.now()
         const r = await p.publish(ts)
         const s = summary(r, t0, Date.now())

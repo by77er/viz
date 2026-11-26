@@ -71,7 +71,11 @@ export function wantedRateLimits(stage, plan = readJson(join(DEPLOY_DIR, 'worker
 function rateLimitsOf(version, script) {
   const out = []
   for (const b of version?.resources?.bindings ?? version?.bindings ?? []) {
-    if (b?.type !== 'ratelimit') continue
+    // `ratelimit` is the type wrangler uploads (training knowledge; not read from Cloudflare): any other type that names a rate limit is a shape this does not know.
+    if (b?.type !== 'ratelimit') {
+      if (/rate.?limit/i.test(String(b?.type ?? ''))) throw new Error(`${script}: a binding ${b.name ?? '(no name)'} of type ${b.type}, which resources.mjs does not know how to read: which Rate Limiting ids are in use is unknown, so none is allocated`)
+      continue
+    }
     const id = b.namespace_id ?? b.namespaceId
     if (!(typeof id === 'string' || Number.isInteger(id)) || !/^\d+$/.test(String(id))) throw new Error(`${script}: a Rate Limiting binding ${b.name ?? '(no name)'} whose namespace id cannot be read (${JSON.stringify(id)}): which ids are in use is unknown, so none is allocated`)
     out.push({ name: b.name, id: String(id) })
@@ -180,6 +184,14 @@ function recordRateLimits(keys, ids) {
   Object.assign(map, ids)
   r[RATELIMIT_RECORD] = Object.fromEntries(Object.entries(map).sort(([a], [b]) => a.localeCompare(b)))
   writeFileSync(RESOURCES_FILE, JSON.stringify(r, null, 2) + '\n')
+}
+
+/** A stage's Rate Limiting ids, removed from resources.json (nothing to delete on Cloudflare). Returns the keys freed. */
+export function freeRateLimitIds(stage, plan) {
+  if (!stage) throw new Error('only a stage frees its rate-limit ids: production keeps its own')
+  const keys = wantedRateLimits(stage, plan).map((x) => x.key)
+  if (keys.length) recordRateLimits(keys, {})
+  return keys
 }
 
 const CF_READ = { listScripts, currentDeployment, listVersions, versionInfo }
@@ -313,11 +325,8 @@ export async function destroy(stage) {
     done.push(`R2 bucket ${b.name} (${keys.length} objects)`)
   }
   // Its Rate Limiting namespace ids: nothing on Cloudflare (a namespace exists only as bindings name it); freed here.
-  const freed = wantedRateLimits(stage).map((x) => x.key)
-  if (freed.length) {
-    recordRateLimits(freed, {})
-    done.push(`rate-limit ids of ${freed.length} bindings freed`)
-  }
+  const freed = freeRateLimitIds(stage)
+  if (freed.length) done.push(`rate-limit ids of ${freed.length} bindings freed`)
   log(`destroy ${stage}: ${done.length ? done.join(', ') : 'nothing to delete'}`)
   return done
 }

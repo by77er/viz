@@ -35,7 +35,7 @@ under Housekeeping), every server stopped. Each timing gives its load.
 
 | v8 finding | Change | Shown by |
 |---|---|---|
-| **B1** a page reloaded while scrolled to a chart moves (0.18 to 1.69) and lands elsewhere | Every chart reserves what it draws, **in its markup** (the first frame of a load comes before the chart script); the reference chart sets the reservation again whenever it draws its legend; the legend's actions have a row each (two in one row wrapped at 320 px, 44 px past the reservation); the pages `tools/reference.mjs` builds preload the typefaces; `hidden` hides | Reload pass: v8 **68 of 108** loads fail (shift up to 0.88, landing up to 3,975 px away); v9 **0.0000 on every load** in two passes (212 loads), every chart lands in place but one in each pass, on the reference at 400 px coarse with no shift (an intermittent miss, open: below). `check.mjs` and the audit now read every chart. T1 to T3 caught. `compare/v9-b1-*` |
+| **B1** a page reloaded while scrolled to a chart moves (0.18 to 1.69) and lands elsewhere | Every chart reserves what it draws, **in its markup** (the first frame of a load comes before the chart script); the reference chart sets the reservation again whenever it draws its legend; the legend's actions have a row each (two in one row wrapped at 320 px, 44 px past the reservation); the pages `tools/reference.mjs` builds preload the typefaces; `hidden` hides | Reload pass: v8 **68 of 108** loads fail (shift up to 0.88, landing up to 3,975 px away); v9 **0.0000 on every load** in three passes (318 loads), every chart lands in place but one in each of the first two passes, on the reference at 400 px coarse with no shift (an intermittent miss, open: below). `check.mjs` and the audit now read every chart. T1 to T3 caught. `compare/v9-b1-*` |
 | **m1** V2b, V3, V4, V10 survive | `check.mjs`: colour longhands of every spelling, no `var()` in a property list, no duration without one, no rule undoing a chart's skipping; the audit: what each element eases as computed (at rest and hovered), colour transitions running when a change of theme is drawn, every chart's `content-visibility`, a ring drawn inside against the ink of its words | **Q2b, Q3, Q4, Q10 caught**, each through every tool that sees it (8 of 8 runs) |
 | **m2** touch crosshair over 36 series at 49.6 ms against 50 | Two costs in the move handler removed: a computed-style read that restyled the page on every move, and a number formatter made on every call | Phone, judged, 20 runs: **v8 51 → v9 44 ms** at p75 (load 1.0 and 1.1); 10 runs: 50 → 44 (load 3.4 to 3.6) |
 | **m3** "Colour the eight largest" offered when it would change nothing | Offered only when one of the eight largest on screen is not coloured (the lead's decision); `review.md`, `project/README.md` and the Chart README say so | P8 in `chart-rules.test.mjs` (failing first on v8: 11 of 21 tests); a fixed case for the review's image 02; C16 caught; `compare/v9-m3-*` |
@@ -94,10 +94,14 @@ not needed once every reservation is exact, and is not checkable in CSS.
 - **`tools/audit.mjs`**: `reserve` and `skip` on every chart of every page at all 14 configurations, read as the page opened;
   `font` (the sans face preloaded); and the **reload pass** (`reload-shift`), at both layouts: every chart (`--quick`: the middle one and
   the last), a layout shift of 0.05 or more or a landing more than 1 px away fails, judged at any load; a failure prints the scroll
-  position and page height frame by frame.
+  position and page height frame by frame. Before the reloads, every page with a chart is also loaded **with no script run**, and each
+  chart's reservation there must be what it draws (`reserve`): the deterministic form of the reload check, added after the first whole
+  corpus run, where T3.audit survived (below). On the v8 copy it fails every chart of the Chart preview at both layouts ("reserves 264.5 px
+  in the page as served, before any script, and draws 365.5 px"); on v9 it passes on every page.
 - Mutants: **T1** (the script no longer keeps its reservation: caught after "Show 20 more of Other"), **T2** (two actions in one row:
-  caught at 320 px and in the markup), **T3** (a chart with no markup reservation: `check.mjs`) and **T3.audit** (four: the reload pass
-  catches it, landing 1,178 px away), **T6** (no preload: `font`), **Z6** rewritten (below).
+  caught at 320 px and in the markup), **T3** (a chart with no markup reservation: `check.mjs`) and **T3.audit** (four charts without:
+  first caught by the reloads, landing 1,178 px away; in the first whole corpus run it **survived**, because whether a reload shows it
+  depends on whether the browser draws a frame before the chart script; now caught every time by the served-page reservation), **T6** (no preload: `font`), **Z6** rewritten (below).
 
 ### Measured: reload while scrolled to a chart
 
@@ -127,6 +131,7 @@ Over every load:
 | v8 copy | 108 | **68** | 0.8835 (reference, 1500) | 0.8400 (reference, 400 coarse) | 3,975 px (reference, 400 coarse) |
 | v9, the audit's reload pass | 106 | **1** | **0.0000** | **0.0000** | 759 px, once (below) |
 | v9, the final full audit's reload pass | 106 | **1** | **0.0000** | **0.0000** | 6,760 px, once (below) |
+| v9, the last reload pass (with the served-page check), 26 Nov | 106 | **0** | **0.0000** | **0.0000** | 0 px: every chart in place |
 
 My runs of v8 differ from the review's in detail: at 400 px coarse I measure no layout shift but a landing far away (the restored
 position points into a page made shorter by the skipped charts above it), where the review measured both. Both are B1, and both are
@@ -140,7 +145,7 @@ scroll position somewhere other than where it was, with **no layout shift**:
 - the reference, chart 22 of 22: **6,760 px past** where it was (the final full audit, `evidence/audit-full.txt`). Its frame-by-frame
   trace has one entry: the first frame, 278 ms after the reload, was already the whole page (52,387 px tall) and already at 51,350 px.
 
-None came back on a retry: 22 more reloads of every reference chart, 44 in a second reload pass, 38 of the memory chart and three
+None came back on a retry, and the last full reload pass (106 loads, `evidence/reload-v9-final.txt`) had none: 22 more reloads of every reference chart, 44 in a second reload pass, 38 of the memory chart and three
 retakes all landed in place, and it never happened at 1500 px (about 330 reloads of v9 in all). What I ruled out: the page is the same
 height before and after its scripts (each panel measured with scripts off and on), and with the fallback face or the web face (the
 Chart preview to the pixel; the reference within 30 px per section), and every chart reserves what it draws; the last trace shows a

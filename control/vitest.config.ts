@@ -1,10 +1,33 @@
 import { cloudflareTest } from '@cloudflare/vitest-plugin'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitest/config'
+import { experimental_readRawConfig } from 'wrangler'
+
+/**
+ * The Worker's own wrangler.jsonc, less its `ratelimits` (D70): the deploy declares the six OAuth
+ * limiters there with production limits and placeholder namespace ids, and the plugin would bind them
+ * in every test file (it merges bindings by name, so they cannot be unset below). The tests want them
+ * absent unless a test puts its own in place (test/ratelimit*.test.ts, with the small RL_TEST_*
+ * limits below), as a deployment without the bindings runs. Everything else is read from the file as
+ * it is. Written to `.wrangler/test/wrangler.json` (git-ignored), which no release reads.
+ */
+function testWranglerConfig(): string {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const { rawConfig } = experimental_readRawConfig({ config: join(here, 'wrangler.jsonc') })
+  const { ratelimits: _ratelimits, ...rest } = rawConfig as Record<string, unknown>
+  // In this checkout's .wrangler/ (git-ignored), not node_modules, which a scratch copy may share by link.
+  const out = join(here, '.wrangler', 'test', 'wrangler.json')
+  mkdirSync(dirname(out), { recursive: true })
+  writeFileSync(out, JSON.stringify({ ...rest, main: resolve(here, String(rest.main)) }, null, 2))
+  return out
+}
 
 export default defineConfig({
   plugins: [
     cloudflareTest({
-      wrangler: { configPath: './wrangler.jsonc' },
+      wrangler: { configPath: testWranglerConfig() },
       // Test-only signing key for OAuth client registrations (production sets OAUTH_CLIENT_KEY as a Worker secret).
       miniflare: {
         bindings: { OAUTH_CLIENT_KEY: 'test-only-oauth-registration-signing-key-not-a-secret' },

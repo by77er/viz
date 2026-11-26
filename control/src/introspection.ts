@@ -10,7 +10,7 @@ import {
 } from '../../contracts/oauth'
 import { type DeadListEnv, type DeadReason, listedDead, recordDead } from './deadlist'
 import { type OAuthEnv, credentialExpired, credentialTagValid, oauthConfig } from './oauth'
-import { type RateLimitEnv, limitBearer } from './ratelimit'
+import { LISTED, type RateLimitEnv, limitBearer } from './ratelimit'
 import type { Tenant } from './tenant'
 
 /**
@@ -31,7 +31,8 @@ import type { Tenant } from './tenant'
  * - a tagged token past the expiry its body carries (layout 2, contracts/oauth.ts) is `inactive`
  *   (`expired`) and reaches no object, and counts against nothing (D70, review B-1);
  * - so is one its tenant's object has already called dead (`unknown`, `expired`, `revoked`), with
- *   that reason: the Worker lists it when the object says so (src/deadlist.ts; round 2, R2-M2);
+ *   that reason, after its own per-token allowance and before its tenant's fuse: the Worker lists it
+ *   when the object says so (src/deadlist.ts; round 2, R2-M2; round 3, m-1);
  * - any other tagged token is counted against itself, then against its tenant (src/ratelimit.ts,
  *   D70), before the tenant's object is asked: over either, `rate_limited` and no object. A made-up
  *   or expired token is refused before it counts, so it cannot spend a tenant's budget, and one
@@ -53,10 +54,11 @@ export async function introspectFor(env: IntrospectionEnv, caller: unknown, toke
   if (!(await credentialTagValid(oauthConfig(env).clientKey, token))) return unknown
   // Past the expiry the tag vouches for: the object would say the same (D70).
   if (credentialExpired(token as string)) return expired
-  // Its object has called it dead already (R2-M2): that answer again, before any limit or object.
-  const listed = await listedDead(env, token as string)
-  if (listed !== null) return { v: 1, status: 'inactive', reason: listed }
-  const limited = await limitBearer(env, cred.tenant, token as string)
+  // Counted against itself; then, if its object has called it dead already (R2-M2), that answer again,
+  // before its tenant's fuse and the object (after its own allowance: round 3, m-1).
+  let listed: DeadReason | null = null
+  const limited = await limitBearer(env, cred.tenant, token as string, async () => (listed = await listedDead(env, token as string)) !== null)
+  if (limited === LISTED) return { v: 1, status: 'inactive', reason: listed! }
   if (limited) return limited
   // The one place this picks a tenant's object: the tenant the token names.
   const stub = env.TENANT.get(env.TENANT.idFromName(cred.tenant)) as unknown as TenantOAuthRpc

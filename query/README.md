@@ -600,6 +600,17 @@ before the flag".
 5. **The tail's limit** ("The tail") is now only a backlog of more than `maxFetchBytes` inside one
    query's range (D72); it refuses, it never misanswers.
 
+**Spike S10 ran on Cloudflare (2026-11-19, the ABI 7 build; `spikes/s10-signals-trial/README.md`).**
+The memory budget held (isolate at most 70.8 MiB; fat shapes refused at 40 to 45 MiB). At realistic
+volume, about 690,000 spans in five minutes, every trace query was refused by `maxFetchBytes` or
+`maxSpans`, trace by ID included, and a margin of 0 did not help. D62 "What volume this serves"
+states the ceiling (trace by ID about 240,000 spans in the trace's hour on ABI 7, narrower on ABI 8
+by time only, modelled; searches about 620,000 spans in the window plus four hours) and the
+follow-up design (bloom filters for trace by ID, `trace_index` read in waves, smaller row groups);
+none of it is built. With these ceilings the flag can serve tenants below them, refused with a 422
+above; whether that is enough to turn it on is the owner's decision, after the re-check and a rerun
+of S10's realistic block on ABI 8.
+
 The re-reviewer's verdict says the flag must not go on merely because the trial and the Grafana
 run pass: neither exercises R2-M1 or R2-M2. With them fixed and tested (below), the order is 1,
 then 2 and 3.
@@ -1029,6 +1040,28 @@ one-stream query). Not measured: larger sizes through the Worker (a fixture modu
 12 MB does not reach the test runner: one message is at most 32 MiB), and anything on Cloudflare.
 
 ### Verification
+
+**The re-review (R2) and the review of D72's query side**, on the final code (module SHA-256
+`f29e583a…`, 4,530,674 bytes, 1,446,413 gzip -9), 2026-11-26:
+- `npx tsc --noEmit` clean; `npx vitest run --maxWorkers=2`: **172 of 172** in 20 files (268 s).
+- `test/review-r2.test.ts` (8 tests, new): the re-review's reproductions through edge, the real
+  flush, the ledger and the Worker (R2-M1, R2-M2 histogram, tag values, LogQL `label_format`,
+  R2-M3b with its refusal text, R2-M4a) and D72 review m-3 and m-2. **Run on the code before this
+  change** (`query/` and `engine/wasm-query/js` at `514828c`, the ABI 7 module, everything else
+  linked; `qe/before/`): 7 of 8 fail, with 113.3, 512.8, 105.1 and 221.3 MiB of WASM memory and
+  the 422s of R2-M3b and R2-M4a; m-3 passes there (the code before sent no range: it guards the
+  D72 change, and mutant 115 shows it has teeth).
+- Updated: `signals.test.ts` (the `early` case takes no tail byte; a new test reads the tail inside
+  each query's bound with the filter on, off and from a shard that ignores the range),
+  `engine.test.ts` (ABI 8), `memory.test.ts` and `signals.test.ts` (refusal texts).
+  `completeness.test.ts` unchanged and passing.
+- `engine/wasm-query`: `cargo test -j 2 --lib`, 22 of 22; `./build.sh`; `node tools/check.mjs`, every
+  check passes. `engine/traceql`: `cargo test -j 2`, api 14, props 6, limits 6, regex 1,
+  conformance 1, differential 1 ignored. `engine/logql`: `cargo test -j 2`, every suite passing
+  (22, 9, 1, 5, 8, 10, 1; 2 ignored as before).
+- `contracts/engine.ts` changed first: `npx tsc --noEmit` clean in app, anomaly, engine/wasm, compact,
+  query, publisher, ruler, stack, shard, dashboard, flush and mcp before any code changed.
+- The reviewer's scripts against the final module: `qe/after-final.txt` ("The re-review" table).
 
 **The review's findings (2026-11-19)**, run on the final code (load average 7 to 10, 4 shared
 cores):
@@ -1510,6 +1543,50 @@ page states them. The independent consumer is the app's client. **Grafana itself
 run against the Worker**, and no response was compared with a running Prometheus.
 
 ### Mutation check
+
+**The re-review of D62 (R2) and the review of D72's query side (2026-11-26, on scratch copies).**
+
+*Rust*, 20 mutants of `engine/wasm-query`, `engine/traceql` and `engine/logql`, on scratch copies of
+those three crates (the other engine crates linked), `cargo test -j 2 --lib` against `src/sigtests.rs`
+(the runner `qe/mut/rust-mutants.py` in this work's scratch area): **20 of 20 killed** on the final
+code, the unmutated tests passing first; the shared tree's mutated files hashed the same before and
+after. Five survived earlier runs and were killed by strengthening the cases, each because the case
+was refused at an earlier stage than the one the mutant broke: the label answer's charge (300 fat
+streams are refused at their label sets; a 60-stream case is refused only at its answer); the
+tag-value set's charge (with one span per trace the spans are let go as the set grows, so the peak
+did not depend on it; one trace of 500 spans does); the tag-name set's charge and the search
+answer's charge-after (both cases were refused at their records; retuned so the stage under test
+refuses). Writing the search case also found a gap: `viz_traceql::search` built its whole
+response, with every echoed value copied, before anything was charged (60.3 MB peak); search
+results are now charged per span as they are made (`search_with`). One run's baseline failed for a
+reason of the runner's own (copies kept their source mtimes, so cargo reused a crate built for the
+previous run's last mutant); fixed, and the whole set rerun.
+
+| # | Mutant | Killed by (`sigtests.rs`) |
+|---|---|---|
+| 1 | R2-M1: the label sets `/series` keeps not charged | `r2_m1_…` |
+| 2 | R2-M1: the label texts read from a file not charged | `r2_m1_…` |
+| 3 | R2-M1: the label answer not charged before it is written | `r2_m1_…` (60 streams) |
+| 4 | R2-M2: a TraceQL group's series not charged when made | `r2_m2_one_series_per_quantile…`, `a_trace_metric_query…` |
+| 5 | R2-M2: a histogram bucket's output series not reserved | `r2_m2_histogram_series…` |
+| 6 | R2-M2: quantiles do not multiply the reserved output | `r2_m2_one_series_per_quantile…` |
+| 7 | R2-M2: a metric answer charged after it is written | `r2_m2_a_metric_answer…` |
+| 8 | R2-M2: tag values not charged as the set grows | `r2_m2_tag_values…` |
+| 9 | R2-M2: LogQL series label sets not charged | `r2_m2_label_sets_from_regexp…` |
+| 10 | R2-M2: the budget does not reach LogQL's evaluation | `r2_m2_label_sets_from_regexp…` |
+| 11 | R2-M3: the extent pass holds every trace of the bound | `r2_m3_the_extent_pass…`, `r2_m3_a_long_trace…` |
+| 12 | R2-M3: spans planned by the hull (ranges ignored) | `r2_m3_a_long_trace…` |
+| 13 | R2-M3: a log query keeps every label set to the end | `r2_m3_log_query_lets_go…` |
+| 14 | R2-M4a: trace by ID counts other traces' spans | `r2_m4a_…` |
+| 15 | D72 m-2: tag names de-duplicate over all time again | `d72_m2_…` |
+| 16 | R2-M3: the ids after the window not charged | `r2_m3_the_extent_pass…` |
+| 17 | R2-M2: tag names not charged as the set grows | `r2_m2_tag_names_search_answers…` |
+| 18 | R2-M2: search results not charged as they are made | `r2_m2_tag_names_search_answers…` |
+| 19 | R2-M2: a search answer charged after it is written | `r2_m2_tag_names_search_answers…` |
+| 20 | R2-M2: the lines a log query keeps not charged | `r2_m2_tag_names_search_answers…` |
+
+*TypeScript*, mutants 111 to 117 of `tools/mutants.mjs` (`node tools/mutants.mjs 111 … 117`, scratch
+tree): TS_MUTANTS_RESULT
 
 **The review of spans and logs end to end, M-1, M-2, m-3, m-4 (2026-11-19, 12:41 to 13:14 UTC, load
 average 3 to 10, on scratch trees; `node tools/mutants.mjs 98 … 110`): 13 of 13 killed**, the

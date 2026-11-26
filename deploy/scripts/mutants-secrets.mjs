@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Mutation check for the secrets the deploy generates (lib/secrets.mjs, its use in release.mjs, and
 // how lib/wrangler.mjs hands a value over, and the review of D69's m-5, m-6, m-7 and the message of
-// M-1): AGENTS.md, "Tests must have teeth". Each mutant is one text replacement; `node --test
-// test/secrets.test.mjs test/review-d69.test.mjs` must fail with it. The file is restored after every
+// M-1), and D70's gate on the key: AGENTS.md, "Tests must have teeth". Each mutant is one text
+// replacement; `node --test test/secrets.test.mjs test/review-d69.test.mjs test/oauth-gate.test.mjs`
+// must fail with it. The file is restored after every
 // mutant, also on failure.
 //
 //   node scripts/mutants-secrets.mjs [text]   (from deploy/, in a COPY outside any git work tree;
@@ -60,6 +61,15 @@ const MUTANTS = [
   ['m-7: VIZ_FRESH_READ_MS="" is a 0 ms budget', 'lib/secrets.mjs', "  if (raw === undefined || raw.trim() === '') return FRESH_READ_MS", '  if (raw === undefined) return FRESH_READ_MS'],
   ['m-7: a Cloudflare API request has no timeout', 'lib/cf.mjs', ', signal: AbortSignal.timeout(timeoutMs()) }', ' }'],
   ['M-1: the rotation refusal advises a bare record without viz-control again', 'lib/secrets.mjs', '`Nothing was moved. Fix forward; or restore the other Workers only', '`Nothing was moved. Roll back with a record that leaves ${spec.worker} out (its serving version stays, a callee newer than its callers), or fix forward. Or restore the other Workers only'],
+  // D70's gate on the key (review of D70, M-2)
+  ['D70 gate: the key is created on a viz-control without its rate limits (no up-front refusal)', 'release.mjs', ', ...rotateProblems(rotate, specs), ...keyGateRefusals(gate, planned)]', ', ...rotateProblems(rotate, specs)]'],
+  ['D70 gate: the put itself does not check the gate', 'lib/secrets.mjs', '  if (refused.length) throw new SecretRefused(', '  if (false) throw new SecretRefused('],
+  ['D70 gate: a stage passes without its bindings and without --oauth-without-rate-limits', 'lib/secrets.mjs', '    if (manifest.stage && manifest.oauthWithoutRateLimits === true && w?.oauth?.withoutRateLimits === true) continue', '    if (manifest.stage) continue'],
+  ['D70 gate: production passes with the stage flag', 'lib/secrets.mjs', '    if (manifest.stage && manifest.oauthWithoutRateLimits === true && w?.oauth?.withoutRateLimits === true) continue', '    if (manifest.oauthWithoutRateLimits === true && w?.oauth?.withoutRateLimits === true) continue'],
+  ['D70 gate: a placeholder namespace_id passes', 'lib/secrets.mjs', "r.simple.period === w.oauth.period && /^[1-9]\\d*$/.test(", "r.simple.period === w.oauth.period && /^\\d+$/.test("],
+  ['D70 gate: two bindings with one id pass', 'lib/secrets.mjs', '    if (missing.length || shared.length) {', '    if (missing.length) {'],
+  ['D70 gate: OAUTH_CLIENT_KEY no longer gated', 'lib/secrets.mjs', "    gate: 'oauth',\n", ''],
+  ['D70: the record does not say a stage left the rate limits out', 'release.mjs', '    oauthWithoutRateLimits: manifest.oauthWithoutRateLimits === true,', '    oauthWithoutRateLimits: false,'],
   ['m-11: every run has the same VIZ_DEPLOY_RUN', 'release.mjs', "`gh${process.env.GITHUB_RUN_ID}.${process.env.GITHUB_RUN_ATTEMPT ?? 1}-` : ''}${randomUUID()}`", "`gh${process.env.GITHUB_RUN_ID}.${process.env.GITHUB_RUN_ATTEMPT ?? 1}-` : ''}00000000-0000-4000-8000-000000000000`"],
 ]
 
@@ -73,7 +83,7 @@ try {
 
 const run = () => {
   try {
-    execFileSync('node', ['--test', '--test-concurrency=2', 'test/secrets.test.mjs', 'test/review-d69.test.mjs'], { cwd: DEPLOY_DIR, stdio: 'pipe', timeout: 600_000 })
+    execFileSync('node', ['--test', '--test-concurrency=2', 'test/secrets.test.mjs', 'test/review-d69.test.mjs', 'test/oauth-gate.test.mjs'], { cwd: DEPLOY_DIR, stdio: 'pipe', timeout: 600_000 })
     return { failed: false, detail: '' }
   } catch (e) {
     const out = String(e.stdout ?? '') + String(e.stderr ?? '')

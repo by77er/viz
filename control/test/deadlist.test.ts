@@ -176,25 +176,40 @@ describe('what it costs', () => {
 })
 
 describe('it fails open, like the rate limits', () => {
-  for (const mode of ['throw', 'hang'] as const) {
-    it(`a KV read that ${mode === 'throw' ? 'throws' : 'does not answer'}: the request is served, logged once, reads are skipped for a while, /healthz says so`, async () => {
-      const { admin } = await newTenant('dlopen')
-      const c = await connect(admin)
-      const broken = kv(mode)
-      const w = client({ CONFIG: broken.CONFIG })
-      const log = vi.spyOn(console, 'error').mockImplementation(() => {})
-      const t0 = Date.now()
-      const r = await w.refresh(c.clientId, c.refresh)
-      expect(r.status).toBe(200)
-      expect(Date.now() - t0).toBeLessThan(1_000)
-      expect((await w.introspect(r.body.access_token)).status).toBe('active')
-      expect((await w.refresh(c.clientId, r.body.refresh_token)).status).toBe(200)
-      // One read failed; the others were skipped. One log line.
-      expect(broken.n.reads).toBe(1)
-      expect(log.mock.calls.filter((a) => String(a[0]).includes('dead-credential list could not be read')).length).toBe(1)
-      expect(await w.health()).toMatch(/^OAUTH_DEAD_LIST: skipped$/m)
-    })
-  }
+  it('a KV read that throws (KV failing): the request is served, logged once, reads are skipped in the isolate for a while, /healthz says so', async () => {
+    const { admin } = await newTenant('dlopen')
+    const c = await connect(admin)
+    const broken = kv('throw')
+    const w = client({ CONFIG: broken.CONFIG })
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const r = await w.refresh(c.clientId, c.refresh)
+    expect(r.status).toBe(200)
+    expect((await w.introspect(r.body.access_token)).status).toBe('active')
+    expect((await w.refresh(c.clientId, r.body.refresh_token)).status).toBe(200)
+    // One read failed; the others were skipped. One log line.
+    expect(broken.n.reads).toBe(1)
+    expect(log.mock.calls.filter((a) => String(a[0]).includes('dead-credential list could not be read')).length).toBe(1)
+    expect(await w.health()).toMatch(/^OAUTH_DEAD_LIST: skipped$/m)
+  })
+
+  it('a KV read that does not answer in time (a cold key, which anyone can cause): only that key counts as not listed, for a minute; every other key is still read; the list stays on (round 3, m-2)', async () => {
+    const { admin } = await newTenant('dlslow')
+    const c = await connect(admin)
+    const slow = kv('hang')
+    const w = client({ CONFIG: slow.CONFIG })
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const t0 = Date.now()
+    const r = await w.refresh(c.clientId, c.refresh)
+    expect(r.status).toBe(200)
+    expect(Date.now() - t0).toBeLessThan(1_000)
+    expect((await w.introspect(r.body.access_token)).status).toBe('active')
+    expect((await w.introspect(r.body.access_token)).status).toBe('active')
+    expect((await w.refresh(c.clientId, r.body.refresh_token)).status).toBe(200)
+    // Three keys, each read once (the access token's second check was remembered as not listed).
+    expect(slow.n.reads).toBe(3)
+    expect(log.mock.calls.filter((a) => String(a[0]).includes('took more than')).length).toBe(1)
+    expect(await w.health()).toMatch(/^OAUTH_DEAD_LIST: bound$/m)
+  })
 
   it('a KV write that fails: the answer is the object\'s, the isolate still remembers, logged once', async () => {
     const { admin } = await newTenant('dlwfail')

@@ -104,8 +104,9 @@ describe('B-1, R1 and R1b: a dead credential at the token endpoint spends at mos
     expect(r.status, JSON.stringify(r.body)).toBe(200)
     // Before the fix: 13 × 400, each reaching the object. After round 1: 3 reached it, then its own
     // allowance refused it ([400 × 3, 429 × 10]). Since round 2 (R2-M2) its client's revocation listed
-    // it dead, so every request is answered as the object would, before any limit or object.
-    expect(statuses).toEqual(new Array(13).fill(400))
+    // it dead, so none reaches the object; since round 3 (m-1) the list is read after its own
+    // allowance, so the answers are round 1's again ([400 × 13] in round 2).
+    expect(statuses).toEqual([400, 400, 400, ...new Array(10).fill(429)])
     expect(gets).toBe(0)
   })
 
@@ -133,9 +134,10 @@ describe('B-1, R2: revocation counts the token itself first', () => {
     expect(rf.status, JSON.stringify(rf.body)).toBe(200)
     const rv = await l.revoke(victim.clientId, rf.body.refresh_token)
     expect(rv.status, JSON.stringify(rv.body)).toBe(200)
-    // After round 1: [200 × 3, 429 × 10]. Since round 2 the object's first answer calls it dead and the
-    // Worker lists it: the other 12 are answered 200 without a limit or an object.
-    expect(statuses).toEqual(new Array(13).fill(200))
+    // After round 1: [200 × 3, 429 × 10], all 3 reaching the object. Since round 2 the object's first
+    // answer calls it dead and the Worker lists it, so only one reaches the object; since round 3
+    // (m-1) the list is read after its own allowance, so the answers are round 1's ([200 × 13] in round 2).
+    expect(statuses).toEqual([200, 200, 200, ...new Array(10).fill(429)])
     expect(gets).toBe(1)
   })
 })

@@ -2,8 +2,10 @@
 // Mutation check for the release tool's rules (contracts/COMPATIBILITY.md §6): forward-only
 // marking, the rollback refusal by schema and by format version, the rollback floors a writer's
 // switch raises (D69), what configure.mjs records, and the fixes of the review of D69 (M-1, M-2,
-// m-2, m-3, m-8) (AGENTS.md, "Tests must have teeth"). Each mutant is one text replacement; `node
-// --test` on the release, release-checks, configure, review-d69 and workflow tests must fail with it.
+// m-2, m-3, m-8), D70's gate in configure.mjs, the oauth-public floor and the Rate Limiting ids of
+// resources.mjs (AGENTS.md, "Tests must have teeth"). Each mutant is one text replacement; `node
+// --test` on the release, release-checks, configure, review-d69, workflow, oauth-gate, resources and
+// upgrade-production tests must fail with it.
 // The file is restored after every mutant, also on failure.
 //
 //   node scripts/mutants-release.mjs [text]   (from deploy/, in a COPY outside any git work tree;
@@ -87,6 +89,39 @@ const MUTANTS = [
   ['m-2: a release goes ahead while the switch is a secret on the writer', 'lib/floors.mjs', '  if (s.secret) {', '  if (false) {'],
   ['m-3: a floor Worker this release does not deploy is not judged at switch-on', 'lib/floors.mjs', '        if (!manifest.order.includes(floor.worker)) return serving ? { floor, now: null, serving } : null', '        if (!manifest.order.includes(floor.worker)) return null'],
   ['m-8: --only is ignored (the whole record is restored)', 'release.mjs', '  const target = restrictRecord(full, only, stage)', '  const target = full'],
+  // D70's gate in configure.mjs (review of D70, M-2, m-8)
+  ['D70 gate: production viz-control without its bindings is not refused', 'configure.mjs', '  if (missing.length) {\n    throw new Error(', '  if (false) {\n    throw new Error('],
+  ['D70 gate: a period other than the source\'s (10) is accepted', 'configure.mjs', '    if (simple.period !== gate.period) throw', '    if (false) throw'],
+  ['D70 gate: a limit that is not a positive integer is accepted', 'configure.mjs', '    if (!Number.isInteger(simple.limit) || simple.limit < 1) throw', '    if (false) throw'],
+  ['D70 gate: a binding name control does not list is accepted', 'configure.mjs', '    if (!gate.required.includes(r.name)) throw', '    if (false) throw'],
+  ['D70 gate: two bindings of viz-control with one id are accepted', 'configure.mjs', '      if (seenIds.has(r.namespace_id)) throw', '      if (false) throw'],
+  ['D70 gate: an id outside viz\'s range is accepted', 'configure.mjs', " || Number(id) < range.from || Number(id) > range.to) throw", ') throw'],
+  ['D70 gate: a stage is given production\'s ids (keyed by the canonical name)', 'configure.mjs', '    const key = `${out.name}/${r.name}`', '    const key = `${worker.name}/${r.name}`'],
+  ['D70 gate: a missing id becomes a placeholder without --ids-optional', 'configure.mjs', "      if (!idsOptional) throw new Error(`no namespace_id recorded for ${key}", "      if (false) throw new Error(`no namespace_id recorded for ${key}"],
+  ['D70 gate: --oauth-without-rate-limits is accepted for production by generateWorker', 'configure.mjs', "    if (!stage) throw new Error('--oauth-without-rate-limits is for a stage only", "    if (false) throw new Error('--oauth-without-rate-limits is for a stage only"],
+  ['D70 gate: a Worker without an oauth gate may carry ratelimits', 'configure.mjs', '    if (list?.length) throw new Error(`${where}: "ratelimits", but', '    if (false) throw new Error(`${where}: "ratelimits", but'],
+  ['configure: OAUTH_PUBLIC is not set on a production viz-control', 'configure.mjs', '  if (oauth && (!stage || oauthPublic)) {', '  if (oauth && oauthPublic) {'],
+  ['configure: OAUTH_PUBLIC is set on every stage, asked or not', 'configure.mjs', '  if (oauth && (!stage || oauthPublic)) {', '  if (oauth) {'],
+  ['configure: a component or VIZ_STAGE_VARS may set OAUTH_PUBLIC', 'configure.mjs', '  if (gate && (Object.hasOwn(cfg.vars ?? {}, gate.publicVar)', '  if (false && (Object.hasOwn(cfg.vars ?? {}, gate.publicVar)'],
+  ['m-8: placement is not refused on viz-control and viz-mcp', 'configure.mjs', '  if (worker.no_placement !== undefined && cfg.placement !== undefined) throw', '  if (false) throw'],
+  ["m-8: workers.json no longer marks viz-mcp no_placement", 'workers.json', '      "no_placement": "viz-mcp\'s OAuth bearers', '      "placement_note": "viz-mcp\'s OAuth bearers'],
+  ['configure: two bindings of one deployment with one id (across Workers) are accepted', 'configure.mjs', '      if (other) throw new Error(`${worker.name} ${name} and ${other}', '      if (false) throw new Error(`${worker.name} ${name} and ${other}'],
+  // The oauth-public floor (D69 point 6)
+  ['oauth-public: a release over a viz-control serving below the floor is refused (serving_below_floor ignored)', 'lib/floors.mjs', " && !(w.now && rule.servingBelow === 'forward-only')", ''],
+  ['oauth-public: such a release is not marked forward-only', 'lib/floors.mjs', '    forwardOnly.push(...floorForwardOnly(rule, s))\n', ''],
+  ['oauth-public: the deploy drops the floor\'s forward-only reasons', 'release.mjs', '  const forwardOnly = [...forwardOnlyReasons(manifest, before), ...floors.forwardOnly]', '  const forwardOnly = forwardOnlyReasons(manifest, before)'],
+  ['oauth-public: workers.json no longer says forward-only (the 2026-11-19 production is refused)', 'workers.json', '    "serving_below_floor": "forward-only",\n', ''],
+  ['oauth-public: the evidence of D70 round 2 (recordDead) dropped from the floor', 'workers.json', '        "control/src/deadlist.ts#recordDead"\n', '        "contracts/oauth.ts#CREDENTIAL_LAYOUT"\n'],
+  ['deploy.sh: a release forward-only for a floor is rolled back automatically', 'deploy.sh', 'f.kind==="format"||f.kind==="floor"', 'f.kind==="format"'],
+  ['release: a manifest configured --ids-optional is deployed', 'release.mjs', '(manifest.idsOptional === true ? [', '(false ? ['],
+  // Rate Limiting namespace ids (resources.mjs)
+  ['ids: an id a script that is not viz\'s binds is not excluded', 'resources.mjs', '    for (const s of scripts) if (!ourScripts.has(s)) takenBy.set(id, s)', '    for (const s of scripts) if (!ourScripts.has(s) && s.startsWith(\'viz-\')) takenBy.set(id, s)'],
+  ['ids: another deployment\'s recorded ids are not excluded', 'resources.mjs', "  for (const [key, id] of Object.entries(recorded)) if (!mine.has(key) && !takenBy.has(String(id)))", "  for (const [key, id] of Object.entries(recorded)) if (false)"],
+  ['ids: a kept id is reused although another script binds it', 'resources.mjs', '      if (free(id)) {\n        kept = id', '      if (inRange(id)) {\n        kept = id'],
+  ['ids: the scan reads the serving versions only, not the newest', 'resources.mjs', '    const ids = [...new Set([...serving, ...(newest ? [newest] : [])])]', '    const ids = [...new Set(serving)]'],
+  ['ids: a Rate Limiting binding whose id cannot be read is skipped', 'resources.mjs', "    if (!(typeof id === 'string' || Number.isInteger(id)) || !/^\\d+$/.test(String(id))) throw", "    if (!(typeof id === 'string' || Number.isInteger(id)) || !/^\\d+$/.test(String(id))) continue\n    if (false) throw"],
+  ['ids: the deployment\'s own bound ids are not kept (re-allocated)', 'resources.mjs', '    const bound = inUse.byScript.get(w.worker)?.[w.name]', '    const bound = undefined'],
+  ['ids: destroy --stage does not free the stage\'s ids', 'resources.mjs', '  if (keys.length) recordRateLimits(keys, {})\n', ''],
 ]
 
 try {
@@ -99,7 +134,7 @@ try {
 
 const run = () => {
   try {
-    execFileSync('node', ['--test', '--test-concurrency=2', 'test/release.test.mjs', 'test/release-checks.test.mjs', 'test/configure.test.mjs', 'test/review-d69.test.mjs', 'test/workflow.test.mjs'], { cwd: DEPLOY_DIR, stdio: 'pipe', timeout: 600_000 })
+    execFileSync('node', ['--test', '--test-concurrency=2', 'test/release.test.mjs', 'test/release-checks.test.mjs', 'test/configure.test.mjs', 'test/review-d69.test.mjs', 'test/workflow.test.mjs', 'test/oauth-gate.test.mjs', 'test/resources.test.mjs', 'test/upgrade-production.test.mjs'], { cwd: DEPLOY_DIR, stdio: 'pipe', timeout: 900_000 })
     return { failed: false, detail: '' }
   } catch (e) {
     const out = String(e.stdout ?? '') + String(e.stderr ?? '')

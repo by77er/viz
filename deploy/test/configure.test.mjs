@@ -1,6 +1,8 @@
 // node --test deploy/test/: configure.mjs, without the network.
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { checkEntrypoints, checkFloorSchemas, configure, durableObjectsOf, exportedNames, generateWorker, loadPlan, queuesOf, readOAuthGates, stageVars } from '../configure.mjs'
@@ -496,4 +498,134 @@ test('floors: the publisher\'s floor, schema 4, is the release that first reads 
   assert.ok(at('publisher/src/schema.ts') >= 4)
   const { values: [now] } = evaluateExports([{ module: 'publisher/src/log.ts', name: 'PUBLISHED_TABLES' }])
   for (const t of ['spans', 'trace_index', 'logs']) assert.ok([...now].includes(t), t)
+})
+
+// ───────────────────────────── rate limits in front of OAuth (D70; review of D70, M-2, m-8) ─────────────────────────────
+
+const controlCfg = () => readJsonc(join(REPO_ROOT, 'control/wrangler.jsonc'))
+const withLimits = (f) => {
+  const c = controlCfg()
+  c.ratelimits = f(c.ratelimits)
+  return c
+}
+
+test('D70 gate: the bindings and the period are read from control\'s source; control/wrangler.jsonc declares all six with the proposed limits, period 60, placeholder ids', () => {
+  const g = gates.get('viz-control')
+  assert.deepEqual(g.required, ['OAUTH_RL_SOURCE', 'OAUTH_RL_SOURCE_48', 'OAUTH_RL_CREDENTIAL', 'OAUTH_RL_TENANT', 'OAUTH_RL_BEARER', 'OAUTH_RL_BEARER_TENANT'])
+  assert.equal(g.period, 60)
+  assert.equal(g.publicVar, 'OAUTH_PUBLIC')
+  assert.deepEqual([...gates.keys()], ['viz-control'])
+  assert.deepEqual(controlCfg().ratelimits.map((r) => [r.name, r.namespace_id, r.simple.limit, r.simple.period]), [
+    ['OAUTH_RL_SOURCE', '0', 120, 60], ['OAUTH_RL_SOURCE_48', '0', 1200, 60], ['OAUTH_RL_CREDENTIAL', '0', 5, 60],
+    ['OAUTH_RL_TENANT', '0', 6000, 60], ['OAUTH_RL_BEARER', '0', 1200, 60], ['OAUTH_RL_BEARER_TENANT', '0', 30000, 60],
+  ])
+})
+
+test('D70 gate: production with all six and allocated ids passes; each placeholder id is replaced by the deployment\'s own; OAUTH_PUBLIC is set and viz-control is stamped at oauth-public', () => {
+  const { config, summary } = gen('viz-control')
+  assert.deepEqual(config.ratelimits.map((r) => r.namespace_id), ['7000', '7001', '7002', '7003', '7004', '7005'])
+  assert.equal(config.vars.OAUTH_PUBLIC, '1')
+  assert.deepEqual(summary.oauth, { required: RL, period: 60, ratelimits: Object.fromEntries(RL.map((n, i) => [n, String(7000 + i)])), withoutRateLimits: false, public: true })
+  // A stage gets ids of its own, never production's; OAUTH_PUBLIC only when asked.
+  const t = gen('viz-control', 'trial')
+  assert.deepEqual(t.config.ratelimits.map((r) => r.namespace_id), ['7100', '7101', '7102', '7103', '7104', '7105'])
+  assert.equal(t.config.vars.OAUTH_PUBLIC, undefined)
+  assert.equal(gen('viz-control', 'trial', undefined, { oauthPublic: true }).config.vars.OAUTH_PUBLIC, '1')
+  // A stage with no ids of its own recorded is refused, even with production's recorded (ids are by deployed name).
+  assert.throws(() => gen('viz-control', 'other', undefined, { ids: { ...ids, 'viz-other-config': 'd'.repeat(32) } }), /no namespace_id recorded for viz-other-control\/OAUTH_RL_SOURCE; run deploy\/resources\.mjs ensure --stage other first/)
+  const m = configure({ stage: 'citest', release: 'r1', idsOptional: true, quiet: true })
+  const c = m.workers.find((w) => w.canonical === 'viz-control')
+  assert.deepEqual(c.floors, ['oauth-public'])
+  assert.equal(m.idsOptional, true, 'the manifest says its ids are placeholders (release.mjs refuses it)')
+  assert.deepEqual(readJsonc(join(REPO_ROOT, c.config)).ratelimits.map((r) => r.namespace_id), ['0', '0', '0', '0', '0', '0'])
+})
+
+test('D70 gate: production without the block is refused, naming all six; with five of the six, naming the sixth', () => {
+  const none = controlCfg()
+  delete none.ratelimits
+  assert.throws(() => gen('viz-control', undefined, none), /production viz-control without the rate-limit bindings OAUTH_RL_SOURCE, OAUTH_RL_SOURCE_48, OAUTH_RL_CREDENTIAL, OAUTH_RL_TENANT, OAUTH_RL_BEARER, OAUTH_RL_BEARER_TENANT: OAuth is not served/)
+  for (const gone of RL) {
+    const five = withLimits((l) => l.filter((r) => r.name !== gone))
+    assert.throws(() => gen('viz-control', undefined, five), new RegExp(`production viz-control without the rate-limit binding ${gone}: `), gone)
+  }
+  // The command itself exits non-zero, before anything is uploaded: production without allocated ids (resources.mjs not run).
+  const dir = mkdtempSync(join(tmpdir(), 'viz-configure-gate-'))
+  try {
+    writeFileSync(join(dir, 'resources.json'), JSON.stringify({ kv_namespaces: { 'viz-config': 'a'.repeat(32) } }))
+    const r = spawnSync(process.execPath, [join(REPO_ROOT, 'deploy', 'configure.mjs'), '--release', 'r1', '--quiet'], { encoding: 'utf8', env: { ...process.env, VIZ_RESOURCES_FILE: join(dir, 'resources.json'), VIZ_GENERATED_DIR: join(dir, 'generated') } })
+    assert.equal(r.status, 1, r.stderr)
+    assert.match(r.stderr, /configure: no namespace_id recorded for viz-control\/OAUTH_RL_SOURCE; run deploy\/resources\.mjs ensure first/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('D70 gate: a period of 10, a limit that is not a positive integer, a name control does not list, a binding twice, an unknown key, a placeholder that survives, an id outside viz\'s range and two bindings with one id are refused', () => {
+  const at = (i, patch) => withLimits((l) => l.map((r, j) => (j === i ? { ...r, ...patch(r) } : r)))
+  assert.throws(() => gen('viz-control', undefined, at(2, (r) => ({ simple: { ...r.simple, period: 10 } }))), /OAUTH_RL_CREDENTIAL\): period must be 60, not 10/)
+  for (const limit of [0, -5, 1.5, '5']) assert.throws(() => gen('viz-control', undefined, at(0, (r) => ({ simple: { ...r.simple, limit } }))), /limit must be a positive integer/, String(limit))
+  assert.throws(() => gen('viz-control', undefined, at(0, () => ({ name: 'OAUTH_RL_CLIENT' }))), /"OAUTH_RL_CLIENT" is not one of viz-control's rate-limit bindings/)
+  assert.throws(() => gen('viz-control', undefined, withLimits((l) => [...l, l[0]])), /OAUTH_RL_SOURCE is bound twice/)
+  assert.throws(() => gen('viz-control', undefined, at(0, () => ({ extra: 1 }))), /"extra" is not something configure\.mjs knows how to deploy/)
+  const ids0 = { ...ratelimitIds, 'viz-control/OAUTH_RL_TENANT': '0' }
+  assert.throws(() => gen('viz-control', undefined, undefined, { ratelimitIds: ids0 }), /viz-control\/OAUTH_RL_TENANT: recorded namespace_id "0" is not in viz's range 7000–7999/)
+  assert.throws(() => gen('viz-control', undefined, undefined, { ratelimitIds: { ...ratelimitIds, 'viz-control/OAUTH_RL_TENANT': '1001' } }), /"1001" is not in viz's range/)
+  assert.throws(() => gen('viz-control', undefined, undefined, { ratelimitIds: { ...ratelimitIds, 'viz-control/OAUTH_RL_TENANT': '7000' } }), /OAUTH_RL_TENANT and OAUTH_RL_SOURCE have the same namespace_id 7000/)
+  // Placeholders stay only with --ids-optional; and then a deploy refuses the manifest.
+  assert.throws(() => gen('viz-control', undefined, undefined, { ratelimitIds: {} }), /no namespace_id recorded for viz-control\/OAUTH_RL_SOURCE/)
+  assert.deepEqual(gen('viz-control', undefined, undefined, { ratelimitIds: {}, idsOptional: true }).summary.oauth.ratelimits, Object.fromEntries(RL.map((n) => [n, null])))
+  // A Worker without an oauth gate may not carry ratelimits at all.
+  const q = readJsonc(join(REPO_ROOT, 'query/wrangler.jsonc'))
+  assert.throws(() => gen('viz-query', undefined, { ...q, ratelimits: controlCfg().ratelimits }), /declares no "oauth" gate for viz-query/)
+})
+
+test('D70 gate: a stage without the bindings passes only with --oauth-without-rate-limits, which drops them and is recorded; production refuses the flag; --oauth-public needs the bindings', () => {
+  const none = controlCfg()
+  delete none.ratelimits
+  assert.throws(() => gen('viz-control', 'trial', none), /stage trial viz-control without the rate-limit bindings .* or configure the stage with --oauth-without-rate-limits/)
+  const ok = gen('viz-control', 'trial', none, { oauthWithoutRateLimits: true })
+  assert.equal(ok.config.ratelimits, undefined)
+  assert.deepEqual(ok.summary.oauth, { required: RL, period: 60, ratelimits: {}, withoutRateLimits: true, public: false })
+  // With the block present the flag drops it (a stage that runs without them, as asked).
+  assert.equal(gen('viz-control', 'trial', undefined, { oauthWithoutRateLimits: true }).config.ratelimits, undefined)
+  assert.throws(() => gen('viz-control', undefined, undefined, { oauthWithoutRateLimits: true }), /--oauth-without-rate-limits is for a stage only/)
+  assert.throws(() => configure({ release: 'r1', idsOptional: true, quiet: true, oauthWithoutRateLimits: true }), /is for a stage only/)
+  assert.throws(() => gen('viz-control', 'trial', undefined, { oauthWithoutRateLimits: true, oauthPublic: true }), /--oauth-public and --oauth-without-rate-limits together/)
+  const m = configure({ stage: 'citest', release: 'r1', idsOptional: true, quiet: true, oauthWithoutRateLimits: true })
+  assert.equal(m.oauthWithoutRateLimits, true)
+  assert.equal(m.workers.find((w) => w.canonical === 'viz-control').oauth.withoutRateLimits, true)
+  configure({ stage: 'citest', release: 'r1', idsOptional: true, quiet: true })
+})
+
+test('D70: OAUTH_PUBLIC is set by configure only: a component config or VIZ_STAGE_VARS that sets it is refused', () => {
+  const c = controlCfg()
+  c.vars.OAUTH_PUBLIC = '1'
+  assert.throws(() => gen('viz-control', 'trial', c), /OAUTH_PUBLIC is set by deploy\/configure\.mjs only/)
+  assert.throws(() => gen('viz-control', 'trial', undefined, { extraVars: { OAUTH_PUBLIC: '' } }), /OAUTH_PUBLIC is set by deploy\/configure\.mjs only/)
+})
+
+test('m-8: placement is refused on viz-control and viz-mcp (D70 counts per location); viz-query keeps its Smart Placement', () => {
+  assert.deepEqual(plan.workers.filter((w) => w.no_placement).map((w) => w.name), ['viz-control', 'viz-mcp'])
+  for (const name of ['viz-control', 'viz-mcp']) {
+    const cfg = readJsonc(join(REPO_ROOT, worker(name).component, 'wrangler.jsonc'))
+    for (const stage of [undefined, 'trial']) assert.throws(() => gen(name, stage, { ...cfg, placement: { mode: 'smart' } }), new RegExp(`"placement" is refused on ${name}: `), `${name} ${stage}`)
+  }
+  assert.deepEqual(gen('viz-query').config.placement, readJsonc(join(REPO_ROOT, 'query/wrangler.jsonc')).placement)
+})
+
+test('D70 round 2: viz-control declares kv.oauth-dead 1, its list of dead credentials in CONFIG (viz-config), written and read by it alone', () => {
+  const read = readFormats(formatSources(plan.workers))
+  assert.deepEqual(read.filter((x) => x.format === 'kv.oauth-dead'), [{ worker: 'viz-control', format: 'kv.oauth-dead', writes: 1, reads: [1] }])
+  assert.equal(plan.resources.kv.CONFIG, 'viz-config')
+})
+
+test('oauth-public: the rule parses, viz-control is its writer and its one floor, on the evidence of three exports only D70\'s second round has; a viz-control without one is refused at configure', () => {
+  const rule = floorRules(plan, undefined).find((r) => r.name === 'oauth-public')
+  assert.deepEqual([rule.writer, rule.var, rule.servingBelow], ['viz-control', 'OAUTH_PUBLIC', 'forward-only'])
+  assert.deepEqual(rule.floors.map((f) => [f.worker, f.evidence.map((e) => `${e.module}#${e.name}`)]), [['viz-control', ['contracts/oauth.ts#CREDENTIAL_LAYOUT', 'contracts/oauth.ts#DEAD_INACTIVE_REASONS', 'control/src/deadlist.ts#recordDead']]])
+  assert.deepEqual(stampedFloors(floorRules(plan, undefined), 'viz-control', exportedNames), ['oauth-public'])
+  const r = plan.rollback_floors.find((x) => x.name === 'oauth-public')
+  const bad = floorRules({ ...plan, rollback_floors: [{ ...r, floors: { 'viz-control': { ...r.floors['viz-control'], evidence: ['control/src/deadlist.ts#recordDeadX'] } } }] }, undefined)
+  assert.throws(() => stampedFloors(bad, 'viz-control', exportedNames), /viz-control is declared at or above its floor on the evidence of control\/src\/deadlist\.ts#recordDeadX, which does not export it/)
+  assert.throws(() => floorRules({ ...plan, rollback_floors: [{ ...r, serving_below_floor: 'allow' }] }, undefined), /serving_below_floor is "refuse" \(the default\) or "forward-only"/)
 })

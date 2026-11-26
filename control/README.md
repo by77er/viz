@@ -421,6 +421,14 @@ The interface goes through design review (AGENTS.md, "Design changes"); none is 
 
 ### Rate limits in front of OAuth (D70)
 
+**Production has served OAuth without any of this since 2026-11-19**, when the owner deployed `main`
+at PR #8 (`vis.bitcru.sh`): the endpoints are public with the tag and the object's checks, reuse
+detection included, and without layer 1, the expiry check in the Worker or the list. "Required
+before OAuth is exposed publicly" (review of D44, M-2) **was not met**; this change, with the deploy's
+gate ("Needed changes elsewhere"), is the remedy. Revised again on 2026-11-26 after the third look
+(`design/reviews/d70-rate-limits-r3.md`, reject until R3-B1 is fixed): dispositions under "Round 3"
+in "How it was verified".
+
 Required before OAuth is exposed publicly (review of D44, M-2). Rewritten after D70's adversarial
 review (`design/reviews/d70-rate-limits.md`). The review rejected the first layer as first built:
 one dead credential of a tenant could spend that tenant's budgets (B-1). The first layer also
@@ -467,8 +475,18 @@ replay the stock after the grant has ended.
   at introspection (`DEAD_INACTIVE_REASONS`; never `suspended` or `audience`, which can come back);
   `dead: true` from revocation, a field added to `RevokeResult` because RFC 7009 answers 200
   either way (a stock replayed at `/oauth/revoke` would otherwise never be listed). The object sets
-  `dead` when the token was unknown, expired, rotated or of an ended grant, or when this revocation
-  ended it; a live token another client presented is `dead: false`.
+  `dead` when the token was unknown or of an ended grant, an unrotated one had expired, or this
+  revocation ended it; any token of a live grant that another client presented is `dead: false`,
+  **a rotated refresh token included** (round 3, R3-B1).
+- **The rule** (round 3, R3-B1): nothing is listed whose later presentation must still reach the
+  object. Reuse detection ends a stolen grant only when the other holder of a rotated refresh token
+  presents it; round 2 listed such a token when anyone revoked it under another client id, so a thief
+  could list the owner's copy and keep the grant (reproduced by the review). Each place that lists is
+  checked against the rule in `src/deadlist.ts`'s header: the token endpoint (no row; a grant ended or
+  unable to issue, a rotated token having just ended its grant; or a token this request spent with
+  nothing issued, which leaves the grant no unrotated refresh token), introspection (access tokens,
+  which reuse detection does not watch) and revocation (only what is ended; not a rotated row past
+  its own expiry either, which inside the Worker's grace still reaches reuse detection).
 - **Where**: in the isolate at once (a map of hashes to expiries, at most `ISOLATE_ENTRIES`, 10,000,
   oldest dropped first), and in `CONFIG`, the viz KV namespace this Worker already binds (titled
   `viz-config` by the deploy, `deploy/workers.json`; not the account's unrelated namespace titled
@@ -478,9 +496,12 @@ replay the stock after the grant has ended.
   holds what the expiry check refuses anyway. Nothing is written for layout 1, or with less than
   KV's 60 s minimum left.
 - **Checked** at `/oauth/token` (refresh tokens; codes die within 12 minutes and each needs a
-  person's approval), `/oauth/revoke` and introspection, after the tag and the expiry and before any
-  limit: answered as the object answered (`invalid_grant`, 200, `inactive` with the recorded reason),
-  counted against nothing, its network included.
+  person's approval), `/oauth/revoke` and introspection, after the tag, the expiry and the
+  credential's own limit, and before its tenant's fuse (round 3, m-1; `firstRefusal`'s `listed`):
+  answered as the object answered (`invalid_grant`, 200, `inactive` with the recorded reason), counted
+  against its own allowance only, its network not at all. So cycling dead credentials costs at most
+  one KV read per allowed request (5 a minute per credential per location), and a listed and a live
+  token are counted alike (R3-M1). Consulted whatever the narrow limiter's verdict but a refusal.
 - **Reads**: the isolate's map, then one KV read of at most `DEAD_READ_MS` (100 ms). A credential KV
   does not list is remembered so for `NOT_LISTED_MS` (60 s): a live token costs at most one KV read
   per isolate a minute.
@@ -492,8 +513,10 @@ replay the stock after the grant has ended.
   absent read (training knowledge; not measured). Until then each isolate of another location may ask
   the object once more and learns it there. The window's consequences and the costs are in D70.
 - **Fails open**: without `CONFIG`, or when a read throws or overruns, the credential counts as not
-  listed, the failure is logged once per isolate, and KV reads are skipped for 10 s in that isolate
-  (its own map still applies). A failed write is logged once and not retried. `/healthz` says
+  listed and the failure is logged once per isolate. A read over 100 ms affects its key only (not
+  listed for 60 s in that isolate; round 3, m-2: a cold key is slow, and anyone can make one); a read
+  that throws is KV failing, and KV reads are then skipped for 10 s in that isolate (its own map
+  still applies). A failed write is logged once and not retried. `/healthz` says
   `OAUTH_DEAD_LIST: bound|absent|skipped`.
 - **What it shows**: `refreshesLastDay` in the grant view (`GET /oauth/grants`, contracts/oauth.ts
   `OAuthGrantView`, an additive field), counted from the refresh-token rows reuse detection keeps a
@@ -1110,6 +1133,42 @@ What the tests establish:
   outbox drain; the Worker has one `idFromName`, on `identity.tenant`.
 
 ### Rate limits in front of OAuth (D70)
+
+**Round 3: the third look's findings** (`design/reviews/d70-rate-limits-r3.md`, reject until R3-B1
+is fixed; fixed 2026-11-26). Runs (`npx tsc --noEmit && npx vitest run --maxWorkers=2` in
+`control/`): `tsc` clean; @@FINAL@@. In `mcp/`: @@MCP@@.
+
+| Finding | Disposition | Evidence |
+|---|---|---|
+| R3-B1 (blocker: a revocation under another client id lists a rotated refresh token of a live grant, so the owner's copy is refused in the Worker, reuse detection never runs and the thief keeps the grant) | **Fixed**, contract first: `RevokeResult.dead` no longer counts "rotated", and `revokeToken`'s branch for another client says dead only for a grant that has ended or an unrotated token that has expired (a rotated row past its own expiry is not dead either: inside the Worker's grace it still reaches reuse detection). The wider rule, nothing listed whose later presentation must still reach the object, is checked for every place that lists (`src/deadlist.ts` header, D70) | `test/ratelimit-review-r3.test.ts`: the review's attack, the owner's copy now reaches the object, the grant is revoked and the thief's token refused (also in a new isolate); the rotated-and-expired case. Mutants 190, 191 |
+| R3-M1 (major: the same path tells whether a refresh token is live) | **Fixed** by the same change, and by m-1 below: a live, a rotated and a listed (ended grant) refresh token all answer `[200, 200, 200, 429, 429]` | the two R3-M1 tests; mutant 192 |
+| m-1 (the list is read before any limit, so cycling more than 10,000 dead credentials forces a KV read per request) | **Fixed**: the per-credential limit first, then the list, then the fuse (`firstRefusal`'s `listed`). A listed credential spends its own allowance and never its tenant's fuse | the m-1 tests (3 KV reads for 10 replays in fresh isolates; the fuse counted once; at introspection `inactive` × 3 then `rate_limited`). Mutants 192–194 |
+| m-2 (one slow KV read switches the list off for the isolate for 10 s) | **Fixed**: a read over 100 ms times out its key only (not listed for 60 s in that isolate); a read that throws, which only a KV fault causes, still skips the isolate's reads for 10 s | `deadlist.test.ts`, the slow and the throwing read. Mutant 195 |
+| m-3 (the residual's conditions) | **Recorded** in D70: about a minute per stock; tripping a location's fuse with a stock of 1,200 needs at least 5 isolates there to meet all of it within the minute, one isolate a stock of 6,000 | modelled |
+| Production served OAuth without limits (the verdict's note) | **Recorded** in D70 and here: since 2026-11-19 (PR #8); "required before public exposure" was not met | |
+
+**Before and after.** `test/ratelimit-review-r3.test.ts` (@@R3N@@ tests) was run against a copy of
+`control/` and `contracts/` at `200f235`, the commit the review read: **5 of 7 fail** (the file as it
+then was: the attack, both R3-M1 tests and both m-1 tests); the 2 that pass there are controls
+(reuse detection with no probe, and a revocation by the client itself). The rotated-and-expired test
+was added after that run. Against this code, all pass.
+
+**Tests changed deliberately**, each because it asserted what this round changes:
+- `ratelimit-review.test.ts` R1 and R2: `[400 × 13]` and `[200 × 13]` in round 2 are round 1's
+  `[400 × 3, 429 × 10]` and `[200 × 3, 429 × 10]` again (a listed credential spends its own allowance),
+  still with 0 and 1 object requests;
+- `ratelimit-review-r2.test.ts`, the new-isolate test: the listed token is now counted against its own
+  allowance (two requests there, the third 429), never the fuse; N2 now also asserts the dead token
+  reached its object once (the list is consulted while the narrow limiter is skipped);
+- `deadlist.test.ts`: the hanging read is now its own test (per-key timeout, the list stays `bound`),
+  apart from the throwing one (isolate skip).
+
+**`vitest.config.ts`** now hands the test plugin `wrangler.jsonc` without its `ratelimits`, which the
+deploy builder added there (Known risks): with them, every test file ran with production limits on
+placeholder namespaces, and 22 tests failed on the first run (registrations from the shared `none`
+key refused at 120, "absent" bindings present), none because of this change.
+
+@@MUT3@@
 
 **Round 2: the second review's findings** (`design/reviews/d70-rate-limits-r2.md`, approve with
 changes; fixed 2026-11-19). Runs (`npx tsc --noEmit && npx vitest run --maxWorkers=2` in `control/`):
@@ -1848,9 +1907,10 @@ ratelimit (1).
   person approves again). Strict by choice; a grace window would let a copied token through.
 - **OAuth: the tenant id is readable in codes and tokens.** Only their holder, the client acting
   for that tenant, sees them; they are never logged.
-- **OAuth: the rate limits (D70) are not in any deployment yet, so "required before public
-  exposure" still holds**, and nothing but a deploy change can enforce it ("Needed changes
-  elsewhere", the gate). The Worker checks the bindings and fails open without them, logging each
+- **OAuth is public in production without the rate limits (D70)**: since 2026-11-19, when the owner
+  deployed `main` at PR #8, which has none of D70. "Required before public exposure" was not met. This
+  change and the deploy's gate ("Needed changes elsewhere") are the remedy, and only a deploy can
+  enforce the gate. The Worker checks the bindings and fails open without them, logging each
   absent one once per isolate and listing it as `absent` in `/healthz`. The deploy does not create
   the bindings. Until it does, OAuth runs without layer 1:
   - a made-up credential costs one HMAC in the Worker and reaches no object (since the review of
@@ -1947,10 +2007,16 @@ ratelimit (1).
   - Neither the gateway nor this Worker reads `x-real-ip`.
   - Either way the caller can evade the source limit, or spend a chosen network's registration and
     authorization budget, such as a broker's egress. Since M-1 it cannot refuse a refresh.
-- **D70's round 2 fixes are not reviewed.** The re-review (`design/reviews/d70-rate-limits-r2.md`)
-  approved with changes; the list of dead credentials, the cascade, the share per check and the
-  contract fields came after it and have not been read by someone who has not seen the reasoning
-  (AGENTS.md, "Review before building on it").
+- **D70's round 3 fixes are not reviewed.** The third look (`design/reviews/d70-rate-limits-r3.md`)
+  rejected round 2 until R3-B1 was fixed and tried the one-line fix as a counterfactual; the rest of
+  this revision (the list after the per-credential limit, the per-key timeout, the rotated-and-expired
+  refinement) has not been read by someone who has not seen the reasoning (AGENTS.md, "Review before
+  building on it").
+- **The tests run without the deploy's limiter bindings.** `control/wrangler.jsonc` now declares the
+  six `ratelimits` (the deploy's change), and the test plugin would bind them in every file; so
+  `vitest.config.ts` hands the plugin a copy of `wrangler.jsonc` without `ratelimits`
+  (`.wrangler/test/wrangler.json`, git-ignored). The production limits themselves are therefore not
+  exercised here; the rate-limit tests use the small `RL_TEST_*` bindings as before.
 - **OAuth: the ruler and the gateway still bind the `Tenant` class** (`deploy/workers.json`
   `binds_classes` lists both with why), so either can call any method of any tenant's object.
   Neither handles untrusted text the way viz-mcp does, and `invoke` no longer accepts an identity
@@ -2021,7 +2087,9 @@ skipped in every deployment: absent bindings fail open, logged once per isolate,
 `/healthz`. The review of D70 (M-2) found "required before public exposure" enforced nowhere, and
 its second review found it still unbuilt. Item 3 is that enforcement, and **it is needed before any
 production release that carries `OAUTH_CLIENT_KEY`**. Item 6 (round 2, m-3) is needed from the same
-release on.
+release on. Production already carries the key and serves OAuth without either (PR #8, since
+2026-11-19); the deploy builder's `ratelimits` block in `control/wrangler.jsonc` and the gate in
+`deploy/configure.mjs` are in progress as this is written (not read or tested here).
 
 **`deploy/`** (all together, then the `control/wrangler.jsonc` block below):
 
@@ -2090,14 +2158,15 @@ release on.
        "why": "with it, anyone reaches control's OAuth endpoints through the gateway, and clients hold codes and tokens control issued (D44, D70). Turning it off leaves those credentials valid until they expire, 30 days for a refresh token",
        "floors": {
          "viz-control": {
-           "evidence": ["contracts/oauth.ts#CREDENTIAL_LAYOUT", "contracts/oauth.ts#DEAD_INACTIVE_REASONS", "control/src/deadlist.ts#recordDead"],
+           "evidence": ["contracts/oauth.ts#CREDENTIAL_LAYOUT", "contracts/oauth.ts#DEAD_INACTIVE_REASONS", "control/src/deadlist.ts#recordDead", "control/src/ratelimit.ts#LISTED"],
            "why": "D70 after its two reviews: the first viz-control whose credentials carry their expiry (an older one mints credentials the Worker can never refuse as expired, and keys the token endpoint per presented client_id: B-1), asks a tenant's fuse only after the credential's own limit (R2-M1), and lists credentials found dead (R2-M2: an older one lets a stock of refresh tokens trip the token fuse for 30 days, revocation included)"
          }
        }
      }
      ```
 
-     The three exports exist only from this change on, so the stamp marks this release.
+     `LISTED` exists only from round 3 on (the other three since round 2), so the stamp marks the
+     release with R3-B1 fixed; a release with round 2 alone would let a thief stop reuse detection.
    - Tests in `configure.test.mjs` and `release.test.mjs`, beside the `signal-data` ones: the rule
      parses; a production config with the gate passed carries `OAUTH_PUBLIC`; a release setting it
      while the serving viz-control is unstamped is refused; a rollback to an unstamped viz-control

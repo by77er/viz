@@ -148,7 +148,8 @@ function configureRateLimits({ out, worker, gate, stage, ids, range, idsOptional
 }
 
 export function loadPlan() {
-  return { plan: readJson(join(DEPLOY_DIR, 'workers.json')), resources: readJson(join(DEPLOY_DIR, 'resources.json')) }
+  // VIZ_RESOURCES_FILE (tests only, as in resources.mjs): another resources.json.
+  return { plan: readJson(join(DEPLOY_DIR, 'workers.json')), resources: readJson(process.env.VIZ_RESOURCES_FILE ?? join(DEPLOY_DIR, 'resources.json')) }
 }
 
 /** The Worker of deploy/workers.json a `script_name` or `service` means (aliases applied). */
