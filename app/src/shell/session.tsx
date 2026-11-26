@@ -89,7 +89,7 @@ export function signInResult(outcome: WhoamiOutcome): SignInResult {
 /** A key as it is shown after sign-in: its public part, `viz_<keyId>`, never the secret. */
 export function keyPrefix(key: string): string {
   const m = /^(viz_[A-Za-z0-9]+)_/.exec(key)
-  return m ? `${m[1]}_…` : '…'
+  return m ? `${m[1]}_…` : ''
 }
 
 function readKey(): string {

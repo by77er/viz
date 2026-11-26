@@ -1,6 +1,6 @@
 import { memo, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { createPortal, flushSync } from 'react-dom'
-import { NO_AGGREGATE } from './spec'
+import { fixHead, fixName, fixText } from './fixups'
 import { drawChart, type ChartHandle, type ChartSpec } from './systemChart'
 
 /** The range a zoomed chart shows, as instants (epoch ms). */
@@ -57,22 +57,6 @@ function remember(view: string, root: HTMLElement): void {
 
 /** The reserved height of a view's chart before any chart is drawn (the waiting and empty states use it). */
 export const reservedStyle = reserved
-
-/**
- * Words the chart writes that an application's result needs otherwise. Each is a gap in the
- * reference chart, listed in README.md under "Needed changes in the design system"; this is
- * the whole of what the app changes in what the chart writes.
- *
- * - A result with no unit: the chart writes "Last, " and "title, , range". The comma that
- *   introduces the missing unit is removed.
- * - The text form says "every 0.25 min, <aggregate>" (it assumes steps of whole minutes and an
- *   aggregate per step). A range query has neither: it says "one value every 15 s".
- */
-const fixHead = (text: string) => (text.endsWith(', ') ? text.slice(0, -2) : text)
-const fixName = (text: string) => text.replace(', , ', ', ')
-export function fixText(line: string, step: string): string {
-  return line.replace(', , ', ', ').replace(new RegExp(`, every [^,]+ min, ${NO_AGGREGATE}\\.`), `, one value every ${step}.`)
-}
 
 /**
  * The design system's chart for one result. This component owns no drawing: it hands the

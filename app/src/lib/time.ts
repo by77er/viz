@@ -15,7 +15,7 @@ export function parseDuration(text: string): number | null {
 
 /** Format seconds as the shortest exact Prometheus duration ("90s" -> "1m30s"). */
 export function formatDuration(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds <= 0) return '0s'
+  if (!Number.isFinite(seconds) || seconds <= 0) return '0s' // token-lint-ignore: a Prometheus duration in a URL, not a CSS value
   let ms = Math.round(seconds * 1000)
   const parts: string[] = []
   for (const [unit, size] of [['d', 86400000], ['h', 3600000], ['m', 60000], ['s', 1000], ['ms', 1]] as const) {

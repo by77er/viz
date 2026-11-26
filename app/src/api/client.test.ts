@@ -42,14 +42,14 @@ describe('PromClient', () => {
     await expect(new PromClient({ fetch: f }).query('x')).rejects.toMatchObject({ errorType: 'execution', message: 'boom' })
   })
 
-  it('reports non-JSON HTTP failures and hints at the token on 401', async () => {
+  it('reports non-JSON HTTP failures and hints at the API key on 401', async () => {
     await expect(new PromClient({ fetch: fakeFetch(502, '<html>Bad Gateway</html>', 'Bad Gateway') }).labels()).rejects.toMatchObject({
       errorType: 'http',
       status: 502,
       message: 'HTTP 502 Bad Gateway',
     })
     const e = await new PromClient({ fetch: fakeFetch(401, '', 'Unauthorized') }).labels().catch((x) => x)
-    expect(e.message).toContain('token')
+    expect(e.message).toContain('API key')
   })
 
   it('rejects a 200 that is not an API envelope', async () => {

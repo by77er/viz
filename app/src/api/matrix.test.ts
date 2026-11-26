@@ -38,7 +38,7 @@ function parseInPieces(text: string, cuts: number[]): ParsedMatrix {
 
 const label = fc.oneof(fc.constantFrom('__name__', 'job', 'le', 'service', 'a'), fc.string({ minLength: 1, maxLength: 6 }))
 /** Label values with what can trip a scanner: quotes, backslashes, brackets, braces, commas, non-ASCII. */
-const labelValue = fc.oneof(fc.string({ maxLength: 8 }), fc.constantFrom('q"r', 'a\\b', '}]{[', ',:', 'ü→😀', ''))
+const labelValue = fc.oneof(fc.string({ maxLength: 8 }), fc.constantFrom('q"r', 'a\\b', '}]{[', ',:', 'ü→\u{1F600}', ''))
 const valueText = fc.oneof(
   fc.double().map(String),
   fc.double({ noNaN: true, noDefaultInfinity: true, min: -1e6, max: 1e6 }).map((d) => d.toFixed(4)),

@@ -46,10 +46,14 @@ function preloadSans(): Plugin {
  */
 function themeScript(): Plugin {
   const file = fileURLToPath(new URL('./src/theme-init.js', import.meta.url))
+  let building = false
   return {
     name: 'viz-theme-script',
+    configResolved(config) {
+      building = config.command === 'build'
+    },
     buildStart() {
-      if (this.meta.watchMode) return
+      if (!building) return
       this.emitFile({ type: 'asset', name: 'theme.js', source: readFileSync(file, 'utf8') })
     },
     transformIndexHtml: {

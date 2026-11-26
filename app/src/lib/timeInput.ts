@@ -185,9 +185,11 @@ export function readRange(from: TimeSpec, to: TimeSpec, nowMs: number, zone: Zon
   const b = wallOf(endSec * 1000, zone)
   const y = wallOf(nowMs, zone).y
   const sameDay = a.y === b.y && a.mo === b.mo && a.d === b.d
-  const end = `${clockText(b)}${to === 'now' ? ' (now)' : ''}`
+  // A time that follows the clock is read to the minute: its seconds change as it is read.
+  const clock = (w: Wall, spec: TimeSpec) => (spec.startsWith('now') ? `${pad(w.h)}:${pad(w.mi)}` : clockText(w))
+  const end = `${clock(b, to)}${to === 'now' ? ' (now)' : ''}`
   const span = endSec > startSec ? `, ${spanWords(endSec - startSec)}` : ''
-  const text = sameDay ? `${dayText(a, y)}, ${clockText(a)} to ${end}${span}` : `${dayText(a, y)} ${clockText(a)} to ${dayText(b, y)} ${end}${span}`
+  const text = sameDay ? `${dayText(a, y)}, ${clock(a, from)} to ${end}${span}` : `${dayText(a, y)} ${clock(a, from)} to ${dayText(b, y)} ${end}${span}`
   return { text: `${text}, ${zoneName(zone, endSec * 1000)}`, startSec, endSec }
 }
 
