@@ -1,6 +1,6 @@
 import { memo, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { createPortal, flushSync } from 'react-dom'
-import { fixHead, fixName, fixText } from './fixups'
+import { fixHead, fixName, fixRowName, fixText } from './fixups'
 import { drawChart, type ChartHandle, type ChartSpec } from './systemChart'
 
 /** The range a zoomed chart shows, as instants (epoch ms). */
@@ -78,13 +78,25 @@ export const Chart = memo(function Chart({ spec, shiftMs, stepWords, view, textF
   useLayoutEffect(() => {
     const root = rootRef.current!
     const unitless = () => live.current.spec.unit === ''
-    const fix = () => {
+    const fix = (records: MutationRecord[] | null) => {
+      const tbody = root.querySelector('tbody')
       const svg = root.querySelector(':scope > svg')
       if (unitless()) {
         const head = root.querySelector('thead [data-col="last"] .vz-sort')
         if (head && head.textContent !== fixHead(head.textContent)) head.textContent = fixHead(head.textContent)
         const name = svg?.getAttribute('aria-label')
         if (svg && name && name !== fixName(name)) svg.setAttribute('aria-label', fixName(name))
+      }
+      // Only when the legend's rows were written again, not on every move of the crosshair.
+      if (tbody && (records === null || records.some((r) => r.target === tbody))) {
+        for (const row of tbody.querySelectorAll<HTMLElement>('.vz-series')) {
+          const name = row.getAttribute('aria-label') ?? ''
+          const fixed = fixRowName(`${row.querySelector('.vz-series-name')?.textContent ?? ''} ${row.querySelector('.vz-series-rest')?.textContent ?? ''}`, name)
+          if (fixed !== name) row.setAttribute('aria-label', fixed)
+          // "Other" and "28 series" are two elements with nothing between them: their text reads "Other28 series". A space between them is not drawn (they are flex items) and makes the words two.
+          const rest = row.querySelector('.vz-series-rest')
+          if (rest && rest.previousSibling?.nodeType === Node.ELEMENT_NODE) rest.before(' ')
+        }
       }
       // The error's place: the chart makes a new one whenever it draws, so the message follows it.
       const host = root.querySelector<HTMLElement>(':scope > .vz-empty')
@@ -102,7 +114,7 @@ export const Chart = memo(function Chart({ spec, shiftMs, stepWords, view, textF
       const first = text?.querySelector('li')
       if (first && first.textContent !== fixText(first.textContent, live.current.stepWords)) first.textContent = fixText(first.textContent, live.current.stepWords)
     }
-    const chartObserver = new MutationObserver(fix)
+    const chartObserver = new MutationObserver((records) => fix(records))
     chartObserver.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-label'] })
     const textObserver = new MutationObserver(fixForm)
     if (text) textObserver.observe(text, { childList: true })

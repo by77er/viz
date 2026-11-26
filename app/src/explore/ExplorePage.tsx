@@ -159,7 +159,7 @@ export function ExplorePage() {
   const q = search.q.trim()
   /** What the page now wants answered. A result is compared with it, never described by it. */
   const current = useMemo<ResultRequest>(() => ({ q, from: search.from, to: search.to, step: search.step }), [q, search.from, search.to, search.step])
-  // The token is deliberately not part of the key; connectionId changes when settings do.
+  // The API key is deliberately not part of the query key; connectionId changes when the key does.
   const queryKey = ['query_range', connectionId, q, window_?.start, window_?.end, window_?.step, runId]
   /** When the current wait began: retries count against the waiting table's 60 s stop. */
   const waitStartedAt = useRef(0)
@@ -497,7 +497,7 @@ export function ExplorePage() {
             <h2 className="vz-panel-title" id="result-title">
               Query result{shown ? <span className="vz-sr">: {shown.q}</span> : null}
             </h2>
-            {shown && result && (
+            {shown && result ? (
               <span className="vz-panel-meta" data-testid="result-meta">
                 {/* While the result is not the answer to the current request, the head says so; everything else stays the result's. */}
                 {shown.staleText && (
@@ -516,6 +516,13 @@ export function ExplorePage() {
                 </span>
                 <Age at={result.receivedAt} />
               </span>
+            ) : (
+              // The meta's place while no result is on screen, so the head is the same height when one lands.
+              <span className="vz-panel-meta is-reserved" aria-hidden="true">
+                <span>18 Nov, 09:30 to 12:30</span>
+                <span>· every 15 s</span>
+                <span>· updated just now</span>
+              </span>
             )}
             <div className="vz-segmented" role="group" aria-label="Show the result as">
               {VIEWS.map(([v, label]) => (
@@ -525,10 +532,15 @@ export function ExplorePage() {
               ))}
             </div>
           </div>
-          {shown && (
+          {shown ? (
             // The query the data on screen answers, which is not always the one in the editor: it may have been edited since, or be waiting.
             <p className="vz-panel-desc result-query" aria-hidden="true" title={shown.q} data-testid="result-query">
               <span className="vz-qty">{shown.q}</span>
+            </p>
+          ) : (
+            // Its place while no result is on screen: nothing under it moves when one lands.
+            <p className="vz-panel-desc result-query is-reserved" aria-hidden="true">
+              <span className="vz-qty">{'\u00a0'}</span>
             </p>
           )}
           {shown && result && <Warnings warnings={result.warnings} />}

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { AlignedData } from '../lib/series'
-import { fixText } from './fixups'
+import { fixRowName, fixText } from './fixups'
 import { chartLabels, chartUnit, figureFormat, largest, NO_AGGREGATE, toSpec } from './spec'
 import type { ChartRules } from './systemChart'
 
@@ -110,6 +110,16 @@ describe('the words the chart writes that a query result needs otherwise', () =>
   })
   it('a result with no unit leaves no empty place for one', () => {
     expect(fixText(`Query result: up, , 09:30 to 12:30, every 1 min, ${NO_AGGREGATE}. 12 series.`, '1 min')).toBe('Query result: up, 09:30 to 12:30, one value every 1 min. 12 series.')
+  })
+  it('a legend row is named by the words it shows, then its full label set', () => {
+    expect(fixRowName('/product · catalog · 200', 'route="/product", service="catalog", status="200"')).toBe('/product · catalog · 200: route="/product", service="catalog", status="200"')
+    // Already in the name: left alone, and so applied once only.
+    expect(fixRowName('catalog', 'service="catalog"')).toBe('service="catalog"')
+    const once = fixRowName('a · b', 'x="a", y="b"')
+    expect(fixRowName('a · b', once)).toBe(once)
+    expect(fixRowName('', 'x="a"')).toBe('x="a"')
+    expect(fixRowName('Other 28 series', 'Other: 28 series as one band')).toBe('Other 28 series, as one band')
+    expect(fixRowName('Other 28 series', 'Other 28 series, as one band')).toBe('Other 28 series, as one band')
   })
   it('other lines are left as the chart wrote them', () => {
     const line = '/product · catalog · 200: last 295, lowest 217, highest 312.'

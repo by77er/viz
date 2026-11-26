@@ -181,7 +181,7 @@ export default memo(function PromqlEditor({ value, onRun, client, handleRef, ran
     }
   }, [value])
 
-  // New connection settings -> new autocomplete source.
+  // A new key -> a new autocomplete source.
   const firstClient = useRef(client)
   useEffect(() => {
     if (firstClient.current === client) return

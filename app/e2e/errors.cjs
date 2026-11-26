@@ -23,8 +23,8 @@ const { chromium, APP, MOCK, Q_RATE, Q_CPU, url, startServers, setMockFailure } 
 const { check, results, failed } = lib.makeChecker()
 
 async function ready(page) {
-  await page.waitForSelector('[data-testid=legend] tbody tr')
-  await page.waitForSelector('[data-testid=chart] canvas')
+  await page.waitForSelector('[data-testid=chart] tbody tr[data-key]')
+  await page.waitForSelector('[data-testid=chart] svg.vz-plot .vz-line', { state: 'attached' })
   await page.waitForSelector('.cm-content')
 }
 const text = (page, sel) => page.$eval(sel, (e) => e.textContent.replace(/\s+/g, ' ').trim()).catch(() => '')
@@ -55,7 +55,7 @@ async function main() {
     await page.waitForSelector('[data-testid=progress-text]')
     await page.waitForFunction(() => /Asking again in/.test(document.querySelector('[data-testid=progress-text]')?.textContent || ''))
     const line = await text(page, '[data-testid=progress-text]')
-    const kept = (await page.$$('[data-testid=legend] tbody tr')).length
+    const kept = (await page.$$('[data-testid=chart] tbody tr[data-key]')).length
     check('busy (503, no Retry-After): the line says the API is busy and when it asks again, over the previous result', /^The API is busy \(HTTP 503\)\. Asking again in [12] s\.$/.test(line) && kept === 4, `${line}; ${kept} legend rows kept`)
     await page.waitForSelector('[data-testid=error-state]', { timeout: 20000 })
     const took = Date.now() - t0
@@ -80,7 +80,7 @@ async function main() {
     n0 = queryRanges(requests)
     await page.click('[data-testid=error-fix]')
     await settled(page)
-    await page.waitForSelector('[data-testid=legend] tbody tr', { timeout: 10000 })
+    await page.waitForSelector('[data-testid=chart] tbody tr[data-key]', { timeout: 10000 })
     check('busy once (503, Retry-After: 1), then an answer: the result is shown and no error', queryRanges(requests) - n0 === 2 && !(await page.$('[data-testid=error-state]')), `${queryRanges(requests) - n0} tries`)
 
     // ---- 429 with Retry-After: 10: the line says so; Cancel stops the wait and keeps the result.
@@ -92,7 +92,7 @@ async function main() {
     await page.waitForSelector('[data-testid=cancel]', { timeout: 5000 })
     await page.click('[data-testid=cancel]')
     await page.waitForSelector('[data-testid=halted]')
-    check('Cancel during a retry stops it; the previous result stays', /Cancelled\. The previous result is shown\./.test(await text(page, '[data-testid=halted]')) && (await page.$$('[data-testid=legend] tbody tr')).length === 4)
+    check('Cancel during a retry stops it; the previous result stays', /Cancelled\. The previous result is shown\./.test(await text(page, '[data-testid=halted]')) && (await page.$$('[data-testid=chart] tbody tr[data-key]')).length === 4)
     await setMockFailure('busy', 0)
     await settled(page)
 
@@ -128,31 +128,39 @@ async function main() {
     await page.unroute('**/api/v1/query_range')
     await ctx.close()
 
-    // ---- 401 and 403, from a mock that requires a key, as the real API does.
+    // ---- 401 and 403 in the middle of a session: the key this tab signed in with stops working
+    // (disabled, rotated, expired) or loses its read scope. The API's own answers, word for word
+    // (edge/src/auth.ts), given to the next query; sign-in itself is checked in e2e/app.cjs.
     stop()
     for (let i = 0; i < 50 && ((await lib.ping(APP)) || (await lib.ping(`${MOCK}/__mock/delay`))); i++) await new Promise((r) => setTimeout(r, 100))
-    const stopMock = await lib.startMock(Number(new URL(MOCK).port), ['--require-token', 'e2e-read', '--readless-token', 'e2e-write'])
+    const KEY = 'viz_e2eReadKey0000000_goodSecret'
+    const stopMock = await lib.startMock(Number(new URL(MOCK).port), ['--require-token', KEY])
     const stopApp = await lib.startPreview(Number(new URL(APP).port), MOCK)
     try {
-      for (const [label, key, kind, re] of [
-        ['401 (no key)', '', 'auth', /unauthorized with HTTP 401\. No API key is set\. Enter a key with the read scope in Settings\./],
-        ['401 (a key the API does not know)', 'e2e-unknown', 'auth', /unauthorized with HTTP 401\. The API did not accept the API key\. Enter a valid key in Settings\./],
-        ['403 (a key without the read scope)', 'e2e-write', 'scope', /forbidden with HTTP 403\. The API key in Settings cannot read metrics\. Use a key with the read scope\./],
+      for (const [label, status, errorType, error, kind, re] of [
+        ['401 (the key was disabled)', 401, 'unauthorized', 'invalid API key', 'auth', /unauthorized with HTTP 401\. The API no longer accepts the key this tab signed in with: it may have been disabled, rotated or expired\. Sign in again with a key that is valid now\./],
+        ['403 (the key lost the read scope)', 403, 'forbidden', 'API key lacks the read scope', 'scope', /forbidden with HTTP 403\. The key this tab signed in with cannot read metrics\. Sign in again with a key that has the read scope\./],
       ]) {
-        const c = await lib.contextWithKey(browser, key)
+        const c = await lib.contextWithKey(browser, KEY)
         const p = await c.newPage()
         await p.goto(url(Q_CPU))
+        await ready(p)
+        await p.route('**/api/v1/query_range', (route) => route.fulfill({ status, contentType: 'application/json', headers: status === 401 ? { 'WWW-Authenticate': 'Bearer realm="viz"' } : {}, body: JSON.stringify({ status: 'error', errorType, error }) }))
+        await p.click('[data-testid=run]')
         await p.waitForSelector('[data-testid=error-state]')
         const a = await text(p, '[data-testid=error-advice]')
         const k = await p.getAttribute('[data-testid=error-state]', 'data-kind')
+        const button = await text(p, '[data-testid=error-fix]')
+        await p.unroute('**/api/v1/query_range')
         await p.click('[data-testid=error-fix]')
-        const settingsOpen = await p.waitForSelector('dialog[open] #set-token', { timeout: 3000 }).then(() => true, () => false)
-        check(`${label}: the advice names the key, and the button opens Settings`, k === kind && re.test(a) && settingsOpen, a)
-        if (key === '') {
-          await p.fill('#set-token', 'e2e-read')
-          await p.click('dialog[open] button[type=submit]')
-          await p.waitForSelector('[data-testid=legend] tbody tr', { timeout: 10000 })
-          check('401: with a key entered in Settings the same query runs', true)
+        const form = await p.waitForSelector('[data-testid=sign-in][data-reason=refused]', { timeout: 3000 }).then(() => true, () => false)
+        const forgotten = await p.evaluate(() => sessionStorage.getItem('viz.key'))
+        check(`${label}: the advice names the key, and the button, "Sign in again", forgets the key and shows the sign-in form`, k === kind && re.test(a) && button === 'Sign in again' && form && forgotten === null, `${a} | ${button}`)
+        if (status === 401) {
+          await p.fill('[data-testid=sign-in-key]', KEY)
+          await p.click('[data-testid=sign-in-submit]')
+          await ready(p)
+          check('401: signed in again, the same query runs at the same address', new URL(p.url()).searchParams.get('q') === Q_CPU)
         }
         await c.close()
       }

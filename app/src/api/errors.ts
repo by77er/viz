@@ -115,7 +115,7 @@ export function answerLine(error: unknown): string {
 
 /** What the page knows that the advice depends on. */
 export interface AdviceContext {
-  /** Whether an API key is set in Settings (a 401 without one is not a refused key). */
+  /** Whether this tab holds an API key (a 401 without one is not a refused key). */
   keySet?: boolean
   /** Whether the step is the automatic one (the resolution refusal then names the range). */
   autoStep?: boolean
@@ -128,12 +128,12 @@ export interface AdviceContext {
 export function errorAdvice(error: unknown, tries: number, elapsedMs: number, mod: string, context: AdviceContext = {}): string {
   switch (errorKind(error)) {
     case 'network':
-      return 'Check the connection and the API address in Settings, then run the query again.'
+      return 'Check the connection, then run the query again.'
     case 'auth':
-      if (context.keySet === false) return 'No API key is set. Enter a key with the read scope in Settings.'
-      return 'The API did not accept the API key. Enter a valid key in Settings.'
+      if (context.keySet === false) return 'This tab holds no API key. Sign in with a key that has the read scope.'
+      return 'The API no longer accepts the key this tab signed in with: it may have been disabled, rotated or expired. Sign in again with a key that is valid now.'
     case 'scope':
-      return 'The API key in Settings cannot read metrics. Use a key with the read scope.'
+      return 'The key this tab signed in with cannot read metrics. Sign in again with a key that has the read scope.'
     case 'busy':
       return tries > 1
         ? `The API stayed busy: the query was sent ${tries} times over ${seconds(elapsedMs)}. Run it again in a moment.`
@@ -154,7 +154,7 @@ export function errorAdvice(error: unknown, tries: number, elapsedMs: number, mo
     case 'server':
       return 'The API failed on its side. Run the query again; if it keeps failing, note the time and report it.'
     case 'response':
-      return 'The answer was not a Prometheus API response. Check the API address in Settings.'
+      return 'The answer was not an API response: something between this page and the API answered in its place. Run the query again.'
     case 'query':
       return `Change the query and press ${mod} Enter to run it again.`
   }

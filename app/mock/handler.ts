@@ -243,7 +243,7 @@ export function createMockApi(opts: MockOptions = {}) {
     const problem = (status: number, code: string, title: string, detail: string, fix: string, extra?: Record<string, string>): MockResponse => ({
       status,
       body: { type: `https://vis.bitcru.sh/problems/${code}`, title, status, code, detail, fix },
-      headers: extra,
+      headers: { 'Content-Type': 'application/problem+json', ...extra },
     })
     if (method !== 'GET') return problem(405, 'method-not-allowed', 'Method not allowed', `${method} is not supported here.`, 'Use one of: GET.', { Allow: 'GET' })
     const identity = (name: string, scopes: string[]): MockResponse => ({ status: 200, body: { tenant: MOCK_TENANT, subject: `key:${name}`, kind: 'key', name, scopes, mayApply: false } })

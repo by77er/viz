@@ -86,7 +86,7 @@ describe('what an API failure means (errors.ts)', () => {
   it('advises by kind, never "change the query" for a key, a busy API or its time limit', () => {
     const advice = (e: PromApiError, tries = 1, ms = 0) => errorAdvice(e, tries, ms, 'Ctrl')
     for (const e of [REAL.missingKey, REAL.readless, REAL.busy, REAL.timeout, REAL.internal, REAL.network]) expect(advice(e)).not.toMatch(/Change the query/)
-    expect(advice(REAL.missingKey)).toMatch(/Settings/)
+    expect(advice(REAL.missingKey)).toMatch(/Sign in/)
     expect(advice(REAL.readless)).toMatch(/read scope/)
     expect(advice(REAL.busy, 4, 7200)).toBe('The API stayed busy: the query was sent 4 times over 8 s. Run it again in a moment.')
     expect(advice(REAL.timeout)).toMatch(/time limit/)
@@ -113,8 +113,8 @@ describe('what an API failure means (errors.ts)', () => {
   })
 
   it('a 401 with no key set asks for a key; with one, for a valid one', () => {
-    expect(errorAdvice(REAL.missingKey, 1, 0, 'Ctrl', { keySet: false })).toBe('No API key is set. Enter a key with the read scope in Settings.')
-    expect(errorAdvice(REAL.missingKey, 1, 0, 'Ctrl', { keySet: true })).toBe('The API did not accept the API key. Enter a valid key in Settings.')
+    expect(errorAdvice(REAL.missingKey, 1, 0, 'Ctrl', { keySet: false })).toBe('This tab holds no API key. Sign in with a key that has the read scope.')
+    expect(errorAdvice(REAL.missingKey, 1, 0, 'Ctrl', { keySet: true })).toBe('The API no longer accepts the key this tab signed in with: it may have been disabled, rotated or expired. Sign in again with a key that is valid now.')
   })
 
   it('says "the API answered" only for the API\'s own error envelope', () => {

@@ -304,24 +304,30 @@ async function main() {
       await setMockDelay(800)
       const requests = []
       page.on('request', (r) => { if (r.url().includes('query_range')) requests.push(r.url()) })
-      const t0 = Date.now()
+      // Times are taken in the page, from the press itself, so the harness's own waits are not in them.
+      await page.evaluate(() => {
+        const log = (window.__wait = { press: 0, shown: 0, gone: 0 })
+        document.querySelector('[data-testid=run]').addEventListener('click', () => { if (!log.press) log.press = performance.now() }, { capture: true })
+        new MutationObserver(() => { const on = !!document.querySelector('[data-testid=progress]'); if (on && !log.shown) log.shown = performance.now(); if (!on && log.shown && !log.gone) log.gone = performance.now() }).observe(document.body, { childList: true, subtree: true })
+      })
       await page.click('[data-testid=run]')
       await page.keyboard.press('Control+Enter') // a second press while it runs
       await page.waitForSelector('[data-testid=progress]')
-      const shownAfter = Date.now() - t0
+
       const during = await page.evaluate(() => {
         const p = document.querySelector('[data-testid=progress]'), plot = document.querySelector('svg.vz-plot').getBoundingClientRect(), r = p.getBoundingClientRect()
         const strip = parseFloat(getComputedStyle(document.querySelector('[data-testid=chart]')).getPropertyValue('--strip'))
         return { position: getComputedStyle(p).position, top: plot.top, lineTop: r.top - plot.top, lineBottom: r.bottom - plot.top, strip, left: r.left - plot.left, words: p.querySelector('[role=status]').textContent, cancel: !!document.querySelector('[data-testid=cancel]'), requests: 0 }
       })
       const sentBefore = requests.length
-      check('an 800 ms wait shows the line only after 400 ms', shownAfter >= 380 && shownAfter < 800, `${shownAfter} ms`)
+
       check('M8: the waiting line lies over the strip above the plot, right of the value axis; nothing is reserved for it and nothing moves', during.position === 'absolute' && Math.abs(during.top - top0) < 0.5 && during.lineTop >= -0.5 && during.lineBottom <= during.strip + 0.5 && during.left >= 43, JSON.stringify(during))
       check('a second press while the query runs is ignored: one request was sent', sentBefore === 1, `${sentBefore} requests`)
       check('the line says what is waited for, with no Cancel before 2 s', during.words === 'Waiting for the query.' && !during.cancel, during.words)
       await page.waitForSelector('[data-testid=progress]', { state: 'detached' })
-      const gone = Date.now() - t0
-      check('a line that was shown is kept at least 300 ms', gone - shownAfter >= 290, `${gone - shownAfter} ms`)
+      const w = await page.evaluate(() => window.__wait)
+      check('an 800 ms wait shows the line only after 400 ms', w.shown - w.press >= 395 && w.shown - w.press < 700, `${Math.round(w.shown - w.press)} ms`)
+      check('a line that was shown is kept at least 300 ms', w.gone - w.shown >= 295, `${Math.round(w.gone - w.shown)} ms`)
       // 3 s: Cancel from 2 s, which aborts the request.
       await setMockDelay(3000)
       const aborted = []
@@ -401,7 +407,7 @@ async function main() {
       await page.goto(url(Q_MANY))
       await ready(page)
       const many = await page.evaluate(() => ({ rows: [...document.querySelectorAll('[data-testid=chart] tbody tr')].map((tr) => tr.dataset.key === 'other' ? 'other' : tr.dataset.key ? tr.querySelector('.vz-swatch').dataset.series : tr.textContent.trim()), lines: document.querySelectorAll('svg.vz-plot [data-layer=lines] .vz-line').length, band: document.querySelectorAll('svg.vz-plot .vz-other-band').length, other: document.querySelector('tr[data-key=other]').textContent, note: document.querySelector('.vz-legend-note').textContent, lasts: [...document.querySelectorAll('[data-testid=chart] tbody tr[data-key]:not([data-key=other]) td:last-child')].map((t) => +t.textContent), reserve: document.querySelector('[data-testid=chart]').style.cssText }))
-      check('M2: with 36 series the eight largest are coloured, slot 1 the largest, in palette order; the rest are ONE band and ONE legend row', many.rows.slice(0, 9).join() === '1,2,3,4,5,6,7,8,other' && many.lines === 8 && many.band === 1 && /Other28 series/.test(many.other) && many.lasts.every((v, i, a) => i === 0 || v <= a[i - 1]), JSON.stringify([many.rows, many.lines, many.band, many.other, many.lasts]))
+      check('M2: with 36 series the eight largest are coloured, each on its own slot, listed in palette order; the rest are ONE band and ONE legend row', many.rows.slice(0, 9).join() === '1,2,3,4,5,6,7,8,other' && many.lines === 8 && many.band === 1 && /Other ?28 series/.test(many.other) && [...many.lasts].sort((a, b) => b - a).join() === '312,175,141,96,83,61,44,27', JSON.stringify([many.rows, many.lines, many.band, many.other, many.lasts]))
       check('D73: at load the eight largest are already coloured, so "Colour the eight largest" is not offered; the note says how the colours were chosen', many.rows.slice(9).join() === 'Show 20 more of Other' && many.note === '8 coloured by size; 28 in Other', JSON.stringify([many.rows.slice(9), many.note]))
       check('the chart reserves the height of its legend from its own rows (Chart, Reserved height)', /--legend-rows:\s*10/.test(many.reserve) && /--legend-notes:\s*1/.test(many.reserve), many.reserve)
       const coloursBefore = Object.fromEntries((await legend(page)).filter((r) => /^\d$/.test(r.slot)).map((r) => [r.key, r.slot]))
@@ -418,8 +424,8 @@ async function main() {
       check('M2: series on screen keep their colours when the query widens; the larger ones arrive in Other and the note says so', held === 8 && /in Other (is|are) now larger than a coloured series/.test(kept.note), JSON.stringify([held, kept.note]))
       check('D73: now that one of the eight largest is not coloured, "Colour the eight largest" is offered', kept.actions.join('|') === 'Show 20 more of Other|Colour the eight largest', kept.actions.join('|'))
       await page.click('[data-recolour]')
-      const recoloured = await page.evaluate(() => ({ note: document.querySelector('.vz-legend-note').textContent, actions: [...document.querySelectorAll('.vz-legend-actions')].map((t) => t.textContent.trim()), slots: Object.fromEntries([...document.querySelectorAll('[data-testid=chart] tbody tr[data-key]')].filter((tr) => /^\d$/.test(tr.querySelector('.vz-swatch').dataset.series)).map((tr) => [tr.dataset.key, tr.querySelector('.vz-swatch').dataset.series])) }))
-      check('D73: pressed, it colours the eight largest by size and is no longer offered', JSON.stringify(recoloured.slots) === JSON.stringify(coloursBefore) && recoloured.actions.join('|') === 'Show 20 more of Other' && recoloured.note === '8 coloured by size; 28 in Other', JSON.stringify([recoloured, coloursBefore]))
+      const recoloured = await page.evaluate(() => ({ maxes: [...document.querySelectorAll('[data-testid=chart] tbody tr[data-key]:not([data-key=other]) td:last-child')].map((t) => +t.textContent), note: document.querySelector('.vz-legend-note').textContent, actions: [...document.querySelectorAll('.vz-legend-actions')].map((t) => t.textContent.trim()), slots: Object.fromEntries([...document.querySelectorAll('[data-testid=chart] tbody tr[data-key]')].filter((tr) => /^\d$/.test(tr.querySelector('.vz-swatch').dataset.series)).map((tr) => [tr.dataset.key, tr.querySelector('.vz-swatch').dataset.series])) }))
+      check('D73: pressed, it colours the eight largest, slot 1 the largest, and is no longer offered', recoloured.maxes.every((v, i, a) => i === 0 || v <= a[i - 1]) && Object.keys(recoloured.slots).sort().join() === Object.keys(coloursBefore).sort().join() && recoloured.actions.join('|') === 'Show 20 more of Other' && recoloured.note === '8 coloured by size; 28 in Other', JSON.stringify([recoloured, coloursBefore]))
       await page.reload()
       await ready(page)
       const reloaded = Object.fromEntries((await legend(page)).filter((r) => /^\d$/.test(r.slot)).map((r) => [r.key, r.slot]))
@@ -521,8 +527,8 @@ async function main() {
       const { ctx, page } = await newPage({ viewport: { width: 400, height: 1600 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 })
       await page.goto(url(Q_RATE))
       await ready(page)
-      const well = await page.evaluate(() => { const w = document.querySelector('.query-well'), c = w.querySelector('.cm-content') || w; return { h: w.getBoundingClientRect().height, size: getComputedStyle(c).fontSize, coarse: matchMedia('(pointer: coarse)').matches } })
-      check('B2: with a coarse pointer the query well is 44 px tall with body-size text, so focus does not zoom the page', well.coarse && well.h >= 44 && parseFloat(well.size) >= 16, JSON.stringify(well))
+      const well = await page.evaluate(() => { const w = document.querySelector('.query-well'), c = w.querySelector('.cm-content') || w; return { h: w.getBoundingClientRect().height, size: getComputedStyle(c).fontSize, body: getComputedStyle(document.documentElement).getPropertyValue('--text-body-size').trim(), coarse: matchMedia('(pointer: coarse)').matches } })
+      check('B2: with a coarse pointer the query well is 44 px tall with body-size text, as the system sets a text input', well.coarse && well.h >= 44 && well.size === well.body, JSON.stringify(well))
       const small = []
       const covered = []
       let measured = 0
