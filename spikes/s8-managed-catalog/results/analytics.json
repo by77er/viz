@@ -1,0 +1,116 @@
+{
+  "window": {
+    "since": "2026-11-19T02:35:38.117Z",
+    "until": "2026-11-19T03:07:22.245Z"
+  },
+  "catalog": {
+    "data": {
+      "viewer": {
+        "accounts": [
+          {
+            "r2CatalogDataOperationsAdaptiveGroups": [],
+            "r2CatalogTableMaintenanceAdaptiveGroups": []
+          }
+        ]
+      }
+    },
+    "errors": null
+  },
+  "workers": {
+    "data": {
+      "viewer": {
+        "accounts": [
+          {
+            "workersInvocationsAdaptive": [
+              {
+                "quantiles": {
+                  "cpuTimeP50": 703,
+                  "cpuTimeP99": 3297
+                },
+                "sum": {
+                  "errors": 0,
+                  "requests": 608,
+                  "subrequests": 1277
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "errors": null
+  },
+  "durableObjects": {
+    "data": {
+      "viewer": {
+        "accounts": [
+          {
+            "durableObjectsInvocationsAdaptiveGroups": [
+              {
+                "sum": {
+                  "requests": 1297
+                }
+              }
+            ],
+            "durableObjectsPeriodicGroups": [
+              {
+                "sum": {
+                  "activeTime": 3776783038,
+                  "cpuTime": 13164421,
+                  "duration": 483.4282288639999
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "errors": null
+  },
+  "r2": {
+    "data": {
+      "viewer": {
+        "accounts": [
+          {
+            "r2OperationsAdaptiveGroups": [
+              {
+                "dimensions": {
+                  "actionType": "PutObject"
+                },
+                "sum": {
+                  "requests": 6026
+                }
+              },
+              {
+                "dimensions": {
+                  "actionType": "HeadBucket"
+                },
+                "sum": {
+                  "requests": 8
+                }
+              },
+              {
+                "dimensions": {
+                  "actionType": "HeadObject"
+                },
+                "sum": {
+                  "requests": 3676
+                }
+              },
+              {
+                "dimensions": {
+                  "actionType": "GetObject"
+                },
+                "sum": {
+                  "requests": 7160
+                }
+              }
+            ],
+            "r2StorageAdaptiveGroups": []
+          }
+        ]
+      }
+    },
+    "errors": null
+  }
+}

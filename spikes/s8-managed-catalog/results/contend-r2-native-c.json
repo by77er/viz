@@ -1,0 +1,75 @@
+{
+  "at": "2026-11-19T02:54:42.631Z",
+  "runs": [
+    {
+      "catalog": "r2-native",
+      "name": "contend_r2native_8_c",
+      "committers": 8,
+      "commits": 80,
+      "succeeded": 78,
+      "gaveUp": 2,
+      "rejected": 0,
+      "conflicts": 391,
+      "unknowns": 7,
+      "attemptsPerCommit": {
+        "n": 80,
+        "p50": 3,
+        "p90": 8,
+        "p99": 50,
+        "max": 50
+      },
+      "msToSuccess": {
+        "n": 80,
+        "p50": 6066,
+        "p90": 13536,
+        "p99": 87942,
+        "max": 87942
+      },
+      "commitRequestMs": {
+        "n": 476,
+        "p50": 531,
+        "p90": 873,
+        "p99": 1422,
+        "max": 1626
+      },
+      "statuses": {
+        "0": 7,
+        "200": 78,
+        "412": 391
+      },
+      "details": {
+        "unknown 0: Error: put: Reduce your concurrent request rate for the same object. (10058)": 7
+      },
+      "names": [
+        "contend-contend_r2native_8_c-1795056727919-0",
+        "contend-contend_r2native_8_c-1795056727919-1",
+        "contend-contend_r2native_8_c-1795056727919-2",
+        "contend-contend_r2native_8_c-1795056727919-3",
+        "contend-contend_r2native_8_c-1795056727919-4",
+        "contend-contend_r2native_8_c-1795056727919-5",
+        "contend-contend_r2native_8_c-1795056727919-6",
+        "contend-contend_r2native_8_c-1795056727919-7"
+      ],
+      "wallMs": 144440,
+      "commitsPerSecond": 0.54,
+      "startedLateMs": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "verify": {
+        "ok": true,
+        "problems": [],
+        "problemCount": 0,
+        "chain": 78,
+        "files": 78,
+        "rows": 9360
+      }
+    }
+  ]
+}

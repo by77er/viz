@@ -1,0 +1,18 @@
+{
+  // Deployed only for the measurement, then deleted (README). The catalog URI and warehouse are
+  // what `wrangler basin catalog enable viz-spike-s8-catalog` prints; KEY and CATALOG_TOKEN are
+  // secrets set at deploy time from stdin.
+  "name": "viz-spike-s8-managed-catalog",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "observability": { "enabled": false },
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "viz-spike-s8-catalog" }],
+  "durable_objects": { "bindings": [{ "name": "COMMITTER", "class_name": "Committer" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Committer"] }],
+  "vars": {
+    "CATALOG_URI": "https://catalog.cloudflarestorage.com/8dbec6148300483801d721889a2f4749/viz-spike-s8-catalog",
+    "WAREHOUSE": "8dbec6148300483801d721889a2f4749_viz-spike-s8-catalog",
+    "BUCKET_NAME": "viz-spike-s8-catalog"
+  }
+}
