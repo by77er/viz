@@ -12,7 +12,7 @@
  */
 import { runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BASE62, CREDENTIAL_LAYOUT, OAUTH_LIMITS, credentialExpiresAt } from '../../contracts/oauth'
 import worker from '../src/index'
 import { introspectFor } from '../src/introspection'
@@ -20,10 +20,13 @@ import { credentialExpired, credentialTagValid, expiryChars, mintCredential, oau
 import { CHECK_BUDGET_MS, LIMITERS, RATE_PERIOD_S, SKIP_AFTER_FAILURE_MS, WORKERS_EGRESS, resetLimiterState, sourceKeys, sourceNetwork } from '../src/ratelimit'
 import type { Tenant } from '../src/tenant'
 import { B62 } from '../src/util'
-import { newTenant, stubOf } from './helpers'
+import { newTenant, stubOf, windowRoom } from './helpers'
 import { ORIGIN, REDIRECT, RESOURCE, authorizeUrl, connect, newClient, pkce, refresh as refreshPlain, revokeAtServer } from './oauth'
 import controlWrangler from '../wrangler.jsonc?raw'
 import mcpWrangler from '../../mcp/wrangler.jsonc?raw'
+
+// No test here may straddle the minute: the local binding's windows are the wall clock's (helpers.ts).
+beforeEach(() => windowRoom(), 20_000)
 
 const KEY = oauthConfig(env).clientKey!
 const byte = () => crypto.getRandomValues(new Uint8Array(1))[0]!

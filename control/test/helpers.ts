@@ -11,6 +11,23 @@ export const BASE = 'https://vis.bitcru.sh/api/v1/control'
 let counter = 0
 const run = Math.random().toString(36).slice(2, 8)
 
+// Captured before any test installs fake timers, so the wait below is always a real one.
+const realSetTimeout = globalThis.setTimeout
+const RealDate = Date
+
+/**
+ * The local Rate Limiting binding aligns its windows to the wall clock (miniflare:
+ * `epoch = floor(now / period)`), so a count does not survive the turn of the minute. A test
+ * that counts on a 60 s window must not straddle one: this waits for the next minute when under
+ * `room` ms remain in this one. Use it as `beforeEach(() => windowRoom(), 20_000)` in every file that
+ * asks a real `RL_TEST_*` binding. (Pull request #9's first CI run failed on a refresh served
+ * at 19:19:00 that the test expected refused: the 13 requests before it were in 19:18.)
+ */
+export async function windowRoom(room = 5_000): Promise<void> {
+  const left = 60_000 - (RealDate.now() % 60_000)
+  if (left < room) await new Promise((r) => realSetTimeout(r, left + 50))
+}
+
 export const stubOf = (tenant: string): DurableObjectStub<Tenant> => env.TENANT.get(env.TENANT.idFromName(tenant))
 
 /** A fresh tenant with its first admin key, made the way an operator would: through the binding. */

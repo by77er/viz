@@ -16,7 +16,7 @@
  */
 import { runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import { OAUTH_LIFETIMES, parseCredential, type TenantOAuthRpc } from '../../contracts/oauth'
 import worker from '../src/index'
 import { introspectFor } from '../src/introspection'
@@ -24,8 +24,11 @@ import { hashCredential, mintCredential, oauthConfig, seal, sealAad, unseal } fr
 import * as ratelimit from '../src/ratelimit'
 import type { Tenant } from '../src/tenant'
 import { previousCredentialTagValid, previousMintCredential, previousParseCredential } from './fixtures/previous-release-oauth'
-import { newTenant, stubOf } from './helpers'
+import { newTenant, stubOf, windowRoom } from './helpers'
 import { ORIGIN, RESOURCE, connect, refresh as refreshPlain, revokeAtServer } from './oauth'
+
+// No test here may straddle the minute: the local binding's windows are the wall clock's (helpers.ts).
+beforeEach(() => windowRoom(), 20_000)
 
 const KEY = oauthConfig(env).clientKey!
 const byte = () => crypto.getRandomValues(new Uint8Array(1))[0]!
