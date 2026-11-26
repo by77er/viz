@@ -5,6 +5,7 @@
 //   node bfs/run.ts findings        the design / implementation as written (a counterexample is a finding)
 //   node bfs/run.ts amended         the amended protocol, exhaustive (expect none)
 //   node bfs/run.ts liveness        AG EF query-done on the full state graph
+//   node bfs/run.ts proposed        the proposed fixes (registration before writes, F16)
 //   node bfs/run.ts <name> [...]    named experiments
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -90,7 +91,7 @@ const ALLSAFE = SAFETY
 
 export interface Exp {
   name: string
-  kind: 'teeth' | 'finding' | 'amended' | 'liveness' | 'd30' | 'log'
+  kind: 'teeth' | 'finding' | 'amended' | 'liveness' | 'd30' | 'log' | 'proposed'
   label: string
   cfg: Cfg
   props: string[]
@@ -190,6 +191,8 @@ d30('D30_3batches', 'amended + D30 + log as built: 3 batches, ledger loss + shar
 d30('D30_2shards', 'amended + D30 + log as built: 2 shards, ledger loss + shard loss + compaction, no client retry, ≤ 2 sweep runs', { ...AD, ...X, ns: 2, maxLL: 1, maxSL: 1, maxComp: 1 }, 'holds', ALLSAFE, 6_000_000)
 d30('D30_2tenants', 'amended + D30 + log as built: 2 tenants in one pooled shard sending identical bytes, ledger loss + shard loss + compaction, no client retry, ≤ 2 sweep runs', { ...AD, ...X, nt: 2, nb: 2, maxLL: 1, maxSL: 1, maxComp: 1, sameContent: true }, 'holds', ALLSAFE, 6_000_000)
 d30('D30_variants', 'amended + D30 + log as built: two encoder outputs per segment, ledger loss + compaction + retention, no client retry, ≤ 2 sweep runs', { ...AD, ...X, variants: 2, maxLL: 1, maxComp: 1, maxExp: 1 }, 'holds', ALLSAFE, 6_000_000)
+d30('D30_chain', 'amended + D30 + log as built: 3 batches, 2 compactions, so an output is an input of the next (the rule applied inductively), retention, ledger loss, no client retry, one flush Worker, no query, ≤ 2 sweep runs', { ...AD, ...X, nb: 3, maxJobs: 1, maxQ: 0, maxComp: 2, maxCJobs: 1, maxExp: 1, maxLL: 1 })
+E.push({ name: 'W_chain_reachable', kind: 'd30', label: 'non-vacuity of D30_chain: a level-2 output (built from a compaction output) becomes live within its bounds', cfg: E.find((e) => e.name === 'D30_chain')!.cfg, props: ['W_NoChainedOutputLive'], expect: 'violated', maxStates: 6_000_000 })
 // teeth: which parts of D30 are load-bearing (F14's bounds unless said otherwise)
 const T14 = { ...X, maxJobs: 1, maxQ: 0, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1 }
 d30('D30_teeth_not_live_only', 'D30 teeth: an input counts as gone when it is merely not live (its object may still exist)', { ...AD, ...T14, sweepGone: 'notLive' }, 'violated', ['I11_LiveFilesReadable'], 6_000_000)
@@ -215,6 +218,7 @@ logrun('LOG_teeth_retry_new_bounds', 'segment log teeth: a retried drain takes e
 logrun('LOG_S1_rollback', 'review S-1, as built: one rollback to the first-layout ledger and back, one ledger loss, retention, compaction, registration logged before writes', { ...IMPL, reg: 'logged', noRetryAcrossLoss: true, maxRB: 1, maxLL: 1, maxComp: 1, maxExp: 1, maxJobs: 1 }, 'violated')
 logrun('LOG_S1_rollback_I1', 'review S-1, as built, carried through to acknowledged-row loss', { ...IMPL, reg: 'logged', noRetryAcrossLoss: true, maxRB: 1, maxLL: 1, maxComp: 0, maxExp: 0, maxJobs: 1 }, 'violated', ['I1_AckedIsDurable'])
 logrun('LOG_S1_rollback_I11', 'review S-1, as built, carried through to a listed file with no object (a removal the first-layout drain logged, purged, then undone by the rebuild)', { ...IMPL, reg: 'logged', noRetryAcrossLoss: true, maxRB: 1, maxLL: 1, maxComp: 0, maxExp: 1, maxJobs: 1 }, 'violated', ['I11_LiveFilesReadable'])
+logrun('LOG_S1_heal_1batch', 'review S-1 with fix (b), one batch, one ledger loss, one flush Worker (small enough to be exhaustive)', { ...IMPL, reg: 'logged', noRetryAcrossLoss: true, maxRB: 1, rbFix: 'heal', maxLL: 1, maxSend: 1, maxJobs: 1, nb: 1 })
 logrun('LOG_S1_heal', 'review S-1 with fix (b): on roll-forward an outbox that does not continue the segment log starts a new incarnation from SQLite; same bounds', { ...IMPL, reg: 'logged', noRetryAcrossLoss: true, maxRB: 1, rbFix: 'heal', maxLL: 1, maxComp: 1, maxExp: 1, maxJobs: 1 })
 
 // ---- the amended protocol: exhaustive within bounds, expect no violation
@@ -241,8 +245,8 @@ live('LIVE_impl_F6_fixed', 'code at HEAD + F6 fixed completely (register before 
 // ---- no leak (I11, second half): AG EF every object in R2 is live. Retention may remove any
 // live file (maxExp large: it eventually removes everything), no query (purge's grace is then
 // free), one flush Worker.
-const leak = (name: string, label: string, cfg: Cfg, expect: 'holds' | 'violated') =>
-  E.push({ name, kind: 'liveness', label: `${label}; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory)`, cfg: { ...cfg, sweepSteps: false, purgeSteps: false, startSteps: false, maxJobs: 1, maxQ: 0, liveness: true, goal: cfg.goal === 'cleanComp' ? 'cleanComp' : 'clean' }, props: [], expect, maxStates: 3_000_000 })
+const leak = (name: string, label: string, cfg: Cfg, expect: 'holds' | 'violated', maxStates = 3_000_000) =>
+  E.push({ name, kind: 'liveness', label: `${label}; sweep, purge and ledger start as single steps (they only delete; the graph must fit in memory)`, cfg: { ...cfg, sweepSteps: false, purgeSteps: false, startSteps: false, maxJobs: 1, maxQ: 0, liveness: true, goal: cfg.goal === 'cleanComp' ? 'cleanComp' : 'clean' }, props: [], expect, maxStates })
 leak('LEAK_D30_maintenance', 'no leak, D30 + log as built: compaction (2 steps at once), retention of every file, ledger loss, no client retry', { ...AD, maxSend: 1, maxComp: 1, maxCJobs: 2, maxExp: 4, maxLL: 1 }, 'holds')
 leak('LEAK_D30_shardloss', 'no leak, D30 + log as built: shard loss, ledger loss, retention of every file, compaction, no client retry', { ...AD, maxSend: 1, maxComp: 1, maxExp: 4, maxLL: 1, maxSL: 1 }, 'violated')
 leak('LEAK_V1_shardloss', 'no leak, the rules before D30 (age-swept outputs, committed newer incarnation): same bounds as LEAK_D30_shardloss', { ...AD, sweep: 'impl', sweepIncLogged: false, compConflictDelete: true, maxSend: 1, maxComp: 1, maxExp: 4, maxLL: 1, maxSL: 1 }, 'violated')
@@ -251,9 +255,72 @@ const LS = { maxSend: 1, maxCJobs: 1, maxComp: 1, maxExp: 2, maxLL: 1 }
 leak('LEAK_D30_ll', 'no leak, D30 + log as built: compaction, retention (2 removals), ledger loss, no shard loss', { ...AD, ...LS }, 'holds')
 leak('LEAK_D30_sl', 'no leak, D30 + log as built: compaction, retention (2 removals), shard loss, no ledger loss', { ...AD, ...LS, maxLL: 0, maxSL: 1 }, 'violated')
 leak('LEAK_V1_sl', 'no leak, the rules before D30: same bounds as LEAK_D30_sl', { ...AD, ...LS, sweep: 'impl', sweepIncLogged: false, compConflictDelete: true, maxLL: 0, maxSL: 1 }, 'violated')
-leak('LEAK_D30_sl_comp', 'no leaked compaction output, D30 + log as built: compaction, retention (2 removals), ledger loss + shard loss', { ...AD, ...LS, maxSL: 1, goal: 'cleanComp' }, 'violated')
-leak('LEAK_V1_sl_comp', 'no leaked compaction output, the rules before D30: same bounds as LEAK_D30_sl_comp', { ...AD, ...LS, sweep: 'impl', sweepIncLogged: false, compConflictDelete: true, maxSL: 1, goal: 'cleanComp' }, 'holds')
+// compaction outputs only: one retention removal is enough to release an output (one input gone)
+leak('LEAK_D30_sl_comp', 'no leaked compaction output, D30 + log as built: compaction, retention (1 removal), ledger loss + shard loss', { ...AD, ...LS, maxExp: 1, maxSL: 1, goal: 'cleanComp' }, 'violated', 8_000_000)
+leak('LEAK_V1_sl_comp', 'no leaked compaction output, the rules before D30: same bounds as LEAK_D30_sl_comp', { ...AD, ...LS, maxExp: 1, sweep: 'impl', sweepIncLogged: false, compConflictDelete: true, maxSL: 1, goal: 'cleanComp' }, 'holds', 8_000_000)
 E.push({ name: 'W_leak_behind_lost_flush', kind: 'd30', label: 'F16 witness: an unlisted compaction output kept because an input is an unlisted flush file of an incarnation its shard lost, which the sweep keeps (D30 + log as built, ledger loss + shard loss, compaction)', cfg: { ...AD, maxSend: 1, maxSweeps: 2, maxComp: 1, maxCJobs: 1, maxExp: 1, maxLL: 1, maxSL: 1 }, props: ['W_NoLeakBehindLostFlush'], expect: 'violated', maxStates: 6_000_000 })
+
+// ---- proposed fixes (README "Proposed fixes"): registration before writes, three variants, on
+// the code as built (IMPL; F3 assumed away as in IMPL_3), then the F16 fix on the chosen one.
+/** R1: the shard registers before its first write and waits only for the ledger's COMMIT (one round trip, no R2); flush.ts's lazy paths stay; a read naming an incarnation the shard does not hold makes it register a fresh one. */
+export const R1: Partial<Cfg> = { reg: 'committed', regOnRead: 'named' }
+/** R2: as R1, but the shard accepts writes only once the registration is LOGGED (appends refused, retryably, until then; each attempt repeats the idempotent registration). */
+export const R2: Partial<Cfg> = { reg: 'logged', regOnRead: 'named' }
+/** R3: R2's write side; no registration on the read path: the coordinator settles a lost incarnation after one re-plan. */
+export const R3: Partial<Cfg> = { reg: 'logged', regOnRead: 'none', lostEmpty: true }
+/** R4: R1, plus the coordinator re-reads the ledger after its tail reads and re-plans if a shard it read without a watermark has been registered since. */
+export const R4: Partial<Cfg> = { reg: 'committed', regOnRead: 'named', recheck: true }
+/** The F16 fix: the janitor makes a shard that lost a stream register a fresh incarnation; a newer incarnation kills old flush files once its registration is logged. */
+export const F16FIX: Partial<Cfg> = { regOnSweep: true, sweepNewerReg: true }
+const BASE: Cfg = { ...IMPL, noRetryAcrossLoss: true }
+/** The recommended protocol: the code as built + R2 + the F16 fix. */
+export const PROPOSED: Cfg = { ...BASE, ...R2, ...F16FIX }
+const prop = (name: string, label: string, cfg: Cfg, expect: 'holds' | 'violated' = 'holds', props: string[] = ALLSAFE, maxStates = 4_000_000) =>
+  E.push({ name, kind: 'proposed', label, cfg, props, expect, maxStates })
+const propLive = (name: string, label: string, cfg: Cfg, expect: 'holds' | 'violated') =>
+  E.push({ name, kind: 'proposed', label, cfg: { ...cfg, sweepSteps: false, purgeSteps: false, maxJobs: 1, liveness: true }, props: [], expect, maxStates: 3_000_000 })
+const propLeak = (name: string, label: string, cfg: Cfg, expect: 'holds' | 'violated', maxStates = 8_000_000) =>
+  E.push({ name, kind: 'proposed', label: `${label}; sweep, purge and ledger start as single steps`, cfg: { ...cfg, sweepSteps: false, purgeSteps: false, startSteps: false, maxJobs: 1, maxQ: 0, liveness: true, goal: cfg.goal === 'cleanComp' ? 'cleanComp' : 'clean' }, props: [], expect, maxStates })
+const VARIANTS: [string, string, Partial<Cfg>, 'holds' | 'violated'][] = [
+  ['R1', 'R1 (registration committed before writes)', R1, 'violated'],
+  ['R2', 'R2 (registration logged before writes; shard registers on a read naming a lost incarnation)', R2, 'holds'],
+  ['R3', 'R3 (registration logged before writes; coordinator settles a lost incarnation)', R3, 'holds'],
+  ['R4', 'R4 (registration committed before writes; coordinator re-checks unregistered shards after its tail reads)', R4, 'holds'],
+]
+for (const [v, what, over, expect] of VARIANTS) {
+  prop(`${v}_safety`, `${what}: client retries, two flush Workers, 1 compaction, 1 retention removal, ledger loss + shard loss`, { ...BASE, ...FAULTS, ...over }, expect)
+  if (expect === 'holds') {
+    prop(`${v}_2shards`, `${what}: 2 shards, ledger loss + shard loss + compaction, no client retry, ≤ 2 sweep runs`, { ...BASE, ...over, ...X, ns: 2, maxLL: 1, maxSL: 1, maxComp: 1 })
+    prop(`${v}_2tenants`, `${what}: 2 tenants in one pooled shard sending identical bytes, ledger loss + shard loss + compaction, no client retry, ≤ 2 sweep runs`, { ...BASE, ...over, ...X, nt: 2, nb: 2, maxLL: 1, maxSL: 1, maxComp: 1, sameContent: true })
+  }
+  propLive(`LIVE_${v}_sl`, `${what}: shard loss (1 send per batch)`, { ...BASE, ...over, maxSend: 1, maxSL: 1 }, 'holds')
+  propLive(`LIVE_${v}_llsl`, `${what}: ledger loss + shard loss (1 send per batch)`, { ...BASE, ...over, maxSend: 1, maxLL: 1, maxSL: 1 }, 'holds')
+}
+// F6(b)'s exact bounds (shard loss, no ledger loss: F6b_impl_now) with each variant, I4 only
+for (const [v, what, over] of VARIANTS) prop(`F6b_bounds_${v}`, `F6(b)'s bounds (code as built, shard loss) with ${what}`, { ...BASE, maxSL: 1, ...over }, 'holds', ['I4_NoGapAtSeam'])
+// teeth: each step of the recommended variant, removed alone (R1 is R2 with "logged" removed)
+propLive('LIVE_R2_teeth_no_read_trigger', 'R2 teeth: nothing registers a fresh incarnation on a read (only a write does): shard loss', { ...BASE, ...R2, regOnRead: 'none', maxSend: 1, maxSL: 1 }, 'violated')
+propLive('LIVE_R3_teeth_no_settle', 'R3 teeth: the coordinator does not settle a lost incarnation: shard loss', { ...BASE, ...R3, lostEmpty: false, maxSend: 1, maxSL: 1 }, 'violated')
+prop('R_teeth_lost_read_as_empty', 'R2/R3 teeth: tailRead answers ok/empty to an incarnation it does not hold (no refusal, so no re-plan); shard loss', { ...BASE, ...R2, unknownStream: 'empty', maxSL: 1 }, 'violated', ['I4_NoGapAtSeam'])
+// the F16 fix on the recommended protocol: safety (I11's safety half; F13, F14, F15 not back) and no leak
+prop('P_safety', 'proposed (as built + R2 + F16 fix): client retries, two flush Workers, 1 compaction, 1 retention removal, ledger loss + shard loss', { ...PROPOSED, ...FAULTS })
+prop('P_maintenance', 'proposed: two compaction steps at once + retention + ledger loss + shard loss, no client retry, ≤ 2 sweep runs', { ...PROPOSED, ...X, maxComp: 1, maxCJobs: 2, maxExp: 1, maxLL: 1, maxSL: 1 })
+prop('P_F13x', 'proposed at F13\'s bounds (1 compaction, sweeper on), no client retry, ≤ 2 sweep runs', { ...PROPOSED, ...X, maxComp: 1 }, 'holds', ALLSAFE, 6_000_000)
+prop('P_F14x', 'proposed at F14\'s bounds (two compaction steps at once, retention, ledger loss), sweeper on, ≤ 2 sweep runs', { ...PROPOSED, ...T14 }, 'holds', ALLSAFE, 6_000_000)
+prop('P_F15x', 'proposed at F15\'s bounds (2 flush Workers, shard loss + ledger loss), no client retry, ≤ 2 sweep runs', { ...PROPOSED, ...X, maxSL: 1, maxLL: 1 }, 'holds', ALLSAFE, 6_000_000)
+prop('P_teeth_newer_committed', 'F16 fix teeth: a newer incarnation kills old flush files once COMMITTED (not logged); F15\'s bounds', { ...PROPOSED, ...X, sweepNewerReg: false, sweepNewerLogged: false, maxSL: 1, maxLL: 1 }, 'violated', ['I11_LiveFilesReadable'], 6_000_000)
+propLeak('LEAK_P_sl', 'no leak, proposed: compaction, retention (2 removals), shard loss, no ledger loss (LEAK_D30_sl\'s bounds)', { ...PROPOSED, ...LS, maxLL: 0, maxSL: 1 }, 'holds')
+// At LEAK_D30_sl_comp's bounds (one retention removal) the shallowest dead end is no longer F16
+// but the bound itself: a removal that a ledger rebuild undoes still counts against the budget,
+// so the output's inputs, admitted again, can never be removed and D30 rightly keeps the output.
+propLeak('LEAK_P_sl_comp', 'no leaked compaction output, proposed: compaction, retention (1 removal), ledger loss + shard loss (LEAK_D30_sl_comp\'s bounds). Expected to stop at the retention bound, not at F16: the one removal is undone by the rebuild and not refunded', { ...PROPOSED, ...LS, maxExp: 1, maxSL: 1, goal: 'cleanComp' }, 'violated')
+propLeak('LEAK_P_llsl', 'no leak of any object, proposed: compaction, retention (1 removal), ledger loss + shard loss. As LEAK_P_sl_comp: the retention bound', { ...PROPOSED, ...LS, maxExp: 1, maxSL: 1 }, 'violated')
+// the decisive runs: two removals, so one is left after the one rebuild can undo another
+propLeak('LEAK_P_sl_comp2', 'no leaked compaction output, proposed: compaction, retention (2 removals), ledger loss + shard loss', { ...PROPOSED, ...LS, maxExp: 2, maxSL: 1, goal: 'cleanComp' }, 'holds')
+propLeak('LEAK_P_llsl2', 'no leak of any object, proposed: compaction, retention (2 removals), ledger loss + shard loss', { ...PROPOSED, ...LS, maxExp: 2, maxSL: 1 }, 'holds')
+propLeak('LEAK_D30_sl_comp2', 'no leaked compaction output, D30 + log as built (amended protocol, as LEAK_D30_sl_comp): compaction, retention (2 removals), ledger loss + shard loss', { ...AD, ...LS, maxExp: 2, maxSL: 1, goal: 'cleanComp' }, 'violated')
+propLeak('LEAK_P_teeth_no_trigger', 'F16 fix teeth: the janitor does not ask the shard (the rule alone); LEAK_P_sl_comp2\'s bounds', { ...PROPOSED, ...LS, regOnSweep: false, maxExp: 2, maxSL: 1, goal: 'cleanComp' }, 'violated')
+propLeak('LEAK_P_teeth_wm_rule', 'F16 fix teeth: the sweep keeps the rule as built (a newer incarnation counts once it has a logged UNIT); LEAK_P_sl_comp2\'s bounds', { ...PROPOSED, ...LS, sweepNewerReg: false, maxExp: 2, maxSL: 1, goal: 'cleanComp' }, 'violated')
 
 // ------------------------------------------------------------------ main
 
@@ -263,7 +330,7 @@ if (isMain) main()
 function main(): void {
 mkdirSync(out, { recursive: true })
 const args = process.argv.slice(2)
-const kinds = new Set(['teeth', 'finding', 'amended', 'liveness', 'd30', 'log'])
+const kinds = new Set(['teeth', 'finding', 'amended', 'liveness', 'd30', 'log', 'proposed'])
 const sel = E.filter((e) => args.length === 0 || args.includes(e.name) || (kinds.has(e.kind) && args.includes(e.kind)))
 if (sel.length === 0) {
   console.error('names:\n  ' + E.map((e) => e.name).join('\n  '))
@@ -292,8 +359,8 @@ for (const e of sel) {
 const rows = E.map((e) => join(out, `${e.name}.json`)).filter(existsSync).map((f) => JSON.parse(readFileSync(f, 'utf8')))
 const md = ['# Explicit-state results (generated by bfs/run.ts; do not edit)', '',
   'Breadth-first, exhaustive within the bounds of each row; every counterexample is a shortest one in the model.', '']
-const names: Record<string, string> = { teeth: 'Guard switched off (expect a counterexample)', finding: 'Design and implementation as written (a counterexample is a finding)', d30: 'D30: the compaction fix as built (compact.ts + janitor.ts)', log: 'The ledger segment log as built', amended: 'Amended protocol (expect none; exhaustive)', liveness: 'Liveness: AG EF query-done, or every object live (no leak)' }
-for (const k of ['teeth', 'finding', 'd30', 'log', 'amended', 'liveness']) {
+const names: Record<string, string> = { teeth: 'Guard switched off (expect a counterexample)', finding: 'Design and implementation as written (a counterexample is a finding)', d30: 'D30: the compaction fix as built (compact.ts + janitor.ts)', log: 'The ledger segment log as built', amended: 'Amended protocol (expect none; exhaustive)', liveness: 'Liveness: AG EF query-done, or every object live (no leak)', proposed: 'Proposed fixes: registration before writes (R1-R3) and F16' }
+for (const k of ['teeth', 'finding', 'd30', 'log', 'amended', 'liveness', 'proposed']) {
   md.push(`## ${names[k]}`, '', '| experiment | checked | result | distinct states | transitions | depth | time | P(collision) |', '|---|---|---|---|---|---|---|---|')
   for (const r of rows.filter((x) => x.kind === k)) {
     const res = r.verdict === 'violated' ? `**violated** ${r.violated} in ${r.trace.length} steps` : r.verdict === 'holds' ? 'holds (exhaustive)' : `stopped: ${r.note}`

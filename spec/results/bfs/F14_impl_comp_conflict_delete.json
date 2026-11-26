@@ -46,7 +46,18 @@
     "fpScope": "stream",
     "tailScope": "stream",
     "noRetryAcrossLoss": false,
-    "retain": false
+    "retain": false,
+    "sweepSteps": false,
+    "sweepAge": true,
+    "purgeSteps": false,
+    "startSteps": false,
+    "goal": "query",
+    "sweepGone": "both",
+    "sweepOrder": "listFirst",
+    "sweepNewerLogged": true,
+    "maxSweeps": 99,
+    "maxRB": 0,
+    "rbFix": "none"
   },
   "props": [
     "I11_LiveFilesReadable"
@@ -57,7 +68,7 @@
   "states": 41961,
   "transitions": 143700,
   "depth": 21,
-  "seconds": 2.8,
+  "seconds": 1.7,
   "collisionProb": 4.8e-11,
   "violated": "I11_LiveFilesReadable",
   "trace": [
