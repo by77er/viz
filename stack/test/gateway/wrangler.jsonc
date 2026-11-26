@@ -1,0 +1,52 @@
+// TESTS ONLY (stack/vitest.gateway.config.ts): viz-gateway in front of viz-ingest and viz-query,
+// as ONE script (test/gateway/worker.ts). The gateway's service bindings reach this same
+// script's entrypoints, as the gateway's own tests do; the queues, bucket, KV and Durable
+// Objects are those of stack/wrangler.jsonc and query/wrangler.jsonc. Not deployed, and not
+// compared with the production configs (deploy/test/configure.test.mjs compares those).
+{
+  "name": "viz-gateway-e2e",
+  "main": "worker.ts",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "SHARD", "class_name": "Shard" },
+      { "name": "LEDGER", "class_name": "Ledger" },
+      { "name": "LEAF", "class_name": "Leaf" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Shard", "Ledger", "Leaf"] }],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "viz-lake" }],
+  "kv_namespaces": [{ "binding": "CONFIG", "id": "00000000000000000000000000000000" }],
+  "queues": {
+    "producers": [
+      { "binding": "FLUSH_QUEUE", "queue": "viz-flush" },
+      { "binding": "MAINT_QUEUE", "queue": "viz-maint" }
+    ],
+    "consumers": [
+      { "queue": "viz-flush", "max_batch_size": 50, "max_batch_timeout": 1, "max_retries": 8, "dead_letter_queue": "viz-flush-dlq" },
+      { "queue": "viz-maint", "max_batch_size": 20, "max_batch_timeout": 1, "max_retries": 5, "dead_letter_queue": "viz-maint-dlq" },
+      { "queue": "viz-flush-dlq", "max_batch_size": 50, "max_batch_timeout": 5 },
+      { "queue": "viz-maint-dlq", "max_batch_size": 50, "max_batch_timeout": 5 }
+    ]
+  },
+  "services": [
+    // The gateway's backends (deploy/gateway/wrangler.jsonc), with both flags on.
+    { "binding": "INGEST", "service": "viz-gateway-e2e", "entrypoint": "Ingest" },
+    { "binding": "QUERY", "service": "viz-gateway-e2e", "entrypoint": "Query" },
+    { "binding": "CONTROL", "service": "viz-gateway-e2e", "entrypoint": "Elsewhere" },
+    { "binding": "RULER", "service": "viz-gateway-e2e", "entrypoint": "Elsewhere" },
+    { "binding": "MCP", "service": "viz-gateway-e2e", "entrypoint": "Elsewhere" },
+    // The same Workers as a deployment without INGEST_SIGNALS and QUERY_SIGNALS.
+    { "binding": "INGEST_OFF", "service": "viz-gateway-e2e", "entrypoint": "Ingest", "props": { "signals": "off" } },
+    { "binding": "QUERY_OFF", "service": "viz-gateway-e2e", "entrypoint": "Query", "props": { "signals": "off" } }
+  ],
+  "vars": {
+    "CELL": "cell-0",
+    "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":2,\"spread\":2,\"epoch\":1}",
+    "LEDGER_STATE_MAX_BYTES": "16777216",
+    "LEAF_POOL_SIZE": "8",
+    "INGEST_SIGNALS": "traces,logs",
+    "QUERY_SIGNALS": "traces,logs",
+    "VIZ_RELEASE": "test"
+  }
+}

@@ -13,7 +13,7 @@ import { runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { expect } from 'vitest'
 import { COMPACTION_INPUTS_META, compactStep, decodeCompactionInputs } from '../../compact/src/compact'
-import type { Watermark } from '../../contracts/ledger'
+import { TABLES, type Watermark } from '../../contracts/ledger'
 import { dataKeys, healLedgerLog } from '../../flush/test/helpers'
 import { type OrphanResult, type PurgeResult, expireTenant, purgeTenant, sweepOrphans } from '../../janitor/src/janitor'
 import type { Ledger } from '../../ledger/src/ledger'
@@ -45,7 +45,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 export async function quiesce(sim: Sim, t: SimTenant): Promise<void> {
   await healLedgerLog(ledger(t))
   await ledger(t).drain()
-  for (const s of sim.shards) {
+  for (const s of [...sim.shards, ...sim.signalShards]) {
     await shard(s).seal(t.name)
     for (let i = 0; ; i++) {
       const x = await flushTenant(sim.env, engine, t.name, s)
@@ -80,7 +80,7 @@ export async function checkedPurge(sim: Sim, t: SimTenant, where: string, g: Gra
 export async function checkedOrphans(sim: Sim, t: SimTenant, where: string, g: Graces, did: Count = () => {}): Promise<OrphanResult> {
   const listed = new Map<string, number>()
   const inputsOf = new Map<string, string | undefined>()
-  for (const table of ['metric_samples', 'metric_series']) {
+  for (const table of TABLES) {
     for (const o of (await env.BUCKET.list({ prefix: `${env.CELL}/data/${table}/tenant=${t.name}/`, include: ['customMetadata'] })).objects) {
       listed.set(o.key, o.uploaded.getTime())
       inputsOf.set(o.key, o.customMetadata?.[COMPACTION_INPUTS_META])
@@ -137,6 +137,10 @@ export async function awaitLogged(t: SimTenant, where: string, timeoutMs = LOG_W
 }
 
 export interface SettleHooks {
+  /** After a tenant is quiesced (its log drained by an explicit `drain()`), before its expiry and merges commit (tests: inject an outage). */
+  afterQuiesce?(t: SimTenant): Promise<void>
+  /** After a tenant's expiry and merges have committed, before the graces are waited out (tests: let the drain back off, heal). */
+  afterRemovals?(t: SimTenant): Promise<void>
   /** After the graces have passed, before waiting for the logs (tests: the state the end phase finds). */
   afterGrace?(t: SimTenant): Promise<void>
 }
@@ -149,13 +153,17 @@ export interface SettleHooks {
 export async function settle(sim: Sim, g: Graces, did: Count = () => {}, hooks: SettleHooks = {}): Promise<void> {
   for (const t of sim.tenants) {
     await quiesce(sim, t)
-    t.model.expire((await expireTenant(sim.env, t.name)).beforeDay!)
+    await hooks.afterQuiesce?.(t)
+    const expired = await expireTenant(sim.env, t.name)
+    t.model.expire(expired.beforeDay!)
+    t.signals?.expire(expired)
     for (let i = 0; i < 200; i++) {
       const x = await compactStep(sim.env, engine, t.name, { now: Date.now() + 3 * DAY_MS, policy: { maxInputPairs: 4, maxStepMs: g.stepMs } })
       if (x.status === 'idle') break
       expect(x.status).toBe('merged')
     }
     await checkTenant(sim, t, g.deleteGraceMs, 'end, before deletion')
+    await hooks.afterRemovals?.(t)
   }
   await sleep(Math.max(g.deleteGraceMs, 2 * g.stepMs, g.orphanGraceMs) + 200)
   for (const t of sim.tenants) {
@@ -174,7 +182,9 @@ export async function settle(sim: Sim, g: Graces, did: Count = () => {}, hooks: 
     expect(state.objects).toEqual(state.live.map((f) => f.key).sort())
     expect(state.objects).toEqual(await dataKeys(t.name))
     expect(state.tombstones).toEqual([])
-    expect(state.live.every((f) => f.level === 2)).toBe(true)
-    for (const s of sim.shards) expect(await shard(s).pendingSegments(t.name)).toEqual([])
+    // Every file is merged to level 2: metric pairs and trace_index and logs files per day, spans per hour.
+    expect(state.live.filter((f) => f.level !== 2).map((f) => f.key)).toEqual([])
+    for (const f of state.live) if (f.table === 'spans') expect(f.key).toMatch(/\/hour=(\d\d)\/L2-h\1-[0-9a-f]{16}-[0-9a-f]{8}\.parquet$/)
+    for (const s of [...sim.shards, ...sim.signalShards]) expect(await shard(s).pendingSegments(t.name)).toEqual([])
   }
 }

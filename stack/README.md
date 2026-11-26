@@ -27,16 +27,20 @@ hourly cron. It is deployed as viz-ingest (`deploy/`).
 | `test/e2e.test.ts` | 6 end-to-end tests that drive flush by hand |
 | `test/auto.test.ts` | 1 test where nothing is called: the simulated Queue delivers |
 | `test/triggers.test.ts` | 8 tests of the triggers, the maintenance marker, the orphan-sweep flag and the idle deployment |
-| `test/cron.test.ts` | 7 tests: the cron with a failing shard, listing or send (review R-7), the bound on shards per cron, the marker under KV's write rate (R-11(c)), maintenance message versions |
+| `test/cron.test.ts` | 8 tests: the cron with a failing shard, listing or send (review R-7), the bound on shards per cron, the marker under KV's write rate (R-11(c)), maintenance message versions, leftovers that stop keeping the sweep due (S-6) |
 | `test/golden.test.ts`, `test/golden/` | 3 tests: golden files of the maintenance message and marker, and the marker reader's refusal of an unknown version |
 | `test/compaction.property.test.ts` | 8 seeded runs of the I8 property test |
 | `test/precedence.property.test.ts` | 6 seeded runs: random rewrites of the same samples always read back as the latest write |
-| `test/soak.test.ts` | The soak (400 steps in `npm test`; `npm run soak` for 3,000) |
+| `test/soak.test.ts` | The soak, twice: as before (`INGEST_SIGNALS` off) and with spans and logs (on); 400 steps each in `npm test`, `npm run soak` for 3,000; `SOAK_SIGNALS=off` or `on` for one |
+| `test/signals.ts` | Spans and logs in the simulation: the model, OTLP senders through edge, the reader (hyparquet over files, edge's test decoder over tails) and its check |
+| `test/signals.test.ts` | 2 tests (and a third driven by `tools/signals_readback.mjs`): traces and logs end to end; nothing of it with the flag off |
 | `test/settle.ts` | The soak's checked purge and orphan sweep and its end phase, shared with `test/settle.test.ts` |
-| `test/settle.test.ts` | 1 test: the end phase reaches its end state while a ledger's drain is still backing off (regression test for the soak's end-phase failure of 2026-11-19) |
+| `test/settle.test.ts` | 1 test: the end phase reaches its end state while a ledger's drain is still backing off, the backoff forced with no explicit drain after the outage (regression test for the soak's end-phase failure of 2026-11-19) |
 | `test/sim.ts`, `test/world.ts` | Simulated deployments: tenants, real requests, queues under test control, the model, the invariants |
+| `test/gateway/gateway.e2e.test.ts`, `test/gateway/worker.ts`, `test/gateway/wrangler.jsonc`, `vitest.gateway.config.ts` | 4 tests through the public path: viz-gateway in front of this Worker and viz-query, in one test script ("Through the gateway") |
 | `scripts/mutants.mjs` | Mutation check for the four new parts |
 | `tools/hyparquet_check.mjs` | Reads one produced Parquet file with hyparquet, in Node |
+| `tools/signals_readback.mjs`, `tools/signals-readback/` | An OTLP corpus through this Worker's write path, its files read back by viz-storage's readers, viz-traceql, viz-logql, PyArrow and DuckDB |
 
 ## What now happens without anyone calling it
 
@@ -155,7 +159,8 @@ letters.
 
 ## Not implemented
 
-- **A query Worker.** The read path here is test code; nothing serves queries.
+- **A query Worker.** The read path here is test code; viz-query (`query/`) serves queries. Only
+  `test/gateway/` puts the two Workers (and the gateway) in one script, for tests.
 - **Separate deployment.** In production these are several Workers bound to each other;
   that wiring (service bindings, `script_name` on the Durable Object bindings, the queue
   consumers in their own scripts) is not written.
@@ -177,10 +182,13 @@ letters.
 ```
 (cd ../engine/wasm && ./build.sh)
 npm install
-npx vitest run --maxWorkers=2    # 47 tests in workerd, 10 files (soak: 400 steps)
-npm run soak                     # the soak with 3,000 steps
+npx vitest run --maxWorkers=2    # 50 tests (and 1 skipped) in workerd, 11 files (soaks: 400 steps, flag off and on)
+npx vitest run -c vitest.gateway.config.ts   # 4 tests through the gateway (npm test runs both)
+npm run soak                     # the soaks with 3,000 steps (SOAK_SIGNALS=off or on for one)
+node tools/signals_readback.mjs WORK 1 1    # stage 2 through the engines (Rust, -j 2; PyArrow and DuckDB if installed)
 npx tsc --noEmit                 # clean
 node scripts/mutants.mjs all     # mutation check, four parts
+node scripts/mutants.mjs --check # which mutant patterns no longer apply (writes nothing; runs in the checkout)
 node tools/hyparquet_check.mjs   # 4 checks agree
 ```
 
@@ -192,6 +200,15 @@ soak's end-phase fix (2026-11-19, `test/settle.ts`, `test/settle.test.ts`; "The 
 the end state before the ledger had logged" below): **47 passed, 0 failed** (10 files, 91 s);
 `tsc --noEmit` clean; `ledger/`, `janitor/` and `compact/` unchanged and green alongside it
 (101, 21 and 24 tests; `tsc --noEmit` clean in each).
+
+**Stage 2 of traces and logs, the drain fix and the restored state cap (2026-11-19):** **50
+passed, 1 skipped, 0 failed** (11 files, 143 s; the skipped one is the corpus mode of
+`test/signals.test.ts`, which runs only under `tools/signals_readback.mjs`); `tsc --noEmit`
+clean. The soak ran twice, flag off and on, 400 steps each, every invariant held (summaries
+below, "Traces and logs end to end"); `test/settle.test.ts` passed in 17 s, its end phase waiting
+for the log after the graces. `wrangler.jsonc` and `wrangler.test.jsonc` again set
+`LEDGER_STATE_MAX_BYTES` to 16 MiB (review of D47/D48/D55, P-2 and P-3); `deploy/`'s
+`node --test test/configure.test.mjs` (the two files equal but for the publisher): 20 of 20.
 
 ### Wiring for the ledger's background log (2026-11-19)
 
@@ -241,6 +258,43 @@ the copy the janitor suite could not import control's golden file (its baseline 
 so it could not judge them). With them, the `trigger` part's six sweep mutants, including a
 new one for S-6 ("a leftover that waits on the ledger keeps the sweep due for ever", killed by
 `cron.test.ts` "review S-6"): 6 of 6 killed.
+
+### The intermittent S-6 failure was the test's assumption (fixed 2026-11-19)
+
+`test/cron.test.ts` "review S-6 … it is kept, never deleted" failed now and then (reported as one
+run in five; see "Through the gateway", Run). **Reproduced**: `npx vitest run test/cron.test.ts
+--maxWorkers=2`, 50 runs: **2 failed**, 0 of 30 at the machine's load and 2 of 20 pinned to one
+core (`taskset -c 3`), both `TypeError: Cannot read properties of null (reading 'incarnation')`
+at `(await shard(s0).describe(t.name))!.incarnation`.
+
+**Cause**: not timing, shared state, KV's per-key rate or a product race. The test named its
+leftover after the pool's first shard (`sim.shards[0]`) and assumed the tenant's data had reached
+it. `slotFor` (rendezvous hashing over the tenant's name and each series' job and instance) picks
+each series' shard, and the sim builds the tenant's name from `Date.now()`. The four series
+`ingest(…, rng(9), 4, …)` sends (1, 5, 0 and 4, four distinct routing keys) all go to the second
+shard for about one name in sixteen: **6.5% of 20,000 names** (computed in Node with
+`shard/src/pool.ts` `slotFor`, the sim's name pattern and the test's series). The first shard then
+has no stream of the tenant, `describe` answers null and the ledger has no watermark for it.
+Load does not change that probability. 2 failures in 50 runs is within it.
+**Deterministic reproduction** (a scratch copy of the test, not committed, that creates sims
+until the routing is the one wanted): with none of the four series on the first shard, **4 of 4
+failed** with that `TypeError`; with some on it, 4 of 4 passed.
+
+**Fix** (the test only): the leftover continues a stream the ledger has logged for the tenant,
+on whichever of the pool's shards it is, and the test asserts that there is one. No assertion
+was weakened and no wait was added. **After**: the same 50 runs (30 at load, 20 pinned):
+**0 failed** (0 of 30, 0 of 20). 50 runs alone cannot rule out a 6.5% failure (that rate passes 50
+runs about 3% of the time), so the routing that failed was also forced: the scratch variant
+passed 5 of 5 under both routings.
+
+**Mutants** (in a scratch copy of the tree, each source restored and compared afterwards;
+against `test/cron.test.ts` and against the scratch variant under both routings):
+
+| Mutant | Killed by |
+|---|---|
+| S-6: a leftover that waits on the ledger keeps the sweep due for ever (`stack/src/maintain.ts`, `scripts/mutants.mjs`) | "review S-6", in `cron.test.ts` and under both routings |
+| a flush file one unit above the logged watermark is judged dead and deleted (`janitor/src/janitor.ts` `flushFileState`) | "review S-6", in `cron.test.ts` and under both routings |
+| the test's fix reverted (the leftover named after `sim.shards[0]`) | the scratch variant with no series on the first shard (4 of 4 failed) |
 
 ### Triggers (`test/auto.test.ts`, `test/triggers.test.ts`)
 
@@ -498,6 +552,15 @@ test (cargo failures are now reported by test name). The previous engineer's 57 
 re-run unchanged before this review's changes: 57 of 57. `flush/scripts/mutants.mjs`: 18 of
 18 on the final code; `edge/scripts/mutants.mjs`: 35 of 35.
 
+**Run of 2026-11-19, compaction of spans and logs.** A part `signals` (7 mutants of
+`compact/src/compact.ts`: an output deleted by its own step on a conflict or after its PUT, a
+closed day's spans merged across hours, a spans output keyed without its hour, outputs without
+their inputs record, a spans record accepting another hour's files, inputs merged in key order).
+On a copy of the components in a scratch area, `MUTANT_FILES=compact/ node scripts/mutants.mjs
+all`: **27 of 27 killed** (signals 7, compaction 11, precedence 3, review 6); the
+pattern of "R-2: inputs outside the output's tenant and day are accepted" was updated for the
+rewritten reader (it printed NOT APPLIED first). Details: compact/README.md.
+
 **Run of 2026-11-19 (the write-path review's fixes in compact, janitor, flush and this
 script's cron and maintenance).** On a copy of the tree in a scratch area (the script refuses a
 git checkout), `MUTANT_FILES=compact/,janitor/,flush/,stack/ node scripts/mutants.mjs all`:
@@ -511,6 +574,33 @@ differently: a conflicted step's outputs being left behind is intended, and the 
 conflicted step deletes its outputs" (killed by compact: conflict); "a compaction output is an
 orphan as soon as a flush file would be" is now "a compaction output's age floor is only the
 flush files' grace" (killed by janitor: true orphans).
+
+**Check mode, and anchors re-fitted after D63 and M-5 (2026-11-19).** `node scripts/mutants.mjs
+--check [part] [name]` applies nothing and runs no test: it lists every mutant whose pattern
+is not in its file (NOT APPLIED) or is there more than once (AMBIGUOUS: only the first is
+mutated), and exits 1 if any does not apply. It writes nothing, so it may run in the
+checkout. On the tree of 2026-11-19 it found 7 of 141 that no longer applied, all since the
+ledger's SQLite rebuild, D61's logged incarnation and D63's per-signal retention; each was
+re-anchored to the code that now holds the same property:
+
+| Mutant | Now mutates | Killed by (on a scratch copy) |
+|---|---|---|
+| precedence: a rebuilt ledger forgets precedence | `applyLogged` loads every replayed file with precedence 0 | ledger `precedence.test.ts`: "keeps precedence across a rebuild from the log, also from a log written before precedence existed" |
+| deletion: the orphan sweep ignores pending units | `flushFileState`: every file not of an older incarnation is dead | janitor `janitor.test.ts`: "never deletes the files of a unit that is written but not yet admitted, and they become live", "judges a pending unit by the LOGGED watermark, not the committed one" |
+| deletion: the orphan sweep takes an unknown stream for a dead one | `flushFileState`: no stream means dead | janitor `janitor.test.ts`: "never deletes the files of a unit that is written but not yet admitted, and they become live" |
+| deletion: the orphan sweep judges by the committed watermark | `loggedStreams` reads `watermark` as `logged` | janitor `janitor.test.ts`: "never deletes while the removal is committed but not logged, whatever the grace", "judges a pending unit by the LOGGED watermark, not the committed one" |
+| deletion: series files are not expired | the metric `expire` names `metric_samples` only | janitor `janitor.test.ts`: "an unreadable record refuses the whole run for that tenant and says why; a fixed one is applied", "expires whole days past the policy from both tables, and touches no object" |
+| deletion: retention keeps one day too few | `cutoffDay` keeps `days - 1` (every table's cutoff) | janitor `signals.test.ts`: "the metric tables and the readable signal expire; …", "both signal fields unreadable: the metric tables still expire, …" |
+| review: F15, a newer incarnation counts before its registration is logged | `flushFileState`: `newer` is any higher incarnation | janitor `janitor.test.ts`: "spec F15: … worker 2 adopts worker 1's file; a newer incarnation registers unlogged; the sweep runs; a rebuild rolls it back" |
+
+These 7 and the base-pool mutant retargeted to `shard/src/pool.ts` ("edge: a base pool ending
+in /logs is accepted", killed by `test/gateway/gateway.e2e.test.ts` "a base pool ending in
+/traces or /logs … is refused by viz-ingest and by viz-query, through the gateway …") were run
+on a copy of the tree in a scratch area: **8 of 8 killed**, after the copy's unmutated suites
+they use passed (ledger precedence 5 of 5, janitor 33 of 33, gateway 4 of 4); the other 133
+were not run. The 7 AMBIGUOUS entries (compaction and review mutants of `compact/src/compact.ts`,
+whose metric and signal steps share lines, and "a live key is deletable") mutate their first
+match, which is the metric step's or `deletable`'s: the code they were written for.
 
 | Part | Mutant (review part) | Killed by |
 |---|---|---|
@@ -658,6 +748,218 @@ the shard's own batches for that segment; sort order).
 The flush mutants (`flush/scripts/mutants.mjs --stack`) run against this suite killed 8 of
 18 when it was written (see `flush/README.md`); that run was not repeated for this work.
 
+## Traces and logs end to end (stage 2, 2026-11-19)
+
+The write side of spans and log records, through this one script with `INGEST_SIGNALS` on:
+OTLP traces (protobuf and JSON), OTLP logs and Loki push through edge → the shards of
+`{pool}/traces` and `{pool}/logs` → seal → the flush queue → flush (`engine/wasm` ABI 3) →
+`spans` + `trace_index` / `logs` files in R2 → the ledger, then retention, purge and the orphan
+sweep (`janitor/`). Nothing of it runs with the flag off (the default).
+
+**`test/signals.test.ts`** (in `npm test`):
+
+- *End to end*: one tenant sends metrics, OTLP/JSON spans and logs from eight senders over four
+  UTC days, OTLP/protobuf spans (edge's test-side protobuf writer) and a Loki push; before any
+  flush a reader sees every span and record from the tails alone (read with `signals: [2]` /
+  `[3]` and decoded by edge's test decoder), and a metric shard's read with `signals: [2, 3]` is
+  empty; after flushing it sees exactly the same from files (hyparquet) and nothing pending.
+  Every derived stream's unit holds `spans` and `trace_index` files, or `logs` files only; every
+  key names its table, tenant, day, stream and the first 8 hex digits of its object's SHA-256,
+  a spans key its hour with `[minTs, maxTs]` inside it; the `trace_index` rows count every span.
+- *Flag off*: `/v1/traces`, `/v1/logs` and `/loki/api/v1/push` answer 404, no derived shard holds
+  a stream for the tenant, the ledger names only the metric stream, and the same Remote Write
+  request flushed for a tenant with the flag off and one with it on gives files of identical
+  bytes.
+
+**The soak with the flag on** (`test/soak.test.ts`, second run; the first is the metrics soak
+exactly as before, its operations drawn from the same generator in the same order): every
+tenant also registers its derived pools' slots (resent while edge answers 503 `registering`),
+then sends OTLP spans and logs through edge in about 30% of the steps each, over four days; the
+derived shards are sealed by hand, alarmed and evicted now and then; their seal notifications
+go through the same flush queue with the same injected crashes, duplicates and retries;
+retention expires them by `trace_days` 3 and `log_days` 1; purge and the orphan sweep judge
+their objects. Every check (`checkTenant`, every 20 steps for all tenants and after each step
+for those touched) also requires the reader to see exactly the model's spans and records, from
+files and tails, every live signal file to be in R2 at its size under the tenant's prefix, and
+nothing leaked; the end phase requires R2 to be exactly the ledger's live set (metric files at
+level 2, signal files at level 0 until 2026-11-19; at level 2 since they are compacted, below)
+with nothing pending in any shard.
+
+**Flag off: the soak as before.** With `INGEST_SIGNALS` off no stage-2 code runs in the soak
+(no signal model, no derived shards, no `rs` draws), its metric operations come from the same
+generator in the same order, and its policy and checks are the old ones (`checkTenant` lists
+every table's prefix, which holds nothing more for these tenants). The soak is not
+deterministic for a seed (timing decides which operations run, "Known risks"), so "identical"
+is shown two ways. Byte for byte where it is deterministic: the engine's metric outputs equal
+the previous build's (`engine/wasm/tools/same_metrics.mjs`, 21 of 21), flush's golden files are
+unchanged, and `test/signals.test.ts` flushes the same Remote Write request to identical bytes
+with the flag off and on. And by distribution, 400 steps, seed 20261118, this machine at load
+average 6–8, every run passing every invariant at every step:
+
+| | Runs | Final rows per tenant | Acknowledged requests | Segments admitted | Files expired | Objects purged | Merges | Orphans deleted | Dead letters |
+|---|---|---|---|---|---|---|---|---|---|
+| the code before this change (a scratch copy of HEAD) | 5 | from [15, 15, 268] to [188, 178, 30] | 106–122 | 79–111 | 136–316 | 548–638 | 28–53 | 6–14 | 0 |
+| this change, flag off | 4 | from [15, 44, 45] to [265, 206, 141] | 108–113 | 87–93 | 208–298 | 564–596 | 26–41 | 6–16 | 0 |
+
+Flag on, the same seed (two runs: 85 s alone, and inside the full suite): 400 steps, every
+invariant held; in the suite's run 104 traces and 123 logs requests acknowledged after the
+warm-up (1–4 spans and 1–6 records each; the warm-up's 30 + 30 refusals were `registering`,
+resent until logged), 118 segments admitted (metric and signal), 427 files expired, 813 objects
+purged; at the end 37/74/62 spans and 16/21/44 log records left per tenant after retention, read
+back exactly from files.
+
+**The engines** (`node tools/signals_readback.mjs WORK SEED SCALE`): `edge/scripts/otel-corpus.mjs
+--requests` writes an OTLP corpus (protobufjs- and JSON-encoded traces and logs, Loki push with
+snappy, every attribute type, Unicode, retries, a 256 KiB line) with the expected rows computed
+from its model; the corpus mode of `test/signals.test.ts` posts every request through edge in
+workerd (shards sealing at 256 KiB, so duplicates cross units), flushes everything and prints
+the ledger's live files; `tools/signals-readback` (Rust, a copy of `engine/storage/readback`
+with its own flushing replaced by these files) reads them with viz-storage's readers, resolves
+duplicates by the ledger's precedence, recomputes each unit's `trace_index`, and runs 30 TraceQL
+and 18 LogQL queries through the engines' read seams (`SpanSource`; `LogSource` with fragment
+pruning on and off) against the in-memory engines over the expected rows; then
+`engine/storage/tools/otel_independent_check.py` reads the same files with PyArrow and DuckDB.
+
+| Seed, scale | Requests | Units | Files | Spans, log rows | Rust checks | TraceQL identical | LogQL identical | trace_index merged: equal / over-count (cross-unit duplicates) / wrong | PyArrow + DuckDB checks |
+|---|---|---|---|---|---|---|---|---|---|
+| 1, 1 | 63 | 47 | 125 | 1,005, 2,675 | 19,094, **0 failed** | 60 of 60 (30 non-empty) | 36 of 36 (18 non-empty) | 128 / 22 / 0 | 139,513, **0 failed** |
+| 2, 2 | 120 | 83 | 214 | 1,886, 6,115 | 40,893, **0 failed** | 60 of 60 (30) | 36 of 36 (18) | 248 / 52 / 0 | 284,107, **0 failed** |
+| 3, 2 | 120 | 84 | 216 | 1,858, 5,691 | 38,219, **0 failed** | 60 of 60 (30) | 36 of 36 (17) | 256 / 44 / 0 | 272,096, **0 failed** |
+
+(2026-11-19, PyArrow 26.0.1, DuckDB 2.0.0. A first run of each seed without the Python step gave
+the same Rust results with 45, 77 and 81 units: how segments seal varies with timing.)
+`trace_index` over-counts exactly the traces with a span retried into another unit, as
+`contracts/TRACES.md` says. The tool builds with `cargo -j 2` into its own `target/`, deleted
+after the run.
+
+**Mutants** of stage 2 are listed in the READMEs of `shard/`, `flush/`, `ledger/` and
+`janitor/`, each run on a scratch copy: 10 of 10 killed.
+
+## Compaction of spans, trace_index and logs (2026-11-19)
+
+compact/ now merges the span and log tables (compact/README.md, "Spans, trace_index and logs";
+design/DECISIONS.md D68), through the same maintenance runs and the same step function the soak
+already drives; nothing in `src/` changed. What changed here are the tests that see it:
+
+- **The soak with `INGEST_SIGNALS` on** (`test/soak.test.ts`): its compaction steps (alone, two at
+  once, crashing after their PUT, with retention between PUT and `replace`, inside maintenance
+  runs with clocks hours and days ahead) now merge span and log files too, and every check
+  (`checkTenant`, after each step for the tenants it touched and every 20 steps for all) requires
+  the reader to see exactly the model's spans and records from merged files and tails; the
+  old-plan reader also takes its plan of `spans`, `trace_index` and `logs` and, after four
+  compaction steps, a purge and an orphan sweep, reads every file of that old plan to the same
+  rows (hyparquet); the end requires every live file at level 2, spans under their hour named
+  after it (`test/settle.ts`), and R2 to be exactly the live set. Its summary counts merges per
+  table. Run 2026-11-19, 400 steps, seed 20261118, flag on, alone (61 s, load average 4 to 6):
+  every invariant at every step; 47 merges of spans, 27 of trace_index, 6 of logs (maintenance
+  and direct steps), 2 crashed steps, 1 conflict, 3 retention-during-step conflicts, 5 old-plan
+  readers verified (span and log files included), 7 orphans deleted, 1,047 objects purged, 0 dead
+  letters. Then, flag on, on the final code: **1,500 steps**, seed 20261118 (311 s at load average
+  10 to 15): every invariant; 182 merges of spans, 95 of trace_index, 19 of logs, 15 crashed steps,
+  3 retention-during-step conflicts, 39 old-plan readers verified, 26 orphans deleted, 4,110
+  objects purged, 0 dead letters; **400 steps, seed 7** (105 s): every invariant; 33, 23 and 7
+  merges, 8 crashed steps, 7 old-plan readers verified, 0 dead letters. The whole suite on the
+  final code (`npx vitest run --maxWorkers=2`, both soaks of 400 steps included): **50 passed,
+  1 skipped** (the corpus mode, which needs a corpus), 11 files; the gateway script
+  (`-c vitest.gateway.config.ts`): 4 of 4; `tsc --noEmit` clean.
+- **Through the engines, before and after** (`test/signals.test.ts` corpus mode and
+  `tools/signals_readback.mjs`): after the flushed files are exported, the same test compacts the
+  tenant to the end (every day closed: `compactTenant` until it is idle) and exports the live
+  files again; `tools/signals-readback` checks the second export as the first (every row equal to
+  the expected one, duplicates resolved by precedence; TraceQL and LogQL over the files equal to
+  the in-memory engines), compares every answer with the one over the flushed files, and runs the
+  LogQL queries a third way, with row groups skipped by the outputs' token filters (four queries
+  were added whose literals imply tokens: `|= "error: connection refused"`, `|= "level=error msg="`,
+  `|= " starting worker"`, a `count_over_time` of `|= " status=500 "`). Results, 2026-11-19:
+
+  | Seed, scale | Flushed files (units) | After compaction | TraceQL before = after | LogQL before = after | Merged fragments differing | Checks, failures |
+  |---|---|---|---|---|---|---|
+  | 1, 2 | 223 (84) | 8 files, all level 2, 32 merges | 30 of 30 | 22 of 22 | 0 of 300 traces | 76,148, 0 |
+  | 2, 3 | 319 (124) | 8 files, 48 merges | 30 of 30 | 22 of 22 | 0 of 450 | 114,340, 0 |
+  | 3, 3 | 301 (115) | 8 files, 46 merges | 30 of 30 | 22 of 22 | 0 of 450 | 111,208, 0 |
+
+  Against the in-memory engines, after compaction: TraceQL 60 of 60 identical (files, and files
+  with the engine's pruning), LogQL 66 of 66 (files, pruned by fragment, pruned by fragment and
+  token filter). The token filters skipped **no** row group on these corpora: a compacted day of
+  them is one or two row groups holding every common token, so the third way checks that the
+  filter never drops a needed row group, not that it saves reads (engine/storage/README.md
+  measures that). PyArrow and DuckDB read the flushed export: 0 failures (286,153, 413,795 and
+  408,688 checks).
+- **A bug in the export, found by it**: files were base64-encoded in pieces of 32,768 bytes, not a
+  multiple of 3, so a file over 32 KiB carried padding inside its text and the script read only
+  its first piece. Pieces are now 32,766 bytes. (Compacted files were the first to exceed it.)
+
+## Through the gateway (stage 3 of traces and logs, 2026-11-19)
+
+The public path end to end: every request goes to viz-gateway's own `handle`
+(`deploy/gateway/src/index.ts`), whose `INGEST` and `QUERY` service bindings reach this Worker's
+`fetch` (edge) and viz-query's `fetch` (`query/src/index.ts`) in the same test script
+(`test/gateway/worker.ts`, `test/gateway/wrangler.jsonc`; both flags on). `INGEST_OFF` and
+`QUERY_OFF` reach the same entrypoints with `props: {signals: "off"}`, which take the flag away;
+the flags-off test puts them behind the gateway in place of `INGEST` and `QUERY`. Seals go through
+the real flush queue to this Worker's consumer. Thin on purpose: answers equal to the engines'
+in-memory ones over whole OTLP corpora through edge, flush and the ledger are query's
+`test/signals.e2e.test.ts`.
+
+| Test (`test/gateway/gateway.e2e.test.ts`) | What it shows |
+|---|---|
+| both flags on | OTLP/protobuf and OTLP/JSON traces (the same three spans, two services), OTLP/JSON logs and a Loki push (protobuf, snappy) reach viz-ingest (`x-viz-route: ingest`, 200, 200, 200 `{}`, 204); 15 calls on every Tempo and Loki read path (trace by ID v1 and v2, search, tags v1 and v2, tag values v1 and v2, TraceQL metrics range and instant, LogQL range by GET and by POST form, LogQL instant, labels, label values, series) reach viz-query and answer exactly what was sent (span ids, root service, tag names and values, span counts 2 and 3, lines, `2`, labels, the series) with no file read; `/api/v1/plan` reaches viz-query; a missing trace is viz-query's 404. Then every shard is sealed, the flush queue's consumer flushes, the ledger lists `spans`, `trace_index` and `logs` files, and the same 15 calls answer the same bodies (without Tempo's `metrics` and Loki's `stats`) from files, with no tail batch |
+| both flags off | `/v1/traces`, `/v1/logs`, `/loki/api/v1/push` are routed to viz-ingest, which answers 404 `not found`, and no derived shard holds a stream of the tenant; the 15 read calls are routed to viz-query, which answers 404 `not_found`, with a valid key and with a malformed one (before authentication, as before stage 2); `/api/v1/plan` answers. Metrics: the same Remote Write for a tenant behind the flags-off Workers and one behind the flags-on Workers that also sent spans and logs (so its ledger names span and log streams in every plan, D62): `query_range`, `query`, `series`, `labels` and label values give byte-identical bodies, non-empty, from the tails and again after both are flushed through the queue |
+| a base pool ending in `/logs` | a tenant whose pool is another tenant's pool plus `/logs` (its metric shards would be that tenant's log shards): Remote Write and Loki push through the gateway 503 from viz-ingest (`shard pool map is invalid`), nothing in those shards for it; `/api/v1/query` and `/loki/api/v1/labels` 503 from viz-query; the other tenant's Loki series unchanged |
+| ingest to queryable | measured, below; also asserts that every acknowledged span and log line is answered by the first query after the acknowledgement |
+
+**Run (2026-11-19):** `npx vitest run -c vitest.gateway.config.ts --maxWorkers=2`: **4 of 4** (about
+30 s). `npx tsc --noEmit` clean (it now covers `test/gateway/`, which imports `query/src` and
+`deploy/gateway/src`). The main suite, `npx vitest run --maxWorkers=2`: **50 passed, 1 skipped** (11
+files, 87 s; `vitest.config.ts` now leaves `test/gateway/` out). One later run of `npm test` (which
+passes no worker cap to its first half) failed one test, `test/cron.test.ts` "a flush file of a unit
+that may yet be admitted keeps the orphan sweep due only for stalledAfterMs…"; it passed in the run
+before, and alone three times out of three. Nothing it covers was changed here (no `src/`, flush or
+janitor file). Investigated since: a test bug, not a product one ("The intermittent S-6 failure", above).
+
+**Mutants** (`node scripts/mutants.mjs gateway`, on a copy of the tree in a scratch directory, after
+the copy's unmutated gateway suite passed 4 of 4; each against that suite; every source in the copy
+equal to the shared tree's afterwards): **8 of 8 killed**.
+
+| Mutant (file) | Killed by |
+|---|---|
+| a trace path goes to ingest (`deploy/gateway/src/index.ts`) | both flags on; both flags off |
+| every `/loki/` path goes to ingest (gateway) | both flags on; both flags off |
+| the span and log ingest paths are not routed (gateway) | both flags on; both flags off |
+| `/api/v1/plan` is not routed (gateway) | both flags on; both flags off |
+| a base pool ending in `/logs` is accepted (`edge/src/route.ts`) | a base pool ending in `/logs` |
+| `QUERY_SIGNALS` ignored on the Loki read paths (`query/src/index.ts`) | both flags off |
+| `QUERY_SIGNALS` ignored on the Tempo read paths (`query/src/index.ts`) | both flags off |
+| `INGEST_SIGNALS` ignored on the span and log ingest paths (`edge/src/index.ts`) | both flags off |
+
+The gateway's own suite kills its routing mutants too (`deploy/README.md`, 28 of 28), and edge's
+the pool-name ones (`edge/README.md`).
+
+**Ingest to queryable, measured here** (local workerd through the gateway, one script, service
+bindings to itself; miniflare's Durable Objects, R2 and queue; 4 shared cores at load average 2.0
+to 3.1 with other engineers' test runs on the machine; three runs at 09:35, 09:41 and 09:47 UTC;
+times from `Date.now()`, which workerd advances at I/O). Per run, 20 traces of one span posted as
+OTLP/JSON to `/v1/traces` then asked for by `/api/traces/<id>`, and 20 lines posted to
+`/loki/api/v1/push` then asked for by a LogQL range query with a line filter, alternating:
+
+| | First request of a new tenant (3 runs) | Established streams (57 per kind) |
+|---|---|---|
+| trace: acknowledgement | 12–21 ms | 2–7 ms (medians 2–3) |
+| trace: acknowledgement → answered by trace by ID | 28–51 ms | 3–6 ms (median 4) |
+| log line: acknowledgement | 8–9 ms | 2–4 ms (medians 2–3) |
+| log line: acknowledgement → answered by LogQL | 16–35 ms | 3–23 ms (medians 3–4) |
+
+Every one of the 120 items was answered by the first query after its acknowledgement: tails are
+read above the ledger's watermark, so nothing waits for a flush. Served **from a file** instead:
+after a seal, 1,040–1,131 ms (n = 15, medians 1,048–1,096), almost all of it the flush queue's
+`max_batch_timeout` of 1 s in this config. The new tenant's first request includes its first shard
+and ledger objects (registration mode `lazy`, the default; in mode `logged` add D61's measured
+0.5–1 s). **Not measured on Cloudflare.** There, by configuration rather than measurement, the
+file path is bounded by the seal (4 MiB or `sealAgeMs`, 10 minutes by default) plus the queue and
+a flush (D63: 134–388 ms here per ~3.3 MB segment) and R2 PUTs (0.17–0.4 s each, AGENTS.md); the
+tail path is a ledger plan, shard tail reads and the engine. The experiment: the stage trial
+listed in `deploy/README.md` ("Needed changes in components", stage 3).
+
 ## Contract changes made during integration
 
 Two comments in `contracts/ledger.ts` and one sentence in `contracts/BATCH.md`. No type,
@@ -704,13 +1006,17 @@ had the adversarial review `AGENTS.md` asks for protocol changes.
 - **The soak's end phase can take up to a minute longer** when a ledger is still backing off
   from an outage (it waits for the ledger's own drain, bounded at 75 s; the longest backoff is
   60 s). Rare in natural runs: none of 39 runs after the fix waited.
-- **A ledger's backoff outlives a successful `drain()`** (seen while fixing the soak; not
-  changed here). After an explicit `drain()` the failure count, the backoff and
-  `logStatus().lastError` stay until the alarm's next drain, so commits made meanwhile are
-  logged up to the rest of the backoff (at most 60 s) late: shards keep their rows and purges
-  wait that much longer. Nothing counts as logged early, so no safety rule is touched; the
-  alarm's own successful drain clears all three. Whether `drain()` (contract: "what the alarm
-  does") should clear them too is for `ledger/` to decide; the soak no longer depends on it.
+- **A ledger's backoff outlived a successful `drain()`** until 2026-11-19; `ledger/` now clears
+  it (failure count and retry time) on a successful `drain()`, as the alarm's drain does. The
+  regression test (`test/settle.test.ts`) relied on the old behaviour to force its timing; it
+  now forces the backoff without an explicit drain (the log breaks after the end phase's own
+  `drain()`, the alarm runs until the drain backs off 16 s, the log is healed by hand, nothing
+  more), and still asserts that the removals are unlogged when the graces have passed and that
+  the end phase waits for them.
+- **Spans and logs in the soak** are checked against a model of what was acknowledged, read
+  from files (hyparquet) and tails; `trace_index` is checked only in the end-to-end run (a
+  unit's spans and trace_index files may leave on different days, so the soak checks no
+  pairing for them). They are never compacted (not built), so their files stay level 0.
 - **Files that disagree** are now ordered by the ledger's precedence (D22) and tested with
   rewrites (`test/precedence.property.test.ts`); the soak's model still sends one value per
   `(series, ts)`. Admission order equals write order across streams only once the
@@ -727,5 +1033,10 @@ had the adversarial review `AGENTS.md` asks for protocol changes.
   miniflare's. Nothing here says how the real services behave under failure or load.
 - **Small data.** The end-to-end tests send about 60 samples per tenant; the larger runs are
   the measurements in `flush/` and `engine/wasm/`.
+- **The sim's routing changes every run.** Its tenant and pool names embed the clock, so which
+  shard holds which series differs per run. A test that assumes a given shard holds a tenant's
+  data fails for some names: S-6 did, about one run in sixteen, until 2026-11-19.
+  `test/signals.test.ts` already allows for an empty first shard. New tests should take the shard
+  from where the data went (the ledger's streams, `describe`).
 - **A test run near UTC midnight** produces files for two days; the assertions allow for
   it but that path has only been exercised in `flush/test`.
