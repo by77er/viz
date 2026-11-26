@@ -4,14 +4,23 @@
   // query service and the ruler are fakes (test/fake/), reached in-process. OAUTH is bound as in
   // wrangler.jsonc (entrypoint and props), to this script; TENANT is only for the tests' own setup
   // (provisioning tenants), never passed to the agent surface.
+  //
+  // Rate limits (D70): control's OAuthIntrospection is this script's own export, so a binding named
+  // OAUTH_RL_BEARER here would limit every test's tokens (many use one token more than twice). The
+  // limiter is bound under a test name instead, RL_TEST_BEARER (2 a minute), and only OAUTH_LIMITED
+  // reaches it: control's real entrypoint, given it as OAUTH_RL_BEARER (test/worker.ts). Every other
+  // test runs without limiters, as a deployment without the bindings does (each check fails open).
   "name": "viz-mcp-test",
   "main": "test/worker.ts",
   "compatibility_date": "2026-10-01",
   "durable_objects": { "bindings": [{ "name": "TENANT", "class_name": "Tenant" }] },
   "services": [
     { "binding": "OAUTH", "service": "viz-mcp-test", "entrypoint": "OAuthIntrospection", "props": { "caller": "viz-mcp" } },
-    { "binding": "OAUTH_AS_RULER", "service": "viz-mcp-test", "entrypoint": "OAuthIntrospection", "props": { "caller": "viz-ruler" } }
+    { "binding": "OAUTH_AS_RULER", "service": "viz-mcp-test", "entrypoint": "OAuthIntrospection", "props": { "caller": "viz-ruler" } },
+    { "binding": "OAUTH_LIMITED", "service": "viz-mcp-test", "entrypoint": "OAuthIntrospectionBearerLimited", "props": { "caller": "viz-mcp" } }
   ],
+  // Local only (miniflare); the id names nothing on Cloudflare.
+  "ratelimits": [{ "name": "RL_TEST_BEARER", "namespace_id": "9101", "simple": { "limit": 2, "period": 60 } }],
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Tenant"] }],
   "kv_namespaces": [{ "binding": "CONFIG", "id": "viz-mcp-test-config" }],
   "vars": {

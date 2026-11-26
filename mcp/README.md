@@ -517,6 +517,18 @@ status: 400 bad arguments, 403 scope or refusal, 404 unknown, 409/422 from the c
     release does not know, a newer release holding the storage, a missing binding, or a binding
     control does not accept (`unauthorized`: its props name another caller): 503
     `oauth-unavailable` or `unavailable`, never accepted.
+  - **Over control's rate limits** (D70: per token, then per tenant, in front of the tenant's
+    object) introspection answers `rate_limited` with `retryAfterMs`. That is **429**
+    `rate-limited`, `Retry-After: <whole seconds>` (`Math.ceil(retryAfterMs / 1000)`; 60 for an
+    answer without a usable number, at most 3,600), `Cache-Control: no-store`, a JSON-RPC error whose
+    message ends `Retry in N s.`, and no `WWW-Authenticate`: it is not a 401, so a client keeps its
+    token and does not start a new authorization. Nothing was read or spent; the token works once
+    the window passes. Neither official client acts on it: SDK v2 2.4.0's transport throws
+    `SdkHttpError` (code `CLIENT_HTTP_NOT_IMPLEMENTED`, `status` 429, the body's text in the message),
+    SDK v1 1.32.2's throws `StreamableHTTPError` (code 429, the body's text); neither reads
+    `Retry-After`, retries, refreshes or re-authorizes (read in their `streamableHttp` sources; the
+    status and the text for both, and for v2 that it keeps its tokens and starts no authorization,
+    are tested). Retrying is the host's or the agent's, with the seconds in the header and the message.
   - **What this Worker can ask control** is exactly that and its HTTP API with a caller's own key
     (review of D44, M-1). It holds no binding to control's `Tenant` class any more: such a binding
     reaches every method of every tenant's object (`invoke` with a made-up identity, which minted
@@ -610,7 +622,8 @@ becomes `budget-exhausted` (429), tested.
 Everything above: 14 tools, 3 resources and a resource template, 3 prompts, on MCP
 (2026-07-28 and 2025 revisions) and JSON; API-key identity through edge and the control
 plane; OAuth 2.1 at `/mcp` (protected resource metadata, the 401 and 403 challenges, tokens
-checked by control on every request, the grant's key downstream); the cleaning and fencing of untrusted text; budgets, paging and cursors; limits
+checked by control on every request, the grant's key downstream; control's rate-limit refusal as
+a 429 with `Retry-After`); the cleaning and fencing of untrusted text; budgets, paging and cursors; limits
 with a deadline and partial results; the budget hook.
 
 ## Not implemented
@@ -645,9 +658,9 @@ with a deadline and partial results; the budget hook.
 
 ```
 npm install
-npm test               # 222 tests in 11 files, in workerd (npx vitest run --maxWorkers=2)
+npm test               # 225 tests in 11 files, in workerd (npx vitest run --maxWorkers=2)
 npx tsc --noEmit       # clean
-npm run mutants        # 41 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md); vitest with at most 2 workers
+npm run mutants        # 43 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md); vitest with at most 2 workers
 npm run conformance    # the official conformance suite against wrangler dev on 127.0.0.1:8921
 npm run oauth-client   # the whole OAuth flow with the official SDK v2 client, against wrangler dev on 127.0.0.1:8922
 npm run measure        # read_dashboard tokens and wall time per example and budget
@@ -655,8 +668,32 @@ npm run spike:libs     # the library check above (3 tests)
 ```
 
 Measured here: vitest 5.1.1 in workerd, TypeScript 5.9, Node 22.23, wrangler 4. The suite
-takes about 25–75 s on a shared machine. Last run 2026-11-19, after the review of D44 (below):
-222 of 222 pass (about 20 s), `tsc` clean.
+takes about 25–75 s on a shared machine. Last run 2026-11-19, after control's rate limits (D70,
+below): 225 of 225 pass (37 s, load average about 8), `tsc` clean. Before the change: 222 of 222.
+
+**Control's rate limits (D70)**, in `oauth.test.ts` (3 tests). Control's real `OAuthIntrospection`
+answers `rate_limited` when its `OAUTH_RL_BEARER` binding refuses. control/README.md suggested binding
+`OAUTH_RL_BEARER` itself in `wrangler.test.jsonc`; here that would limit every test, because the
+entrypoint is this test Worker's own export and many tests use one token more than twice. So, as
+control's own tests do, the limiter has a test name, `RL_TEST_BEARER` (miniflare's Rate Limiting
+binding, limit 2, period 60), and only the binding `OAUTH_LIMITED` reaches it:
+`test/worker.ts` `OAuthIntrospectionBearerLimited` is control's class unchanged, constructed with
+that limiter as `OAUTH_RL_BEARER`, behind a service binding with `props: { caller: "viz-mcp" }`, as
+production binds `OAUTH`. Every other test runs without limiters, as every deployment does until
+`deploy/` adds the bindings (control/README.md, "Needed changes elsewhere"). Miniflare's windows are
+aligned to the wall clock, so each test starts its counted calls at least 10 s before a window ends
+(waiting for the next one otherwise, at most 10 s). Tested: with one token, two `tools/list` calls
+answer 200 and the third **429**, `Retry-After: 60`, `no-store`, no `WWW-Authenticate`, the exact
+JSON-RPC error; a second token of the same person and tenant still gets 200; the limited token
+still works where no limiter is bound (nothing spent or revoked); the official SDK v2 client
+(`authProvider` holding the token) gets `SdkHttpError` with status 429 and `Retry in 60 s.`, starts
+no authorization and keeps its tokens; the SDK v1 client gets code 429 and the same text. The JSON
+agent API refuses an OAuth token before introspection (401 `wrong-audience`): three JSON calls spend
+none of the token's budget (the next two `/mcp` calls answer 200, the third 429), and after the
+429 the JSON answer is still 401 `wrong-audience`, never 429. `Retry-After` is
+`Math.ceil(retryAfterMs / 1000)` (1,500 → 2, 60,000 → 60, 1 → 1, through the Worker with a fake
+binding), and `retryAfterSeconds` maps 0 → 0, 999 → 1, 1,001 → 2, 10¹² ms → 3,600, and -1, NaN,
+Infinity, a string and nothing → 60.
 
 **After the review of D44** (`design/reviews/d44-d52-d53-d60.md`), in `oauth.test.ts`: the agent
 surface checks every OAuth token through `OAUTH` with no `TENANT` in its environment (the whole
@@ -671,7 +708,7 @@ the cap gets the same answer chunked as with its length, not the 403, and under 
 |---|---|---|
 | `protocol.test.ts` | 20 | Raw JSON-RPC on the 2025 path (initialize for three revisions, an unknown revision, initialized, ping, tools/list byte-stable and scope-filtered, tools/call, tool errors as `isError`, argument errors with did-you-mean, resources incl. the template, prompts, -32601, -32700, -32600, 405 for GET/DELETE, 401 for missing/wrong/altered keys, Origin); the official SDK v1 client (2025) and v2 client (2026-07-28) doing everything |
 | `tools.test.ts` | 35 | Every tool's paths against the fake query service and ruler and the REAL control plane imported from `control/`: matches, entities, near names, not-available-yet, positions and carets, suggestions, rate-on-gauge, histogram without `le`, digest/instant/scalar/table/series, no data, service errors with positions, the series limit, the deadline, dashboards in three views, paging across the control plane's pages, revisions, schema pages that reassemble exactly, monitors with and without scope and binding, annotate, the REST surface, MCP and REST giving identical results; `validate_query`'s plan (one `/api/v1/plan` call with the caller's tenant, its numbers in text and structure, nothing run; a refusal the plan foresees is the warning `would-be-refused`; a query service without the endpoint leaves the series estimate with a note); `/healthz` (200 with the five bindings, `TENANT` included, 503 naming missing ones, 405) |
-| `oauth.test.ts` | 9 | Below |
+| `oauth.test.ts` | 15 | Below (12 before D70's 3; this row said 9 after the review of D44 added 3) |
 | `examples.test.ts` | 10 | The three `dashboard/examples` dashboards via `read_dashboard`: each fits 2,000 tokens, breaching panels first in text and structure; CRIT/failed/not-available panels; narrowing by panels and variables; deadline (returns in under 2 s with 3 s queries); ≤ 3 in flight with the limit at 3 and every query run once; the panel limit; the measurements below |
 | `write.test.ts` | 15 | Dry runs write nothing for agent, agent-with-apply and person keys (control-plane snapshot unchanged); preview with data; the wrong metric caught with its near name; schema errors with suggestions; stale base; new specs; sanitized copies; proposals with named changes; base required; invalid refused unwritten; a new dashboard proposed (held by the control plane, nothing created, a retry returns the same proposal with nothing stored, an invalid spec refused unwritten, an agent with the apply scope refused by the control plane, a person applies, `list_revisions` names both); agents refused for apply and create with nothing written and no proposal made behind their back; apply sends no dry run: a refusal sends no write and a person's apply exactly one `PATCH`; a person applies; `agentsMayApply` lets an agent apply; no apply tool exists |
 | `e2e.test.ts` | 1 | The scripted agent task over MCP (below) |
@@ -733,6 +770,7 @@ nothing. *Audience*: refused by a resource configured at another URL, by the JSO
 each give 401 on the next request; without the `OAUTH` binding, 503. *No credential in a log line
 or error body*: across five failure paths, with a probe showing the object's own log lines reach
 the spy, no token, its secret part, a refresh token's secret or the grant key's secret appears.
+*Rate limits (D70)*: above.
 
 **The OAuth flow, scripted** (`npm run oauth-client`, `scripts/oauth-client.mjs`). The official
 SDK v2 client as an MCP host would run it, against `wrangler dev` (local; `test/oauth-dev/`, the
@@ -893,7 +931,7 @@ the dry-run probe that `mayApply` replaced).
 | 26 | `/healthz` says ok whatever is bound | tools (1) |
 | 27 | OAuth: token passthrough (downstream calls carry the client's access token, not the grant's key) | oauth (3) |
 | 28 | OAuth: audience not this resource (introspection asked about a fixed resource, whatever this server is configured as) | oauth (1) |
-| 29 | OAuth: the JSON agent API accepts access tokens (audience widened) | oauth (1) |
+| 29 | OAuth: the JSON agent API accepts access tokens (audience widened) | oauth (2) |
 | 30 | OAuth: no 403 `insufficient_scope` (step-up never signalled) | oauth (2) |
 | 31 | OAuth: the 401 challenge does not name the protected resource metadata | oauth (1) |
 | 32 | OAuth: a binding control does not accept (props naming another caller) is taken for an unknown token (401), not a deployment fault (503). (Replaces "the tenant object asked is the one a request header names": this Worker no longer picks a tenant's object; control's entrypoint takes the tenant from the token, mutated in control/README.md 94–101) | oauth (1) |
@@ -906,6 +944,19 @@ the dry-run probe that `mayApply` replaced).
 | 39 | `backtest_monitor`: a refusal retried once | backtest (9) |
 | 40 | review m-6: scopes compared literally (`dashboards:apply` does not cover `dashboards:write`) | oauth (1) |
 | 41 | review m-2: the step-up check reads the whole body (no cap on one without `Content-Length`) | oauth (1) |
+| 42 | D70: control's `rate_limited` not mapped (falls through to the retryable 503 for a status this release does not know) | oauth (3) |
+| 43 | D70: the 429 carries no `Retry-After` | oauth (2) |
+
+42 and 43 (control's rate limits, D70), with 29 and 32 because their code sits next to the change
+(the JSON surface's refusal of tokens, the line before the new mapping), were run on 2026-11-19 in a
+copy in a uniquely named scratch directory outside git (`node scripts/mutants.mjs 29 32 42 43`),
+taken after the copy's unmutated suite passed 225 of 225: **4 of 4 killed, first run**. 29 is now
+caught by two tests (the D70 JSON test also fails). The copy's `src/` was equal to the shared tree's
+afterwards. The first unmutated run in the copy failed to load (11 files, no tests): the copy list
+in `scripts/mutants.mjs`'s header lacked `shard/src` and `ledger/src`, which control's
+`src/ops-settings.ts` now imports; the header is corrected. 1–28, 30, 31 and 33–41 were not re-run:
+this change touches only `identifyOAuth` and `AuthError` (`src/auth.ts`) and `authFailure`
+(`src/index.ts`).
 
 40, 41 and the rewritten 32 (review of D44) were run on 2026-11-19 in a copy of the whole tree in a
 scratch directory outside git (`node scripts/mutants.mjs 26 32 40 41`), with 26 because its anchor
@@ -1025,10 +1076,16 @@ suite ran on the same machine.
   `OAUTH` service binding 1.76–2.42 ms, against 0.90–1.62 ms on the object directly as before the
   review of D44, so the narrow entrypoint costs one hop, about 0.6–0.9 ms here; a made-up token
   0.58–0.89 ms and no object. Not measured on Cloudflare.
-- **OAuth: no rate limit in front of OAuth bearers at `/mcp` yet**; a made-up token costs this
-  Worker and control's entrypoint an HMAC each, no tenant's object. Required before public
-  exposure (control/README.md, "Known risks", with why the Workers Rate Limiting binding was not
-  the check).
+- **OAuth: rate limits in front of OAuth bearers are control's, per token and per tenant**, in its
+  `OAuthIntrospection` entrypoint (D70), after the token's tag and before the tenant's object;
+  this Worker answers their refusal with 429 and `Retry-After` (above). They are approximate (per
+  Cloudflare location, eventually consistent) and fail open, and **until `deploy/` adds the
+  bindings no deployment has them** (control/README.md, "Needed changes elsewhere"). A forged
+  bearer is not counted by them: it costs this Worker a regular expression and one RPC to control's
+  entrypoint, which checks its tag (one HMAC) and reaches no object. A limit per network at `/mcp`,
+  if wanted, would be this Worker's own; there is none. The official MCP clients do not retry a
+  429 or read `Retry-After`: an agent over its limit sees an error naming the seconds until its
+  host retries.
 - **OAuth: a grant's key may not have reached KV everywhere** when its first token is used: the
   downstream call is then refused (401 from that service), shown to the agent as that service's
   error; it works once KV has the record. Modelled, not measured (control/README.md, "Known risks").
