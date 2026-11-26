@@ -1344,17 +1344,26 @@ URL>/mcp`, RFC 8707). mcp publishes RFC 9728 metadata and answers 401 and 403 wi
   `invoke` with a made-up identity included), and `deploy/configure.mjs` refuses to deploy one.
 - **Every request is checked by control**: audience, expiry, grant and key state. Revocation
   takes effect at `/mcp` on the next request. Codes are single use (a second use revokes the
-  grant); refresh tokens rotate on every use (presenting a used one revokes the grant).
+  grant); refresh tokens rotate on every use (presenting a used one revokes the grant). Since the
+  second review of D70, a token the tenant's object has called dead (unknown, expired, revoked,
+  rotated) is listed by the Worker and refused there before any limit or object; revocation's
+  result says whether the token is dead (`RevokeResult.dead`), and the grant view counts the refresh
+  tokens issued in its last day (`refreshesLastDay`), which shows a client collecting them.
 - **Credentials name their tenant in clear** (`vza1.<tenant>.<secret>`), so the server can find
   the tenant's object; that object holds only the credential's SHA-256, so a credential edited to
   name another tenant matches nothing. Because a forged one can name any string, a `Tenant` object
   nobody provisioned no longer creates storage when it is constructed: `provision` opens it.
 - **A made-up credential reaches no object** (review of D44, M-2). The secret's 43 characters are
-  27 random ones and a 16-character tag, HMAC-SHA-256 under a key derived by HKDF from
-  `OAUTH_CLIENT_KEY`, over the prefix, tenant and random part. `/oauth/token`, `/oauth/revoke` and
+  a 27-character body and a 16-character tag, HMAC-SHA-256 under a key derived by HKDF from
+  `OAUTH_CLIENT_KEY`, over the prefix, tenant and body. `/oauth/token`, `/oauth/revoke` and
   `OAuthIntrospection` check the tag in the Worker before any tenant's object is asked; a
   credential without it gets the answer an unknown one gets. The tag does not make a credential
-  valid (the object's hash does). And a token request or revocation that changed nothing writes
+  valid (the object's hash does). **Since the review of D70 (B-1) the body carries the
+  credential's expiry** (layout 2: the marker `e`, the expiry in minutes, 22 random characters, about
+  131 bits; layout 1, issued before, was 27 random characters), so the Worker also refuses a
+  credential past its expiry before any rate limit counts it or any object is asked (D70). The shape
+  and the tag are unchanged, so a release that knows only layout 1 still reads layout 2, and this
+  release serves layout 1 credentials until they expire in the object. And a token request or revocation that changed nothing writes
   nothing: the alarm is re-armed only after a write (each `setAlarm` is billed as a row written).
   Measured here (local workerd, three runs of 300 sequential forged `/oauth/token` requests against
   a tenant with a live grant): 1.50–1.69 ms, one object call and two `setAlarm` each before;
@@ -1393,13 +1402,16 @@ credential.
 before the object: it stops names nobody provisioned, but not the attack the review measured,
 forged credentials naming a real tenant, and a record published at approval may not have reached
 the location of the code exchange that follows within seconds (KV propagation, and cached misses).
-(i) A negative cache in KV: the same, plus writes driven by unauthenticated requests. (j) A
+(i) A negative cache in KV: the same, plus writes driven by unauthenticated requests. (Since the
+second review of D70 there is a KV list, for another purpose: credentials this deployment made
+whose object has called them dead, written only on that answer, so its writes follow what layer 2
+lets be minted, never what a request asks; D70.) (j) A
 Workers Rate Limiting binding as the check: approximate and per Cloudflare location by its
 documentation ("Requests can exceed your configured limit"; "Other Cloudflare locations maintain
 separate counts"), and keyed by the only identifiers an unauthenticated request has (IP, which the
 documentation advises against, or the tenant, which hands the attacker the limit); it bounds a
 source's rate, not what reaches a tenant's object. Still wanted before public exposure, for the
-Worker's own CPU (`control/README.md`, Known risks).
+Worker's own CPU (`control/README.md`, Known risks); built as one layer of D70, keyed after the tag.
 
 **Cost of the tag.** Replacing `OAUTH_CLIENT_KEY` (D53, by a deploy told to) now also ends every
 code and token: clients connect again and a person approves again, rather than only registering
@@ -1415,7 +1427,12 @@ key becomes a generated secret of its own, or control verifies tags under two ke
 
 *Amended 2026-11-19 after the review of D44, D52, D53 and D60 (`reviews/d44-d52-d53-d60.md`, M-1,
 M-2, m-1 to m-3, m-5, m-6): the entrypoint, the tag, no writes on no change, key-only approvers.
-The decision itself stands.*
+The decision itself stands. Amended again the same day after the review of D70
+(`reviews/d70-rate-limits.md`, B-1): the credential body's layout 2, carrying its expiry under the
+tag; this replaces the text under which the body was 27 random characters. The decision stands.
+Amended again the same day after the second review of D70 (`reviews/d70-rate-limits-r2.md`, R2-M2):
+revocation's result says whether the token is dead, the grant view counts refreshes in its last
+day, and the Worker lists credentials found dead (D70). The decision stands.*
 
 ## D45. The ruler writes recorded samples through a named entrypoint of viz-ingest; the service binding is the credential
 
@@ -1489,8 +1506,10 @@ contracts/COMPATIBILITY.md §6 ("the newest release that ever ran since T"), mad
 **Cost.** A deploy reads one version per Worker (it already did, for the release tag); a
 rollback reads one version per Worker per version since its target (tens of API calls). A spec
 module that does more than define values at load time breaks the read, loudly. Format versions
-(queue messages, R2 objects, KV records) are not recorded yet, so the tool does not refuse a
-rollback below the reader of a format.
+(queue messages, R2 objects, KV records) were not recorded here, so the tool did not refuse a
+rollback below the reader of a format; since D69 they are recorded, in a var of their own
+(`VIZ_FORMATS`), and it does, judging what each Worker it restores reads against what was written
+since, also by the Workers it leaves serving (D69, as revised after its review).
 
 **Would change if.** Format versions join the record (the same var can carry them); components
 start publishing their specs in a form the deploy can read directly; or Cloudflare keeps
@@ -1545,24 +1564,29 @@ rebuild took 20 s, memory flat. Not measured on Cloudflare.
 PUTs per checkpoint instead of one (about $0.01 a day for a busy tenant, modelled); slower
 rebuilds; one more table pair and a `tracked` write per mutation while a checkpoint runs. The
 publisher re-bases in bounded memory since D55, but production keeps the 16 MiB limit
-(`LEDGER_STATE_MAX_BYTES` in `stack/wrangler.jsonc`) for this release, for two reasons from the
-review of D47, D48 and D55 (P-2, P-3; `design/reviews/d47-d48-d55.md`):
-- the release before cannot hold or checkpoint a larger state: it answers `full` to every unit
-  and its drain builds the whole state in memory, so a rollback or gradual deployment to it must
-  never meet one;
-- a rebuild above 16 MiB (20 s here at 300 MiB) and a first publication (27–38 s here) have not
-  been measured within a Durable Object's CPU limit on Cloudflare, and neither keeps progress.
+(`LEDGER_STATE_MAX_BYTES` in `stack/wrangler.jsonc`), for two reasons from the review of D47, D48
+and D55 (P-2, P-3; `design/reviews/d47-d48-d55.md`):
+- a release before D47 cannot hold or checkpoint a larger state: it answers `full` to every unit
+  and its drain builds the whole state in memory, so a rollback or gradual deployment to one must
+  never meet one (production's first release, fb77292, has D47 and D55);
+- a rebuild above 16 MiB (20 s here at 300 MiB) and a first publication (27–38 s here) had not
+  been measured within a Durable Object's CPU limit on Cloudflare. They have been since (S11,
+  `spikes/s11-large-ledger/`, measured on Cloudflare 2026-11-19, CPU from the analytics API): at
+  64 MiB a rebuild after a storage loss used 14.2 s of CPU and a first publication 5.6 s; at
+  150 MiB 16.4–18.6 s and 14.0 s, within the 30 s default but without margin (the cost per file
+  varied twofold between runs); 300 MiB was not run and extrapolates to 32–37 s (65 s at the
+  slower rate measured) and 28–32 s, over it. The publisher's re-base keeps progress across
+  invocations since D55's amendment; the ledger's rebuild keeps none.
 
 **Would change if.** A rebuild of the largest tenants takes too long on Cloudflare (then keep
 rebuild progress, or start a new incarnation from the old checkpoint); R2 offered conditional
 multipart completion (then (d) is simpler); or row writes during checkpoints show on the bill
-(then (c), forward-only). **Production's 16 MiB is lifted** in a later release whose rollback
-floor is this one, once a rebuild and a first publication above it are measured within the CPU
-limit on Cloudflare (S4's ledger at 300,000 files with a storage loss, CPU from the analytics
-API; the publisher's first publication of that tenant), or `limits.cpu_ms` is set and then
-measured. That release's record must say what a rollback below it does to a tenant above
-16 MiB: forward-only for such tenants, or the record carries the state limit and the rollback
-check compares it.
+(then (c), forward-only). **Production's 16 MiB** can be lifted to 64 MiB by S11's measurements
+(its recommendation; not done: `stack/wrangler.jsonc` still says 16 MiB), and no further until a
+rebuild above that is measured with margin or keeps progress, or `limits.cpu_ms` is set and then
+measured. The release that lifts it must have a rollback floor with D47 and D55, and its record
+must say what a rollback below it does to a tenant above 16 MiB: forward-only for such tenants,
+or the record carries the state limit and the rollback check compares it.
 
 ## D48. A shard filters and pages its tail reads itself, by reading the batches it stores; the unpaged form stays
 
@@ -1576,9 +1600,14 @@ rows do not fit a page is refused (`page_limit`), never cut. Without options the
 before; an older shard ignores options, so `page` in the answer is how a caller knows. An
 answer without `page` in the middle of a paged read is the whole tail: the caller either drops
 the pages it has and uses that answer alone, or refuses the read retryably and plans again;
-never mixes the two (the query coordinator refuses with 503, D54). A new filter field comes with `v` 2, because a `v` 1
-shard ignores fields it does not know and still pages (review of D47, D48 and D55, P-9;
-`shard/README.md`, "Needed changes elsewhere").
+never mixes the two (the query coordinator refuses with 503, D54; review of D47, D48 and D55,
+P-9). The same review asked that a new filter field come with `v` 2, because a `v` 1 shard
+ignores fields it does not know and still pages. The two fields added since stayed in `v` 1 and
+are made safe at the caller instead: `signals` (D63) and the time range that skips span and log
+batches (D72) are sent only to the signal's own shards, chosen by name, every batch that comes
+back is checked by its header, and the engine selects the same rows whether or not the shard
+skipped any (D62, 4.), so an older shard's superset changes no answer. A field whose superset a
+caller could not tell from a filtered answer still needs `v` 2.
 
 **Alternatives.** (a) Filter at the coordinator (as `engine.splitTails` does now). (b) Per-batch
 metadata (time bounds, metric names) written at append and used to skip whole batches. (c) A
@@ -1720,7 +1749,10 @@ never past the group's budget). A rejection whose message starts with **no** ref
 the entrypoint did not answer by its contract (the viz-ingest release serving the call lacks it,
 or the platform failed the call); then, and only then, the same batches go through Remote Write
 over `INGEST` with the shard's service key, the path of the release before, and the Worker logs
-that it did. `INGEST` stays bound for this purpose for one release.
+that it did. `INGEST` stays bound for this purpose for one release. (That a word-less rejection
+means only these was not true at first: with a shard marked hot, an unreadable pool map was
+rejected bare. Since 2026-11-19 every error the entrypoint sees carries a word, an unexpected one
+`unavailable`; review of D52, m-8, `edge/README.md`.)
 
 **Alternatives.** (a) No fallback: a rejection without a refusal word is retried like
 `unavailable` and, after three attempts, the tick's samples are dropped (counted). Promotion is
@@ -1771,7 +1803,7 @@ until phase 2 promotes it in place of the upload. A viz-control that goes out wi
 deploy` (new, as on the first production deploy, or applying a Durable Object migration) gets it
 on the version just deployed, and the keyed version is deployed before the next Worker. Every
 later upload inherits it. It is replaced only by a deploy run with `VIZ_ROTATE_SECRETS=
-OAUTH_CLIENT_KEY`. If the Worker has it now (its secret list, a serving version, or a version
+OAUTH_CLIENT_KEY`. If the Worker has it now (a serving version, or a version
 newer than every serving one, which a rollback across the release that created the key leaves
 behind) but the upload does not carry it, the release is refused before anything is promoted
 (exit 3) instead of generating a new one. Every wrangler run that gets a value on stdin runs with
@@ -1816,25 +1848,47 @@ the incident tool and must not be blocked by a key, the next deploy has to look 
 evidence is cheap (one list call, and one read per version newer than the serving one, none
 normally). The release then stops with exit 3 and names the version that carries the key; the
 operator promotes that release again or replaces the key on purpose. m-11 (another run of the same
-release uploading between the newest-version check and the put) is open (`deploy/README.md`, Known
-risks).
+release uploading between the newest-version check and the put) is fixed with D69: every version a
+run uploads carries `VIZ_DEPLOY_RUN`, unique to the run, and the keyed version must carry this run's
+or nothing is promoted (exit 3).
+
+**Measured on Cloudflare, 2026-11-19, S9** (`spikes/s9-oauth-key-rollback/`; the created case run
+twice, the rotated case once). A rollback across the release that **created** the key is allowed (no
+10220): the restored version serves without the key, because a secret belongs to each version, so
+`/oauth/register` answers 503, the metadata drops `registration_endpoint` and every registered
+client is refused at `/oauth/authorize` (by reading control's code, not measured: its codes and
+tokens too), until the next deploy, which keeps the key because uploads inherit the **newest**
+version's secrets (m-9's exit-3 branch never fired). A rollback across a **rotation** is refused by
+Cloudflare (10220, "secrets have changed"); `release.mjs` then exited 1 after `restore()` would have
+moved the callers first; forced through the API the old key serves until the next release takes
+the rotated one back while its record says `kept`. A version read right after it was created was
+not there yet in 2 of 16 reads (a 404, a version without the secret just put). The script's secret
+list names the newest version's secrets, not the serving one's. What the tool does about each (D69,
+`deploy/README.md`): a rollback across the creation is refused up front (exit 3, nothing moved)
+unless `--accept-secret-loss OAUTH_CLIENT_KEY`; a rollback across a rotation is refused up front
+always (wrangler's `versions deploy` cannot force it); a failed promotion leaves a viz-control whose
+key it created or rotated where it is; a version just created is read again for up to 10 s; the
+secret list is no longer read as evidence.
 
 **Cost.** One to three more API reads (after a rollback, one more per version newer than the
-serving one) and, on the release that creates or rotates the key, one more version of viz-control. Not run on Cloudflare: inheritance of secrets by later uploads is
-from wrangler's `keep_bindings: ["secret_text", "secret_key"]` and the API's "keep from
-previous_upload" (taken to mean the newest version, as `inherit` bindings default to "latest"),
-not measured. Whether a deployment of an older version that lacks a secret the serving one has
-is refused (wrangler's rollback command handles an API error 10220, "secrets have changed", by
-asking; `versions deploy`, which the automatic rollback uses, does not) is not documented and
-not measured; if it is, the automatic rollback of the release that created the key fails loudly
-and that release keeps serving. Rotation needs a deploy; there is no dispatch input for it yet.
+serving one) and, on the release that creates or rotates the key, one more version of viz-control.
+Measured on Cloudflare, 2026-11-19, S9: uploads inherit the newest version's secrets, whatever made
+it (a `versions upload` or a `versions secret put`), not the deployed version's; a rollback to a
+version without the key is allowed and leaves OAuth broken for every MCP client until the next
+deploy, which is why the tool refuses it unless told to accept that; a rollback to a version with a
+different value is refused by Cloudflare (10220), which is why the tool refuses it before moving
+any Worker, and why a rotation cannot be undone by a rollback (only by leaving viz-control out of
+the rollback, or by fixing forward). Rotation needs a deploy; there is no dispatch input for it yet.
+The record's `kept` compares names, not values: it means "the newest version's value".
 
-**Would change if.** A stage shows uploads not inheriting the key, or a rollback refused with
-10220 (then the rollback passes `force` or the key is put before the rollback); control verifies
-registrations under an old and a new key (then rotation can be automatic and overlapping);
-wrangler can upload a version with secrets read from stdin (then code and key go in one version);
-or more generated secrets appear (they join `GENERATED_SECRETS`, and one `versions secret bulk`
-replaces one put per secret).
+**Would change if.** Control verifies registrations under an old and a new key (then rotation can
+be automatic and overlapping, and a rollback across one stops breaking clients); wrangler can upload
+a version with secrets read from stdin (then code and key go in one version); wrangler's `versions
+deploy` takes `force` (then a rollback across a rotation could be offered, with the warning that the
+next release takes the rotated key back); or more generated secrets appear (they join
+`GENERATED_SECRETS`, and one `versions secret bulk` replaces one put per secret). The two earlier
+conditions were settled by S9: uploads do inherit the key (from the newest version), and a rollback
+is refused with 10220 for a rotation but not for the creation.
 
 ## D54. The query coordinator reads each shard's tail filtered and paged under one byte budget for all shards; split parts read the rest in their key range, to an end fixed before the split, only when it does not fit
 
@@ -1876,7 +1930,10 @@ query is refused (422). A query that cannot be split is refused with `max_fetch_
 the previous release answers with its whole tail: the coordinator uses it as before; a part (the
 shard rolled back after the coordinator's read) applies the shard's own filter, key range
 included, to that answer, so only its rows count. A leaf of the previous release, which ignores
-the rest it is given, is refused (503).
+the rest it is given, is refused (503). The span and log tail reads (D62) go through the same
+reads: one budget over the signal's shards, resumed in the second round with the signal's
+filter, and the same per-page checks. They are never split, so a span or log tail that does not
+fit is refused at once (422), and no end is learned for it: the end exists only for the parts.
 
 **Alternatives.** (a) Every split part always reads its own key range (shard/README.md "Needed
 changes" 2): no coordinator cap on the tail at all. (b) The coordinator always reads the whole
@@ -1958,15 +2015,15 @@ and bytes. Any disagreement stops the tenant (`corrupt`), and so does a part tha
 checkpoint of a format this code does not read is passed over for the base. The tombstones a
 checkpoint or base carries are recorded as removed by the commit's snapshot, so files a
 checkpoint skipped are released, and only once no snapshot that could reference them is
-retained. A tenant's log is read once per publish, from the lower of its two tables' cursors,
-or from the newest checkpoint or base when either table has no cursor in the newest
-incarnation. A table whose cursor is below the version a log read from a checkpoint or base
-starts at (`log.start`) is re-based too, never planned from its cursor. Planning from the cursor
-would skip the changes between, and they are not in what was read. That skip was the blocker
-P-1 of the review of D47, D48 and D55 (`design/reviews/d47-d48-d55.md`), fixed with its test.
+retained. A tenant's log is read once per publish, from the lowest of its tables' cursors,
+or from the newest checkpoint or base when a table has no cursor in the newest incarnation. A
+table whose cursor is below the version a log read from a checkpoint or base starts at
+(`log.start`) is re-based too, never planned from its cursor. Planning from the cursor would
+skip the changes between, and they are not in what was read. That skip was the blocker P-1 of
+the review of D47, D48 and D55 (`design/reviews/d47-d48-d55.md`), fixed with its test.
 `planFromCursor` also refuses a log that starts above its cursor, as defence in depth: it is not
 reachable with the first rule. This lets the ledger's 300 MiB apply, but production keeps the
-16 MiB limit (`stack/wrangler.jsonc`) for this release (D47, "Cost of it"; review P-2, P-3).
+16 MiB limit (`stack/wrangler.jsonc`; D47, "Cost of it" and "Would change if"; review P-2, P-3).
 
 **Alternatives.** (a) Keep reading the base whole, with the 16 MiB pin (D47's interim). (b) Stream
 the base only and never read checkpoints (the change `ledger/README.md` asked for). (c) A new
@@ -2012,12 +2069,67 @@ ledger writes a newer one or an operator removes it. The publisher becomes a rea
 checkpoint format, which `contracts/LEDGER-LOG.md` says only the ledger reads; a newer format
 is passed over, so the ledger still needs no readers-first release to change it.
 
-**Would change if.** A re-base or first publication of the largest tenants exceeds the
-publisher's CPU limit on Cloudflare (then progress kept across invocations, or a higher
-`limits.cpu_ms`; until that is measured, production stays at 16 MiB, and it is lifted as D47's
-"Would change if" says); corrupt checkpoints appear in practice (then (e)); the contract orders a base's
-files by key (then (d), no staging); or the manifest gains per-part sizes or digests (then each
-part is checked on its own as it arrives, not only the totals at the end).
+**Amended 2026-11-26: a re-base that does not fit one invocation goes on across invocations.**
+Measured on Cloudflare, 2026-11-19, S11 (`spikes/s11-large-ledger/`): a first publication from the
+base took 14.0 s of CPU at 150 MiB, about 0.09–0.13 ms per file, and 300 MiB extrapolates to 28–32 s
+against the 30 s default limit, so the largest tenants exceed it, the case this entry named as what
+would change it. The streaming re-base above is kept, and a publish's re-base work is now bounded by
+a budget (`maxRebaseFilesPerPublish`, 100,000 units: files staged, added files written ahead,
+manifest entries rebuilt). A checkpoint in parts is staged part by part into `rebase_stage`, each
+part in one transaction with its marker in `rebase_step` (checkpoint key, attempt, parts done,
+running totals, last keys), and stops at the first part boundary past the budget; the next publish
+continues the same checkpoint, so the per-part and whole-checkpoint checks still span every part.
+Once staged, the changes after it are applied for every table in one transaction, all or none, and
+the step records the version reached and the snapshot id its commit will have; the files it adds are
+then written into manifests ahead of that commit, a manifest per transaction, each ADDED entry
+carrying that snapshot id (sequence numbers are inherited); the commit, first in a publish of its own
+and with nothing else admitted to it,
+lists them after HEADing each at its recorded size. Every step re-reads and re-checks the kept state:
+a newer ledger incarnation, another checkpoint, or a re-based table whose cursor moved drops it. A
+re-base read whole within the budget is committed as before, byte for byte. `stage` is left to the
+older releases (the release in production, `test/n1/` at storage version 3, and the development states
+after it; they empty it at every attempt); the new tables are storage migration 7, additive, which
+those releases ignore. After a lost storage a table is rebuilt from R2 the same way, a manifest
+at a time into `live` with a done mark each. Alternatives: (g) a higher `limits.cpu_ms` alone (up to
+5 minutes): moves the wall, and Durable Objects are billed by wall time so it would not cost more,
+but a tenant past it still never finishes, and S11 saw the per-file cost vary threefold between
+runs; (h) staging resumable but the commit whole: the commit is about half a 300,000-file
+first publication's CPU here (5.8 s of 9.9 s in the upgrade, 13.5 s of 17.9 s in a first
+publication); (i) commits of part of a tenant's files without moving its cursor: a snapshot that is
+no ledger version; (j) one snapshot id reserved per table for the next commit: any other commit of
+the table before it invalidates the manifests written ahead; (k) entries written with a null snapshot
+id (inherited): readers must support inheritance, and a whole re-base's bytes would differ; (l)
+resuming inside a base: needs a byte offset at an element boundary and a contract change to
+`readLedgerLogStream`. Measured here (local workerd, `publisher/bench/upgrade.bench.test.ts`): a
+300,000-file tenant's first publication in 7 publishes, at most 4.8–5.4 s of CPU each (19.8 s and
+22.7 s in all, two runs), against 19.8 s in one publish for the development state before it (`800b926`); from a base the step
+that stages it whole 7.8–8.4 s. Modelled on Cloudflare from S11's per-file cost: at most about 9–13 s
+per publish. In workerd tests: a re-base over several runs ends exactly as one uncapped re-base for
+three starts; one cut off at each R2 operation in turn (95, 157 and 181 cuts on the three starts) loses
+nothing committed and releases its removed files as its twin does; a newer
+incarnation mid-way commits nothing of the old; the release in production (`test/n1/`, storage
+version 3, which the first release of this tree upgrades to 7 in one step) and the development state
+before this change (`test/m6/`, never deployed), on storage left mid-way, ignore
+it (`publisher/README.md`, "Re-bases and rebuilds in steps").
+
+**After the adversarial review (2026-11-26, `design/reviews/publisher-steps.md`: approve with
+changes).** M-1: the publish that commits a re-base in steps admitted other re-bases up to the whole
+budget; now nothing is admitted once a commit is chosen, so the commit is the only re-base work of its
+publish (other tenants are still read from their cursors). M-3: a commit cut off between its metadata
+write and its SQLite transaction never recorded the tombstones its re-base staged (whole re-bases too),
+so those files were never released; they are now recorded before the metadata write as well, a record
+not yet released keeping the highest sequence number any attempt gave it. M-2: `locationPrefix` cannot
+change while manifests are written ahead. M-4: tested against the release actually in production
+(`test/n1/`): the upgrade 3 → 7, a rollback in the middle of a staging and of a write ahead, rolled
+forward. M-5: the four checks no test reached now have tests and mutants.
+
+**Would change if.** A publish at the budget, measured on Cloudflare, comes near the limit (then a
+smaller budget: steps commit nothing, so it costs only alarm wakes) or far from it (a larger one);
+the step that stages a base whole, the commit of a re-base in steps (both grow with the tenant), or a
+rebuild after a conflict nears the limit (then resuming inside a base, or those in steps too);
+corrupt checkpoints appear in practice (then (e)); the contract orders a base's files by key (then
+(d), no staging); or the manifest gains per-part sizes or digests (then each part is checked on its
+own as it arrives, not only the totals at the end).
 
 ## D56. The label endpoints are counted over leaves by ranges of `series_id`, each part listing its files in waves and counting distinct series by id
 
@@ -2056,6 +2168,86 @@ its memory (8 bytes and a set entry per series of the part).
 reads its own range: `partPlan` already plans it); the metadata calls get an index of their own
 (label values per metric, written at flush); or Prometheus clients come to depend on `limit`
 shortening the work, not only the answer (then (e)).
+
+## D57. Spans and log records are `VZB1` signals 2 and 3, canonicalised by edge, appended to shards of their own (`{pool}/traces`, `{pool}/logs`)
+
+**Decision.** A span batch and a log-record batch have the metrics header (magic, signal 2 or
+3, `n_rows`, and the size of an entry table at offset 12), an entry table (resource and
+instrumentation scope for spans; stream labels and `stream_id` for logs), fixed-width columns,
+and variable-length columns as offsets plus data, every column 8-aligned
+(`contracts/BATCH.md`). `edge` canonicalises before encoding: attributes typed, sorted by UTF-8
+key with the last duplicate kept, arrays, key-value lists and bytes as canonical OTLP JSON,
+event and link attributes as canonical OTLP JSON lists; so the flush encoder copies bytes and
+both sides test against one strict format. The batches go to shards of their own: for a
+tenant with pool map `{pool, slots, spread, epoch}`, spans to pool `{pool}/traces` and log
+records to `{pool}/logs`, same slots, spread and epoch, routed by the sender key as metrics are,
+so one sender's three signals take the same slot number. As built, `edge` appends only when
+`INGEST_SIGNALS` names the signal (off in production); flush drains those shards since D63.
+
+**Alternatives.** (a) One stream for every signal: a shard stream holds metrics, spans and logs,
+and flush splits a segment by signal. (b) A signal in the shard's stream key (a shard schema
+change, and a new field in the ledger's stream identity, object keys and the orphan sweep).
+(c) Another batch format: OTLP protobuf stored as received and decoded at flush, or Arrow IPC.
+(d) Row-oriented records instead of columns. (e) Canonicalise in the flush encoder instead of
+`edge`.
+
+**Why.** (a) puts log bytes in every metrics tail read (the shard reads each stored payload of
+the range it filters, D48; its filter throws on a batch that is not metrics, so every metrics
+query would fail once a log batch was stored), and lets log volume set when a stream seals, so
+metrics files would shrink to the logs' cadence. (b) gives the same separation, but changes
+the shard's storage and every component that names a stream; with derived pools the shard
+name already separates the streams, and everything is keyed by shard name. (c) OTLP bytes
+stored as received leave validation to flush, which runs after the acknowledgement, so a
+refusal could no longer reach the sender as `partial_success`; Arrow IPC adds a dependency to
+`edge` and the engine for a format the shard never reads. (d) Columns are what signal 1 is and
+what a shard-side tail filter (D48) would read for logs. (e) would make the Rust encoder parse
+OTLP values and produce ECMAScript number text; `edge` has both already.
+
+**Cost.** Up to three shard streams per tenant in each ledger's watermarks (only for tenants
+that send spans or logs), and a base pool name at most 113 characters that does not end in
+`/traces` or `/logs` (the second rule added 2026-11-19, stage 3: a metric shard of such a pool
+would be the same object, under the same name, as another pool's span or log shard; edge refuses
+the map, `contracts/BATCH.md`). Query, flush and the
+sweeper must know the derived pools (`edge/README.md`, "Needed changes"). Measured here (Node,
+load 8 to 9, not workerd): `edge` decodes and batches OTLP traces in 16 to 22 µs a span, OTLP
+logs in 10 to 19 µs a record, Loki push in 3 to 5 µs an entry; `engine/storage` encodes a million
+spans in 4.9 s (95.5 MB of Parquet) and a million log lines in 1.9 s (58.6 MB)
+(`engine/storage/README.md`, "Spans and logs").
+
+**Would change if.** The shard gains a signal-aware stream key for another reason (then the
+pools fold back into one); a logs tail filter needs streams metered (log batches would then
+carry `seriesIds` = stream ids against a stream limit); or idle per-signal shard objects or the
+larger watermark lists are measured to cost more than the separation saves.
+
+## D58. OTLP logs take Loki's documented default stream labels without `k8s.pod.name` and `service.instance.id`; everything else is structured metadata
+
+**Decision.** For OTLP logs, the stream labels are the resource attributes `service.name`,
+`service.namespace`, `deployment.environment.name`, `cloud.region`, `cloud.availability_zone`,
+`k8s.cluster.name`, `k8s.namespace.name`, `k8s.container.name`, `container.name`,
+`k8s.replicaset.name`, `k8s.deployment.name`, `k8s.statefulset.name`, `k8s.daemonset.name`,
+`k8s.cronjob.name` and `k8s.job.name`, names mapped `[^A-Za-z0-9_]` to `_`, plus
+`service_name="unknown_service"` when there is no service name. Every other resource attribute,
+every scope attribute and every record attribute is structured metadata, key-value lists
+flattened with `_`, colliding names joined with `;`, the more specific level winning. A record
+with neither `time_unix_nano` nor `observed_time_unix_nano` is refused (`contracts/LOGS.md` §1).
+
+**Alternatives.** (a) Every resource attribute a stream label (the proposed `LOGS.md`). (b)
+Loki's full documented default list, with `k8s.pod.name` and `service.instance.id`. (c) Only
+`service.name`. (d) A per-tenant choice (not built; it is the obvious next step). For the
+timestamp: (e) the time of ingestion, as Loki does.
+
+**Why.** (a) makes a stream of every process (`process.pid`, `host.id`, command lines), refuses
+resources with more than 32 attributes, and streams are what the sort order, the index
+fragment's stream list (at most 256 a file) and the shard's stream count grow with. (b) Loki's
+documentation (read 2026-11-19) itself recommends new users move pod name and instance id to
+structured metadata for cardinality; without them a stream has at most 16 OTLP labels, inside
+Loki's default limit of 15 plus `service_name`. (c) loses the selectors operators use first
+(`{k8s_namespace_name=…}`, `{deployment_environment_name=…}`). (e) makes a retried request a
+new set of rows (a new timestamp each time), which the row key `(stream_id, ts, line,
+metadata)` cannot recognise.
+
+**Would change if.** The per-tenant setting is built (this list becomes its default); users
+mostly select by pod (then (b)); or Loki's documented default changes.
 
 ## D59. Split parts read their `series_id` range of the series files too, and the split runs again with whole series files if any part sees a series whose key is not its id, or cannot say
 
@@ -2152,7 +2344,8 @@ not. (c) would save a quarter of the bytes for a migration and a contract change
 existing JSON body keeps the table, the column and the bundle. (h) raises the rollback floor of the
 whole ruler for one format. (i) breaks §3.3: the release before reads only version 1, so a rollback
 to it would leave rewritten rules unscored until rolled forward, and the release record, which does
-not carry format versions (D46), would not refuse that rollback. Readers first costs one release,
+not carry format versions (D46), would not refuse that rollback (since D69 it carries them and
+does). Readers first costs one release,
 and nothing is deployed to production yet. (j) would let one deployment flip it without a release,
 which is exactly the step §3.3 orders; a constant ships in a release, with the release's tests. Measured
 here (workerd, 1,500 points, `ruler/README.md` part 8), what the writer brings: 48.8 KB a series as
@@ -2165,8 +2358,8 @@ position (tested).
 **Cost.** One release in which the reader is shipped and unused but for a rollback, and the caps stay
 JSON's (18 series a default rule). Version 2's reader is tested against rows this code writes with
 the gate on, not against a deployed next release. Once the gate is on: a rollback below this release
-(to one without the reader) leaves rewritten rules `state_unreadable` until rolled forward, and
-nothing in the release tooling refuses it; the head (labels and last outcomes of every series) is
+(to one without the reader) leaves rewritten rules `state_unreadable` until rolled forward (since D69 the
+release tooling refuses that rollback); the head (labels and last outcomes of every series) is
 still rewritten every tick, 13 KB at 18 series and 70 KB at 100; a third row about once an hour when
 a block leaves the window; base64 costs a third more than raw Float64; a seasonal series with few
 points in a block costs a full block; more series a rule means more of them start cold (the warm-up
@@ -2177,98 +2370,1894 @@ rollback below the reader, and the gate can be checked by it); heads grow large 
 (then labels move to a row of their own, written when the series set changes); or a detector's state
 stops being a window of values on the grid.
 
-## D71. Edge counts what it builds while decoding metrics: a resource or data point of more than 65,536 key-value entries and array elements is refused at the limit, not built; a request decodes into at most 16 MiB of series table and a JSON body has at most 2^20 structural characters (413 otherwise); a body is at most 8 MiB decompressed
+## D61. Registration before writes: a shard accepts a new stream only once its registration is LOGGED, derived by the ledger from its outbox; registration runs in the background; reads and the janitor re-register a lost stream
 
-*D61 to D70 are on the development branch, not on `main`. This entry is the metrics part of
-the development branch's D71, which applies the same limits to OTLP traces, OTLP logs and Loki
-push; those paths exist only on the development branch.*
+**Decision.** Variant R2 of spec/README.md "Proposed fixes", with the F16 fix and the changes
+of the adversarial review (`design/reviews/registration-before-writes.md`, verdict "build R2
+with changes"). A shard in registration mode `logged` accepts no write to a NEW stream (first
+use, or after it lost its storage) until the tenant's ledger answers its registration as
+logged (`RegisterResult.logged`); a stream that already holds acknowledged rows keeps
+accepting while it is confirmed. The ledger DERIVES `logged`, and each stream's
+`loggedIncarnation`, at call time from its outbox (a committed registration is logged exactly
+when no pending `register_stream` change names it), never from a stored flag (B-1). An append
+to an unconfirmed new stream is refused at once, `backpressure` scope `registering` with
+`Retry-After` 0.5–1 s, nothing stored or held; the registration runs in the background, one
+call per stream at a time, at most four per shard, retried with backoff from the shard's one
+alarm (M-1). Edge answers `registering` 503 with `Retry-After`, never 429 (M-2; edge's
+change is its owner's, `shard/README.md` "Needed changes elsewhere"). A tail read naming an
+incarnation the shard lost starts a fresh, newer stream, registers it and names it, so a query
+can finish (F6 liveness). The janitor asks a stream's shard (`ensureStream`) when its flush
+files wait for a unit, and counts a newer incarnation's files dead only once its registration
+is logged (F16, F15 kept). Mode `lazy` (the default) is the append path as before; production
+turns `logged` on with the Worker var `SHARD_REGISTRATION` in a second release, once every
+edge maps the new scope.
 
-(Written 2026-11-19 for the development branch's review of spans and logs end to end, M-3:
-"count attributes, array items and value bytes while decoding, and refuse at the limit before
-materialising. Lower `maxDecompressedBytes`. Measure in workerd." The review reproduced 117 MiB
-of heap growth from a 2 MiB traces body that gzips to 2,076 bytes, and found the same flaw on
-`/v1/metrics`, which is live on `main`: 179 MiB for a 4 MiB metrics body, by its own repro.)
+**Alternatives.** R1: the registration committed (not logged) before the first write. R3:
+logged before writes, and the coordinator settles a lost incarnation by taking its tail as
+empty. R4: committed before writes, and the coordinator re-reads the ledger after its tail
+reads when it read a shard the plan did not name. Within R2: a `logged_inc` column the ledger
+maintains (the plan before the review); an append that awaits the ledger before refusing (the
+plan before the review); turning `logged` on in the same release as edge's mapping.
 
-**What was wrong, measured here** (the development branch's `edge/bench/memory.mjs`, run on
-`main`'s `edge/src` at `9e56957`: local workerd 2026-11-17, V8 heap from `--trace-gc`, peak = the
-largest heap any GC saw, one run per case; Node 22 alongside). The OTLP metrics decoders built
-every key-value entry and array element of a resource or data point as JavaScript objects and
+**Why.** R1 fails: a ledger rebuild rolls a committed registration back and F6(b) returns
+(the model's `R1_safety`, I4 in 15 steps; reproduced against the code in
+`flush/test/registration.test.ts` by its own mutant). R3 changes the coordinator (another
+component, being edited), leaves every query of a tenant refused once per plan while the
+ledger names a lost incarnation, and still needs `ensureStream` for F16. R4 re-reads only
+shards it read without a watermark, so a shard that has left the pool after a map change is
+never read and a rolled-back registration hides its rows; closing that is a ledger round trip
+on every query. R2 pays only when a stream is new, and one mechanism (the shard registering a
+fresh incarnation) serves appends, reads and the janitor. A stored `logged_inc` is maintained
+only by the new release, so a rollback and roll-forward leaves streams refused for ever (B-1;
+its mutant is killed by the rollback test in `ledger/test/registration.test.ts`); deriving it
+costs one outbox read, which holds a drain cycle of rows. Awaiting the ledger on the append
+path holds payloads outside D37's bound or fills it, so one tenant's slow ledger blocks the
+shard's other tenants (M-1; its mutant is killed by `shard/test/registration.test.ts`). All
+five components are one Worker whose Durable Objects take new code up to 30 s late, so the
+shard may send the new scope only once every edge that can run maps it: two releases
+(COMPATIBILITY.md §3.3).
+
+**Measured** (here, local workerd, load average 2.6–3.4; `shard/bench/results/registration.log`):
+a new stream's first acknowledgement, the ledger draining on its own, 519–1007 ms (median 702)
+with the shard's `Retry-After` and 1006–1013 ms with it rounded up to whole seconds as edge
+writes it, one refusal each (n = 30 each; local R2 PUTs take milliseconds, so a lower bound);
+appends per second of established streams unchanged against the release before (1, 16 and 64
+clients, three runs each, within the run-to-run spread). **Modelled** for Cloudflare: 1–2 s to
+the first acknowledgement (180–494 ms segment PUT, edge's whole-second `Retry-After`), against
+the proposal's 0.5–1.5 s; the shard→ledger round trip is not measured. The model's results
+(spec/README.md) and the review's runs are bounded-depth for safety, whole-graph for liveness
+and leaks.
+
+**Cost of it.** About a second before a new stream's first acknowledgement (a new tenant, a
+new slot, a shard that lost its storage), 1–3 ledger calls per stream lifetime, one row write
+per confirmed stream, one outbox read per registration call and per `loggedWatermarks` while
+some stream has no logged unit. While a tenant's ledger cannot log, its new streams take no
+writes (fails closed, retryable, reported after 60 s by the shard and in `logStatus`).
+Streams are never retired (review m-3) and a forgotten registration is not re-registered
+(m-2); both are recorded as open in `shard/README.md`.
+
+**Would change if.** The first refused append is measured to matter on Cloudflare (then R4's
+committed registration with its re-check, or registration ahead of map changes and at tenant
+creation, which `ensureStream` allows, m-4); the outbox read shows in the ledger's CPU (then a
+nullable `kind` column older code leaves NULL); or pool retirement or tenant deletion is built
+(then a stream-retirement change in the ledger, and both creating paths fenced).
+
+## D62. Traces and logs are read in one place under a byte budget the engine charges before each thing is made; a trace the answer names is read whole within a margin around the window, from the flush units its own pieces lie in, the same with pruning on or off; span-local calls cut to their window before de-duplication; each tail read asks only its signal's shards, by name and within its range, and checks every batch's header
+
+(Rewritten a second time 2026-11-19 after the re-review `design/reviews/signals-end-to-end-r2.md`,
+approve with changes: R2-M1 to R2-M4 and R2-m1 to R2-m5, and after the review of D72's query side,
+`design/reviews/d72-shard-bounds.md` m-2 and m-3. It replaces the first rewrite, which replaced the
+text the first review rejected (`design/reviews/signals-end-to-end.md`, M-1 and M-2); "Replaces" at
+the end lists what changed each time. The contract changed first, in its own change:
+`contracts/engine.ts` `SignalBudget` and `SignalEngine`, ABI 8 of `engine/wasm-query`.
+`QUERY_SIGNALS` stays off until the re-review's narrow re-check of R2-M1 to R2-M4(a), which has
+not been done, and a rerun of the Cloudflare trial (S10 ran on the build before this rewrite); the
+Grafana run of `query/README.md` "What remains before the flag" is also outstanding.)
+
+**Decision.** The query Worker answers Tempo's and Loki's APIs (behind `QUERY_SIGNALS`,
+`query/README.md` "Traces and logs") in one place: files through the leaf pool, the signal's
+shard tails, one engine call.
+
+1. **Memory is bounded by bytes the engine charges before it makes each thing.** Every span and
+   log call carries the tenant's `maxDecodedBytes` (32 MiB), the Loki label calls included
+   (R2-M1). The engine charges, and refuses past the budget BEFORE making the thing that would pass
+   it (R2-M2):
+   - each row it holds (a fixed overhead plus every string it keeps; a span's resource once per
+     distinct resource of the call; 256 bytes more per span kept as a record, by trace by ID and
+     the tag calls);
+   - what the evaluation derives as it grows: trace extents and the ids the margin needs (2.);
+     a TraceQL group's accumulator and the output series it will make (one per quantile) when the
+     group is made, a histogram's output series (every point) when the group first sees its
+     bucket, buckets and exact-sum partials as they grow, the series that arithmetic between
+     metrics queries makes; tag-name and tag-value sets as they grow; a LogQL query's label sets
+     (one per distinct set its pipeline makes: `regexp`, `label_format`, structured metadata),
+     samples and points, and an estimate of the vector operations' series (they run on
+     viz-promql, which the meter cannot see into: the inputs' size once more per operation above
+     them, twice for `label_replace`); the label calls' streams, names or values;
+   - the answer, four times its exact length (twice in WASM, once as a JavaScript string, and
+     once more for the copies in between), before it is written.
+   What is let go is released (a log query's entries and label sets cut by its `limit`; a metrics
+   query's accumulators once its series are made). Past the budget: 422 `max_decoded_bytes`, whose
+   text names what was being made and what would make the query fit (R2-m5). The peak WASM memory
+   of a call is then at most the budget, plus what it was handed (files and tail), plus a constant
+   measured at under 12 MiB (one file's copy while it is opened, the Parquet reader's pages, one row
+   or value before it is charged, the module): measured per call type, below. The row caps,
+   `maxSpans` (18,000) and `maxLogRows` (30,000), count rows HELD: checked from the fragments
+   before the files are fetched (not for trace by ID: a row group holds other traces' spans, so it
+   is checked by bytes) and again by the engine on the rows it holds; a span outside the call's
+   bound, a span of another trace than trace by ID's (R2-M4a), and a log row no selector reads, are
+   read and passed over without being held or counted.
+2. **A trace the answer names is whole within a margin, read from its own pieces.** A search, a
+   TraceQL metrics query that needs whole traces, and trace by ID with a time hint have a bound:
+   the window widened by the tenant's `traceMarginMs` (2 h) on each side. `trace_index` is planned
+   over the bound. A piece is a fragment that overlaps the bound, or a tail span that starts in
+   it. A trace is found when its extent merged over its pieces overlaps the window: a piece
+   overlaps the window, or it has a piece wholly before the window and one wholly after it. The
+   engine finds them in passes over the pieces, reading only the id and time columns: first the
+   ids of the traces with a piece in the window and of those with a piece after it; then the
+   traces with a piece before the window among the latter; then the hull, hours and **ranges** of
+   the found traces' pieces, cut to the bound (merged, at most 256, the closest joined beyond
+   that). It holds the found traces' ids and, while the second pass runs, the ids after the
+   window: not every trace of the bound (R2-M3a). `spans` is planned over the hull at the same
+   ledger version, and only its row groups that overlap one of the ranges are read (R2-M3b): every
+   span of a found trace that starts in the bound lies within its own unit's fragment, a piece, so
+   it is read, and a long trace costs the flush units its far pieces lie in, not the hull. The
+   engine drops every span whose start lies outside the bound, before de-duplication. So every
+   trace the answer names is evaluated over exactly its spans that start inside the bound: all of
+   them when it starts and ends within the margin of the window, wherever its spans were flushed
+   or whether they are still in a tail, and with pruning on or off (off reads both tables whole
+   over the bound). A trace longer than the margin is answered from its part inside it, the same
+   part every time. Trace by ID without a hint is bounded by all time: the whole trace. Summaries
+   are computed from the spans; `trace_index` counts are upper bounds used only to plan.
+3. **Span-local calls are cut to their window before de-duplication.** Tag names, tag values and
+   TraceQL metrics whose pipeline is span-local have their window as their bound: a span that
+   starts outside it is not part of the data, before de-duplication, as a trace query's spans
+   outside its margin are not (review of D72, m-2; chosen there as option (a)). A later copy of a
+   span (same trace and span id) that starts outside the window no longer hides an earlier one
+   inside it, so what lies outside the window, in a file or a tail batch read or skipped, cannot
+   change the answer.
+4. **Tails by signal, within the range.** A tail read asks the shards of its signal by name
+   (`…/traces/{slot}`, `…/logs/{slot}`, the rest metrics), sends `signals` and the range its
+   engine call selects rows in (D72: a trace query its bound, never the window alone; a span-local
+   call its window; a log query its selectors' hull; a label call its range), each end floored to
+   the millisecond, and checks every batch it gets back by its header: a batch of another signal
+   refuses the query (503); none is read as the wrong signal or dropped. An empty range (a Loki
+   `query_range` with `start == end`) reads no tail: no row can match, and a shard refuses an
+   inverted range (review of D72, m-3). A shard of the release before D72 returns every batch of
+   the signal; by 2. and 3. the engine selects the same rows either way.
+
+**Alternatives.** Completeness, from the first rewrite: (a) `trace_index` over the window only;
+(b) a second `trace_index` round by trace id for the traces found, over a bounded lookback; (c)
+document a Tempo-like partiality; (d) no bound: every `trace_index` file of the tenant. The
+margin's cost (R2-M3): (e) cap the hull's growth per trace and answer such traces in part, said in
+the answer; (f) stream the extent pass as a merge of the `trace_index` files by trace id (each file
+is sorted by it); (g) lower the default margin and state the traces-per-second it affords; (h) read
+the margin's spans by the bloom filters on `spans.trace_id`. Memory: (i) estimate decoded bytes from
+the fragments; (j) lower row caps alone; (k) charge derived structures and the answer once built
+(the first rewrite, ABI 7); (l) cap series times points instead of bytes. The label calls: (m) cut
+the list at a size. Span-local calls (review of D72, m-2): (n) send them no range, and keep "a
+later copy outside the window hides an earlier one inside it". Earlier alternatives, still
+rejected: summaries from `trace_index` alone; split execution by trace-id hash; skipping batches of
+another signal silently.
+
+**Why.** (a) is false (review M-1). (b) selects traces by "a fragment overlaps the window" and
+prunes nothing on flush output, whose `trace_index` file per unit is one row group spanning the
+id space. (c) gives answers the engine over the same data does not give; `traceMarginMs: 0` is
+exactly the window-only answer, made deterministic. (d) costs every `trace_index` file the tenant
+holds. Chosen for the margin's cost: the passes (a cheaper (f)) and the ranges, with the 2-hour
+margin kept, measured below. (e) makes a trace's completeness depend on how many other traces'
+rows share its flush units, which changes with load and compaction, and Tempo's search body has no
+field that says which traces are partial; the ranges make (e)'s case cheap instead (one unit per
+far piece). (f) with the record reader keeps a reader with its pages open on every file at once
+(not measured); the passes hold 64 bytes per id after the window and nothing before it. (g) loses
+completeness for traces of one to two hours with no measured need: after the change a one-minute
+search answers at 72 traces a second in a window that ended hours ago (refused at about 10 before),
+and a window that ends now holds no margin ids at all. (h) needs a round of range reads of each
+span file's bloom filter before the span read; the fragments already name the units a trace's
+pieces lie in, and blooms would only prune other shards' units over the same minutes (kept under
+"Would change if"). (i) is not possible with what the fragments carry. (j) leaves a fat row
+unbounded. (k) let a few hundred rows grow the isolate to 0.1–0.9 GB before the refusal (R2-M2,
+reproduced). (l) does not see the bytes of labels a pipeline makes. (m): Loki's HTTP API reference
+(read 2026-11-19) lists no `limit` for `/labels`, `/label/<name>/values` or `/series`, so a cut list
+would be a wrong answer a client cannot tell from a right one. (n) would send the whole tail again
+for these calls (review m-3's cost back), and the file side is already planned by window, so (n)'s
+semantics held only for rows still in a tail; with 3., files and tail agree.
+
+**Measured** (here, not on Cloudflare: Node 22 through the binding with the re-review's own
+scripts, and workerd through the Worker, `query/test/review-r2.test.ts`; peaks are WASM memory of a
+fresh engine instance; `query/README.md` "Memory" has the per-call table). Before → after:
+- R2-M1, `/series` over 100 and 300 streams of 31 labels of 8,000 bytes: 200 at 113.3 and 399.1 MiB →
+  422 at 33.8 and 36.1 MiB (workerd: 113.3 MiB and 200 → 29.7 MiB and 422); `/labels` over the
+  300 answers at 16.6 MiB, one label's 300 values at 25.6 MiB.
+- R2-M2: `histogram_over_time` 8 groups × 60 buckets × 11,000 points, 513.7 → 2.9 MiB (422);
+  100 quantiles, 869.8 → 2.9 MiB (422); `rate() by` 60 groups, 65 → 11.9 MiB (422, at the answer);
+  tag values of 500 × 60 KB, 107.7 → 35.6 MiB (422); the LogQL `label_format` query, 200 at
+  221.4 MiB → 422 at 33.9 MiB.
+- R2-M3: a one-minute search at 12 traces/s, margin 2 h: 422 → 721 traces at 7.4 MiB; at 6 traces/s
+  the extent call took 464 ms and 15.1 MiB before, 414 ms and 4.6 MiB after (82 ms and 2.1 MiB for
+  a window ending at the data's end). One long trace at 5 spans/s: 39,002 rows in 15 span files →
+  9,002 rows in 5 (its child's unit and the unit over the same minutes).
+- R2-M4(a), trace by ID in a 20,000-span row group: 422 before any fetch → 200 at 3.4 MiB.
+- The first review's inputs: 4.2, 4.7 and 38.7 MiB (422) as before.
+- Per call type at the caps, realistic rows (the shape is training knowledge; R2-m3), peak WASM
+  / charged: 18,000 spans, search 32.7 / 30.6 MiB, metrics 32.7 / 30.6 (35.8 for three quantiles
+  at 15 s, refused at the default budget), tags and tag values 36.4 / 34.8–35.1 (46.6 / 30.3
+  before), trace by ID 7.3 / 0.3; 30,000 log rows with per-line structured metadata, a log query
+  28.1 / 25.6 (36.1 / 46.3 before label sets were let go on trim), the label calls 3.1 / 0.1.
+  Every peak is within the budget plus the 1.1 to 1.2 MiB handed in plus 3.3 MiB.
+
+**Cost of it.**
+- *Reads.* Each trace query reads `trace_index` over the window and twice the margin (not measured on
+  Cloudflare: the experiment is a search over a tenant with S span shards and uncompacted recent
+  hours at margins of 0, 1 and 2 hours, timing files read and wall time), and decodes its id and
+  time columns up to three times.
+- *The margin's ceilings.* The extent call holds 64 bytes per trace with a piece after the window:
+  a window that ended two hours or more ago is refused at about 72 traces a second (measured: 72
+  answered at 42.6 MiB of WASM with 5.7 MiB of `trace_index` handed in; modelled beyond); one that
+  ends now holds none. A found trace's far piece costs the span files over its minutes, one flush
+  unit per span shard; many long traces spread over the margin approach the hull, and a search is
+  then refused with a text that says the margin, not the window, does not fit.
+- *A trace longer than the margin* is answered in part, deterministically.
+- *Row caps.* Tenants with more than about 18,000 spans or 30,000 log rows in a query's window are
+  refused until split execution exists. Above 18,000 realistic spans little is left for an
+  answer: a three-quantile query over 18,000 spans is charged 35.8 MiB and refused.
+- *Trace by ID* decodes every span of the row groups it reads (an hour's, or a unit's) and holds
+  only the trace's; it is bounded by `maxFetchBytes`, not by `maxSpans`.
+- *Without a hint* (R2-M4(b), modelled from D68's layout and the README's 9 bytes of `trace_index`
+  per span): every `trace_index` file of the retention is planned; an uncompacted flush file is
+  read whole (one row group across the id space), a compacted one by the row group (at most 2 MiB)
+  whose id range holds the id. Uncompacted, `maxFiles` (2,000) is reached after about 14 days at
+  one span shard and the 10-minute seal (144 files a day), and `maxFetchBytes` (16 MiB) at about
+  1.86 M spans retained. Compacted, each day costs up to one 2 MiB row group, so a tenant above
+  about 2.7 spans a second (2 MiB of `trace_index` a day) is refused past about 8 days of
+  retention, one at 1 span a second past about 20. The refusal says to send `start` and `end`.
+- *The retention edge* (R2-m1): a `trace_index` file leaves with the day of its fragments' first
+  start, so it can leave before spans of its unit that started after midnight. A trace found only
+  through fragments of the expired day is not found by a search, a whole-trace metrics query or
+  trace by ID, although some of its spans remain; span-local metrics and the tag calls still see
+  those spans.
+- *Tails.* Since D72 a span or log query takes the tail inside its range; a backlog of more than
+  `maxFetchBytes` inside one range (five hours of spans for a one-hour search) is still refused.
+- *Charges are estimates.* They were set at or above the growth measured on these shapes; a shape
+  whose overhead per string is larger could hold more than it is charged, and the LogQL vector
+  operations are charged by an estimate (above).
+- Without this release's ABI 8 module the query refuses (`EngineLoadError`, 500).
+
+**What volume this serves** (spike S10, `spikes/s10-signals-trial/README.md`, **measured on
+Cloudflare, 2026-11-19**, on the ABI 7 build, before the passes and ranges above). The memory budget
+held: the query isolate peaked at 70.8 MiB, the fat shapes were refused 422 `max_decoded_bytes` at
+40 to 45 MiB or answered at 4.8 to 6.0 MiB, and a search of 17,402 spans answered at 31 MiB of WASM.
+The caps did not: at about 690,000 spans in five minutes every trace query was refused, trace by ID
+included. A search's `trace_index` over the window and both margins was 20.1 MB, and trace by ID
+then read every `spans` file of the trace's hour, 18.0 MB, both over `maxFetchBytes` (16 MiB); a
+10-second rate was over `maxSpans` (235,913 rows in the row groups in range). A margin of 0 did not
+help: each flush unit's files covered about a minute of start times and so overlapped any window.
+At S10's 69 bytes of `spans` and 27 of `trace_index` per span (measured there), **the design serves,
+in one query**:
+- trace by ID up to about 240,000 spans in the trace's hour (S10's figure, modelled from its bytes)
+  on ABI 7; on ABI 8 the span read is cut to the files whose start times overlap the trace's own
+  pieces, so the bound becomes the span bytes of the flush units overlapping those minutes, not the
+  hour (modelled: not run on Cloudflare; for S10's load, whose units each covered about a minute of
+  five, roughly a fifth to a half of 18.0 MB);
+- a search while `trace_index` over the window plus four hours stays under 16 MiB less the tail:
+  about 620,000 spans in those hours (S10's figure; unchanged by ABI 8, which reads the same
+  `trace_index` and holds less of it);
+- a search or span-local metrics query while the span row groups overlapping its window, or its
+  traces' pieces, hold at most 18,000 spans and 16 MiB: about 5 spans a second over a one-hour
+  window, more for shorter windows only once a flush unit's row group covers less time than the
+  window.
+Above that a trace query is refused (422), never misanswered. This is a ceiling of reading one
+place, not of memory.
+
+**Follow-up design (not built; for D62's owner to schedule).** What removes the ceiling, in order:
+1. *Trace by ID by trace id within the hour.* `spans` files carry a bloom filter on `trace_id` per
+   row group (TRACES.md; written by flush, never read). Plan: fetch each candidate file's footer and
+   its row groups' bloom filters (one coalesced range read per file, at most six in flight per leaf),
+   keep the row groups whose filter may hold the id, fetch only those. `maxFetchBytes` then bounds
+   the bloom bytes plus the trace's row groups, not the hour. Flush and compaction should also cut
+   `spans` row groups smaller (2 MiB, as compaction does) so a hit costs a small group. Needs an
+   engine call that reads a bloom filter from a byte range (`viz_storage` has the writer).
+2. *Searches page `trace_index` within the bound.* The extent pass already holds ids only; make it an
+   engine session (as `gatherNew`/`gatherAdd` are for PromQL) that takes `trace_index` files in waves
+   under a per-wave byte cap, so the 16 MiB applies to a wave, not to the bound; the passes then run
+   over waves (pass 1 and 2 over all waves, pass 3 over the waves again). The found traces' spans
+   are then read by ranges as now, also in waves if the engine call can take spans incrementally
+   (it holds the traces under the byte budget anyway).
+3. *Span-local calls and searches over busy hours.* Smaller row groups at flush (time-cut), or split
+   execution by trace-id hash once the engines have exact partials (D62's earlier alternative), so
+   `maxSpans` applies per part.
+4. The log pre-check counts whole row groups (S10): count by stream list and time inside the group
+   where the fragment has a stream list.
+None of this changes answers: each reads a subset that still contains every row the engine selects.
+
+**Would change if.** `trace_index` gains an id-sorted, bloom-filtered layout at flush (then a second
+round by id over a longer reach, and a hintless trace by ID that stops at the newest day holding the
+trace); the engines gain exact partials (split execution); projection by the plan's columns cuts the
+memory per span (larger row caps, and tags that hold names only); Cloudflare shows the margin's reads
+cost too much (a smaller default margin, or (h)); a tenant's long traces make most searches read
+most of the margin (then (h), bloom filters, before the margin shrinks).
+
+**Replaces.** The second rewrite (2026-11-19, re-review R2) replaced, of the first rewrite:
+- "a metric query's series are charged per point; the answer is charged four times its length"
+  (the series' buckets, quantile outputs and labels were not charged, and the answer only once
+  written: R2-M2) by 1.'s charges before each thing is made;
+- the label calls' having no budget (R2-M1) by the budget and an exact answer charge;
+- "the engine merges, per trace, every fragment and tail span" (an extent per trace of the bound:
+  R2-M3a) by the passes, and "`spans` is planned over that hull" (R2-M3b) by the ranges;
+- "the engine checks the row caps on the rows it holds" for trace by ID, which counted every span
+  of the row groups (R2-M4a), by the trace's own spans, and its pre-fetch row check by bytes;
+- "Memory is bounded by bytes" and the README's "at most the budget plus what was fetched" by the
+  peak stated in 1., measured per call type;
+- for tag names, tag values and span-local metrics, "a later copy hides an earlier one whether or
+  not it is wanted" by 3. (review of D72, m-2);
+- "A span or log tail is read whole, whatever the window" by 4. (D72).
+The first rewrite (the first review) replaced "Every trace the answer can name is then complete"
+by "complete within `traceMarginMs`", the caps' bound on rows and compressed bytes by the engine's
+decoded-bytes budget with resources held once, `maxSpans` 40,000 and `maxLogRows` 60,000 by 18,000
+and 30,000 counting rows held, and trace by ID with a hint over the hint alone by the hint and the
+margin; the Loki and Tempo compatibility points (m-4) are in `query/README.md` ("Grafana").
+
+## D63. Span and log files enter the ledger as metric files do: one unit per segment, millisecond bounds, a `spans` key under its hour; `Table` keeps its meaning and the ledger's tables are `LedgerTable`; a tail read chooses batches by signal and returns span and log batches whole
+
+(Written 2026-11-19, stage 2 of traces and logs, the write side. The read side is D62.)
+
+**Decision.** Flush chooses the encoder by the batches' signal byte and reports a span or log
+segment as ONE unit, exactly as a metric segment: `spans` files (one per hour of start time,
+keyed `…/day=D/hour=HH/`) with `trace_index` files (one per day), or `logs` files (one per day).
+The ledger lists them with `minTs`/`maxTs` in milliseconds, the floor of the files' nanosecond
+bounds, so plans, precedence, `replace` and `expire` are unchanged; it admits a `spans` key only
+under the hour its `[minTs, maxTs]` lies in. In `contracts/ledger.ts` the table names a ledger
+lists are a new union, `LedgerTable`; `Table` stays the metric pair (and
+`LedgerChange.removedFiles` stays typed `Table`, with a note) until the publisher reads the new
+tables. A filtered tail read takes `signals` (the header byte); the time range and series fields
+select metric rows only, and a span or log batch it admits is returned whole. (Replaced in part by
+D72, 2026-11-19: the time range also skips a span or log batch whose bounds, recorded at append,
+lie outside it; an admitted batch is still returned whole, and the series fields still keep
+nothing of one.) Retention reads
+`trace_days` and `log_days` from the record control already writes, 30 days each when absent,
+and expires them in ledger requests of their own after the metric one.
+
+**Retention, revised 2026-11-19 after review B-1 and m-1** (`design/reviews/signals-end-to-end.md`).
+This replaces two parts of the first D63: a present but unreadable `trace_days` or `log_days`
+refused the whole record (metrics included), and control's "shorter" check compared only the
+fields a new value named, so a PUT that left a field out dropped it to the default unconfirmed.
+Now: (1) the janitor reads each signal field on its own. One that is present but not a positive
+integer stops that signal only: its tables expire nothing until it is fixed, the metric tables and
+the other signal expire as usual, and the run reports the field as `refused` (looked at hourly,
+shown in the maintenance marker, as a refused record is). A bad `metric_samples_days` still refuses
+the whole record (review R-1). (2) Control's `PUT /settings/retention` stays a replace, like every
+section's. A shortening is judged on what the readers keep, before and after, with each absent field
+at its reader's default: 30 days for spans and logs (the janitor's `DEFAULT_SIGNAL_DAYS`); a rollup
+tier, which has no reader yet, counts as shortened when it was set and is left out. So a PUT that
+leaves out `trace_days` or `log_days`, or sets one below the default for the first time, needs
+`confirmShorter` like any other shortening, and the refusal names the fields left out (`leftOut`).
+
+**Alternatives.** Time: (a) nanoseconds in `FileEntry` as decimal strings or a second pair of
+fields. Units: (b) one unit per hour of a span segment. Types: (c) widen `Table` in place;
+(d) make `FileEntry` and `LedgerChange` generic over the table. Tails: (e) filter span and log
+rows by time inside the shard; (f) a `signals` field only, other fields refusing span batches.
+Retention: (g) traces and logs inherit `metric_samples_days` when the record does not name them.
+Control's check (revised): (h) merge the fields a PUT leaves out from the stored value, so PUT
+becomes a patch for this section; (i) merge and compare effective policies both. A bad signal field
+(revised): (j) refuse the whole record (the first D63); (k) read it as the default.
+
+**Why.** (a) A Unix nanosecond does not fit a JS number, and every reader of the ledger (query's
+planner, compaction's pairing, the publisher) would need a second time model; the floor is exact
+for overlap (a millisecond range `[a, b]` covers nanoseconds `[a·10⁶, b·10⁶ + 999,999]`), and
+`query/` had already planned in milliseconds (`msRange`). (b) would break "everything one sealed
+segment produced is admitted atomically" and the watermark's contiguity for no gain: a unit's
+files are few (at most 26 for a segment across the 24 h accept window). (c) is what the change
+means, but the publisher maps every `Table` (`Record<Table, TableDef>`), so widening it failed
+the publisher's typecheck and, through their imports of its sources, compact's and the janitor's
+(tried); the publisher is not this change's to edit. `LedgerTable` fails none, and
+`removedFiles` is the one field the publisher's log reader pushes into its own `Table`-typed
+list. (d) carries the same lie as the note, with more
+machinery. (e) means rewriting span and log batches (variable-length columns, entry tables) on
+the shard's thread for a filter the reader applies anyway; whole batches keep the shard opaque to
+them, as it is on append. (f) would make an older caller's metric filter throw on a span batch,
+as before: keeping nothing is the answer a series filter gives a batch with no series. (g) ties
+the volume a tenant keeps of its largest signals to a number chosen for metrics (a tenant keeping
+metrics for 400 days would keep logs as long); control already writes separate fields. (h) alone
+leaves a hole of the same kind: a signal set for the first time below the 30-day default has no
+stored field to compare with, so it shortens what the janitor keeps with nothing asked (reproduced
+before the fix: a stored `{metric_samples_days: 45}` took `trace_days: 7` unconfirmed). It would
+also make retention the one section whose PUT is a patch, leave no way to return a field to its
+default, and change the documented behaviour of an existing route. The effective comparison closes
+both holes alone, so (i) adds the patch for no safety; a caller that leaves fields out gets a 422
+that names them. (j) let one optional field stop metric expiry, against this entry's own "the
+metric expiry never depends on them". (k) is R-1's mistake again: the default can be shorter than
+what was meant.
+
+**Measured** (here, workerd, load average 8; `flush/README.md`, "Spans and logs"): a ~3.3 MB
+segment flushes in 134–388 ms (spans) and 86–218 ms (logs); 94 bytes in R2 per span (with its
+trace_index share) and 158 per log record for the test workloads. End to end through edge and
+three OTLP corpora: every row and every TraceQL (60) and LogQL (36) answer identical to the
+in-memory engines' (`stack/README.md`, "Traces and logs end to end").
+
+**Cost of it.** `removedFiles`' static type is narrower than what the ledger writes until the
+publisher is updated (readers check it at run time, as the publisher does). A span or log read
+gets every batch of its signal above the watermark, whatever its time range (until D72, and until
+the query sends a time range). `INGEST_SIGNALS`
+must stay off in any deployment with a publisher until the publisher reads these tables (it
+stops a tenant at the first change naming one). (Since 2026-11-19 the publisher reads them and
+`removedFiles` is typed `LedgerTable`: D64, which also gives the rule for turning the flag on.)
+Control holds its own copy of the readers' defaults (`KEPT_WHEN_ABSENT` in
+`control/src/ops-settings.ts`), not the janitor's constant: importing the janitor's source would
+bring compaction and flush into control's Worker, and `contracts/` has no type for the record yet
+(control README, "Contract issues"). A control test runs random PUT sequences, with days on both
+sides of the default, through the janitor's own `readRetention` and `parseRetention`, and fails if
+the two disagree on any shortening. A partly unreadable record expires metrics and the readable
+signal, so `refused` no longer always means "nothing expired" (`beforeDay` says which).
+
+**Would change if.** The publisher reads the span and log tables (then `removedFiles` and
+`Table` are retyped, and `Table` may become the full union); span tails grow large enough that
+per-batch time bounds at append pay (then (e) at batch granularity: done, D72, after review m-3); or tenants ask for traces
+and logs to follow their metric retention (then (g), or a control-side default). The retention
+record gets a type in `contracts/` with its defaults (then control and the janitor import them and
+the copy goes); the rollup tiers get a reader (then its default replaces "left out counts as
+shortened"); or operators want partial updates (then a PATCH of its own, not a change to PUT).
+
+## D64. The publisher reads the span and log tables and does not publish them yet: it records them per tenant, releases their removed files to the janitor, and never stops a tenant for them; `INGEST_SIGNALS` goes on only once this publisher release is the oldest a rollback can reach
+
+(Written 2026-11-19. Step 1 of publishing traces and logs; publishing them as Iceberg tables is
+the next step, not done: `publisher/README.md`, "Not implemented". **Since D67 the release after
+this one publishes them**: its record and its release of removed files are replaced there by the
+tables' Iceberg state and the snapshot rule. The rollout rule below stands: this release stays the
+oldest viz-publisher a rollback may reach once `INGEST_SIGNALS` is on, and D67 is shown to roll
+back to it. **Since D69 the release tooling enforces the rule** (it no longer rests on an operator),
+widened by the review of traces and logs (M-4) to viz-query (D62) and viz-ingest (D63).)
+
+**Decision.** The publisher's log reader knows every table the ledger lists (`LedgerTable`): it
+publishes `metric_samples` and `metric_series` as before and reads `spans`, `trace_index` and
+`logs` without publishing them (`PUBLISHED_TABLES`, `UNPUBLISHED_TABLES` in
+`publisher/src/log.ts`, pinned there and tested equal to the contract's `TABLES`). A change, a
+base or a checkpoint that names them no longer stops the tenant; a table no release knows still
+does (`unsupported`, COMPATIBILITY.md §3.2). A re-base counts their files and does not stage
+them; their tombstones are staged as tombstones. After the metric commits, in SQLite only, the
+publisher records per tenant and table (`unpublished`, storage migration 4, `readableFrom` 1):
+the ledger version through which it counted, the live files counted, where the count started
+(`base`: a re-base's base or checkpoint; `log`: the first change it read that named the table),
+and when the table was first and last named. Each publish reports the counts per tenant;
+`unpublished()` returns the records; `status(table)` answers `published: false` with the tenants
+and files counted. The files of those tables that a change removes, and a re-base's tombstones of
+them, are recorded as removed before they were ever published and released to the janitor
+`deleteGraceMs` later, as such metric files already are; not while the cell holds an object under
+`{cell}/iceberg/{table}/` (only a newer publisher, one that publishes the table, writes there).
+`LedgerChange.removedFiles` is typed `LedgerTable` (contracts/ledger.ts). Metric publication is
+unchanged: the same Iceberg bytes.
+
+**The rollout rule.** The publisher is the reader that must act on every file of the ledger's
+log, so it goes first and `INGEST_SIGNALS` (edge, the writer of span and log changes) goes last
+(COMPATIBILITY.md §3.3):
+
+1. Deploy viz-publisher at this release. It is additive (migration 4 has `readableFrom` 1; it
+   writes no new format; its Iceberg output is unchanged), so the release before stays a
+   rollback target, and nothing in the release tooling stops a rollback to it (D46 judges
+   storage, not the log tables a release reads).
+2. Set `INGEST_SIGNALS` in a deployment with a publisher only after viz-publisher at this release
+   or later has served there and the operator treats it as viz-publisher's rollback floor: from
+   then on a rollback of viz-publisher may only go to this release or later. Without a publisher
+   bound, the flag needs no publisher release at all.
+3. If viz-publisher is rolled back below this release while any tenant's log names a span or log
+   table: the release before opens this storage, publishes every tenant up to its first change
+   naming one, and stops it there, metrics included (`unsupported`, retried every `retryMs`), and
+   releases none of that tenant's files, so the janitor deletes nothing of it. Stuck, not lost
+   (COMPATIBILITY.md §9); rolled forward, this release catches up. Turning the flag off does not
+   unstick it: the changes are in the log already. Shown with the release before frozen beside
+   this one (`publisher/test/n1/`, `test/signals.test.ts`, "releases N and N-1 side by side").
+
+**Alternatives.** (a) Publish the tables in this release (Iceberg tables with hour partitions
+from `start_time`, contracts/TRACES.md, LOGS.md). (b) Pass over their changes with no record
+(the least D63 asked for). (c) Record every span and log file (a `live` row each). (d) Release
+none of their removed files until they are published. (e) Make this release forward-only
+(migration 4 `readableFrom` 4), so the release tooling enforces the floor. (f) Keep stopping at
+any table the publisher does not publish (as before).
+
+**Why.** (a) is the larger change (nested schemas, a partition transform the metric tables do
+not use, per-table manifest schemas, a re-base of every tenant on the upgrade, and readers shown
+to read all of it), and the flag waits on the publisher only for this much: never stopping a
+tenant. (b) makes span and log data invisible: neither published nor said to be unpublished. (c)
+pays a row write per file for tables that are not published; counts say what is unpublished. (d)
+holds those files for ever with a publisher bound (the janitor's purge deletes only what the
+publisher releases), and past 10,000 held-back tombstones at the head of the ledger's answer the
+purge stops reaching the tenant's metric files as well (`janitor/src/janitor.ts`, the `held`
+window); no snapshot of this publisher can reference them, which is exactly the rule for metric
+files removed before they were published. (e) would make a rollback below this release refuse
+the publisher's storage for every tenant, and the janitor's purge fail closed for the whole cell,
+to protect tenants whose logs name tables a rollback target cannot read; the rollback that (e)
+refuses costs, without it, only those tenants' publication, retried until rolled forward. (f)
+makes `INGEST_SIGNALS` unusable wherever a publisher runs.
+
+**Measured** (here, workerd; `publisher/README.md`, "Tables it does not publish"): with the
+same fixed ids and clock, the Iceberg objects published from a log with span and log changes,
+from the same log with them removed, and by the release before from the log without them are
+byte-identical, at two stages (units, expiries of logs and metrics, a compaction). The readers'
+export (PyIceberg 0.12.0, DuckDB 2.0.0) reads 504 checks, 0 failed, with the eight content hashes
+of the metric tables as before. A publish costs one R2 list more per span or log table only when
+it reads a removal of one (the check for a newer publisher's table); none for a metric-only log.
+
+**Cost of it.** One SQLite table, a row per tenant and span or log table, written by a publish
+that reads a change naming one (at most three rows a tenant). A count that started at a cursor
+(`origin: log`) misses files added before it if this publisher has lost its storage since (it
+then restarts at the cursors restored from R2) until the tenant's next re-base; a release before
+this one never passes such a change, so nothing else is missed. A removal read while a newer
+publisher's table of that name exists is never released by this release. The rollout rule rests
+on an operator, not on the release tooling. Span and log data reach no Iceberg reader yet.
+
+**Would change if.** The publisher publishes the tables (then the record is replaced by their
+Iceberg state, their removals are released by the snapshot rule, and every tenant is re-based once
+for the new tables' cursors); the release tooling learns per-format floors (then step 2 of the
+rule is enforced); or counts must be exact across a publisher storage loss (then a re-base of
+every tenant after a resync).
+
+## D65. A `logs` file's token filter lives inside its Parquet object, between the last row group and the footer; its place is in the fragment (`tok`) and the file's metadata
+
+(Written 2026-11-19, with compaction of the span and log tables, D68. Replaces the placement
+`contracts/LOGS.md` §6 gave before, which was never built; the filter's bytes are unchanged.)
+
+**Decision.** Compaction writes a `logs` output's token filter (`VZT1`, contracts/LOGS.md §6)
+into the output's own Parquet bytes: after the last row group's column chunks and bloom filter,
+before the page indexes and the footer metadata, through the `parquet` crate's
+`SerializedFileWriter::write_all` (which keeps the writer's offsets right). Its offset and
+length are in the index fragment (`"tok":[off,len]`) and in the footer's key-value metadata
+(`viz.token_filter`). The fragment's `foot` then starts where the filter ends. A file with more
+than 2^19 distinct tokens gets no filter (the builder holds about 33 bytes a token).
+
+**Alternatives.** (a) The settled text: a separate object `….tokens` next to the file, with its
+size and SHA-256 in the ledger. (b) The filter as a footer key-value entry. (c) The filter before
+the first row group. (d) A filter in the ledger's index fragment.
+
+**Why.** (a) needs every deleter to know the second object: the orphan sweep keeps any key it
+cannot parse for ever (`unknown_name`), and purge deletes only keys the ledger removed, so every
+`.tokens` object would outlive retention, holding the tokens of expired log lines; the ledger has
+no field for its size or hash (`contracts/ledger.ts`, not this change's to edit) and would need a
+format change and its readers first (COMPATIBILITY.md §3.3); D30's adoption and sweep rules would
+need restating for a pair of objects; and a merge would cost a third PUT. Inside the object it is
+covered by the object's hash, written by the PUT the step already makes, and deleted with the file
+by rules already proven. (b) Every reader reads the footer; a filter of hundreds of kilobytes
+there taxes every read of the file, including the ones that never use it. (c) needs all of the
+file's tokens before its first row group is written, which a streaming merge does not have. (d)
+Fragments are capped (ledger state is 16 MiB a tenant) and the filter grows with distinct tokens.
+Parquet readers locate everything through the footer, and writers already put bloom filters and
+page indexes between row groups and the footer; PyArrow 26.0.1 and DuckDB 2.0.0 read every merged
+file whole (`engine/storage/README.md`).
+
+**Cost.** A reader that wants only the filter first needs the fragment (or the footer) to find it.
+A file's bytes grow by its filter (measured in `engine/storage/README.md`, "Compaction of spans and
+logs"). `foot` no longer starts at the last row group's end for these files; readers before this
+change never read the bytes between, so they are unaffected.
+
+**Would change if.** A Parquet reader viz must support refuses bytes no footer field references;
+filters are wanted for files that are never compacted (flush files); or the ledger gains per-file
+side objects for other reasons.
+
+## D66. Control refuses every pool map edge would refuse, with edge's own function (`validBasePool`: `POOL_NAME`, and no `/traces` or `/logs` suffix); a tenant's dedicated pool is `dedicatedPool(tenant)`; tenant ids stay as they are
+
+(Rewritten 2026-11-19 after review M-5, `design/reviews/signals-end-to-end.md`. It replaces the
+first D66, which checked only the derived suffixes and accepted the dedicated pool `tenant/<id>`
+verbatim: for a tenant id with `_`, which `TENANT_ID` allows and `POOL_NAME` does not, control
+published a map edge refuses, and every write of that tenant, metrics included, was a 503.)
+
+**Decision.** `PUT /settings/pool` refuses (422 `invalid`, field `pool`) any pool that is not a
+valid base pool by `validBasePool` (`shard/src/pool.ts`): a valid pool name (`POOL_NAME`: segments
+of `[A-Za-z0-9-]` joined by `/`, at most 120 characters) that does not end in `/traces` or
+`/logs`, the suffixes of the derived span and log pools (`DERIVED_SIGNALS`). The function moved
+there from `edge/src/route.ts`, and edge reads every map with it (`parseMap`), so control and
+edge cannot disagree. A tenant's dedicated pool is D38's `dedicatedPool(tenant)`: `tenant/<id>`
+with `_` written `-`. Control offers and accepts only that one; asked for `tenant/<id>` verbatim
+with a `_`, it refuses and names the right pool. A shared pool (`DEFAULT_POOL`) that breaks the
+rule is refused too, with a fix for the operator. A tenant whose id is `traces` or `logs` can still
+be created and uses the shared pool. Its dedicated pool breaks the suffix rule and is refused, as
+edge would refuse it (503 for every signal: `contracts/BATCH.md`, "Streams per signal"; D57, D63).
+
+**Alternatives.** (a) Refuse the tenant ids `traces` and `logs` at `provision` (a change to
+`TENANT_ID`'s meaning in `contracts/ledger.ts`, which every component checks). (b) Give such a
+tenant a dedicated pool under another name (for example `tenant/<id>-t`). (c) Do nothing in
+control, and let edge's refusal show. (d) Control's own copy of the rule (the first D66). (e) No
+dedicated pool for tenant ids with `_`. (f) An injective naming of dedicated pools: escape `-` as
+well as `_`, or write `_` as `/`.
+
+**Why.** The narrower rule: (a) would refuse two names that work everywhere on the shared pool,
+and a tenant created before the rule would still exist; the pool rule refuses exactly the maps
+edge refuses and nothing else, at the moment one is written. (b) needs a second naming rule for
+dedicated pools that every operator and reader must know, for two names. (c) publishes a map
+that turns every one of the tenant's writes into a 503, with nothing in the response that says
+why. (d) drifted at once: the copy checked the suffix and not `POOL_NAME` (M-5), which is what
+one function shared by the writer and the reader prevents. (e) refuses for a reason the data path
+does not have: `dedicatedPool` already names those tenants' pool. Two ids that differ only in
+`_` and `-` then share their dedicated objects, which D38 recorded as safe: streams and epochs
+are per tenant, and keys lie under each tenant's own `tenant=` prefix. (f) either renames every
+existing dedicated pool whose id has a `-`, or produces names that break the rule (`_` as `/`
+turns `a_traces` into `tenant/a/traces` and `a__b` into an empty segment).
+
+**Cost of it.** Tenants `a_b` and `a-b` share their dedicated shard objects, so a noisy one slows
+the other, as in a shared pool. A map published by an earlier control that breaks the rule is
+not withdrawn: edge refuses it, and replacing it is a pool change (409 until the drain-and-handover
+protocol of DESIGN §4.1 exists). None is known to exist. Edge's and the stack's mutants of the rule
+must name `shard/src/pool.ts` now (`edge/scripts/mutants.mjs`, `stack/scripts/mutants.mjs`).
+
+**Would change if.** Dedicated pools get another naming (then `dedicatedPool` changes and control
+follows it), another derived pool suffix is added (`DERIVED_SIGNALS` carries it to both sides),
+or the drain-and-handover protocol exists (then a stored map that edge refuses can be replaced).
+
+## D67. The publisher publishes `spans`, `trace_index` and `logs` as Iceberg v2 tables of their own: every nested field has a pinned id and a nested name mapping, `spans` is partitioned by `hour(start_time)` with the value taken from the key's hour level, every tenant is re-based once on the upgrade, a few per publish, and the metric tables' bytes do not change
+
+(Written 2026-11-19. Step 2 of publishing traces and logs; step 1 was D64, whose release read the
+tables without publishing them. Replaces D64's "record and release": `publisher/README.md`,
+"The span and log tables". Amended the same day after review M-6 of the spans-and-logs review: the
+upgrade's re-bases, and everything else a publish does in proportion to the cell's tenants, are
+bounded per publish (`publisher/README.md`, "Bounded work per publish"). This replaces the earlier
+text, under which the first publish after the upgrade re-based every tenant in one invocation.
+Amended again 2026-11-26: (l), a tenant's re-base kept across invocations, is now done (D55's
+amendment), and so is a lost table's rebuild a manifest at a time; this replaces the text that left
+one tenant, or one table's rebuild, whole in one invocation. Corrected 2026-11-26 after the review of
+that change: the text below names "D64's release" as the upgrade's source and "the rollback floor".
+D64 was never deployed, nor was the state before re-bases in steps (`test/m6/`). Production runs the
+release before D64 (`test/n1/`, main at PR #8, storage version 3, `INGEST_SIGNALS` off): the first
+release of this tree upgrades it 3 → 7 in one step, and it too has no cursor of the span and log
+tables, so every tenant is re-based once as below; a rollback of the publisher alone lands on it, and
+it opens version 7, ignores the new tables and re-bases whole (`publisher/test/steps-review.test.ts`).
+D64's rollout rule applies only once `INGEST_SIGNALS` is on.)
+
+**Decision.** `PUBLISHED_TABLES` is every `LedgerTable`, in commit order `metric_samples`,
+`metric_series`, `spans`, `trace_index`, `logs`; each is one Iceberg v2 table per cell with its
+own metadata, snapshots, cursors per tenant, expiry deadline and sweep, under
+`{cell}/iceberg/{table}/`. Schemas match the Parquet files of contracts/TRACES.md and LOGS.md
+column for column (required where the files are, `fixed[16]`/`fixed[8]` ids, `timestamptz`
+`start_time`, maps with required values, lists of required structs and of ints), with `tenant`
+(and `day` for `trace_index` and `logs`) first, optional, filled from the partition tuple, as for
+metrics. Field ids are pinned in `publisher/src/iceberg.ts` (`SIGNAL_DEFS`): the files' columns
+1..N in file order, then the partition columns, then every map key and value, list element and
+struct field in order of appearance; `schema.name-mapping.default` maps every one of them,
+`element`, `key` and `value` included (spec, "Column Projection"), because the files carry no
+field ids. Partition specs: `spans` `identity(tenant)` and `hour(start_time)` (field
+`start_time_hour`, an int of hours since the epoch); `trace_index` and `logs` `identity(tenant)`
+and `identity(day)`. A `spans` file's hour is read from its key (`…/day=D/hour=HH/`, under which
+the ledger admits it only if its `[minTs, maxTs]` lies in that hour) and checked against
+`minTs`/`maxTs` when it is planned: a file that disagrees stops its tenant (`inconsistent`).
+Statistics: value and null counts only for required top-level primitive columns; bounds for the
+time columns from `minTs`/`maxTs` widened by the last millisecond, for `service_name` and
+`trace_id` from the index fragment, never reading its 64-bit integers as numbers. Removals are
+released by the snapshot rule, as metric files are. After an upgrade from D64's release every tenant
+is re-based once (D55; the new tables have no cursor), spread over publishes: a publish starts at
+most 100 re-bases (`maxRebasesPerPublish`) and no further one once those it started have staged
+100,000 files and tombstones (`maxRebaseFilesPerPublish`), always at least one, least recently started
+first (storage migration 6, `rebase`, written before a re-base reads anything, so one cut off with its
+invocation goes to the back); each publish commits what it re-based. A tenant waiting for its re-base
+is read from the cursors it has, so its metric tables keep being published; the alarm continues
+after `continueMs` (1 s), and before publishing sets its own deadline `retryMs` ahead (a lease that an
+invocation cut off by the platform keeps). A publish reads at most 1,000 tenants
+(`maxTenantsPerPublish`), longest waiting first, a tenant read and not finished going behind. After a
+lost storage, a table whose metadata R2 has is rebuilt from it, one per publish, before any tenant is
+read, so no tenant is re-based for a table R2 holds its cursor for. The metric tables move on from
+their cursors and are committed only if their files changed. D64's `unpublished` records are
+left alone. The alarm's deadlines and orphan sightings of the new tables live in tables of their own
+(storage migration 5, additive), because the D64 release, the rollback floor, re-arms at the earliest
+row of `due` and `orphan` and would wake for ever on rows of tables it does not publish. New golden formats `iceberg.signal-metadata` and `iceberg.signal-manifest`;
+`viz.format-version` stays 1, so a metric table's `metadata.json` is unchanged.
+
+**Alternatives.** Partitioning `spans`: (a) `identity(day)` plus an optional `hour` int column
+filled from the partition tuple, like `day`: a reader would prune only on a predicate over that
+column, not over `start_time`; (b) `day(start_time)`: a day's 24 hours in one partition, and
+readers filtering an hour read them all. The hour's source: (c) `floor(minTs / 1 h)`, equal to the
+key's hour under the ledger's rule, but `live` keeps no `minTs`, and a rewrite or a resync would
+need it (a storage migration on `live`, which the release before cannot read back through its
+resync's column-less `INSERT … SELECT`). Ids: (d) nested ids right after their parent; (e) field
+ids written into the Parquet files instead of a name mapping (contract issue 4: `engine/storage`'s,
+not this component's). Counts: (f) per-column counts read from each file's footer at publish (a
+range read per file). The upgrade: (g) start the new tables' cursors from D64's `unpublished`
+records: they hold counts, not files; (i) every re-base in the first publish (the text this
+amendment replaces); (j) a higher `limits.cpu_ms` alone (up to 5 minutes, Cloudflare's documentation);
+(k) a commit after every re-based tenant; (l) a tenant's staged state kept across invocations;
+(m) a tenant waiting for its re-base not read at all until then. Removals: (h) keep D64's immediate release: wrong once a
+snapshot can reference the file.
+
+**Why.** `hour(start_time)` is the partitioning contracts/TRACES.md and DESIGN §5.1 name, and the
+one a reader can prune with from a time predicate: measured, PyIceberg 0.12.0 and DuckDB 2.0.0
+(iceberg extension `4c0c0874c4`) plan or read only the files of the hour asked for. The key's hour is
+exact for every file the ledger admits and needs no storage; the plan-time check refuses a log that
+breaks the rule rather than publishing a wrong partition. Field ids in a fixed table, golden-pinned
+and checked never to be reused, keep a column's id across releases whatever a later schema adds.
+Re-basing on the upgrade reuses D55's bounded-memory path, which every tenant takes anyway after a
+storage loss; nothing new is written for it. (i) adds the cell's re-bases up in one invocation, which
+has 30 s of CPU by default (Cloudflare's documentation, read 2026-11-19): about 340 s for 100 tenants
+of 100,000 files by the times measured here (modelled), and a publish cut off was retried from
+nothing, so the alarm could fail for ever and stop metric publication for the whole cell. (j) moves
+the wall without removing it, and is still the answer for one tenant too large for an invocation.
+(k) loses less in a cut-off but writes a snapshot per tenant per table; a publish commits what it
+re-based instead, and the cap bounds what one cut off loses. (l) is done since 2026-11-26 (D55's
+amendment): measured on Cloudflare, 2026-11-19, S11, one tenant's first publication reaches the 30 s
+limit near 300 MiB, so a cap on the number of re-bases alone was not enough; a tenant larger than
+the budget goes on in steps under the same cap. (m) is simpler but holds every waiting tenant's
+metrics back for the whole queue, which D64's release did not. The started mark keeps a re-base that
+cannot finish, or keeps failing, from being taken first every time and holding the queue. Metric commits first, and unchanged code paths for
+them, keep metric publication byte-identical, which the counterfactual below requires.
+
+**Measured** (here, workerd, `publisher/README.md`): with the same ids and clock, the metric tables'
+Iceberg objects are byte-identical whether published by this release from a log with span and log
+changes, by this release from the same log without them, by D64's release from the log as written,
+or by the release before D64 from the log without them, at two stages. Real span and log files from
+the stack's write path, four stages: PyIceberg and DuckDB read every row and column of every file
+as pyarrow does, under a schema equal to the files' (1,542 checks, 0 failed; PyIceberg reads a null
+list as empty, counted), prune by
+tenant, hour and day, and give rows that viz-storage's readers read identically and on which
+viz-traceql and viz-logql answer identically (1,786 checks, 960 TraceQL and 576 LogQL answers, 0
+different). A first publication of 10,000 `spans` files took 0.8–1.4 s of commit and 399 kB of
+metadata, 10,000 `logs` files 0.8–1.2 s and 253 kB (four runs, load average 8.5–13.6). The capped
+upgrade (`publisher/bench/upgrade.bench.test.ts`, load average 9–10.6): a publish at the cap, 100,000
+staged files of which 50,000 span and log files added, took 3.3–3.8 s of workerd CPU and 4.8–9.5 s of
+wall time; a 300,000-file tenant re-based alone 10.3 s of CPU; a table rebuilt from R2 about 30 µs of
+CPU per file. In workerd tests, a cell of five tenants capped at two tenants' staged files is
+upgraded over three alarm runs, each within the cap, and ends with every table as one uncapped
+publish leaves it (live data files with partitions, counts and bounds, totals, cursors, metadata);
+waiting tenants' metric files are committed meanwhile; an invocation reset in the middle of a re-base
+loses nothing committed, keeps the alarm, and the next run takes the tenants never started; 12
+mutants of these rules killed. Not measured on Cloudflare.
+
+**Cost of it.** A publish that moves a tenant's cursors without a commit costs one R2 HEAD per
+table (up to five, three more than before) to check that no other writer is ahead. A `spans`
+`metadata.json` is about 9.8 kB with one snapshot (2.6 kB for a metric table: the schema has 70
+field ids and the name mapping all of them), and each of its manifests carries a 7.8 kB header.
+The upgrade re-bases every tenant once: about two `stage` row writes per live file of every table,
+spread over about (the cell's files ÷ 100,000) publishes a second apart, each a commit (and a
+retained snapshot, about 1 kB of `metadata.json` each for 24 hours) of every span and log table;
+until a tenant's turn its span and log tables are not published. Storage migration 6, additive. A
+publish with a tenant to re-base GETs the version hint of each table SQLite has no metadata for (up
+to five). A lost storage takes a publish per table before tenants are read again, more for a table
+larger than the budget: a rebuild reads at most the budget's manifest entries per publish (about
+30–36 µs of CPU per entry here, 1.3 s at most per publish at a budget of 25,000; before, the whole
+table, so about 1,000,000 files per table before it alone reached 30 s, modelled). A re-base larger
+than the budget is a few more publishes, a second apart, and its stage and manifests written ahead
+are kept meanwhile (storage migration 7, additive). A publish still gives up after six conflicts (one per table plus one:
+with three, before the rebuild came first, the first publish after a loss threw at the fourth
+table), which now serves a lost storage whose version hints are gone too.
+External readers that ignore the name mapping, or the projection rule for identity partitions, see
+nothing or nulls; PyIceberg 0.12.0 shows a span without events as an empty list rather than null.
+
+**Would change if.** `engine/storage` writes Parquet field ids (then the name mapping is a
+fallback only); a promoted attribute is added (a schema change: this release refuses metadata with
+a schema id it did not write, so that needs a release that evolves the schema); compaction of
+`spans` ever merges across hours (then the hour comes from the files' bounds, not the key); or
+readers that matter turn out to ignore the name mapping. For the caps: a capped publish's CPU,
+measured on Cloudflare, far from the limit (then larger caps) or near it (smaller ones, or
+`limits.cpu_ms`); the parts of a re-base still whole in one invocation (a base staged whole, the
+commit of a re-base in steps) near the limit by themselves (D55, "Would change if").
+
+## D68. Spans, `trace_index` and logs are compacted by the metric step, each table on its own: spans per hour and never across one, `trace_index` and logs per day; merges stream their inputs and cut row groups at 2 MiB
+
+(Written 2026-11-19. Contracts: `contracts/TRACES.md` and `LOGS.md`, "Compaction"; the token
+filter's place is D65.)
+
+**Decision.** `compactStep` (compact/) looks at the metric tables first and, when they have no
+job, at `spans`, `trace_index` and `logs` in turn, each with the metric policy (open-hour level-1
+merges, closed-day level-2 merges, 8 inputs and 16 MB a step, the step deadline), the metric
+keys (`L{level}-{span}-{inputs16}-{hash8}`), D30's inputs record, one `replace`, and nothing ever
+deleted by a step. A unit of the policy is one file; nothing pairs the trace tables (a fragment
+names hours, never files). `spans` files stay hour-pure: an open hour's bucket is the file's hour,
+a closed day's spans become one level-2 file per hour, and an output's key is under its hour and
+named after it at both levels (`hour=HH/L2-hHH-…`). The engine merges them (`engine/storage`
+`merge_signal_files`, engine/wasm ABI 4 `mergeSignalFiles`): `spans` rows equal on
+`(trace_id, span_id)` and `logs` rows equal on their row key keep the later input's, `trace_index`
+rows of one trace are merged as the contract merges fragments (the later input's root on a tie,
+at most 64 services). Each input is read row by row and the output written one row group at a
+time, in 1 MiB chunks the binding copies out one by one, with row groups cut at 2 MiB of data
+(flush keeps 16 MiB). An engine without the merge compacts metrics only.
+
+**Alternatives.** (a) Pair `spans` with `trace_index` like a metric pair (one job, both tables,
+one `replace`). (b) Merge spans per day like metrics (files no longer hour-pure). (c)
+Re-aggregate `trace_index` from the merged spans (exact counts, no over-count of retried spans).
+(d) Decode whole inputs into memory and re-run flush's encoder over them. (e) Keep 16 MiB row
+groups and lower the step budget for these tables. (f) A separate compactor for traces and logs.
+
+**Why.** (a) would tie two partitionings (hour and day) into one job for no reader's benefit:
+nothing reads the two tables as a pair, and both are expired by each file's own day. (b) breaks
+the hour partitions the key, the ledger's `spans` admission rule, the publisher's `hour(start_time)`
+partition (D67) and the read path's hour hull rely on. (c) needs every span of a trace, which lie
+in up to 24 hour files and other days: a step would read most of a day. Query summaries are
+computed from spans already (D62); the fragments' extents and hours, which queries use, are exact
+either way. (d) and 16 MiB groups were measured: a merge at the step budget peaked at 193 MB of
+WASM memory (spans) with whole output row groups of 16 MiB decoded, 87 MB for one 1.9 MB input;
+with streamed inputs, 2 MiB groups, interned span entries, a chunked output and a token builder
+of about 12 bytes a token, the largest step peaks at 62 MB (spans) and 81 MB (logs, 16 MB in,
+22 MB out with its filter), against metrics' 70 (`engine/storage/README.md`, "Compaction of spans
+and logs"). (e) was not wanted: the task fixed the step budget; and smaller row groups cost only
+fragment bytes. (f) would duplicate D30's machinery and its proofs.
+
+**Cost.** More row groups per merged file (49 in a 16 MB spans file instead of 7; about 130 bytes
+of ledger state each). The isolate holds the inputs and the output on the JS side besides the
+WASM peak: about 81 + 16 + 22 MB for the largest logs step (modelled; not measured on
+Cloudflare). A span id re-sent with a start in another hour is two rows in two hours' files,
+which no merge brings together; after a merge of one hour a reader's precedence order between the
+two can change (`contracts/TRACES.md`, "Compaction"). The token filter adds about a quarter to a
+logs file whose lines carry unique ids (25% measured on the benchmark's lines). Merges are
+CPU-bound at about 5 MB/s (spans) and 9 MB/s (logs) natively here, so a step at the budget takes
+3–4 s natively and 4–6 s in WASM (measured here, not on Cloudflare).
+
+**Would change if.** A Container takes merges over the Worker budget (then 16 MiB row groups and
+larger steps); the binding streams the output to JS during the merge (then the WASM peak drops by
+the output); `trace_index` must count retried spans once (then (c), at the cost above); or reads
+need traces across hours together (then hour-pure spans would be revisited with the publisher's
+partition).
+
+## D69. Release records carry format versions; `INGEST_SIGNALS` puts a rollback floor under every Worker that reads what it lets in, enforced at deploy and rollback; each run marks its uploads; a rollback across the OAuth key's creation or rotation is refused before anything moves
+
+(Written 2026-11-19 for the owner's ask that "care goes into how the system can be updated or
+redeployed in place". Closes three open risks of `deploy/README.md`: D64's floor, m-13 of the review
+of D60, m-11 of the review of D53; widened by the review of traces and logs, M-4 and m-5; and folds
+in spike S9, measured on Cloudflare. Code: `deploy/lib/formats.mjs`, `deploy/lib/floors.mjs`,
+`deploy/lib/secrets.mjs`, `deploy/release.mjs`, `deploy/configure.mjs`, `deploy/workers.json`.
+Revised the same day after its adversarial review, `design/reviews/d69-deploy-safety.md` (approve
+with changes): points 1 to 4 below are rewritten where the review found the code or the text short,
+and point 5 is new; each change says "review of D69". The entry as first written is in git.)
+
+**Decision.**
+
+1. **Format versions** (contracts/COMPATIBILITY.md §6 already asks for them; D46 left them out).
+   `workers.json` names, per Worker, the `FORMATS` maps its components keep (§3.1) and the read
+   lists they keep (`READS` maps; `reads_of` for one format, the ruler's `ANOMALY_STATE_READS`).
+   `lib/formats.mjs` reads them from the sources as schemas are read (esbuild, a `vm`): for each
+   format, the version the Worker writes and the versions it reads, a Worker reading what it writes
+   unless a list says more, two lists intersected, a Worker that writes what it does not read
+   refused. They go into the manifest, the release record (`formats: { worker: { format: { writes,
+   reads } } }`) and every version's `VIZ_FORMATS` var. **Every deployed Worker declares what it
+   reads, completely** (review of D69, M-1 (c)): its components' read lists and version constants
+   (edge's `KEY_RECORD_VERSION`; `contracts/control.ts`'s `CONTROL_SERVICE_VERSION`;
+   `contracts/oauth.ts`'s `OAUTH_VERSION`), and, where its code reads a format with no version of its
+   own (control's KV records in edge, shard routing and query; the API key's and the OAuth
+   credential's layouts), `reads_v1` in `workers.json`, version 1 only, with where; a Worker that reads
+   none declares `{}`; configure refuses a deployed Worker without a declaration, and the record and
+   var say `complete`. A test bundles each Worker as wrangler does and fails if its sources read one of
+   control's KV records, the two layouts or control's RPC answers without declaring it. What a release
+   reads of a format is then judged **per Worker**: a Worker that declares nothing (a version without
+   the var, a record without its entry) reads version 1 of every format; a declaration from before
+   they were complete (D69's first records and vars) reads version 1 of every format it does not list;
+   a complete one reads exactly what it lists. A release that writes a version that some Worker
+   serving now does not read is **forward-only** (kind `format`; no automatic rollback); every Worker
+   the deploy reads is asked, not only those declaring the format. A rollback is **refused** when a
+   Worker it restores does not read a version that (a) any version newer than the target's, of a
+   restored Worker that writes formats, wrote (the gate of D60, `store.anomaly-state` 2, is the case
+   at hand), or (b) **a Worker the record leaves out** wrote or writes: it keeps serving, so every
+   version Cloudflare keeps of it since its version in the record (all of them when the record does
+   not name it), its serving one always, is judged against the restored Workers (review of D69, M-1:
+   before, a record without viz-control, the README's own way round the rotation refusal, put
+   viz-ingest's janitor back to a `kv.settings` reader of version 1 while viz-control kept writing 2).
+   A record entry of a Worker left out is no reader. `release.mjs rollback --only` names the Workers to
+   restore from a whole record. **Old records** (no `formats`) are taken to read version 1 only (§3.1
+   "absent means 1"; §6 Bootstrapping), the side that refuses more. A version that declares no formats,
+   of a Worker that writes them, is refused as unknown, as D46 does for schemas.
+2. **Rollback floors raised by a switch.** `workers.json` `rollback_floors` has one rule today,
+   `signal-data`: once a version of viz-ingest whose `INGEST_SIGNALS` names anything has existed,
+   viz-publisher must be at its floor (`publisher.Publisher` schema 4, D64; D67's migration 5 is
+   additive), viz-query at its floor (D62: it asks each signal's shards by name and checks every
+   batch's header), and viz-ingest at its floor (D63: flush, the ledger and the janitor flush, list
+   and expire span and log files). A floor is expressed one of two ways: by the Worker's **storage
+   schema version**, when one marks it (the publisher's, in every version's `VIZ_SCHEMAS` since D46,
+   so versions and records from before this change are judged with no new data), or by
+   **evidence**: exports the code at the floor has (`query/src/shards.ts#checkSignal`,
+   `#signalOfShard`; `janitor/src/janitor.ts#DEFAULT_SIGNAL_DAYS`, `contracts/ledger.ts#TRACE_TABLES`,
+   `#LOG_TABLES`), checked by configure, which then stamps every version of the Worker with
+   `VIZ_FLOORS`; an unstamped version is below the floor. "Has existed" means: is among the versions
+   Cloudflare keeps (the 100 newest); the switch is seen as a binding of any type with its name, a
+   plain or JSON var, or a secret, whose value cannot be read (review of D69, m-2). Refused (exit 3,
+   before anything is uploaded or moved): a release with `INGEST_SIGNALS` on, unless each of the
+   three, in this release **and as it serves now**, is at its floor, a floor Worker this release does
+   not deploy judged as it serves (review of D69, m-3) ("every release a rollback could reach": the
+   serving one, which deploy.sh's automatic rollback and phase 2's restore put back without asking,
+   and this one; an older one is reached only through `release.mjs rollback`, which refuses it from
+   the moment this release's viz-ingest is uploaded; asking every version Cloudflare keeps to be at
+   the floor would hold the switch off for about 100 releases); a release with one of its own below
+   its floor while any viz-ingest version Cloudflare keeps set the switch (older code in a new
+   commit); a release while viz-ingest's serving or newest version carries the switch as a secret
+   (every upload inherits it, whatever the release's config says: review of D69, m-2); a rollback, of
+   the whole release or of any Workers a record names (the others judged as they serve), that would
+   leave one below its floor while any kept viz-ingest version set the switch. The record says what
+   each floor saw. With the switch on, one floor Worker off its floor as it serves refuses every
+   release; the way out is restoring that Worker alone (`--only`), not turning the switch off (review
+   of D69, m-8).
+3. **Each run marks its uploads** (m-11). Every version a run uploads or deploys carries
+   `VIZ_DEPLOY_RUN` (`--var`), a UUID per run. `versions secret put` patches whatever version is
+   newest when Cloudflare applies it, and the keyed version keeps that version's vars: before the
+   put the newest version must be this run's upload and carry its mark; after it, the keyed version
+   must carry this run's mark. For a viz-control uploaded in phase 1 (every release once it exists)
+   that refusal comes before anything is promoted (exit 3). For one that goes out with `wrangler
+   deploy` in phase 2 (new, or applying a migration) there is no version before phase 2: the same
+   refusals come after the Workers before it were promoted and while viz-control serves its deployed
+   version without the key, so the release fails in phase 2 (exit 1), and the messages say so
+   (review of D69, m-5: they said "nothing is promoted").
+4. **Generated secrets and rollbacks** (measured on Cloudflare, S9). A rollback whose target version
+   lacks the key that a newer version carries (across the key's creation) is refused before any
+   Worker moves, naming what it breaks, unless `--accept-secret-loss OAUTH_CLIENT_KEY`. One across a
+   rotation (a newer version made by the deploy's put, by its message) is refused always. A failed
+   promotion leaves a viz-control whose key it created or rotated on that version. A version just
+   created is read again, backing off from 250 ms, for up to 10 s of wall-clock time, and an upload
+   until the key it inherited shows, not only until it exists (review of D69, m-7); an empty
+   `VIZ_FRESH_READ_MS` is the default, and every Cloudflare API request times out after 30 s and is
+   retried. The secret list is not evidence. A key set but missing from the upload has no way out but
+   rotation, and the refusal says so (review of D69, m-6; "Known risks").
+   The phase-2 restore after a failed promotion also no longer crosses a forward-only release
+   (schema or format) for a Worker already promoted: it was a rollback no check judged.
+5. **Only main is deployed, with main's own tooling** (review of D69, M-2). Every refusal above lives
+   in the tooling of the commit that runs it, and "redeploy an older commit" (the README's advice, the
+   workflow's own when no record exists) ran that commit's `deploy/`: for a commit from before D69, no
+   floor, format or key check at all (the review deployed a viz-query from before D62 over span and
+   log data with `b322599`'s tooling). The Deploy workflow now refuses any ref but `refs/heads/main`
+   as the first step of both jobs that hold the Cloudflare credentials; the `production` environment
+   allows deployments from main only (a repository setting, in `deploy/README.md`'s one-time setup),
+   which is what stops an older commit's workflow, since it has no such step. Older code goes out
+   again either as a recorded release (`rollback_to`, judged by main's tooling) or as a new commit on
+   main that restores it, which main's tooling judges like any release. `deploy.sh` run by hand from an
+   older checkout cannot be refused from here.
+6. **A second switch: `OAUTH_PUBLIC` holds viz-control at D70's third round** (added 2026-11-26 for
+   the second review of D70, m-3; `deploy/workers.json` rule `oauth-public`). Rolling viz-control back
+   to `3cbabb8` or earlier (PR #8, what production first served, among them) once OAuth is public
+   would mint credentials without an expiry the Worker can see and bring B-1 back; to a release with
+   D70's second round but not its third, R3-B1 (a thief's way round reuse detection).
+   - **What raises it**: the first viz-control version that carries `OAUTH_PUBLIC`, a plain var that
+     `configure.mjs` sets to `"1"` on every production viz-control that passes D70's gate (all six
+     Rate Limiting bindings, each with an allocated id) and on a stage only when asked
+     (`--oauth-public`); no component or `VIZ_STAGE_VARS` may set it. In production that is every
+     release from this change on, which is every release that carries or will carry
+     `OAUTH_CLIENT_KEY` (the deploy creates the key wherever it is missing, D53). The key itself is
+     not the switch: point 2 refuses a secret as a switch (its value cannot be read).
+   - **The floor**: viz-control by evidence: `contracts/oauth.ts#CREDENTIAL_LAYOUT`,
+     `#DEAD_INACTIVE_REASONS`, `control/src/deadlist.ts#recordDead` (D70's second round) and
+     `control/src/ratelimit.ts#LISTED` (its third); configure stamps every viz-control version
+     `VIZ_FLOORS` naming `oauth-public`. The writer is its own floor Worker.
+   - **Over a viz-control serving below the floor: forward-only, not refused**
+     (`"serving_below_floor": "forward-only"`, a rule option; `signal-data` keeps the default,
+     `refuse`). Point 2 refuses a switch-on while a floor Worker serves below its floor, and its
+     remedy is "release it at its floor without the switch first". For `signal-data` that is
+     possible: a person sets the switch. For `oauth-public` it is not: production's configure sets
+     the switch on every release, so over an unstamped viz-control every release would be refused,
+     for ever. That is production as deployed on 2026-11-19 from main at fb77292 with that commit's
+     tooling (before D69): viz-control serves OAuth with its key, no rate limits and no stamp. Such a
+     release goes out marked FORWARD-ONLY for viz-control (kind `floor` in `forwardOnlyBecause`):
+     `deploy.sh` does not roll it back automatically and a failed promotion does not put that
+     viz-control back, the two ways back the refusal guarded; and from the moment this release's
+     viz-control is uploaded, `release.mjs rollback` refuses the older one as any rollback below a
+     floor. The serving version is no worse than what serves already; the mark prevents going back
+     to it after credentials of the new layout were issued. A floor Worker the release does not
+     deploy is still judged as it serves and refused.
+   - Otherwise point 2 applies unchanged: once a kept viz-control version had the switch, a release
+     or a rollback that would leave viz-control below its floor is refused (exit 3), and so is a
+     release while the switch is a secret on viz-control.
+   - With it, D70's gate (`deploy/README.md`, "Rate limits in front of OAuth"): configure refuses a
+     production viz-control without the six bindings, and `placement` on viz-control and viz-mcp;
+     `lib/secrets.mjs` does not create or rotate the key on a version without them; a manifest with
+     placeholder ids (`--ids-optional`) is not deployed.
+
+**How the floor is expressed: the alternatives.** (a) In the publisher's own spec: make migration
+4 forward-only (`readableFrom` 4): rejected in D64 (e), it refuses every tenant's storage on a
+rollback to protect only those with span or log changes, and says nothing for viz-query, which keeps
+no storage. (b) A constant in each component (`READS_SIGNAL_DATA`) read like `FORMATS`: the cleanest
+end state, but it needs edits in publisher/, query/ and the write path that this change does not own,
+and versions from before it would be unmarked either way. (c) A format version (`ingest.signal-data`
+2 written by viz-ingest when the switch is on, read by the floor Workers): the generic rollback rule
+judges versions since the target of the target's Workers, which misses the cross-Worker case of a
+record naming only viz-query; and the writer's version is a var, not a code constant. (d) A floor
+release recorded in KV or R2: D46 (c)'s objections. (e) Schema versions alone: viz-query has none and
+D63 changed no schema of viz-ingest's. Chosen: the rule in `workers.json` (writer, switch, Worker,
+floor, why), judged by schema where one marks the floor and by an evidence stamp otherwise.
+
+**Which of the review's two shapes (M-4).** It offered: refuse a rollback below the release that
+first set `INGEST_SIGNALS`, or mark that release forward-only for those Workers. Neither as such; the
+floors are per Worker. Since a release that sets the switch is refused unless every floor Worker is at
+its floor in it and as it serves, the first release with the switch on is at or above every floor, so
+"below that release" is at least as strict as "below the floor" and is stricter only for rollbacks
+that are safe: to a release whose Workers are all at their floors with the switch off (the release
+just before the switch, whose automatic rollback this keeps), and the publisher from D67 to D64, which
+`publisher/test/signals.test.ts` shows is served. Marking forward-only would also stop deploy.sh's
+automatic rollback of the release that sets the switch, although its target is at every floor; and
+in this tool a forward-only mark is not what a rollback reads (it reads the versions), so a floor has
+to be judged from the versions anyway.
+
+**m-5 (D64 must ship as its own release).** The floor is "schema 4 or later", whatever served. If D64
+and D67 reach a deployment in one release, no publisher at exactly 4 ever serves there: the oldest
+reachable publisher once the switch is on is the first with D67, the D67→D64 rollback shown by the
+publisher's tests does not exist there, and nothing is lost by that. The tool cannot make D64 ship
+alone (it deploys whatever commit it is given, and both are on the same branch now); D64 serves first
+only if a release of a commit that has D64 and not D67 is deployed, and nothing in production has
+been. `deploy/README.md`, "Rollback floors", says so.
+
+**Alternatives the review of D69 raised.** Formats across Workers (M-1): (l) judge only the serving
+version of a Worker a record leaves out (the review's suggestion): misses one rolled back since, whose
+newer kept versions wrote what its serving one no longer does; (m) refuse records that leave Workers
+out: loses the only way round the rotation refusal and the one-Worker way out of m-8; (n) keep "a
+Worker that does not declare a format does not read it" (D69's): edge, shard routing and query read
+control's KV records without declaring them, so no rollback or release ever asked them; (o) have the
+components declare their reads: the end state, but it needs edits in edge/, query/, stack/ and
+contracts/ that this change does not own; until then `workers.json` declares them and a test holds it
+to the bundled sources. Older commits (M-2): (q) run main's tooling on the older commit's components
+in one checkout: `workers.json` from main names sources, evidence exports and Workers an older commit
+may lack, so configure would refuse many commits for reasons that have nothing to do with safety, and
+the gateway (in `deploy/`) would come from main; (r) refuse a commit that does not descend from the
+floors' commit (`git merge-base --is-ancestor`): it depends on history's shape (a squash merge into
+main loses the development branch's commits), and a descendant may still lack later fixes, this
+review's among them; (s) a release-safety level in the tooling that the workflow compares with
+main's: right only if every change that refuses more bumps it by hand. Chosen: main only, older code
+back through a commit on main. Floors: (t) carry the switch's evidence forward in every later
+version (m-1) and (u) re-check the floors before each restore step (m-4): not built, recorded as
+known risks with the review's scenarios.
+
+**After the review's second round** (`design/reviews/d69-deploy-safety-r2.md`, approve with changes;
+2026-11-26):
+- **M2-1, a release from before format records gets its real reads.** fb77292's record and versions
+  declare no formats, so point 1 took them to read version 1 of everything, and after the first release
+  every rollback to fb77292, `--only` any Worker included, was refused by `r2.dead-letters`, which
+  fb77292's own ingest writes at 2 and reads at 1 and 2. `deploy/records/<sha>.formats.json`, made by
+  `deploy/scripts/record-formats.mjs` from that commit's own sources (`git archive`: its `FORMATS` maps,
+  `READS` lists and version constants, read through this tree's declarations), now stands in for the
+  missing declarations: for that record, and for any version that declares nothing and carries that
+  release's `VIZ_RELEASE` (else its tag). Today one, fb77292. Every format version this tree writes is
+  one fb77292 reads, so the first release is forward-only by point 6 alone, and every Worker but
+  viz-control can be rolled back to fb77292 alone. Alternatives: deriving a recordless target's reads
+  from its commit at rollback time (the rollback job would need the history and esbuild over an old
+  tree on every rollback); keeping "version 1" and documenting it (refuses the one per-Worker way back
+  the owner has on a release with no automatic rollback). Chosen: a file per such release, checked in,
+  made by a script, and its use tested (the upgrade test, RV2-1, and a unit test of the file).
+- **m2-1, what the account scan cannot read.** Before, one unreadable Rate Limiting binding of any
+  script stopped every deploy. Now an id that cannot be a decimal number is ignored (it can equal no viz
+  id); anything else is a doubt, under which ids this deployment's viz-control already binds are kept
+  and no new id is taken (refused, naming the script); viz-control's own unreadable binding is not a
+  doubt (its ids from `resources.json`, else the deterministic pick). Alternative: an explicit override
+  naming a script to ignore, recorded: it would take an id that cannot be proven free, which the
+  allocation must never do. Chosen: skip with a warning only where nothing new is taken.
+- **m2-2**: COMPATIBILITY §6 states the `forward-only` option. **m2-3**: the credential layout's early
+  expiry rate is corrected in `contracts/oauth.ts` and D70. **m2-4**: the README's owner notes put the
+  environment rule first, before the merge.
+- **M2-2** (the Rate Limiting binding's shape and acceptance on Cloudflare) needs a stage trial,
+  `spikes/s13-upgrade-trial/`, prepared and not run here.
+
+**Alternatives for point 6.** (v) The key as the switch (`"on": "present"`, which `control/README.md`
+names): `deployFloorProblems` would skip its secret refusal for one rule, and a switch would have two
+meanings. (w) Refuse over an unstamped serving viz-control, as point 2 does, with a one-off configure
+flag for production that leaves `OAUTH_PUBLIC` off for one release: the first release over the
+2026-11-19 production would fail in CI until someone ran a release by hand from a workstation, and
+the flag would be a standing way to release a public OAuth without raising the floor. (x) Mark every
+switch-on over a below-floor serving Worker forward-only, for both rules: for `signal-data` the
+refusal costs one release without the switch and keeps the automatic rollback of the release that
+sets it, so there is no reason to give that up. (y) Raise the floor only from the first release with
+the rate limits whose viz-control already had the key (the lead's example): the same releases in
+production, since every production release from this change has both; the var says it without a
+second condition. Chosen: the var, set by configure, and forward-only over an unstamped viz-control
+for this rule only. This replaces `control/README.md`'s "a release setting it while the serving
+viz-control is unstamped is refused", which would have stranded production.
+
+**Alternatives for the rest.** Formats: (f) record only the formats whose read and write sets differ
+(the gate): a later bump of any other format would go unjudged; recording every `FORMATS` map, with a
+test that no map in a deployed component is left out, costs a var of under 1 KB per Worker. (g)
+Treat an old record as reading every version: a guess in the unsafe direction. (h) Refuse old records
+outright as D46 does: it would also refuse the rollbacks that are safe today. Run marks: (i) put the
+mark in the tag or message: `versions secret put` overwrites both on the keyed version, so they cannot
+say which upload it was built on. (j) A lock in KV: another store, eventual. Secrets: (k) force the
+rotation rollback through the API (`?force=true`): the old key serves only until the next release
+takes the rotated one back (S9), and the clients registered after the rotation break meanwhile.
+
+**Why.** Each refusal is computed from what Cloudflare keeps for every version (vars) and from the
+release record, as D46's, so the evidence lasts as long as a rollback is possible and needs no store
+of its own; each happens before anything is uploaded or moved. Per-Worker floors refuse exactly the
+states the reviews reproduced (a pre-D62 query handing span batches to a metrics read; a pre-D64
+publisher stopping tenants; a pre-D63 write path stalling flush and retention) and allow every
+rollback that keeps each Worker at its floor.
+
+**Verified** (here, nothing deployed, the Cloudflare API not called; fakes of wrangler and the API that
+model S9's measurements: `deploy/README.md`, "How it was verified"): 36 new tests; of the 35 tests in
+the two files that drive the real deploy, plan and rollback, 23 fail against the release tool as it
+was before this change (the rest are the earlier secrets tests and a negative control; the other 13
+new tests are unit tests of new functions); mutants in a scratch copy: release 41 of 41 killed, secrets 31 of 31 (first runs 40 of 41 and 30 of
+31; each survivor was fixed by a test or a corrected mutant, as listed there). After the review of
+D69: its reproductions are regression tests (`deploy/test/review-d69.test.mjs`, 12, and
+`deploy/test/workflow.test.mjs`, 2); against the tool as the review read it, 13 of the 14 fail (12
+on their assertions, one, the API timeout, by hanging until the event loop drained), and the one that
+passes is RV-3's half that already held (the current tool refuses the release `b322599` would make);
+all pass now. Mutants in a scratch copy: release 60 of 60 killed (19 new), secrets 38 of 38 (7
+new), each a named test failing (`deploy/README.md`, "How it was verified").
+Point 6 (2026-11-26; against fakes, nothing deployed): 25 new tests, among them the first release
+over production as fb77292's tool left it (`deploy/test/upgrade-production.test.mjs`): not refused,
+forward-only by format and by this floor, the key kept, the way back to fb77292 refused; with
+`serving_below_floor` removed, the same release is refused at its plan. Mutants: release 29 of 29 new
+killed (after one unreachable check was removed and one test strengthened), the 60 earlier ones again
+(60 of 60, one pattern rewritten), secrets 46 of 46 (8 new; two patterns rewritten), and the
+gateway's 30 of 30 (2 new, for `/api/echo`).
+
+**Cost of it.** Configure bundles more source (the `FORMATS` maps). A rollback reads one more version
+per format-bearing Worker per version since its target; a rollback below a floor, and a release
+whose Worker is below one, read the writer's versions until one with the switch (up to 100). The
+first release with format records over a deployment without them is forward-only (viz-ingest writes
+`r2.dead-letters` 2, which a release without records is taken not to read), and rollbacks to records
+from before this change across a viz-ingest upload are refused; nothing is in production, so that is
+paid on stages only. The switch needs a release with this change (stamps) to have served first.
+Since the review of D69: a deploy and a rollback read the live state of every Worker in
+`workers.json` (one deployment read and one version read each); a deploy reads viz-ingest's version
+list and one or two versions for a secret switch; a rollback that leaves a Worker that writes formats
+out reads its versions since the record (up to 100); and the first release with complete read
+declarations over a deployment with D69's is forward-only again, as is a rollback to a D69 record
+across a viz-ingest upload (stages only).
+Evidence is a guard against a declaration outliving its code, not proof of behaviour: the floor of
+viz-query and viz-ingest rests on the declaration in `workers.json`, added with this change, after
+D62 and D63. A forced rollback outside the tool (wrangler, the dashboard) is not checked.
+
+**Would change if.** Components declare their own floors or read versions (then `workers.json`
+points at them, and evidence and `reads_v1` go); a further switch appears (another rule; point 6 is
+the second); OAuth can be turned off in production (then `OAUTH_PUBLIC` follows that setting rather
+than every gated release); Cloudflare
+keeps deployment history the tool can read (then "the switch was on" need not be found among
+versions, and m-1 goes); the key can be rotated with overlap (D53); GitHub lets a repository refuse a
+ref for every workflow file, old ones included (then the environment rule is not the only guard of
+point 5); or an upload can inherit a secret from a version named by id through wrangler (then m-6 has
+a way out that keeps the key).
+
+## D70. OAuth is rate-limited in two layers: Cloudflare's Rate Limiting binding before any object, counting each presented credential and then its tenant (a fuse near one object's capacity), a wider key only while every narrower one was checked, and a network only where no genuine credential is involved, failing open within 100 ms; codes and tokens carry an expiry the Worker checks under their tag; a credential its object has called dead is listed and refused before any limit; and an exact per-grant refresh limit in the tenant's object
+
+(Written 2026-11-19 for the review of D44, M-2: "a rate limit in front of `/oauth/token`,
+`/oauth/revoke`, `/oauth/register`, `/oauth/authorize` and OAuth bearers before public exposure".
+Rewritten the same day after its adversarial review, `reviews/d70-rate-limits.md`, which rejected
+layer 1 as first built (B-1, M-1, M-2, m-1 to m-8), and again after its second review,
+`reviews/d70-rate-limits-r2.md` (approve with changes: R2-M1, R2-M2, m-1 to m-4, n-1, n-2). **Revised
+on 2026-11-26 after its third look, `reviews/d70-rate-limits-r3.md`, which rejected the second
+rewrite until R3-B1 was fixed. This replaces the version written after the second review**, which:
+- counted a rotated refresh token of a live grant as dead when another client revoked it, so a
+  thief could list the owner's copy, the owner's next refresh was refused in the Worker, reuse
+  detection never ran and the stolen grant stayed live (R3-B1, reproduced); and the same path told
+  an unauthenticated caller whether a refresh token was live (R3-M1, reproduced);
+- read the list before any rate limit, so someone cycling more dead credentials than an isolate
+  remembers forced one KV read per request (m-1);
+- switched the list off for a whole isolate for 10 s after one slow KV read (m-2).
+
+**Production has served OAuth without these limits since 2026-11-19**, when the owner deployed
+`main` at PR #8: control's OAuth endpoints are public at `vis.bitcru.sh`, with the tag and the
+object's own checks (reuse detection included) but with no layer 1, no expiry check in the Worker
+and no list. The rule this decision was written for, "required before public exposure" (review of
+D44, M-2), **was not met**. This change, with the deploy's gate (`control/README.md`, "Needed changes
+elsewhere"), is the remedy; until it reaches `main`, the exposure stands as the first review found it.
+
+The version written after the first review:
+- asked the tenant fuse alone whenever the credential's own limiter was absent, failed or skipped,
+  so one dead credential spent the fuse again for as long as the narrow binding was down (R2-M1);
+- kept no record of credentials found dead, so refresh tokens collected at the per-grant limit
+  stayed good for spending the token fuse for 30 days, revocation of their grant included, and it
+  said wrongly that a client "could spend the fuse with live tokens anyway" (R2-M2);
+- gave the whole request one 100 ms budget, so a slow narrow check got a healthy fuse blamed and
+  skipped (m-1), and counted a genuine but expired credential against its sender's network (m-2).
+The first version keyed the token endpoint per presented `client_id` and then per tenant, and
+revocation per tenant only, with tenant budgets of 5 and 50 a second, every request counted by
+network and 1 s per check; one dead credential of a tenant could refuse all of that tenant's OAuth
+in a location. The keys, the fuses, the expiry, layer 2, the refusal and the contract status stand
+as rewritten after the first review.)
+
+**What needs limiting, from the code** (costs measured here, `control/test/oauth-cost.test.ts`:
+local workerd, sequential, three runs; `control/README.md` has the table). Since the tag (D44) a
+made-up credential reaches no object. Registration (0.18–0.41 ms), the authorization page
+(0.23–0.52 ms) and a forged code (0.16–0.33 ms) cost the Worker alone and write nothing; anyone can
+send them. What reaches a tenant's object is a credential this deployment made:
+- a code exchange or a refresh: 4.3–8.4 ms, 9 rows and 2 `setAlarm`, so about 11 billed row writes
+  each;
+- a revocation: 1 to 18 rows;
+- an introspection: 0.9–1.5 ms, no write;
+- a **replay** of a spent, rotated or revoked credential: 0.75–2.1 ms, one object request, no write
+  (since the list below, only until the Worker has heard the object call it dead: then 0.0–0.25 ms
+  in that isolate and 1.0–1.2 ms with one KV read in another, measured here).
+
+A credential's tag never expired, and anyone may hold dead credentials: a former client, a debug
+log, a code left in shell history (first review, B-1). And anyone holding one *live* refresh token
+of a grant can make more: rotating it at the per-grant limit yields 6 a minute, every one of them
+tagged and unexpired for 30 days, whether they are the grant's own client or a thief of an idle
+grant's token (second review, R2-M2). An approval (17 rows, 2 alarm writes, 1 KV write) needs a
+person's admin key and was already bounded exactly (20 a tenant an hour).
+
+**Decision.**
+
+- **Credentials carry their expiry** (`contracts/oauth.ts`, layout 2 of format version 1). The 27
+  characters before the tag are now the marker `e`, the expiry, and 22 characters from a CSPRNG
+  (about 131 bits). The expiry is in whole minutes since 2026-11-01, rounded up, so it is never
+  earlier than the expiry the tenant's object stores. The tag covers it, as before.
+  - `/oauth/token`, `/oauth/revoke` and introspection refuse a tagged credential once its expiry and
+    60 s more have passed. They answer as the object would (`invalid_grant`, 200, `inactive`
+    `expired`), before any limit counts the request and before any object is asked. Such a
+    credential is genuine and its HMAC is already paid, so it is **not counted against its sender's
+    network either** (second review, m-2; before, the token endpoint and revocation counted it
+    there, so a broker presenting users' month-old tokens could be answered 429 instead of
+    `invalid_grant`).
+  - Codes die in the Worker 10 minutes after issue and access tokens after an hour. A former
+    client's stock of dead credentials shrinks to its refresh tokens (30 days) and to the access
+    tokens of its last hour.
+  - The shape and the tag are unchanged, so every earlier reader of version 1 reads layout 2: the
+    previous release's control and the agent surface's `parseCredential` see 27 opaque characters.
+  - Layout 1 credentials, issued by the previous release, carry no expiry. They go to the object as
+    before until they expire there. Both skews are tested (`test/ratelimit-review.test.ts`). None
+    had been issued in production.
+- **A credential its tenant's object has called dead is listed, and refused before any limit**
+  (`control/src/deadlist.ts`; second review, R2-M2; the owner's choice over accepting the
+  residual).
+  - *When.* The object says so, and its contract makes each a promise (`contracts/oauth.ts`
+    `DEAD_INACTIVE_REASONS`): `invalid_grant` on the `refresh_token` grant (unknown, expired,
+    rotated, of a grant that ended or can no longer issue, or presented by another client, which
+    ends the grant); introspection's `inactive` `unknown`, `expired` or `revoked` (never `suspended`
+    or `audience`, which can come back); and revocation's new `dead: true` (an additive field of
+    `RevokeResult`: the token was unknown or of an ended grant, an unrotated one had expired, or this
+    call ended it; false for any token of a live grant another client presented). Revocation had to
+    say it: it answers 200 either way (RFC 7009), and a stock replayed there would otherwise never be
+    listed.
+  - *The rule that bounds when* (third look, R3-B1): **nothing is listed whose later presentation
+    must still reach the object.** Rotation detects theft only because the other holder of a rotated
+    refresh token presents it again and the object ends the grant; a listed copy would be refused in
+    the Worker first. So a rotated token of a live grant is never dead. Each place that lists keeps
+    the rule: at the token endpoint, `invalid_grant` follows either no row (nothing a later
+    presentation could detect either), or a grant that has ended or cannot issue (a rotated token
+    presented there has just ended its grant by reuse detection), or a token this request spent with
+    nothing issued, which leaves the grant without any unrotated refresh token for another holder to
+    hold; introspection lists access tokens, which reuse detection does not watch; revocation lists
+    only what the call ended or what was already ended (a rotated row past its own expiry included:
+    inside the Worker's 60 s grace it still reaches reuse detection, so it is not dead either). The
+    version this replaces counted "rotated" as dead at revocation by another client, which broke it.
+  - *Where.* In the isolate at once (a map of hashes to expiries, at most 10,000, oldest dropped
+    first), and in `CONFIG`, the viz KV namespace control already binds, under a prefix of its own:
+    `oauth-dead:<tenant>:<SHA-256 of the credential, hex>` → `{"v":1,"reason":…}` (format
+    `kv.oauth-dead` 1), with KV's absolute `expiration` set to the credential's encoded expiry plus
+    the Worker's 60 s of grace. Nothing outlives what the expiry check refuses anyway. Nothing is
+    written for layout 1 (no expiry to bound it) or with less than KV's 60 s minimum left.
+  - *Check.* At `/oauth/token` (refresh tokens; codes die within 12 minutes and each needs a
+    person's approval), `/oauth/revoke` and introspection, after the tag, the expiry and **the
+    credential's own rate limit**, and before its tenant's fuse and the object (third look, m-1): a
+    listed credential is answered as the object answered (`invalid_grant`, 200, `inactive` with the
+    recorded reason), counted against its own allowance like any credential and against nothing
+    else, its network included. So no one forces KV reads faster than 5 a minute per credential per
+    location (1,200 at introspection), however many dead credentials they cycle, and a listed and a
+    live token answer the same counts (R3-M1). The list is consulted whatever the narrow limiter's
+    verdict but a refusal: it does not fail with a limiter.
+  - *Reads.* The isolate's map first, then one KV read; a credential KV does not list is remembered
+    as such for 60 s, so a live token costs at most one read per isolate a minute. A read has 100 ms.
+    A read that overruns affects **its key only**: that credential counts as not listed for 60 s in
+    the isolate, and every other key is still read (third look, m-2: a cold key is slow, and anyone
+    can make keys cold with fresh credentials, so a timeout must not switch the list off). A read that
+    throws is KV failing, which no request can cause: it is logged once and KV reads are skipped for
+    10 s in that isolate (its own map still applies). `/healthz` says
+    `OAUTH_DEAD_LIST: bound|absent|skipped`.
+  - *Writes.* One per dead credential per isolate: an isolate that has recorded or read one as dead
+    never asks the object about it again. Every write is of a credential this deployment minted and
+    its object already paid rows for, so writes are bounded by what layer 2 lets be minted, never by
+    unauthenticated requests. The write goes through `waitUntil`, off the response's path; a failed
+    write is logged once and not retried (the next isolate that meets the credential writes it).
+  - *Consistency.* KV is eventually consistent: a write may take about 60 s to be seen in other
+    locations, and a location that read a key as absent may answer from that for up to 60 s
+    (training knowledge; not measured here). Until a location sees it, each of its isolates may ask
+    the object once more, then learns the answer itself. What an attacker gets from that window is
+    below.
+  - *What it shows.* The grant view gains `refreshesLastDay` (contracts/oauth.ts `OAuthGrantView`, an
+    additive field), counted from the refresh-token rows reuse detection already keeps a day: about
+    24 for a client refreshing hourly, up to 8,640 for one rotating at the limit, which is how a
+    stock is collected. A revocation's audit entry keeps the last count. The keys under
+    `oauth-dead:<tenant>:` count the dead credentials a tenant's stocks have replayed.
+- **Layer 1, approximate, before any object: the Workers Rate Limiting binding**
+  (developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/, read 2026-11-19, page
+  modified 2026-11-12). Six bindings, period 60 s each. The limits are deploy configuration,
+  proposed here (`control/README.md`, "Needed changes elsewhere"):
+
+  | Binding | Key | Proposed limit per 60 s, per Cloudflare location | Where | What it bounds |
+  |---|---|---|---|---|
+  | `OAUTH_RL_SOURCE` | client network: IPv4 address or IPv6 /64, from `CF-Connecting-IP` | 120 | `/oauth/register` (POST) and `/oauth/authorize` (GET, HEAD) before the body is read; `/oauth/token` and `/oauth/revoke` only for a request without a genuine credential (malformed, or no tag) | one network's Worker CPU: 2 a second |
+  | `OAUTH_RL_SOURCE_48` | IPv6 /48 | 1,200 | the same, after the /64 | one host's routed /48 (65,536 /64s): ten networks' worth |
+  | `OAUTH_RL_CREDENTIAL` | the presented code, refresh token or access token (SHA-256 prefix), tagged, not expired, not listed dead | 5 | `/oauth/token` and `/oauth/revoke` | one credential's object requests: a code or token is presented once, plus retries |
+  | `OAUTH_RL_TENANT` | its tenant | 6,000 | the same, after the credential | a fuse: OAuth token traffic on one object, 100 a second |
+  | `OAUTH_RL_BEARER` | the access token (SHA-256 prefix), tagged, not expired, not listed dead | 1,200 | introspection (`OAuthIntrospection`) | one agent's `/mcp` requests: 20 a second |
+  | `OAUTH_RL_BEARER_TENANT` | its tenant | 30,000 | introspection, after the token | a fuse: introspection on one object, 500 a second |
+
+  - **The narrower key is asked first**, and a refused call does not count. So one credential
+    spends its own allowance and at most that much of its tenant's fuse a minute, in each location.
+    A request refused by a fuse has still been counted against its credential.
+  - **A wider key is asked only while every narrower one was checked** (second review, R2-M1). When
+    the credential's (or bearer's) binding is absent, has failed or is skipped, the request is not
+    counted against the tenant's fuse either: the chain fails open together. **While a narrow limiter
+    is down, its fuse counts nothing** for the requests of that isolate (10 s per failure), and the
+    object takes what it would take without layer 1: dead credentials once each (the list then
+    refuses them), live ones as often as they are sent, and layer 2 still bounds writes exactly.
+    Asking the fuse alone, as the version this replaces did, let one dead credential spend it
+    (reproduced: one hang or one throw of the credential binding, then one dead refresh token 13
+    times, and the tenant's live client got 429). The same holds for the source keys: no /48 count
+    without the /64's.
+  - **Spending a fuse takes many distinct credentials that stay countable**: the fuse divided by the
+    per-credential limit, 1,200 at the token endpoint and 25 at introspection, each of them live or
+    dead but not yet known dead where it is sent.
+  - **No per-client key.** The first version's was keyed on text the request chose (R1). A key on
+    a `client_id` whose MAC verifies would be no better: client ids are public, so any dead
+    credential sent with the victim's id would spend that client's allowance (R1b).
+  - **The fuses are sized** to protect the object, not to meter clients:
+    - The token fuse is 20 times the most live traffic layer 2 lets a whole tenant make: 6 refreshes
+      a minute times 50 grants, 300 a minute from all locations together. 100 a second is 8–21% of
+      one object busy with replays at 0.75–2.1 ms each (measured here).
+    - The bearer fuse is 10 times 50 grants calling `/mcp` once a second (review m-5). It is 45–75% of
+      the 670–1,100 introspections a second one object served here (0.9–1.5 ms each).
+    - Per bearer, 20 a second leaves room for an agent's parallel tool calls (m-5).
+    - **Per location, not per object** (second review, m-4; modelled). Each location has its own
+      fuse, so the fuses protect the object against a flood in one location. Two locations at the
+      bearer fuse are 90–150% of one object's introspection rate, which saturates it; five locations
+      at the token fuse are 38–105% of its replay rate, and fourteen exceed it at any of the measured
+      speeds. Who can drive that: at introspection, a client holding 25 live access tokens per
+      location (about 4 minutes of refreshes), while it is approved and for about two minutes after;
+      at the token endpoint, since the list, only a stock of dead credentials in the minutes after
+      its first replay (below), because a tenant's live credentials cannot reach the token fuse (per
+      grant at most 6 refreshes, 5 retries of one refused and 6 access tokens revoked a minute: about
+      850 a minute per location for 50 grants, 14% of it).
+    - These ratios are modelled, not measured on traffic.
+  - **Networks.** A genuine credential is never counted by where it comes from (review M-1), expired
+    or listed dead included (m-2). Every MCP client hosted on Cloudflare Workers arrives from one
+    address. Brokers concentrate all their users' refreshes behind a few egress addresses.
+  - **The Workers address is not counted at all**, at any endpoint. Every cross-zone Worker
+    subrequest arrives from `2a06:98c0:3600::103` (developers.cloudflare.com/fundamentals/reference/
+    http-headers/, read 2026-11-19, page modified 2026-11-15; verified there). Counting it would let
+    anyone with a Workers account refuse every Worker-hosted client. Its requests then cost a billed
+    request of the gateway's and this Worker's CPU, never an object or a row: registration and the
+    authorization page store nothing. (What a sender pays does not bound that: one paid invocation of
+    its Worker can make many subrequests, training knowledge. The source limit never saved the
+    request charge, so what the exemption gives up is CPU: second review, n-1.)
+  - **IPv6 is counted by /64 and by /48** (m-6). A tunnel broker hands one host a routed /48, which
+    is 65,536 /64s; a /56 home allocation is 256 of them (training knowledge). One host with a /48
+    gets 1,200 a minute, not 7.8 million.
+- **Every binding check fails open**, for every endpoint, when the binding is absent, throws, does
+  not answer `{ success: boolean }`, or has not answered in time.
+  - **Time**: a request's checks have 100 ms, **split evenly between them**: 50 ms for a credential
+    and 50 for its fuse, all of it for an IPv4 source (second review, m-1). A binding that has not
+    answered within its own share has failed, is logged, and is skipped by that isolate for 10 s; a
+    slow check can no longer spend another's time and get a healthy binding blamed (reproduced
+    before: a credential check of 80 ms left the fuse 20, which then "failed"). The share is a timer,
+    not arithmetic on `Date.now()`, which in Workers advances only at I/O (n-2).
+  - **Brownout cost** (m-1): the review measured a refresh at 3,035 ms and an introspection at
+    2,005 ms with hanging limiters. Now one request per binding, per isolate, every 10 s, waits up to
+    its share. Measured here (local workerd, limiters that never answer), with the version this
+    replaces: the first two refreshes 105–129 ms, then 14 ms; introspections 104–105 ms, then 2 ms.
+    With the share and the chain failing open together (measured here, three runs): the first
+    refresh 59–64 ms, then 3–7 ms; the first introspection 56–58 ms, then 2–3 ms.
+  - **Logs**: an absent or failing binding is logged once per isolate, never per request (m-2), an
+    absent one whether or not a request came to ask it. `/healthz` lists each limiter as `bound`,
+    `absent` or `skipped`, the list of dead credentials the same way, and whether `OAUTH_CLIENT_KEY`
+    is set.
+  - **Why open, per endpoint.**
+    - Registration and the authorization page store nothing and reach no object. A closed failure
+      would refuse onboarding and protect nothing.
+    - At the token endpoint, revocation and introspection, the tag, the expiry and the list still
+      keep made-up, expired and known-dead credentials from every object, and layer 2 still bounds
+      writes exactly. What an open failure lets through is object requests from holders of genuine
+      credentials not yet known dead, for as long as the fault lasts.
+    - A closed failure would end every agent's access within the hour its access token lasts. It
+      would also block revocations, which a client sends to end access.
+  - **The exact limits** in layer 2 cannot fail open: they are statements in the request's own
+    transaction.
+  - **The deploy enforces that the bindings exist**, not the Worker (done 2026-11-26,
+    `deploy/README.md`, "Rate limits in front of OAuth"): `configure.mjs` refuses a production
+    viz-control without all six (naming the missing ones), with a period other than 60, a limit that
+    is not a positive integer, a name `src/ratelimit.ts` `LIMITERS` does not list, or a namespace id
+    that is a placeholder, outside viz's range or shared; `lib/secrets.mjs` does not create or rotate
+    `OAUTH_CLIENT_KEY` on a version whose generated config lacks them; a stage leaves them out only
+    with `--oauth-without-rate-limits`, which its release record says. `deploy/resources.mjs` gives
+    each deployment ids of its own from 7000–7999, never one another script of the account binds.
+- **Layer 2, exact, in the tenant's object, where rows are written:** at most 6 refresh tokens per
+  grant in any 60 s (`OAUTH_LIMITS.refreshesPerGrantPerMinute`, the code exchange's included).
+  - It is counted from the `oauth_tokens` rows the object already keeps: no new state, one read.
+  - It is checked after reuse detection and before the presented token is spent.
+  - With the approvals, clients and live grants D44 bounds, this is what bounds writes, from any
+    number of locations, the list's KV writes included.
+  - **Worst case per tenant** (m-7; modelled, list prices as training knowledge): 50 grants × 6
+    refreshes a minute × about 11 billed rows is 3,300 row writes a minute. That is about 4.75
+    million a day, about $4.75 a day per tenant, plus about 432,000 rotated refresh-token rows kept a
+    day. Per grant it is $0.10 a day. Only the tenant's own approved clients, or a thief of one of
+    their live refresh tokens, can drive it.
+- **Refusal**: 429 with `Retry-After`, `Cache-Control: no-store`, the endpoints' CORS headers, and
+  `{ "error": "too_many_requests", "error_description": … }`.
+  - `Retry-After` is 60 for a binding, which does not say where in its window it is. For the
+    per-grant limit it is the exact time.
+  - The authorization page answers a plain-text page with the same code.
+  - No credential is spent, and nothing in the object changes. A request the token endpoint or
+    revocation refused by itself has had its body read.
+  - RFC 6749 §5.2 has no rate-limit code. `too_many_requests` is what the MCP TypeScript SDK's own
+    authorization server sends with 429 on these endpoints. That SDK's client maps it to
+    `TooManyRequestsError` and keeps its credentials (verified in `@modelcontextprotocol/sdk`
+    1.32.2): an unknown code becomes a `ServerError`, after which that client starts a new
+    authorization, and `invalid_grant` makes it discard its tokens.
+  - **The Python SDK** (`mcp` 2.3.0, `_handle_refresh_response`; read by the review and again
+    here) discards its tokens on any refresh answer that is not 200. For its clients no refusal code
+    is safe: any refusal of a live refresh means a person approves again. That is why the limits are
+    set so that only the client itself, or someone holding many of the tenant's credentials that
+    stay countable, can make the Worker refuse a live refresh.
+  - Introspection answers the status `rate_limited` with `retryAfterMs` (`contracts/oauth.ts`,
+    additive within version 1). The agent surface maps it to 429 with `Retry-After`.
+- **Not limited**: the RFC 8414 metadata (static, `max-age=300`), CORS preflights, and requests with
+  a method an endpoint does not serve (m-3: the first version counted a preflight of the
+  authorization page).
+- **Assumed**: viz-control and viz-mcp run without Smart Placement (m-8). With placement their
+  invocations gather in a few locations, and the per-location budgets become nearly global, the
+  fuses with them. A control test checks both Workers' `wrangler.jsonc`, and the deploy's
+  `configure.mjs` refuses `placement` on both (done 2026-11-26).
+- **Rollback floor** (second review, m-3; OAuth is public already, since PR #8): rolling viz-control
+  back to a release before the first rewrite (`3cbabb8` or earlier, PR #8 among them) would mint
+  credentials without an expiry and serve without layer 1; one with the second rewrite but not this
+  revision would bring R3-B1 back, a thief's way round reuse detection. D69's `rollback_floors` holds
+  viz-control at this revision from the first release that carries it (done 2026-11-26: rule
+  `oauth-public`, its evidence `LISTED` with the three of round 2, the var `OAUTH_PUBLIC` set by
+  configure on every production viz-control; D69, point 6, also says why that first release, over
+  PR #8's viz-control, is forward-only rather than refused).
+
+**What an attacker can still do** (modelled unless marked):
+- **Someone holding dead credentials of a tenant that have not expired** (a former client's; a
+  stock collected while a grant was live, by its client or by a thief of an idle grant's refresh
+  token, R2-M2) gets each of them to the object **once in each isolate that has not learned it is
+  dead**, and at most the per-credential limit a minute per location (5 at the token endpoint and
+  revocation, 1,200 at introspection). In the isolate that hears the object's answer the
+  credential is refused at once; elsewhere once KV shows it, about a minute (training knowledge),
+  plus up to a minute in an isolate that had read it as not listed before it died.
+  - So a stock of N dead refresh tokens can spend at most 5N of each location's token fuse in the
+    minute it is first replayed, and at worst as much again in the next, **once**. More exactly
+    (third look, m-3): each credential reaches the object at most once per isolate that has not met
+    it, so a stock of N trips a location's fuse (6,000 a minute) only if at least 6,000 ÷ N isolates
+    there meet the whole stock within the minute: **at least 5 isolates for a stock of 1,200**, and a
+    single isolate needs a stock of 6,000 (16 h 40 min of rotating at the cap). After about a minute
+    the KV record refuses the stock in every location: a burst of about a minute per stock. Tripping the token
+    fuse (6,000) takes N ≥ 1,200, which is 3 hours 20 minutes of rotating at layer 2's limit, and
+    lasts one or two minutes in each location replayed at the same time; then the stock is spent.
+    Tripping the bearer fuse takes 25 dead access tokens less than an hour old, for the same one or
+    two minutes, once. (Before the list it lasted 30 days for refresh tokens, revocation included,
+    and repeated every minute: reproduced, N1 and N1b.)
+  - The effect, while it lasts, is that the tenant's refreshes and revocations (or `/mcp` calls) in
+    those locations are refused. TypeScript-SDK clients keep their tokens; Python-SDK clients need a
+    person to approve again.
+  - **The token-fuse lever needs a stock.** The version this replaces said a client "could spend the
+    fuse with live tokens anyway". That holds for the bearer fuse (25 live access tokens, about 4
+    minutes of refreshes, while approved), not for the token fuse: a live client presents each
+    refresh token once and holds one unrotated refresh token per grant, so a tenant's 50 grants
+    present at most about 850 a minute per location (above) against 6,000. The lever existed only
+    through a stock, which outlived revocation by 30 days and which anyone holding one live refresh
+    token of an idle grant could build (second review, R2-M2).
+  - **The tenant's remedy**: a person revokes the grant. `refreshesLastDay` in the grant view shows
+    a grant rotating far faster than its client needs while the stock is being built; after the
+    revocation the stock is good for the one window above. Rotating `OAUTH_CLIENT_KEY` still ends
+    every tenant's credentials at once, and is now never needed for this.
+- **While a narrow limiter is down in an isolate** (a fault, or a `limit()` call slower than its
+  share), that isolate's requests count against no fuse (R2-M1, above). Dead credentials reach the
+  object once each and are listed; live ones reach it as often as they are sent. **While the list
+  cannot be read as well**, dead credentials not already in the isolate's memory reach the object as
+  often as they are sent, for that isolate's 10 s skips. Both are fail-open residuals: a limiter or
+  KV fault costs protection of the object, never a refusal.
+- **Layout 1 credentials** (none in production) carry no expiry and are not listed. Until they
+  expire they still spend their allowance and the fuse, as before.
+- **A host with many /48s, or many hosts**, gets 1,200 registrations and authorization pages a
+  minute per /48 and 120 per IPv4 address. **Worker-hosted senders** are not counted at all. Either
+  way this costs the Worker's CPU (0.2–0.5 ms each), never an object or a row.
+- **A Worker in the same zone** (`bitcru.sh` holds unrelated hostnames) sets `CF-Connecting-IP` from
+  its own `x-real-ip` (the headers page; verified there) (m-4 of the first review). It can therefore
+  evade the source limit, or spend a chosen network's registration and authorization budget, such
+  as a broker's egress.
+  - Neither the gateway nor control reads `x-real-ip` (checked in `deploy/gateway/src` and
+    `control/src`).
+  - Since M-1, genuine credentials are not counted by network, so this cannot refuse a refresh.
+  - A future internal caller by service binding sends no `CF-Connecting-IP` and shares one key,
+    `none`.
+- **A flood spread over N locations** gets N times every per-location limit ("Other Cloudflare
+  locations maintain separate counts"; "Requests can exceed your configured limit before those
+  updates arrive"), and N fuses on one object (m-4, above). NAT and carrier-grade NAT share one
+  network's budget at the two endpoints that count networks.
+
+**What the list costs** (modelled; Cloudflare list prices as training knowledge, not read here: KV
+$0.50 a million reads, $5.00 a million writes, $0.50 a GB-month stored; settled only by
+Cloudflare's analytics on a stage):
+- **Per tenant, in ordinary use**: one KV read per refresh (about 24 a day per client refreshing
+  hourly) and at most one per isolate a minute per access token in use at `/mcp`: for a client
+  working all day through 1 to 10 isolates, 1,440 to 14,400 reads a day, $0.02 to $0.22 a month; for
+  a tenant of 50 such clients $1 to $11 a month, and a fraction of that for agents used an hour a
+  day. Writes only for revocations by clients and for replays of dead credentials: a few a month,
+  under $0.001. Records are about 170 bytes and live at most 30 days: storage is negligible.
+- **Per attack**: a stock of N dead credentials replayed costs about N writes, one at each
+  credential's first answer, and more only from isolates that hear the object before KV shows them
+  the record: at worst 5 per refresh token per location (its per-credential limit). N = 1,200 is
+  $0.006, and at worst $0.30 over 10 locations. Reads: one per
+  credential per isolate that meets it, for example 120,000 ($0.06) for 1,200 credentials over 100
+  isolates.
+- **The ceiling**: every write is of a credential minted under layer 2. A tenant's 50 grants rotating
+  at the limit mint 600 credentials a minute (an access and a refresh token per refresh); if every
+  one were later replayed dead, at one write each, about 864,000 writes a day, $4.32 a day, beside
+  the $4.75 of rows the minting itself costs; per grant, $0.09 a day beside its $0.10. A replay
+  spread over many locations at once multiplies the writes by at most the per-credential limit in
+  each (above).
+- **Latency** (not measured on Cloudflare): one KV read on each refresh and on the first `/mcp`
+  request per isolate a minute per token. Locally a refusal read from KV took 1.0–1.2 ms a request
+  (`oauth-cost.test.ts`, three runs); a cold read on Cloudflare is the number to measure.
+
+**Alternatives, with what each costs and what an attacker can still do** (cost per request
+modelled: Cloudflare list prices as training knowledge, Workers $0.30 a million requests, Durable
+Objects $0.15 a million requests and $1.00 a million rows written; a service-binding call is not
+billed as a request).
+
+- (a) **The binding alone**, keyed as above. Cost: the page names no price and says a check "uses a
+  locally cached count"; modelled $0 to unknown, 0.01–1 ms. Measured here only through miniflare,
+  whose binding is a SQLite-backed object: 2.1–4.0 ms for a registration with the source limit asked,
+  against 0.18–0.41 ms without, and 0.62–0.99 ms for one it refuses. That is an upper bound for
+  local workerd, not Cloudflare. Still possible: per location and approximate (above). Every refused
+  request is still a billed Worker request. Its `namespace_id` is account-wide in an account with
+  unrelated Workers.
+- (b) **A Durable Object counter** (exact, global). Cost per check: $0.15–1.15 a million (a request,
+  and a stored row if every count must survive), on every request; 1–10 ms in the object's region,
+  50–300 ms from another continent. A counter object is single-threaded, so a flood moves to it.
+  Rejected as the first layer; kept where it is free, inside the tenant's object (layer 2).
+- (c) **A WAF rate-limiting rule on the zone** (`vis.bitcru.sh` only): the only layer that saves the
+  request charge. But it counts by IP and the like and cannot see a credential, and it is outside
+  the release. Recommended in addition, by hand, as the volumetric layer; not built.
+- (d) **A binding keyed by tenant before the tag check**: it hands any tenant's budget to whoever
+  writes its name into a made-up credential. Rejected.
+- (e) **Fail closed** on a limiter fault, for all or some endpoints: rejected above.
+- (f) **Per presented `client_id`**, then per tenant at 5 and 50 a second (the first version): any
+  one dead credential spends the tenant's budgets (R1, R2, R3) or a named client's (R1b), at 5
+  requests a second. Replaced.
+- (g) **Per `client_id` whose MAC verifies**: still spent by any dead credential sent with the
+  victim's public client id (R1b). Rejected.
+- (h) **No tenant keys at all** (the first review's option (b), first half). An attacker holding
+  many unexpired dead credentials then loads the tenant's object without bound. A month of one
+  client's refresh tokens at 5 a minute each is 60 replays a second, 4.5–13% of the object per
+  location at 0.75–2.1 ms each, and all of it from enough locations. That slows the tenant's whole
+  control plane, not only its OAuth. Fuses near capacity refuse only when the object would be loaded
+  anyway. (Since the list, such a stock is good once; the fuses stay for live floods and for the
+  window.)
+- (i) **A per-location cache of credentials found dead in the Cache API** (the first review's
+  option (a)). Not built: the Cache API page (read 2026-11-19) says nothing of a Worker reached only
+  through service bindings, as viz-control is; and a per-location cache is filled once per
+  location, where KV is filled once. KV was chosen instead (above).
+- (j) **Per-isolate memory alone**: free, but an isolate is a small share of a location, and a new
+  isolate knows nothing. Used as the list's first level, with KV behind it.
+- (k) **A new credential version** (`vza2`, …): a release that reads only version 1 would refuse it.
+  On a rollback, or during a gradual deployment, the previous control release and the agent
+  surface's `parseCredential` would refuse it, and clients discard tokens refused as `invalid_grant`
+  or 401. So it needs readers first, which is two releases (COMPATIBILITY.md §3.3).
+  - Layout 2 within version 1 needs neither: the previous release's checks accept layout 2
+    (tested).
+  - The cost: 22 random characters instead of 27, which is 131 bits instead of 160. RFC 6749 §10.10
+    asks for at most 2^-128, and the 16-character tag, which only `OAUTH_CLIENT_KEY` makes, adds to
+    it for anyone without the key.
+  - A layout 1 body begins with `e` one time in 62 and is then read with an expiry uniform over 28
+    years. So about 1 in 11,600 layout 1 credentials could be refused as expired early by 2026-12-26
+    (1/62 × the share of 62^4 minutes already past then; corrected from "1 in 13,000" by the review of
+    D69, round 2, m2-3). Production has issued layout 1 since 2026-11-19 (fb77292), so this applies
+    to whatever it issued before the first release with layout 2: such a client is approved again by a
+    person. Accepted, against a reader that stops trusting an expiry beyond the layout's start plus 30
+    days, which would need a control change.
+- (l) **An issue time instead of an expiry**: every reader would need the lifetimes, which a later
+  release may change. Rejected.
+- (m) **A 1 s timeout per check** (the first version): a brownout added 3 s to each refresh and 2 s
+  to each `/mcp` request. Replaced, first by one 100 ms budget a request and the skip, then by an
+  even share of it per check.
+- (n) **One 100 ms budget a request, shared in order** (the version this replaces): a slow narrow
+  check left the next binding the remainder, which then timed out and was blamed, skipped and shown
+  `skipped` though it had answered in 30 ms (second review, m-1, reproduced). The reviewer's other
+  option, keep the shared budget and blame only a binding that overran a fair share, keeps the
+  `Date.now()` arithmetic (n-2) and the remainder logic for no gain over an even split. Replaced.
+- (o) **The fuse asked when a narrower key is unchecked** (the version this replaces): R2-M1.
+  Replaced by the chain failing open together. Cost of the change: while a narrow binding is down,
+  the fuse protects nothing in that isolate (above); it protected the object then only by refusing
+  the whole tenant.
+- (p) **A per-tenant "not before" in KV**, compared with the issue time the encoded expiry implies,
+  set by a person (the second review's option (b)). One key a tenant, no writes driven by any
+  request, and it ends every stock at once, also one never replayed. Not chosen: it needs a person to
+  notice first, and the first sign is the tenant's clients refused, by when Python-SDK clients have
+  discarded their tokens; it ends every live grant of the tenant with the stock, so every client is
+  approved again; and it makes the Worker derive issue times from the lifetimes, which (l) rejected.
+  The list needs no one, ends only dead credentials, and leaves each stock one window. Kept as the
+  emergency switch to build if a stock is ever seen used in a way the list does not stop.
+- (q) **Accept the residual**, with D70's justification corrected (the second review's third
+  option). The owner chose the list instead.
+- (r) **List every refresh token at rotation**, not at its first replay: nothing farmed would ever
+  reach an object, not even once. But every refresh would cost a KV write (about $0.0036 a month
+  per client refreshing hourly), and a client rotating at the limit would drive writes directly, 6 a
+  minute per grant, where listing on the object's answer writes only for credentials someone
+  replays. Not chosen.
+- (t) **List a rotated refresh token of a live grant** when another client revokes it (the version
+  after the second review): R3-B1, a thief suppresses reuse detection and keeps a stolen grant; R3-M1,
+  a liveness oracle. Replaced by the rule above.
+- (u) **Read the list before any rate limit** (the same version): someone cycling more dead
+  credentials than an isolate remembers (10,000) forces a KV read per request at their own rate, and
+  a listed token answers differently from a live one. Replaced: the credential's own limit first.
+- (v) **Skip the list for the isolate after a slow read** (the same version): a cold key, which
+  anyone can make, switches the list off for 10 s. Replaced: a slow read affects its key only.
+- (s) **Count a genuine expired credential on a key of its own** (the second review's other option
+  for m-2): it keeps a network budget for something that reaches no object and costs one HMAC, the
+  same as a forged one, which the source key already counts when no tag verifies. Not chosen.
+
+**Why.** The properties that matter are exact:
+- no made-up credential reaches an object (the tag);
+- no expired credential does either (the expiry under the tag);
+- a credential its object has called dead does not again, beyond one request per isolate until the
+  list reaches it (the list);
+- what a tenant's object stores is bounded inside it (approvals, clients, grants, refreshes per
+  grant).
+
+What remains is cost, which is approximate by nature, and the cheapest approximate counter is the
+binding. Keying the narrow limits on the credential itself means each credential spends only its own
+allowance, and asking a wider key only after the narrow one keeps that true when a binding is down.
+So a tenant's OAuth can be refused in a location only by someone holding many of its credentials
+that stay countable: at introspection a client it approved, and at the token endpoint a stock of
+dead ones, once. The fuses then refuse only where one object would be loaded anyway. Counting
+networks only where no genuine credential is involved keeps shared egress addresses, Cloudflare's
+own and brokers', from refusing anyone's refresh. The expiry inside version 1 gets the Worker its
+check without the two releases a new version would take. The list closes what the expiry leaves
+open without a person and without touching live credentials, and its writes follow what the
+object answers, never what a request asks.
+
+**Would change if.**
+- **Bindings, KV and the Cache API**:
+  - `limit()` is measured on Cloudflare above about 25 ms, half the share (then a larger budget, or
+    the checks in parallel);
+  - a cold KV read, or KV's propagation between locations, is measured much slower than assumed
+    (then the list's window and per-request cost above are restated; the experiment: put a key in
+    one location and time its first visible read in others, and time absent-key reads from several
+    locations);
+  - a stock is seen used in a way the list does not stop (then (p) as an emergency switch);
+  - the binding is billed per call at a price that matters;
+  - the per-location counts are measured to let a flood that matters through (then a WAF rule in
+    front, or an exact counter for the fuses).
+- **Platform and clients**:
+  - Cloudflare changes the address of Worker subrequests, or documents more of them;
+  - viz-control or viz-mcp is given Smart Placement (then the fuses become nearly global and must be
+    raised, or the placement refused);
+  - MCP clients converge on another rate-limit code, or the Python SDK stops discarding tokens on a
+    429.
+- **viz itself**:
+  - a version 2 of the credential is needed for another reason (then the expiry moves into it and
+    layout 1's reading ends);
+  - viz moves to a plan or product where zone rules are managed with the release (then (c) carries
+    the source limit);
+  - a sign-in replaces approval by API key (the authorization page becomes a form and may need its
+    own limits).
+
+## D71. Edge counts what it builds while decoding: an item (span, resource and scope, log record, data point) of more than 65,536 key-value entries and array elements is refused at the limit, not built; a request decodes into at most 16 MiB and a JSON body has at most 2^20 structural characters (413 otherwise); a body is at most 8 MiB decompressed
+
+(Written 2026-11-19 for the review of spans and logs end to end, M-3: "count attributes, array
+items and value bytes while decoding, and refuse at the limit before materialising. Lower
+`maxDecompressedBytes`. Measure in workerd." The review reproduced 117 MiB of heap growth from a
+2 MiB traces body that gzips to 2,076 bytes, and found the same flaw on `/v1/metrics`, which was
+live on `main`: 179 MiB for a 4 MiB metrics body, by its own repro. The metrics part of this
+entry therefore reached `main` first, in pull request #8, under a title that named metrics only;
+the span, log and Loki paths, and this full entry, came with pull request #9.)
+
+**What was wrong, measured here** (`edge/bench/memory.mjs`: local workerd 2026-11-17, V8 heap
+from `--trace-gc`, peak = the largest heap any GC saw, one run per case; Node 22 alongside). Every
+decoder built every key-value entry and array element of an item as JavaScript objects and
 checked the limits afterwards, so a body of two-byte entries cost 25 to 40 bytes of heap per byte:
-a 4 MiB resource of empty `KeyValue`s peaked at 120 MiB in workerd (181 MiB in Node), the same
-body as JSON at 135 MiB (222 MiB). At the old default of 32 MiB decompressed, which a 32 KB gzip
-body reaches, that is about 1 GB (extrapolated). Worse, with a valid body: a resource's labels
-are copied into every series of it, so a 157 KiB OTLP metrics body (one 96 KiB resource, 2,000
-points) built a 498 MiB series table (Node, ArrayBuffers retained). Also: offset arrays grew with
-every child message, and a data point's attribute names were matched with `indexOf`, quadratic
-(262 ms for a 229 KiB point of distinct keys in Node).
+a 4 MiB resource of empty `KeyValue`s peaked at 139 MiB in workerd (245 MiB in Node), a span of
+empty attributes at 159 MiB, OTLP logs and metrics alike (113 to 124 MiB), a Loki entry of empty
+metadata at 120 MiB, JSON of empty attributes at 76 to 135 MiB (one run each; an earlier run of
+the same bodies differed by up to 12%). At the old default of 32 MiB
+decompressed, which a 32 KB gzip body reaches, that is about 1.2 GB (extrapolated). Found while
+fixing it: a resource's labels are copied into every series of it, so a valid 157 KiB OTLP
+metrics body (one 96 KiB resource, 2,000 points) built a 498 MiB series table (Node, ArrayBuffers;
+2.1 GB at 350 KiB), live on `main`; 4 MiB of empty `ScopeSpans` took 17 to 20 s to decode in Node (each scope
+re-encoded its resource); offset arrays grew with every child message; each accepted span or log
+record was a JavaScript object of about 290 / 100 bytes (30 / 19 MiB retained for 107,546 minimal
+spans and 200,000 minimal records); a 4 MiB span name grew the row buffer to 12 MiB; a data point's
+attribute names were matched with `indexOf` (quadratic: 0.5 s for 229 KiB).
 
 **Decision.**
 
 - **Values per item, counted before building** (`edge/src/meter.ts`). Every key-value entry and
-  every array element of an OTLP metric resource or data point, at any depth, as received, is
-  counted against it before it is built. At 65,536 the item is refused on its own (OTLP
-  `partial_success`: "label set too large to fit one batch"; a resource refuses every point under
-  it), its remainder is read only to check the wire (lengths, wire types, nesting, UTF-8), and the
-  rest of the request is decoded as before. Remote Write needs no count: its labels are read into a
-  fixed scratch as byte ranges. Contract: `contracts/BATCH.md`, "Decode limits".
-- **Per request: 413, nothing appended**, when the series table passes `maxDecodedBytes`
-  (16 MiB), or a JSON body has more than `maxJsonTokens` (1,048,576) structural characters,
-  counted before `JSON.parse`.
+  every array element, at any depth, as received, is counted against its item before it is
+  built: a span with its events and links, a resource with one scope (spans), a log resource, a
+  log scope, a log record, a Loki entry or label set, a metric resource, a data point. At 65,536
+  the item is refused on its own (OTLP `partial_success`, Loki 400; a metric point as "label set
+  too large to fit one batch"), its remainder is read only to check the wire (lengths, wire
+  types, nesting, UTF-8 for metrics), and the rest of the request is decoded as before. Events and
+  links past the 128th are read and not built. Remote Write needs no count: its labels are read
+  into a fixed scratch as byte ranges. Contract: `contracts/BATCH.md`, "Decode limits".
+- **Per request: 413, nothing appended**, when the decoded series table (metrics) or entries and
+  rows (spans, logs) pass `maxDecodedBytes` (16 MiB), or a JSON body has more than
+  `maxJsonTokens` (1,048,576) structural characters, counted before `JSON.parse`.
 - **`maxDecompressedBytes` 32 → 8 MiB.**
-- **Shape of the decoder:** a protobuf level is read twice (its scalar fields and how many
-  children, then the children) instead of keeping an offset per child; the series table's buffer
-  doubles only up to the decoded limit; a request's body is released once decoded; a point's
-  attribute names are found in a `Map`. Decoded batches are identical: 605 of 605 metrics requests
-  give the same batches, byte for byte, as `main` (the development branch's
-  `edge/bench/differential.mjs`, run on this change).
+- **Shape of the decoders:** a protobuf level is read twice (what its children need, then the
+  children) instead of keeping an offset per child; a resource is encoded once for all its scopes
+  and an entry is found again by resource and scope bytes; rows are bytes in one buffer (no
+  object per row), the buffer doubles only up to the decoded limit; a request's body is released
+  once decoded; a point's attribute names are found in a `Map`. Decoded batches are identical
+  (`edge/bench/differential.mjs`: 1,294 requests against the tree before, 605 metrics requests
+  against `main`).
 
-**After, measured here** (same harness, on this change): the hostile 4 MiB protobuf bodies peak at
-1.3 to 6.0 MiB in workerd; hostile JSON is 413 before parsing, and JSON just under the token limit
-peaks at 28.2 MiB (the worst JSON shape found, measured on the development branch; `JSON.parse`
-builds that tree whatever the signal); the fan-out body is 413 and retains nothing; realistic
-bodies of 8,200 points peak at 3.2 MiB (protobuf) and 8.8 MiB (JSON) in workerd, against 3.2 and
-8.5 before. `edge/README.md`, "Memory per request", has the table and the model.
+**After, measured here** (same harness): the same hostile 4 MiB protobuf bodies peak at 0.1 to
+6.0 MiB in workerd (the worst, 65,536 nested key-value lists in one span) and every protobuf body
+measured at 6.9 MiB or less; hostile JSON is 413 before parsing, and JSON just under the token
+limit peaks at 28.2 MiB (the worst JSON shape found); the metrics fan-out is 413 at 16 MiB; 2
+million empty scopes, spans or records take 29 to 465 ms in Node (wall time). Realistic bodies of 8,200
+items peak at 1.4 to 3.2 MiB (protobuf) and 8.1 to 17.1 MiB (JSON) in workerd, against 3.1 to 7.6
+and 8.3 to 28.6 before. `edge/README.md`, "Memory per request", has the table and the model.
 
-**Why 8 MiB.** Realistic batches of 8,200 points measured here are 1.34 MiB as protobuf and
-3.06 MiB as JSON and decode into 2.14 MiB; on the development branch, realistic span, log and Loki
-batches of 8,200 items are 0.4 to 7.1 MiB. Clients' defaults (training knowledge, not verified
-here): the OpenTelemetry Collector's batch processor sends 8,192 items (`send_batch_size`) and does
-not cap a batch unless `send_batch_max_size` is set; gRPC's default largest message is 4 MiB; the
-Collector's HTTP server refuses bodies over 20 MiB by default; Prometheus sends 2,000 samples
-(625 KB measured here). 8 MiB holds the Collector's default metrics batch several times over; the
-README's earlier advice was 8 to 16 MiB.
+**Why 8 MiB.** Realistic batches of 8,200 items measured here are 0.4 MiB (Loki, snappy) to 3.4 MiB
+(traces) as protobuf and 1.6 to 7.1 MiB as JSON; they decode into 1.9 to 3.7 MiB. Clients' defaults
+(training knowledge, not verified here): the OpenTelemetry Collector's batch processor sends 8,192
+items (`send_batch_size`) and does not cap a batch unless `send_batch_max_size` is set; SDKs export
+512 spans or records at a time; gRPC's default largest message is 4 MiB; the Collector's HTTP
+server refuses bodies over 20 MiB by default; Prometheus sends 2,000 samples (625 KB measured here)
+and Promtail and Alloy 1 MiB of log lines. 8 MiB holds the Collector's default batch twice over as
+protobuf and once as JSON spans; the README's earlier advice was 8 to 16 MiB.
 
 **Why 65,536 values.** It bounds an item's objects to what was measured above (6.0 MiB at worst)
-while every item real senders make has tens to a few thousand values. A data point of exactly
-65,536 values can still be stored, and is, in the tests, with every value read back.
+while every item real senders make has tens to a few thousand values; items with more were valid
+but absurd (a log body that is an array of 100,000 numbers). An item of exactly 65,536 values can
+still be stored, and is, in the tests, for each signal.
 
-**Why 16 MiB decoded.** About seven times the realistic batch above (2.14 MiB for 8,200 points); a
+**Why 16 MiB decoded.** About four times the realistic batches above (3.7 MiB for 8,200 spans); a
 Kubernetes resource of about 25 attributes (about 1.4 KiB a series, modelled) makes 8,192 points
 about 11.5 MiB. It is what stops a resource's copies: the 157 KiB body above.
 
 **Alternatives.**
 
 - *Count after building* (as before): the measurements above.
-- *A byte budget per item* (a lower bound of the stored size against the series limits) instead
-  of a count: exact for well-formed input, but it still needs a count for entries the mapping
-  drops (empty values), and on the development branch one bound must hold for five mappings.
-  Would change if the count refuses items real senders make.
-- *Build nothing: write the mapping straight from the wire*: the least memory, but the live
-  metrics mapping re-implemented over the wire. Would change if 6 MiB per item is too much.
-- *Refuse the whole request (413) for an item over the limit*: simpler, but one bad point would
-  drop a sender's batch, against the per-item refusals OTLP's `partial_success` defines.
+- *A byte budget per item* (a lower bound of the stored size against the 256 KiB row and entry,
+  64 KiB metadata and series limits) instead of a count: exact for well-formed input, but one
+  lower bound must hold for five mappings (typed attributes, canonical JSON, plain JSON, flattened
+  log metadata whose names are shorter than their keys, metric labels that drop empty values), and
+  it still needs a count for entries that map to nothing. Would change if the count refuses items
+  real senders make.
+- *Build nothing: write each mapping straight from the wire*: the least memory, but every mapping
+  re-implemented over the wire, the live metrics one included. Would change if 6 MiB per item is too
+  much.
+- *Refuse the whole request (413) for an item over the limit*: simpler, but one bad span would drop
+  a sender's batch, against the per-item refusals the contract and OTLP's `partial_success` define.
 - *One budget per request*: a large honest request would be refused for the sum of its items; the
   body and decoded limits already govern a request's size.
 - *A streaming JSON parser* counted like protobuf: no pre-scan, more code; `JSON.parse` is native,
   the pre-scan costs about 3 ms per MiB (Node).
-- *Resource attributes in `target_info`, not copied into every series*: removes the fan-out at
-  its source, but changes every OTLP series's labels, which queries and dashboards already use.
-- *`maxDecompressedBytes` 16 MiB*: twice the memory (modelled) for no realistic metrics batch;
-  *4 MiB* would refuse a default Collector batch of spans as JSON on the development branch.
+- *Resource attributes in `target_info`, not copied into every series*: removes the metrics
+  fan-out at its source, but changes every OTLP series's labels, which queries and dashboards
+  already use.
+- *`maxDecompressedBytes` 16 MiB*: holds JSON batches of 16,000 spans, at twice the memory (modelled);
+  *4 MiB* would refuse a default Collector batch of spans as JSON (7.1 MiB measured).
 
 **Would change if.** Cloudflare measurements of isolate memory per request differ from these local
 ones (`design/VERIFICATION.md` §4: run the hostile and realistic bodies against a deployed edge and
 read the isolate's memory from Workers analytics); senders' bodies seen on Cloudflare are larger
 than 8 MiB, or metrics with wide resources reach 16 MiB decoded (then resource attributes go to
 `target_info` instead of every series, or the series table becomes chunks); OTLP clients learn to
-split on 413; a real sender's item passes 65,536 values.
+split on 413; a real sender's item passes 65,536 values. The first of these was run for memory
+(S10, `spikes/s10-signals-trial/`, measured on Cloudflare 2026-11-19): 35 of 35 bodies were
+answered as locally and the isolate stayed at 16–78.5 MiB per request. What the limits do not
+bound is CPU: a 4 KB gzip body of 4 MiB of empty spans cost 1.4–3.4 s of CPU there, about twice
+that at the 8 MiB limit (modelled), under the 30 s limit but a large amplification for any key
+with `write`. Open; a CPU bound on decoding would change this entry.
+
+## D72. A shard records each span and log batch's time bounds when it appends it, in the batch's row and in a partial index of them; a filtered tail read with a time range skips, deciding from that index, a span or log batch whose bounds lie outside it, and keeps every batch without bounds
+
+(Written 2026-11-19 by the shard engineer, after review finding m-3 of
+`design/reviews/signals-end-to-end.md`. It replaces one part of D63, "the time range and series
+fields select metric rows only, and a span or log batch it admits is returned whole", which was
+D63's alternative (e) at batch granularity, named in its "Would change if". **Revised 2026-11-26**
+after its adversarial review, `design/reviews/d72-shard-bounds.md` (approve with changes): the
+storage of the bounds (M-1: the decision, as first built, read every skipped batch's payload from
+storage, and this entry claimed it did not), a per-call bound on batches considered (M-1, D48's
+budget), the walk's refusal of layouts it does not know (m-1), its measured cost (m-4), and
+`page_limit`'s `last` (n-1). Migration 3 had not shipped, so its layout was changed in place.)
+
+**Decision.** At append, the shard reads a span batch's `start` column, or a log batch's `ts`
+column, by walking the entry table's length fields (no decoding, no strings), and stores the floor
+in milliseconds of the smallest and largest value in two new nullable columns of the batch's row
+(`batch.min_ts`, `batch.max_ts`), which a **partial index** `batch_time (tenant, seq, min_ts,
+max_ts) WHERE min_ts IS NOT NULL AND max_ts IS NOT NULL` also holds (schema 3, additive,
+`readableFrom` 1). The walk accepts only the layout `contracts/BATCH.md` defines: `flags` and
+`reserved` zero, at least one entry, zero padding around the `entry` column; anything else, a metric
+batch, an empty one and one the walk cannot follow get NULL (and so no index entry), and the append
+is never refused for it. A filtered tail read with `minTs`/`maxTs` skips, in its SQL, a batch whose
+bounds lie wholly outside them, deciding from the index (`INDEXED BY batch_time`, a correlated
+`NOT EXISTS`, `shard/src/tail.ts` `TIMED_TAIL_SQL`), never from the row: a skipped batch's payload
+is not read from storage. A batch with NULL bounds has no entry and is always kept. One call
+considers at most `TAIL_SCAN_MAX_BATCHES` (32,768) batches, skipped ones included, and examines at
+most `TAIL_SCAN_MAX_BYTES` (32 MiB) as before, so D48's budget again bounds what one call reads; a
+page may then hold no batch and continue. A `page_limit` says, as `last`, whether no later batch up
+to `through` can be kept by its bounds. Everything else of D48 stands: pages, cursors (the range is
+in the filter they are bound to), `through`, the fence, refusals; a kept span or log batch is
+returned whole. The contract text is `contracts/BATCH.md`, "Tail reads of spans and log records by
+time". The batch format does not change.
+
+**Alternatives.** Where the bounds come from: (a) The bounds in the batch header, written by `edge`
+(a new `VZB1` field, or the reserved bytes): a format change readers must know first (two releases,
+COMPATIBILITY §3.3), and a shard that trusts what edge wrote, where now it derives the bounds from
+the column every reader decodes. (b) The bounds as arguments of `append`, from `edge`, as
+`seriesIds` are: a contract change on the ingest path and a trusted value no reader can check.
+Where they are kept (review M-1; measured, below): (c1) **in the row only, as first built**: `ADD
+COLUMN` puts them after the payload, so testing them walks every overflow page of it. (c2) A full
+covering index, every row: the smallest reads, but a row write on every append, metric ones too,
+for bounds they never have. (c3) A table of bounds, one row per bounded batch: the same reads and
+append cost as the partial index, plus a row on discard, and a table the release before does not
+know, so after a rollback its deletes leave rows behind; the index is maintained by SQLite for
+every writer. (c4) The bounds before the payload, by rebuilding `batch`: no extra row write, but a
+migration copying up to `shardMaxBytes` (512 MiB) of payload in the constructor of every shard, and
+it reads more than the index (below). SQLite cannot reorder columns without a rebuild. Other: (d) A
+new filter field in nanoseconds (decimal strings) instead of the existing `minTs`/`maxTs`: exact to
+the nanosecond, but the stored bounds are milliseconds either way (a nanosecond does not fit a JS
+number or, safely, the SQL API's integers) and the floor is exact for overlap (D63), so it would add a
+second time model and a second canonical form for cursors for no batch kept or skipped differently.
+(e) Filter rows inside span and log batches (D63's (e) as written): rewriting batches with entry tables
+and variable-length columns on the thread that acknowledges writes, for rows the reader filters anyway.
+(f) Backfill the bounds of stored rows: a migration over an unbounded table (COMPATIBILITY §2.2) for
+rows that leave the tail within minutes; NULL is the safe reading of "unknown".
+(g) The same columns for metric batches (their `ts` column can be found from the end of the batch):
+it would let a metrics read skip batches without scanning their series tables, but D48 measured
+that a metric batch spans most of a tail's times, and the rows are filtered anyway; not done here.
+(h) Count skipped batches against the byte budget at a nominal size instead of a batch cap: the
+same bound with an invented constant. (i) Bound the walk (no bounds past some number of attributes,
+m-4): it would only switch skipping off for senders with many resources; the walk is linear and paid
+once per append, so it is documented instead.
+
+**Why.** Review m-3: a span or log query read the signal's whole tail whatever its window, and the
+tail's bytes count against `maxFetchBytes` (16 MiB), so a tenant with four or more span or log
+shards near the seal size was refused 422 on every trace or log query (modelled). The bounds come
+from the bytes every reader decodes, so they cannot disagree with the rows; skipping is only ever by
+bounds the shard computed itself from a layout it knows, and a batch it knows nothing about is kept,
+so the only effect of a wrong or missing value is a read that returns more, never less. The partial
+index is chosen because it reads as little as any layout to decide (16 to 20 KB to skip 48 batches,
+against 33 MB) while adding the row write only to the appends that have bounds, and because SQLite
+keeps it true for every writer, the release before included.
+
+**Correctness for traces.** A query that needs every span starting in the nanosecond bound
+`[lo, hi]` (the window widened by `traceMarginMs`, D62) passes `floor(lo / 10⁶)` and
+`floor(hi / 10⁶)`, as `msRange` already computes. For a span at `t ∈ [lo, hi]`, `floor(t / 10⁶)`
+lies in that range and in its batch's bounds, so the batch overlaps and is returned. Tested over 200
+random nanosecond bounds against six hours of spans, with bounds on and next to span starts and
+millisecond edges (`shard/test/bounds.test.ts`), and killed when either comparison is off by one;
+and against 284 batches built by edge's own encoders (`shard/test/bounds.edge.test.ts`, adopted
+from the review).
+
+**Measured, first build** (here, local workerd, 2026-11-19, three runs at load average 3.0 to 3.9;
+`shard/bench/results/signaltail.txt`). Eight hours of tail, one batch per ten minutes of start time,
+48 batches: spans 18.74 MB, logs 16.79 MB. Bytes a one-hour query takes from the shard: spans, the
+read query made then, 18,736,064 (over the 16 MiB budget: refused); a span-local hour, 2,343,888
+(6 batches); a search with the 2-hour margin, 11,719,440 (30 batches); an hour a day before the
+tail, 0. Logs: 16,791,072 (over the budget), 2,100,928 for the hour, 0 a day before. In each case
+the read held, byte for byte, every batch in which the engine's flush finds a row inside the bound.
+
+**Measured, the layouts** (review M-1; here, local workerd through a Durable Object,
+`shard/bench/skipread.node.mjs`, 2026-11-26, three runs, identical in bytes; every layout returned
+the same batches for every read). Bytes are what the workerd process read from SQLite's file during
+one read after its page cache was filled with other pages; times in whole milliseconds cold, and
+the mean of a loop warm. Tail of 48 batches of 0.4 to 1 MB (33.7 MB) plus two unbounded:
+
+| Layout | Rows written per append (bounded / unbounded) | Skip all 48: read, cold, warm | One hour (8 kept) | Everything |
+|---|---|---|---|---|
+| (c1) in the row, after the payload (as first built) | 3 / 3 | **33,004 KB**, 7–10 ms, 5.3–7.4 ms | 37,532 KB | 65,870 KB (each page twice) |
+| **partial index, chosen** | **4 / 3** | **20 KB**, <1 ms, 0.05–0.09 ms | 4,568 KB | 33,006 KB |
+| the same with `payload IS NOT NULL` in the WHERE | 4 / 3 | 140 KB | 4,668 KB | 33,006 KB |
+| (c2) full covering index | 4 / 4 | 16 KB | 4,564 KB | 33,002 KB |
+| (c3) table of bounds | 4 / 3 (and 2 rows on discard, not 1) | 20 KB | 4,568 KB | 33,007 KB |
+| (c4) bounds before the payload (rebuilt) | 3 / 3 | 136 KB | 4,664 KB | 33,002 KB |
+
+With 2,000 batches of about 200 B (payloads inside the B-tree leaves), skipping all of them read 580
+KB as first built, 176 KB chosen, 108 KB with (c2), 580 KB with (c4); but took 1.3 ms warm chosen,
+against 0.3 to 0.7 ms as first built (the correlated lookup per batch, about 0.65 µs): for tails of
+tiny batches the chosen statement reads less and costs about 1 ms more per 2,000 batches. Discard
+and fingerprint expiry write one row each in every layout but (c3).
+
+**Measured, end to end** (here, local workerd, 2026-11-26, the eight-hour tail above, this change
+against the first build from a scratch copy, alternating, two runs each, load average 8 to 11 from
+other builds): an hour a day before the tail 4–9 ms → 1 ms; the hour 6–10 ms → 3 ms; the hour with
+the margin 20–26 ms → 15–18 ms, the RPC included. Appends of the same 96 batches (35.5 MB), this
+change against the release before D72 (frozen): 582–737 ms against 455–1,004 ms, no difference
+beyond the spread at that load. The walk alone, Node 22 (`shard/bench/walk.node.mjs`, three runs):
+10 to 25 µs for a 0.4 to 1 MB batch of a few resources or streams, **1.27–1.49 ms** for the worst
+shape edge builds (1,289 resources of 128 attributes in 1 MiB, a span each), 0.19–0.23 ms for 12,465
+one-label log streams; shapes edge never builds up to 2.4 ms per MiB. The first build claimed 7.5 to
+35 µs (review m-4): that held only for batches of few entries.
+
+**Cost of it.** Billed: **one more row written per span or log append** (3 to 4; a batch's life,
+with discard and expiry, 5 to 6 rows), none per metric append; at Cloudflare's list price of $1.00
+per million rows written past the 50 million a month included, **$1.00 per million span or log
+appends** (modelled: e.g. a sustained 100 span or log appends a second is 259 million a month, $259
+more). The row counts are the cursor's `rowsWritten` measured here; on Cloudflare not measured
+(experiment: the same appends on a deployed shard, rows written read from the analytics API). The
+index's storage, tens of bytes per bounded batch of the tail, is negligible. CPU: the walk, up to
+about 1.5 ms per 1 MiB append for the worst shape edge builds, on the object's thread, paid by the
+sender's own bytes. A call of a read with a range reads at most 32 MiB of payload plus up to 32,768
+index entries (about 3 MB and 21 ms at most, modelled from the measurement above). Rows written
+before this release, or by the release before it after a rollback, are read whatever the range until
+they leave the tail. A query whose bound covers the tail still takes all of it: the 2-hour margin
+makes a one-hour search read five hours, so a backlog of more than about 16 MiB within any five
+hours still refuses a search (modelled: 11.7 MB for five hours here). Skipping changes an answer
+that depends on rows outside the range (a later copy of a span outside it hides an earlier copy
+inside it only if read; review m-2): a reader must drop rows outside its range before
+de-duplicating (BATCH.md; query's side). `last` on `page_limit` is used only once query reads it
+(`shard/README.md`, "Needed changes elsewhere"). Not measured on Cloudflare.
+
+**Would change if.** A query needs another time than a span's start or a log's `ts` (then that
+column's bounds too); senders' late spans make most batches span hours, so bounds skip little (then
+per-batch metadata finer than a hull); filtered metric reads show on the shard's CPU (then (g));
+the extra row write shows in the bill (then (c4) at a release that can afford the rebuild, or bounds
+only for shards that are read with ranges); the walk shows on a shard's CPU (then (i)); Cloudflare's
+SQLite reads or bills differently from workerd's here (the experiments above).
