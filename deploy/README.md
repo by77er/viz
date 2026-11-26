@@ -890,6 +890,33 @@ module proxy and cross-checked against GitHub's tag pages). Rust comes from the 
 
 All measured here unless it says Cloudflare.
 
+- **The review of D69, round 2, its findings fixed (2026-11-26)** (`design/reviews/d69-deploy-safety-r2.md`,
+  approve with changes: 2 majors, 4 minors). Nothing deployed; the Cloudflare API only read (an
+  inventory). **M2-1**: `deploy/records/fb77292….formats.json` from fb77292's own sources
+  (`scripts/record-formats.mjs`; the same maps as an independent run of this tree's reader over a
+  `git archive` of fb77292). The review's RV2-1 is now a test that passes for viz-query, viz-gateway,
+  viz-mcp, viz-ruler, viz-ingest and viz-publisher (`--only`, to fb77292's record and to
+  `previous.json`) and still refuses viz-control, by its floor alone; the upgrade test now expects the
+  first release forward-only by `oauth-public` only, and a whole rollback refused by that one problem;
+  a unit test holds the file and its lookup (by record, by `VIZ_RELEASE`, by tag). **m2-1**: the scan
+  reports what it cannot read; tests for an id that cannot be a number (ignored), a missing id and an
+  unreadable script (a first allocation refused, naming it; nothing recorded), ids viz-control already
+  binds kept in doubt, a recorded-only id not kept in doubt, viz-control's own unreadable binding (not a
+  doubt), and the review's RV2-4 end to end against the fake account. **m2-2**: COMPATIBILITY §6 states
+  the forward-only option. **m2-3**: `contracts/oauth.ts` and D70 say about 1 in 11,600 (checked:
+  1/62 × 79,200 / 62^4 minutes, 1 in 11,567 by 2026-12-26) and that production issued layout 1.
+  **m2-4**: one-time setup and the owner notes put the environment rule first. **M2-2**: the stage
+  trial `spikes/s13-upgrade-trial/` is prepared and **not run** (the session's permission check
+  refused deploying to Cloudflare).
+
+  Mutants (scratch copy, at most 2 workers): **9 of 9 new killed** (M2-1 4: the record not used for a
+  target, nor for a version, a version known by its tag only, the record's ingest reading 1 only; m2-1
+  5: new ids taken in doubt, a recorded id kept in doubt, a non-numeric id a doubt, viz-control's own a
+  doubt, an unreadable script stopping the scan). Suites (`cd deploy`): `npx tsc --noEmit` clean; `npx
+  vitest run --maxWorkers=2` 183 of 183; `node --test --test-concurrency=2 'test/*.test.mjs'` **135 of
+  135** (4 new: RV2-1, the formats record, m2-1's two); `bash -n deploy.sh` clean; `control` and `mcp`
+  `npx tsc --noEmit` clean (the contract comment).
+
 - **D70's gate, the rate-limit ids, the `oauth-public` floor and `/api/echo` (2026-11-26).** Nothing
   deployed; the Cloudflare API not called. New tests: `test/configure.test.mjs` 9 (the gate's six
   bindings and period read from control's source and declared by `control/wrangler.jsonc`;
@@ -1676,6 +1703,9 @@ From D70's gate (2026-11-26), for `control/`'s owner (not edited here):
   "in progress" sentence are out of date. Item 6's test "a release setting it while the serving
   viz-control is unstamped is refused" was not built as written: such a release is forward-only
   instead (D69, point 6), because refusing would strand production.
+- **`control/README.md`** (line about layout 1 read early): "about 1 in 13,000" is about 1 in 11,600 by
+  2026-12-26, and production has issued layout 1 since 2026-11-19 (corrected in `contracts/oauth.ts`
+  and D70 by the review of D69, round 2, m2-3).
 - **`control/vitest.config.ts`** now strips `ratelimits` from the config it hands the test plugin
   (control's builder, after the block made 22 tests fail): a test of control that wants the real
   bindings has to add them itself.
