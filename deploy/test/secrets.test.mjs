@@ -9,7 +9,7 @@ import { join, relative } from 'node:path'
 import { after, beforeEach, test } from 'node:test'
 import { GENERATED_DIR, REPO_ROOT } from '../lib/common.mjs'
 import { GENERATED_SECRETS, generateSecretValue, secretNamesOf } from '../lib/secrets.mjs'
-import { deploy, planOnly, rollback } from '../release.mjs'
+import { deploy, newRunId, planOnly, rollback } from '../release.mjs'
 import { callsLike, captured, cmd, installFakeAccount, oauthGated, promotions, serving } from './fake-account.mjs'
 
 const STAGE = 'oauthkeytest'
@@ -300,7 +300,7 @@ test('m-11: another run of the same release uploads between the check and the pu
   assert.ok(keyed.secrets[KEY], 'the put went on the other run’s version')
   // Before m-11 was fixed this run promoted that version (exit 0): the VIZ_RELEASE check cannot tell the two runs apart.
   assert.equal(result.exit, 3, log)
-  assert.match(log, /OAUTH_CLIENT_KEY went on version .*, built on an upload of another run \(VIZ_DEPLOY_RUN another-run-of-the-same-release, this run is [0-9a-f-]{36}\)/)
+  assert.match(log, /OAUTH_CLIENT_KEY went on version .*, built on an upload of another run \(VIZ_DEPLOY_RUN another-run-of-the-same-release, this run is (gh\d+\.\d+-)?[0-9a-f-]{36}\)/)
   assert.deepEqual(promotions(s).map(cmd), [], 'nothing promoted')
   assert.equal(serving(s, CONTROL).id, '00000000-0000-4000-8000-00000000000a')
   assertNotLeaked(keyed.secrets[KEY], s, log)
@@ -321,8 +321,27 @@ test('m-11: every version a run uploads carries VIZ_DEPLOY_RUN; two runs carry d
     assert.equal(serving(s, GATEWAY).vars.VIZ_DEPLOY_RUN, result.record.run)
     runs.push(result.record.run)
   }
-  assert.match(runs[0], /^[0-9a-f-]{36}$/)
+  // On GitHub Actions the id also names the workflow run and its attempt (release.mjs newRunId); CI runs this test there.
+  assert.match(runs[0], /^(gh\d+\.\d+-)?[0-9a-f-]{36}$/)
   assert.notEqual(runs[0], runs[1])
+})
+
+test('m-11: the run id is a UUID, prefixed on GitHub Actions with the workflow run and its attempt', () => {
+  const saved = { id: process.env.GITHUB_RUN_ID, attempt: process.env.GITHUB_RUN_ATTEMPT }
+  const set = (k, v) => (v === undefined ? delete process.env[k] : (process.env[k] = v))
+  try {
+    set('GITHUB_RUN_ID', undefined)
+    set('GITHUB_RUN_ATTEMPT', undefined)
+    assert.match(newRunId(), /^[0-9a-f-]{36}$/)
+    set('GITHUB_RUN_ID', '45882355070')
+    assert.match(newRunId(), /^gh45882355070\.1-[0-9a-f-]{36}$/)
+    set('GITHUB_RUN_ATTEMPT', '3')
+    assert.match(newRunId(), /^gh45882355070\.3-[0-9a-f-]{36}$/)
+    assert.notEqual(newRunId(), newRunId())
+  } finally {
+    set('GITHUB_RUN_ID', saved.id)
+    set('GITHUB_RUN_ATTEMPT', saved.attempt)
+  }
 })
 
 test('m-11: an upload that does not carry this run\'s VIZ_DEPLOY_RUN gets no put at all (refused before it, exit 3)', async () => {
