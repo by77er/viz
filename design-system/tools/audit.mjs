@@ -31,7 +31,8 @@
 //   font          a page that does not preload the sans face (v9: a reload moved the previews' charts when it arrived);
 //   reload-shift  after every configuration, at 1500 px with a fine pointer and 400 px with a coarse one: every page with a chart reloaded
 //                 while scrolled to each chart (--quick: the middle one and the last), and jumped to each after load: a layout shift of
-//                 0.05 or more, or a chart that does not land where it was (v9; the v8 review's B1). --reload-only runs this alone;
+//                 0.05 or more, or a chart that does not land where it was (v9; the v8 review's B1); and, before the reloads, each
+//                 chart's reservation in the page as served with no script run against what it draws (reserve). --reload-only runs this alone;
 //                 --no-reload leaves it out.
 // The guards (each fix the reviews asked for, as rendered; in both themes, at 1500 px with a fine pointer and at 400 px with a coarse one,
 // hit areas at every coarse width; v7 review, M3):
@@ -556,10 +557,17 @@ for (const L of reloadPass ? [{ w: 1500 }, { w: 400, coarse: true }] : []) {
   await ctx.addInitScript(() => { const z = (window.__vzShift = []); try { new PerformanceObserver((l) => { for (const e of l.getEntries()) z.push([e.startTime, e.value, e.hadRecentInput]) }).observe({ type: 'layout-shift', buffered: true }) } catch {}
     const y = (window.__vzY = []), tick = () => { const v = [Math.round(performance.now()), Math.round(scrollY), document.documentElement.scrollHeight]; if (!y.length || v[1] !== y.at(-1)[1] || v[2] !== y.at(-1)[2]) y.push(v); if (performance.now() < 5000) requestAnimationFrame(tick) }; requestAnimationFrame(tick) }) // the scroll position and page height, frame by frame, for a failure's message
   let page = await ctx.newPage(); const settle = async (p, ms) => { await page.evaluate(() => document.fonts.ready); await page.waitForTimeout(/fixture/.test(p) ? 600 : 0); await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))); await page.waitForTimeout(ms) }
-  const lay = `${L.w}${L.coarse ? ' coarse' : ''}`
+  const lay = `${L.w}${L.coarse ? ' coarse' : ''}`, noJs = await browser.newContext({ javaScriptEnabled: false, viewport: { width: L.w, height: 900 }, ...(L.coarse ? { hasTouch: true, isMobile: true } : {}) })
   for (const p of pages.filter((x) => !/\/flows\//.test(x))) {
-    let n = 0; try { await page.goto(urlOf(p), { waitUntil: 'load', timeout: 60000 }); n = await page.evaluate(() => [...document.querySelectorAll('.vz-chart')].filter((c) => c.getClientRects().length).length) } catch { continue }
+    let n = 0, drawn = []; try { await page.goto(urlOf(p), { waitUntil: 'load', timeout: 60000 }); await settle(p, 200); n = await page.evaluate(() => [...document.querySelectorAll('.vz-chart')].filter((c) => c.getClientRects().length).length)
+      drawn = await page.evaluate(() => [...document.querySelectorAll('.vz-chart')].map((c) => { if (!c.getClientRects().length) return null; c.style.setProperty('content-visibility', 'visible', 'important'); c.style.setProperty('min-height', '0px', 'important'); const h = c.getBoundingClientRect().height; c.style.removeProperty('min-height'); c.style.removeProperty('content-visibility'); return [h, (c.closest('.vz-panel')?.querySelector('.vz-panel-title')?.textContent ?? c.id ?? '').trim().replace(/\s+/g, ' ').slice(0, 48)] })) } catch { continue }
     if (!n) continue
+    // the first frame of a load can come before any script has run (a parser-blocking script loading, a slow link): every chart's
+    // reservation in the page as served, with no script run, is what it draws. Deterministic, where the reloads below depend on when the
+    // browser draws that frame (v9: T3.audit survived one run of the reload pass and was caught in another)
+    { const bare = await noJs.newPage(); try { await bare.goto(urlOf(p), { waitUntil: 'load', timeout: 60000 }); const served = await bare.evaluate(() => [...document.querySelectorAll('.vz-chart')].map((c) => parseFloat(getComputedStyle(c).minHeight) || 0))
+        drawn.forEach((d, k) => { if (d && served.length === drawn.length && Math.abs(served[k] - d[0]) > 1) results.push({ page: p, config: lay, kind: 'reserve', msg: `the chart "${d[1]}" reserves ${Math.round(served[k] * 10) / 10} px in the page as served, before any script, and draws ${Math.round(d[0] * 10) / 10} px: a load's first frame is the wrong height, and a reload can land elsewhere` }) })
+      } catch (e) { results.push({ page: p, config: lay, kind: 'load', msg: `reload pass, the page without script: ${e.message.split('\n')[0]}` }) } await bare.close() }
     for (const i of quick ? [...new Set([Math.floor(n / 2), n - 1])] : [...Array(n).keys()]) {
       try {
         await page.close(); page = await ctx.newPage() // a page of its own for each chart: a second load of the same address in one page is taken as a reload, scroll restored
@@ -577,7 +585,7 @@ for (const L of reloadPass ? [{ w: 1500 }, { w: 400, coarse: true }] : []) {
     }
     process.stdout.write(`\rreload pass ${lay.padEnd(10)} ${relative(root, p).slice(-40).padEnd(40)} ${Math.round((Date.now() - started) / 1000)} s`)
   }
-  await ctx.close()
+  await ctx.close(); await noJs.close()
 }
 await browser.close(); server.close()
 if (reloads.length) { console.log(`\n\nReload while scrolled to a chart, and a jump to it after load (${reloads.length} loads; fails at a layout shift of 0.05 or more, or a chart that moves or lands more than 1 px away):\n\n| Page | Layout | Chart | Jump: shift | Jump: moved, px | Reload: shift | Reload: landed, px |\n|---|---|---|---|---|---|---|`)

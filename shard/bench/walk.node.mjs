@@ -48,13 +48,16 @@ const cases = [
   ['logs, 1 row', log(1), true],
   ['spans, edge\'s worst: 1,289 resources of 128 attributes, a span each', worstSpans(1289), true],
   ['logs, edge\'s worst: 12,465 one-label streams, a record each', worstLogs(12465), true],
-  ['not edge: logs, 1 stream of 262,000 empty labels', raw(3, (dv) => { dv.setUint32(8, 1, true); dv.setUint32(12, 1, true); dv.setUint32(24, Math.floor((LEN - 16 - 8 - 4 - 64) / 4), true) }), false],
-  ['not edge: spans, 58,000 empty entries', raw(2, (dv) => { dv.setUint32(8, 1, true); dv.setUint32(12, Math.floor((LEN - 80) / 18), true) }), false],
-  ['not edge: spans, 1 entry of 65,535 bool attributes with empty keys', raw(2, (dv) => { dv.setUint32(8, 1, true); dv.setUint32(12, 1, true); dv.setUint16(24, 65535, true); for (let i = 0; i < 65535; i++) dv.setUint8(26 + 4 * i + 2, 4) }), false],
-  ['not edge: logs, 87,000 rows and no entry', raw(3, (dv) => { dv.setUint32(8, Math.floor((LEN - 64) / 12) - 1, true) }), false],
+  ['not edge: logs, 1 stream of 262,000 empty labels', raw(3, (dv) => { dv.setUint32(8, 1, true); dv.setUint32(12, 1, true); dv.setUint32(24, Math.floor((LEN - 16 - 8 - 4 - 64) / 4), true) }), null],
+  ['not edge: spans, 58,000 empty entries', raw(2, (dv) => { dv.setUint32(8, 1, true); dv.setUint32(12, Math.floor((LEN - 80) / 18), true) }), null],
+  ['not edge: spans, 1 entry of 65,535 bool attributes with empty keys', raw(2, (dv) => { dv.setUint32(8, 1, true); dv.setUint32(12, 1, true); dv.setUint16(24, 65535, true); for (let i = 0; i < 65535; i++) dv.setUint8(26 + 4 * i + 2, 4) }), null],
+  ['not edge: logs, 87,000 rows and no entry', raw(3, (dv) => { dv.setUint32(8, Math.floor((LEN - 64) / 12) - 1, true) }), null],
 ]
-for (const [name, b, bounded] of cases) {
-  if ((batchTimeBounds(b) !== null) !== bounded) throw new Error(`${name}: bounds ${JSON.stringify(batchTimeBounds(b))}`)
+// `bounded`: true when the walk must find bounds (every batch edge builds); null for the shapes edge
+// never builds, which the walk may refuse or walk (the engine refuses them all at flush anyway).
+for (const [name, b, mustBound] of cases) {
+  const bounded = batchTimeBounds(b) !== null
+  if (mustBound && !bounded) throw new Error(`${name}: no bounds`)
   for (let i = 0; i < 50; i++) batchTimeBounds(b) // warm up
   const reps = b.byteLength > 500_000 && !name.startsWith('spans, 1') && !name.startsWith('logs, 5') ? 200 : 2000
   const t = process.hrtime.bigint()
