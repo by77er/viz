@@ -595,7 +595,10 @@ another signal refuses the query, never misread).
   (`trace_index` counts are upper bounds: a retried span is counted twice). Metrics queries
   whose pipeline is span-local, tag names and tag values read only the spans that start in the
   window, cut before de-duplication (D62; review of D72 m-2): what lies outside the window cannot
-  change their answers. Structural operators are evaluated per trace in one place.
+  change their answers. One exception, from the narrow re-check
+  (r3-m4): a span re-sent with a moved start has two copies, and these calls count the copy that
+  starts in the window while search uses the later write, so the two can disagree for one window.
+  Only a sender that changes a span's start between retries reaches it. Structural operators are evaluated per trace in one place.
 - **Trace by ID:** the `trace_index` row groups whose trace-id range (from the index fragment)
   holds the id are read, over all time without a hint and over the hint and the margin with one;
   the trace's fragments name its extent and the `spans` hours that hold it, and only those hours'
