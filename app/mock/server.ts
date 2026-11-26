@@ -72,7 +72,7 @@ const FAILURES: Record<string, () => MockResponse & { text?: string }> = {
 
 /** The CORS headers of the real API for an origin it allows; the mock allows every origin (it is for development). */
 function cors(origin: string | undefined): Record<string, string> {
-  const h: Record<string, string> = { Vary: 'Origin' }
+  const h: Record<string, string> = { Vary: 'Origin, Accept-Encoding' }
   if (!origin) return h
   return {
     ...h,
@@ -156,8 +156,8 @@ const server = createServer((req, res) => {
     }
     const payload = out.text ?? JSON.stringify(out.body)
     // Compressed when the client accepts it, as the real API's answers are (workerd and
-    // Cloudflare send gzip): over a slow network a 3.4 MB matrix is about 0.4 MB. `Vary` stays
-    // `Origin`, as the real API sends it under wrangler dev (README, "Needed changes in query/").
+    // Cloudflare send gzip): over a slow network a 3.4 MB matrix is about 0.4 MB. `Vary` names
+    // `Accept-Encoding` too, as the real API's does since 2026-11-26 (e2e/contract.cjs).
     const gzip = payload.length > 1024 && /\bgzip\b/.test(String(req.headers['accept-encoding'] ?? ''))
     const send = () => {
       res.writeHead(out.status, { ...c, 'Content-Type': 'application/json', 'X-Viz-Mock': '1', 'Cache-Control': 'no-store', ...(gzip ? { 'Content-Encoding': 'gzip' } : {}), ...out.headers })

@@ -4,11 +4,11 @@ import type { Ledger } from '../../ledger/src/ledger'
 import { type SchemaSpec, type SchemaTooNew, SchemaTooNewError, columnsOf, openSchema, refusalOf } from '../../contracts/schema'
 import { SeriesWindow, UnreadableSketch } from './sketch'
 import {
-  type CompiledFilter, SKIPPED_BY_BOUNDS, TAIL_PAGE_MAX_BYTES, TAIL_READ_VERSION, TAIL_SCAN_MAX_BATCHES, TAIL_SCAN_MAX_BYTES, TIMED_TAIL_SQL, type TailPage, type TailReadOptions,
+  type CompiledFilter, PLAIN_TAIL_SQL, SKIPPED_BY_BOUNDS, TAIL_PAGE_MAX_BYTES, TAIL_READ_VERSION, TAIL_SCAN_MAX_BATCHES, TAIL_SCAN_MAX_BYTES, TIMED_TAIL_SQL, type TailPage, type TailReadOptions,
   UnreadableBatch, batchTimeBounds, compileFilter, decodeCursor, encodeCursor, filterBatch, fnv64,
 } from './tail'
 export {
-  TAIL_PAGE_MAX_BYTES, TAIL_READ_VERSION, TAIL_SCAN_MAX_BATCHES, TAIL_SCAN_MAX_BYTES, TIMED_TAIL_SQL, type TailFilter, type TailPage, type TailReadOptions, splitKeyRange,
+  PLAIN_TAIL_SQL, TAIL_PAGE_MAX_BYTES, TAIL_READ_VERSION, TAIL_SCAN_MAX_BATCHES, TAIL_SCAN_MAX_BYTES, TIMED_TAIL_SQL, type TailFilter, type TailPage, type TailReadOptions, splitKeyRange,
 } from './tail'
 
 /**
@@ -1064,7 +1064,8 @@ export class Shard extends DurableObject<ShardEnv> {
    * the read admits is returned whole. The time range selects metric rows, and (D72) span and
    * log batches whole by the bounds recorded at append: one wholly outside the range is skipped,
    * decided from the index `batch_time` without reading its payload, and one without bounds is
-   * kept. One call considers at most `tailScanMaxBatches` batches, skipped ones included, and
+   * kept. A read that admits only metric batches (`signals: [1]`) looks at no bounds and reads as
+   * before D72 (re-check of D72, r2-m-2). One call considers at most `tailScanMaxBatches` batches, skipped ones included, and
    * examines at most `tailScanMaxBytes` of them (review of D72, M-1). A metrics read should pass
    * `signals: [1]`: a shard of an earlier release ignores the field and refuses (throws) on a
    * span or log batch, so a caller must also read only its signal's shards by name.
@@ -1132,16 +1133,19 @@ export class Shard extends DurableObject<ShardEnv> {
     // Row by row from SQLite (nothing is awaited here), so the page holds what it returns and
     // one stored batch, not the tail. One call considers the batches `from … upto`, at most
     // `tailScanMaxBatches` of them, and examines at most `tailScanMaxBytes` of those; the rest is
-    // the next page's (D48; review of D72, M-1). With a time range, a span or log batch whose
-    // recorded bounds lie wholly outside it (D72) is skipped in SQL, decided from the index
-    // `batch_time` (`TIMED_TAIL_SQL`), never from the row: its payload is not read. A batch without
-    // bounds (a metric batch, or one stored before schema 3 or by the release before) has no entry
-    // there and is always read; `filterBatch` decides as before. A skipped batch is not examined: it
-    // counts in neither `scannedBatches` nor `scannedBytes`.
+    // the next page's (D48; review of D72, M-1). With a time range, in a read that admits span or
+    // log batches (`f.byBounds`), a span or log batch whose recorded bounds lie wholly outside the
+    // range (D72) is skipped in SQL, decided from the index `batch_time` (`TIMED_TAIL_SQL`), never
+    // from the row: its payload is not read. A batch without bounds (a metric batch, or one stored
+    // before schema 3 or by the release before) has no entry there and is always read; `filterBatch`
+    // decides as before. A skipped batch is not examined: it counts in neither `scannedBatches` nor
+    // `scannedBytes`. Every other read, a metrics query's ranged read included, runs the statement
+    // it ran before D72 (`PLAIN_TAIL_SQL`): it could skip nothing, and the index lookup is a second
+    // row read (billed) per batch (re-check of D72, r2-m-2).
     const upto = Math.min(through, from + Math.max(1, this.cfg.tailScanMaxBatches) - 1)
-    const rows = f.timed
+    const rows = f.byBounds
       ? this.ctx.storage.sql.exec(TIMED_TAIL_SQL, tenant, from, upto, ...this.skipArgs(tenant, f))
-      : this.ctx.storage.sql.exec(`SELECT seq, rows, payload FROM batch WHERE tenant = ? AND seq BETWEEN ? AND ? AND payload IS NOT NULL ORDER BY seq`, tenant, from, upto)
+      : this.ctx.storage.sql.exec(PLAIN_TAIL_SQL, tenant, from, upto)
     for (const r of rows) {
       // (Checked here, not in `TIMED_TAIL_SQL`: there it would read every row's record, skipped ones too.)
       if (r.payload === null) continue
@@ -1189,13 +1193,14 @@ export class Shard extends DurableObject<ShardEnv> {
   /**
    * `page_limit`'s `last` (review of D72, n-1): true when no batch after `seq`, up to `through`, can
    * hold a row this read keeps by its time bounds, so the batch's bytes complete the read. Without
-   * a time range only `through` itself is last. With one, the batches after `seq` the range does
-   * not skip are looked for in the index (no payload is read), at most `tailScanMaxBatches` of them:
-   * false when one is found, or when the look stops before `through`.
+   * a time range, or in a read that admits no span or log batch (nothing is skipped by bounds), only
+   * `through` itself is last. Otherwise the batches after `seq` the range does not skip are looked
+   * for in the index (no payload is read), at most `tailScanMaxBatches` of them: false when one is
+   * found, or when the look stops before `through`.
    */
   private lastKept(tenant: string, f: CompiledFilter, seq: number, through: number): boolean {
     if (seq >= through) return true
-    if (!f.timed) return false
+    if (!f.byBounds) return false
     const upto = Math.min(through, seq + Math.max(1, this.cfg.tailScanMaxBatches))
     const kept = this.ctx.storage.sql
       .exec(`SELECT b.seq AS seq FROM batch AS b WHERE b.tenant = ? AND b.seq > ? AND b.seq <= ? AND NOT ${SKIPPED_BY_BOUNDS} LIMIT 1`, tenant, seq, upto, ...this.skipArgs(tenant, f))

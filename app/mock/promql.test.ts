@@ -271,11 +271,11 @@ describe('mock API: the real API\'s HTTP surface (e2e/contract.cjs checks it aga
     // No cost headers on a refusal: nothing was asked of storage.
     expect(api.handle('GET', '/api/v1/labels').headers?.['X-Viz-Engine-Ms']).toBeUndefined()
   })
-  it('sends the 29 cost headers on answers and on query errors', () => {
+  it('sends the 34 cost headers on answers and on query errors', () => {
     const okRes = api.handle('POST', '/api/v1/query_range', range('up'), { ...auth, ...form })
     const bad = api.handle('POST', '/api/v1/query_range', range('up{'), { ...auth, ...form })
     for (const r of [okRes, bad]) {
-      expect(Object.keys(r.headers ?? {}).filter((k) => k.startsWith('X-Viz-'))).toHaveLength(29)
+      expect(Object.keys(r.headers ?? {}).filter((k) => k.startsWith('X-Viz-'))).toHaveLength(34)
       expect(r.headers?.['X-Viz-Execution']).toBe('single')
     }
   })
