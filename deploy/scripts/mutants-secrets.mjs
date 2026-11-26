@@ -35,7 +35,7 @@ const MUTANTS = [
     // Since D69 an ensureSecrets call without this run's VIZ_DEPLOY_RUN is refused before any put (the first form of this
     // mutant became equivalent), so the plan puts directly, as a careless change would.
     "  const secrets = planSecrets(await secretsNow(specs, live, SECRET_API), rotate, plan.steps)\n  for (const sc of secrets) if (sc.action === 'create') await wrangler(['versions', 'secret', 'put', sc.name, '--name', sc.worker], { input: 'p'.repeat(43), quiet: true }).catch(() => {})\n"],
-  ['an unknown name to rotate is ignored instead of refused', 'release.mjs', '  const refusals = [...plan.problems, ...floors.problems, ...rotateProblems(rotate, specs)]', '  const refusals = [...plan.problems, ...floors.problems]'],
+  ['an unknown name to rotate is ignored instead of refused', 'release.mjs', ', ...floors.problems, ...rotateProblems(rotate, specs), ...keyGateRefusals(gate, planned)]', ', ...floors.problems, ...keyGateRefusals(gate, planned)]'],
   ['lib/wrangler.mjs: the value is not written to stdin', 'lib/wrangler.mjs', '    if (input !== undefined) child.stdin.end(input)', '    if (input !== undefined) child.stdin.end()'],
   // review of D53 (design/reviews/d44-d52-d53-d60.md)
   ["m-10: a run with a secret on stdin keeps the deploy's own log settings (sanitising off, debug log on disk)", 'lib/wrangler.mjs', ", ...(input !== undefined ? SECRET_RUN_ENV : {}) },", ' },'],
@@ -54,7 +54,7 @@ const MUTANTS = [
   ['S9: a failed promotion restores viz-control across its own rotation', 'release.mjs', '      const back = promoted.filter((n) => !keyed.has(n))', '      const back = promoted'],
   ['a serving version that cannot be read is taken as not carrying the key', 'lib/secrets.mjs', '      if (!info) throw new Error(`${spec.worker}: serving version', '      if (!info) continue\n      if (!info) throw new Error(`${spec.worker}: serving version'],
   // Review of D69 (design/reviews/d69-deploy-safety.md)
-  ['m-5: a refusal on the wrangler deploy path (phase 2) says nothing is promoted', 'release.mjs', "deployed: step.via === 'deploy', log })", 'deployed: false, log })'],
+  ['m-5: a refusal on the wrangler deploy path (phase 2) says nothing is promoted', 'release.mjs', "deployed: step.via === 'deploy', gate, log })", 'deployed: false, gate, log })'],
   ['m-5: a refusal in phase 2 is logged as a promotion failure, not as a refusal after promotion began', 'release.mjs', "e instanceof SecretRefused ? 'REFUSED in phase 2, after promotion began (exit 1)' : 'promotion failed'", "'promotion failed'"],
   ['m-6: the refusal of a key missing from the upload no longer says that a rollback or a redeploy does not lift it', 'lib/secrets.mjs', '          `Neither a rollback nor deploying again lifts this: the refused version is now the newest, and the next upload inherits from it (deploy/README.md, Known risks). ` +\n', ''],
   ['m-7: the upload is read until it exists, not until the key it inherited shows', 'lib/secrets.mjs', '(x) => Boolean(x) && inherited.every((n) => secretNamesOf(x).includes(n))', '(x) => Boolean(x)'],

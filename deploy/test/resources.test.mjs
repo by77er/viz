@@ -58,6 +58,12 @@ test('allocation: production and stages never collide, whether their ids are bou
   const prod = allocateRateLimitIds({ wanted: wantedRateLimits(undefined), range: RANGE, inUse: none() })
   // Stage a, configured from the same checkout before production was deployed: production's ids are only recorded.
   const a = allocateRateLimitIds({ wanted: wantedRateLimits('a1'), range: RANGE, inUse: none(), recorded: prod.ids })
+  // Ids recorded for another deployment are excluded even where this one would take them first.
+  const natural = allocateRateLimitIds({ wanted: wantedRateLimits('a1'), range: RANGE, inUse: none() })
+  const theirs = Object.fromEntries(ids(natural).map((id, i) => [`viz-control/${wantedRateLimits(undefined)[i].name}`, id]))
+  const avoided = allocateRateLimitIds({ wanted: wantedRateLimits('a1'), range: RANGE, inUse: none(), recorded: theirs })
+  for (const id of ids(avoided)) assert.ok(!ids(natural).includes(id), id)
+  assert.match(avoided.notes.join('\n'), /allocated/)
   // Stage b after both are deployed: their ids are bound by their viz-controls; nothing is recorded here (another checkout).
   const bound = { 'viz-control': Object.fromEntries(Object.entries(prod.ids).map(([k, v]) => [k.split('/')[1], v])), 'viz-a1-control': Object.fromEntries(Object.entries(a.ids).map(([k, v]) => [k.split('/')[1], v])) }
   const b = allocateRateLimitIds({ wanted: wantedRateLimits('b1'), range: RANGE, inUse: inUse(bound) })
