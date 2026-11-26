@@ -1,0 +1,125 @@
+{
+  "$comment": "Production as the owner deployed it on 2026-11-19 from main at fb77292 (PR #8), with that commit's tooling (before D69): each Worker's vars and newest migration tag exactly as fb77292's own deploy/configure.mjs generates them for production (run on a git archive of fb77292 in a scratch directory, 2026-11-26, KV id replaced by a dummy), and the record fb77292's release.mjs writes for that first deploy (schemas, no formats, floors, run or oauth). What versions Cloudflare keeps is modelled in test/upgrade-production.test.mjs from fb77292's release.mjs and bootstrap.mjs: every Worker by wrangler deploy (the first deploy applies the migrations), then viz-control's key by versions secret put and versions deploy, and the gateway's bootstrap secret put and deleted by wrangler secret.",
+  "release": "fb7729280d79f41e4f9fa40be1867c0fd2491352",
+  "workers": [
+    {
+      "name": "viz-publisher",
+      "migrationTag": "v1",
+      "vars": {
+        "ICEBERG_LOCATION_PREFIX": "s3://viz-lake",
+        "VIZ_RELEASE": "fb7729280d79f41e4f9fa40be1867c0fd2491352",
+        "VIZ_WORKER": "viz-publisher",
+        "VIZ_SCHEMAS": "{\"v\":1,\"classes\":{\"publisher.Publisher\":{\"latest\":3,\"compat\":1,\"by\":\"1: the schema as it stood when versioning began\"}}}"
+      }
+    },
+    {
+      "name": "viz-ingest",
+      "migrationTag": "v1",
+      "vars": {
+        "CELL": "cell-0",
+        "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":8,\"spread\":2,\"epoch\":1}",
+        "LEDGER_STATE_MAX_BYTES": "16777216",
+        "VIZ_RELEASE": "fb7729280d79f41e4f9fa40be1867c0fd2491352",
+        "VIZ_WORKER": "viz-ingest",
+        "VIZ_SCHEMAS": "{\"v\":1,\"classes\":{\"shard.Shard\":{\"latest\":1,\"compat\":1,\"by\":\"1: the schema as it stood when versioning began (segment.sealed_at added to objects that lack it)\"},\"ledger.Ledger\":{\"latest\":3,\"compat\":2,\"by\":\"2: the change log in segments (contracts/LEDGER-LOG.md); the state-size estimate in meta\"}}}"
+      }
+    },
+    {
+      "name": "viz-control",
+      "migrationTag": "v1",
+      "vars": {
+        "CORS_ALLOW_ORIGINS": "https://vis.bitcru.sh",
+        "PUBLIC_URL": "https://vis.bitcru.sh",
+        "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":8,\"spread\":2,\"epoch\":1}",
+        "VIZ_RELEASE": "fb7729280d79f41e4f9fa40be1867c0fd2491352",
+        "VIZ_WORKER": "viz-control",
+        "VIZ_SCHEMAS": "{\"v\":1,\"classes\":{\"control.Tenant\":{\"latest\":3,\"compat\":1,\"by\":\"1: the schema as it stood when versioning began\"}}}"
+      }
+    },
+    {
+      "name": "viz-query",
+      "migrationTag": "v1",
+      "vars": {
+        "CELL": "cell-0",
+        "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":8,\"spread\":2,\"epoch\":1}",
+        "LEAF_POOL_SIZE": "32",
+        "CORS_ORIGINS": "https://vis.bitcru.sh",
+        "FILE_CACHE_TTL_S": "3600",
+        "VIZ_RELEASE": "fb7729280d79f41e4f9fa40be1867c0fd2491352",
+        "VIZ_WORKER": "viz-query"
+      }
+    },
+    {
+      "name": "viz-ruler",
+      "migrationTag": "v2",
+      "vars": {
+        "VIZ_RELEASE": "fb7729280d79f41e4f9fa40be1867c0fd2491352",
+        "VIZ_WORKER": "viz-ruler",
+        "VIZ_SCHEMAS": "{\"v\":1,\"classes\":{\"ruler.Ruler\":{\"latest\":3,\"compat\":1,\"by\":\"1: the schema as it stood when versioning began\"},\"ruler.Notifier\":{\"latest\":1,\"compat\":1,\"by\":\"1: the schema as it stood when versioning began\"},\"ruler.RulerIndex\":{\"latest\":1,\"compat\":1,\"by\":\"1: the schema as it stood when versioning began\"}}}"
+      }
+    },
+    {
+      "name": "viz-mcp",
+      "migrationTag": null,
+      "vars": {
+        "APP_URL": "https://vis.bitcru.sh",
+        "PUBLIC_URL": "https://vis.bitcru.sh",
+        "ALLOWED_ORIGINS": "",
+        "VIZ_RELEASE": "fb7729280d79f41e4f9fa40be1867c0fd2491352",
+        "VIZ_WORKER": "viz-mcp"
+      }
+    },
+    {
+      "name": "viz-gateway",
+      "migrationTag": null,
+      "vars": {
+        "VIZ_RELEASE": "fb7729280d79f41e4f9fa40be1867c0fd2491352",
+        "VIZ_WORKER": "viz-gateway"
+      }
+    }
+  ],
+  "schemas": {
+    "publisher.Publisher": {
+      "worker": "viz-publisher",
+      "latest": 3,
+      "compat": 1,
+      "by": "1: the schema as it stood when versioning began"
+    },
+    "shard.Shard": {
+      "worker": "viz-ingest",
+      "latest": 1,
+      "compat": 1,
+      "by": "1: the schema as it stood when versioning began (segment.sealed_at added to objects that lack it)"
+    },
+    "ledger.Ledger": {
+      "worker": "viz-ingest",
+      "latest": 3,
+      "compat": 2,
+      "by": "2: the change log in segments (contracts/LEDGER-LOG.md); the state-size estimate in meta"
+    },
+    "control.Tenant": {
+      "worker": "viz-control",
+      "latest": 3,
+      "compat": 1,
+      "by": "1: the schema as it stood when versioning began"
+    },
+    "ruler.Ruler": {
+      "worker": "viz-ruler",
+      "latest": 3,
+      "compat": 1,
+      "by": "1: the schema as it stood when versioning began"
+    },
+    "ruler.Notifier": {
+      "worker": "viz-ruler",
+      "latest": 1,
+      "compat": 1,
+      "by": "1: the schema as it stood when versioning began"
+    },
+    "ruler.RulerIndex": {
+      "worker": "viz-ruler",
+      "latest": 1,
+      "compat": 1,
+      "by": "1: the schema as it stood when versioning began"
+    }
+  }
+}

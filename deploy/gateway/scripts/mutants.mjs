@@ -33,6 +33,16 @@ const MUTANTS = [
   ['OAuth: /oauth/ and the metadata matched as prefixes (/oauth/x, /.well-known/oauth-authorization-server/x reach control)', ' || CONTROL_OAUTH_PATHS.has(path)) return \'control\'', " || path.startsWith('/oauth/') || path.startsWith('/.well-known/oauth-authorization-server')) return 'control'"],
   ['OAuth: the protected resource metadata goes to control instead of mcp', ' || MCP_OAUTH_PATHS.has(path)) return \'mcp\'', ") return 'mcp'\n  if (MCP_OAUTH_PATHS.has(path)) return 'control'"],
   ['the ruler\'s paths go to the query service (both speak the Prometheus API)', "  if (RULER_PATHS.has(path) || path === MONITORS_ROOT || path.startsWith(`${MONITORS_ROOT}/`)) return 'ruler'", "  if (RULER_PATHS.has(path) || path === MONITORS_ROOT || path.startsWith(`${MONITORS_ROOT}/`)) return 'query'"],
+  // Traces and logs, stage 3: the ingest and read paths of spans and logs
+  ['a trace path goes to ingest (OTLP traces and Tempo share /api/traces/…)', "if (INGEST_PATHS.has(path) || SIGNAL_INGEST_PATHS.has(path)) return 'ingest'", "if (INGEST_PATHS.has(path) || SIGNAL_INGEST_PATHS.has(path) || path.startsWith('/api/traces/')) return 'ingest'"],
+  ['every /loki/ path goes to ingest (where the push is served)', "if (INGEST_PATHS.has(path) || SIGNAL_INGEST_PATHS.has(path)) return 'ingest'", "if (INGEST_PATHS.has(path) || SIGNAL_INGEST_PATHS.has(path) || path.startsWith('/loki/')) return 'ingest'"],
+  ['the span and log ingest paths are not routed', "if (INGEST_PATHS.has(path) || SIGNAL_INGEST_PATHS.has(path)) return 'ingest'", "if (INGEST_PATHS.has(path)) return 'ingest'"],
+  ['the Tempo and Loki read paths are not routed', "  if (SIGNAL_QUERY_PATHS.has(path) || SIGNAL_QUERY_PATTERNS.some((p) => p.test(path))) return 'query'\n", ''],
+  ['a trace id matched as a prefix (/api/traces/abc/x reaches query)', 'traces\\/[^/]+$/', 'traces\\//'],
+  ['/api/v1/plan is not routed (the plan-only endpoint is unreachable from outside)', "'/api/v1/metadata', '/api/v1/plan'])", "'/api/v1/metadata'])"],
+  ['Tempo\'s /api/echo is not routed (a Grafana data source\'s check gets 404)', "  '/api/echo',\n", ''],
+  ['/api/echo matched as a prefix (/api/echo/x, /api/echox reach query)', "  if (SIGNAL_QUERY_PATHS.has(path) || SIGNAL_QUERY_PATTERNS", "  if (path.startsWith('/api/echo') || SIGNAL_QUERY_PATHS.has(path) || SIGNAL_QUERY_PATTERNS"],
+  ['every /loki/ path goes to query (/loki/api/v1/tail, index, rules reach it)', "  if (SIGNAL_QUERY_PATHS.has(path) || SIGNAL_QUERY_PATTERNS", "  if (path.startsWith('/loki/') || SIGNAL_QUERY_PATHS.has(path) || SIGNAL_QUERY_PATTERNS"],
 ]
 
 // It edits gateway/src/index.ts in place: run it in a copy outside any git work tree

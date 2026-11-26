@@ -1,19 +1,27 @@
 // node --test deploy/test/: configure.mjs, without the network.
 import assert from 'node:assert/strict'
-import { readFileSync, readdirSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { checkEntrypoints, configure, durableObjectsOf, exportedNames, generateWorker, loadPlan, queuesOf, stageVars } from '../configure.mjs'
+import { checkEntrypoints, checkFloorSchemas, configure, durableObjectsOf, exportedNames, generateWorker, loadPlan, queuesOf, readOAuthGates, stageVars } from '../configure.mjs'
 import { GENERATED_DIR, REPO_ROOT, checkStage, parseJsonc, readJsonc, stagedName } from '../lib/common.mjs'
-import { SCHEMAS_VAR, parseSource, readSchemas, schemaSources, schemasVar } from '../lib/schemas.mjs'
+import { FLOORS_VAR, floorRules, stampedFloors } from '../lib/floors.mjs'
+import { FORMATS_VAR, formatSources, formatsVar, readFormats } from '../lib/formats.mjs'
+import { SCHEMAS_VAR, evaluateExports, parseSource, readSchemas, schemaSources, schemasVar } from '../lib/schemas.mjs'
 
 const { plan } = loadPlan()
 const worker = (name) => plan.workers.find((w) => w.name === name)
 const ids = { 'viz-config': 'a'.repeat(32), 'viz-trial-config': 'b'.repeat(32) }
-const gen = (name, stage, cfg) => {
+const gates = readOAuthGates(plan)
+const RL = gates.get('viz-control').required
+/** Rate Limiting namespace ids as deploy/resources.mjs records them (production 7000…, the trial stage 7100…). */
+const ratelimitIds = Object.fromEntries(RL.flatMap((n, i) => [[`viz-control/${n}`, String(7000 + i)], [`viz-trial-control/${n}`, String(7100 + i)]]))
+const gen = (name, stage, cfg, opts = {}) => {
   const w = worker(name)
   const componentDir = join(REPO_ROOT, w.component)
-  return generateWorker({ worker: w, cfg: cfg ?? readJsonc(join(componentDir, 'wrangler.jsonc')), componentDir, plan, stage, release: 'abc123', ids, outDir: join(GENERATED_DIR, stage ? `stage-${stage}` : 'production') })
+  return generateWorker({ worker: w, cfg: cfg ?? readJsonc(join(componentDir, 'wrangler.jsonc')), componentDir, plan, stage, release: 'abc123', ids, outDir: join(GENERATED_DIR, stage ? `stage-${stage}` : 'production'), gate: gates.get(name) ?? null, ratelimitIds, ...opts })
 }
 
 test('JSONC: comments and trailing commas go, strings stay', () => {
@@ -330,4 +338,294 @@ test('a Durable Object class of another Worker is bound only where workers.json 
   const q = readJsonc(join(REPO_ROOT, 'query/wrangler.jsonc'))
   const queryW = { ...worker('viz-query'), binds_classes: { 'viz-ingest:Shard': 'x' } }
   assert.throws(() => generateWorker({ worker: queryW, cfg: q, componentDir: join(REPO_ROOT, 'query'), plan, stage: undefined, release: 'r', ids, outDir: join(GENERATED_DIR, 'production') }), /viz-ingest's Durable Object class Ledger/)
+})
+
+// ───────────────────────────── format versions and rollback floors (D69) ─────────────────────────────
+
+test('formats: what each Worker writes and reads is read from the components, into the manifest and each version\'s VIZ_FORMATS', () => {
+  const read = readFormats(formatSources(plan.workers))
+  const of = (w, f) => read.find((x) => x.worker === w && x.format === f)
+  // The ruler's gate (D60): written at ANOMALY_STATE_WRITE, read at 1 and 2.
+  const gate = Number(/export const ANOMALY_STATE_WRITE: 1 \| 2 = (\d)/.exec(readFileSync(join(REPO_ROOT, 'ruler/src/schema.ts'), 'utf8'))[1])
+  assert.deepEqual(of('viz-ruler', 'store.anomaly-state'), { worker: 'viz-ruler', format: 'store.anomaly-state', writes: gate, reads: [1, 2] })
+  assert.deepEqual(of('viz-ruler', 'rpc.alert-update'), { worker: 'viz-ruler', format: 'rpc.alert-update', writes: 1, reads: [1] })
+  // viz-ingest: flush's dead letters (writes 2, reads 1 and 2), the janitor's reads of what others write.
+  assert.deepEqual(of('viz-ingest', 'r2.dead-letters'), { worker: 'viz-ingest', format: 'r2.dead-letters', writes: 2, reads: [1, 2] })
+  assert.deepEqual(of('viz-ingest', 'kv.settings'), { worker: 'viz-ingest', format: 'kv.settings', writes: null, reads: [1] })
+  assert.deepEqual(of('viz-ingest', 'r2.compaction-inputs'), { worker: 'viz-ingest', format: 'r2.compaction-inputs', writes: 1, reads: [1] })
+  assert.ok(of('viz-control', 'kv.settings') && of('viz-publisher', 'iceberg.metadata'))
+  // What other Workers read of control's records and answers (review of D69, M-1 (c)): a reader's constant, or version 1.
+  assert.deepEqual(of('viz-query', 'kv.key'), { worker: 'viz-query', format: 'kv.key', writes: null, reads: [1] })
+  assert.deepEqual(of('viz-query', 'kv.settings'), { worker: 'viz-query', format: 'kv.settings', writes: null, reads: [1] })
+  assert.deepEqual(of('viz-ruler', 'rpc.notification-target'), { worker: 'viz-ruler', format: 'rpc.notification-target', writes: null, reads: [1] })
+  assert.deepEqual(of('viz-mcp', 'rpc.oauth'), { worker: 'viz-mcp', format: 'rpc.oauth', writes: null, reads: [1] })
+  // The publisher's `read.…` entries name what another component writes: not recorded.
+  assert.deepEqual(read.filter((x) => x.format.startsWith('read.')), [])
+  assert.deepEqual([...new Set(read.map((x) => x.worker))].sort(), ['viz-control', 'viz-ingest', 'viz-mcp', 'viz-publisher', 'viz-query', 'viz-ruler'])
+  const m = configure({ stage: 'citest', release: 'r1', idsOptional: true, quiet: true })
+  for (const w of m.workers.filter((x) => x.deploy)) {
+    const cfg = readJsonc(join(REPO_ROOT, w.config))
+    const mine = read.filter((x) => x.worker === w.canonical)
+    assert.deepEqual(w.formats, mine.map(({ format, writes, reads }) => ({ format, writes, reads })), w.name)
+    // Every deployed Worker carries a complete VIZ_FORMATS, the gateway's empty.
+    assert.equal(cfg.vars[FORMATS_VAR], formatsVar(mine), w.name)
+    assert.equal(JSON.parse(cfg.vars[FORMATS_VAR]).complete, true, w.name)
+  }
+  assert.equal(readJsonc(join(REPO_ROOT, m.workers.find((w) => w.canonical === 'viz-gateway').config)).vars[FORMATS_VAR], '{"v":1,"complete":true,"formats":{}}')
+  assert.deepEqual(JSON.parse(readJsonc(join(REPO_ROOT, m.workers.find((w) => w.canonical === 'viz-ruler').config)).vars[FORMATS_VAR]).formats['store.anomaly-state'], { w: gate, r: [1, 2] })
+})
+
+test('formats: every FORMATS map in the sources of a deployed component is declared in workers.json, so no written format goes unrecorded', () => {
+  const declared = new Set(plan.workers.flatMap((w) => w.formats?.writes ?? []))
+  const dirs = ['contracts', 'publisher', 'stack', 'edge', 'shard', 'ledger', 'flush', 'compact', 'janitor', 'control', 'query', 'ruler', 'mcp']
+  const found = []
+  for (const d of dirs) {
+    const src = join(REPO_ROOT, d, d === 'contracts' ? '' : 'src')
+    if (!existsSync(src)) continue
+    for (const f of readdirSync(src, { recursive: true }).filter((x) => String(x).endsWith('.ts'))) {
+      if (/export const FORMATS = \{/.test(readFileSync(join(src, f), 'utf8'))) found.push(`${d}/${d === 'contracts' ? '' : 'src/'}${f}#FORMATS`)
+    }
+  }
+  assert.ok(found.length >= 6, found.join(', '))
+  for (const f of found) assert.ok(declared.has(f), `${f} is not under any Worker's formats.writes in deploy/workers.json`)
+})
+
+test('formats: every deployed Worker declares what it reads; one without a declaration is refused (review of D69, M-1 (c))', () => {
+  for (const w of plan.workers.filter((x) => x.deploy !== false)) assert.ok(w.formats !== undefined, `${w.name} has no "formats" in deploy/workers.json`)
+  const without = { ...plan, workers: plan.workers.map((w) => (w.name === 'viz-query' ? { ...w, formats: undefined } : w)) }
+  assert.throws(() => configure({ stage: 'citest', release: 'r1', idsOptional: true, quiet: true, plan: without }), /deploy\/workers\.json viz-query: no "formats"\. Every deployed Worker says completely what it reads/)
+})
+
+/**
+ * What a Worker's code reads, from the sources it is bundled from (esbuild's list of inputs, as
+ * wrangler bundles its main; packages left out): each signature names a format another Worker writes.
+ */
+const READ_SIGNATURES = [
+  [/`key:\$\{/, 'kv.key'],
+  [/`pool:\$\{/, 'kv.pool'],
+  [/`(?:limits|retention):\$\{/, 'kv.settings'],
+  [/`revocation:\$\{/, 'kv.revocation'],
+  [/\bKEY_RE\b/, 'credential.api-key'],
+  [/\bnotificationTarget\(/, 'rpc.notification-target'],
+  [/\bserviceKey\(/, 'rpc.service-key'],
+  [/\bintrospectAccessToken\(/, 'rpc.oauth'],
+  [/\bparseCredential\(/, 'credential.oauth'],
+]
+
+test('formats: each Worker declares the formats of control\'s KV records, API key and RPC answers that its bundled sources read (review of D69, M-1 (c))', async () => {
+  const { buildSync } = (await import('node:module')).createRequire(join(REPO_ROOT, 'deploy', 'package.json'))('esbuild')
+  const read = readFormats(formatSources(plan.workers))
+  const found = []
+  for (const w of plan.workers.filter((x) => x.deploy !== false)) {
+    const cfg = readJsonc(join(REPO_ROOT, w.component, 'wrangler.jsonc'))
+    const r = buildSync({ entryPoints: [join(REPO_ROOT, w.component, cfg.main)], absWorkingDir: REPO_ROOT, bundle: true, write: false, metafile: true, platform: 'neutral', format: 'esm', packages: 'external', external: ['cloudflare:*', '*.wasm', 'node:*'], logLevel: 'silent', loader: { '.wasm': 'empty' } })
+    const sources = Object.keys(r.metafile.inputs).map((f) => readFileSync(join(REPO_ROOT, f), 'utf8'))
+    for (const [re, format] of READ_SIGNATURES) {
+      if (!sources.some((t) => re.test(t))) continue
+      found.push(`${w.name} ${format}`)
+      assert.ok(read.some((x) => x.worker === w.name && x.format === format), `${w.name}'s sources read ${format} (${re}), and deploy/workers.json does not declare it`)
+    }
+  }
+  // The readers this pins (a change to a component that adds or drops one shows here).
+  for (const f of ['viz-ingest kv.pool', 'viz-query kv.pool', 'viz-query kv.settings', 'viz-ruler rpc.service-key', 'viz-mcp rpc.oauth', 'viz-mcp credential.oauth']) assert.ok(found.includes(f), `${f}: ${found.join(', ')}`)
+})
+
+test('formats: a Worker that writes a version it does not read, or one format at two versions, is refused', () => {
+  const dir = join(GENERATED_DIR, 'test-formats')
+  mkdirSync(dir, { recursive: true })
+  try {
+    writeFileSync(join(dir, 'a.ts'), "export const FORMATS = { 'x.one': 2, 'read.other': 3 } as const\nexport const ONLY_1 = [1] as const\n")
+    writeFileSync(join(dir, 'b.ts'), "export const FORMATS = { 'x.one': 3 } as const\nexport const READS = { 'x.one': [2, 3], 'x.two': [1] } as const\n")
+    const src = (w, f) => formatSources([{ name: w, formats: f }])
+    const rel = (x) => `deploy/generated/test-formats/${x}`
+    assert.throws(() => readFormats(src('w', { writes: [rel('a.ts#FORMATS')], reads_of: { 'x.one': rel('a.ts#ONLY_1') } })), /w: writes x\.one version 2 but reads only 1: a release must read what it writes/)
+    assert.throws(() => readFormats(src('w', { writes: [rel('a.ts#FORMATS'), rel('b.ts#FORMATS')] })), /x\.one is written at version 2 .* and at 3/)
+    // Read lists intersect; `read.…` entries are skipped; a format only read has writes null.
+    assert.deepEqual(readFormats(src('w', { writes: [rel('b.ts#FORMATS')], reads: [rel('b.ts#READS')] })), [{ worker: 'w', format: 'x.one', writes: 3, reads: [2, 3] }, { worker: 'w', format: 'x.two', writes: null, reads: [1] }])
+    assert.deepEqual(readFormats(src('w', { writes: [rel('a.ts#FORMATS')] })), [{ worker: 'w', format: 'x.one', writes: 2, reads: [2] }])
+    // Two read lists of one format in one Worker: it reads what both read. None in common: refused.
+    assert.throws(() => readFormats(src('w', { reads: [rel('b.ts#READS')], reads_of: { 'x.one': rel('a.ts#ONLY_1') } })), /w: the read lists of x\.one have no version in common/)
+    assert.throws(() => readFormats(src('w', { writes: [rel('a.ts#NOPE')] })), /does not export NOPE/)
+    assert.throws(() => formatSources([{ name: 'w', formats: { write: [] } }]), /"write" is not one of/)
+    // One version (a reader's constant) reads that version; reads_v1 reads version 1 and says where.
+    writeFileSync(join(dir, 'c.ts'), 'export const V = 2\n')
+    assert.deepEqual(readFormats(src('w', { reads_of: { 'x.one': rel('c.ts#V') }, reads_v1: { 'x.two': 'c.ts: somewhere' } })), [{ worker: 'w', format: 'x.one', writes: null, reads: [2] }, { worker: 'w', format: 'x.two', writes: null, reads: [1] }])
+    assert.throws(() => readFormats(src('w', { writes: [rel('b.ts#FORMATS')], reads_v1: { 'x.one': 'reads 1 only' } })), /w: writes x\.one version 3 but reads only/)
+    assert.throws(() => formatSources([{ name: 'w', formats: { reads_v1: { 'x.one': '' } } }]), /say where the code reads it/)
+    assert.throws(() => formatSources([{ name: 'w', formats: { reads_v1: { '*': 'x' } } }]), /is not a format name/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('floors: viz-query and viz-ingest are stamped at the floor of INGEST_SIGNALS on the evidence of their sources; a declaration the code does not bear out is refused', () => {
+  const rules = floorRules(plan, 'citest')
+  const m = configure({ stage: 'citest', release: 'r1', idsOptional: true, quiet: true })
+  for (const w of m.workers.filter((x) => x.deploy)) {
+    const stamped = ['viz-query', 'viz-ingest'].includes(w.canonical)
+    const at = stamped ? ['signal-data'] : w.canonical === 'viz-control' ? ['oauth-public'] : []
+    assert.deepEqual(w.floors, at, w.name)
+    assert.equal(readJsonc(join(REPO_ROOT, w.config)).vars[FLOORS_VAR], at.length ? JSON.stringify({ v: 1, at }) : undefined, w.name)
+  }
+  // Evidence missing: an error at configure, never a stamp.
+  const bad = floorRules({ ...plan, rollback_floors: [{ ...plan.rollback_floors[0], floors: { ...plan.rollback_floors[0].floors, 'viz-query': { evidence: ['query/src/shards.ts#noSuchExport'], why: 'x' } } }] }, 'citest')
+  assert.throws(() => stampedFloors(bad, 'viz-query', exportedNames), /viz-query is declared at or above its floor on the evidence of query\/src\/shards\.ts#noSuchExport, which does not export it/)
+  assert.deepEqual(stampedFloors(rules, 'viz-publisher', exportedNames), [], 'the publisher is judged by its schema, not stamped')
+  // A schema floor must name a class the Worker has.
+  const schemas = readSchemas(schemaSources(plan.workers))
+  checkFloorSchemas(rules, schemas)
+  const wrong = floorRules({ ...plan, rollback_floors: [{ ...plan.rollback_floors[0], floors: { 'viz-publisher': { schema: 'publisher.Nope', at_least: 4, why: 'x' } } }] }, 'citest')
+  assert.throws(() => checkFloorSchemas(wrong, schemas), /names schema publisher\.Nope, which none of its classes has \(publisher\.Publisher\)/)
+  // configure() itself runs that check, before writing anything.
+  const wrongPlan = { ...plan, rollback_floors: [{ ...plan.rollback_floors[0], floors: { 'viz-publisher': { schema: 'publisher.Nope', at_least: 4, why: 'x' } } }] }
+  assert.throws(() => configure({ stage: 'citest', release: 'r1', idsOptional: true, quiet: true, plan: wrongPlan }), /names schema publisher\.Nope/)
+})
+
+test('floors: the publisher\'s floor, schema 4, is the release that first reads the span and log tables (the frozen releases in publisher/test/)', () => {
+  const at = (module) => readSchemas([{ worker: 'viz-publisher', class: 'Publisher', module, name: 'PUBLISHER_SCHEMA' }])[0].latest
+  const floor = plan.rollback_floors[0].floors['viz-publisher']
+  assert.deepEqual([floor.schema, floor.at_least], ['publisher.Publisher', 4])
+  // The release before D64 (test/n1): schema 3, and its log reader knows the metric tables only.
+  assert.equal(at('publisher/test/n1/schema.ts'), 3)
+  const n1 = readFileSync(join(REPO_ROOT, 'publisher/test/n1/log.ts'), 'utf8')
+  assert.match(n1, /const TABLES: ReadonlySet<string> = new Set<Table>\(\['metric_samples', 'metric_series'\]\)/)
+  assert.doesNotMatch(n1, /'spans'|'trace_index'|'logs'/)
+  // D64 (test/d64): schema 4, and it reads the three span and log tables (without publishing them).
+  assert.equal(at('publisher/test/d64/schema.ts'), 4)
+  const { values: [d64] } = evaluateExports([{ module: 'publisher/test/d64/log.ts', name: 'UNPUBLISHED_TABLES' }])
+  assert.deepEqual([...d64], ['spans', 'trace_index', 'logs'])
+  // This release: at or above the floor (D67's migration 5 is additive), and it publishes them.
+  assert.ok(at('publisher/src/schema.ts') >= 4)
+  const { values: [now] } = evaluateExports([{ module: 'publisher/src/log.ts', name: 'PUBLISHED_TABLES' }])
+  for (const t of ['spans', 'trace_index', 'logs']) assert.ok([...now].includes(t), t)
+})
+
+// ───────────────────────────── rate limits in front of OAuth (D70; review of D70, M-2, m-8) ─────────────────────────────
+
+const controlCfg = () => readJsonc(join(REPO_ROOT, 'control/wrangler.jsonc'))
+const withLimits = (f) => {
+  const c = controlCfg()
+  c.ratelimits = f(c.ratelimits)
+  return c
+}
+
+test('D70 gate: the bindings and the period are read from control\'s source; control/wrangler.jsonc declares all six with the proposed limits, period 60, placeholder ids', () => {
+  const g = gates.get('viz-control')
+  assert.deepEqual(g.required, ['OAUTH_RL_SOURCE', 'OAUTH_RL_SOURCE_48', 'OAUTH_RL_CREDENTIAL', 'OAUTH_RL_TENANT', 'OAUTH_RL_BEARER', 'OAUTH_RL_BEARER_TENANT'])
+  assert.equal(g.period, 60)
+  assert.equal(g.publicVar, 'OAUTH_PUBLIC')
+  assert.deepEqual([...gates.keys()], ['viz-control'])
+  assert.deepEqual(controlCfg().ratelimits.map((r) => [r.name, r.namespace_id, r.simple.limit, r.simple.period]), [
+    ['OAUTH_RL_SOURCE', '0', 120, 60], ['OAUTH_RL_SOURCE_48', '0', 1200, 60], ['OAUTH_RL_CREDENTIAL', '0', 5, 60],
+    ['OAUTH_RL_TENANT', '0', 6000, 60], ['OAUTH_RL_BEARER', '0', 1200, 60], ['OAUTH_RL_BEARER_TENANT', '0', 30000, 60],
+  ])
+})
+
+test('D70 gate: production with all six and allocated ids passes; each placeholder id is replaced by the deployment\'s own; OAUTH_PUBLIC is set and viz-control is stamped at oauth-public', () => {
+  const { config, summary } = gen('viz-control')
+  assert.deepEqual(config.ratelimits.map((r) => r.namespace_id), ['7000', '7001', '7002', '7003', '7004', '7005'])
+  assert.equal(config.vars.OAUTH_PUBLIC, '1')
+  assert.deepEqual(summary.oauth, { required: RL, period: 60, ratelimits: Object.fromEntries(RL.map((n, i) => [n, String(7000 + i)])), withoutRateLimits: false, public: true })
+  // A stage gets ids of its own, never production's; OAUTH_PUBLIC only when asked.
+  const t = gen('viz-control', 'trial')
+  assert.deepEqual(t.config.ratelimits.map((r) => r.namespace_id), ['7100', '7101', '7102', '7103', '7104', '7105'])
+  assert.equal(t.config.vars.OAUTH_PUBLIC, undefined)
+  assert.equal(gen('viz-control', 'trial', undefined, { oauthPublic: true }).config.vars.OAUTH_PUBLIC, '1')
+  // A stage with no ids of its own recorded is refused, even with production's recorded (ids are by deployed name).
+  assert.throws(() => gen('viz-control', 'other', undefined, { ids: { ...ids, 'viz-other-config': 'd'.repeat(32) } }), /no namespace_id recorded for viz-other-control\/OAUTH_RL_SOURCE; run deploy\/resources\.mjs ensure --stage other first/)
+  const m = configure({ stage: 'citest', release: 'r1', idsOptional: true, quiet: true })
+  const c = m.workers.find((w) => w.canonical === 'viz-control')
+  assert.deepEqual(c.floors, ['oauth-public'])
+  assert.equal(m.idsOptional, true, 'the manifest says its ids are placeholders (release.mjs refuses it)')
+  assert.deepEqual(readJsonc(join(REPO_ROOT, c.config)).ratelimits.map((r) => r.namespace_id), ['0', '0', '0', '0', '0', '0'])
+})
+
+test('D70 gate: production without the block is refused, naming all six; with five of the six, naming the sixth', () => {
+  const none = controlCfg()
+  delete none.ratelimits
+  assert.throws(() => gen('viz-control', undefined, none), /production viz-control without the rate-limit bindings OAUTH_RL_SOURCE, OAUTH_RL_SOURCE_48, OAUTH_RL_CREDENTIAL, OAUTH_RL_TENANT, OAUTH_RL_BEARER, OAUTH_RL_BEARER_TENANT: OAuth is not served/)
+  for (const gone of RL) {
+    const five = withLimits((l) => l.filter((r) => r.name !== gone))
+    assert.throws(() => gen('viz-control', undefined, five), new RegExp(`production viz-control without the rate-limit binding ${gone}: `), gone)
+  }
+  // The command itself exits non-zero, before anything is uploaded: production without allocated ids (resources.mjs not run).
+  const dir = mkdtempSync(join(tmpdir(), 'viz-configure-gate-'))
+  try {
+    writeFileSync(join(dir, 'resources.json'), JSON.stringify({ kv_namespaces: { 'viz-config': 'a'.repeat(32) } }))
+    const r = spawnSync(process.execPath, [join(REPO_ROOT, 'deploy', 'configure.mjs'), '--release', 'r1', '--quiet'], { encoding: 'utf8', env: { ...process.env, VIZ_RESOURCES_FILE: join(dir, 'resources.json'), VIZ_GENERATED_DIR: join(dir, 'generated') } })
+    assert.equal(r.status, 1, r.stderr)
+    assert.match(r.stderr, /configure: no namespace_id recorded for viz-control\/OAUTH_RL_SOURCE; run deploy\/resources\.mjs ensure first/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('D70 gate: a period of 10, a limit that is not a positive integer, a name control does not list, a binding twice, an unknown key, a placeholder that survives, an id outside viz\'s range and two bindings with one id are refused', () => {
+  const at = (i, patch) => withLimits((l) => l.map((r, j) => (j === i ? { ...r, ...patch(r) } : r)))
+  assert.throws(() => gen('viz-control', undefined, at(2, (r) => ({ simple: { ...r.simple, period: 10 } }))), /OAUTH_RL_CREDENTIAL\): period must be 60, not 10/)
+  for (const limit of [0, -5, 1.5, '5']) assert.throws(() => gen('viz-control', undefined, at(0, (r) => ({ simple: { ...r.simple, limit } }))), /limit must be a positive integer/, String(limit))
+  assert.throws(() => gen('viz-control', undefined, at(0, () => ({ name: 'OAUTH_RL_CLIENT' }))), /"OAUTH_RL_CLIENT" is not one of viz-control's rate-limit bindings/)
+  assert.throws(() => gen('viz-control', undefined, withLimits((l) => [...l, l[0]])), /OAUTH_RL_SOURCE is bound twice/)
+  assert.throws(() => gen('viz-control', undefined, at(0, () => ({ extra: 1 }))), /"extra" is not something configure\.mjs knows how to deploy/)
+  const ids0 = { ...ratelimitIds, 'viz-control/OAUTH_RL_TENANT': '0' }
+  assert.throws(() => gen('viz-control', undefined, undefined, { ratelimitIds: ids0 }), /viz-control\/OAUTH_RL_TENANT: recorded namespace_id "0" is not in viz's range 7000–7999/)
+  assert.throws(() => gen('viz-control', undefined, undefined, { ratelimitIds: { ...ratelimitIds, 'viz-control/OAUTH_RL_TENANT': '1001' } }), /"1001" is not in viz's range/)
+  assert.throws(() => gen('viz-control', undefined, undefined, { ratelimitIds: { ...ratelimitIds, 'viz-control/OAUTH_RL_TENANT': '7000' } }), /OAUTH_RL_TENANT and OAUTH_RL_SOURCE have the same namespace_id 7000/)
+  // Placeholders stay only with --ids-optional; and then a deploy refuses the manifest.
+  assert.throws(() => gen('viz-control', undefined, undefined, { ratelimitIds: {} }), /no namespace_id recorded for viz-control\/OAUTH_RL_SOURCE/)
+  assert.deepEqual(gen('viz-control', undefined, undefined, { ratelimitIds: {}, idsOptional: true }).summary.oauth.ratelimits, Object.fromEntries(RL.map((n) => [n, null])))
+  // A Worker without an oauth gate may not carry ratelimits at all.
+  const q = readJsonc(join(REPO_ROOT, 'query/wrangler.jsonc'))
+  assert.throws(() => gen('viz-query', undefined, { ...q, ratelimits: controlCfg().ratelimits }), /declares no "oauth" gate for viz-query/)
+})
+
+test('D70 gate: a stage without the bindings passes only with --oauth-without-rate-limits, which drops them and is recorded; production refuses the flag; --oauth-public needs the bindings', () => {
+  const none = controlCfg()
+  delete none.ratelimits
+  assert.throws(() => gen('viz-control', 'trial', none), /stage trial viz-control without the rate-limit bindings .* or configure the stage with --oauth-without-rate-limits/)
+  const ok = gen('viz-control', 'trial', none, { oauthWithoutRateLimits: true })
+  assert.equal(ok.config.ratelimits, undefined)
+  assert.deepEqual(ok.summary.oauth, { required: RL, period: 60, ratelimits: {}, withoutRateLimits: true, public: false })
+  // With the block present the flag drops it (a stage that runs without them, as asked).
+  assert.equal(gen('viz-control', 'trial', undefined, { oauthWithoutRateLimits: true }).config.ratelimits, undefined)
+  assert.throws(() => gen('viz-control', undefined, undefined, { oauthWithoutRateLimits: true }), /--oauth-without-rate-limits is for a stage only/)
+  assert.throws(() => configure({ release: 'r1', idsOptional: true, quiet: true, oauthWithoutRateLimits: true }), /is for a stage only/)
+  assert.throws(() => gen('viz-control', 'trial', undefined, { oauthWithoutRateLimits: true, oauthPublic: true }), /--oauth-public and --oauth-without-rate-limits together/)
+  const m = configure({ stage: 'citest', release: 'r1', idsOptional: true, quiet: true, oauthWithoutRateLimits: true })
+  assert.equal(m.oauthWithoutRateLimits, true)
+  assert.equal(m.workers.find((w) => w.canonical === 'viz-control').oauth.withoutRateLimits, true)
+  configure({ stage: 'citest', release: 'r1', idsOptional: true, quiet: true })
+})
+
+test('D70: OAUTH_PUBLIC is set by configure only: a component config or VIZ_STAGE_VARS that sets it is refused', () => {
+  const c = controlCfg()
+  c.vars.OAUTH_PUBLIC = '1'
+  assert.throws(() => gen('viz-control', 'trial', c), /OAUTH_PUBLIC is set by deploy\/configure\.mjs only/)
+  assert.throws(() => gen('viz-control', 'trial', undefined, { extraVars: { OAUTH_PUBLIC: '' } }), /OAUTH_PUBLIC is set by deploy\/configure\.mjs only/)
+})
+
+test('m-8: placement is refused on viz-control and viz-mcp (D70 counts per location); viz-query keeps its Smart Placement', () => {
+  assert.deepEqual(plan.workers.filter((w) => w.no_placement).map((w) => w.name), ['viz-control', 'viz-mcp'])
+  for (const name of ['viz-control', 'viz-mcp']) {
+    const cfg = readJsonc(join(REPO_ROOT, worker(name).component, 'wrangler.jsonc'))
+    for (const stage of [undefined, 'trial']) assert.throws(() => gen(name, stage, { ...cfg, placement: { mode: 'smart' } }), new RegExp(`"placement" is refused on ${name}: `), `${name} ${stage}`)
+  }
+  assert.deepEqual(gen('viz-query').config.placement, readJsonc(join(REPO_ROOT, 'query/wrangler.jsonc')).placement)
+})
+
+test('D70 round 2: viz-control declares kv.oauth-dead 1, its list of dead credentials in CONFIG (viz-config), written and read by it alone', () => {
+  const read = readFormats(formatSources(plan.workers))
+  assert.deepEqual(read.filter((x) => x.format === 'kv.oauth-dead'), [{ worker: 'viz-control', format: 'kv.oauth-dead', writes: 1, reads: [1] }])
+  assert.equal(plan.resources.kv.CONFIG, 'viz-config')
+})
+
+test('oauth-public: the rule parses, viz-control is its writer and its one floor, on the evidence of four exports only D70\'s third round has all of; a viz-control without one is refused at configure', () => {
+  const rule = floorRules(plan, undefined).find((r) => r.name === 'oauth-public')
+  assert.deepEqual([rule.writer, rule.var, rule.servingBelow], ['viz-control', 'OAUTH_PUBLIC', 'forward-only'])
+  assert.deepEqual(rule.floors.map((f) => [f.worker, f.evidence.map((e) => `${e.module}#${e.name}`)]), [['viz-control', ['contracts/oauth.ts#CREDENTIAL_LAYOUT', 'contracts/oauth.ts#DEAD_INACTIVE_REASONS', 'control/src/deadlist.ts#recordDead', 'control/src/ratelimit.ts#LISTED']]])
+  assert.deepEqual(stampedFloors(floorRules(plan, undefined), 'viz-control', exportedNames), ['oauth-public'])
+  const r = plan.rollback_floors.find((x) => x.name === 'oauth-public')
+  const bad = floorRules({ ...plan, rollback_floors: [{ ...r, floors: { 'viz-control': { ...r.floors['viz-control'], evidence: ['control/src/deadlist.ts#recordDeadX'] } } }] }, undefined)
+  assert.throws(() => stampedFloors(bad, 'viz-control', exportedNames), /viz-control is declared at or above its floor on the evidence of control\/src\/deadlist\.ts#recordDeadX, which does not export it/)
+  assert.throws(() => floorRules({ ...plan, rollback_floors: [{ ...r, serving_below_floor: 'allow' }] }, undefined), /serving_below_floor is "refuse" \(the default\) or "forward-only"/)
 })

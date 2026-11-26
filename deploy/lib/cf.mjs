@@ -21,11 +21,23 @@ export function account() {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-/** One API call under /accounts/{id}. Retries 429 and 5xx a few times. Returns the parsed envelope. */
+/**
+ * How long one request may take before it is abandoned and retried (review of D69, m-7: `fetch`
+ * has no timeout of its own). VIZ_CF_TIMEOUT_MS sets it (the tests shorten it); unset or empty is
+ * 30 s. With the retries below, one call takes at most about 5 × 30 s + 7.5 s.
+ */
+export const CF_TIMEOUT_MS = 30_000
+const timeoutMs = () => {
+  const raw = process.env.VIZ_CF_TIMEOUT_MS
+  const n = raw === undefined || raw.trim() === '' ? NaN : Number(raw)
+  return Number.isFinite(n) && n > 0 ? n : CF_TIMEOUT_MS
+}
+
+/** One API call under /accounts/{id}. Retries 429, 5xx, unreachable and timed out a few times. Returns the parsed envelope. */
 export async function cf(method, path, body, { raw = false, okStatuses = [] } = {}) {
   const url = `${BASE}/accounts/${account()}${path}`
   for (let attempt = 0; ; attempt++) {
-    const init = { method, headers: { Authorization: `Bearer ${process.env.CLOUDFLARE_API_TOKEN}` } }
+    const init = { method, headers: { Authorization: `Bearer ${process.env.CLOUDFLARE_API_TOKEN}` }, signal: AbortSignal.timeout(timeoutMs()) }
     if (body !== undefined) {
       init.headers['Content-Type'] = 'application/json'
       init.body = JSON.stringify(body)
@@ -38,7 +50,7 @@ export async function cf(method, path, body, { raw = false, okStatuses = [] } = 
         await sleep(500 * 2 ** attempt)
         continue
       }
-      throw new Error(`Cloudflare API unreachable on ${path}: ${e.cause?.code ?? e.message}`)
+      throw new Error(`Cloudflare API unreachable on ${path}: ${e.name === 'TimeoutError' ? `no answer within ${timeoutMs()} ms` : (e.cause?.code ?? e.message)}`)
     }
     if ((res.status === 429 || res.status >= 500) && attempt < 4) {
       await sleep(500 * 2 ** attempt)

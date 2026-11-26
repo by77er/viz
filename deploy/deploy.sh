@@ -11,6 +11,10 @@
 #   VIZ_WASM_PREBUILT=1    use the .wasm modules already in place (CI: built and tested by the checks)
 #   VIZ_SKIP_NPM_CI=1      use node_modules as they are (a shared checkout where others are working)
 #   VIZ_STAGE_EXPIRES_AT   a stage only: ISO time after which its ruler stops evaluating by itself
+#   VIZ_OAUTH_WITHOUT_RATE_LIMITS=1   a stage only: viz-control without D70's rate limits (recorded in the
+#                          release record; the key is then put without them); production never
+#   VIZ_OAUTH_PUBLIC=1     a stage only: set OAUTH_PUBLIC on viz-control (raises the oauth-public
+#                          rollback floor); every production viz-control has it
 #   VIZ_ROTATE_SECRETS     generated Worker secrets to REPLACE in this release, e.g. "OAUTH_CLIENT_KEY"
 #                          (invalidates every registered OAuth client; see deploy/README.md). Without
 #                          it a generated secret is created only where it is missing, never replaced.
@@ -18,9 +22,16 @@
 # Steps: build both WASM engines; npm ci in each deployed component; resources; configure;
 # release (upload every Worker, then promote callees first); smoke test through the public
 # URL. A failed smoke test rolls back to the previous release when the release applied no
-# Durable Object migration; with a migration it fails loudly instead. Exit codes: 0 deployed
-# and healthy; 1 failed; 3 refused before anything was promoted (unacknowledged migration, or a
-# generated secret that is set but missing from the upload).
+# Durable Object migration and is not forward-only; otherwise it fails loudly instead. Exit codes:
+# 0 deployed and healthy; 1 failed; 3 refused before anything was promoted: an unacknowledged
+# migration, a rollback floor (INGEST_SIGNALS before its readers, a floor Worker below its floor
+# after the switch was on, the switch set as a secret), a rotation of a secret the release does not
+# generate, or, for a viz-control uploaded in phase 1 (every release once it exists), its generated
+# key set but missing from the upload, the newest version not this run's upload, or the key landing
+# on another run's upload. The same three key refusals for a viz-control that goes out with
+# `wrangler deploy` in phase 2 (new, or applying a migration) come after the Workers before it were
+# promoted and while viz-control serves without its key: exit 1 (deploy/README.md, "When a deploy
+# fails").
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -89,9 +100,11 @@ node deploy/resources.mjs ensure ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"}
 note "resources: present"
 
 step "configure"
-EXPIRES_ARGS=()
-if [ -n "${VIZ_STAGE_EXPIRES_AT:-}" ]; then EXPIRES_ARGS=(--expires "$VIZ_STAGE_EXPIRES_AT"); fi
-node deploy/configure.mjs ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"} ${EXPIRES_ARGS[@]+"${EXPIRES_ARGS[@]}"} --release "$VIZ_RELEASE_SHA" > /dev/null
+CONFIGURE_ARGS=()
+if [ -n "${VIZ_STAGE_EXPIRES_AT:-}" ]; then CONFIGURE_ARGS=(--expires "$VIZ_STAGE_EXPIRES_AT"); fi
+if [ "${VIZ_OAUTH_WITHOUT_RATE_LIMITS:-0}" = 1 ]; then CONFIGURE_ARGS+=(--oauth-without-rate-limits); fi
+if [ "${VIZ_OAUTH_PUBLIC:-0}" = 1 ]; then CONFIGURE_ARGS+=(--oauth-public); fi
+node deploy/configure.mjs ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"} ${CONFIGURE_ARGS[@]+"${CONFIGURE_ARGS[@]}"} --release "$VIZ_RELEASE_SHA" > /dev/null
 note "configure: deploy/generated/$TARGET"
 
 step "release: upload, then promote"
@@ -99,8 +112,8 @@ set +e
 node deploy/release.mjs deploy ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"}
 rc=$?
 set -e
-if [ $rc -eq 3 ]; then note "release: REFUSED before promoting anything (see above: an unacknowledged Durable Object migration, or a generated secret)"; exit 3; fi
-if [ $rc -ne 0 ]; then note "release: FAILED during upload or promotion (see above)"; exit 1; fi
+if [ $rc -eq 3 ]; then note "release: REFUSED before promoting anything (see above: an unacknowledged Durable Object migration, a rollback floor, or a generated secret)"; exit 3; fi
+if [ $rc -ne 0 ]; then note "release: FAILED during upload or promotion, or refused in phase 2 after promotion began (see above)"; exit 1; fi
 note "release: promoted; record deploy/generated/$TARGET/release.json"
 # Generated secrets, by name only (lib/secrets.mjs): kept, created or rotated.
 # shellcheck disable=SC2016
@@ -108,10 +121,11 @@ SECRETS=$(node -e 'const r=require(process.argv[1]);console.log((r.secrets||[]).
 if [ -n "$SECRETS" ]; then note "secrets: $SECRETS"; fi
 # shellcheck disable=SC2016  # the single quotes hold JavaScript, not shell
 MIGRATED=$(node -e 'const r=require(process.argv[1]);console.log((r.migrations||[]).map(m=>`${m.worker} ${m.from??"(none)"}→${m.to}`).join(", "))' "$OUT/release.json")
-# Forward-only for a schema reason (contracts/COMPATIBILITY.md §6): a class's storage may already
-# be in a shape the previous release cannot open; release.mjs would refuse the rollback anyway.
+# Forward-only for a schema, a format (contracts/COMPATIBILITY.md §6) or a rollback floor (D69 point 6): a class's storage may already
+# be in a shape, or a format at a version, the previous release cannot read; release.mjs would
+# refuse the rollback anyway.
 # shellcheck disable=SC2016
-FORWARD_ONLY=$(node -e 'const r=require(process.argv[1]);console.log((r.forwardOnlyBecause||[]).filter(f=>f.kind==="schema").map(f=>`${f.component} readable from ${f.compat}`).join(", "))' "$OUT/release.json")
+FORWARD_ONLY=$(node -e 'const r=require(process.argv[1]);console.log((r.forwardOnlyBecause||[]).filter(f=>f.kind==="schema"||f.kind==="format"||f.kind==="floor").map(f=>f.kind==="schema"?`${f.component} readable from ${f.compat}`:f.kind==="floor"?`${f.worker} below the ${f.rule} floor before it`:`${f.format} written at ${f.writes}`).join(", "))' "$OUT/release.json")
 
 if [ $SMOKE -eq 0 ]; then note "smoke: skipped (--skip-smoke)"; exit 0; fi
 step "smoke test"
@@ -122,7 +136,7 @@ fi
 note "smoke: FAILED"
 if [ -n "$FORWARD_ONLY" ] && [ -z "$MIGRATED" ]; then
   echo "::error::Smoke test failed after a FORWARD-ONLY release ($FORWARD_ONLY)." >&2
-  echo "  Not rolling back: storage this release migrated cannot be opened by the previous release (contracts/COMPATIBILITY.md §6)." >&2
+  echo "  Not rolling back: storage this release migrated, or a format version it wrote, cannot be read by the previous release (contracts/COMPATIBILITY.md §6)." >&2
   echo "  What to do: fix forward with a new commit (see deploy/README.md, 'When a deploy fails')." >&2
   note "rollback: NOT attempted (forward-only release: $FORWARD_ONLY)"
   exit 1

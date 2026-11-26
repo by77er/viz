@@ -31,6 +31,7 @@ describe('routing', () => {
     ['/api/v1/series', 'query'],
     ['/api/v1/metadata', 'query'],
     ['/api/v1/status/buildinfo', 'query'],
+    ['/api/v1/plan', 'query'],
     ['/api/v1/control', 'control'],
     ['/api/v1/control/keys', 'control'],
     ['/api/v1/control/dashboards/d1/revisions/3', 'control'],
@@ -53,6 +54,30 @@ describe('routing', () => {
     ['/oauth/authorize', 'control'],
     ['/oauth/token', 'control'],
     ['/oauth/revoke', 'control'],
+    // Traces and logs (stage 3): OTLP/HTTP traces and logs and Loki push to ingest; Tempo's and
+    // Loki's read paths to query. Each backend answers 404 for them while its flag is off.
+    ['/v1/traces', 'ingest'],
+    ['/v1/logs', 'ingest'],
+    ['/loki/api/v1/push', 'ingest'],
+    ['/api/traces/0123456789abcdef0123456789abcdef', 'query'],
+    ['/api/traces/abc', 'query'],
+    ['/api/v2/traces/0123456789abcdef0123456789abcdef', 'query'],
+    ['/api/search', 'query'],
+    ['/api/search/tags', 'query'],
+    ['/api/v2/search/tags', 'query'],
+    ['/api/search/tag/service.name/values', 'query'],
+    ['/api/v2/search/tag/resource.service.name/values', 'query'],
+    ['/api/v2/search/tag/span.http%2Froute/values', 'query'],
+    ['/api/metrics/query_range', 'query'],
+    ['/api/metrics/query', 'query'],
+    // Tempo's echo (D62; query review m-4): a Grafana Tempo data source's check. viz-query answers `echo`, behind the key.
+    ['/api/echo', 'query'],
+    ['/loki/api/v1/query', 'query'],
+    ['/loki/api/v1/query_range', 'query'],
+    ['/loki/api/v1/labels', 'query'],
+    ['/loki/api/v1/label/service_name/values', 'query'],
+    ['/loki/api/v1/label/a%2Fb/values', 'query'],
+    ['/loki/api/v1/series', 'query'],
   ]
 
   it.each(table)('%s goes to %s, with x-viz-route', async (path, backend) => {
@@ -67,7 +92,15 @@ describe('routing', () => {
   })
 
   const notFound = [
-    '/', '/index.html', '/api', '/api/v1', '/api/v1/query_exemplars', '/api/v1/write/', '/api/v1/controls', '/api/v1/label', '/v1/logs', '/healthz/x', '/app',
+    '/', '/index.html', '/api', '/api/v1', '/api/v1/query_exemplars', '/api/v1/write/', '/api/v1/controls', '/api/v1/label', '/healthz/x', '/app', '/api/v1/plan/', '/api/v1/planx', '/api/v1/plans',
+    // near misses of the trace and log paths: exact paths, one segment per path parameter
+    '/v1/traces/', '/v1/tracesx', '/v1/trace', '/v1/logs/', '/v1/logsx', '/v1/log', '/v1', '/loki/api/v1/push/', '/loki/api/v1/pushx', '/otlp/v1/logs', '/api/prom/push',
+    '/api/traces', '/api/traces/', '/api/traces/abc/x', '/api/v2/traces', '/api/v2/traces/', '/api/v3/traces/abc', '/api/tracesx/abc', '/api/v1/traces/abc', '/querier/api/traces/abc',
+    '/api/search/', '/api/searchx', '/api/v2/search', '/api/search/tagsx', '/api/search/tag', '/api/search/tag/x', '/api/search/tag//values', '/api/search/tag/x/valuesx', '/api/search/tag/x/y/values', '/api/v3/search/tags',
+    '/api/metrics', '/api/metrics/', '/api/metrics/query_rangex', '/api/metrics/queryx', '/api/echo/', '/api/echox', '/api/echo/x', '/api/v2/echo', '/api/status/buildinfo', '/api/overrides',
+    '/loki', '/loki/api/v1', '/loki/api/v1/', '/loki/api/v1/queryx', '/loki/api/v1/query_range/', '/loki/api/v1/labelsx', '/loki/api/v1/label', '/loki/api/v1/label/', '/loki/api/v1/label//values', '/loki/api/v1/label/x',
+    '/loki/api/v1/label/x/values/y', '/loki/api/v1/seriesx', '/loki/api/v1/tail', '/loki/api/v1/index/stats', '/loki/api/v1/index/volume', '/loki/api/v1/patterns', '/loki/api/v1/detected_fields',
+    '/loki/api/v1/rules', '/loki/api/v1/delete', '/loki/api/v1/format_query', '/loki/api/v1/status/buildinfo', '/api/prom/query', '/api/prom/label',
     // near misses of the ruler's and mcp's prefixes
     '/api/v1/monitorsx', '/api/v1/monitor', '/api/v1/rules/x', '/api/v1/alerts/x', '/api/v1/rulesx', '/mcpx', '/mcp/', '/mcp/x', '/api/v1/agents', '/api/v1/agentx', '/api/v2/alerts',
     // near misses of the OAuth paths: exact paths only, and no OpenID Connect discovery (not offered)
@@ -82,6 +115,14 @@ describe('routing', () => {
     expect(res.headers.get('x-fake-backend')).toBeNull()
     const body = (await res.json()) as { entrypoints: typeof ENTRYPOINTS }
     expect(body.entrypoints).toEqual(ENTRYPOINTS)
+  })
+
+  it('GET /api/echo (a Grafana Tempo data source\'s check) reaches viz-query with its key, exactly as sent', async () => {
+    const res = await call('/api/echo', { headers: { Authorization: 'Bearer viz_k_test.secret' } })
+    expect(res.status).toBe(200)
+    expect(res.headers.get('x-viz-route')).toBe('query')
+    const seen = (await res.json()) as Echo
+    expect([seen.backend, seen.method, seen.url, seen.headers.authorization]).toEqual(['query', 'GET', `${BASE}/api/echo`, 'Bearer viz_k_test.secret'])
   })
 
   it('routeOf agrees with the table and never routes an unknown path', () => {
@@ -209,7 +250,8 @@ describe('health', () => {
     expect(asked).toEqual(['/healthz'])
     // control's own route answers (control/src/index.ts, run here on this Worker's bindings), without a credential
     const direct = await env.CONTROL.fetch(new Request('https://gateway.internal/healthz'))
-    expect([direct.status, await direct.text()]).toEqual([200, 'ok\n'])
+    // Its first line is `ok`; since D70 the lines after it say whether OAuth can issue (control/src/index.ts `health`).
+    expect([direct.status, (await direct.text()).split('\n')[0]]).toEqual([200, 'ok'])
     // and it is not the OpenAPI document any more: the old probe would have needed none of control's bindings
     const misconfigured = await control.fetch!(new Request('https://gateway.internal/healthz') as never, { ...env, TENANT: undefined } as never, {} as ExecutionContext)
     expect(misconfigured.status).toBe(503)
