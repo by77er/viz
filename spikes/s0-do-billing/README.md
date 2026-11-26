@@ -56,7 +56,7 @@ and was not read: the invoice is not available through the analytics API. The ac
 Durable Object usage for 1–26 November across all its Workers (measured on Cloudflare) was
 2,867,598 invocations, 68,702 GB-s, 3,935,031 rows written and 325.9 million rows read,
 against monthly allowances of 1 million, 400,000 GB-s, 50 million and 25 billion
-(`research/02-cloudflare-compute-platform.md`). Only invocations are over their allowance,
+(`research/01-cloudflare-data-services.md`). Only invocations are over their allowance,
 so if the billing period is the calendar month the spike's share is its 360,155 invocations,
 about $0.05.
 
@@ -103,11 +103,11 @@ from the same two analytics datasets grouped by hour.
 | P15 | alarm, then calls `B15` | 15 s | 5,758 | 314.6 s | 54.6 ms | 0.364% | 0.289–0.531% | 40.27 |
 | P60 | alarm, then calls `B60` | 60 s | 1,443 | 96.5 s | 66.9 ms | 0.112% | 0.091–0.167% | 12.35 |
 
-"Wakes counted" is the request count of the invocations dataset, which is sampled; it is
-within 1% of the objects' own counters ("Did it stop?"). Billed GB-s is billed active time at 128 MB
-in every class. The window asked for at the time, 19:00 to 19:00, gives the same figures to
-within 1% (A60 0.033%, B60 0.057%), but its first hour bucket holds only the 55.7 minutes
-after the start, so the table uses 20:00 to 20:00.
+"Wakes counted" is the request count of the invocations dataset, which is sampled; over the
+whole run it is within 1% of the objects' own counters ("Did it stop?"). Billed GB-s is
+billed active time at 128 MB in every class. The window asked for at the time, 19:00 to
+19:00, gives the same figures to within 1% (A60 0.033%, B60 0.057%), but its first hour
+bucket holds only the 55.7 minutes after the start, so the table uses 20:00 to 20:00.
 
 **Conclusion against the decision rule: not triggered.** Over 24 hours the 60-second
 classes ran at 0.033% duty when woken by their own alarm and 0.057% when woken by a
