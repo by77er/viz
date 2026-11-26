@@ -152,6 +152,27 @@ jobs:
         env:
           DIRS: ${{ matrix.install }}
         run: for d in $DIRS; do (cd "$d" && npm ci --no-audit --no-fund); done
+      - name: Rust toolchain (the fixtures are the native engines' answers)
+        if: matrix.rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: matrix.rust
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            engine/wasm-query/target
+          key: fixtures-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ matrix.dir }}-${{ hashFiles('engine/wasm-query/Cargo.lock', 'engine/**/*.rs') }}
+          restore-keys: fixtures-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ matrix.dir }}-
+      - name: Generated fixtures
+        if: matrix.prepare != ''
+        working-directory: ${{ matrix.dir }}
+        env:
+          PREPARE: ${{ matrix.prepare }}
+        run: bash -c "$PREPARE"
       - name: Typecheck
         if: matrix.npm
         working-directory: ${{ matrix.dir }}

@@ -878,7 +878,14 @@ Components not in the checkout are skipped with a notice: on `main` today that i
 and `design-system/` (and `app/` also needs `design-system/`). One test file imports from a
 directory that may be absent and is excluded, with a warning, when it is:
 `stack/test/e2e.test.ts` (imports hyparquet from `bench/node_modules`, so `bench/` is
-`npm ci`'d for stack). Each exclusion names the import that justifies it, and
+`npm ci`'d for stack, and for flush, compact and engine/wasm, whose tests read their files back
+with it). query's trace and log tests need fixtures that are generated and git-ignored (tens of
+MB): its job installs the Rust toolchain and `edge/`'s packages and runs
+`query/tools/gen-signal-fixtures.sh` before tsc (`rust` and `prepare` in the matrix), and
+`query/test/signals.bench.ts`, a benchmark over fixtures CI does not generate, is excluded with a
+warning. Pull request #9's first CI run failed on all four (2026-11-26): the development branch's
+suites had only run on a machine where `bench/node_modules` and the fixtures already existed.
+Each exclusion names the import that justifies it, and
 `test/matrix.test.mjs` fails once the file no longer contains it (commit 587f3df, which
 also dropped the exclusion of `query/test/http.test.ts`: it no longer imports `app/`).
 Actions are pinned to full commit SHAs (checkout v7.0.1, setup-node v7.1.0, cache v6.1.0,
