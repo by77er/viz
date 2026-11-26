@@ -2,6 +2,7 @@ import type {
   ApiCost,
   ApiResult,
   BuildInfo,
+  Identity,
   Metric,
   MetricMetadata,
   PromEnvelope,
@@ -180,6 +181,32 @@ export class PromClient {
     return (await this.get<BuildInfo>('/api/v1/status/buildinfo', [], opts)).data
   }
 
+  /**
+   * Who the API key is: control's `GET /api/v1/control/whoami`, which any valid key may ask
+   * whatever its scopes. It is not a Prometheus endpoint and answers no envelope: the identity
+   * itself, or a problem with an HTTP status (401 for a key that is missing, unknown, disabled
+   * or expired).
+   */
+  async whoami(opts?: RequestOptions): Promise<Identity> {
+    const res = await this.send('/api/v1/control/whoami', { method: 'GET' }, opts)
+    const text = await res.text()
+    if (!res.ok) throw new PromApiError('http', `HTTP ${res.status}`, res.status, parseRetryAfter(res.headers.get('Retry-After')))
+    let v: Partial<Identity> | undefined
+    try {
+      v = JSON.parse(text) as Partial<Identity>
+    } catch {
+      v = undefined
+    }
+    if (!v || typeof v.tenant !== 'string' || !Array.isArray(v.scopes)) throw new PromApiError('parse', 'The answer is not an identity', res.status)
+    return {
+      tenant: v.tenant,
+      subject: typeof v.subject === 'string' ? v.subject : '',
+      kind: typeof v.kind === 'string' ? v.kind : 'key',
+      name: typeof v.name === 'string' ? v.name : null,
+      scopes: v.scopes.filter((x): x is string => typeof x === 'string'),
+    }
+  }
+
   private get<T>(path: string, params: [string, string][], opts?: RequestOptions): Promise<ApiResult<T>> {
     const qs = new URLSearchParams(params).toString()
     return this.request<T>(path + (qs ? `?${qs}` : ''), { method: 'GET' }, opts)
@@ -271,7 +298,7 @@ export class PromClient {
     }
     if (!res.ok) {
       // No envelope: a proxy, a rate limit or the platform answered (HTML, plain text or nothing).
-      const hint = res.status === 401 || res.status === 403 ? ' (check the API token in Settings)' : ''
+      const hint = res.status === 401 || res.status === 403 ? ' (sign in with an API key that has the read scope)' : ''
       throw new PromApiError('http', `HTTP ${res.status} ${res.statusText}${hint}`.replace(/\s+/g, ' ').trim(), res.status, retryAfter)
     }
     if (!body || typeof body !== 'object' || body.status !== 'success') {

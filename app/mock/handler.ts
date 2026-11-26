@@ -62,6 +62,9 @@ const ROUTES: Record<string, string[]> = {
   '/api/v1/metadata': ['GET'],
   '/api/v1/status/buildinfo': ['GET'],
 }
+/** control's identity route, which the app's sign-in asks. */
+export const WHOAMI_PATH = '/api/v1/control/whoami'
+export const MOCK_TENANT = 'viz-mock'
 const LABEL_VALUES = /^\/api\/v1\/label\/([^/]+)\/values$/
 
 const ok = (data: unknown, headers?: Record<string, string>): MockResponse => ({ status: 200, body: { status: 'success', data }, headers })
@@ -230,9 +233,33 @@ export function createMockApi(opts: MockOptions = {}) {
    * @param body    form-encoded body for POST
    * @param headers request headers (lower-case names)
    */
+  /**
+   * control's `GET /api/v1/control/whoami`: who the key is, for any valid key whatever its
+   * scopes (control/README.md). It is not a Prometheus endpoint: the identity itself, or
+   * control's problem body with 401. Without `requireToken` the mock needs no key and says so
+   * by answering for a key of its own.
+   */
+  function whoami(method: string, headers: Record<string, string | undefined>): MockResponse {
+    const problem = (status: number, code: string, title: string, detail: string, fix: string, extra?: Record<string, string>): MockResponse => ({
+      status,
+      body: { type: `https://vis.bitcru.sh/problems/${code}`, title, status, code, detail, fix },
+      headers: extra,
+    })
+    if (method !== 'GET') return problem(405, 'method-not-allowed', 'Method not allowed', `${method} is not supported here.`, 'Use one of: GET.', { Allow: 'GET' })
+    const identity = (name: string, scopes: string[]): MockResponse => ({ status: 200, body: { tenant: MOCK_TENANT, subject: `key:${name}`, kind: 'key', name, scopes, mayApply: false } })
+    if (!opts.requireToken) return identity('mock key', ['read'])
+    const token = /^Bearer\s+(.+)$/i.exec(headers.authorization ?? '')?.[1]?.trim()
+    if (opts.readlessToken && token === opts.readlessToken) return identity('write-only key', ['write'])
+    if (token === opts.requireToken) return identity('read key', ['read'])
+    return problem(401, 'unauthenticated', 'Not authenticated', 'The API key is missing, malformed, unknown, disabled or expired.', 'Send "Authorization: Bearer viz_<keyId>_<secret>" with a key that is enabled and not expired.', {
+      'WWW-Authenticate': 'Bearer realm="viz"',
+    })
+  }
+
   function handle(method: string, url: string, body = '', headers: Record<string, string | undefined> = {}): MockResponse {
     const u = new URL(url, 'http://mock.invalid')
     const path = u.pathname
+    if (path === WHOAMI_PATH) return whoami(method, headers)
     const values = LABEL_VALUES.exec(path)
     const methods = values ? ['GET'] : ROUTES[path]
     if (!methods) return fail('not_found', 'not found')

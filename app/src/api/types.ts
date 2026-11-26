@@ -40,6 +40,16 @@ export interface BuildInfo {
   mock?: boolean
 }
 
+/** Who an API key is, as control's `GET /whoami` answers (control/README.md, "Who is calling"). */
+export interface Identity {
+  tenant: string
+  subject: string
+  /** `key` or `agent`. */
+  kind: string
+  name: string | null
+  scopes: string[]
+}
+
 export interface MetricMetadata {
   type: string
   help: string
