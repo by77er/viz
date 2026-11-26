@@ -503,7 +503,7 @@ fn main() {
         }
     }
     // ── Tempo metrics ──
-    let limits = viz_traceql::Limits { max_series: 10_000, max_points: 11_000 };
+    let limits = viz_traceql::Limits { max_series: 10_000, max_points: 11_000, max_bytes: u64::MAX };
     for (i, q) in METRICS.iter().enumerate() {
         let req = viz_traceql::align_request(&RangeRequest::range(all.0 * sec, all.1 * sec, 60 * sec));
         let r = viz_traceql::query_range_with(&mem, q, &req, &limits).unwrap();
@@ -589,14 +589,14 @@ fn main() {
     for (i, q) in LOG_QUERIES.iter().enumerate() {
         for (dir, d) in [("forward", viz_logql::Direction::Forward), ("backward", viz_logql::Direction::Backward)] {
             let limit = if i % 2 == 0 { 5000 } else { 7 };
-            let opts = viz_logql::Options { limit, direction: d, max_steps: 11_000, max_series: 20_000, now_ns: None };
+            let opts = viz_logql::Options { limit, direction: d, max_steps: 11_000, max_series: 20_000, now_ns: None, max_bytes: u64::MAX };
             let r = viz_logql::query_range(&lmem, q, ls, le, lstep, &opts).unwrap();
             let params = vec![("query", q.to_string()), ("start", ls.to_string()), ("end", le.to_string()), ("limit", limit.to_string()), ("direction", dir.to_string())];
             cases.push(case(format!("loki/{i}/{dir}"), "/loki/api/v1/query_range", params, 200, r.data_json().into(), "text-data"));
         }
     }
     for (i, q) in LOG_METRICS.iter().enumerate() {
-        let opts = viz_logql::Options { limit: 100, direction: viz_logql::Direction::Backward, max_steps: 11_000, max_series: 20_000, now_ns: None };
+        let opts = viz_logql::Options { limit: 100, direction: viz_logql::Direction::Backward, max_steps: 11_000, max_series: 20_000, now_ns: None, max_bytes: u64::MAX };
         let r = viz_logql::query_range(&lmem, q, ls, le, lstep, &opts).unwrap();
         let params = vec![("query", q.to_string()), ("start", ls.to_string()), ("end", le.to_string()), ("step", "60".to_string())];
         cases.push(case(format!("loki-metric/{i}"), "/loki/api/v1/query_range", params, 200, r.data_json().into(), "text-data"));
