@@ -4165,10 +4165,12 @@ max_ts) WHERE min_ts IS NOT NULL AND max_ts IS NOT NULL` also holds (schema 3, a
 `readableFrom` 1). The walk accepts only the layout `contracts/BATCH.md` defines: `flags` and
 `reserved` zero, at least one entry, zero padding around the `entry` column; anything else, a metric
 batch, an empty one and one the walk cannot follow get NULL (and so no index entry), and the append
-is never refused for it. A filtered tail read with `minTs`/`maxTs` skips, in its SQL, a batch whose
-bounds lie wholly outside them, deciding from the index (`INDEXED BY batch_time`, a correlated
+is never refused for it. A filtered tail read with `minTs`/`maxTs` that admits span or log batches (no `signals`, or
+2 or 3 listed) skips, in its SQL, a batch whose bounds lie wholly outside them, deciding from the index (`INDEXED BY batch_time`, a correlated
 `NOT EXISTS`, `shard/src/tail.ts` `TIMED_TAIL_SQL`), never from the row: a skipped batch's payload
-is not read from storage. A batch with NULL bounds has no entry and is always kept. One call
+is not read from storage. A batch with NULL bounds has no entry and is always kept. A read that admits
+only metric batches runs the statement from before D72 and consults no bounds (re-check
+r2-m-2). One call
 considers at most `TAIL_SCAN_MAX_BATCHES` (32,768) batches, skipped ones included, and examines at
 most `TAIL_SCAN_MAX_BYTES` (32 MiB) as before, so D48's budget again bounds what one call reads; a
 page may then hold no batch and continue. A `page_limit` says, as `last`, whether no later batch up
@@ -4271,7 +4273,17 @@ with discard and expiry, 5 to 6 rows), none per metric append; at Cloudflare's l
 per million rows written past the 50 million a month included, **$1.00 per million span or log
 appends** (modelled: e.g. a sustained 100 span or log appends a second is 259 million a month, $259
 more). The row counts are the cursor's `rowsWritten` measured here; on Cloudflare not measured
-(experiment: the same appends on a deployed shard, rows written read from the analytics API). The
+(experiment: the same appends on a deployed shard, rows written read from the analytics API).
+Rows read are billed too. Deciding from the index costs a ranged read 2 rows per batch it
+skips and 3 per batch it keeps, where a read before D72 read 1 per batch (the cursor's
+`rowsRead` in local workerd, `shard/test/bounds.recheck.test.ts`: 400 and 599 rows for 200
+span batches skipped and kept, against 200; Cloudflare's count and bill are not measured). So
+only a read that can skip something pays it: a read with a time range that admits spans or
+logs. A read that admits only metric batches, which every metrics query sends, runs the
+statement from before D72 and reads 1 row per batch as before (re-check r2-m-2; as first
+reviewed every ranged read ran the index statement, which doubled the rows read of every
+metrics query: 400 against 200). Modelled at the list price of $0.001 per million rows read
+past 25 billion a month: $1 to $2 per billion span or log batches considered by ranged reads. The
 index's storage, tens of bytes per bounded batch of the tail, is negligible. CPU: the walk, up to
 about 1.5 ms per 1 MiB append for the worst shape edge builds, on the object's thread, paid by the
 sender's own bytes. A call of a read with a range reads at most 32 MiB of payload plus up to 32,768
@@ -4282,12 +4294,15 @@ makes a one-hour search read five hours, so a backlog of more than about 16 MiB 
 hours still refuses a search (modelled: 11.7 MB for five hours here). Skipping changes an answer
 that depends on rows outside the range (a later copy of a span outside it hides an earlier copy
 inside it only if read; review m-2): a reader must drop rows outside its range before
-de-duplicating (BATCH.md; query's side). `last` on `page_limit` is used only once query reads it
-(`shard/README.md`, "Needed changes elsewhere"). Not measured on Cloudflare.
+de-duplicating (BATCH.md; query's side). `last` on `page_limit` is read by query (`query/src/tail.ts` `readPages`, which sets
+`overLast` from it; `query/src/coordinator.ts` keeps it), so a 422 for a tail whose later
+batches are all skipped gives the exact size (`query/test/review-r2.test.ts`, "n-1"). Not measured on Cloudflare.
 
 **Would change if.** A query needs another time than a span's start or a log's `ts` (then that
 column's bounds too); senders' late spans make most batches span hours, so bounds skip little (then
 per-batch metadata finer than a hull); filtered metric reads show on the shard's CPU (then (g));
-the extra row write shows in the bill (then (c4) at a release that can afford the rebuild, or bounds
+rows read show in the bill (then (c2), the full covering index, which
+`shard/bench/results/skipread.txt` measured at 1 row read per batch, at the price of a row written on
+every append); the extra row write shows in the bill (then (c4) at a release that can afford the rebuild, or bounds
 only for shards that are read with ranges); the walk shows on a shard's CPU (then (i)); Cloudflare's
 SQLite reads or bills differently from workerd's here (the experiments above).
