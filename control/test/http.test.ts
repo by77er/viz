@@ -74,7 +74,8 @@ describe('HTTP surface', () => {
     const at = (method: string, e: unknown = env, path = '/healthz') => worker.fetch!(new Request(`https://control.internal${path}`, { method }) as never, e as never, {} as ExecutionContext)
     const ok = await at('GET')
     expect(ok.status).toBe(200)
-    expect(await ok.text()).toBe('ok\n')
+    // "ok", then what OAuth can do and its rate limiters (D70; test/ratelimit.test.ts): absent here.
+    expect((await ok.text()).split('\n')[0]).toBe('ok')
     expect(ok.headers.get('Cache-Control')).toBe('no-store')
     expect((await at('HEAD')).status).toBe(200)
     const post = await at('POST')

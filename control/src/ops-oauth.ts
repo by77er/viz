@@ -18,6 +18,7 @@ import { Problem, invalid, notFound } from './errors'
 import type { Actor } from './identity'
 import { mayApply } from './ops-dashboards'
 import { dropKey, mintKey, newKey } from './ops-keys'
+import { REFRESHES_PER_WINDOW, REFRESH_WINDOW_MS } from './ratelimit'
 import {
   type AuthzRequest,
   approverScopes,
@@ -166,6 +167,12 @@ export function grantView(t: Tenant, g: GrantRow, now: number): OAuthGrantView {
     revokedAt: iso(g.revoked_at),
     revokedBy: g.revoked_by === null ? null : (JSON.parse(g.revoked_by) as Actor),
     revokeReason: g.revoke_reason,
+    // The rows reuse detection keeps a day (review of D70, round 2, R2-M2): the signature of
+    // collecting refresh tokens, readable while the grant lives and kept by its revocation's audit entry.
+    refreshesLastDay: t.one<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM oauth_tokens WHERE tenant = ? AND grant_id = ? AND kind = 'refresh' AND issued_at > ?",
+      t.tenant, g.id, now - OAUTH_LIFETIMES.rotatedRefreshKeepSeconds * 1000,
+    )!.n,
   }
 }
 
@@ -202,7 +209,8 @@ export async function prepareApprove(t: Tenant, body: unknown): Promise<ApproveP
   const registration = request ? await verifyClientId(t.oauth.clientKey, request.client_id) : null
   const grantId = `g_${randomId(22)}`
   const clientKey = t.oauth.clientKey
-  const code = clientKey === null ? null : await mintCredential('code', t.tenant, clientKey)
+  // The code's expiry as its body carries it (D70): from now; the row's, from the approval's own clock a moment later, is the same or later.
+  const code = clientKey === null ? null : await mintCredential('code', t.tenant, clientKey, Date.now() + OAUTH_LIFETIMES.codeSeconds * 1000)
   const key = mintKey()
   return { request, registration, grantId, code, key, sealed: code === null ? '' : await seal(code, key.secret, sealAad(t.tenant, grantId)) }
 }
@@ -425,6 +433,15 @@ export async function refreshTokens(t: Tenant, req: TokenRequest, now: number): 
       if ('unknown' in asked || !asked.ok.every((s) => held.includes(s))) return { error: fail('invalid_scope', `A refresh may ask only for scopes the grant holds: ${held.join(' ')}.`) }
       scopes = asked.ok
     }
+    // D70: what a client stuck in a refresh loop can make this object write, bounded exactly and from
+    // every location at once, by rows it already keeps (refresh tokens issued for the grant in the
+    // last minute, the code exchange's included). Checked after reuse detection and before the
+    // presented token is spent, so a refused refresh writes nothing and can be retried with it.
+    const recent = t.one<{ n: number; first: number | null }>(
+      "SELECT COUNT(*) AS n, MIN(issued_at) AS first FROM oauth_tokens WHERE tenant = ? AND grant_id = ? AND kind = 'refresh' AND issued_at > ?",
+      t.tenant, g.id, now - REFRESH_WINDOW_MS,
+    )!
+    if (recent.n >= REFRESHES_PER_WINDOW) return { error: { v: 1, status: 'rate_limited', retryAfterMs: Math.max(1, recent.first! + REFRESH_WINDOW_MS - now) } }
     t.run('UPDATE oauth_tokens SET rotated_at = ? WHERE tenant = ? AND hash = ?', now, t.tenant, hash)
     // Keep rotated tokens a day (reuse detection), expired ones not at all.
     t.run(
@@ -445,8 +462,9 @@ async function issue(t: Tenant, g: GrantRow, presented: string, sealed: string, 
   if (secret === null) return fail('invalid_grant', 'This grant cannot issue tokens; approve the application again.')
   const clientKey = t.oauth.clientKey
   if (clientKey === null) return fail('invalid_grant', 'This deployment cannot issue tokens now (no OAUTH_CLIENT_KEY).')
-  const access = await mintCredential('access', t.tenant, clientKey)
-  const refresh = await mintCredential('refresh', t.tenant, clientKey)
+  // Each carries the expiry its row gets (D70: the Worker refuses it once that has passed).
+  const access = await mintCredential('access', t.tenant, clientKey, now + OAUTH_LIFETIMES.accessSeconds * 1000)
+  const refresh = await mintCredential('refresh', t.tenant, clientKey, now + OAUTH_LIFETIMES.refreshSeconds * 1000)
   const [sa, sr] = await Promise.all([seal(access, secret, aad), seal(refresh, secret, aad)])
   const stored = t.transaction(() => {
     // Revoked while the crypto ran (a reuse, a person, the alarm): issue nothing.
@@ -463,20 +481,37 @@ async function issue(t: Tenant, g: GrantRow, presented: string, sealed: string, 
 
 // ---- revocation (RFC 7009) ----
 
-/** An access token ends alone; a refresh token ends its grant. A token of another client, or none at all, changes nothing. */
-export function revokeToken(t: Tenant, token: string, clientId: string, now: number): void {
+/**
+ * An access token ends alone; a refresh token ends its grant. A token of another client, or none at
+ * all, changes nothing. Returns whether the token is dead afterwards (`RevokeResult.dead`,
+ * contracts/oauth.ts): unknown here, expired, of a grant that has ended, or ended now. A token of a
+ * live grant that another client presented is not, a rotated refresh token included: its other
+ * holder's next presentation must reach this object for reuse detection (review of D70, round 3,
+ * R3-B1). Nor is anything that is not a token (no answer).
+ */
+export function revokeToken(t: Tenant, token: string, clientId: string, now: number): boolean | undefined {
   const parsed = typeof token === 'string' ? parseCredential(token) : null
-  if (!parsed || parsed.kind === 'code') return
+  if (!parsed || parsed.kind === 'code') return undefined
   const row = t.one<TokenRow>(`SELECT ${TOKEN_COLS} FROM oauth_tokens WHERE tenant = ? AND hash = ? AND kind = ?`, t.tenant, hashCredential(token), parsed.kind)
-  if (!row) return
+  // Never stored, expired and swept, or its grant ended (which deletes its rows): no row is ever
+  // stored again under this hash, so it stays dead.
+  if (!row) return true
   const g = loadGrant(t, row.grant_id)
-  if (!g || !clientMatches(t, g, clientId)) return
+  if (!g) return true
+  if (!clientMatches(t, g, clientId)) {
+    // Changes nothing. Dead only if it already was, by what cannot come back. Not for being rotated:
+    // the grant is live, and the owner presenting its rotated copy is what ends a thief's grant
+    // (R3-B1). Nor a rotated row past its own expiry: until the Worker refuses it as expired (60 s
+    // later), presenting it still reaches reuse detection, which refreshTokens checks first.
+    return g.revoked_at !== null || g.expires_at <= now || (row.rotated_at === null && row.expires_at <= now)
+  }
   if (row.kind === 'access') {
     t.run('DELETE FROM oauth_tokens WHERE tenant = ? AND hash = ?', t.tenant, row.hash)
-    return
+    return true
   }
   const client = loadClient(t, g.client)!
   revokeGrant(t, g, { subject: `oauth-client:${client.id}`, kind: 'agent', name: client.name }, now, 'client')
+  return true
 }
 
 // ---- introspection, for the resource ----

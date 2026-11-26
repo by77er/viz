@@ -23,6 +23,8 @@ data path never calls it.
 | `src/ops-oauth.ts` | OAuth grants in the Tenant object: approve (the consent step), list, get, revoke; the token endpoint's code exchange and refresh; RFC 7009 revocation; introspection for the agent surface; the alarm's sweep |
 | `src/oauth-http.ts` | The authorization server's public endpoints: RFC 8414 metadata, `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke`; `readCapped`, a body read with a cap |
 | `src/introspection.ts` | `OAuthIntrospection`, the named entrypoint the agent surface binds (`contracts/oauth.ts`): token introspection for one caller, the tenant from the token, nothing else |
+| `src/ratelimit.ts` | Rate limits in front of OAuth (D70, as rewritten after its two reviews): the Rate Limiting binding checks (keys, order, a wider key only after every narrower one was checked, an even share of the request's budget per check, failing open, logged once per isolate, `/healthz`'s status), the client networks a request comes from, the exact per-grant refresh limit's window |
+| `src/deadlist.ts` | The list of OAuth credentials found dead (D70 after its second review, R2-M2): recorded when the tenant's object says a token is dead, in the isolate and in `CONFIG` under `oauth-dead:` until the credential expires; refused before any limit or object; bounded reads and writes; failing open |
 
 Runtime dependencies: none. It imports `../edge/src/auth` (key verification),
 `../dashboard/src` (the `viz.dashboard/v1` model) and `../contracts/ledger` (`TENANT_ID`).
@@ -206,15 +208,38 @@ a person for review instead of describing it in text.
 | Section | Value | Published to KV |
 |---|---|---|
 | `general` | `{ agentsMayApply, proposalTtlDays }` | no |
-| `retention` | `{ metric_samples_days, metric_5m_days?, metric_1h_days?, log_days?, trace_days? }`, 1 to 3650 days, coarser tiers not shorter than finer ones. Shortening needs `confirmShorter: true` | `retention:<tenant>`, the value as is |
+| `retention` | `{ metric_samples_days, metric_5m_days?, metric_1h_days?, log_days?, trace_days? }`, 1 to 3650 days, coarser tiers not shorter than finer ones. The value replaces the stored one, so a field left out returns to its default. Any change that shortens what is kept needs `confirmShorter: true`, a field left out included (below) | `retention:<tenant>`, the value as is |
 | `limits` | `{ active_series, samples_per_second, query_max_series, query_max_samples, query_timeout_seconds, query_max_range_days, query_concurrency }`, any subset. `LIMIT_CEILINGS` (JSON, operator) caps them | `limits:<tenant>`, the value as is |
-| `pool` | `{ pool, slots, spread }`. The pool must be `tenant/<this tenant>` or the shared pool of `DEFAULT_POOL` | `pool:<tenant>` → `{ pool, slots, spread, epoch }` |
+| `pool` | `{ pool, slots, spread }`. The pool must be the tenant's dedicated pool, `dedicatedPool(tenant)`: `tenant/<id>` with `_` written `-`, or the shared pool of `DEFAULT_POOL`, and one edge accepts (`validBasePool`: `POOL_NAME`, and no `/traces` or `/logs` suffix; D66, below) | `pool:<tenant>` → `{ pool, slots, spread, epoch }` |
 | `notifications` | `{ email[], webhookUrl, webhookFormat, sendResolved, webhookSecret }`. `webhookFormat` is `alertmanager` (default) or `json` (`viz.notification/v1`); `webhookSecret` (16–512 characters) is **write-only**: kept in `tenant_meta`, never in the value, so no read, list or audit entry holds it; the value shows `webhookSecretSetAt` instead. Left out, the secret is kept while `webhookUrl` is unchanged and dropped when it changes; `null` removes it. The ruler's notifier sends to this webhook as its receiver `viz:default` (below). `email` is stored, not acted on | no: read over the binding (`notificationTarget`), so the secret is not in KV |
+
+**Retention.** A PUT replaces the stored value, as in every section, so a field it leaves out
+returns to its reader's default: 30 days for `trace_days` and `log_days` (the janitor's
+`DEFAULT_SIGNAL_DAYS`), and nothing known for a rollup tier, which has no reader yet. Whether a PUT
+shortens retention is judged on what is kept before and after, field by field, with those
+defaults (`KEPT_WHEN_ABSENT` in `src/ops-settings.ts`; D63, revised after review B-1 of
+`design/reviews/signals-end-to-end.md`). So `{"metric_samples_days": 60}` over `{30, trace_days:
+365, log_days: 400}` is refused with 422 `confirmation-required`, `shortened` and `leftOut` both
+`["log_days", "trace_days"]`, and a `fix` that says to send them too. A signal set for the first
+time below 30 days is a shortening as well, and so is a rollup tier that was set and is left out.
+Until this change only the fields the new value named were compared: that PUT was accepted, and
+the janitor then kept traces and logs 30 days.
 
 **Pool map.** The first map gets the shared map's epoch plus one; raising `spread` bumps
 the epoch. Everything else (another pool, another slot count, a smaller spread) is refused
 with 409 `pool-change-unsupported`, because it needs the drain-and-handover protocol of
-DESIGN §4.1, which is out of scope here.
+DESIGN §4.1, which is out of scope here. The pool must be one edge accepts as a map's pool, by
+edge's own function, `validBasePool` (`shard/src/pool.ts`, moved there from `edge/src/route.ts`
+so both import it; D66, revised after review M-5). That means a valid pool name (`POOL_NAME`: no
+`_`, at most 120 characters) that does not end in `/traces` or `/logs`, the suffixes of the
+derived span and log pools (`contracts/BATCH.md`, "Streams per signal"). Anything else is refused
+with 422 `invalid`, field `pool`: edge would turn every write of the tenant into a 503. The
+tenant's dedicated pool is `dedicatedPool(tenant)`: `tenant/<id>` with `_` written `-`, so tenant
+`acme_prod` gets `tenant/acme-prod`. Asked for `tenant/acme_prod`, control refuses and names
+`tenant/acme-prod`. Two ids that differ only there share their dedicated objects, each with its
+own map, streams and epoch (D38). Tenants `traces` and `logs` can be created (tenant ids are
+unchanged) and use the shared pool, but cannot have the dedicated pool `tenant/<id>`. A shared pool
+(`DEFAULT_POOL`) that breaks the rule is refused for every tenant, with a fix for the operator.
 
 ### The service surface (`contracts/control.ts`, decision D39)
 
@@ -347,10 +372,13 @@ The interface goes through design review (AGENTS.md, "Design changes"); none is 
   `<vzc1|vza1|vzr1>.<tenant>.<43 base62>`; the tenant is in clear so the server can find the
   tenant's object, which then holds only the hash, so a credential edited to name another tenant
   matches nothing there).
-- **The 43 characters are 27 random ones and a 16-character tag** (`contracts/oauth.ts`
+- **The 43 characters are a 27-character body and a 16-character tag** (`contracts/oauth.ts`
   `CREDENTIAL_TAG`): HMAC-SHA-256 under a key derived by HKDF from `OAUTH_CLIENT_KEY` (its own
-  salt, so not the registration key itself), over prefix, tenant and random part, each of the
-  first 16 bytes as `BASE62[byte % 62]` (about 95 bits; the random part is about 160). The
+  salt, so not the registration key itself), over prefix, tenant and body, each of the first 16
+  bytes as `BASE62[byte % 62]` (about 95 bits). Since the review of D70 the body is layout 2: the
+  marker `e`, the credential's expiry in 4 characters, and 22 random ones (about 131 bits); the
+  Worker refuses one past its expiry like a made-up one ("Rate limits in front of OAuth", 0).
+  Layout 1, issued before, is 27 random characters (about 160 bits) and still served. The
   token endpoint, revocation and `OAuthIntrospection` check it in the Worker, before any tenant's
   object is asked: a made-up credential, for a tenant that exists or not, reaches no object and
   writes nothing (review of D44, M-2). The tag makes nothing valid; the object's hash does.
@@ -390,6 +418,262 @@ The interface goes through design review (AGENTS.md, "Design changes"); none is 
   instance's own statements, compared before and after): each `setAlarm` is billed as a row
   written, and before the review of D44 (M-2) every such request, a made-up one included, set
   it twice.
+
+### Rate limits in front of OAuth (D70)
+
+**Production has served OAuth without any of this since 2026-11-19**, when the owner deployed `main`
+at PR #8 (`vis.bitcru.sh`): the endpoints are public with the tag and the object's checks, reuse
+detection included, and without layer 1, the expiry check in the Worker or the list. "Required
+before OAuth is exposed publicly" (review of D44, M-2) **was not met**; this change, with the deploy's
+gate ("Needed changes elsewhere"), is the remedy. Revised again on 2026-11-26 after the third look
+(`design/reviews/d70-rate-limits-r3.md`, reject until R3-B1 is fixed): dispositions under "Round 3"
+in "How it was verified".
+
+Required before OAuth is exposed publicly (review of D44, M-2). Rewritten after D70's adversarial
+review (`design/reviews/d70-rate-limits.md`). The review rejected the first layer as first built:
+one dead credential of a tenant could spend that tenant's budgets (B-1). The first layer also
+counted genuine credentials by network, and every client on Cloudflare Workers shares one address
+(M-1). **Changed again after the second review** (`design/reviews/d70-rate-limits-r2.md`, approve
+with changes): a wider key is asked only while every narrower one was checked (R2-M1); a list of
+credentials found dead (R2-M2, the owner's choice over accepting the residual); an even share of
+the budget per check (m-1); expired genuine credentials not counted by network (m-2); and the
+grant view counts refreshes (R2-M2). The dispositions are under "Round 2" in "How it was verified".
+
+The tag already keeps a made-up credential away from every object. What is left is cost and abuse.
+Its measured shape decided the keys ("How it was verified", the cost table):
+- Registration, the authorization page and a made-up credential cost the Worker alone (0.2–0.5 ms
+  here, nothing written), and anyone can send them.
+- What reaches a tenant's object is a credential this deployment made. An exchange or a refresh
+  writes 9 rows and 2 `setAlarm`. A replay of a spent or revoked one costs an object request and
+  writes nothing.
+
+**0. Credentials carry their expiry** (`contracts/oauth.ts`, layout 2; `src/oauth.ts`
+`mintCredential`, `credentialExpired`). The 27 characters before a code's or token's tag are now
+the marker `e`, its expiry and 22 random characters. The expiry is in whole minutes since
+2026-11-01, rounded up: never earlier than the expiry its row stores. The tag covers it.
+- `/oauth/token`, `/oauth/revoke` and `OAuthIntrospection` refuse a tagged credential once its
+  expiry and `EXPIRY_GRACE_MS` (60 s, for the Worker's clock against the object's) have passed. A
+  code dies in the Worker 10 minutes after issue, an access token after an hour.
+- The refusal is the answer the object would give: `invalid_grant`, 200 at revocation, `inactive`
+  `expired` at introspection. It comes before any rate limit counts the request and before any
+  object is asked, and it is not counted against the sender's network either: the credential is
+  genuine and its HMAC is paid (round 2, m-2; before, the token endpoint and revocation counted it
+  there, so a broker presenting its users' month-old tokens could get 429 instead of `invalid_grant`).
+- The shape and the tag are unchanged, so a release that knows only layout 1 reads layout 2.
+- A layout 1 credential, issued by the previous release, carries no expiry. It goes to its object as
+  before until it expires there.
+
+**0b. Credentials found dead are listed** (`src/deadlist.ts`; round 2, R2-M2). A dead credential
+that has not expired (a rotated refresh token, one of a revoked grant, an access token of an ended
+grant) has a good tag and a future expiry; only its tenant's object knows it is dead. Without a
+record, each replay reached the object and counted against the tenant's fuse for the credential's
+whole life, 30 days for a refresh token. Anyone holding one live refresh token of a grant, its
+client or a thief of an idle grant's token, can collect them at layer 2's limit (6 a minute) and
+replay the stock after the grant has ended.
+- **When**: the tenant's object says so (contracts/oauth.ts, a promise of the contract):
+  `invalid_grant` on the `refresh_token` grant; `inactive` with `unknown`, `expired` or `revoked`
+  at introspection (`DEAD_INACTIVE_REASONS`; never `suspended` or `audience`, which can come back);
+  `dead: true` from revocation, a field added to `RevokeResult` because RFC 7009 answers 200
+  either way (a stock replayed at `/oauth/revoke` would otherwise never be listed). The object sets
+  `dead` when the token was unknown or of an ended grant, an unrotated one had expired, or this
+  revocation ended it; any token of a live grant that another client presented is `dead: false`,
+  **a rotated refresh token included** (round 3, R3-B1).
+- **The rule** (round 3, R3-B1): nothing is listed whose later presentation must still reach the
+  object. Reuse detection ends a stolen grant only when the other holder of a rotated refresh token
+  presents it; round 2 listed such a token when anyone revoked it under another client id, so a thief
+  could list the owner's copy and keep the grant (reproduced by the review). Each place that lists is
+  checked against the rule in `src/deadlist.ts`'s header: the token endpoint (no row; a grant ended or
+  unable to issue, a rotated token having just ended its grant; or a token this request spent with
+  nothing issued, which leaves the grant no unrotated refresh token), introspection (access tokens,
+  which reuse detection does not watch) and revocation (only what is ended; not a rotated row past
+  its own expiry either, which inside the Worker's grace still reaches reuse detection).
+- **Where**: in the isolate at once (a map of hashes to expiries, at most `ISOLATE_ENTRIES`, 10,000,
+  oldest dropped first), and in `CONFIG`, the viz KV namespace this Worker already binds (titled
+  `viz-config` by the deploy, `deploy/workers.json`; not the account's unrelated namespace titled
+  `CONFIG`), under a prefix of its own: `oauth-dead:<tenant>:<SHA-256 of the credential, hex>` →
+  `{"v":1,"reason":…}` (format `kv.oauth-dead` 1, `test/golden/formats/kv.oauth-dead.v1.json`). KV's
+  absolute `expiration` is the credential's encoded expiry plus `EXPIRY_GRACE_MS`, so the list never
+  holds what the expiry check refuses anyway. Nothing is written for layout 1, or with less than
+  KV's 60 s minimum left.
+- **Checked** at `/oauth/token` (refresh tokens; codes die within 12 minutes and each needs a
+  person's approval), `/oauth/revoke` and introspection, after the tag, the expiry and the
+  credential's own limit, and before its tenant's fuse (round 3, m-1; `firstRefusal`'s `listed`):
+  answered as the object answered (`invalid_grant`, 200, `inactive` with the recorded reason), counted
+  against its own allowance only, its network not at all. So cycling dead credentials costs at most
+  one KV read per allowed request (5 a minute per credential per location), and a listed and a live
+  token are counted alike (R3-M1). Consulted whatever the narrow limiter's verdict but a refusal.
+- **Reads**: the isolate's map, then one KV read of at most `DEAD_READ_MS` (100 ms). A credential KV
+  does not list is remembered so for `NOT_LISTED_MS` (60 s): a live token costs at most one KV read
+  per isolate a minute.
+- **Writes**: one per dead credential per isolate (an isolate that recorded or read it never asks
+  the object again; concurrent replays write once), through `ctx.waitUntil` off the response's path
+  when there is a context (the tests have none and await it). Every write is of a credential this
+  deployment minted, so writes follow what layer 2 lets be minted, never what a request asks.
+- **Eventually consistent**: about 60 s for a write to be seen elsewhere, and up to 60 s of a cached
+  absent read (training knowledge; not measured). Until then each isolate of another location may ask
+  the object once more and learns it there. The window's consequences and the costs are in D70.
+- **Fails open**: without `CONFIG`, or when a read throws or overruns, the credential counts as not
+  listed and the failure is logged once per isolate. A read over 100 ms affects its key only (not
+  listed for 60 s in that isolate; round 3, m-2: a cold key is slow, and anyone can make one); a read
+  that throws is KV failing, and KV reads are then skipped for 10 s in that isolate (its own map
+  still applies). A failed write is logged once and not retried. `/healthz` says
+  `OAUTH_DEAD_LIST: bound|absent|skipped`.
+- **What it shows**: `refreshesLastDay` in the grant view (`GET /oauth/grants`, contracts/oauth.ts
+  `OAuthGrantView`, an additive field), counted from the refresh-token rows reuse detection keeps a
+  day: about 24 for a client refreshing hourly, up to 8,640 for one rotating at the limit, which is
+  how a stock is collected. The revocation's audit entry keeps the last count (its `before`). Keys
+  under `oauth-dead:<tenant>:` count a tenant's replayed dead credentials.
+
+**1. Approximate, before any object: Cloudflare's Rate Limiting binding** (`src/ratelimit.ts`).
+Per Cloudflare location, eventually consistent, a 60 s window each. The limits are the bindings'
+configuration, which the deploy does not create yet ("Needed changes elsewhere"):
+
+| Binding | Counted per | Where, and when | Proposed limit / 60 s | In the tests |
+|---|---|---|---|---|
+| `OAUTH_RL_SOURCE` | client network: IPv4 address, IPv6 /64 (an IPv4-mapped address as IPv4), from `CF-Connecting-IP`; without one, one shared key; Cloudflare's Workers address (`2a06:98c0:3600::103`) not at all | `/oauth/register` (POST) and `/oauth/authorize` (GET, HEAD), first thing, before the body is read; `/oauth/token` and `/oauth/revoke` only for a request without a genuine credential (malformed, or no tag) | 120 | 5 |
+| `OAUTH_RL_SOURCE_48` | the IPv6 /48 | the same, after the /64 | 1,200 | 8 |
+| `OAUTH_RL_CREDENTIAL` | the presented code, refresh token or access token (SHA-256 prefix), tagged, not expired, not listed dead | `/oauth/token` and `/oauth/revoke`, before the object | 5 | 3 |
+| `OAUTH_RL_TENANT` | its tenant: a fuse | the same, after the credential | 6,000 | 12 |
+| `OAUTH_RL_BEARER` | the access token (SHA-256 prefix), tagged, not expired, not listed dead | `OAuthIntrospection`, before the object | 1,200 | 3 |
+| `OAUTH_RL_BEARER_TENANT` | its tenant: a fuse | the same, after the token | 30,000 | 12 |
+
+- **After the tag and the expiry**: only a credential this deployment made, and that has not
+  expired, is counted against a credential or a tenant. A made-up or expired credential naming a
+  tenant spends nothing of it.
+- **The credential first**, and a refused call does not count. So one credential spends its own
+  allowance and at most that much of its tenant's fuse. A fuse takes (fuse ÷ per-credential) distinct
+  credentials that stay countable to spend: 1,200 at the token endpoint and 25 at introspection, in
+  production; a dead one counts until the list reaches where it is sent, then never.
+- **A wider key only while every narrower one was checked** (round 2, R2-M1). When the credential's
+  (or bearer's, or /64's) binding is absent, failed or is skipped, the request is not counted
+  against the wider key either: the chain fails open together. So while a narrow limiter is down in
+  an isolate (10 s per failure), its fuse counts nothing there; dead credentials reach the object
+  once each and are listed, live ones as often as they are sent, and layer 2 still bounds writes.
+  The version before asked the fuse alone, and one dead credential spent it again (reproduced by
+  the review, N2 and N2b).
+- **No per-client key.** The first version keyed the token endpoint on the presented `client_id`,
+  which the request chooses (R1). A verified one would be no better, since client ids are public and
+  any dead credential sent with one spends it (R1b).
+- **A genuine credential is never counted by its network** (M-1), expired or listed dead included
+  (round 2, m-2). Registration and the authorization page count every request's network. The token
+  endpoint and revocation count only the requests they refuse by themselves without a genuine
+  credential, after reading them: a missing or malformed parameter, a code at revocation, or a
+  credential without the tag. Such a request costs one HMAC (0.28–0.33 ms here).
+- **Cloudflare's Workers address is not counted at all.** Every cross-zone subrequest from a Worker
+  arrives as `2a06:98c0:3600::103` (Cloudflare's headers page, read 2026-11-19), so counting it would
+  let anyone with a Workers account refuse every Worker-hosted client. What it can reach without a
+  genuine credential costs Worker CPU only.
+- **IPv6 by /64, then /48** (m-6): one host with a routed /48 holds 65,536 /64s.
+- **Not counted**: the RFC 8414 metadata (static, `max-age=300`), CORS preflights (the first version
+  counted one of the authorization page, m-3), and a method an endpoint does not serve.
+- **The proposed limits** (modelled, not measured on real traffic):
+  - A person connecting makes 3 to 5 requests, and a client presents a code or refresh token once.
+    5 per credential leaves room for retries after a 429 or 503.
+  - An agent's parallel tool calls fit in 20 a second per access token (m-5).
+  - The token fuse, 100 a second, is 20 times the most live refreshes layer 2 lets a whole tenant
+    make (300 a minute) and 8–21% of one object answering replays (0.75–2.1 ms each, measured here).
+  - The bearer fuse, 500 a second, is 10 times 50 grants at one `/mcp` call a second (m-5) and
+    45–75% of the introspections one object served here (0.9–1.5 ms each).
+  - **Per location** (round 2, m-4): two locations at the bearer fuse are 90–150% of one object's
+    introspection rate, which saturates it; five at the token fuse are 38–105% of its replay rate,
+    fourteen exceed it. A client holding 25 live access tokens per location can do the first while
+    approved (and for a minute or two after); since the list, the token fuse is reachable only by a
+    stock of dead credentials in the minutes after its first replay, because a tenant's live
+    credentials make at most about 850 token requests a minute per location (14% of the fuse).
+- **Assumed**: viz-control and viz-mcp have no Smart Placement (m-8). Placement would gather their
+  invocations in few locations and make the per-location fuses nearly global.
+  `test/ratelimit.test.ts` checks both `wrangler.jsonc` files.
+
+**2. Exact, in the tenant's object, where rows are written.** At most
+`OAUTH_LIMITS.refreshesPerGrantPerMinute` (6) refresh tokens per grant in any 60 s, the code
+exchange's included.
+- It is counted from the `oauth_tokens` rows the object already keeps: one read, no new state.
+- It is checked after reuse detection (a rotated token presented again still ends the grant) and
+  before the presented token is spent.
+- From any number of locations, a client stuck in a refresh loop writes at most 6 times a minute per
+  grant.
+- With D44's exact bounds (20 approvals an hour, 50 clients, 50 live grants, all per tenant) this
+  bounds what OAuth can make an object store.
+- The worst case per tenant (modelled; review m-7) is 50 grants × 6 refreshes a minute × about 11
+  billed rows: 3,300 row writes a minute. That is about 4.75 million a day ($4.75 a day at list
+  price, training knowledge), and about 432,000 rotated refresh-token rows kept a day. Only the
+  tenant's own approved clients can drive it.
+
+**A refusal** is 429 with `Retry-After`, `Cache-Control: no-store`, the endpoints' CORS headers, and
+`{ "error": "too_many_requests", "error_description": … }` naming which budget is spent (never a
+key).
+- `Retry-After` is 60 for a binding, which does not say where in its window it is. For the per-grant
+  limit it is the moment its oldest refresh leaves the window.
+- The authorization page answers a plain-text page with the same code and header.
+- No credential is spent and nothing in the object changes: a refused code, refresh token or
+  revocation can be sent again. The narrower keys asked before the one that refused have counted the
+  request (m-3). A request the token endpoint or revocation refused by itself has had its body read.
+- Why `too_many_requests`: RFC 6749 §5.2 has no rate-limit code, and it is what the MCP TypeScript
+  SDK's authorization server sends with 429 at these endpoints.
+  - That SDK's client (`@modelcontextprotocol/sdk` 1.32.2 `client/auth.js`, read in
+    `mcp/node_modules`) maps it to `TooManyRequestsError` and keeps its credentials.
+  - An unknown code becomes a `ServerError`, after which it abandons the refresh and starts a new
+    authorization (a person approves again). `invalid_grant` makes it discard its tokens.
+  - The Python SDK (`mcp` 2.3.0, `mcp/client/auth/oauth2.py` `_handle_refresh_response`, read in the
+    wheel the review unpacked) discards its tokens on any refresh answer that is not 200. For its clients every refusal of a live refresh means a person approves
+    again, whatever the code. That is why only the client itself, or someone holding many of the
+    tenant's unexpired credentials, can make this Worker refuse a live refresh (above).
+- Introspection answers `{ v: 1, status: 'rate_limited', retryAfterMs: 60000 }`, which the agent
+  surface maps to 429 with `Retry-After`.
+
+**Every binding check fails open**, deliberately, for every endpoint. A binding that is absent,
+throws, rejects, answers without a boolean `success`, or has not answered in time lets the request
+through.
+- **Time** (m-1): one request's checks have `CHECK_BUDGET_MS` (100 ms), **split evenly** since round 2
+  (50 ms for a credential and 50 for its fuse; 100 for an IPv4 source). A binding that has not
+  answered within its own share has failed; a slow narrow check can no longer use the fuse's time and
+  get the fuse blamed (round 2, m-1, reproduced by the review as N3). The share is a timer, not
+  arithmetic on `Date.now()` (n-2). A binding that failed is skipped by that isolate for
+  `SKIP_AFTER_FAILURE_MS` (10 s). A limiter brownout therefore makes one request per isolate wait up
+  to 50 ms every 10 s, where the first version added 3 s to every refresh and 2 s to every `/mcp`
+  request. The list's KV read has its own 100 ms (above).
+- **Logs** (m-2): an absent binding (`control: rate limiter <binding> is not bound; …`) and a failing
+  one (`… failed; …`, with the reason, never the key) are each logged once per isolate, not per
+  request. An absent one is logged whether or not a request comes to ask it (a wider one is not
+  asked while a narrower one is absent). The list logs the same way (`control: the OAuth
+  dead-credential list …`).
+- **`/healthz`** lists, after `ok`, `OAUTH_CLIENT_KEY: set|absent` (never its value), each
+  limiter as `bound`, `absent`, or `skipped` (failed in this isolate in the last 10 s), and
+  `OAUTH_DEAD_LIST` the same way. An absent limiter does not make it 503; the gateway reads only the
+  status.
+
+| Endpoint | Limiter fault | Why |
+|---|---|---|
+| `/oauth/register`, `/oauth/authorize` | open | they store nothing and reach no object: failing closed would refuse onboarding and protect nothing |
+| `/oauth/token` | open | the tag and the expiry still keep made-up and expired credentials from every object, and layer 2 still bounds writes exactly; failing closed would end every agent's access within the hour its token lasts |
+| `/oauth/revoke` | open | a revocation ends access; a limiter fault must not keep a grant alive the client wants ended |
+| introspection (OAuth bearers at `/mcp`) | open | read only; failing closed would refuse every OAuth request at `/mcp` |
+| the expiry check | cannot fail | a comparison in the Worker, under the tag |
+| the list of dead credentials | open | a KV fault must not refuse live credentials; the limits, the expiry and layer 2 still apply, and each isolate's own memory of dead credentials still holds |
+| the per-grant refresh limit | cannot fail open | it is a statement in the refresh's own transaction |
+
+That the bindings exist is the deploy's to make sure of ("Needed changes elsewhere", the gate), not
+something the Worker finds out request by request. Until the deploy creates them, every check is
+skipped as absent, logged once per isolate, and `/healthz` says `absent`. Every other test file runs
+without them, as such a deployment does.
+
+**The contract** (`contracts/oauth.ts`):
+- With the first version, additive within version 1 by COMPATIBILITY.md §4: the status
+  `rate_limited` (`RateLimited`) in `TokenResult` and `OAuthIntrospectionResult`, and
+  `OAUTH_LIMITS.refreshesPerGrantPerMinute`. The agent surface maps the status to a 429 with
+  `Retry-After` (`mcp/src/auth.ts`).
+- With the review's fixes: layout 2 of a credential's body (`CREDENTIAL_LAYOUT`, `BASE62`,
+  `credentialExpiresAt`). Its shape is unchanged and every version 1 reader reads it, so
+  `FORMATS['credential.oauth']` stays 1, and the deploy's format check (D69) has nothing to refuse
+  on a rollback.
+- With round 2 (contracts first; additive within version 1 by COMPATIBILITY.md §4, new response
+  fields): `RevokeResult`'s optional `dead` (absent from older objects: read as unknown, never as
+  dead), `OAuthGrantView.refreshesLastDay`, and `DEAD_INACTIVE_REASONS` with the promises the list
+  relies on (which answers mean dead for good). `test/golden/formats/rpc.oauth.v1.json` now shows
+  `dead: true` on the revocation sample; the previous release's Worker ignores the field, and this
+  one lists a revoked token only on `dead: true` (an older object's answer, without it, lists
+  nothing; read in `src/oauth-http.ts`, not tested against an older object). New format `kv.oauth-dead` 1, written and read by viz-control only (the
+  deploy's format records take it from `FORMATS`; an older release does not read the prefix).
 
 ### Audit log
 
@@ -434,7 +718,9 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
 - **Every statement names the tenant** (a test reads the source and checks; the one
   exception reads which tenant the object is bound to).
 - **Mutation, audit row and outbox rows commit in one transaction.** KV is written only
-  afterwards, from the outbox, in order, by one drain at a time.
+  afterwards, from the outbox, in order, by one drain at a time. (The Worker, outside any object,
+  writes one other kind of record: the list of dead OAuth credentials, `oauth-dead:`, which holds no
+  tenant state, only what an object answered; `src/deadlist.ts`, checked by `test/rules.test.ts`.)
 - **One alarm**, at the earliest of: an open proposal's expiry, a deleted dashboard's purge
   time, and, as a third deadline the task did not list, 30 s after a KV publication failed
   (and the OAuth deadlines above). It is deleted when none applies. The handler is idempotent.
@@ -495,7 +781,13 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
   The checks returned are validation, lint and the diff.
 - **A caller of `recordUsage`.** The shard does not know which key a batch came from.
 - **A reader of `revocation:<tenant>`**, and of every `limits` and `retention` field except
-  `active_series` and `metric_samples_days`.
+  `active_series`, `metric_samples_days`, `trace_days` and `log_days` (the janitor reads the last
+  three).
+- **A partial update of a settings section.** PUT replaces the section's value; a client sends
+  every field it wants kept (a retention field left out is a shortening, confirmed or refused).
+- **Replacing a stored pool map that edge refuses** (one published by an earlier control: an id
+  with `_`, or tenants `traces` and `logs` before D66). It is a pool change, refused with 409 until
+  the drain-and-handover protocol exists.
 - **Proposals to delete a dashboard**; accepting the rest of a proposal after a partial
   apply; extending a proposal's expiry; an owner on a proposal that creates a dashboard
   (set it after applying, `PUT …/owner`).
@@ -509,7 +801,24 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
   **Rule definitions**, which DESIGN §3.1 lists under `Tenant`, are not here.
 - **A test notification** when the webhook is saved, and a check that the URL answers.
 - **Grafana import** over HTTP (the dashboard package has the importer).
-- Rate limiting, metrics about this API, pruning of the audit log.
+- Rate limiting of the control API itself (`/api/v1/control/…`, API keys); OAuth's endpoints and
+  bearers are limited (D70). Metrics about this API, pruning of the audit log.
+- **The rate-limit bindings in a deployment** (D70): the Worker reads them, the deploy does not create
+  them yet and does not refuse a release without them ("Needed changes elsewhere"), so every
+  deployment today would run OAuth without layer 1 (logged once per isolate, `absent` in `/healthz`).
+  A WAF rate-limiting rule on `vis.bitcru.sh` (the only layer that saves the request charge of a
+  refused request) is recommended, not built. A per-network limit for OAuth bearers at `/mcp` is the
+  agent surface's (the network is known there, not in the entrypoint).
+- **A per-tenant "not before"** (D70 alternative (p), the second review's option (b)): a person's
+  switch that would end every credential of one tenant issued before a moment. Not built: the list
+  of dead credentials ends each stock after its first window without a person. To build if a stock
+  is ever seen used in a way the list does not stop.
+- **The list of dead credentials does not cover codes or layout 1 credentials** (codes die in the
+  Worker within 12 minutes and each needs an approval; layout 1 has no expiry to bound a record, and
+  none was issued in production), and nothing measures its KV latency or propagation on Cloudflare.
+- **A metric of grants collecting refresh tokens**: the grant view's `refreshesLastDay` and the
+  revocation's audit entry show it; no alert or metric is emitted (a log line would be sampled at
+  1% by the deploy's observability setting).
 - **Production deployment.** viz-control ran on Cloudflare only in two staged trials, both
   destroyed (`deploy/README.md`, "Trial on Cloudflare (2026-11-18)" and "Trial 2", 2026-11-19);
   it is mounted behind the gateway (`deploy/`), not in `app/`. The OAuth endpoints have not run on
@@ -519,36 +828,32 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
   false`. Also not built: a consent page and grants screen (above), OpenID Connect discovery, RFC
   7662 introspection over HTTP (introspection is an RPC only), the RFC 8252 any-port rule for
   loopback redirect URIs (redirect URIs match exactly; a client on a new port registers again), a
-  grace period for a refresh retried after a lost response (it counts as reuse), DPoP, and rate
-  limits on `/oauth/register`, `/oauth/authorize` and `/oauth/token` other than what stored state
-  bounds (registration stores nothing; approvals are bounded per tenant).
+  grace period for a refresh retried after a lost response (it counts as reuse), and DPoP. (Rate
+  limits on the OAuth endpoints: D70, above.)
 
 ## Verification
 
 ```
 npm install
-npm test             # 147 tests in 18 files, in workerd (at most 2 workers)
+npm test             # 222 tests in 24 files, in workerd (at most 2 workers)
 npx tsc --noEmit     # clean
-npm run mutants      # 93 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md)
+npm run mutants      # 195 mutants, in a copy outside git only (it refuses a work tree: AGENTS.md)
 npm run gen:openapi  # rewrite openapi.json from src/openapi.ts
 ```
 
 Measured here: vitest 5.1 in workerd, TypeScript 5.9, Node 22.23. The suite takes 11 to 75 s
 on a shared machine (75 s on a cold cache with the load average above 6). Last run
-2026-11-19, after the review of D44: 147 of 147 pass, `tsc` clean.
+2026-11-19, after the pool rule of D66 (`npx vitest run --maxWorkers=2`): 132 of 132 pass in 31 s,
+`tsc` clean.
 
-2026-11-19, the isolation fuzz test's false alarm (found on the development branch, where the
-fuzzer reached it at run 155 of 400 while the review of D44 was being ported there; not specific
-to any change): `isolation.test.ts`'s fuzz property failed once because B sent
-`var.env=<A's tenant id>` to `GET /dashboards/beta_dash?view=resolved`, and the resolved view's
-issue (`"<value>" given but not among the variable's values; ignored`) echoed B's own input, which
-the leak check read as A's tenant id. The check now removes exactly that echo, and only when the
-request carried that value; every other occurrence of A's tenant id, ids or marker still fails
-it. On `main` (measured here): 147 of 147 pass (`npx vitest run --maxWorkers=2`), `tsc` clean,
-`isolation.test.ts` alone 5 runs of 6 tests, 5 passes. Its teeth after the change: mutants 1 and 2
-(the tenant taken from `?tenant=`), run in a scratch copy whose unmutated suite passed 147 of 147,
-are still killed by `isolation.test.ts` (with `rules`, and `oauth-review` for 2); the copy's
-sources were afterwards equal to the tree's.
+2026-11-19, the review of D44 ported onto the development branch (with D66): 148 of 148 pass,
+`tsc` clean. The first run failed one test, `isolation.test.ts`'s fuzz property, on a false alarm:
+B sent `var.env=<A's tenant id>` to `GET /dashboards/beta_dash?view=resolved`, and the resolved
+view's issue (`"<value>" given but not among the variable's values; ignored`) echoed B's own input,
+which the leak check read as A's tenant id. The check now removes exactly that echo, and only when
+the request carried that value; every other occurrence of A's tenant id, ids or marker still fails
+it. Not specific to this change (the fuzzer reached it at run 155 of 400); five further runs of the
+file passed.
 
 **After the review of D44** (`design/reviews/d44-d52-d53-d60.md`; dispositions there):
 `test/oauth-review.test.ts`, 15 tests, and `test/forged-cost.test.ts`, 1. The entrypoint is
@@ -742,9 +1047,28 @@ What the tests establish:
   credential's tenant, and one log line, without request data).
 - **Health** (`http.test.ts`). `GET /healthz` without a credential is 200 `ok`, `HEAD` 200,
   `POST` 405; 503 naming `TENANT` or `CONFIG` when that binding is missing; only that path.
-- **Settings and audit** (`settings.test.ts`, 8 tests). KV shapes for retention, limits and
+- **Settings and audit** (`settings.test.ts`, 12 tests). KV shapes for retention, limits and
   pool; the published pool map is accepted by `shard/src/pool`'s routing; the refused pool
-  changes. Audit completeness: each of the 17 mutating routes is called once (the test
+  changes. Tenants `traces` and `logs` are provisioned, and their dedicated pools `tenant/traces`
+  and `tenant/logs` are refused (422, field `pool`, dry run and real), with no KV record, no
+  version and no audit entry; each can still take the shared pool. Ids that only resemble them
+  (`Traces`, `xlogs`, `traces-1`, `logs-traces-x`) get their dedicated pool. The oracle for every
+  pool is edge's own: `validBasePool` (`shard/src/pool.ts`, the function edge reads maps with) and
+  edge's `poolMap` reading the record control published, which routes on each map control
+  published and refuses each pool control refuses for the rule. Review M-5: for ten ids with `_`
+  (and `acme-prod`), `tenant/<id>` verbatim is refused naming `dedicatedPool(id)`, and
+  `dedicatedPool(id)` is accepted and routed on by edge; `acme_prod` and `acme-prod` get the same
+  pool; a shared pool outside `POOL_NAME` (`shared/c_1`, 127 characters) or ending in `/logs` is
+  refused here and answered 503 by edge as `DEFAULT_POOL`. Review B-1: the review's scenario (a PUT
+  naming only `metric_samples_days` over traces 365 and logs 400 days) is refused, dry run and
+  real, with `leftOut`, and the janitor's `readRetention` still reads 365 and 400; dropping one
+  field, a rollup tier left out, a signal set below the default for the first time, and the
+  confirmed replace. A property over 60 random PUT sequences (fast-check, fixed seed; days 1, 29,
+  30, 31 and 400 around the janitor's `DEFAULT_SIGNAL_DAYS`): judged by the janitor's own
+  `readRetention` and `parseRetention`, no PUT without `confirmShorter` shortens what the janitor
+  keeps, and every refusal names exactly the fields the janitor would shorten (plus a rollup tier
+  left out), so control and the janitor cannot drift apart. The first retention test now confirms
+  its first record (logs 14 and traces 7 days are shorter than the 30-day default). Audit completeness: each of the 17 mutating routes is called once (the test
   fails if the route table gains one it does not call) and adds exactly one entry; its dry
   run, every read, and refused or unchanged writes add none. Every non-GET method on the
   audit routes is 405, and `UPDATE` and `DELETE` on the table fail inside the object.
@@ -758,8 +1082,7 @@ What the tests establish:
   hostile strings), queries, headers and bodies never returns a 2xx for an id of A's.
   After each part a snapshot of A (keys, dashboards, specs, revisions, proposals and their
   reviews, settings, audit log, and A's six KV records) is unchanged, and no response to B
-  contains the marker, A's tenant id or any of A's ids, apart from B's own `var.env` value
-  echoed back in a resolved dashboard's issue when B sent A's tenant id as that value (below).
+  contains the marker, A's tenant id or any of A's ids.
 - **Durability** (`durability.test.ts`, 6 tests). The object is evicted after each of 12
   steps of a lifecycle and the tenant's state and alarm are identical afterwards. Eviction
   while 12 key creations are in flight: every acknowledged key exists and works at edge,
@@ -808,6 +1131,400 @@ What the tests establish:
 - **House rules** (`rules.test.ts`, 2 tests), read from the source: every SQL statement
   names the tenant; the audit table is only inserted into; KV is written only in the
   outbox drain; the Worker has one `idFromName`, on `identity.tenant`.
+
+### Rate limits in front of OAuth (D70)
+
+**Round 3: the third look's findings** (`design/reviews/d70-rate-limits-r3.md`, reject until R3-B1
+is fixed; fixed 2026-11-26). Runs (`npx tsc --noEmit && npx vitest run --maxWorkers=2` in
+`control/`): `tsc` clean; **222 of 222 in 24 files** (2026-11-26, 29 s). In `mcp/`: `npx tsc --noEmit` clean, `npx vitest run test/oauth.test.ts` 15 of 15 (the contract changed only in its documentation; the entrypoint mcp's tests run changed).
+
+| Finding | Disposition | Evidence |
+|---|---|---|
+| R3-B1 (blocker: a revocation under another client id lists a rotated refresh token of a live grant, so the owner's copy is refused in the Worker, reuse detection never runs and the thief keeps the grant) | **Fixed**, contract first: `RevokeResult.dead` no longer counts "rotated", and `revokeToken`'s branch for another client says dead only for a grant that has ended or an unrotated token that has expired (a rotated row past its own expiry is not dead either: inside the Worker's grace it still reaches reuse detection). The wider rule, nothing listed whose later presentation must still reach the object, is checked for every place that lists (`src/deadlist.ts` header, D70) | `test/ratelimit-review-r3.test.ts`: the review's attack, the owner's copy now reaches the object, the grant is revoked and the thief's token refused (also in a new isolate); the rotated-and-expired case. Mutants 190, 191 |
+| R3-M1 (major: the same path tells whether a refresh token is live) | **Fixed** by the same change, and by m-1 below: a live, a rotated and a listed (ended grant) refresh token all answer `[200, 200, 200, 429, 429]` | the two R3-M1 tests; mutant 192 |
+| m-1 (the list is read before any limit, so cycling more than 10,000 dead credentials forces a KV read per request) | **Fixed**: the per-credential limit first, then the list, then the fuse (`firstRefusal`'s `listed`). A listed credential spends its own allowance and never its tenant's fuse | the m-1 tests (3 KV reads for 10 replays in fresh isolates; the fuse counted once; at introspection `inactive` × 3 then `rate_limited`). Mutants 192–194 |
+| m-2 (one slow KV read switches the list off for the isolate for 10 s) | **Fixed**: a read over 100 ms times out its key only (not listed for 60 s in that isolate); a read that throws, which only a KV fault causes, still skips the isolate's reads for 10 s | `deadlist.test.ts`, the slow and the throwing read. Mutant 195 |
+| m-3 (the residual's conditions) | **Recorded** in D70: about a minute per stock; tripping a location's fuse with a stock of 1,200 needs at least 5 isolates there to meet all of it within the minute, one isolate a stock of 6,000 | modelled |
+| Production served OAuth without limits (the verdict's note) | **Recorded** in D70 and here: since 2026-11-19 (PR #8); "required before public exposure" was not met | |
+
+**Before and after.** `test/ratelimit-review-r3.test.ts` (8 tests) was run against a copy of
+`control/` and `contracts/` at `200f235`, the commit the review read: **6 of 8 fail** (the attack, the
+rotated-and-expired case, both R3-M1 tests and both m-1 tests); the 2 that pass there are controls
+(reuse detection with no probe, and a revocation by the client itself). Against this code, 8 of 8
+pass.
+
+**Tests changed deliberately**, each because it asserted what this round changes:
+- `ratelimit-review.test.ts` R1 and R2: `[400 × 13]` and `[200 × 13]` in round 2 are round 1's
+  `[400 × 3, 429 × 10]` and `[200 × 3, 429 × 10]` again (a listed credential spends its own allowance),
+  still with 0 and 1 object requests;
+- `ratelimit-review-r2.test.ts`, the new-isolate test: the listed token is now counted against its own
+  allowance (two requests there, the third 429), never the fuse; N2 now also asserts the dead token
+  reached its object once (the list is consulted while the narrow limiter is skipped);
+- `deadlist.test.ts`: the hanging read is now its own test (per-key timeout, the list stays `bound`),
+  apart from the throwing one (isolate skip).
+
+**`vitest.config.ts`** now hands the test plugin `wrangler.jsonc` without its `ratelimits`, which the
+deploy builder added there (Known risks): with them, every test file ran with production limits on
+placeholder namespaces, and 22 tests failed on the first run (registrations from the shared `none`
+key refused at 120, "absent" bindings present), none because of this change.
+
+**Mutants, round 3** (2026-11-26, in a copy of `control/` and `contracts/` from the shared tree
+and the other components at HEAD, in a scratch directory outside git; its unmutated suite passed 222
+of 222; machine load average 6–13 from other builders): the whole D70 set, 72 (114–135, 146–165,
+166–189 and this round's 190–195), and the review of D44's M-2 group, 7. **72 of 72 and 7 of 7
+killed.** Eight anchors that this round moved were re-pointed first (119, 122, 154, 168, 169, 170, 171,
+177); all ran. Afterwards the copy's `control/` and `contracts/oauth.ts` equalled the shared tree
+(only `scripts/mutants.mjs` differs, by a skip count for running in two parts). Not re-run: 1–101,
+104–106, 108–113, 136–145.
+
+| # | Mutant | Caught by (tests failing) |
+|---|---|---|
+| 190 | R3-B1: a rotated refresh token revoked by another client counts as dead again | ratelimit-review-r3 (2) |
+| 191 | R3-B1: a rotated refresh row past its own expiry, revoked by another client, counts as dead | ratelimit-review-r3 (1) |
+| 192 | R3 m-1: the list is read before the per-credential limit | ratelimit-review, ratelimit-review-r2, ratelimit-review-r3 (6) |
+| 193 | R3 m-1: the list is read after the tenant fuse | deadlist, oauth-cost, ratelimit, ratelimit-review-r2, ratelimit-review-r3 (15) |
+| 194 | R3 m-1: the list is not consulted while the narrow limiter is down | deadlist, oauth-cost, ratelimit-review-r2 (8) |
+| 195 | R3 m-2: one slow KV read switches the list off for the whole isolate again | deadlist (1) |
+
+**Round 2: the second review's findings** (`design/reviews/d70-rate-limits-r2.md`, approve with
+changes; fixed 2026-11-19). Runs (`npx tsc --noEmit && npx vitest run --maxWorkers=2` in `control/`):
+`tsc` clean; **214 of 214 in 23 files**, 31–43 s, machine load average 3–6 from other builders. In
+`mcp/` after the contract change: `npx tsc --noEmit` clean, `npx vitest run test/oauth.test.ts` 15
+of 15.
+
+| Finding | Disposition | Evidence |
+|---|---|---|
+| R2-M1 (fuse asked alone when the narrow limiter is skipped or absent) | **Fixed**: a wider key is asked only while every narrower one was checked (`firstRefusal`); absent bindings are still each logged once. While a narrow limiter is down, its fuse counts nothing in that isolate (D70 says so) | `ratelimit-review-r2.test.ts` N2 (hang, throw) and N2b: the victim is served and the fuse counted none of the 13 requests; before, 12 counted and the victim got 429. Mutant 166 |
+| R2-M2 (farmed refresh tokens trip the token fuse for 30 days after revocation; no per-tenant remedy; D70's "live tokens anyway" false for the token fuse) | **Fixed** by the list of dead credentials (the owner's decision over the residual; D70 (p), the per-tenant not-before, recorded and not chosen), the grant view's `refreshesLastDay`, and D70 rewritten: the false sentence corrected, the thief of an idle grant's token added, the remedy (revoke the grant) and the remaining window stated | N1 at `/oauth/token` and at `/oauth/revoke`, N1b (thief), a new isolate reading the list from KV with the record's expiration checked, 5 dead access tokens × 3 at introspection, the farming count in the grant view and the revocation's audit entry; `deadlist.test.ts`, 13 tests. Mutants 169–189 |
+| M-2 (carried: no deploy gate) | **Open**, the deploy's: restated in "Needed changes elsewhere" 3, with m-3's floor as 6 | none here |
+| m-1 (a slow narrow check eats the shared budget; the healthy fuse is blamed) | **Fixed**: each check has an even share of `CHECK_BUDGET_MS` as its own timer, and only a binding that overran its share is skipped | N3 in `ratelimit-review-r2.test.ts` (80/30 and 60/60 ms: the credential is skipped and the fuse not asked; 20/75 ms: the fuse is skipped, the credential bound; 30/30: both bound) and a share test in `ratelimit.test.ts`. Mutant 160 (re-anchored) |
+| m-2 (genuine expired credentials counted by network) | **Fixed**: answered as the object would, counted against nothing; a listed one too | `ratelimit-review-r2.test.ts` m-2 (10 + 10 expired from one network, then its budget whole); `ratelimit.test.ts`'s network test changed accordingly. Mutants 167, 168 |
+| m-3 (rollback below the fix once OAuth is public) | **Written** for the deploy: a `rollback_floors` rule keyed on a plain `OAUTH_PUBLIC` var, with evidence exports only this release has ("Needed changes elsewhere" 6) | none here |
+| m-4 (per-location fuse headroom) | **Recorded** with the numbers in D70 and above: two locations at the bearer fuse are 90–150% of one object, five at the token fuse 38–105% | modelled |
+| n-1 (who pays for Worker-hosted senders) | **Fixed** wording in D70 and `src/ratelimit.ts` | |
+| n-2 (`Date.now()` budget arithmetic) | **Gone**: the share is a timer | |
+
+**The reproductions, before and after.** `test/ratelimit-review-r2.test.ts` (14 tests) makes the
+review's N1, N1b, N2, N2b and N3 again, plus the variants this round had to close (the stock
+replayed at revocation and at introspection, a new isolate, the farming signal), each asserting that
+the victim is served. Run against a copy of `control/` and `contracts/` at `3f68591` (the code the
+review read, unchanged since `122229b`), with the same file, `vitest.config.ts` and `test/env.d.ts`:
+**13 of 14 fail** (N1: victim 429 "this tenant"; at revocation: 429; N1b: 429; new isolate: no KV
+record; introspection: `rate_limited`; farming: no field; N2: the fuse counted 12 and the victim got
+429; N2b: `rate_limited`; N3: `[bound, skipped]` for 80/30 and 60/60, `[bound, bound]` for 20/75;
+m-2: 429). The one that passes there is N3's 30/30 ms control, where nothing should change. Against
+this code: 14 of 14 pass.
+
+**Tests changed deliberately**, each because it asserted what this round changes:
+- `ratelimit.test.ts`:
+  - "each binding is logged once" now expects the narrowest binding of each chain logged once as
+    failing and the wider ones never asked (R2-M1); absent ones are still each logged once;
+  - "a binding that hangs takes the whole request's budget … tried by the next request" became "takes
+    only its own share; while it is skipped the wider binding is not asked at all" (R2-M1, m-1), and
+    a share test was added;
+  - "made-up credentials and bad requests from one network" no longer counts two expired credentials
+    by network (m-2): it presents three of each, uncounted, and two other bad requests;
+  - "the tenant fuse takes 12 ÷ 3 = 4 distinct unexpired credentials" spent the fuse with dead access
+    tokens, which are now listed after one request: it now spends it with four live refresh tokens
+    held at layer 2's limit (the object refuses them without calling them dead), and a new test shows
+    four dead credentials × 3 revocations and × 3 refreshes reach the object 4 times and the live
+    client is served.
+- `ratelimit-review.test.ts`: R1 was `[400 × 3, 429 × 10]` with 3 objects asked, now `[400 × 13]`
+  with none (its client's revocation listed the token); R2 was `[200 × 3, 429 × 10]`, now
+  `[200 × 13]` with one object request. A new test keeps the per-token key at revocation covered: a
+  live token revoked 13 times by another client (nothing changes, so it is never listed) is
+  `[200 × 3, 429 × 10]` and the victim is served (added after mutant 122 survived, below).
+- `oauth-review.test.ts`: revoking tagged unknown tokens at the object now answers `dead: true`.
+- `golden.test.ts`: `rpc.oauth`'s revocation sample has `dead: true`; a new golden file for
+  `kv.oauth-dead`, with the key's shape, the value and the expiration rule.
+- `oauth-cost.test.ts`: replays of dead credentials are split into the first (reaches the object,
+  lists it: one Worker KV write) and later ones (no object, nothing written; one KV read in a new
+  isolate), and the Worker's own KV reads and writes are counted (table below).
+- `rules.test.ts`: the list is the one KV writer outside the object's outbox (one `put`, under its
+  prefix, with an expiration, never a delete), and the rate limits and the list log fixed messages
+  only.
+
+`test/deadlist.test.ts`, 13 tests: what is listed (a refresh refused for its scope or resource is
+not, and one refused by layer 2 is not either, `ratelimit.test.ts`; at introspection `suspended` and `audience` are not and the token comes back,
+`unknown` is, and a new isolate answers it from KV; a live token revoked by another client is not,
+by its own client is); nothing written with less than 60 s left or for layout 1; one write per dead
+credential per isolate, also for 5 concurrent replays; one KV read per live token per isolate for 50
+introspections; the isolate's map holds at most 10,000 and drops the oldest; a KV read that throws or
+hangs is served within the budget, logged once, skipped for 10 s and shown `skipped` by `/healthz`; a
+failed write is logged once and the isolate still remembers; without `CONFIG` only the isolate
+refuses; keys carry the prefix and the tenant and never the credential.
+
+**What each OAuth endpoint costs, round 2** (`test/oauth-cost.test.ts` as changed; local workerd, one
+test file, sequential, three runs, the machine's load average 7.2–7.4; Worker plus object, not
+Cloudflare; no rate-limit bindings but in the last two rows; counts per request). The first replay
+of a dead credential reaches its object once and the Worker lists it (one KV write); every later
+replay is answered from the isolate's memory (no I/O) or, in a new isolate, from one KV read, and
+reaches no object. A live token at introspection, and each refresh, read the list once (a live
+access token then not again in that isolate for a minute). The rotated token presented again reads
+nothing: its own refresh a moment before left it remembered as not listed.
+
+| Per request | n | ms (3 runs) | Objects | Rows | Alarm writes | Object KV writes | Worker KV reads | Worker KV writes |
+|---|---|---|---|---|---|---|---|---|
+| `register` | 100 | 0.29–0.39 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `authorize page` | 100 | 0.21–0.31 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `token: forged code (no tag)` | 100 | 0.15–0.33 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `approve (control API, admin key)` | 40 | 9.50–11.35 | 0 | 17.1 | 2 | 1 | 0 | 0 |
+| `token: code exchange` | 40 | 3.90–4.88 | 1 | 9 | 2 | 0 | 0 | 0 |
+| `introspection: live token (entrypoint logic)` | 20 | 1.85–2.25 | 1 | 0 | 0 | 0 | 1 | 0 |
+| `introspection: live token (through the OAUTH binding)` | 20 | 1.55–2.00 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `token: refresh` | 20 | 4.50–6.05 | 1 | 9 | 2 | 0 | 1 | 0 |
+| `revoke: live access token` | 20 | 5.60–8.75 | 1 | 1 | 2 | 0 | 1 | 1 |
+| `token: rotated refresh token presented again (ends the grant; listed)` | 20 | 11.80–15.55 | 1 | 18.05 | 2 | 2 | 0 | 1 |
+| `token: first replay of a genuine refresh token whose grant ended (listed)` | 20 | 3.85–4.35 | 1 | 0 | 0 | 0 | 1 | 1 |
+| `token: replay of a listed refresh token (this isolate)` | 20 | 0.20–0.25 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `token: replay of a listed refresh token (a new isolate: read from KV)` | 20 | 1.00–1.20 | 0 | 0 | 0 | 0 | 1 | 0 |
+| `revoke: live refresh token (ends the grant; listed)` | 20 | 9.95–11.50 | 1 | 17.05 | 2 | 2 | 1 | 1 |
+| `revoke: replay of a listed token (this isolate)` | 20 | 0.10–0.20 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `introspection: first replay of a genuine token whose grant ended (listed)` | 20 | 3.95–4.30 | 1 | 0 | 0 | 0 | 1 | 1 |
+| `introspection: replay of a listed token (this isolate)` | 20 | 0.00–0.05 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `register, source limit asked and allowing` | 100 | 2.43–4.36 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `register, refused by the source limit` | 100 | 0.70–0.83 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+**Brownout, round 2** (`test/ratelimit-review.test.ts` R5: every limiter hangs; local workerd, three
+runs, load average about 8): the first refresh took 59–64 ms (its credential check's 50 ms share,
+and the fuse not asked), then 3–7 ms; introspections 56–58 ms, then 2–3 ms. After round 1 they were
+105–129 and 104–105 ms, then 14 and 2.
+
+**Mutants, round 2** (2026-11-19, in a copy of `control/` and `contracts/` from the shared tree and
+`dashboard edge engine janitor ledger mcp ruler shard compact flush` at the commit then current, in a
+scratch directory outside git, `node_modules` linked; its unmutated suite passed 213 of 213, and 214
+of 214 after the test added below; the machine's load average 3–9 from other builders). Run: the
+whole D70 set, `node scripts/mutants.mjs "rate limit (D70"` (66: 114–135, 146–165 and this round's
+166–189), and `"review M-2"` (7), because this round moved code those mutate.
+- Eight anchors no longer matched the source and were re-anchored before the run: 107, 128, 153,
+  154, 160 (now "each check gets the whole budget, not its share"), 164 (moved with this round's
+  edits), and **102 and 103, which had not matched since round 1**: their anchors named the token
+  endpoint and revocation as they were before `refusedHere` existed, so they would have been
+  reported `NOT APPLIED` and were not run then (1–113 were not re-run in round 1). All eight were run.
+- **65 of 66 killed in the first pass. 122 survived** ("revocation has no per-token key"): its old
+  killers revoked a dead token 13 times, which the list now stops after one request, so nothing
+  exercised the per-token key at revocation. The key still matters for a token that is not dead: a
+  test now revokes a live token 13 times as another client (nothing changes, so it is never listed)
+  and expects `[200 × 3, 429 × 10]`. Run again: **killed** (`ratelimit-review`). So **66 of 66**.
+- **7 of 7** of the review of D44's M-2 group killed.
+- The run was stopped once after 14 mutants (the machine was slow and the background limit is two
+  hours), the copy restored from the shared tree and checked green, and resumed with a skip count
+  added to the copy's script only; no mutant was run twice except 122.
+- The script's report named a failing file only if its name had no digit, so kills in
+  `ratelimit-review-r2` were counted but not always named in the first two parts; the regex is fixed
+  (`[a-z0-9-]+`), and the table names what the later parts printed.
+- Afterwards the copy's `control/src`, `control/test` and `contracts/oauth.ts` were compared with the
+  shared tree: equal (only `scripts/mutants.mjs` differs, by the skip count). Not re-run this round:
+  1–101, 104–106, 108–113, 136–145.
+
+**Runs after the review's fixes** (2026-11-19, `npx tsc --noEmit && npx vitest run --maxWorkers=2`
+in `control/`): `tsc` clean; 183 of 183 in 21 files, 46 s, with the machine's load average about 7–9
+from other builders' runs; the count includes the settings tests another builder is changing. 31
+of the tests are D70's:
+- `ratelimit.test.ts`: 19;
+- `ratelimit-review.test.ts`: 12;
+- `oauth-cost.test.ts`: 1, which measures as well as tests.
+
+In `mcp/`, after the contract change: `npx tsc --noEmit` clean, and `npx vitest run
+test/oauth.test.ts` 15 of 15. That suite runs control's real `OAuthIntrospection`, with its own
+`OAUTH_RL_BEARER`.
+
+**The review's reproductions, before and after** (`test/ratelimit-review.test.ts`). The review's R1
+to R5 are made again, scaled to spend the test bindings' limits, and each test asserts that the
+victim is served. The file also binds `OAUTH_RL_CLIENT` as the reviewed release did (per client id,
+3), so that R1b reaches the release it was found in.
+- **Before**: the same file, with the same `vitest.config.ts` and `test/env.d.ts`, was run in a
+  copy of `control/`, `contracts/` and their imports taken before any edit. **8 of 12 failed**:
+  - R1: the victim's refresh was 429 "this tenant".
+  - R1b: 429 "this client".
+  - R2: the victim's refresh was 429.
+  - R3 with expired tokens: they counted and reached the object.
+  - R3 at the token endpoint: 429.
+  - R4 from the Workers address: the 6th registration was 429.
+  - R4 with a genuine refresh from a spent network: 429 "your network".
+  - R5: refreshes took 3,013–3,031 ms and introspections 2,005–2,022 ms.
+- **The 4 that pass there**:
+  - the review's own R3 numbers (two dead tokens, 3 + 2 checks), which the fuse's ratio now absorbs;
+  - the header-less shared key, recorded, not changed;
+  - the two release skews.
+- **After**: 12 of 12 pass. R5 measured refreshes at 105, 129 and 14 ms, and introspections at 104,
+  105 and 2 ms (local workerd, limiters that never answer, machine load average about 6).
+
+`test/ratelimit-review.test.ts`, 12 tests:
+- **B-1, R1**: one dead refresh token sent 13 times with made-up client ids (the tenant fuse is 12).
+  Statuses are `[400 × 3, 429 × 10]`, it reaches the object 3 times, and the live client refreshes.
+- **B-1, R1b**: the same with the victim's own client id; the victim refreshes.
+- **B-1, R2**: one dead access token revoked 13 times, `[200 × 3, 429 × 10]`; the victim refreshes and
+  revokes.
+- **B-1, R3**:
+  - the review's two dead access tokens (3 + 2 checks): the live token is served;
+  - 5 expired access tokens × 3 checks are each `inactive` `expired`, with no object asked, and the
+    live token is served;
+  - 13 expired refresh tokens, 13 expired codes and 13 expired revocations ask no object, and the
+    live client refreshes.
+- **M-1, R4**:
+  - 10 registrations from `2a06:98c0:3600::103` are all 201, and a genuine refresh from it is 200;
+  - from a network whose 5 made-up refreshes spent its budget (the 6th is 429 "your network"), a
+    genuine refresh and revocation are served;
+  - recorded, unchanged: header-less requests share one key.
+- **m-1, R5**: with all limiters hanging, each refresh and introspection is under 600 ms, and the
+  third of each is under 100 ms.
+- **Skews**:
+  - Layout 1 credentials, minted by the previous release's code (`test/fixtures/
+    previous-release-oauth.ts`) with rows as it wrote them, are served by this release: introspected,
+    refreshed (the answer is layout 2), revoked. One past its row's expiry is `inactive` `expired` by
+    the object.
+  - The previous release's checks (its regex and tag computation, frozen in that fixture) accept the
+    code, access and refresh token this release issues. The object's RPCs serve them as that
+    release's Worker would call them.
+
+`test/ratelimit.test.ts`, 19 tests:
+- **Source**:
+  - Register and authorize (GET and HEAD) share one budget per network. The sixth counted request
+    is 429 with `Retry-After: 60`, JSON, `no-store`, CORS and `too_many_requests`, and a plain-text
+    page at `/oauth/authorize` with no request handle. Another network is served.
+  - Not counted: the metadata, an `OPTIONS` at each of the four endpoints, `GET /oauth/register` and
+    `POST /oauth/authorize`.
+  - A refused registration pulls nothing from its body stream.
+  - IPv6 counts by /64 and then /48: after 5 from one /64 that /64 is refused, the /48 has counted 5,
+    three more from another /64 of it pass, and the next is refused by the /48. Another /48 is
+    served.
+  - IPv4-mapped addresses count as IPv4. A missing or unreadable header is one shared key (8 bad
+    inputs). The Workers address, however written, is no key; its neighbour is.
+- **Token and revocation by network**:
+  - From one network, 5 requests the Worker refuses by itself (a made-up refresh token and a made-up
+    revocation, a missing `client_id`, an expired refresh token, an expired revocation) ask no
+    object. The sixth made-up request is 429 "your network" without "Nothing was read".
+  - A genuine refresh and a genuine revocation from the same network are then served and reach the
+    object.
+- **Per credential, then the fuse**:
+  - A live refresh token that layer 2 refuses, retried, reaches the object 3 times. Then come five
+    429s "this code or token" that ask no object. Another client refreshes, and once the grant's
+    minute has passed the refused token refreshes.
+  - The fuse:
+    - 20 made-up and 20 expired credentials of each kind naming tenant X ask no object and count
+      nothing;
+    - four dead credentials × 3 then fill the fuse of 12, each one's fourth request being refused at
+      its own allowance;
+    - X's live client is then 429 "this tenant", before the object;
+    - tenant Y is served.
+- **Introspection**:
+  - One token's flood is `rate_limited` before the object after 3.
+  - Three more tokens spend 9, so the fuse of 12 then refuses a fifth token.
+  - Another tenant is served.
+  - 30 made-up and 30 expired tokens count nothing and ask no object, expired ones as `expired`.
+- **Layout 2**:
+  - The code, access and refresh token of a real flow carry the marker, and an expiry no earlier than
+    their rows' (less a few seconds for the code, minted before its row's clock) and less than a
+    minute later.
+  - The encoding is pinned with fixed inputs: `AAAA`, `AAAB`, `AABA`, `ALa7` for 2026-12-01T12:34:05Z,
+    clamped to `9999`.
+  - A minted credential decodes to its minute, and the tag covers the expiry: changing one of its
+    characters breaks the tag.
+  - Layout 1 and non-credentials carry none. `B62` equals the contract's `BASE62`.
+  - Grace: a token 55 s past its expiry still goes to the object; one 120 s past does not.
+- **Fails open**:
+  - With the bindings absent, throwing, rejecting, or answering `{ ok: true }`, every endpoint and
+    introspection serve, twice.
+  - Each of the six bindings is logged exactly once per case ("is not bound" or "failed"), not per
+    request.
+  - Hanging: the first register and introspection give up within the budget, the second pair skips
+    the failed bindings and the third pair takes under 100 ms. `/healthz` then says `skipped`.
+- **One budget per request**: with the credential and tenant limiters hanging, the first refresh
+  calls only the first, and the second refresh tries the second.
+- **`/healthz`**: `ok`, `OAUTH_CLIENT_KEY: set` (never the value), each limiter `bound` or `absent`,
+  still 200; `absent` when the key is.
+- **Placement**: neither `control/wrangler.jsonc` nor `mcp/wrangler.jsonc` sets `placement`.
+- **Reset**: a real binding with a 10 s window refuses at its limit and serves again in the next
+  window.
+- **Exact per-grant limit**, unchanged from the first version:
+  - After the exchange and 5 refreshes, the sixth refresh in the minute is 429 with `Retry-After`
+    between 1 and 60. It writes no row and no alarm, and does not spend the token.
+  - Another grant of the same tenant is served, and with the grant's tokens dated back 61 s the same
+    token refreshes.
+  - A rotated refresh token presented while the grant is at its limit still ends the grant (reuse
+    detection first).
+
+**Does the test runner have the binding?** Yes. `@cloudflare/vitest-plugin` 1.8.4 passes miniflare's
+`ratelimits` option through, and miniflare 5.20261117.0-beta implements it: a SQLite-backed object
+per namespace, windows aligned to the clock, exact counts, and a refused call does not count, as on
+Cloudflare.
+- `vitest.config.ts` declares seven such bindings under test names with small limits. The tenant
+  fuses are 4 times the per-credential limits, as in production they are many times them.
+- The two rate-limit test files put them in place of the `OAUTH_RL_*` bindings in the environment
+  they hand the Worker. Only limiters that fail are stubs.
+- Every other test file runs without the bindings.
+
+**Before the review** (the first version, for the record): 164 of 164 in 20 files. 13 tests were
+that change's; 22 of 22 mutants were killed.
+
+**What each OAuth endpoint costs, measured here** (`test/oauth-cost.test.ts`; local workerd, one test
+file, sequential; three runs before D70, on the unchanged tree, three after its first version, the
+machine's load average 4–8, and three after the review's fixes, load average 8.6–9.4; Worker plus
+object, not Cloudflare). Rows are as the object's SQLite counts them
+(`rowsWritten`, indexes included); each `setAlarm` or `deleteAlarm` is billed as a row written too.
+
+| Per request | n | Before D70: ms (3 runs) | D70 first version: ms (3 runs) | After the review's fixes: ms (3 runs) | Objects | Rows | Alarm writes | KV writes |
+|---|---|---|---|---|---|---|---|---|
+| `POST /oauth/register` | 100 | 0.18–0.22 | 0.22–0.41 | 0.32–0.38 | 0 | 0 | 0 | 0 |
+| `GET /oauth/authorize` (the page) | 100 | 0.23–0.26 | 0.25–0.52 | 0.27–0.32 | 0 | 0 | 0 | 0 |
+| `/oauth/token`, made-up code (no tag) | 100 | 0.16–0.20 | 0.28–0.33 | 0.27–0.37 | 0 | 0 | 0 | 0 |
+| approve (control API, a person's admin key) | 40 | 11.70–25.48 | 12.43–14.10 | 12.55–27.60 | not counted (the API's path) | 17.1 | 2 | 1 |
+| `/oauth/token`, code exchange | 40 | 6.08–8.10 | 5.83–6.40 | 6.38–8.63 | 1 | 9 | 2 | 0 |
+| `/oauth/token`, refresh | 20 | 5.75–7.85 | 4.30–8.35 | 3.70–7.45 | 1 | 9 | 2 | 0 |
+| `/oauth/revoke`, live access token | 20 | 3.20–4.80 | 2.65–3.55 | 2.35–7.15 | 1 | 1 | 2 | 0 |
+| `/oauth/token`, rotated refresh token again (ends the grant) | 20 | 14.10–28.80 | 9.65–31.00 | 10.15–17.10 | 1 | 18.1 | 2 | 2 |
+| `/oauth/revoke`, live refresh token (ends the grant) | 20 | 19.65–23.10 | 10.65–17.10 | 9.65–20.35 | 1 | 17.1 | 2 | 2 |
+| `/oauth/token`, replay of a genuine refresh token, grant ended | 20 | 1.10–2.10 | 1.00–1.65 | 1.60–3.30 | 1 | 0 | 0 | 0 |
+| `/oauth/revoke`, replay of a genuine token, grant ended | 20 | 0.85–1.45 | 0.95–1.20 | 0.80–1.15 | 1 | 0 | 0 | 0 |
+| introspection, live token (the entrypoint's logic) | 20 | 0.90–1.50 | 0.90–1.35 | 0.95–1.35 | 1 | 0 | 0 | 0 |
+| introspection, live token (through the `OAUTH` binding) | 20 | 1.40–3.15 | 1.60–1.75 | 1.20–1.45 | 1 | 0 | 0 | 0 |
+| introspection, replay of a genuine token, grant ended | 20 | 0.80–1.45 | 0.75–1.80 | 0.50–0.70 | 1 | 0 | 0 | 0 |
+| register with the source limit asked and allowing (miniflare's binding) | 100 | | 2.13–3.96 | 2.15–4.29 | 0 | 0 | 0 | 0 |
+| register refused by the source limit (miniflare's binding) | 100 | | 0.62–0.99 | 0.61–0.88 | 0 | 0 | 0 | 0 |
+
+The two "after" columns have no bindings but those two rows (as a deployment without them); the
+refresh row includes the per-grant count, one read; since the review's fixes, every row with a
+genuine credential also decodes its expiry (four characters, no I/O). A "replay" row's credential is
+dead but not yet expired, so it still reaches its object; an expired one is refused in the Worker
+like a made-up one (`test/ratelimit.test.ts`). The limiter rows are miniflare's implementation, which
+writes a SQLite row per allowed call: an upper bound here, not what Cloudflare's locally cached count
+costs. The ranges overlap before and after; the machine is shared, so differences under about 2x are
+noise.
+
+**Modelled billing per request** (Cloudflare list prices as training knowledge, not read here:
+Workers $0.30 a million requests and $0.02 a million CPU-ms; Durable Objects $0.15 a million
+requests, $1.00 a million rows written, $12.50 a million GB-s; KV $5.00 a million writes; a
+service-binding call is not billed as a request): anything without a genuine credential, about
+$0.30–0.31 a million (the gateway's request; refused or not); a replay of a genuine credential, about
+$0.45 a million (plus an object request); a refresh or exchange, about $11.5 a million (11 billed
+rows); an approval, about $24 a million. A client looping on refresh at 1 a second would cost about
+$1 a day per grant and keep 86,400 rotated rows a day; at the exact limit, 6 a minute, about $0.10 a
+day and 8,640 rows. Settled only by billing on Cloudflare (the analytics API), for a stage with the
+bindings.
+
+**Neighbours**: `mcp/` imports this Worker and the entrypoint in its tests and uses the contract:
+`npx tsc --noEmit` clean there, and `npx vitest run test/oauth.test.ts` 12 of 12 (2026-11-19).
+
+### Review of spans and logs: retention and pools (B-1, M-5)
+
+2026-11-19, after `design/reviews/signals-end-to-end.md` B-1 and M-5 (D63 and D66 revised):
+`npx vitest run --maxWorkers=2` **164 of 164** in 20 files (settings 12, three of them new), `npx
+tsc --noEmit` clean. The suite imports the janitor's `readRetention`, `parseRetention` and
+`DEFAULT_SIGNAL_DAYS` (and, through them, compaction and flush sources, for the test only) and
+edge's `poolMap`, so the oracles are the real readers.
+
+The review's reproductions, bundled with esbuild from copies of the tree before and after
+(`retention-replace.mjs`, `pool-underscore.mjs`, plus two of mine for the sibling cases):
+
+| Case | Before | After |
+|---|---|---|
+| `{metric_samples_days: 60}` over traces 365, logs 400, unconfirmed | accepted; the janitor then keeps traces and logs 30 days | 422 `confirmation-required`, `log_days: 400 → 30 (left out: the default)`, `trace_days: 365 → 30 …` |
+| `trace_days: 7` added to a stored `{metric_samples_days: 45}`, unconfirmed | accepted (no stored field to compare) | 422, `shortened: ["trace_days"]` |
+| `log_days: 1` as a tenant's first record, unconfirmed | accepted | 422, `shortened: ["log_days"]` |
+| tenant `acme_prod`, pool `tenant/acme_prod` | accepted, published; edge: 503 for every write | 422, naming `tenant/acme-prod` |
+| tenant `acme_prod`, pool `tenant/acme-prod` | 422 (not its own pool) | accepted; edge routes on it |
+| shared pool `shared/c_1` | accepted, published; edge: 503 | 422, fix: rename `DEFAULT_POOL` |
 
 ### Mutation checks
 
@@ -936,24 +1653,35 @@ first run, before a container restart, did not report, so this is their only res
 | 91 | oauth: a grant's key can be rotated through the keys API | oauth (1) |
 | 92 | oauth: introspection ignores the approver's key | oauth (1) |
 | 93 | oauth: a credential naming an unprovisioned tenant creates storage for it | oauth (1) |
-| 94 | review M-1: `OAuthIntrospection` answers any caller (`props.caller` not checked) | oauth-review (1) |
-| 95 | review M-1: `invoke` accepts an identity without a key, as the caller states it | oauth-review (1) |
-| 96 | review M-1: a grant whose approver is not a key counts as live (the approver check fails open) | oauth-review (1) |
-| 97 | review M-1: `approve` accepts an approver that is not a key | oauth-review (1) |
-| 98 | review M-2: the token endpoint asks the object without checking the tag | forged-cost, oauth-review (4) |
-| 99 | review M-2: revocation asks the object without checking the tag | forged-cost, oauth-review (3) |
-| 100 | review M-2: `OAuthIntrospection` asks the object without checking the tag | forged-cost, oauth-review (3) |
-| 101 | review M-2: any credential of the right shape passes the tag check | forged-cost, oauth-review (5) |
-| 102 | review M-2: the token endpoint re-arms the alarm after a request that wrote nothing | oauth-review (1) |
-| 103 | review M-2: revocation re-arms the alarm after a request that wrote nothing | oauth-review (1) |
-| 104 | review M-2: a request that wrote something does not re-arm the alarm or publish (the fix overdone) | oauth-review, oauth (3) |
-| 105 | review m-1: an approver key's expiry is no alarm deadline | oauth-review (1) |
-| 106 | review m-2: a body without `Content-Length` is read whole before its size is checked | oauth-review (1) |
-| 107 | review m-3: a redirect URI may carry non-ASCII (bidirectional, invisible) characters | oauth-review (1) |
-| 108 | review m-5: the approval warns to approve only what one started for loopback redirects only | oauth-review (1) |
-| 109 | review m-5: the authorize page warns for loopback redirects only | oauth-review (1) |
+| 94 | pool: a pool ending in `/traces` or `/logs` is published (D66) | settings (1) |
+| 95 | pool: only `/traces` is refused, `/logs` is published | settings (1) |
+| 96 | pool: any pool containing a derived signal's name is refused (too broad) | settings (1) |
+| 97 | pool: the suffix is compared without case (too broad) | settings (1) |
 
-**94–109** (the review of D44, `design/reviews/d44-d52-d53-d60.md`) were run on 2026-11-19 in a
+**94–97** (D66) were run on 2026-11-19 in a copy in a scratch directory outside git, taken from the
+shared tree after its suite passed there (132 of 132) and checked green in the copy (132 of 132):
+`node scripts/mutants.mjs "pool:"`, **4 of 4 killed**, each by the new settings test alone.
+Afterwards the copy's `control/src` and `contracts/` were compared with the shared tree byte for
+byte: equal. 1–93 were not re-run in this change.
+
+| 98 | review M-1: `OAuthIntrospection` answers any caller (`props.caller` not checked) | oauth-review (1) |
+| 99 | review M-1: `invoke` accepts an identity without a key, as the caller states it | oauth-review (1) |
+| 100 | review M-1: a grant whose approver is not a key counts as live (the approver check fails open) | oauth-review (1) |
+| 101 | review M-1: `approve` accepts an approver that is not a key | oauth-review (1) |
+| 102 | review M-2: the token endpoint asks the object without checking the tag | forged-cost, oauth-review (4) |
+| 103 | review M-2: revocation asks the object without checking the tag | forged-cost, oauth-review (3) |
+| 104 | review M-2: `OAuthIntrospection` asks the object without checking the tag | forged-cost, oauth-review (3) |
+| 105 | review M-2: any credential of the right shape passes the tag check | forged-cost, oauth-review (5) |
+| 106 | review M-2: the token endpoint re-arms the alarm after a request that wrote nothing | oauth-review (1) |
+| 107 | review M-2: revocation re-arms the alarm after a request that wrote nothing | oauth-review (1) |
+| 108 | review M-2: a request that wrote something does not re-arm the alarm or publish (the fix overdone) | oauth-review, oauth (3) |
+| 109 | review m-1: an approver key's expiry is no alarm deadline | oauth-review (1) |
+| 110 | review m-2: a body without `Content-Length` is read whole before its size is checked | oauth-review (1) |
+| 111 | review m-3: a redirect URI may carry non-ASCII (bidirectional, invisible) characters | oauth-review (1) |
+| 112 | review m-5: the approval warns to approve only what one started for loopback redirects only | oauth-review (1) |
+| 113 | review m-5: the authorize page warns for loopback redirects only | oauth-review (1) |
+
+**98–113** (the review of D44, `design/reviews/d44-d52-d53-d60.md`) were run on 2026-11-19 in a
 copy of the whole tree in a scratch directory outside git, after its unmutated suite passed 147 of
 147 there (`node scripts/mutants.mjs "review"`): **16 of 16 killed, first run**. They were run a
 second time, with the same result, because the first run's report named no files: the runner's
@@ -962,8 +1690,8 @@ mutants whose text this change moved were brought up to date and run again: 2 ("
 a request parameter, and the Tenant object trusting what it is told": the object now checks every
 identity's key, so trusting means taking the caller's word for the key's subject, kind and scopes)
 **killed** by isolation, oauth-review and rules (4); 88 ("a code stored in clear, not hashed": `p.code!`)
-**killed** by oauth (1). 102 and 103 are each caught by one test only, the one that calls the
-object directly with tagged but unknown credentials: through HTTP the tag check (98, 99) stops a
+**killed** by oauth (1). 106 and 107 are each caught by one test only, the one that calls the
+object directly with tagged but unknown credentials: through HTTP the tag check (102, 103) stops a
 forged credential first. 1, 3–87 and 89–93 were not re-run. The copy's `src/`, `scripts/`, `test/`
 and `contracts/` were compared with the worktree's afterwards: equal, but for one comment line in
 `contracts/oauth.ts` and one table row in `contracts/README.md`, written after the copy was taken.
@@ -979,6 +1707,145 @@ Mutant 9 is the closest faithful form of "audit entry skipped on failure then re
 design allows: the audit row cannot be skipped separately, because it is in the same
 transaction as the change. The test that pins it: a create that is refused after its first
 insert, then retried, yields one dashboard and one entry.
+
+| # | Mutant | Caught by (tests failing) |
+|---|---|---|
+| 114 | rate limit (D70): registration and the authorization page do not ask the source limit | oauth-cost, ratelimit, ratelimit-review (8) |
+| 115 | rate limit (D70): registration reads its body before the source limit | oauth-review, ratelimit (2) |
+| 116 | rate limit (D70): an IPv6 source is counted by its whole address, not its /64 | ratelimit (1) |
+| 117 | rate limit (D70): the source is taken from `X-Forwarded-For`, a header the client writes | oauth-cost, ratelimit, ratelimit-review (7) |
+| 118 | rate limit (D70): the token endpoint counts a credential before its tag is checked (a made-up one spends the tenant's fuse) | ratelimit, ratelimit-review (6) |
+| 119 | rate limit (D70) B-1: the narrow key at the token endpoint is the presented `client_id` again | ratelimit-review (2) |
+| 120 | rate limit (D70) B-1: the tenant fuse is asked before the credential (one credential spends it) | ratelimit, ratelimit-review (5) |
+| 121 | rate limit (D70): the token endpoint and revocation have no per-tenant fuse | ratelimit (3) |
+| 122 | rate limit (D70) B-1: revocation has no per-token key (each request a fresh one) | ratelimit, ratelimit-review (2); round 2: **survived** the first pass, killed after a test was added: ratelimit-review (1) |
+| 123 | rate limit (D70): introspection has no per-token limit | ratelimit (3) |
+| 124 | rate limit (D70): introspection has no per-tenant fuse | ratelimit (2) |
+| 125 | rate limit (D70): introspection counts a token before its tag is checked (a made-up one spends the tenant's fuse) | ratelimit, ratelimit-review (5) |
+| 126 | rate limit (D70): a bearer over its limit is told its token is inactive (the client discards it) | ratelimit (1) |
+| 127 | rate limit (D70): a limiter that fails, fails closed | ratelimit, ratelimit-review (4) |
+| 128 | rate limit (D70): an absent limiter fails closed | forged-cost, golden, isolation, oauth, oauth-cost, oauth-review, ratelimit, ratelimit-review, settings (70) |
+| 129 | rate limit (D70): a limiter call has no time limit (a hung limiter hangs every OAuth request) | ratelimit, ratelimit-review (3) |
+| 130 | rate limit (D70): the refusal carries no `Retry-After` | ratelimit (8) |
+| 131 | rate limit (D70): the refusal uses an error code clients do not know (`rate_limited`) | ratelimit (8) |
+| 132 | rate limit (D70): refreshes per grant are not limited in the object | ratelimit (3) |
+| 133 | rate limit (D70): the per-grant limit is checked after the presented token is spent | ratelimit (2) |
+| 134 | rate limit (D70): the per-grant limit is checked before reuse detection (a rotated token at the limit no longer ends the grant) | ratelimit (2) |
+| 135 | rate limit (D70): the per-grant limit counts every grant of the tenant (one loop refuses the others) | oauth-cost, ratelimit (4) |
+
+**114–135** (rate limits in front of OAuth, D70) were first run with D70's first version (22 of 22
+killed). After its review, 114–129 were rewritten for the code as changed (the keys, the order, the
+budget) and 146–165 added below; 130–135 (the refusal and layer 2) are unchanged. Positions in
+`scripts/mutants.mjs` are now the table's numbers (counted by evaluating the list); the review's
+mutants were appended after 136–145 so that no other mutant moved. All 42 were run on 2026-11-19 in
+a copy of `control/`, `contracts/`, `edge/src`, `shard/src`, `ruler/src`, `mcp/src` (and
+`mcp/wrangler.jsonc`), `janitor/src`, `compact/src`, `flush/src` and `dashboard/` in a scratch
+directory outside git, after its unmutated suite passed 183 of 183 there (`node scripts/mutants.mjs
+"rate limit (D70"`, with the machine's load average 6–10 from other builders' runs): **40 of 41
+killed in the first run.** The survivor was 158 ("no grace"): the test computed its two
+credentials' expiries from `EXPIRY_GRACE_MS` itself, so with the constant at 0 its inputs moved
+with it. The test now uses whole-minute expiries fixed in the test (one 0–60 s ago, one 60–120 s ago).
+Run again: **killed**. 129 ("no time limit"), added after the run began, was run on its own:
+**killed**. So **42 of 42**. Afterwards the copy's `control/src` and `contracts/` were compared with
+the worktree's: equal; `control/test` differed only in that grace test, which was copied in before
+the second run. 1–113 and 136–145 were not re-run in this change.
+
+| # | Mutant | Caught by (tests failing) |
+|---|---|---|
+| 136 | signals review B-1: shortening is judged only on the fields both values name (the fix undone) | settings (3): the first retention test, "a field left out returns to its default…", the property |
+| 137 | signals review B-1: a field left out counts as unchanged (a PUT that drops `trace_days` or `log_days` passes) | settings (2): "a field left out…", the property |
+| 138 | signals review B-1: a signal set for the first time is not compared with its default | settings (3): the first retention test, "a field left out…", the property |
+| 139 | signals review B-1: control's signal default is 29 days, the janitor's 30 (they drift: shortenings pass) | settings (2): "a field left out…", the property |
+| 140 | signals review B-1: control's signal default is 31 days, the janitor's 30 (they drift: lengthenings refused) | settings (2): "a field left out…", the property |
+| 141 | signals review B-1: a rollup tier that was set and is left out passes | settings (1): "a field left out…" |
+| 142 | signals review M-5: the dedicated pool is `tenant/<id>` verbatim, with its `_` (edge refuses it) | settings (1): "the dedicated pool is dedicatedPool(tenant)…" |
+| 143 | signals review M-5: only the derived suffixes are checked, not `POOL_NAME` (D66 as first built) | settings (1): the same |
+| 144 | signals review M-5: the shared base-pool rule drops `POOL_NAME` (`shard/src/pool.ts`) | settings (1): the same |
+| 145 | signals review M-5: `dedicatedPool` keeps `_` (`shard/src/pool.ts`) | settings (1): the same |
+
+**136–145** (review B-1 and M-5 of `design/reviews/signals-end-to-end.md`; positions 136–145 in
+`scripts/mutants.mjs`, counted by evaluating the list) were run on 2026-11-19 in a copy of
+`contracts/`, `control/`, `janitor/`, `shard/`, `edge/`, `compact/`, `flush/`, `ledger/`,
+`publisher/`, `dashboard/`, `ruler/src`, `mcp/src` and `engine/wasm` in a scratch directory outside
+git, after its unmutated suite passed 164 of 164 there (`node scripts/mutants.mjs "signals review"`):
+**10 of 10 killed, first run.** The run of 142 also failed `ratelimit.test.ts` once; that file's
+windows are timed, and a second run against `settings.test.ts` alone named the settings test, so
+142 counts as killed by settings only. The anchors of **94–97** (D66) moved with M-5: the gate is now
+`validBasePool`, so 94 removes the call in `src/ops-settings.ts` and 95–97 break the shared function
+in `shard/src/pool.ts` (only `/traces`; `includes`; case-blind). Run again in the same copy: **4 of 4
+killed** (94, 95: the D66 test and the M-5 test; 96, 97: the D66 test). 31 ("shortening retention
+needs no confirmation") was run again: **killed** by settings (3). The test names above come from a
+second run of each against `settings.test.ts` alone, with the same results. Afterwards the copy's
+`control/src`, `control/test`, `control/scripts/mutants.mjs`, `janitor/src`, `janitor/test`,
+`shard/src`, `shard/test` and `edge/src/route.ts` were compared with the worktree's: equal. After
+that, only the description of `PUT /settings/{section}` in `src/openapi.ts` (and the generated
+`openapi.json`) changed; no mutant touches it, and the suite passed again. 1–30, 32–93 and
+98–135 were not re-run.
+
+| # | Mutant | Caught by (tests failing) |
+|---|---|---|
+| 146 | rate limit (D70) m-6: no /48 key (one host's routed /48 is 65,536 budgets) | ratelimit (2) |
+| 147 | rate limit (D70) M-1: the token endpoint counts every request's network again, genuine credentials included | ratelimit, ratelimit-review (2) |
+| 148 | rate limit (D70) M-1: revocation counts genuine tokens by network | ratelimit, ratelimit-review (2) |
+| 149 | rate limit (D70) M-1: the Workers address is counted (anyone on Workers refuses every Worker-hosted client) | ratelimit, ratelimit-review (2) |
+| 150 | rate limit (D70) M-1: a request the token endpoint refuses by itself is not counted by network | ratelimit, ratelimit-review (2) |
+| 151 | rate limit (D70) m-3: a CORS preflight of the authorization page is counted | ratelimit (1) |
+| 152 | rate limit (D70) B-1: the bearer fuse is asked before the token | ratelimit (1) |
+| 153 | rate limit (D70) B-1: an expired code or refresh token is not refused at the token endpoint | ratelimit, ratelimit-review (4) |
+| 154 | rate limit (D70) B-1: an expired token is not refused at revocation | ratelimit, ratelimit-review (3) |
+| 155 | rate limit (D70) B-1: an expired access token is not refused at introspection | ratelimit, ratelimit-review (3) |
+| 156 | rate limit (D70) B-1: credentials are minted without an expiry (layout 1) | ratelimit, ratelimit-review (8) |
+| 157 | rate limit (D70) B-1: the expiry is rounded down (the Worker could refuse a live credential early) | ratelimit (3) |
+| 158 | rate limit (D70) B-1: no grace for a Worker clock ahead of the object's | ratelimit (1) |
+| 159 | rate limit (D70) B-1: an access token carries its issue time as its expiry (refused a minute after issue) | ratelimit (1) |
+| 160 | rate limit (D70) m-1: each check gets its own budget (a request's waits add up). Since round 2: each check gets the whole budget, not its share (a slow check is not the one blamed) | ratelimit (1); round 2: ratelimit, ratelimit-review-r2 (4) |
+| 161 | rate limit (D70) m-1: a failed binding is not skipped (every request waits for it) | ratelimit, ratelimit-review (3) |
+| 162 | rate limit (D70) m-1: the budget is 1 s, as before the review | ratelimit-review (1) |
+| 163 | rate limit (D70) M-2: an absent limiter is logged on every request | ratelimit (1) |
+| 164 | rate limit (D70) M-2: an absent limiter is not logged | ratelimit (1) |
+| 165 | rate limit (D70) M-2: `/healthz` does not report the limiters | ratelimit (2) |
+
+**146–165** (the review of D70, `design/reviews/d70-rate-limits.md`: each undoes one fix of B-1, M-1,
+M-2, m-1, m-3 or m-6) ran in the same run as 114–135, above. All of 114–135 and 146–165 ran again in
+round 2 with 166–189 ("Mutants, round 2", under "Rate limits in front of OAuth (D70)" in
+"Verification"): 65 of 66, then 66 of 66.
+
+**166–189** (the second review of D70, `design/reviews/d70-rate-limits-r2.md`: each undoes one fix of
+R2-M1, R2-M2 or m-2, or one property of the list of dead credentials), 2026-11-19: **24 of 24
+killed** in the round 2 run.
+
+| # | Mutant | Caught by (tests failing) |
+|---|---|---|
+| 166 | R2-M1: a wider key is asked after a narrower one was skipped (the fuse alone counts a dead credential again) | ratelimit, ratelimit-review-r2 (7) |
+| 167 | R2 m-2: an expired refresh token or code is counted against its network again | ratelimit, ratelimit-review-r2 (2) |
+| 168 | R2 m-2: an expired token at revocation is counted against its network again | ratelimit, ratelimit-review-r2 (2) |
+| 169 | R2-M2: the token endpoint does not consult the list | deadlist, oauth-cost, ratelimit, ratelimit-review, ratelimit-review-r2 (8) |
+| 170 | R2-M2: revocation does not consult the list | oauth-cost, ratelimit, ratelimit-review, ratelimit-review-r2 (5) |
+| 171 | R2-M2: introspection does not consult the list | oauth-cost, ratelimit-review-r2 (2) |
+| 172 | R2-M2: the token endpoint does not list a refresh token its object calls dead | deadlist, oauth-cost, ratelimit-review-r2 (6) |
+| 173 | R2-M2: revocation ignores the object's `dead` (a stock replayed at `/oauth/revoke` is never listed) | deadlist, golden, oauth-cost, ratelimit, ratelimit-review, ratelimit-review-r2 (7) |
+| 174 | R2-M2: introspection does not list a token its object calls dead | deadlist, oauth-cost, ratelimit-review-r2 (5) |
+| 175 | R2-M2: introspection lists a suspended or wrong-audience token (it would not come back) | deadlist (1) |
+| 176 | R2-M2: the token endpoint lists a refresh token on any error (one refused for its scope or resource would never work again) | deadlist, oauth (2) |
+| 177 | R2-M2: the object calls a live token dead when another client revokes it | deadlist, oauth, ratelimit-review (3) |
+| 178 | R2-M2: the object never says a revoked token is dead | deadlist, golden, oauth-cost, oauth-review, ratelimit, ratelimit-review, ratelimit-review-r2 (9) |
+| 179 | R2-M2: a listed credential's KV record never expires | golden, ratelimit-review-r2, rules (3) |
+| 180 | R2-M2: the list forgets a credential before the Worker's expiry check refuses it (no grace) | deadlist, golden, ratelimit-review-r2 (3) |
+| 181 | R2-M2: a credential with less than KV's 60 s left is written anyway | deadlist (1) |
+| 182 | R2-M2: no once-per-isolate guard on writes (concurrent replays write each) | deadlist (1) |
+| 183 | R2-M2: the isolate ignores what it already knows is dead (every replay reads KV) | deadlist, oauth-cost (6) |
+| 184 | R2-M2: a credential KV did not list is read again on every request | deadlist (1) |
+| 185 | R2-M2: the isolate's memory of credentials is unbounded | deadlist (1) |
+| 186 | R2-M2: a failed KV read fails closed (every credential refused as listed) | deadlist (2) |
+| 187 | R2-M2: a KV read has no time limit (a hung KV hangs every token request and `/mcp` call) | deadlist (1) |
+| 188 | R2-M2: a failed KV read is not skipped (every request waits for KV again) | deadlist (2) |
+| 189 | R2-M2: the grant view's refresh count counts every grant of the tenant | ratelimit-review-r2 (1) |
+
+Re-anchored in round 2 and run (each killed): 102, 103 (stale since round 1, above), 107, 128, 153,
+154, 160, 164. 102: forged-cost, oauth-cost, oauth-review, ratelimit, ratelimit-review,
+ratelimit-review-r2 (9); 103: forged-cost, oauth-review, ratelimit (5); 107: oauth-review (1); 128:
+eleven files (95); 153 and 154: ratelimit, ratelimit-review, ratelimit-review-r2 (4 each); 164:
+ratelimit (1).
 
 ## Known risks
 
@@ -1024,6 +1891,21 @@ insert, then retried, yields one dashboard and one entry.
 - **Edge's verifier is called once per known scope** until one fits (up to nine SHA-256
   computations), because its signature insists on a scope. See "Needed changes".
 - **Clock.** Expiry, overlap and purge use the object's `Date.now()`.
+- **Tenants whose ids differ only in `_` and `-` share their dedicated shard objects**
+  (`acme_prod` and `acme-prod` both get `tenant/acme-prod`, D66 as revised after review M-5, and
+  D38). Streams, epochs and keys stay per tenant, so nothing mixes, but a noisy one slows the
+  other, as on a shared pool. (Before the revision a tenant id with `_` got `tenant/<id>` verbatim,
+  which edge refuses: every write a 503.)
+- **A pool map published by an earlier control that edge refuses** is not withdrawn: one whose
+  pool ends in `/traces` or `/logs` (tenants `traces` or `logs`, before D66) or has a `_` (a tenant
+  id with `_`, before the revision of D66). Edge answers 503 to every write of such a tenant.
+  Replacing it is a pool change, refused with 409 (and raising `spread` is refused too, since the
+  stored pool is no longer one control accepts); it needs the drain-and-handover protocol (DESIGN
+  §4.1) or an operator. None is known to exist: no viz-control has served in production.
+- **Control's copy of the janitor's retention defaults** (`KEPT_WHEN_ABSENT`, 30 days for spans
+  and logs) is a second statement of `DEFAULT_SIGNAL_DAYS`. The settings property test fails if
+  they disagree in this tree; it cannot see a janitor deployed at another release with another
+  default.
 - **The first own pool map moves the tenant's writes** from the shared pool to the new one
   with no handover. The task allows it; a tenant with data in flight would see the effects
   edge's README describes for `stale_epoch`.
@@ -1041,24 +1923,116 @@ insert, then retried, yields one dashboard and one entry.
   person approves again). Strict by choice; a grace window would let a copied token through.
 - **OAuth: the tenant id is readable in codes and tokens.** Only their holder, the client acting
   for that tenant, sees them; they are never logged.
-- **OAuth: no rate limit in front of `/oauth/token`, `/oauth/revoke` and OAuth bearers at
-  `/mcp` yet. Required before public exposure.** Since the review of D44 (M-2) a made-up
-  credential costs one HMAC in the Worker and reaches no tenant's object (before: one object
-  request and two billed `setAlarm` writes each; it was this README's claim that it "writes
-  nothing", which the review found false). What remains is the Workers' own CPU and requests,
-  which scale with the attacker. The Workers Rate Limiting binding (developers.cloudflare.com/
-  workers/runtime-apis/bindings/rate-limit/, read 2026-11-19, page modified 2026-11-12) was read
-  and not used for the check the review asked for: its limits are "local to the Cloudflare
-  location that your Worker runs in", "approximate" ("Requests can exceed your configured limit
-  before those updates arrive"; "Other Cloudflare locations maintain separate counts"), periods
-  of 10 or 60 s only, and the page advises against keying on IP addresses ("since these can be
-  shared by many users"), which with the tenant are the only identifiers an unauthenticated
-  request has; keyed by tenant it would hand the limit to the attacker. Its `namespace_id` is an
-  integer that "uniquely defines this rate limiting namespace within your Cloudflare account",
-  and the account holds unrelated Workers, so the deploy would also have to allocate ids it can
-  show are not in use. **Before public exposure**: a zone rate-limiting rule on
-  `vis.bitcru.sh` for these paths keyed by client IP, or the binding keyed by `<IP>|<tenant>` as a
-  per-source throttle with namespace ids allocated by `deploy/configure.mjs` per deployment.
+- **OAuth is public in production without the rate limits (D70)**: since 2026-11-19, when the owner
+  deployed `main` at PR #8, which has none of D70. "Required before public exposure" was not met. This
+  change and the deploy's gate ("Needed changes elsewhere") are the remedy, and only a deploy can
+  enforce the gate. The Worker checks the bindings and fails open without them, logging each
+  absent one once per isolate and listing it as `absent` in `/healthz`. The deploy does not create
+  the bindings. Until it does, OAuth runs without layer 1:
+  - a made-up credential costs one HMAC in the Worker and reaches no object (since the review of
+    D44, M-2);
+  - an expired one costs the same (since the review of D70);
+  - a dead one is listed at its first answer and refused before any object afterwards, since round 2:
+    the list needs only `CONFIG`, which every deployment binds;
+  - layer 2, the exact per-grant refresh limit, works already.
+- **OAuth: a stock of dead credentials still has one window** (D70, "What an attacker can still do";
+  modelled). Refresh tokens collected at layer 2's limit while a grant was live (by its client, or a
+  thief of one live refresh token of an idle grant), replayed after the grant ends, each reach the
+  object once in every isolate that has not learned they are dead: until KV shows the record in that
+  location (about 60 s, training knowledge, unmeasured), plus up to 60 s in an isolate that read it
+  as absent before. At most 5 a minute per credential per location (1,200 for access tokens).
+  - Tripping the token fuse takes about 1,200 such refresh tokens (3 h 20 min of rotating at the
+    limit), and the bearer fuse 25 access tokens less than an hour old. Either lasts a minute or two
+    in each location replayed at once, and then the stock is spent. Before round 2 it lasted 30 days
+    and repeated every minute (reproduced by the review, N1, N1b; turned around in
+    `test/ratelimit-review-r2.test.ts`).
+  - While it lasts, the tenant's refreshes and revocations (or `/mcp` calls) in those locations get
+    429: TypeScript-SDK clients keep their tokens, Python-SDK clients (`mcp` 2.3.0) discard them and
+    a person approves again.
+  - A client the tenant approved can still trip the bearer fuse with 25 **live** access tokens (about
+    4 minutes of refreshes) for as long as it is approved, and two locations at that fuse can saturate
+    the object (round 2, m-4). The grant view's `refreshesLastDay` shows a grant rotating faster than
+    a client needs; revoking it is the remedy.
+- **OAuth: the list of dead credentials rests on KV** (`src/deadlist.ts`). Not run on Cloudflare: a
+  cold read's latency (one per refresh, and one per isolate a minute per access token at `/mcp`) and
+  the propagation time are training knowledge. The list shares `viz-config` with edge, the janitor
+  and the others under its own prefix `oauth-dead:`; a reader listing other prefixes is unaffected
+  (`flush` lists `pool:`, the stack lists its markers). Its cost is modelled in D70: $0.02–0.22 a
+  month per client working all day, a few writes a month per tenant, $0.006–0.30 per stock of 1,200
+  replayed; the ceiling, every credential layer 2 lets be minted later replayed dead, $4.32 a day per
+  tenant beside the $4.75 of rows the minting costs.
+- **OAuth: while a narrow limiter is down in an isolate, its fuse counts nothing there** (round 2,
+  R2-M1, by design): dead credentials reach the object once each, live ones as often as they are
+  sent, for 10 s per failure. If the list cannot be read at the same time, dead credentials the
+  isolate does not remember reach the object as often as they are sent too. Both fail open: a fault
+  costs protection of the object, never a refusal.
+- **OAuth: credentials issued by the previous release (layout 1) carry no expiry.** Until they expire
+  in their object (30 days at most) they spend their allowance and the fuse as any unexpired
+  credential does. None was issued in production.
+  - A layout 1 body begins with layout 2's marker one time in 62. It is then read with an expiry
+    uniform over 28 years, so about 1 in 13,000 of them could be refused as expired early in the
+    month after the change.
+  - Layout 2's random part is 22 characters, about 131 bits (27 and 160 before). RFC 6749 §10.10 asks
+    for at most 2^-128, and the 16-character tag, which only `OAUTH_CLIENT_KEY` makes, adds to it for
+    anyone without the key.
+  - The expiry field runs out in 2054-12: a later credential would carry the last minute it can
+    hold, and the Worker would never refuse it early.
+- **OAuth: the binding's limits are per Cloudflare location and approximate** (its documentation,
+  read 2026-11-19: "Requests can exceed your configured limit before those updates arrive"; "Other
+  Cloudflare locations maintain separate counts").
+  - A client served from N locations gets N budgets, and a burst overshoots.
+  - A botnet gets 120 registrations and authorization pages a minute per network. A host with a
+    routed /48 gets 1,200 per /48, not 65,536 × 120 (m-6; training knowledge that tunnel brokers hand
+    them out).
+  - People behind one NAT or carrier-grade NAT share one network's budget at those two endpoints.
+    That is why the page advises against IP keys; the source limit sits well above what a group
+    connecting at once needs.
+  - A broker that registers a client for each of its users from one egress address shares 120 a
+    minute per location (modelled; brokers' egress is training knowledge). Its users' refreshes are
+    not counted by network.
+  - What reaches objects without an unexpired genuine credential is nothing, whatever the counts;
+    what is stored is bounded exactly (layer 2).
+- **OAuth: the limits assume no Smart Placement for viz-control and viz-mcp** (m-8).
+  `test/ratelimit.test.ts` fails if either `wrangler.jsonc` sets `placement`. The deploy's generated
+  configs are not checked here ("Needed changes elsewhere").
+- **OAuth: requests from Cloudflare Workers are not counted by network at all.** Every cross-zone
+  Worker subrequest arrives as `2a06:98c0:3600::103` (Cloudflare's headers page, read 2026-11-19).
+  Counting it would let anyone with a Workers account refuse every Worker-hosted MCP client (M-1).
+  - Registrations and authorization pages from Workers are bounded only by their senders' own Worker
+    spend. They cost this Worker 0.2–0.5 ms of CPU each (measured here) and store nothing.
+  - If Cloudflare uses other addresses for this, they are counted as ordinary networks.
+- **OAuth: a refused request is still a billed Worker request** (the gateway's). A Worker-side limit
+  saves CPU and object work, not the request charge. Only a WAF rate-limiting rule on `vis.bitcru.sh`
+  in front of the four paths would; not built (outside what the deploy manages; AGENTS.md allows
+  rules for that host only).
+- **OAuth: the limits are proposed, not measured against traffic**, and the tests run miniflare's
+  implementation of the binding (an exact counter in a SQLite-backed object, windows aligned to the
+  clock), not Cloudflare's. Nothing of D70 has run on Cloudflare: not the binding, and not the
+  100 ms budget against how long `limit()` really takes.
+  - Experiment: a stage with the bindings and clients as Durable Objects in two locations
+    (AGENTS.md), counting how far a flood gets past each limit and timing `limit()`.
+  - If `limit()` often takes more than its 50 ms share, that binding is skipped in the isolate for
+    10 s at a time, and its fuse with it (R2-M1). It fails open, so this costs protection, not
+    service.
+- **OAuth: the network comes from `CF-Connecting-IP`.** Cloudflare sets it on every request that
+  reaches the zone without a Worker subrequest, and the gateway forwards it unchanged.
+  - A caller can choose it in two ways (m-3, m-4). A Worker in the same zone sets it from its own
+    `x-real-ip` (Cloudflare's headers page; `bitcru.sh` holds unrelated hostnames). A caller by
+    service binding sends whatever it likes, and without the header it shares one key, `none`, with
+    every other.
+  - Neither the gateway nor this Worker reads `x-real-ip`.
+  - Either way the caller can evade the source limit, or spend a chosen network's registration and
+    authorization budget, such as a broker's egress. Since M-1 it cannot refuse a refresh.
+- **D70's round 3 fixes are not reviewed.** The third look (`design/reviews/d70-rate-limits-r3.md`)
+  rejected round 2 until R3-B1 was fixed and tried the one-line fix as a counterfactual; the rest of
+  this revision (the list after the per-credential limit, the per-key timeout, the rotated-and-expired
+  refinement) has not been read by someone who has not seen the reasoning (AGENTS.md, "Review before
+  building on it").
+- **The tests run without the deploy's limiter bindings.** `control/wrangler.jsonc` now declares the
+  six `ratelimits` (the deploy's change), and the test plugin would bind them in every file; so
+  `vitest.config.ts` hands the plugin a copy of `wrangler.jsonc` without `ratelimits`
+  (`.wrangler/test/wrangler.json`, git-ignored). The production limits themselves are therefore not
+  exercised here; the rate-limit tests use the small `RL_TEST_*` bindings as before.
 - **OAuth: the ruler and the gateway still bind the `Tenant` class** (`deploy/workers.json`
   `binds_classes` lists both with why), so either can call any method of any tenant's object.
   Neither handles untrusted text the way viz-mcp does, and `invoke` no longer accepts an identity
@@ -1122,6 +2096,150 @@ Things outside this directory that this component needs or exposes. Only the gat
    viz-mcp from the deployment's domain by `deploy/configure.mjs`, done. Still open, `app/`: the consent page and the grants screen ("What the UI must later show"), through
    design review.
 
+### Needed changes elsewhere (rate limits, D70)
+
+Not made here: `deploy/` is another builder's. Until the deploy part lands, D70's first layer is
+skipped in every deployment: absent bindings fail open, logged once per isolate, `absent` in
+`/healthz`. The review of D70 (M-2) found "required before public exposure" enforced nowhere, and
+its second review found it still unbuilt. Item 3 is that enforcement, and **it is needed before any
+production release that carries `OAUTH_CLIENT_KEY`**. Item 6 (round 2, m-3) is needed from the same
+release on. Production already carries the key and serves OAuth without either (PR #8, since
+2026-11-19); the deploy builder's `ratelimits` block in `control/wrangler.jsonc` and the gate in
+`deploy/configure.mjs` are in progress as this is written (not read or tested here).
+
+**`deploy/`** (all together, then the `control/wrangler.jsonc` block below):
+
+1. **`configure.mjs`**: add `'ratelimits'` to `KNOWN_KEYS`. In `generateWorker`, for each entry of
+   `out.ratelimits`:
+   - require `name` to be one of the six bindings below;
+   - require `simple.limit` to be a positive integer, and `simple.period` to be 60 (the Worker's
+     `Retry-After` assumes 60; the platform also allows 10);
+   - replace `namespace_id` with the id recorded for `<staged worker name>/<binding name>`, as KV
+     ids are replaced;
+   - refuse a placeholder `"0"` that survives (unless `idsOptional`), and refuse two bindings of
+     one deployment with the same id.
+
+   A stage gets ids of its own, never production's: the counters would be shared.
+2. **`resources.mjs`** (and `resources.json`): allocate those ids once per deployment and record
+   them.
+   - `namespace_id` "uniquely defines this rate limiting namespace within your Cloudflare account",
+     and the account holds unrelated Workers. Before choosing, list the account's Workers' bindings
+     (read only) and exclude every `ratelimit` namespace id another script uses.
+   - Take ids from a range recorded as viz's (for example 7000–7999), and refuse to reuse an id seen
+     on a script whose name does not start with `viz-`.
+   - Deleting a stage frees its ids. There is nothing to delete on Cloudflare: a namespace exists
+     only as bindings name it.
+3. **The gate** (review M-2). `configure.mjs` refuses, with a non-zero exit before anything is
+   uploaded, to generate a **production** config for viz-control unless it has all six of
+   `OAUTH_RL_SOURCE`, `OAUTH_RL_SOURCE_48`, `OAUTH_RL_CREDENTIAL`, `OAUTH_RL_TENANT`,
+   `OAUTH_RL_BEARER` and `OAUTH_RL_BEARER_TENANT`. Each must have period 60, a positive integer
+   limit and an allocated `namespace_id`. The message names the missing ones.
+   - `lib/secrets.mjs` refuses, as defence in depth, to put `OAUTH_CLIENT_KEY` on a production
+     viz-control version whose generated config lacks them. That key is what turns OAuth on: without
+     it, registration answers 503 and no code or token can be issued.
+   - A stage may leave them out only when asked (`--oauth-without-rate-limits`), and then its
+     release record says so.
+   - Tests in `configure.test.mjs`, next to the `binds_classes` ones:
+     - production without the block is refused;
+     - production with five of the six is refused, naming the sixth;
+     - a period of 10 is refused;
+     - the six with allocated ids pass;
+     - a stage without them passes only with the flag.
+4. **Placement** (review m-8): `configure.mjs` refuses `placement` on viz-control and viz-mcp while
+   D70's binding layer stands, with a test. Their per-location budgets assume each request is
+   counted where it arrives. Smart Placement would gather viz-control's and viz-mcp's invocations
+   in a few locations, making the tenant fuses nearly global. `control/test/ratelimit.test.ts`
+   checks the two components' own `wrangler.jsonc`, not what the deploy generates.
+5. **`README.md`**: the bindings and their ids. Also: the gateway must keep forwarding the request
+   unchanged. `forward` passes `req`, so `CF-Connecting-IP` arrives, and the gateway reads no
+   `x-real-ip`; no gateway change is needed.
+6. **A rollback floor for viz-control once OAuth is public** (second review, m-3; D69's
+   `rollback_floors`, deploy/README.md "Rollback floors"). Rolling viz-control back to `3cbabb8` or
+   earlier would mint layout 1 credentials again (no expiry the Worker can see, so dead access tokens
+   and codes count for ever) and restore the first version's keys (B-1); rolling it back to any
+   release before this one would restore R2-M1 and the 30-day stock (R2-M2). D69's rules key on a
+   **var** of the writer: `deployFloorProblems` refuses a secret as a switch (review of D69, m-2), so
+   `OAUTH_CLIENT_KEY` itself cannot be the switch. Wanted:
+   - `configure.mjs` sets a plain var **`OAUTH_PUBLIC`** (`"1"`) in every production viz-control
+     config that the gate (item 3) passes, that is, every release that carries or will carry
+     `OAUTH_CLIENT_KEY`; a stage only when asked. From the first such release on, D69's history read
+     (`switchSeen`) finds it in the versions Cloudflare keeps.
+   - A rule in `deploy/workers.json` `rollback_floors` (never rename it once released):
+
+     ```json
+     {
+       "name": "oauth-public",
+       "writer": "viz-control",
+       "var": "OAUTH_PUBLIC",
+       "why": "with it, anyone reaches control's OAuth endpoints through the gateway, and clients hold codes and tokens control issued (D44, D70). Turning it off leaves those credentials valid until they expire, 30 days for a refresh token",
+       "floors": {
+         "viz-control": {
+           "evidence": ["contracts/oauth.ts#CREDENTIAL_LAYOUT", "contracts/oauth.ts#DEAD_INACTIVE_REASONS", "control/src/deadlist.ts#recordDead", "control/src/ratelimit.ts#LISTED"],
+           "why": "D70 after its two reviews: the first viz-control whose credentials carry their expiry (an older one mints credentials the Worker can never refuse as expired, and keys the token endpoint per presented client_id: B-1), asks a tenant's fuse only after the credential's own limit (R2-M1), and lists credentials found dead (R2-M2: an older one lets a stock of refresh tokens trip the token fuse for 30 days, revocation included)"
+         }
+       }
+     }
+     ```
+
+     `LISTED` exists only from round 3 on (the other three since round 2), so the stamp marks the
+     release with R3-B1 fixed; a release with round 2 alone would let a thief stop reuse detection.
+   - Tests in `configure.test.mjs` and `release.test.mjs`, beside the `signal-data` ones: the rule
+     parses; a production config with the gate passed carries `OAUTH_PUBLIC`; a release setting it
+     while the serving viz-control is unstamped is refused; a rollback to an unstamped viz-control
+     after a version with the var is refused.
+   - The alternative: a rule option that treats a secret's presence as the switch being on
+     (`"on": "present"`), so `OAUTH_CLIENT_KEY` itself is the switch. It needs `deployFloorProblems`
+     to skip its secret refusal for that rule only; the var is simpler and keeps one meaning of a
+     switch.
+   - Until then, any rollback of viz-control in a deployment that has issued credentials should be
+     to this release or later, by hand.
+7. **Nothing for the list of dead credentials**: it uses `CONFIG`, which every generated viz-control
+   config already binds to `viz-config` (`deploy/workers.json` `resources.kv`). Its KV writes are
+   modelled in D70 ("What the list costs"); state the worst case with the release that turns OAuth
+   on: $4.32 a day per tenant at the ceiling, cents per attack.
+
+Then, in `control/wrangler.jsonc`. It is not added now: today `configure.mjs` refuses an unknown
+key, which would fail deploy's configure tests and any release.
+
+```jsonc
+  // Rate limits in front of OAuth (D70, src/ratelimit.ts). namespace_id: placeholders, replaced by
+  // deploy/configure.mjs with ids it allocated for this deployment; never deploy with them.
+  "ratelimits": [
+    { "name": "OAUTH_RL_SOURCE", "namespace_id": "0", "simple": { "limit": 120, "period": 60 } },
+    { "name": "OAUTH_RL_SOURCE_48", "namespace_id": "0", "simple": { "limit": 1200, "period": 60 } },
+    { "name": "OAUTH_RL_CREDENTIAL", "namespace_id": "0", "simple": { "limit": 5, "period": 60 } },
+    { "name": "OAUTH_RL_TENANT", "namespace_id": "0", "simple": { "limit": 6000, "period": 60 } },
+    { "name": "OAUTH_RL_BEARER", "namespace_id": "0", "simple": { "limit": 1200, "period": 60 } },
+    { "name": "OAUTH_RL_BEARER_TENANT", "namespace_id": "0", "simple": { "limit": 30000, "period": 60 } }
+  ],
+```
+
+The binding names changed with the review of D70. The first version proposed `OAUTH_RL_CLIENT` and
+no `OAUTH_RL_SOURCE_48` or `OAUTH_RL_CREDENTIAL`. Nothing was deployed with either set.
+
+Worst-case cost of the deploy change: none on Cloudflare's side that the page names. It gives no
+price for the binding (read 2026-11-19), and no resource is created, only bindings.
+
+Optional, by hand, outside the deploy: a WAF rate-limiting rule on `vis.bitcru.sh` only, for
+`/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke`, counted by IP, above the
+Worker's source limit (for example 300 a minute), so that a flood is refused before any Worker runs.
+Such a rule should leave Cloudflare's Workers address alone, or count it by the field
+`cf.worker.upstream_zone`, which the headers page recommends instead of the `CF-Worker` header;
+otherwise it refuses every Worker-hosted client together (M-1).
+
+**`mcp/`**: done there. `identifyOAuth` maps `rate_limited` to a 429 with `Retry-After`, tested
+(mcp/README.md). The review's fixes change no status: an expired access token is now answered
+`inactive` `expired` by control's entrypoint without asking the object, which `mcp/` already maps to
+401 `invalid-token`. The agent surface's `parseCredential` accepts layout 2 (the shape is
+unchanged). mcp's tests bind `OAUTH_RL_BEARER`, which keeps its name. Round 2 changes nothing
+there: a listed access token is answered `inactive` with the reason its object gave (`unknown`,
+`expired` or `revoked`), which mcp already maps to 401 (`npx tsc --noEmit` clean and
+`test/oauth.test.ts` 15 of 15 after the contract change, 2026-11-19).
+
+**`design/`** (the lead's): the `reviews/d70-rate-limits-r2.md` row of `design/REVIEW.md` ("Being
+fixed") and the OAuth row of `design/artifact/viz-design.html` ("a re-review is pending") are out of
+date once this change lands; dispositions are in "Round 2" under "How it was verified" here.
+
 ## Contract issues
 
 1. **Who owns the pool-map epoch.** DESIGN §4.1 says "The shard map has an epoch, owned by
@@ -1132,10 +2250,13 @@ Things outside this directory that this component needs or exposes. Only the gat
 2. **The KV records are not in `contracts/`.** `key:`, `pool:`, `limits:` and `retention:`
    are defined by their readers' source (`edge/src/auth.ts`, `shard/src/pool.ts`,
    `edge/src/route.ts`, `janitor/src/janitor.ts`); `revocation:` is defined here. A
-   `contracts/config.ts` with the five shapes would let writer and readers share one type.
-3. **`limits:<tenant>` and `retention:<tenant>` have one reader field each**
-   (`active_series`, `metric_samples_days`). The other field names published here
-   (`samples_per_second`, `query_*`, `metric_5m_days`, `metric_1h_days`, `log_days`,
-   `trace_days`) are this component's proposal, not an agreed contract.
+   `contracts/config.ts` with the five shapes would let writer and readers share one type, and,
+   for `retention:`, the defaults of absent fields, which control now copies from the janitor
+   (`KEPT_WHEN_ABSENT`, tied by a test; D63). The pool map's validity rule is shared code since
+   review M-5 (`validBasePool` in `shard/src/pool.ts`), not a contract text.
+3. **`limits:<tenant>` has one reader field, `retention:<tenant>` three** (`active_series`;
+   `metric_samples_days`, `trace_days`, `log_days`, the last two read by the janitor since D63).
+   The other field names published here (`samples_per_second`, `query_*`, `metric_5m_days`,
+   `metric_1h_days`) are this component's proposal, not an agreed contract.
 4. **Key expiry is not in edge's record.** It is carried as a KV expiration, which cannot
    be less than 60 s away; a key within 61 s of its end is removed from KV instead.

@@ -256,8 +256,9 @@ describe('M-2: a made-up credential reaches no object; a request that changes no
       const at = await mintCredential('access', tenant, KEY)
       expect(await stub.oauthToken(tenant, { grant_type: 'authorization_code', client_id: c.clientId, code, code_verifier: 'x'.repeat(43), redirect_uri: REDIRECT })).toMatchObject({ status: 'error', error: 'invalid_grant' })
       expect(await stub.oauthToken(tenant, { grant_type: 'refresh_token', client_id: c.clientId, refresh_token: rt })).toMatchObject({ status: 'error', error: 'invalid_grant' })
-      expect(await stub.oauthRevoke(tenant, rt, c.clientId)).toEqual({ v: 1, status: 'ok' })
-      expect(await stub.oauthRevoke(tenant, at, c.clientId)).toEqual({ v: 1, status: 'ok' })
+      // Unknown is dead for good: the Worker lists it (contracts/oauth.ts RevokeResult, D70 round 2).
+      expect(await stub.oauthRevoke(tenant, rt, c.clientId)).toEqual({ v: 1, status: 'ok', dead: true })
+      expect(await stub.oauthRevoke(tenant, at, c.clientId)).toEqual({ v: 1, status: 'ok', dead: true })
       expect(await stub.introspectAccessToken(tenant, at, RESOURCE)).toEqual({ v: 1, status: 'inactive', reason: 'unknown' })
       // A real refresh token presented by the wrong client is a change (the grant ends): not counted here.
     }

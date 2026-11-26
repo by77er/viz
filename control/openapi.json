@@ -3521,7 +3521,7 @@
       "put": {
         "operationId": "PUT_settings_section",
         "summary": "Replace a settings section",
-        "description": "general: {agentsMayApply, proposalTtlDays}. retention: {metric_samples_days, metric_5m_days, metric_1h_days, log_days, trace_days} (shortening needs confirmShorter). limits: {active_series, samples_per_second, query_max_series, query_max_samples, query_timeout_seconds, query_max_range_days, query_concurrency}. pool: {pool, slots, spread}; only a first map or a larger spread is accepted, and the epoch is bumped. notifications: {email, webhookUrl, webhookFormat (alertmanager|json), sendResolved, webhookSecret (write-only: never returned; null removes it; left out it is kept while webhookUrl is unchanged)}; the response shows webhookSecretSetAt instead of the secret. The ruler notifier sends to webhookUrl as its receiver viz:default (contracts/control.ts); email is stored, not acted on.",
+        "description": "general: {agentsMayApply, proposalTtlDays}. The value replaces the stored one, and a field left out returns to its default. retention: {metric_samples_days, metric_5m_days, metric_1h_days, log_days, trace_days}; any change that shortens what is kept needs confirmShorter, including a field left out whose default is shorter (log_days and trace_days default to 30 days) and a rollup tier left out. limits: {active_series, samples_per_second, query_max_series, query_max_samples, query_timeout_seconds, query_max_range_days, query_concurrency}. pool: {pool, slots, spread}; the pool is the dedicated pool of the tenant, tenant/<id> with _ written -, or the shared pool, and must be one the data path accepts (no _, at most 120 characters, not ending in /traces or /logs); only a first map or a larger spread is accepted, and the epoch is bumped. notifications: {email, webhookUrl, webhookFormat (alertmanager|json), sendResolved, webhookSecret (write-only: never returned; null removes it; left out it is kept while webhookUrl is unchanged)}; the response shows webhookSecretSetAt instead of the secret. The ruler notifier sends to webhookUrl as its receiver viz:default (contracts/control.ts); email is stored, not acted on.",
         "security": [
           {
             "apiKey": [
@@ -5517,6 +5517,10 @@
                 "type": "null"
               }
             ]
+          },
+          "refreshesLastDay": {
+            "type": "integer",
+            "description": "Refresh tokens issued for the grant in the last 24 hours (the code exchange's included); 0 once it has ended. About 24 for a client refreshing hourly; up to 8,640 for one rotating as fast as it may, which is how a stock of refresh tokens is collected. The revocation's audit entry keeps the last count."
           }
         },
         "required": [
@@ -5531,7 +5535,8 @@
           "lastUsedAt",
           "key",
           "revokedAt",
-          "revokeReason"
+          "revokeReason",
+          "refreshesLastDay"
         ]
       },
       "AuditEntry": {
