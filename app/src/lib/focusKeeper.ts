@@ -21,8 +21,8 @@ export interface FocusOrigin {
   inRegion: boolean
 }
 
-export const REGION_FALLBACK = '.vz-segmented button[aria-pressed="true"]'
-export const PAGE_FALLBACKS = ['[data-testid="run"]', 'header nav a[aria-current="page"]', 'header nav a.active', 'main a[href], main button:not([disabled]), main input, main select']
+export const REGION_FALLBACK = '[data-testid^="view-"][aria-pressed="true"]'
+export const PAGE_FALLBACKS = ['[data-testid="run"]', '.vz-nav a[aria-current="page"]', '.vz-nav a.active', 'main a[href], main button:not([disabled]), main input, main select']
 
 /** The selectors to try, in order, for a control that went away. Pure, so the order is testable. */
 export function focusFallbacks(origin: FocusOrigin): string[] {

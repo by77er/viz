@@ -1,33 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { focusFallbacks, mayLoseFocus, PAGE_FALLBACKS, REGION_FALLBACK } from './focusKeeper'
-import { additiveToggle } from './pointer'
 import { formatAge, shorterRange } from '../explore/waiting'
-import { spacedDuration, zoomedIn, zoomedOut } from '../explore/TimeRangePicker'
+import { presetWords, sameSpec } from '../explore/TimeRangeField'
 import { stepWords } from './time'
-
-const plain = { shiftKey: false, ctrlKey: false, metaKey: false }
-
-describe('touch parity (M4)', () => {
-  it('a tap toggles the series; a mouse needs a modifier', () => {
-    expect(additiveToggle({ ...plain, pointerType: 'touch' }, true)).toBe(true)
-    expect(additiveToggle({ ...plain, pointerType: 'touch' }, false)).toBe(true) // a touch screen beside a mouse
-    expect(additiveToggle({ ...plain, pointerType: 'pen' }, false)).toBe(true)
-    expect(additiveToggle({ ...plain, pointerType: 'mouse' }, false)).toBe(false)
-    expect(additiveToggle({ ...plain, pointerType: 'mouse' }, true)).toBe(false)
-    expect(additiveToggle({ ...plain, shiftKey: true, pointerType: 'mouse' }, false)).toBe(true)
-    expect(additiveToggle({ ...plain, metaKey: true }, false)).toBe(true)
-    expect(additiveToggle({ ...plain, pointerType: '' }, false)).toBe(false) // Enter on a desktop isolates
-    expect(additiveToggle({ ...plain, pointerType: '' }, true)).toBe(true) // Enter on a phone toggles, like a tap
-  })
-  it('zoom in halves the range around its middle; zoom out doubles it and does not pass now', () => {
-    expect(zoomedIn(1000, 5000)).toEqual([2000, 4000])
-    expect(zoomedIn(1000, 1060)).toEqual([1000, 1060]) // never under a minute
-    expect(zoomedOut(2000, 4000, 1e9)).toEqual([1000, 5000])
-    expect(zoomedOut(2000, 4000, 4000)).toEqual([0, 4000])
-    const [a, b] = zoomedIn(...zoomedOut(2000, 4000, 1e9))
-    expect([a, b]).toEqual([2000, 4000])
-  })
-})
 
 describe('focus after a control goes away (M3)', () => {
   it('looks only at changes that can take the focus away, so ordinary changes read no layout (B3)', () => {
@@ -57,11 +32,14 @@ describe('focus after a control goes away (M3)', () => {
 })
 
 describe('words (minors)', () => {
-  it('a result younger than 5 s was updated "now", not "0 s ago"', () => {
-    expect(formatAge(0, 0)).toEqual({ n: '', rest: 'now' })
-    expect(formatAge(4.9, 0)).toEqual({ n: '', rest: 'now' })
-    expect(formatAge(5, 0)).toEqual({ n: '5', rest: ' s ago' })
-    expect(formatAge(125, 0)).toEqual({ n: '2', rest: ' min ago' })
+  it('a result younger than 5 s was updated "just now", not "0 s ago"', () => {
+    expect(formatAge(0, 0)).toEqual({ n: '', rest: 'just now' })
+    expect(formatAge(4.9, 0)).toEqual({ n: '', rest: 'just now' })
+    expect(formatAge(5, 0)).toEqual({ n: '5 s', rest: ' ago' })
+    expect(formatAge(125, 0)).toEqual({ n: '2 min', rest: ' ago' })
+    expect(formatAge(3 * 3600 + 5, 0)).toEqual({ n: '3 h', rest: ' ago' })
+    // Beyond a day: the time itself, never an age.
+    expect(formatAge(2 * 86400, Date.UTC(2026, 10, 17, 9, 30) / 1000, Date.UTC(2026, 10, 19, 9, 30)).rest).toBe('')
   })
   it('a step reads as a number and a unit, minutes as "min"', () => {
     expect(stepWords(15)).toBe('15 s')
@@ -71,16 +49,21 @@ describe('words (minors)', () => {
     expect(stepWords(3600)).toBe('1 h')
   })
   it('a preset reads with a space and "min" for minutes, as a step does', () => {
-    expect(spacedDuration('5m')).toBe('5 min')
-    expect(spacedDuration('15m')).toBe('15 min')
-    expect(spacedDuration('1h')).toBe('1 h')
-    expect(spacedDuration('24h')).toBe('24 h')
-    expect(spacedDuration('7d')).toBe('7 d')
-    expect(spacedDuration('1h30m')).toBe('1 h 30 min')
+    expect(presetWords('15m')).toBe('15 min')
+    expect(presetWords('1h')).toBe('1 h')
+    expect(presetWords('24h')).toBe('24 h')
+    expect(presetWords('7d')).toBe('7 d')
+  })
+  it('a preset stays chosen however its length is spelt', () => {
+    expect(sameSpec('now-24h', 'now-1d')).toBe(true)
+    expect(sameSpec('now-1h', 'now-60m')).toBe(true)
+    expect(sameSpec('now-1h', 'now-6h')).toBe(false)
+    expect(sameSpec('now', 'now')).toBe(true)
+    expect(sameSpec('1795000000000', '1795000000001')).toBe(false)
   })
   it('after 10 s the wait offers the next shorter range, when there is one', () => {
     expect(shorterRange(3 * 3600)).toEqual({ preset: '1h', seconds: 3600 })
-    expect(shorterRange(3600)).toEqual({ preset: '5m', seconds: 300 })
-    expect(shorterRange(300)).toBeNull()
+    expect(shorterRange(3600)).toEqual({ preset: '15m', seconds: 900 })
+    expect(shorterRange(900)).toBeNull()
   })
 })

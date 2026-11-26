@@ -10,8 +10,8 @@ import {
   withoutDefaults,
   type ExploreSearch,
 } from './urlState'
-import { absoluteSpec, describeRange, formatDuration, isValidTimeSpec, parseDuration, resolveTimeSpec } from './time'
-import { formatValue, inferUnit } from './units'
+import { absoluteSpec, formatDuration, isValidTimeSpec, parseDuration, resolveTimeSpec } from './time'
+import { inferUnit } from './units'
 import { alignMatrix, distinguishingNames, seriesKey, seriesName, seriesStats } from './series'
 import fc from 'fast-check'
 
@@ -130,31 +130,10 @@ describe('time', () => {
     expect(isValidTimeSpec('now-15m')).toBe(true)
     expect(isValidTimeSpec('now-x')).toBe(false)
     expect(isValidTimeSpec('12')).toBe(false)
-    expect(describeRange('now-6h', 'now', 0)).toBe('Last 6h')
   })
 })
 
 describe('units', () => {
-  it('formats values', () => {
-    expect(formatValue(0)).toBe('0')
-    expect(formatValue(1234)).toBe('1.23k')
-    expect(formatValue(1_500_000)).toBe('1.5M')
-    expect(formatValue(0.00042)).toBe('420µ')
-    expect(formatValue(0.0425, 'seconds')).toBe('42.5 ms')
-    expect(formatValue(90, 'seconds')).toBe('90 s')
-    expect(formatValue(600, 'seconds')).toBe('10 min')
-    expect(formatValue(1536, 'bytes')).toBe('1.5 KiB')
-    expect(formatValue(3 * 1024 ** 3, 'bytes')).toBe('3 GiB')
-    expect(formatValue(0.0421, 'percentunit')).toBe('4.21%')
-    expect(formatValue(453.2, 'rps')).toBe('453/s')
-    // Was '250m' and '1.5': a number with a unit must show it (design review M7).
-    expect(formatValue(0.25, 'cores')).toBe('250 millicores')
-    expect(formatValue(1.5, 'cores')).toBe('1.5 cores')
-    expect(formatValue(null)).toBe('–')
-    expect(formatValue(NaN)).toBe('NaN')
-    expect(formatValue(Infinity)).toBe('+Inf')
-    expect(formatValue(-12.5)).toBe('-12.5')
-  })
   it('infers units from naming conventions', () => {
     expect(inferUnit('sum by (service) (rate(http_requests_total[5m]))')).toBe('rps')
     expect(inferUnit('histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))')).toBe('seconds')

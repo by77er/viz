@@ -14,7 +14,7 @@ function chrome(resultQuery: string, pendingQuery: string, displayUnit = 'auto')
   const result = identify(req(resultQuery), window_, 1_795_000_000_000)
   const d = describeResult(result, { unit: displayUnit }, req(pendingQuery))
   // The unit the chart is handed, and so what its axis, legend head and readout say.
-  return JSON.stringify({ q: d.q, unit: d.unit, chartUnit: chartUnit(d.unit, 171).name, stale: d.stale === null })
+  return JSON.stringify({ q: d.q, unit: d.unit, chartUnit: chartUnit(d.unit, 171).name })
 }
 
 describe('a result describes itself (B1)', () => {
@@ -26,7 +26,7 @@ describe('a result describes itself (B1)', () => {
       expect(chartUnit(d.unit, 136).name).toBe('/s') // never "", "B" or "cores"
     }
   })
-  it('names the query of the result, which the panel's title, the chart's name and the text form carry', () => {
+  it('names the query of the result, which the panel title, the chart name and the text form carry', () => {
     const d = describeResult(identify(req(RATE), window_, 0), { unit: 'auto' }, req(CPU))
     expect(d.q).toBe(RATE)
     expect(JSON.stringify(d)).not.toContain('pod_cpu_usage_cores')
@@ -35,10 +35,10 @@ describe('a result describes itself (B1)', () => {
     const settled = chrome(RATE, RATE)
     for (const pending of [CPU, MEM, 'histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))']) {
       const waiting = chrome(RATE, pending)
-      expect(waiting).toBe(settled.replace('"stale":false', '"stale":true').replace('"stale":true', '"stale":false'))
+      expect(waiting).toBe(settled)
       expect(waiting).not.toContain(pending)
     }
-    expect(chrome(MEM, RATE)).toBe(chrome(MEM, MEM).replace('"stale":true', '"stale":false'))
+    expect(chrome(MEM, RATE)).toBe(chrome(MEM, MEM))
   })
   it('says plainly when the result is not the answer to the current request', () => {
     const result = identify(req(RATE), window_, 0)

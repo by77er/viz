@@ -238,7 +238,12 @@ export function ExplorePage() {
   // ---- the result on screen, and its description. `result` may be the previous query's
   // (kept while the next one waits, or after Cancel, the 60 s stop or an error): nothing below
   // this line may read `search.q` or `q` to describe it.
-  const result = q === '' ? undefined : query.data
+  // After an error the query library holds no data, and the chart's error state keeps the legend
+  // of the result that was drawn (Chart, "States"): the last result is kept here for that.
+  const lastResult = useRef<RangeResult | undefined>(undefined)
+  if (q === '') lastResult.current = undefined
+  else if (query.data) lastResult.current = query.data
+  const result = q === '' ? undefined : (query.data ?? (query.isError ? lastResult.current : undefined))
   const description = useMemo(() => (result ? describeResult(result, { unit: search.unit }, current) : null), [result, search.unit, current])
   const aligned = useMemo(
     () => (result ? alignSeries(result.matrix.series, result.window.start, result.window.end, result.window.step) : null),
@@ -504,7 +509,7 @@ export function ExplorePage() {
                   {shown.staleText ? '· ' : ''}
                   {dayPrefix(result.window.start, result.window.end, now) ? `${dayPrefix(result.window.start, result.window.end, now)}, ` : ''}
                   {/* The chart writes the range it shows here, and again when it is zoomed (Chart, draw). */}
-                  <span data-range="" className="vz-qty" />
+                  <span data-range="" />
                 </span>
                 <span data-testid="result-step">
                   · every <span className="vz-qty">{stepWords(result.window.step)}</span>

@@ -77,7 +77,8 @@ export const TimeRangeField = memo(function TimeRangeField({ from, to, onChange,
   const read = readRange(from, to, now, zone)
   return (
     <fieldset className="vz-field" data-span="6" data-testid="time-range">
-      <legend className="vz-label">Time range</legend>
+      {/* From and To are the labels a person reads; the group's name is for a reader who cannot see that they sit together. */}
+      <legend className="vz-sr">Time range</legend>
       <div className="vz-range">
         {field('from', 'From')}
         {field('to', 'To')}
@@ -132,15 +133,16 @@ export const RangeControls = memo(function RangeControls({ from, to, onChange, s
           </button>
         ))}
       </div>
-      <button className="vz-button" onClick={() => shift(-1)} aria-label="Show earlier: move the time range back by half its length" data-testid="earlier">
+      <button className="vz-button" data-size="sm" onClick={() => shift(-1)} aria-label="Show earlier: move the time range back by half its length" data-testid="earlier">
         Show earlier
       </button>
-      <button className="vz-button" onClick={() => shift(1)} aria-label="Show later: move the time range forward by half its length" data-testid="later">
+      <button className="vz-button" data-size="sm" onClick={() => shift(1)} aria-label="Show later: move the time range forward by half its length" data-testid="later">
         Show later
       </button>
       {/* Offered only while it would change something: its place is kept, so nothing moves when the chart is zoomed. */}
       <button
         className={shown ? 'vz-button' : 'vz-button is-reserved'}
+        data-size="sm"
         aria-hidden={shown ? undefined : true}
         tabIndex={shown ? undefined : -1}
         onClick={() => shown && onChange(String(Math.round(shown.fromMs)), String(Math.round(shown.toMs)))}
