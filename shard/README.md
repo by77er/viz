@@ -934,7 +934,19 @@ the tail it needs, and split leaves fetch only their key range:
    comes from a shard that predates this; its batches are the whole tail, unfiltered and
    unpaged, and the coordinator uses them as it does today (the engine applies the matchers and
    ranges anyway; for a split, `engine.splitTails` still cuts them). Do not rely on `page`
-   until every `viz-ingest` version running sends it.
+   until every `viz-ingest` version running sends it. **An answer without `page` in the middle
+   of a paged read** (a rollback or a gradual deployment between two pages; review of D47, D48
+   and D55, P-9): it is still the whole tail. A reader either drops the pages already read and
+   uses that answer alone, or refuses retryably and plans again (query does the second, D54);
+   never a mix. Appending it would count every row twice against `maxFetchBytes` and the
+   sample budgets. **A new filter field**: the same review asked that one come with `v` 2,
+   because a `v` 1 shard ignores fields it does not know (COMPATIBILITY.md §3.2) and still
+   answers with `page`, a superset that looks filtered. The two fields added since, `signals`
+   (D63) and the time range that skips span and log batches (D72), stayed in `v` 1
+   (`TAIL_READ_VERSION`) and are made safe at the caller instead: they are sent only to the
+   signal's own shards, every batch that comes back is checked by its header, and the engine
+   selects the same rows whether or not the shard skipped any (D62, 4.). A field whose
+   superset a caller could not tell from a filtered answer still needs `v` 2.
 2. **Split leaves** (`query/src/leaf.ts`, `runSplit`). When the split key has no `without`
    labels, each leaf reads the tail itself: the coordinator passes each shard's
    `(shard, incarnation, above)` it planned (including what `known` learned) to the leaf, and

@@ -1689,12 +1689,13 @@ Workers answer them 404 until then):
   and `contracts/oauth.ts`'s `parseCredential` (the OAuth credential's layout, in viz-mcp). Wanted: a
   `READS` entry or a version constant in each, as the janitor's `READS` has for `kv.settings`, which
   `workers.json` would then point at instead.
-- **A trial on Cloudflare.** Nothing of stages 1 to 3 has run there: OTLP and Loki decode CPU in
-  workerd (`edge/README.md`, "Known risks"), the flush of span and log segments against real R2
-  latencies, the query caps (`maxSpans` 40,000, `maxLogRows` 60,000) against a 128 MB isolate, and
-  the service bindings in production shape (`script_name`; the test puts every Worker in one
-  script). A stage release with both flags in `VIZ_STAGE_VARS`, OTLP and Loki load through the
-  gateway, and Tempo and Loki queries back is the experiment.
+- **A trial on Cloudflare: run once, to be run again.** Spike S10 ran stages 1 to 3 on a stage on
+  2026-11-19 (`spikes/s10-signals-trial/README.md`, measured on Cloudflare, on the query build
+  before ABI 8): the memory budgets held; a compaction run was killed at the 30 s CPU limit; every
+  trace query was refused above about 240,000 spans in an hour; a small request cost edge seconds
+  of decode CPU. Not yet run there: the same shapes on the ABI 8 build with today's caps
+  (`maxSpans` 18,000, `maxLogRows` 30,000), and Grafana against a staged gateway. Both are
+  conditions for `QUERY_SIGNALS` (D62).
 - **Where the flags are set.** Neither is in `workers.json` or a component config; setting them is
   a var on viz-ingest and on viz-query (a release). They are per deployment, not per tenant.
 - **A client run.** No Grafana Tempo or Loki data source, and no OTLP SDK exporter, has been
@@ -1824,7 +1825,9 @@ deployment and nothing here needs it: the gateway has no page and no static asse
   versions of the write path's objects in service at once; the tooling refuses nothing about
   it but never does it.
 - **Alerting** on a failed deploy beyond the failed job and its summary.
-- **The workflows have not run on GitHub** (see above).
+- **How the workflows ran on GitHub is not recorded here.** The owner ran Deploy on main on
+  2026-11-19 (production serves fb77292, the release of pull request #8). Its run log was not read
+  into this README; the upgrade test models what that run left from fb77292's own tooling.
 - **Generated secrets on Cloudflare** were measured by spike S9 (2026-11-19: created case twice,
   rotated case once, first deploy once) on viz-control alone. Not run there: the up-front refusals
   and the read retries added since (modelled by the fakes, which now follow S9), m-11's run marks,

@@ -631,7 +631,8 @@ What is still needed:
 - `contracts/engine.ts` defines the TraceQL shapes since 2026-11-19 (`TempoSearchResponse`,
   `TempoMetricsResponse`, `OtlpTrace`, the tag bodies) and the binding returns the JSON text of
   `to_json()`, as `viz-promql`'s `queryRangeJson` does.
-- `contracts/TRACES.md` is new and proposed; storage does not implement it.
+- `contracts/TRACES.md` is implemented by `engine/storage` (span and `trace_index` files, D57, D68)
+  and read through this crate by `engine/wasm-query` (D62).
 
 ## Layout
 
