@@ -44,8 +44,12 @@
  *   | `too_large` | more series or samples than one request may carry; nothing was written | split |
  *   | `backpressure` | a shard's buffer is full | yes, after the hint |
  *   | `overloaded` | a shard sheds load | yes, after the hint |
- *   | `unavailable` | a shard or the pool map cannot be reached or read | yes |
+ *   | `unavailable` | a shard, the pool map or a limits record cannot be reached or read (an error, an invalid record, one of a newer version), or the entrypoint failed for a reason of its own (an unexpected error) | yes |
  *
+ * Every error the entrypoint itself sees is answered with one of these words (added
+ * 2026-11-19, review of D52, m-8): the pool map unreadable while a shard is marked hot was
+ * rejected without one before. A rejection without a word therefore comes from the platform
+ * (no such entrypoint, the callee's CPU or memory limit, a lost connection), not from ingest.
  * A caller must treat any other message, and any rejection at all, as "not written".
  *
  * Values are Prometheus' text form (`RecordedSample.value`): a decimal, `+Inf` (or `Inf`),

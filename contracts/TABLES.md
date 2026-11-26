@@ -61,6 +61,9 @@ One row per series present in the file's day.
 ```
 
 - `level` is 0 for flush files. `shard` is the shard name with `/` replaced by `_`.
+- The span and log tables (`spans`, `trace_index`, `logs`; `contracts/TRACES.md`,
+  `contracts/LOGS.md`) use the same keys, except that a `spans` key has one more level,
+  `…/day={YYYY-MM-DD}/hour={HH}/L0-…` (`dataKeyPrefix` in `contracts/ledger.ts`).
 - **Pool and shard names** (`POOL_NAME`, `SHARD_NAME` in `contracts/ledger.ts`) are segments
   of `[A-Za-z0-9-]` joined by `/`: a pool name at most 120 characters, a shard name
   (`{pool}/{slot}`) at most 128. They never contain `_`, so the replacement above is
@@ -69,7 +72,13 @@ One row per series present in the file's day.
   A pool map naming another pool is refused where it is read (edge: 503); a shard object
   addressed by another name serves nothing; the ledger answers `invalid` to a unit of a
   stream named otherwise and refuses to register it. (Added 2026-11-19; every name in use
-  already fits, so nothing written before changes.)
+  already fits, so nothing written before changes.) The pool a pool map names (the base of
+  the derived span and log pools) also never ends in `/traces` or `/logs`
+  (`contracts/BATCH.md`, "Streams per signal"); edge refuses such a map in the same way, and
+  control refuses to assign one (so tenants `traces` and `logs` cannot have the dedicated pool
+  `tenant/<id>`; D66). Control refuses every pool edge would refuse under either rule: both check
+  a map's pool with one function, `validBasePool` (`shard/src/pool.ts`), and a tenant's dedicated
+  pool is `dedicatedPool`'s `tenant/<id>` with `_` written `-` (D66, revised 2026-11-19).
 - `hash8` is the first 8 hex characters of the SHA-256 of the file bytes.
 - Files are written with `If-None-Match: *`.
 

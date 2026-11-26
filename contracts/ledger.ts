@@ -4,22 +4,65 @@
  * See design/DESIGN.md §2, §4.3, §5.2.
  */
 
+/**
+ * The metric tables. Until 2026-11-19 these were every table of the ledger, and `Table` keeps
+ * that meaning for the code written against it (the publisher's Iceberg definitions map every
+ * `Table`, `Record<Table, …>`): widening it in place would have broken those builds rather
+ * than added values. A table the ledger lists is a `LedgerTable`.
+ */
 export type Table = 'metric_samples' | 'metric_series'
+/** The span and log tables (contracts/TRACES.md, contracts/LOGS.md), added 2026-11-19 (stage 2 of traces and logs). */
+export type SignalTable = 'spans' | 'trace_index' | 'logs'
+/**
+ * Every table the ledger lists files of. Additive for every reader that acts only on the tables
+ * it knows; a reader that must act on every file (the publisher) refuses a change naming a table
+ * it does not know (COMPATIBILITY.md §3.2), so such readers deploy first (§3.3): `edge` writes
+ * the span and log tables only where `INGEST_SIGNALS` enables a signal. The publisher reads all
+ * five since 2026-11-19 and publishes each as an Iceberg table of its own (design/DECISIONS.md
+ * D67; publisher/README.md, "The span and log tables"); D64's release before it read the span and
+ * log tables and recorded them as not published. `INGEST_SIGNALS` waits until a publisher release
+ * that reads them (D64's or later) is the publisher's rollback floor (D64, "The rollout rule"),
+ * and, since D69, viz-query and viz-ingest are at theirs too (deploy/README.md, "Rollback floors").
+ */
+export type LedgerTable = Table | SignalTable
+
+/** Every table, in the order the ledger, the janitor and the checks list them. */
+export const TABLES: readonly LedgerTable[] = ['metric_samples', 'metric_series', 'spans', 'trace_index', 'logs']
+/** The tables of each signal. A flush unit holds the files of ONE signal (one shard stream holds one signal: contracts/BATCH.md "Streams per signal"). */
+export const METRIC_TABLES: readonly Table[] = ['metric_samples', 'metric_series']
+export const TRACE_TABLES: readonly SignalTable[] = ['spans', 'trace_index']
+export const LOG_TABLES: readonly SignalTable[] = ['logs']
+
+/**
+ * Where a file of `table` and `day` lies (contracts/TABLES.md, contracts/TRACES.md "Object
+ * keys"): `{cell}/data/{table}/tenant={tenant}/day={day}/`, and for `spans` one more level,
+ * `hour={HH}/`. Every key the ledger admits is directly under this prefix (no further `/`).
+ */
+export const dataKeyPrefix = (cell: string, table: LedgerTable, tenant: string, day: string, hour?: number): string =>
+  `${cell}/data/${table}/tenant=${tenant}/day=${day}/${hour === undefined ? '' : `hour=${String(hour).padStart(2, '0')}/`}`
 
 /** One immutable Parquet object. */
 export interface FileEntry {
-  table: Table
-  /** UTC day, `YYYY-MM-DD`. */
+  table: LedgerTable
+  /** UTC day, `YYYY-MM-DD`: of the rows (metrics, logs), of their start time (`spans`), of the fragments' first start (`trace_index`). */
   day: string
   /**
    * R2 object key (contracts/TABLES.md). Unique. It must lie under
    * `{cell}/data/{table}/tenant={tenant}/day={day}/` for this entry's table and day and the
    * ledger's own tenant and cell: the ledger answers `invalid` otherwise, so the janitor can
    * never be told to delete another tenant's object (design/reviews/write-path-completion.md R-8).
+   * A `spans` key lies one level deeper, under `…/day={day}/hour={HH}/` (`dataKeyPrefix`), and
+   * the ledger requires `[minTs, maxTs]` to lie inside that hour of that day.
    */
   key: string
   bytes: number
   rows: number
+  /**
+   * Inclusive Unix MILLISECONDS for every table. Spans and logs are stored in nanoseconds: their
+   * entries carry the floor of the nanosecond bounds (`EncodedSignalFile` in contracts/engine.ts),
+   * so a plan's millisecond range overlaps the file exactly when its nanosecond range does.
+   * `trace_index`: the first fragment start and the last fragment end.
+   */
   minTs: number
   maxTs: number
   /** 0 = flush file; higher = compaction output. */
@@ -125,8 +168,11 @@ export type AddUnitResult =
  * Replay rules. A retried unit is `ok` whenever the stream's watermark is already at or past
  * its `seqHi`, even if its files have since been compacted away. A unit for a shard the
  * ledger has never seen is admitted only with `seqLo === 1`; otherwise it is
- * `not_contiguous` with watermark 0. A retried `replace` is `ok` if every output is live and
- * no input is; otherwise it is judged as a new request.
+ * `not_contiguous` with watermark 0. (That path, and `registerStream` from flush after
+ * `incarnation_mismatch`, serve shards that do not register before they accept writes: shards
+ * of releases before D61, and shards whose registration mode is `lazy`. A shard that registers
+ * first never takes them.) A retried `replace` is `ok` if every output is live and no input
+ * is; otherwise it is judged as a new request.
  */
 
 export interface Watermark extends StreamRef {
@@ -134,9 +180,59 @@ export interface Watermark extends StreamRef {
   seq: number
 }
 
+/**
+ * What `registerStream` answers. Added as a named type with `logged` (2026-11-19, D61); the
+ * other two fields are as before.
+ */
+export interface RegisterResult {
+  /** The ledger's version after the call (unchanged by a retry of a registration it has). */
+  version: number
+  /** The incarnation the stream had before this one (null for a stream new to the ledger). */
+  previousIncarnation: number | null
+  /**
+   * True iff the stream's committed incarnation is `ref.incarnation` AND the change that
+   * registered it is in the LOGGED prefix of the change log (contracts/LEDGER-LOG.md), so no
+   * rebuild from the log can lose it. A shard accepts writes for a new stream only after this
+   * answer (registration before writes, D61): then every plan names every stream that holds
+   * acknowledged rows, whatever the ledger loses.
+   *
+   * Derived at call time from facts every release maintains, never stored: a committed
+   * registration is logged exactly when no `register_stream` change naming it is still pending
+   * in the outbox, because outbox rows leave only with the segment that holds them, or with a
+   * new incarnation whose base (in R2 first) holds their effect. So a rollback and roll-forward
+   * cannot leave it stale (design/reviews/registration-before-writes.md B-1).
+   *
+   * Additive (COMPATIBILITY.md §4): a ledger of an earlier release does not send it, and a
+   * caller that gets no `logged` must treat it as false. A fresh registration answers false (it
+   * was only committed); ask again once the ledger has drained (about 0.2–1 s).
+   */
+  logged?: boolean
+}
+
+/**
+ * A stream as `loggedWatermarks()` and `orphanCheck()` report it: `incarnation` is the stream's
+ * COMMITTED incarnation and `seq` the logged watermark of that incarnation (0 until a unit of it
+ * is logged), as before.
+ *
+ * Its own type, not a field of `Watermark`, because `Watermark` is also `Plan.watermarks` and
+ * `LedgerChange.watermark`, which is part of the R2 log's format (review m-8).
+ */
+export interface LoggedWatermark extends Watermark {
+  /**
+   * Added 2026-11-19 (D61), optional: a ledger of an earlier release does not send it. The
+   * newest incarnation of this stream whose registration the ledger knows to be in the logged
+   * prefix: `incarnation` once its registration is logged; while it is not, the incarnation
+   * registered before it if THAT registration is logged; else 0. Never above what the logged
+   * prefix holds (so no rebuild can take the stream below it); it may be below (two
+   * registrations of one stream pending at once), which only keeps old files longer.
+   * Derived from the outbox at call time, like `RegisterResult.logged`.
+   */
+  loggedIncarnation?: number
+}
+
 export interface PlanRequest {
-  table: Table
-  /** Inclusive Unix-millisecond range. */
+  table: LedgerTable
+  /** Inclusive Unix-millisecond range, for every table (spans and logs too: `FileEntry.minTs`). */
   minTs: number
   maxTs: number
 }
@@ -174,14 +270,18 @@ export type ReplaceResult =
  * its series file leave together (contracts/TABLES.md, "Pairing"). `tables` was added after
  * `table` (an additive request field, COMPATIBILITY.md §4); a ledger that predates it refuses
  * a request without `table` (unknown table), so a caller never loses an expiry silently.
+ * `spans` and `trace_index` are expired together, by the `day` of each file (a span's start
+ * day; a fragment's first start), as are the metric pair. A ledger of a release before the
+ * span and log tables refuses a request naming one (`unknown table`): the caller expires them
+ * in a request of their own, so the metric expiry never depends on it.
  */
 export type ExpireRequest =
   | {
-      table: Table
+      table: LedgerTable
       /** Remove files whose `day` is strictly before this `YYYY-MM-DD`. */
       beforeDay: string
     }
-  | { tables: Table[]; beforeDay: string }
+  | { tables: LedgerTable[]; beforeDay: string }
 
 /** A change, as appended to the ledger's R2 log and consumed by the publisher. */
 export interface LedgerChange {
@@ -203,7 +303,11 @@ export interface LedgerChange {
    * the segment log (contracts/LEDGER-LOG.md); absent in logs written before it. Additive:
    * `removed` keeps its meaning (contracts/COMPATIBILITY.md §4, never repurpose).
    */
-  removedFiles?: { key: string; table: Table }[]
+  removedFiles?: { key: string; table: LedgerTable }[]
+  // Typed `LedgerTable` since 2026-11-19, which is what the ledger has written here since it
+  // listed span and log files (it was typed `Table` until the publisher read those tables).
+  // A reader still checks the value at run time: a table outside `LedgerTable` (a newer ledger's)
+  // is refused, as an unknown `kind` is (COMPATIBILITY.md §3.2).
   /** For `add_unit` and `register_stream`: the stream's watermark after the change. */
   watermark?: Watermark
   /** For `add_unit`: the sequence range admitted, so a reader can check contiguity. */
@@ -223,11 +327,15 @@ export interface LedgerChange {
 
 export interface LedgerRpc {
   /**
-   * Register a stream (or a new incarnation of one). Idempotent for the same incarnation.
+   * Register a stream (or a new incarnation of one). Idempotent for the same incarnation, and
+   * answers whether the registration is logged (`RegisterResult.logged`): a caller that needs
+   * it logged (a shard before it accepts a new stream's writes) calls again until it is.
    * Throws for an incarnation lower than the registered one (see `StreamRef`): the return
    * type has no refusal, and a caller must never proceed as if a stale stream were registered.
+   * The incarnation the ledger has is in `loggedWatermarks()` (what a shard whose clock stepped
+   * back reads to start a newer stream: shard/README.md, "S5").
    */
-  registerStream(ref: StreamRef): Promise<{ version: number; previousIncarnation: number | null }>
+  registerStream(ref: StreamRef): Promise<RegisterResult>
   addUnit(unit: FlushUnit): Promise<AddUnitResult>
   plan(req: PlanRequest): Promise<Plan>
   /** Compaction: swap inputs for outputs iff every input is still live and the outputs' precedence ranges fit (`LiveFile`). */
@@ -238,9 +346,10 @@ export interface LedgerRpc {
    * Highest sequence per stream that is both committed and durably logged to R2, as of the
    * highest version ALL of whose predecessors are in R2 (the contiguous prefix of the log).
    * With the segment log it lags the committed watermark by up to one drain cycle
-   * (contracts/LEDGER-LOG.md). The only legitimate source of `Shard.recorded`.
+   * (contracts/LEDGER-LOG.md). The only legitimate source of `Shard.recorded`. Each entry also
+   * carries `loggedIncarnation` (D61; see `LoggedWatermark`).
    */
-  loggedWatermarks(): Promise<Watermark[]>
+  loggedWatermarks(): Promise<LoggedWatermark[]>
 }
 
 /** Operator and test surface. Not called on the data path. */
@@ -274,7 +383,7 @@ export interface LedgerAdminRpc {
  */
 export interface Tombstone {
   key: string
-  table: Table
+  table: LedgerTable
   /** Ledger version of the `replace` or `expire` that removed the key. */
   version: number
   /** Ledger clock (Unix ms) when it was removed. */
@@ -286,8 +395,8 @@ export interface OrphanCheck {
   live: string[]
   /** Of the keys asked about: those with a tombstone (their deletion goes through `deletable`). */
   tombstoned: string[]
-  /** Every stream's LOGGED watermark, read in the same instant as the two lists. */
-  logged: Watermark[]
+  /** Every stream's LOGGED watermark and (D61) logged incarnation, read in the same instant as the two lists. */
+  logged: LoggedWatermark[]
 }
 
 export interface LedgerJanitorRpc {
@@ -299,9 +408,20 @@ export interface LedgerJanitorRpc {
   removedSince(version: number, limit?: number): Promise<Tombstone[]>
   /**
    * For the orphan sweep: which of these keys the ledger knows, and how far each stream is
-   * logged, as ONE consistent read. A flush file that is neither live nor tombstoned and
-   * whose sequence range is at or below its stream's logged watermark can never become
-   * live (a unit for that range is answered as a replay).
+   * logged, as ONE consistent read. A flush file of incarnation `i` that is neither live nor
+   * tombstoned can never become live when
+   *
+   *   (a) `i` is the stream's incarnation and the file's sequence range is at or below its
+   *       logged watermark (a unit for that range is answered as a replay), or
+   *   (b) `loggedIncarnation` is newer than `i`: that registration is logged, so no rebuild
+   *       brings `i` back, and the ledger refuses a lower incarnation for good (`addUnit`
+   *       answers `incarnation_mismatch`, `registerStream` throws).
+   *
+   * A newer incarnation that is only COMMITTED proves nothing: a rebuild can roll its
+   * registration back and admit `i` again (spec/README.md F15). Without `loggedIncarnation`
+   * (a ledger before D61), (b) holds only when the newer incarnation's logged watermark is
+   * above 0, which proves its registration is logged (the rule of D30, which leaks files of an
+   * incarnation lost before its first logged unit: spec F16).
    */
   orphanCheck(keys: string[]): Promise<OrphanCheck>
 }
@@ -730,9 +850,9 @@ export class JsonObjectStream {
   private started = false
   done = false
   readonly scalars: Record<string, unknown> = {}
-
   private readonly onElement: (member: string, element: unknown) => void
 
+  // A declared field, not a parameter property: contracts/ compiles under `erasableSyntaxOnly`.
   constructor(onElement: (member: string, element: unknown) => void) {
     this.onElement = onElement
   }

@@ -97,27 +97,75 @@ export const OAUTH_LIMITS = {
   stateLength: 512,
   /** A registration request body, in bytes. */
   registrationBytes: 8_192,
+  /**
+   * Refresh tokens issued per grant in any 60 s (the code exchange's included), counted exactly in
+   * the tenant's object (D70). Over it, `/oauth/token` refuses a refresh with `rate_limited` before
+   * the presented token is spent: a client stuck in a refresh loop writes at most this many times a
+   * minute, from any number of Cloudflare locations.
+   */
+  refreshesPerGrantPerMinute: 6,
 } as const
+
+/**
+ * Refused by a rate limit before the tenant's object was asked (D70): retryable, nothing was
+ * written, and a credential presented with the request is not spent. `retryAfterMs`: when to try
+ * again. Added 2026-11-19 within version 1 of `TokenResult` and `OAuthIntrospectionResult`
+ * (COMPATIBILITY.md §4, "new statuses that callers already fail closed on": control's own Worker
+ * reads the first; the agent surface answers a status it does not know with a retryable 503).
+ */
+export interface RateLimited {
+  v: 1
+  status: 'rate_limited'
+  retryAfterMs: number
+}
 
 // ---- credentials ----
 
 /**
- * `<prefix>1.<tenant>.<secret>`: the secret is 43 base62 characters. The tenant is
+ * `<prefix>1.<tenant>.<secret>`: the secret is 43 base62 characters (`BASE62`). The tenant is
  * `contracts/ledger.ts` TENANT_ID, which has no `.`. Format version 1 is the `1` in the prefix.
  *
- * The 43 characters are `CREDENTIAL_TAG.randomChars` characters from a CSPRNG (about 160 bits;
- * this is what makes the credential unguessable) followed by a `CREDENTIAL_TAG.tagChars`-character
- * tag: the first 16 bytes of HMAC-SHA-256, under a key derived (HKDF-SHA-256, salt
- * `CREDENTIAL_TAG.salt`) from control's `OAUTH_CLIENT_KEY`, of `<prefix>1.<tenant>.<random>`, each
- * byte as `BASE62[byte % 62]`. The tag lets control refuse a made-up credential in the Worker,
- * before the tenant's object is asked (review of D44, M-2); it does not make a credential valid:
- * only the tenant's object, which holds the SHA-256 of the whole credential, says that. Replacing
- * `OAUTH_CLIENT_KEY` therefore ends every code and token too (a client connects again). Added
- * 2026-11-19, before any release issued a credential.
+ * The 43 characters are a `CREDENTIAL_TAG.randomChars`-character body followed by a
+ * `CREDENTIAL_TAG.tagChars`-character tag: the first 16 bytes of HMAC-SHA-256, under a key derived
+ * (HKDF-SHA-256, salt `CREDENTIAL_TAG.salt`) from control's `OAUTH_CLIENT_KEY`, of
+ * `<prefix>1.<tenant>.<body>`, each byte as `BASE62[byte % 62]`. The tag lets control refuse a
+ * made-up credential in the Worker, before the tenant's object is asked (review of D44, M-2); it
+ * does not make a credential valid: only the tenant's object, which holds the SHA-256 of the whole
+ * credential, says that. Replacing `OAUTH_CLIENT_KEY` therefore ends every code and token too (a
+ * client connects again). Added 2026-11-19, before any release issued a credential.
+ *
+ * The body has two layouts. Every reader of version 1 reads both, because the shape and the tag
+ * are the same: a reader that does not know layout 2 sees 27 opaque characters, as before.
+ * - **Layout 1** (issued by releases before the review of D70): 27 characters from a CSPRNG.
+ * - **Layout 2** (`CREDENTIAL_LAYOUT`, issued since the review of D70, B-1, 2026-11-19): the marker
+ *   `e`, the credential's expiry in 4 characters, and 22 characters from a CSPRNG (about 131 bits;
+ *   with the tag, which only `OAUTH_CLIENT_KEY` can make, this is what makes the credential
+ *   unguessable). The expiry is whole minutes since `CREDENTIAL_LAYOUT.expiryEpochMs`, rounded
+ *   up, base62 with the most significant character first (good until 2054-12): the moment the
+ *   tenant's object stops accepting the credential, or a little later, never earlier. The tag
+ *   covers it, so the Worker can refuse a credential past its expiry before any limit counts it
+ *   and before any object is asked (`credentialExpiresAt`; D70).
+ * A layout 1 body begins with `e` one time in 62 and is then read as layout 2 with an expiry
+ * uniform over 28 years; layout 1 credentials live 30 days at most, so in the month after the
+ * change about 1 in 11,600 of them could be read as expired early (by 2026-12-26, if layout 2
+ * reaches production in 2026-11). Production has served layout 1 since 2026-11-19 (fb77292, PR #8),
+ * so any credential it issued is such a credential; one refused early this way is re-approved by a person.
  */
 export const OAUTH_CREDENTIAL = /^(vzc|vza|vzr)1\.([A-Za-z0-9_-]{1,64})\.([A-Za-z0-9]{43})$/
 export const CREDENTIAL_PREFIX = { code: 'vzc1', access: 'vza1', refresh: 'vzr1' } as const
+/** `randomChars`: the body's length, the characters before the tag (named before layout 2 put more than randomness in it). */
 export const CREDENTIAL_TAG = { randomChars: 27, tagChars: 16, salt: 'viz.oauth.credential-tag/v1' } as const
+/** The order of base62 digits in a credential's tag and in layout 2's expiry. */
+export const BASE62 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+/** Layout 2 of a credential's body (above): marker, expiry, random characters; 1 + 4 + 22 = `CREDENTIAL_TAG.randomChars`. */
+export const CREDENTIAL_LAYOUT = {
+  marker: 'e',
+  expiryChars: 4,
+  /** 2026-11-01T00:00:00Z. */
+  expiryEpochMs: 1_793_491_200_000,
+  expiryUnitMs: 60_000,
+  randomChars: 22,
+} as const
 export type CredentialKind = keyof typeof CREDENTIAL_PREFIX
 
 export function parseCredential(s: string): { kind: CredentialKind; tenant: string } | null {
@@ -125,6 +173,19 @@ export function parseCredential(s: string): { kind: CredentialKind; tenant: stri
   if (!m) return null
   const kind = m[1] === 'vzc' ? 'code' : m[1] === 'vza' ? 'access' : 'refresh'
   return { kind, tenant: m[2]! }
+}
+
+/**
+ * When a layout 2 credential expires (Unix ms; the object's own expiry or up to a minute later), or
+ * null for a layout 1 credential or a string that is not a credential. Read only after the tag has
+ * been verified: the tag is what makes the expiry the issuer's.
+ */
+export function credentialExpiresAt(s: string): number | null {
+  const m = OAUTH_CREDENTIAL.exec(s)
+  if (!m || m[3]![0] !== CREDENTIAL_LAYOUT.marker) return null
+  let v = 0
+  for (const ch of m[3]!.slice(1, 1 + CREDENTIAL_LAYOUT.expiryChars)) v = v * 62 + BASE62.indexOf(ch)
+  return CREDENTIAL_LAYOUT.expiryEpochMs + v * CREDENTIAL_LAYOUT.expiryUnitMs
 }
 
 /**
@@ -174,6 +235,16 @@ export interface OAuthGrantView {
   revokedBy: OAuthActor | null
   /** person, client, code-reuse, refresh-reuse, wrong-client, not-exchanged, idle, approver-gone, expired. */
   revokeReason: string | null
+  /**
+   * Refresh tokens issued for the grant in the last 24 hours, the code exchange's included: counted
+   * from the rows the tenant's object keeps (a rotated refresh token is kept a day for reuse
+   * detection), so 0 once the grant has ended. A client that refreshes when its hour-long access
+   * token runs out shows about 24; one rotating at `OAUTH_LIMITS.refreshesPerGrantPerMinute` shows
+   * up to 8,640, the signature of collecting refresh tokens (review of D70, round 2, R2-M2). The
+   * revocation's audit entry keeps the last count. Added 2026-11-19 within version 1 (a new
+   * response field, COMPATIBILITY.md §4).
+   */
+  refreshesLastDay: number
 }
 
 // ---- the RPCs on the Tenant object (control/ only: its Worker and its own entrypoints) ----
@@ -192,6 +263,29 @@ export interface TokenRequest {
 
 export type TokenErrorCode = 'invalid_request' | 'invalid_client' | 'invalid_grant' | 'invalid_scope' | 'invalid_target' | 'unsupported_grant_type'
 
+/**
+ * Results that say a presented credential is dead for good, which control's Worker records in its
+ * list of dead credentials and then refuses before its tenant's fuse and before any object (D70,
+ * after its second review, R2-M2). Each is a promise the tenant's object keeps, and each keeps a
+ * second rule (third review, R3-B1): **nothing is called dead whose later presentation must still
+ * reach the object**, which for a refresh token means: never a rotated token of a grant that is still
+ * live, because presenting it again is what reuse detection ends the grant on.
+ * - `TokenResult` `error` `invalid_grant` on the `refresh_token` grant: the presented refresh token
+ *   will never be accepted again. It is unknown (never stored, expired and swept, or its grant's rows
+ *   deleted), expired, rotated (presenting it ended the grant), of a grant that has ended or can no
+ *   longer issue (revoked, expired, its approver's key deleted or expired, its own key gone), or it
+ *   was presented by another client (which ended the grant), or it was spent by this very request
+ *   without anything being issued. A rotated token answered `invalid_grant` here has just ended its
+ *   grant by reuse detection, so nothing is left for a later presentation to detect.
+ *   Every other error leaves it as it was (`invalid_request`, `invalid_scope`, `invalid_target`,
+ *   `rate_limited`, `schema_too_new`).
+ * - `IntrospectionResult` `inactive` with `unknown`, `expired` or `revoked`: the access token will
+ *   never be active again. `suspended` (the grant's key or its approver's is disabled; enabling it
+ *   resumes the grant) and `audience` (asked for another resource) are not dead.
+ * - `RevokeResult` `ok` with `dead: true` (below).
+ */
+export const DEAD_INACTIVE_REASONS: readonly InactiveReason[] = ['unknown', 'expired', 'revoked']
+
 export type TokenResult =
   | {
       v: 1
@@ -201,6 +295,8 @@ export type TokenResult =
   /** The description never contains a credential. */
   | { v: 1; status: 'error'; error: TokenErrorCode; description: string }
   | { v: 1; status: 'not_provisioned' }
+  /** A refresh over `OAUTH_LIMITS.refreshesPerGrantPerMinute` for its grant; the presented token is not spent. */
+  | RateLimited
   | SchemaTooNew
 
 export type InactiveReason = 'unknown' | 'expired' | 'revoked' | 'suspended' | 'audience'
@@ -232,7 +328,18 @@ export type IntrospectionResult =
   | { v: 1; status: 'not_provisioned' }
   | SchemaTooNew
 
-export type RevokeResult = { v: 1; status: 'ok' } | { v: 1; status: 'not_provisioned' } | SchemaTooNew
+/**
+ * `dead`: after this call the presented token is not, and never will be again, a token the object
+ * would act on: it was unknown, expired or of a grant that had ended, or this call ended it (an access
+ * token alone, a refresh token with its grant). False whenever another client presented a token whose
+ * grant is still live, which changes nothing: also for a **rotated** refresh token, whose later
+ * presentation by its other holder must reach the object so that reuse detection ends the grant
+ * (third review of D70, R3-B1; until then the doc and the code counted "rotated" as dead, which let a
+ * thief list the owner's copy and keep a stolen grant alive). Absent from objects of releases before
+ * 2026-11-19: read as unknown, never as dead. Added within version 1 (a new response field,
+ * COMPATIBILITY.md §4).
+ */
+export type RevokeResult = { v: 1; status: 'ok'; dead?: boolean } | { v: 1; status: 'not_provisioned' } | SchemaTooNew
 
 export interface TenantOAuthRpc {
   /** The token endpoint, for the tenant the presented code or refresh token names. */
@@ -263,8 +370,16 @@ export interface TenantOAuthRpc {
  *   `unauthorized` and reaches no object.
  * - A token that is not shaped like an access token, or does not carry this deployment's tag
  *   (`CREDENTIAL_TAG`), is `inactive` (`unknown`) and reaches no object.
- * - Results are `IntrospectionResult` (version 1, above) plus `unauthorized`. Nothing throws for bad
- *   input.
+ * - A token with the tag whose layout 2 expiry has passed (`credentialExpiresAt`) is `inactive`
+ *   (`expired`) and reaches no object (D70).
+ * - A token its tenant's object has already called dead (`DEAD_INACTIVE_REASONS`), which control
+ *   lists until the token's expiry, is `inactive` with the reason recorded and reaches no limit and
+ *   no object (D70 after its second review, R2-M2). The list is eventually consistent: for about a
+ *   minute after the first such answer, other places may still ask the object once.
+ * - Results are `IntrospectionResult` (version 1, above) plus `unauthorized` and `rate_limited`
+ *   (D70: too many introspections of this token, or of this token's tenant, in this Cloudflare
+ *   location; checked after the tag and the expiry and before the tenant's object, so only a
+ *   credential this deployment made, not yet expired, counts). Nothing throws for bad input.
  */
 export const OAUTH_INTROSPECTION_ENTRYPOINT = 'OAuthIntrospection'
 
@@ -276,7 +391,7 @@ export interface OAuthIntrospectionProps {
   caller: string
 }
 
-export type OAuthIntrospectionResult = IntrospectionResult | { v: 1; status: 'unauthorized' }
+export type OAuthIntrospectionResult = IntrospectionResult | { v: 1; status: 'unauthorized' } | RateLimited
 
 export interface OAuthIntrospectionRpc {
   /** Is this access token live, for `resource` (the caller's own canonical URI), and who is it. Read only. */

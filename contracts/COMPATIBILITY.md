@@ -257,6 +257,11 @@ latest, compat }`, and per format the versions it reads and writes.
   `canOpen(T.latest, { version: R.latest, compat: R.compat })`, and T reads every format
   version any release since T has written, and no class lifecycle change lies between them.
   Take R as the newest release that ever ran since T, not the one running now.
+- What a release reads is judged **per Worker**: a format version is read by T when every
+  Worker of T that reads the format reads it, and a Worker that declares nothing of what it reads
+  is taken to read version 1 of every format (§3.1, "absent means 1"). A rollback of some Workers
+  only leaves the others serving: the Workers it restores must also read every format version
+  that those others wrote since T and write now.
 - A release is **forward-only** when it fails that test against its predecessor: it has a
   migration with `readableFrom` = its own version, writes a format version its predecessor
   does not read, or changes a class's lifecycle. The rollback tool refuses to cross it. Fix
@@ -264,6 +269,21 @@ latest, compat }`, and per format the versions it reads and writes.
 - The **rollback floor** is the oldest release a rollback may reach; a forward-only release
   raises it to itself. Rules that say "once A is the floor" mean: the release tool will no
   longer roll back past A.
+- **A floor raised by a switch.** A switch that makes a writer start writing data that older
+  readers cannot handle (a var such as `INGEST_SIGNALS`; no format version records it) raises,
+  per Worker rather than for the whole release, the floor of each reader the rule names to the
+  first release of that Worker that handles the data. It holds while a version of the writer
+  with the switch on is among the versions the platform keeps (the 100 newest), and no release or
+  rollback may then put one of those readers below its floor. Every release with the switch on is
+  refused unless each of them is at its floor in that release and as it serves, one the release
+  does not deploy included; the release record names the rule and what it saw (D69;
+  `deploy/workers.json` `rollback_floors`, a hand list). One exception, which a rule must state
+  (`serving_below_floor: forward-only`; D69, point 6): for a switch the deploy sets on every release
+  (viz-control's `OAUTH_PUBLIC`, so no release can first bring a reader to its floor without the
+  switch), a release that brings such a reader to its floor while the one it replaces serves below
+  it is **forward-only** for that reader instead of refused: nothing puts the older reader back
+  automatically, and every later rollback to it is refused as below the floor. A reader the release
+  does not deploy is still refused as it serves.
 - **Bootstrapping.** The first release with versioned storage cannot protect against a
   rollback to code from before it (that code checks nothing). Version 1 equals that code's
   schema, so such a rollback is harmless; but no migration 2 may ship until the first
