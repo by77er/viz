@@ -295,12 +295,14 @@ describe('a re-base kept across invocations (README, "Re-bases and rebuilds in s
         const kept = (await capped.steps())[big]
         if (!swept && kept && kept.ahead > 0) {
           swept = true
-          const objects = Object.fromEntries(await Promise.all(SIGNALS.map(async (t) => [t, await listKeys(metaDir(cell, t))] as const)))
+          // Every table's objects: a manifest written ahead may be in any table the re-base publishes
+          // (and only a table with a snapshot is swept at all).
+          const objects = Object.fromEntries(await Promise.all(ALL.map(async (t) => [t, await listKeys(metaDir(cell, t))] as const)))
           for (let i = 0; i < 2; i++) {
             await capped.advanceClock(2 * HOUR)
             await capped.maintain()
           }
-          for (const t of SIGNALS) for (const k of objects[t]!) expect(await listKeys(metaDir(cell, t)), `${t}: ${k}`).toContain(k)
+          for (const t of ALL) for (const k of objects[t]!) expect(await listKeys(metaDir(cell, t)), `${t}: ${k}`).toContain(k)
           expect((await capped.steps())[big]!.ahead).toBe(kept.ahead)
         }
       }

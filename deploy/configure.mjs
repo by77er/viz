@@ -457,7 +457,6 @@ export function configure({ stage, release = releaseId(), idsOptional = false, q
   const workers = []
   /** Main module of each Worker configured so far, for the entrypoint check of the ones after it. */
   const mains = new Map()
-  const deploymentIds = new Map()
   for (const worker of plan.workers) {
     const componentDir = join(REPO_ROOT, worker.component)
     const cfgPath = join(componentDir, 'wrangler.jsonc')
@@ -479,13 +478,9 @@ export function configure({ stage, release = releaseId(), idsOptional = false, q
       oauthWithoutRateLimits,
       oauthPublic,
     })
-    // Two bindings of one deployment with one namespace id would share a counter.
-    for (const [name, id] of Object.entries(g.summary.oauth?.ratelimits ?? {})) {
-      if (id === null) continue
-      const other = deploymentIds.get(id)
-      if (other) throw new Error(`${worker.name} ${name} and ${other} have the same namespace_id ${id}: they would share one counter`)
-      deploymentIds.set(id, `${worker.name} ${name}`)
-    }
+    // Two bindings of one deployment with one id would share a counter: refused within the Worker
+    // (configureRateLimits). Only a Worker with an `oauth` block may carry ratelimits (viz-control
+    // alone), and resources.mjs never gives one id to two bindings, so no check across Workers.
     checkEntrypoints(worker.name, g.summary.entrypoints, mains)
     mains.set(worker.name, g.mainAbs)
     const file = join(outDir, `${worker.name}.jsonc`)

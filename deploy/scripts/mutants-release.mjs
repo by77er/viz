@@ -105,7 +105,6 @@ const MUTANTS = [
   ['configure: a component or VIZ_STAGE_VARS may set OAUTH_PUBLIC', 'configure.mjs', '  if (gate && (Object.hasOwn(cfg.vars ?? {}, gate.publicVar)', '  if (false && (Object.hasOwn(cfg.vars ?? {}, gate.publicVar)'],
   ['m-8: placement is not refused on viz-control and viz-mcp', 'configure.mjs', '  if (worker.no_placement !== undefined && cfg.placement !== undefined) throw', '  if (false) throw'],
   ["m-8: workers.json no longer marks viz-mcp no_placement", 'workers.json', '      "no_placement": "viz-mcp\'s OAuth bearers', '      "placement_note": "viz-mcp\'s OAuth bearers'],
-  ['configure: two bindings of one deployment with one id (across Workers) are accepted', 'configure.mjs', '      if (other) throw new Error(`${worker.name} ${name} and ${other}', '      if (false) throw new Error(`${worker.name} ${name} and ${other}'],
   // The oauth-public floor (D69 point 6)
   ['oauth-public: a release over a viz-control serving below the floor is refused (serving_below_floor ignored)', 'lib/floors.mjs', " && !(w.now && rule.servingBelow === 'forward-only')", ''],
   ['oauth-public: such a release is not marked forward-only', 'lib/floors.mjs', '    forwardOnly.push(...floorForwardOnly(rule, s))\n', ''],
