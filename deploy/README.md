@@ -887,10 +887,13 @@ All measured here unless it says Cloudflare.
   is below its floor" (exit 3), which is what the rule as `control/README.md` first wrote it would do
   to production.
 
-  **control** (`control/wrangler.jsonc` gained the block): `npx tsc --noEmit` clean. control's own
-  suite in a scratch copy (it loads `wrangler.jsonc`): 220 of 221; the one failure,
-  `ratelimit-review-r2.test.ts` "the list is shared …", fails the same with the committed
-  `wrangler.jsonc` (2 runs of 2): not this change ("Needed changes in components").
+  **control** (`control/wrangler.jsonc` gained the block): `npx tsc --noEmit` clean. The block made
+  control's test plugin bind the production limits in every control test, and 22 unrelated tests
+  failed; control's builder made `control/vitest.config.ts` hand the plugin a copy of the config
+  without `ratelimits` (reported by the coordinator; control passes 222 of 222 since its round 3).
+  My own run of control's suite in a scratch copy (0fe7684, already with that workaround) gave 220 of
+  221, the one failure (`ratelimit-review-r2.test.ts`, "the list is shared …") the same with the
+  committed `wrangler.jsonc`, 2 runs of 2: round 3 in progress then, not this change.
 
   MUTANTS_PLACEHOLDER
 
@@ -1610,9 +1613,9 @@ From D70's gate (2026-11-26), for `control/`'s owner (not edited here):
   "in progress" sentence are out of date. Item 6's test "a release setting it while the serving
   viz-control is unstamped is refused" was not built as written: such a release is forward-only
   instead (D69, point 6), because refusing would strand production.
-- **`control/test/ratelimit-review-r2.test.ts`**, "the list is shared: in a new isolate a listed token
-  is refused …": fails in a scratch copy of the tree as of 0fe7684, with and without the `ratelimits`
-  block (2 runs each); the other 220 of control's 221 tests pass with the block.
+- **`control/vitest.config.ts`** now strips `ratelimits` from the config it hands the test plugin
+  (control's builder, after the block made 22 tests fail): a test of control that wants the real
+  bindings has to add them itself.
 
 From the generated OAuth key (D53; none made here):
 
