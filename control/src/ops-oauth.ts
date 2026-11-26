@@ -484,8 +484,10 @@ async function issue(t: Tenant, g: GrantRow, presented: string, sealed: string, 
 /**
  * An access token ends alone; a refresh token ends its grant. A token of another client, or none at
  * all, changes nothing. Returns whether the token is dead afterwards (`RevokeResult.dead`,
- * contracts/oauth.ts): unknown here, expired, rotated, of a grant that has ended, or ended now. A
- * live token another client presented is not; nor is anything that is not a token (no answer).
+ * contracts/oauth.ts): unknown here, expired, of a grant that has ended, or ended now. A token of a
+ * live grant that another client presented is not, a rotated refresh token included: its other
+ * holder's next presentation must reach this object for reuse detection (review of D70, round 3,
+ * R3-B1). Nor is anything that is not a token (no answer).
  */
 export function revokeToken(t: Tenant, token: string, clientId: string, now: number): boolean | undefined {
   const parsed = typeof token === 'string' ? parseCredential(token) : null
@@ -497,8 +499,11 @@ export function revokeToken(t: Tenant, token: string, clientId: string, now: num
   const g = loadGrant(t, row.grant_id)
   if (!g) return true
   if (!clientMatches(t, g, clientId)) {
-    // Changes nothing. Dead only if it already was, by what cannot come back.
-    return row.expires_at <= now || g.revoked_at !== null || g.expires_at <= now || (row.kind === 'refresh' && row.rotated_at !== null)
+    // Changes nothing. Dead only if it already was, by what cannot come back. Not for being rotated:
+    // the grant is live, and the owner presenting its rotated copy is what ends a thief's grant
+    // (R3-B1). Nor a rotated row past its own expiry: until the Worker refuses it as expired (60 s
+    // later), presenting it still reaches reuse detection, which refreshTokens checks first.
+    return g.revoked_at !== null || g.expires_at <= now || (row.rotated_at === null && row.expires_at <= now)
   }
   if (row.kind === 'access') {
     t.run('DELETE FROM oauth_tokens WHERE tenant = ? AND hash = ?', t.tenant, row.hash)

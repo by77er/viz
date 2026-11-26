@@ -264,13 +264,18 @@ export type TokenErrorCode = 'invalid_request' | 'invalid_client' | 'invalid_gra
 
 /**
  * Results that say a presented credential is dead for good, which control's Worker records in its
- * list of dead credentials and then refuses before any rate limit or object (D70, after its second
- * review, R2-M2). Each is a promise the tenant's object keeps:
+ * list of dead credentials and then refuses before its tenant's fuse and before any object (D70,
+ * after its second review, R2-M2). Each is a promise the tenant's object keeps, and each keeps a
+ * second rule (third review, R3-B1): **nothing is called dead whose later presentation must still
+ * reach the object**, which for a refresh token means: never a rotated token of a grant that is still
+ * live, because presenting it again is what reuse detection ends the grant on.
  * - `TokenResult` `error` `invalid_grant` on the `refresh_token` grant: the presented refresh token
  *   will never be accepted again. It is unknown (never stored, expired and swept, or its grant's rows
  *   deleted), expired, rotated (presenting it ended the grant), of a grant that has ended or can no
  *   longer issue (revoked, expired, its approver's key deleted or expired, its own key gone), or it
- *   was presented by another client (which ended the grant), or it was spent by this very request.
+ *   was presented by another client (which ended the grant), or it was spent by this very request
+ *   without anything being issued. A rotated token answered `invalid_grant` here has just ended its
+ *   grant by reuse detection, so nothing is left for a later presentation to detect.
  *   Every other error leaves it as it was (`invalid_request`, `invalid_scope`, `invalid_target`,
  *   `rate_limited`, `schema_too_new`).
  * - `IntrospectionResult` `inactive` with `unknown`, `expired` or `revoked`: the access token will
@@ -323,11 +328,15 @@ export type IntrospectionResult =
   | SchemaTooNew
 
 /**
- * `dead`: after this call the presented token is not, and never will be again, a live token of the
- * tenant: it was unknown, expired, rotated or of a grant that had ended, or this call ended it (an
- * access token alone, a refresh token with its grant). False when it is still live (another client
- * presented it, which changes nothing). Absent from objects of releases before 2026-11-19: read as
- * unknown, never as dead. Added within version 1 (a new response field, COMPATIBILITY.md §4).
+ * `dead`: after this call the presented token is not, and never will be again, a token the object
+ * would act on: it was unknown, expired or of a grant that had ended, or this call ended it (an access
+ * token alone, a refresh token with its grant). False whenever another client presented a token whose
+ * grant is still live, which changes nothing: also for a **rotated** refresh token, whose later
+ * presentation by its other holder must reach the object so that reuse detection ends the grant
+ * (third review of D70, R3-B1; until then the doc and the code counted "rotated" as dead, which let a
+ * thief list the owner's copy and keep a stolen grant alive). Absent from objects of releases before
+ * 2026-11-19: read as unknown, never as dead. Added within version 1 (a new response field,
+ * COMPATIBILITY.md §4).
  */
 export type RevokeResult = { v: 1; status: 'ok'; dead?: boolean } | { v: 1; status: 'not_provisioned' } | SchemaTooNew
 

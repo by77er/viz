@@ -12,7 +12,8 @@
  * Steps:
  *   first    every tenant published (all five tables), the caps lifted: a first publication; with
  *            BENCH_FIRST_CAPPED=1 at the cap instead, `publish` until no tenant waits (a re-base too
- *            large for the cap goes on in steps: README, "Re-bases and rebuilds in steps")
+ *            large for the cap goes on in steps: README, "Re-bases and rebuilds in steps"); with
+ *            BENCH_NO_CHECKPOINT=1 the log has no checkpoint, so every re-base reads the base
  *   upgrade  the span and log tables forgotten (what the D64 release leaves: metrics published and
  *            cursored, the span and log tables never published), then `publish` again until no
  *            tenant waits, with re-bases capped at `cap` staged files: every publish is timed,
@@ -42,7 +43,7 @@ import {
 import type { PublishResult } from '../src/publisher'
 import type { BenchPublisher } from './worker'
 
-const E = env as unknown as { PUBLISHER: DurableObjectNamespace<BenchPublisher>; BUCKET: R2Bucket; BENCH_UPGRADE?: string; BENCH_FIRST_CAPPED?: string }
+const E = env as unknown as { PUBLISHER: DurableObjectNamespace<BenchPublisher>; BUCKET: R2Bucket; BENCH_UPGRADE?: string; BENCH_FIRST_CAPPED?: string; BENCH_NO_CHECKPOINT?: string }
 const CASES = (E.BENCH_UPGRADE || '4x2000@4000').split(',').map((c) => {
   const m = /^(\d+)x(\d+)@(\d+)$/.exec(c.trim())
   if (!m) throw new Error(`BENCH_UPGRADE: ${c} is not TENANTSxFILES@CAP`)
@@ -131,6 +132,8 @@ async function writeLog(tenant: string, n: number): Promise<void> {
   })
   const change = { ledgerIncarnation: 1, version: 1001, at: 0, kind: 'add_unit', added: unitFiles(tenant), removed: [], watermark: { shard: 'pool/b/0', incarnation: 1000, seq: 1001 }, unit: { seqLo: 1001, seqHi: 1001 } }
   await E.BUCKET.put(`${CELL}/${ledgerSegmentKey(tenant, 1, 1001, 1001)}`, `${header('viz.ledger.segment', tenant, 1001, 1001)}${JSON.stringify(change)}\n`)
+  // BENCH_NO_CHECKPOINT=1: a re-base reads the base segment (as S11's publication on Cloudflare did), staged whole in one step.
+  if (E.BENCH_NO_CHECKPOINT === '1') return
   const attempt = '0c0c0c0c'
   let lines: string[] = []
   let size = 0

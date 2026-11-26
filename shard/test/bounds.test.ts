@@ -263,6 +263,12 @@ describe('bounds recorded at append', () => {
     const none = log.slice()
     new DataView(none.buffer).setUint32(12, 0, true) // rows, and no entry for them to name
     odd.push(none)
+    // The same with nothing else for the walk to trip on: two rows, no entry, every other byte zero
+    // (a `ts` column of zeros would read as bounds {0, 0}).
+    const bare = new Uint8Array(48)
+    bare.set([0x56, 0x5a, 0x42, 0x31, 3])
+    new DataView(bare.buffer).setUint32(8, 2, true)
+    odd.push(bare)
     for (const [i, x] of odd.entries()) {
       expect(batchTimeBounds(x), `case ${i}`).toBeNull()
       // The engine's strict decoder refuses each one too: none is a batch of this layout.
