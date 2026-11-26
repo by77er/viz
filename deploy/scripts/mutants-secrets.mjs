@@ -100,7 +100,8 @@ if (base.failed) {
   process.exit(1)
 }
 const only = process.argv[2]
-const chosen = MUTANTS.filter(([name]) => !only || name.includes(only))
+// `re:<pattern>` chooses the mutants whose name matches a regular expression.
+const chosen = MUTANTS.filter(([name]) => !only || (only.startsWith('re:') ? new RegExp(only.slice(3)).test(name) : name.includes(only)))
 let killed = 0
 for (const [name, file, from, to] of chosen) {
   const path = join(DEPLOY_DIR, file)

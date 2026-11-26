@@ -72,9 +72,10 @@
           "evidence": [
             "contracts/oauth.ts#CREDENTIAL_LAYOUT",
             "contracts/oauth.ts#DEAD_INACTIVE_REASONS",
-            "control/src/deadlist.ts#recordDead"
+            "control/src/deadlist.ts#recordDead",
+            "control/src/ratelimit.ts#LISTED"
           ],
-          "why": "D70 after its two reviews: the first viz-control whose credentials carry their expiry (an older one mints credentials the Worker can never refuse as expired, and keys the token endpoint per presented client_id: B-1), asks a tenant's fuse only after the credential's own limit (R2-M1), and lists credentials found dead (R2-M2: an older one lets a stock of refresh tokens trip the token fuse for 30 days, revocation included)"
+          "why": "D70 after its two reviews: the first viz-control whose credentials carry their expiry (an older one mints credentials the Worker can never refuse as expired, and keys the token endpoint per presented client_id: B-1), asks a tenant's fuse only after the credential's own limit (R2-M1), and lists credentials found dead (R2-M2: an older one lets a stock of refresh tokens trip the token fuse for 30 days, revocation included), and never lists a rotated refresh token of a live grant (round 3, R3-B1: LISTED exists from round 3 on; a viz-control with round 2 alone would let a thief stop reuse detection)"
         }
       }
     }

@@ -619,10 +619,10 @@ test('D70 round 2: viz-control declares kv.oauth-dead 1, its list of dead creden
   assert.equal(plan.resources.kv.CONFIG, 'viz-config')
 })
 
-test('oauth-public: the rule parses, viz-control is its writer and its one floor, on the evidence of three exports only D70\'s second round has; a viz-control without one is refused at configure', () => {
+test('oauth-public: the rule parses, viz-control is its writer and its one floor, on the evidence of four exports only D70\'s third round has all of; a viz-control without one is refused at configure', () => {
   const rule = floorRules(plan, undefined).find((r) => r.name === 'oauth-public')
   assert.deepEqual([rule.writer, rule.var, rule.servingBelow], ['viz-control', 'OAUTH_PUBLIC', 'forward-only'])
-  assert.deepEqual(rule.floors.map((f) => [f.worker, f.evidence.map((e) => `${e.module}#${e.name}`)]), [['viz-control', ['contracts/oauth.ts#CREDENTIAL_LAYOUT', 'contracts/oauth.ts#DEAD_INACTIVE_REASONS', 'control/src/deadlist.ts#recordDead']]])
+  assert.deepEqual(rule.floors.map((f) => [f.worker, f.evidence.map((e) => `${e.module}#${e.name}`)]), [['viz-control', ['contracts/oauth.ts#CREDENTIAL_LAYOUT', 'contracts/oauth.ts#DEAD_INACTIVE_REASONS', 'control/src/deadlist.ts#recordDead', 'control/src/ratelimit.ts#LISTED']]])
   assert.deepEqual(stampedFloors(floorRules(plan, undefined), 'viz-control', exportedNames), ['oauth-public'])
   const r = plan.rollback_floors.find((x) => x.name === 'oauth-public')
   const bad = floorRules({ ...plan, rollback_floors: [{ ...r, floors: { 'viz-control': { ...r.floors['viz-control'], evidence: ['control/src/deadlist.ts#recordDeadX'] } } }] }, undefined)

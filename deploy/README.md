@@ -7,12 +7,12 @@ changes no component: everything it needs from one is under "Needed changes".
 | File | What it does |
 |---|---|
 | `workers.json` | Which Workers exist, in dependency order (callees first), which are deployed, and why the others are not. Deployment-wide settings: domain, observability sampling, Durable Object code-update mode, resource names, shared vars |
-| `configure.mjs` | Generates each Worker's production (or staged) wrangler config into `generated/` from the component's own `wrangler.jsonc` |
-| `resources.mjs` | Creates the R2 bucket, KV namespace and queues (idempotent); `destroy --stage` deletes a stage |
+| `configure.mjs` | Generates each Worker's production (or staged) wrangler config into `generated/` from the component's own `wrangler.jsonc`; D70's gate on viz-control's rate limits, `OAUTH_PUBLIC`, and no `placement` on viz-control and viz-mcp ("Rate limits in front of OAuth") |
+| `resources.mjs` | Creates the R2 bucket, KV namespace and queues (idempotent), and gives viz-control's Rate Limiting bindings namespace ids of their own (reads the account's bindings; creates nothing); `destroy --stage` deletes a stage and frees its ids |
 | `release.mjs` | Upload every Worker, then promote callees first; the migration gate; release records (with schema and format versions, rollback floors, and whether the release is forward-only); rollback of a record (or `--only` some of its Workers, the others judged as they serve), refused across a forward-only release, under a format version a restored Worker does not read, below a rollback floor, or across the OAuth key's creation or rotation; `plan` |
 | `lib/formats.mjs` | Reads each Worker's format versions (written and read) from its components' `FORMATS` maps and read lists, for the manifest, the `VIZ_FORMATS` var of each version, and the rollback check (D69) |
-| `lib/floors.mjs` | Rollback floors a switch raises (`INGEST_SIGNALS`): which Workers, how each is judged (schema version or a `VIZ_FLOORS` stamp), and the deploy and rollback refusals (D64, D69) |
-| `lib/secrets.mjs` | Worker secrets the deploy generates (viz-control's `OAUTH_CLIENT_KEY`): put on the release's upload only where missing, value on wrangler's stdin, replaced only when asked, never on another run's upload; rollbacks across its creation or rotation refused ("Worker secrets the deploy generates") |
+| `lib/floors.mjs` | Rollback floors a switch raises (`INGEST_SIGNALS`; `OAUTH_PUBLIC`): which Workers, how each is judged (schema version or a `VIZ_FLOORS` stamp), and the deploy and rollback refusals, or a forward-only mark where a rule says so (D64, D69) |
+| `lib/secrets.mjs` | Worker secrets the deploy generates (viz-control's `OAUTH_CLIENT_KEY`): put on the release's upload only where missing, value on wrangler's stdin, replaced only when asked, never on another run's upload, never on a viz-control without its rate limits (D70); rollbacks across its creation or rotation refused ("Worker secrets the deploy generates") |
 | `lib/schemas.mjs` | Reads every Durable Object class's `SchemaSpec` from the component sources (esbuild, no Worker run) for the manifest, the `VIZ_SCHEMAS` var of each version, and the rollback check |
 | `deploy.sh` | The whole deploy: WASM, `npm ci`, resources, configure, release, smoke test, automatic rollback |
 | `smoke.mjs` | `/healthz` until the release just promoted answers, then a real Remote Write and a query that must return it within 60 s |
@@ -22,9 +22,11 @@ changes no component: everything it needs from one is under "Needed changes".
 | `stage/` | The one shim a staged deployment needs (queue names, see "Needed changes" 1) |
 | `trial/` | Trial 2: `sink/index.ts`, a webhook receiver Worker for a stage, and `trial2.mjs`, which drives a stage end to end (monitors, alerting, MCP) and reports. Trial 3: `probe/index.ts`, a stand-in for the ruler's `SINK` binding |
 | `ci/matrix.mjs` | Which components CI checks in this checkout |
-| `scripts/mutants-release.mjs` | Mutation check of the schema, format and floor rules in `release.mjs`, `configure.mjs`, `lib/schemas.mjs`, `lib/formats.mjs`, `lib/floors.mjs`, of the class-binding allowlist and viz-mcp's bindings, and of the workflow's main-only gate (run on a copy) |
-| `scripts/mutants-secrets.mjs` | Mutation check of the generated secrets (`lib/secrets.mjs`, its use in `release.mjs`, stdin in `lib/wrangler.mjs`, the API timeout in `lib/cf.mjs`; run on a copy) |
-| `test/fake-wrangler.mjs` | A stand-in for wrangler that the end-to-end tests (`secrets`, `release-checks`, `review-d69`, `workflow`) run as a real child process (`VIZ_WRANGLER_BIN`, tests only), with `test/fake-account.mjs` answering the Cloudflare API from the same state |
+| `scripts/mutants-release.mjs` | Mutation check of the schema, format and floor rules in `release.mjs`, `configure.mjs`, `lib/schemas.mjs`, `lib/formats.mjs`, `lib/floors.mjs`, of the class-binding allowlist and viz-mcp's bindings, of the workflow's main-only gate, of D70's gate in `configure.mjs` and of the rate-limit ids in `resources.mjs` (run on a copy) |
+| `scripts/mutants-secrets.mjs` | Mutation check of the generated secrets (`lib/secrets.mjs`, its use in `release.mjs`, stdin in `lib/wrangler.mjs`, the API timeout in `lib/cf.mjs`, D70's gate on the key; run on a copy) |
+| `test/fake-wrangler.mjs` | A stand-in for wrangler that the end-to-end tests (`secrets`, `release-checks`, `review-d69`, `workflow`, `oauth-gate`, `upgrade-production`) run as a real child process (`VIZ_WRANGLER_BIN`, tests only), with `test/fake-account.mjs` answering the Cloudflare API from the same state (versions show their vars, secrets and Rate Limiting bindings) |
+| `test/upgrade-production.test.mjs`, `test/fixtures/production-fb77292.json` | The first release this tool makes over production as deployed on 2026-11-19 from fb77292 ("The first release over the 2026-11-19 production"); the fixture holds the vars fb77292's own configure.mjs generates for production |
+| `test/oauth-gate.test.mjs`, `test/resources.test.mjs` | D70's gate on the key and the oauth-public floor, end to end; the rate-limit id allocation |
 | `resources.json` | KV namespace ids by title (not secret; rewritten by `resources.mjs`) |
 | `generated/` | Build output: configs, manifests, release records. Git-ignored |
 
@@ -42,8 +44,10 @@ push to main
             3. deploy/deploy.sh
                  npm ci (deploy/, stack/, control/, query/, ruler/, mcp/)
                  resources.mjs ensure       R2 viz-lake, KV viz-config, queues viz-flush, viz-maint,
-                                            viz-flush-dlq, viz-maint-dlq
-                 configure.mjs              generated/production/*.jsonc + manifest.json
+                                            viz-flush-dlq, viz-maint-dlq; viz-control's six Rate Limiting
+                                            namespace ids (the account's bindings read, nothing created)
+                 configure.mjs              generated/production/*.jsonc + manifest.json; refuses a
+                                            viz-control without its rate limits (D70)
                  release.mjs deploy         plan → refuse unacknowledged migrations (exit 3)
                                             phase 1: upload every Worker (serves nothing); viz-control's
                                                      OAUTH_CLIENT_KEY put on its upload if missing
@@ -93,13 +97,13 @@ with `rollback_to: <sha>`, restores the release recorded for that commit instead
 | `/api/v1/plan` (exactly) | viz-query | what a query would read, without running it (added 2026-11-19; the ruler and mcp reach it through their own `QUERY` bindings) |
 | `POST /v1/traces`, `POST /v1/logs` (exactly) | viz-ingest | OTLP/HTTP traces and logs, the OTLP default paths (opentelemetry.io/docs/specs/otlp/, "OTLP/HTTP Request", read 2026-11-19). edge serves them only while `INGEST_SIGNALS` names the signal, else 404 (added 2026-11-19, stage 3 of traces and logs) |
 | `POST /loki/api/v1/push` (exactly) | viz-ingest | Loki push (grafana.com/docs/loki/latest/reference/loki-http-api/, read 2026-11-19); edge serves it only while `INGEST_SIGNALS` names `logs` |
-| Tempo: `/api/traces/<id>`, `/api/v2/traces/<id>`, `/api/search`, `/api/search/tags`, `/api/v2/search/tags`, `/api/search/tag/<tag>/values`, `/api/v2/search/tag/<tag>/values`, `/api/metrics/query_range`, `/api/metrics/query` | viz-query | the paths of the "Query" section of grafana.com/docs/tempo/latest/api_docs/ (read 2026-11-19) that viz-query serves (`query/src/sigroutes.ts`); exact paths, a path parameter is one non-empty segment. viz-query answers them only while `QUERY_SIGNALS` names `traces`, else 404. Tempo's `POST /api/v2/traces/diff` has the shape of a trace id and reaches viz-query, which does not serve it (an invalid id) |
-| Loki: `/loki/api/v1/query`, `/query_range`, `/labels`, `/label/<name>/values`, `/series` | viz-query | the query paths of grafana.com/docs/loki/latest/reference/loki-http-api/ that viz-query serves; only while `QUERY_SIGNALS` names `logs`, else 404. Every other `/loki/…` path (tail, index stats and volume, patterns, detected fields, rules, delete, format_query, status), Loki's `/otlp/v1/logs`, the deprecated `/api/prom/…` and Tempo's `/api/echo`, `/api/status/buildinfo`, `/api/overrides` are 404 at the gateway |
+| Tempo: `/api/traces/<id>`, `/api/v2/traces/<id>`, `/api/search`, `/api/search/tags`, `/api/v2/search/tags`, `/api/search/tag/<tag>/values`, `/api/v2/search/tag/<tag>/values`, `/api/metrics/query_range`, `/api/metrics/query`, `/api/echo` | viz-query | the paths of the "Query" section of grafana.com/docs/tempo/latest/api_docs/ (read 2026-11-19) that viz-query serves (`query/src/sigroutes.ts`); exact paths, a path parameter is one non-empty segment. viz-query answers them only while `QUERY_SIGNALS` names `traces`, else 404. `GET /api/echo` ("Returns status code 200 and body `echo` when the query frontend is up"), the check a Grafana Tempo data source may make, answers `echo` behind the key like every path (D62; query review m-4; routed 2026-11-26). Tempo's `POST /api/v2/traces/diff` has the shape of a trace id and reaches viz-query, which does not serve it (an invalid id) |
+| Loki: `/loki/api/v1/query`, `/query_range`, `/labels`, `/label/<name>/values`, `/series` | viz-query | the query paths of grafana.com/docs/loki/latest/reference/loki-http-api/ that viz-query serves; only while `QUERY_SIGNALS` names `logs`, else 404. Every other `/loki/…` path (tail, index stats and volume, patterns, detected fields, rules, delete, format_query, status), Loki's `/otlp/v1/logs`, the deprecated `/api/prom/…` and Tempo's `/api/status/buildinfo`, `/api/overrides` are 404 at the gateway |
 | `/api/v1/control`, `/api/v1/control/*` | viz-control | |
 | `GET /api/v1/rules`, `GET /api/v1/alerts`, `/api/v1/monitors`, `/api/v1/monitors/*` | viz-ruler | Prometheus' rule and alert reads, and the monitors API (monitors, groups, rule files, backtest, detectors, notifier config, silences): `ruler/src/http.ts` `ROUTES`. `/api/v2/alerts` (Alertmanager ingestion) is not served |
 | `/mcp` (exactly), `/api/v1/agent`, `/api/v1/agent/*` | viz-mcp | MCP over Streamable HTTP, and the same tools as JSON. `/mcp/` and `/mcp/x` are 404 at the gateway |
 | `/.well-known/oauth-protected-resource`, `/.well-known/oauth-protected-resource/mcp` (exactly) | viz-mcp | OAuth protected resource metadata of `/mcp` (RFC 9728, D44) |
-| `/.well-known/oauth-authorization-server`, `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke` (exactly) | viz-control | The OAuth authorization server for MCP clients (D44; methods in `control/README.md`). `/oauth/register` answers 503 and is not advertised while viz-control has no `OAUTH_CLIENT_KEY`, which the deploy generates ("Worker secrets the deploy generates"). In production `configure.mjs` sets `PUBLIC_URL` for viz-control (the issuer) and viz-mcp (the resource's origin) from `workers.json`'s `domain`, overriding a component that disagrees with a warning, so the two cannot differ; a stage keeps the component's value |
+| `/.well-known/oauth-authorization-server`, `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke` (exactly) | viz-control | The OAuth authorization server for MCP clients (D44; methods in `control/README.md`). `/oauth/register` answers 503 and is not advertised while viz-control has no `OAUTH_CLIENT_KEY`, which the deploy generates ("Worker secrets the deploy generates"), and only on a viz-control with its six Rate Limiting bindings ("Rate limits in front of OAuth"). In production `configure.mjs` sets `PUBLIC_URL` for viz-control (the issuer) and viz-mcp (the resource's origin) from `workers.json`'s `domain`, overriding a component that disagrees with a warning, so the two cannot differ; a stage keeps the component's value |
 | `GET /healthz` | the gateway | asks each backend's own `GET /healthz` through its service binding (ingest, query, control, ruler, mcp; none is public, since the gateway answers `/healthz` itself); 200 `healthy` or 503 naming the backend. The ruler's and mcp's say 503 when a binding they need is missing |
 | `POST /api/v1/bootstrap` | the gateway | exists only while the one-time secret is set ("Bootstrap") |
 | anything else | the gateway | 404, JSON listing the entry points. No web UI and no page: the UI comes later, through design review |
@@ -299,6 +303,78 @@ stdin (this put, and `bootstrap.mjs`'s `secret put`) with `WRANGLER_LOG_SANITIZE
 `WRANGLER_WRITE_LOGS=false` (`SECRET_RUN_ENV`), whatever the environment says; other commands keep
 the environment's settings.
 
+## Rate limits in front of OAuth (D70)
+
+viz-control serves OAuth publicly only behind D70's first layer: six Cloudflare Rate Limiting
+bindings (`control/README.md`, "Rate limits in front of OAuth (D70)"; the review of D70, M-2, found
+"required before public exposure" enforced nowhere; done here 2026-11-26). `control/wrangler.jsonc`
+declares them with placeholder ids; the limits are **modelled, not measured on real traffic**:
+
+| Binding | Limit / 60 s, per Cloudflare location |
+|---|---|
+| `OAUTH_RL_SOURCE` | 120 |
+| `OAUTH_RL_SOURCE_48` | 1,200 |
+| `OAUTH_RL_CREDENTIAL` | 5 |
+| `OAUTH_RL_TENANT` | 6,000 |
+| `OAUTH_RL_BEARER` | 1,200 |
+| `OAUTH_RL_BEARER_TENANT` | 30,000 |
+
+`workers.json` gives viz-control an `oauth` block: the binding names and the period are read from
+control's own source (`control/src/ratelimit.ts` `LIMITERS` and `RATE_PERIOD_S`, evaluated as schemas
+are), so the deploy follows control if it adds one.
+
+**What each check refuses** (all before anything is uploaded):
+
+| Where | Refused |
+|---|---|
+| `configure.mjs`, any deployment | a `ratelimits` entry whose name is not in `LIMITERS`; one bound twice; a key other than `name`, `namespace_id`, `simple`; a limit that is not a positive integer; a period other than 60 (the Worker's `Retry-After` assumes it; the platform also allows 10); a missing id (`resources.mjs` not run) unless `--ids-optional`; a placeholder that survives; an id outside viz's range; two bindings of one deployment with one id; `ratelimits` on a Worker with no `oauth` block |
+| `configure.mjs`, production | a viz-control without all six, naming the missing ones (exit 1: `deploy.sh` stops before the release); `--oauth-without-rate-limits` and `--oauth-public` (stage flags) |
+| `configure.mjs`, a stage | the same, unless configured `--oauth-without-rate-limits` (`VIZ_OAUTH_WITHOUT_RATE_LIMITS=1` for `deploy.sh`): the bindings are dropped, and the manifest and release record say `oauthWithoutRateLimits: true` |
+| `configure.mjs` | `placement` on viz-control or viz-mcp (`no_placement` in `workers.json`: per-location budgets assume each request is counted where it arrives; review of D70, m-8); `OAUTH_PUBLIC` set by a component config or `VIZ_STAGE_VARS` |
+| `release.mjs deploy` and `plan` (exit 3) | a manifest configured `--ids-optional` (its ids are placeholders); creating or rotating `OAUTH_CLIENT_KEY` on a viz-control whose generated config lacks any of the bindings its manifest records as required, each with period 60, a positive limit and an allocated id, or binds one id twice, or whose manifest records no gate at all; a stage passes only when its manifest and viz-control both say `--oauth-without-rate-limits` |
+| `lib/secrets.mjs` at the put | the same check again, just before `versions secret put` (defence in depth; a `SecretRefused`) |
+
+A key that is already there is **kept** whatever the gate says (nothing is put): the gate decides
+whether OAuth is turned on, and configure has already refused a production config without the
+bindings.
+
+**Namespace ids** (`resources.mjs ensure`, every deploy). A `namespace_id` "uniquely defines this rate
+limiting namespace within your Cloudflare account" (the binding page, read 2026-11-19), and the
+account holds unrelated Workers. Nothing is created on Cloudflare: a namespace exists only as bindings
+name it. So:
+
+1. **Read the account, read only.** List the scripts, and for each its deployment's serving versions
+   and its newest version, and collect every binding of type `ratelimit` (`namespace_id`). One script
+   list, then a deployment read, a version list and one to three version reads per script, four
+   scripts at a time: about 80 GET calls for the 20 scripts the account had at Trial 3. A Rate
+   Limiting binding whose id cannot be read, or a binding type that names a rate limit in a shape
+   not known here, stops the allocation (which ids are in use would be unknown). The `ratelimit`
+   type and `namespace_id` field are wrangler's upload shape (training knowledge): **not read from
+   Cloudflare's version API**; the fakes assume it.
+2. **Keep** the id this deployment's own viz-control already binds under that name (its serving
+   version, else its newest), else the one recorded in `resources.json`, unless another script binds
+   it: an id seen on a script whose name does not start with `viz-` is **refused** (logged, a new one
+   taken, the counters reset), and so is one another viz deployment (production, another stage, a
+   spike) binds or has recorded.
+3. **Otherwise allocate** from viz's range, `workers.json` `resources.ratelimit_ids` (7000–7999): the
+   lowest free id at or after a start that the deployed name picks (FNV-1a), wrapping. Allocation is
+   deterministic for one account state, so a CI checkout, whose `resources.json` starts empty, gets
+   the same ids every run; two stages allocated at once from different checkouts rarely pick alike.
+4. Record them in `resources.json` `ratelimit_namespaces` under `<deployed worker>/<binding>`
+   (`viz-control/OAUTH_RL_SOURCE`, `viz-trial-control/OAUTH_RL_SOURCE`). `destroy --stage` removes
+   the stage's entries: nothing to delete on Cloudflare.
+
+**`OAUTH_PUBLIC`.** Every production viz-control config that passes the gate gets the plain var
+`OAUTH_PUBLIC=1`; a stage only with `--oauth-public` (`VIZ_OAUTH_PUBLIC=1`), which needs the bindings.
+It is the switch of the rollback floor `oauth-public` ("Rollback floors"). The record's `oauth` says,
+for viz-control, the bindings' ids, whether a stage left them out as asked, and whether `OAUTH_PUBLIC`
+is set.
+
+The gateway forwards each request unchanged (`forward` passes `req`), so `CF-Connecting-IP` reaches
+viz-control, and it reads no `x-real-ip`: nothing changed there. Optional and by hand, outside the
+deploy: a WAF rate-limiting rule on `vis.bitcru.sh` for the four `/oauth/` paths, above the Worker's
+source limit, that leaves Cloudflare's Workers address alone (`control/README.md`).
+
 ## Class bindings across Workers (`binds_classes`)
 
 A Durable Object binding to another Worker's class (by `script_name`) can call every method of
@@ -356,10 +432,14 @@ these five (Trial 2 measured the four before viz-publisher was deployed).
   "formats": { "viz-ruler": { "store.anomaly-state": { "writes": 1, "reads": [1, 2] }, "…": "…" }, "viz-ingest": { "r2.dead-letters": { "writes": 2, "reads": [1, 2] }, "kv.settings": { "writes": null, "reads": [1] }, "…": "…" }, "viz-gateway": {}, "…": "…" },
   "formatsComplete": true,
   "floors": [{ "name": "signal-data", "writer": "viz-ingest", "var": "INGEST_SIGNALS", "value": null, "on": false,
-    "workers": [{ "worker": "viz-publisher", "atFloor": true, "servingAtFloor": true }, "…"] }],
+    "workers": [{ "worker": "viz-publisher", "atFloor": true, "servingAtFloor": true }, "…"] },
+    { "name": "oauth-public", "writer": "viz-control", "var": "OAUTH_PUBLIC", "value": "1", "on": true,
+    "workers": [{ "worker": "viz-control", "atFloor": true, "servingAtFloor": true }] }],
   "via": { "viz-ingest": "deploy", "viz-control": "versions", "...": "..." },
   "secrets": [{ "worker": "viz-control", "name": "OAUTH_CLIENT_KEY", "action": "kept", "versionId": "…" }],
   "run": "<the VIZ_DEPLOY_RUN of every version this run uploaded>",
+  "oauth": [{ "worker": "viz-control", "ratelimits": { "OAUTH_RL_SOURCE": "7594", "…": "…" }, "withoutRateLimits": false, "public": true }],
+  "oauthWithoutRateLimits": false,
   "workers": [{ "name": "viz-ingest", "versionId": "…", "migrationTag": "v2", "release": "<sha>" }, "…"] }
 ```
 
@@ -518,6 +598,30 @@ at exactly 4 ever serves there, the oldest publisher a rollback can reach once t
 the first with D67, and the D67 → D64 rollback that `publisher/test/signals.test.ts` shows does not
 exist there; nothing is lost by that. To have it, deploy a commit with D64 and without D67 first.
 
+**The second rule, `oauth-public`** (D69, point 6; second review of D70, m-3; added 2026-11-26).
+Once OAuth is public, rolling viz-control back to `3cbabb8` or earlier (PR #8, what production first
+served, among them) would mint credentials without an expiry the Worker can see and bring B-1 back;
+to a release with D70's second round but not its third, R3-B1. The switch is `OAUTH_PUBLIC` on
+viz-control, which configure sets on every production viz-control ("Rate limits in front of OAuth").
+viz-control is both the writer and the one floor Worker:
+
+| Worker | Floor | Judged by | What an older one does |
+|---|---|---|---|
+| viz-control | D70, third round | `VIZ_FLOORS` stamp, given by configure only when `contracts/oauth.ts` exports `CREDENTIAL_LAYOUT` and `DEAD_INACTIVE_REASONS`, `control/src/deadlist.ts` `recordDead` and `control/src/ratelimit.ts` `LISTED` | mints credentials the Worker can never refuse as expired (B-1), lets one dead credential spend a tenant's fuse after a limiter fault (R2-M1) or a stock of refresh tokens trip it for 30 days (R2-M2), or lets a thief stop reuse detection (R3-B1) |
+
+It is judged as `signal-data` is, with one difference (`"serving_below_floor": "forward-only"` on the
+rule): a release that sets `OAUTH_PUBLIC` while the viz-control **it replaces** serves below the floor
+is not refused but goes out **forward-only** for viz-control (kind `floor` in `forwardOnlyBecause`):
+`deploy.sh` does not roll it back automatically, and a failed promotion does not put that viz-control
+back. Refusing, as `signal-data` does, would strand production: configure sets the switch on every
+production release, so the "release it at its floor without the switch first" remedy does not exist,
+and production's viz-control, deployed on 2026-11-19 by fb77292's tooling, is unstamped ("The first
+release over the 2026-11-19 production"). From the moment this release's viz-control is uploaded,
+`release.mjs rollback` refuses that older viz-control as any rollback below a floor. Everything else is
+as for `signal-data`: once a kept viz-control version had the switch, a release or a rollback that
+leaves viz-control below its floor is refused (exit 3), and so is a release while `OAUTH_PUBLIC` is a
+secret on viz-control. **Never rename the rule.**
+
 `previous.json` is the same shape, captured from Cloudflare just before phase 1: what an
 automatic rollback restores. Every version is also tagged with the release SHA on
 Cloudflare (`workers/tag`), which is how a later deploy finds the release serving now.
@@ -586,7 +690,9 @@ unless accepted). It does not restore routes, crons or queue consumers (not vers
 | Refused (exit 3): unacknowledged migration | the previous release, untouched | add the trailer or the dispatch input, if the migration is intended |
 | Refused (exit 3): a rollback floor, the switch about to go on (`INGEST_SIGNALS` set while a floor Worker in this release, or serving, is below its floor) | the previous release, untouched | release the Workers at their floors without the switch first, let them serve, then set it ("Rollback floors") |
 | Refused (exit 3): a rollback floor with the switch already on in the serving release (a floor Worker off its floor as it serves: a gradual deployment or a `wrangler rollback` by hand) | the previous release, untouched; every later release is refused the same way | restore that Worker alone: the workflow with `rollback_to` and `rollback_only: viz-query`, or `release.mjs rollback --record <a record where it is at its floor> --only viz-query` ("Rollback floors", m-8); turning the switch off is not needed |
-| Refused (exit 3): a floor Worker of this release below its floor after the switch was on, or `INGEST_SIGNALS` a secret on viz-ingest | the previous release, untouched | deploy that Worker at or above its floor; remove the secret and set the switch as a var |
+| Refused (exit 3): a floor Worker of this release below its floor after the switch was on, or `INGEST_SIGNALS` (or `OAUTH_PUBLIC`) a secret on its writer | the previous release, untouched | deploy that Worker at or above its floor; remove the secret and set the switch as a var |
+| configure.mjs failed (exit 1, before the release): a viz-control without its six rate limits, a bad limit, period or id, `placement` on viz-control or viz-mcp, `OAUTH_PUBLIC` set by a component | the previous release, untouched | fix `control/wrangler.jsonc` (or the component); for a missing id run `resources.mjs ensure` ("Rate limits in front of OAuth") |
+| Refused (exit 3): the key would be created or rotated on a viz-control without its rate limits, or the manifest was configured `--ids-optional` | the previous release, untouched | configure again without `--ids-optional`, after `resources.mjs ensure`; a stage that is to run without the rate limits: `--oauth-without-rate-limits` |
 | Stopped (exit 1) before anything changed: a serving viz-control version could not be read, so whether its key is set is unknown | the previous release, untouched | deploy again (S9 saw such reads fail for a moment) |
 | Phase 1 (upload) | the previous release, untouched (uploaded versions serve nothing) | fix the build |
 | Phase 1, generated secret: refused (exit 3: set now but missing from the upload after the 10 s re-read, the newest version is not this run's upload, or the key went on another run's upload) or the put failed (exit 1, also when the new version did not show within 10 s) | the previous release, untouched | read the reason; another run: let it finish, then deploy again. "Set but missing" is not lifted by a rollback or a new deploy: only by rotating, which invalidates every registered client ("Known risks"); never rotate to make it pass unless that is accepted ("Worker secrets the deploy generates") |
@@ -607,6 +713,14 @@ that happens, dispatch it again.
 
 ## One-time setup (the owner)
 
+0. **Rate limits need no Cloudflare resource, only ids.** viz-control's six Rate Limiting bindings
+   (D70) take namespace ids that `resources.mjs ensure` allocates from 7000–7999 on every deploy,
+   after reading which ids the account's scripts bind (read only; "Rate limits in front of OAuth").
+   Nothing is created and there is nothing to set by hand; reading other scripts' versions needs no
+   permission beyond Workers Scripts edit (training knowledge: edit includes read; not checked on
+   the account). The only resource-like choice is the range, in
+   `workers.json` `resources.ratelimit_ids`; if a script that is not viz's ever binds an id in it, the
+   next deploy moves viz off it (logged).
 1. **Repository secrets** (Settings → Secrets and variables → Actions):
    `CLOUDFLARE_API_TOKEN` (Workers Scripts edit, Workers R2 Storage edit, Workers KV edit,
    Queues edit, and Workers custom domains on the bitcru.sh zone; no DNS permission is
@@ -658,6 +772,62 @@ is the ordinary 404. The token never appears on a command line or in a log, and 
 is stored. A version created while the secret existed would carry it, but it expires after 10
 minutes regardless.
 
+## The first release over the 2026-11-19 production
+
+The owner deployed production on 2026-11-19 from main at fb77292 (PR #8) with that commit's own
+tooling, which predates D69: `vis.bitcru.sh/healthz` reports that release, viz-control has
+`OAUTH_CLIENT_KEY` and advertises `/oauth/register`, with no Rate Limiting bindings. Its versions carry
+`VIZ_SCHEMAS` but no `VIZ_FORMATS`, `VIZ_FLOORS` or `VIZ_DEPLOY_RUN`, its record has schemas and no
+formats, and viz-control has no `OAUTH_PUBLIC`. The first release of this tree goes over that.
+
+**How it was checked.** `test/upgrade-production.test.mjs`, against the fakes, not Cloudflare. The
+fake account holds production as fb77292's tool leaves it: every Worker's vars exactly as fb77292's
+own `configure.mjs` generates them for production (run on a `git archive` of fb77292 in a scratch
+directory on 2026-11-26; `test/fixtures/production-fb77292.json`), each Worker created by `wrangler
+deploy`, viz-control's key put and deployed, the gateway's bootstrap secret put and deleted, and two
+scripts of the account that are not viz's, plus a viz spike, binding Rate Limiting ids where viz would
+otherwise take its first two. What versions Cloudflare keeps is **modelled** from fb77292's
+`release.mjs` and `bootstrap.mjs`, not read from the account. Then the real `resources.mjs`
+(rate-limit ids), `configure.mjs` (production, this tree's component configs) and `release.mjs` (plan,
+deploy, rollback), twice. What it shows, step by step:
+
+| Step | Result |
+|---|---|
+| Durable Object migrations | **none**: the newest tags are fb77292's (viz-publisher v1, viz-ingest v1, viz-control v1, viz-query v1, viz-ruler v2), so nothing to acknowledge; every Worker is uploaded, then promoted |
+| Schemas | additive only: `publisher.Publisher` 3 → 7 and `shard.Shard` 1 → 3, both readable from 1; `ledger.Ledger` 3/2, `control.Tenant` 3/1 and the ruler's three unchanged |
+| `resources.mjs ensure` | six ids for `viz-control/OAUTH_RL_*`, none bound by the unrelated scripts or the spike; only GET calls |
+| `configure.mjs` | **the gate passes** with the six bindings and their ids; viz-control gets `OAUTH_PUBLIC=1` and is stamped `oauth-public` |
+| `release.mjs plan` | not refused; the key `set (serving version …); kept`; **FORWARD-ONLY** twice: `r2.dead-letters` (viz-ingest writes 2, and every serving Worker declares no format versions, so it is taken to read 1), and `oauth-public` (the serving viz-control is below the floor) |
+| `release.mjs deploy` | exit 0; **the key is kept** (no put; the same value serves, so every registered client stays registered); viz-control serves with the six bindings and `OAUTH_PUBLIC`; the record says `forwardOnly: true`, `oauth-public` on, viz-control at the floor, serving one not |
+| Automatic rollback | **not attempted**: `deploy.sh`'s own forward-only expression, run on the record, names `r2.dead-letters written at 2` and `viz-control below the oauth-public floor before it` |
+| Rollback to `previous.json` or to fb77292's record | **refused**, nothing moved: `r2.dead-letters` (that record predates format versions) and `viz-control … below its floor … set OAUTH_PUBLIC=1` |
+| The next release | ids kept (bound by viz-control); not forward-only; viz-control at its floor here and serving; the key kept; a rollback to the first release is allowed |
+
+Before this change's forward-only option, the same run is **refused at the plan** (exit 3: "this
+release sets OAUTH_PUBLIC=1, and the viz-control serving now is below its floor"), and every later
+release with it: production could not have taken any release of this tree. That is the mutant
+"oauth-public: workers.json no longer says forward-only", which the test kills.
+
+**What the owner must know or do before merging this to main:**
+
+1. **It is forward-only.** If its smoke test fails, `deploy.sh` does not roll back: the job fails, the
+   new release keeps serving, and the way out is a fix in a new commit. A rollback to fb77292's record
+   is refused (formats, and the floor). Nothing else in the path refuses: no migration to acknowledge
+   (no `acknowledge_migrations`, no `Migration:` trailer), no secret to set, nothing to create.
+2. **OAuth's key is kept.** Codes and tokens fb77292's viz-control issued (layout 1, no expiry the
+   Worker can see) keep working until they expire at their objects; new ones carry their expiry.
+3. **The rate-limit ids** come from the real account at that deploy, through the GETs above. The
+   binding shape the scan reads (`type: ratelimit`, `namespace_id`) is training knowledge: if the
+   account shows a rate-limit binding in a shape the scan does not know, `resources.mjs` stops and
+   nothing is deployed; if it shows one under an unrelated name, a collision with an unrelated
+   script would go unseen ("Known risks").
+4. **The `production` environment must allow `main` only, and hold the two Cloudflare secrets**
+   (one-time setup, 1). This tree's workflow refuses any other ref, but fb77292's workflow has no such
+   step, and from this release on an older commit's tooling would also not judge the `oauth-public`
+   floor or the gate. Nothing in the repository can check the setting.
+5. After it, every production release carries the six bindings and `OAUTH_PUBLIC`, and viz-control
+   cannot go back below D70's third round.
+
 ## CI
 
 `.github/workflows/ci.yml` runs on pull requests to `main`, pushes to `claude/**`, and is
@@ -681,6 +851,48 @@ module proxy and cross-checked against GitHub's tag pages). Rust comes from the 
 ## How it was verified
 
 All measured here unless it says Cloudflare.
+
+- **D70's gate, the rate-limit ids, the `oauth-public` floor and `/api/echo` (2026-11-26).** Nothing
+  deployed; the Cloudflare API not called. New tests: `test/configure.test.mjs` 11 (the gate's six
+  bindings and period read from control's source and declared by `control/wrangler.jsonc`;
+  production with all six passes, ids replaced, `OAUTH_PUBLIC` set, stamped; production without the
+  block refused naming all six, each one of the six removed in turn refused naming it, and the
+  command's exit 1 without ids; period 10, limits 0, −5, 1.5 and "5", an unknown name, a binding
+  twice, an unknown key, an id `"0"`, one outside the range and two bindings with one id refused; a
+  stage without them only with `--oauth-without-rate-limits`, recorded, refused for production and
+  with `--oauth-public`; `OAUTH_PUBLIC` from a component or `VIZ_STAGE_VARS` refused; `placement`
+  refused on viz-control and viz-mcp, in production and a stage, viz-query's kept; `kv.oauth-dead` 1
+  declared for viz-control only; the rule parses with its four exports, a missing one refused);
+  `test/resources.test.mjs` 6 (allocation excludes every id an unrelated script binds, even in
+  viz's range; refuses to reuse a recorded or own id an unrelated script binds; production and two
+  stages, recorded or bound, never collide, a spike's ids excluded; production keeps its own ids;
+  deterministic; out of range not kept; range exhausted; the scan reads serving and newest versions,
+  GET only, skips Durable Object namespace ids, refuses an unreadable id or an unknown rate-limit
+  type; `ensure` against the fake account records, reuses and `destroy` frees a stage's ids);
+  `test/oauth-gate.test.mjs` 9 (end to end: the key refused on production without the bindings, one
+  missing, all missing, no gate record, on rotation, and in `plan`, nothing uploaded; created with
+  all six; a stage refused without the flag or with it on only one side, passed with both and
+  recorded; production ignores it; an `--ids-optional` manifest refused; the put itself refuses;
+  `OAUTH_PUBLIC` over an unstamped viz-control forward-only and its rollback refused; over a
+  stamped one ordinary; once seen, an unstamped viz-control refused as a release and as a rollback;
+  `signal-data` still refuses); `test/upgrade-production.test.mjs` 1 ("The first release over the
+  2026-11-19 production"). The existing fixtures of `secrets`, `review-d69` and `release-checks`
+  now carry what configure writes since the gate (viz-control's bindings and stamp; the
+  `oauth-public` floor in the record), and one lag count in `secrets` rose by one read (the new
+  rule's look for a secret switch). Gateway: `/api/echo` routed, `GET` with its key reaching query
+  exactly as sent, and `/api/echo/`, `/api/echox`, `/api/echo/x`, `/api/v2/echo` 404.
+
+  **Counterfactual.** With `serving_below_floor` removed from `workers.json` (a scratch copy), the
+  upgrade test fails at the plan: "this release sets OAUTH_PUBLIC=1, and the viz-control serving now
+  is below its floor" (exit 3), which is what the rule as `control/README.md` first wrote it would do
+  to production.
+
+  **control** (`control/wrangler.jsonc` gained the block): `npx tsc --noEmit` clean. control's own
+  suite in a scratch copy (it loads `wrangler.jsonc`): 220 of 221; the one failure,
+  `ratelimit-review-r2.test.ts` "the list is shared …", fails the same with the committed
+  `wrangler.jsonc` (2 runs of 2): not this change ("Needed changes in components").
+
+  MUTANTS_PLACEHOLDER
 
 - **The review of D69, its findings fixed (2026-11-19)** (`design/reviews/d69-deploy-safety.md`,
   approve with changes: 2 majors, 9 minors). Nothing deployed; the Cloudflare API not called. The
@@ -1337,7 +1549,11 @@ the scratch directory; the shared tree's `resources.json` was never written.
 Modelled, not read from Cloudflare's analytics (Trial 3 read invocation counts from it, above). Production idle: three Durable Object
 Workers and the gateway cost nothing while unused; the hourly cron reads KV only
 (`stack/README.md`, "Idle means free"); storage is whatever `viz-lake` and the queues hold.
-Per deploy: about 8 to 12 API calls and 4 to 8 version uploads; no charge beyond requests.
+Per deploy: about 8 to 12 API calls and 4 to 8 version uploads; no charge beyond requests. Since
+D70's ids, `resources.mjs ensure` also reads the account's scripts' bindings: about 4 GET calls per
+script (about 80 for the 20 scripts counted at Trial 3), modelled, not counted on Cloudflare. The Rate
+Limiting binding itself has no price on its page (read 2026-11-19): worst case of the bindings,
+unknown and not modelled.
 The trial (below) was stated before it ran as under US$1 worst case: at most 30 minutes of
 20 Remote Write requests and 1 query a second through four Workers, a few hundred R2 writes
 from flushes, a few thousand queue operations, one KV namespace and one small bucket, at
@@ -1382,8 +1598,21 @@ Workers answer them 404 until then):
 - **Where the flags are set.** Neither is in `workers.json` or a component config; setting them is
   a var on viz-ingest and on viz-query (a release). They are per deployment, not per tenant.
 - **A client run.** No Grafana Tempo or Loki data source, and no OTLP SDK exporter, has been
-  pointed at the gateway. Tempo's `/api/echo` and `/api/status/buildinfo` are not served
-  (whether Grafana's data source check needs one of them was not verified).
+  pointed at the gateway. Tempo's `/api/echo` is routed to viz-query since 2026-11-26 (it answers
+  `echo` behind the key while `QUERY_SIGNALS` names `traces`); `/api/status/buildinfo` is not served
+  (whether Grafana's data source check needs it was not verified). `query/README.md`, "Grafana",
+  describes the run.
+
+From D70's gate (2026-11-26), for `control/`'s owner (not edited here):
+
+- **`control/README.md`, "Needed changes elsewhere (rate limits, D70)"**: items 1 to 6 and the
+  `control/wrangler.jsonc` block are done here; its "It is not added now" paragraph and the opening
+  "in progress" sentence are out of date. Item 6's test "a release setting it while the serving
+  viz-control is unstamped is refused" was not built as written: such a release is forward-only
+  instead (D69, point 6), because refusing would strand production.
+- **`control/test/ratelimit-review-r2.test.ts`**, "the list is shared: in a new isolate a listed token
+  is refused …": fails in a scratch copy of the tree as of 0fe7684, with and without the `ratelimits`
+  block (2 runs each); the other 220 of control's 221 tests pass with the block.
 
 From the generated OAuth key (D53; none made here):
 
@@ -1469,6 +1698,15 @@ deployment and nothing here needs it: the gateway has no page and no static asse
 
 ## Not implemented
 
+- **A WAF rate-limiting rule** on `vis.bitcru.sh` for the `/oauth/` paths (D70 (c)): by hand, outside
+  the deploy; not made.
+- **A check that the account's rate-limit ids stay clear between deploys**: the scan runs at each
+  `resources.mjs ensure`, not continuously; an unrelated script that starts binding viz's id is seen
+  only at the next deploy.
+- **The gate on a key that is kept**: `lib/secrets.mjs` refuses to create or rotate
+  `OAUTH_CLIENT_KEY` without the bindings, not to keep one; configure already refuses a production
+  viz-control without them, so only a manifest written by hand could promote one.
+
 - **Formats no component lists.** Format versions are recorded from the components' `FORMATS`
   maps and read lists, and from `workers.json`'s `reads_v1` (D69; review of D69, M-1); readers are
   judged per Worker, including Workers a rollback leaves out. Formats no writer keeps in a `FORMATS`
@@ -1515,6 +1753,20 @@ deployment and nothing here needs it: the gateway has no page and no static asse
   from a declaration a test holds to a few signatures.
 
 ## Known risks
+
+- **The Rate Limiting binding's shape in Cloudflare's version API is not verified** (D70's ids). The
+  scan reads bindings of type `ratelimit` with `namespace_id`, wrangler's upload shape (training
+  knowledge; the fakes assume it). Another type that names a rate limit stops the allocation; a shape
+  under an unrelated name would make other scripts' ids invisible, so a collision with an unrelated
+  script would go unseen and the counters would be shared. Allocation stays deterministic for an
+  account state, so viz's own ids would still be stable across CI runs. The experiment: read one
+  version of a staged viz-control through the API and compare its bindings with the config.
+- **Two allocations at once can pick the same id.** Two stages ensured at the same time from different
+  checkouts see the same free ids; the start each name picks makes a clash unlikely, not impossible.
+  The next `ensure` of either sees the other's bound id and moves off it (the counters reset).
+- **Per-location limits are modelled** (control's README); none of the six has run on Cloudflare.
+- **The first release over the 2026-11-19 production is forward-only** ("The first release over the
+  2026-11-19 production"): no automatic rollback; fix forward.
 
 - **A run refused after its put leaves its key on the newest version** (m-11, D69). When another run
   uploaded between the check and the put, the key lands on that run's version (the PATCH has no

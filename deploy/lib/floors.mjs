@@ -44,6 +44,14 @@
 //   serves), that would leave a listed Worker below its floor while any kept version of `writer`
 //   sets `var`, the restored and the serving ones included.
 //
+// A rule may say `"serving_below_floor": "forward-only"` (D69 point 6; the `oauth-public` rule, whose
+// switch OAUTH_PUBLIC configure sets on every production viz-control): then a release that sets the
+// switch while a floor Worker it deploys serves below its floor is not refused but marked
+// FORWARD-ONLY for that Worker (kind `floor`): no automatic rollback, no phase-2 restore of it, and a
+// rollback to it refused once this release's writer version exists. Without it ("refuse", the
+// default, `signal-data`) such a release is refused, and the remedy is a release at the floor without
+// the switch, which a switch set on every release cannot have.
+//
 // Never rename a rule: every version stamped at the old name would read as below the floor of the
 // new one (deploy/README.md, Known risks). Add a rule instead.
 import { existsSync } from 'node:fs'

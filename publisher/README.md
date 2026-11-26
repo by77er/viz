@@ -629,7 +629,7 @@ contract change; see "Contract issues").
 npm install
 npm run fixtures     # Rust: writes test/fixtures/fixture.json (already committed)
 node tools/signal_fixture.mjs <scratch>/sigwork 1 1 6   # writes test/fixtures/signals.json (already committed)
-npm test             # 127 tests in workerd, 15 files, at most 2 workers; fills export/ and export/signals/
+npm test             # 138 tests in workerd, 17 files, at most 2 workers; fills export/, export/signals/ and export/signals-steps/
 npm run typecheck
 # the re-base at scale (Measurements); one size and variant per process for clean memory figures:
 MINIFLARE_WORKERD_V8_FLAGS="--max-old-space-size=32 --max-semi-space-size=4" \
@@ -641,6 +641,7 @@ python3 -m venv <scratch>/readers-venv
 <scratch>/readers-venv/bin/pip install pyiceberg==0.12.0 duckdb==2.0.0 pyarrow==26.0.1
 <scratch>/readers-venv/bin/python tools/verify_readers.py export
 <scratch>/readers-venv/bin/python tools/verify_signal_readers.py export/signals   # also writes export/signals/readback/
+<scratch>/readers-venv/bin/python tools/verify_signal_readers.py export/signals-steps   # the same tables, published by re-bases in steps
 (cd tools/signals-check && CARGO_TARGET_DIR=<scratch>/signals-check-target cargo build --release -j 2)
 <scratch>/signals-check-target/release/viz-publisher-signals-check export/signals
 MUTANT_DIR=<scratch>/mutants npm run mutants   # on a copy under MUTANT_DIR; see "Mutation checks"
@@ -648,9 +649,29 @@ MUTANT_DIR=<scratch>/mutants npm run mutants   # on a copy under MUTANT_DIR; see
 BENCH_UPGRADE=8x25000@100000,2x100000@100000,1x300000@100000 CPU_LOG=<scratch>/cpu.log \
   node bench/cpu.mjs -- npx vitest run -c vitest.bench.config.ts bench/upgrade.bench.test.ts --disableConsoleIntercept > <scratch>/up.out
 node bench/cpu.mjs --report <scratch>/up.out <scratch>/cpu.log
+# re-bases in steps (Measurements, "Re-bases in steps"): add BENCH_FIRST_CAPPED=1 (and BENCH_NO_CHECKPOINT=1 for the base)
+BENCH_FIRST_CAPPED=1 BENCH_UPGRADE=1x300000@100000 CPU_LOG=<scratch>/cpu.log \
+  node bench/cpu.mjs -- npx vitest run -c vitest.bench.config.ts bench/upgrade.bench.test.ts --disableConsoleIntercept > <scratch>/up.out
 ```
 
-**Last run (2026-11-19, bounded work per publish, review M-6): 127 passed, 0 failed** (15 files,
+**Last run (2026-11-26, re-bases and rebuilds in steps): 138 passed, 0 failed** (17 files, `npx vitest
+run --maxWorkers=2`, 168 s at load average 10–10.6 from other builds); `tsc --noEmit` clean. New:
+`test/steps.test.ts` (10: three twin-cell comparisons, the cut at each R2 operation, a new incarnation
+while staging and while writing ahead, the release before on storage left mid-way twice, the rebuild
+cut at each R2 operation and without cuts), `test/e2e-signals-steps.test.ts` (1; the scenario moved
+into `test/e2e-signals.ts`, run unchanged by `e2e-signals.test.ts`), the schema golden of version 7.
+Changed: the two eviction tests of `checkpoints.test.ts` (a re-base cut off now keeps the parts it
+staged, and the next publishes read only the rest: they pinned the opposite), the version expected after
+the D64 upgrade and rollback (7), the adoption test's list of tables expected empty. One run of
+`steps.test.ts` together with three other files had its "new incarnation" twin time out at 120 s (212 s);
+it passed alone (7 s) and in every run since (the file alone 49.7 s, and the full run above): not
+explained, reported here. The readers on this run's exports: **504 checks, 0 failed**; **1,542, 0
+failed** on `export/signals/`; **1,542, 0 failed** on `export/signals-steps/` (its first stage's files in
+manifests written ahead), every content hash as in the tables, the same in both span and log exports.
+`tools/signals-check` not run (it reads what the Python readers write, the same rows). The benches:
+Measurements, "Re-bases in steps". Mutants: "Mutation checks".
+
+Before (2026-11-19, bounded work per publish, review M-6): **127 passed, 0 failed** (15 files,
 `npx vitest run --maxWorkers=2`, 67 s at load average 6.5–7.8); `tsc --noEmit` clean. New:
 `test/caps.test.ts` (5), one test in `test/checkpoints.test.ts` (re-bases found while reading from a
 cursor take turns: the old six-tenant test no longer shows it, since the re-bases a publish knows of
@@ -891,10 +912,11 @@ PyIceberg wrote itself (an optional `list<struct>` column with a null row reads 
 map stays null), so it is the reader's, not these tables'. TRACES.md's logical view and viz's
 reader treat a null and an empty `events` or `links` alike.
 
-### Workerd tests (127)
+### Workerd tests (138)
 
 | Area | Tests |
 |---|---|
+| Re-bases and rebuilds in steps (`steps.test.ts`, 10) | **twins** (the D67 upgrade, a new tenant, a new ledger incarnation): a cell capped at a budget of 5 units and manifests of 3, against the same logs published once uncapped; several alarm runs, each within the budget plus one part or manifest, the big tenant committed by exactly one of them; a sweep twice past the grace while manifests are written ahead deletes none of them; every table then equal as a reader sees it, every ADDED entry carrying its manifest's added snapshot id, verified, each tenant's files the ledger's, nothing kept; **cut off at each R2 operation in turn** that stages, writes or commits (96 cuts: 33 at part reads, 10 at manifests written ahead, 15 at metadata reads or writes): no metadata version lost, parts staged and tables written never going back, a table leaving the re-base only once committed, the alarm's deadline kept, then equal to the twin; **a new ledger incarnation** while staging and while writing ahead: no snapshot of any table names the tenant at the old incarnation, the old checkpoint never continued, then equal to a twin of the new log; **the release before (`test/m6/`) on storage left mid-way**: it opens version 7, publishes another tenant, sweeps the manifests written ahead as orphans and leaves the kept rows as they were; rolled forward, they are found missing, written again, and the cell ends as its twin; or it re-bases the tenant whole, and rolled forward this release drops what it kept, re-bases nothing and writes nothing; **a rebuild after a lost storage** at a budget of 2 and 3, a few manifests per publish, also cut at each R2 operation in turn: SQLite (`live`, manifests, cursors, snapshots, versions) equal row for row to the release before's whole rebuild, no tenant re-based, the next commit right. End to end with real files in steps: `e2e-signals-steps.test.ts` |
 | Bounded work per publish (`caps.test.ts`, 5; review M-6) | the D67 upgrade of five tenants (D64's storage installed) capped at two tenants' staged files: three alarm runs re-basing 2, 2, 1, each within the cap, each leaving the rest pending with the alarm at `continueMs`; every table then equal, as a reader sees it (every live `data_file` with its partition, counts and bounds, the snapshot totals, the cursor object, the table metadata without its history), to the same cell published by one uncapped publish, and verified; capped at one re-base per run: the tenant last in the queue has a new metric unit committed in the second run from its metric cursors (span and log cursors absent, status `deferred`), as does a tenant re-based already; an alarm run reset (`ctx.abort`, no `finally`) at the second re-base it started: nothing committed before changes, a publish deadline and the alarm remain, the next run takes the two tenants never started and the run after the two cut off, nobody re-based twice; a capped publish started over after a conflict (two writers) re-reads the re-base it admitted, admits no other, and commits it; paging at two tenants per publish: a tenant stuck on a hole goes behind those not read yet. After a lost storage, a table rebuilt from R2 per publish and no re-base at all (`signals.test.ts`, below) |
 | Re-bases found while reading from a cursor (`checkpoints.test.ts`, 1) | six tenants whose ledgers started new incarnations, found while read six at a time: their checkpoints' parts read one tenant at a time, at most six R2 operations in flight |
 | The span and log tables, published (`signals.test.ts`, 14; D67) | a tenant's `spans`, `trace_index` and `logs` exactly as its ledger lists them, from a first publication and from the cursor (a log day expired: a DELETED entry), every table verified, `status` published, `unpublished()` empty; each live entry against the ledger's file: the `spans` hour = the key's hour = the hour of `minTs` and of `maxTs`, the day of the others, value and null counts for exactly the required primitive columns, the time bounds widened as said, `service_name` and `trace_id` bounds, split offsets; the partition spec with `hour`, the manifest list's hour summary, `changed-partition-count`, the nested name mapping; a publish with nothing new commits nothing; **byte-identical metric output** at two stages (units, log and metric expiries, a compaction) from four publishers with fixed ids and clock: this release on the log as written, this release on the log without span and log changes, the D64 release (`test/d64/`) on the log as written, the release before it (`test/n1/`) on the log without them (and only this release writes the span and log tables, exactly the ledger's); removals released by the snapshot rule (the never-published one after the grace, the published ones only once their last referencing snapshot expired, then the grace; never a live key); a forged `spans` file outside its key's hour stops the tenant (`inconsistent`), nothing of it published, from the cursor and in a re-base from a forged base segment; a lost storage whose version hints are gone too: each table found behind R2 at its own commit and rebuilt there, one conflict each (five), in one publish, nothing but the hints written; SQLite rebuilt from R2 alone after a lost storage, a table per publish and then the tenant from the cursors found there, with no re-base at all: no new commit, every table and the `spans` hours as before, the next commit (a removal and an addition) right, the manifest list's hour ranges included; the tables known equal the contract's, all published, metric tables first; **re-base** from the base of a new incarnation (every table by difference), from a checkpoint in parts and in one object (a log tombstone released by the snapshot rule), and review P-1 (`spans` committed, `trace_index` failed, a checkpoint above `spans`' cursor: `spans` re-based by difference); **the upgrade from D64**: D64's storage taken over, every tenant re-based once (spread over publishes: `caps.test.ts`), the span and log tables published, the metric tables not committed again (byte-identical objects), D64's record left alone, its released log file still released; **D64 and this release side by side**: D64 on this release's storage with every span table's deadline and orphan sighting overdue rests after its wakes (migration 5), leaves them as they were, and rolled forward this release expires and sweeps them; a rollback to D64 on this release's storage publishes the metrics, leaves the span and log tables' objects, cursors and `live` rows unchanged and releases nothing of them in seven days; rolled forward, this release catches up (a log added and one removed, a span added), verified, and releases the removed log file by the snapshot rule |

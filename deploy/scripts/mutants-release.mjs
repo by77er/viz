@@ -110,8 +110,8 @@ const MUTANTS = [
   ['oauth-public: a release over a viz-control serving below the floor is refused (serving_below_floor ignored)', 'lib/floors.mjs', " && !(w.now && rule.servingBelow === 'forward-only')", ''],
   ['oauth-public: such a release is not marked forward-only', 'lib/floors.mjs', '    forwardOnly.push(...floorForwardOnly(rule, s))\n', ''],
   ['oauth-public: the deploy drops the floor\'s forward-only reasons', 'release.mjs', '  const forwardOnly = [...forwardOnlyReasons(manifest, before), ...floors.forwardOnly]', '  const forwardOnly = forwardOnlyReasons(manifest, before)'],
-  ['oauth-public: workers.json no longer says forward-only (the 2026-11-19 production is refused)', 'workers.json', '    "serving_below_floor": "forward-only",\n', ''],
-  ['oauth-public: the evidence of D70 round 2 (recordDead) dropped from the floor', 'workers.json', '        "control/src/deadlist.ts#recordDead"\n', '        "contracts/oauth.ts#CREDENTIAL_LAYOUT"\n'],
+  ['oauth-public: workers.json no longer says forward-only (the 2026-11-19 production is refused)', 'workers.json', '      "serving_below_floor": "forward-only",\n', ''],
+  ['oauth-public: the evidence of D70 round 3 (LISTED) dropped from the floor', 'workers.json', '            "control/src/deadlist.ts#recordDead",\n            "control/src/ratelimit.ts#LISTED"\n', '            "control/src/deadlist.ts#recordDead"\n'],
   ['deploy.sh: a release forward-only for a floor is rolled back automatically', 'deploy.sh', 'f.kind==="format"||f.kind==="floor"', 'f.kind==="format"'],
   ['release: a manifest configured --ids-optional is deployed', 'release.mjs', '(manifest.idsOptional === true ? [', '(false ? ['],
   // Rate Limiting namespace ids (resources.mjs)
@@ -151,7 +151,8 @@ if (base.failed) {
   process.exit(1)
 }
 const only = process.argv[2]
-const chosen = MUTANTS.filter(([name]) => !only || name.includes(only))
+// `re:<pattern>` chooses the mutants whose name matches a regular expression.
+const chosen = MUTANTS.filter(([name]) => !only || (only.startsWith('re:') ? new RegExp(only.slice(3)).test(name) : name.includes(only)))
 let killed = 0
 for (const [name, file, from, to] of chosen) {
   const path = join(DEPLOY_DIR, file)

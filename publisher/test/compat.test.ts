@@ -214,6 +214,28 @@ describe('Iceberg metadata written by a newer publisher', () => {
     expect(verify.ok).toBe(false)
     expect(verify.problems.join('\n')).toMatch(/newer publisher/)
   })
+
+  it('after a lost storage, a table a newer publisher evolved is not rebuilt from it (rebuilt in steps since storage version 7); publication waits', async () => {
+    const { cell, t } = await published()
+    const table = 'metric_samples'
+    const n = (await metadataVersions(cell, table)).at(-1)!
+    const meta = await readMetadata(cell, table, n)
+    const evolved = { ...structuredClone(meta), properties: { ...meta.properties, 'viz.format-version': '2' } }
+    await env.BUCKET.put(`${metaDir(cell, table)}v${n + 1}.metadata.json`, JSON.stringify(evolved))
+    await env.BUCKET.put(`${metaDir(cell, table)}version-hint.text`, String(n + 1))
+    const before = await listKeys(`${cell}/iceberg/`)
+    // A publisher of the same cell with nothing in its storage: the rebuild from R2 comes first.
+    const lost = publisher(`${cell}~lost`)
+    expect(await lost.publish([t]).then(() => 'published', (e: Error) => e.message)).toMatch(/^metadata_too_new: .*v\d+\.metadata\.json: viz\.format-version 2/)
+    expect(await lost.pending()).toEqual([t])
+    const rows = await runInDurableObject(lost, (_i, s) => ({
+      live: s.storage.sql.exec(`SELECT COUNT(*) AS n FROM live`).one().n,
+      rebuild: s.storage.sql.exec(`SELECT COUNT(*) AS n FROM rebuild`).one().n,
+      tbl: s.storage.sql.exec(`SELECT COUNT(*) AS n FROM tbl`).one().n,
+    }))
+    expect(rows).toEqual({ live: 0, rebuild: 0, tbl: 0 })
+    expect(await listKeys(`${cell}/iceberg/`)).toEqual(before)
+  })
 })
 
 describe('ledger log objects this code does not know (COMPATIBILITY.md §3.2, §8.7)', () => {
