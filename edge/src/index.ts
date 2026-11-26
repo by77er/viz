@@ -2,10 +2,14 @@ import { authenticate, clearAuthCache } from './auth'
 import { Collector } from './batch'
 import { HttpError, badRequest, tooLarge } from './errors'
 import { type Limits, limitsFrom } from './limits'
+import { LogCollector, decodeLogsJson, decodeLogsProto, decodeLokiJson, decodeLokiProto } from './logs'
+import { exportResponse as signalResponse } from './otel'
 import { decodeOtlpJson, decodeOtlpProto, exportResponse, statusBody } from './otlp'
 import { decodeRemoteWrite } from './prw'
 import { type Limited, type Outcome, type RouteEnv, appendAll, clearMapCache, refuseEarly } from './route'
 import { snappyDecompress } from './snappy'
+import { SpanCollector, decodeTracesJson, decodeTracesProto } from './spans'
+import { enabledSignals } from '../../shard/src/pool'
 
 // For now the shard is deployed in the same script as the edge Worker.
 export { Shard } from '../../shard/src/shard'
@@ -15,7 +19,20 @@ export { RecordedSamples } from './recorded'
 export interface Env extends RouteEnv {
   /** JSON overriding any of `Limits` (src/limits.ts). */
   INGEST_LIMITS?: string
+  /**
+   * Comma-separated signals besides metrics that this deployment accepts: `traces` enables
+   * `/v1/traces`, `logs` enables `/v1/logs` and `/loki/api/v1/push`. Unset: neither (404).
+   * Their batches go to the `{pool}/traces` and `{pool}/logs` shards; since stage 2 flush
+   * drains those into the `spans`, `trace_index` and `logs` tables and the ledger lists them.
+   * Not before the publisher reads those tables, in a deployment that has one (the publisher
+   * stops a tenant at a change naming a table it does not know: edge/README.md, "Traces and
+   * logs, stage 2"). Also read by flush's full sweep (`shardsFromPoolMaps`).
+   */
+  INGEST_SIGNALS?: string
 }
+
+/** Whether `INGEST_SIGNALS` enables a signal (shard/src/pool.ts `enabledSignals`, shared with flush). */
+export const signalEnabled = (env: Env, signal: 'traces' | 'logs'): boolean => enabledSignals(env.INGEST_SIGNALS).includes(signal)
 
 /** Drop the in-memory key and pool-map caches (tests; also harmless in production). */
 export function clearCaches(): void {
@@ -168,6 +185,81 @@ async function otlpMetrics(req: Request, env: Env, limits: Limits): Promise<Resp
   }
 }
 
+// ─────────────────────── OTLP/HTTP traces and logs ───────────────────────
+
+async function otlpSignal(req: Request, env: Env, limits: Limits, signal: 'traces' | 'logs'): Promise<Response> {
+  const contentType = (req.headers.get('Content-Type') ?? '').split(';')[0]!.trim().toLowerCase()
+  const json = contentType === 'application/json'
+  const type = json ? 'application/json' : 'application/x-protobuf'
+  const fail = (status: number, message: string, headers: Record<string, string> = {}): Response =>
+    new Response(statusBody(json, status, message), { status, headers: { 'Content-Type': type, ...headers } })
+  try {
+    // The tenant is the credential's; nothing in the request can name another one.
+    const { tenant } = await authenticate(req, env.CONFIG, 'write')
+    if (!json && contentType !== 'application/x-protobuf') {
+      return text(415, 'unsupported content type; expected application/x-protobuf or application/json')
+    }
+    const encoding = (req.headers.get('Content-Encoding') ?? 'identity').toLowerCase()
+    if (encoding !== 'identity' && encoding !== 'gzip') return fail(415, 'unsupported content encoding; expected gzip or none', { 'Accept-Encoding': 'gzip' })
+    const early = await refuseEarly(env, tenant, Date.now(), signal)
+    if (early) return refusal(early, fail)
+
+    let body = await readBody(req, limits.maxBodyBytes)
+    if (encoding === 'gzip') body = await gunzip(body, limits.maxDecompressedBytes)
+    else if (body.byteLength > limits.maxDecompressedBytes) throw tooLarge(`body exceeds the limit of ${limits.maxDecompressedBytes} bytes`)
+
+    const now = Date.now()
+    const c = signal === 'traces' ? new SpanCollector(limits, now) : new LogCollector(limits, now)
+    if (c instanceof SpanCollector) (json ? decodeTracesJson : decodeTracesProto)(body, c)
+    else (json ? decodeLogsJson : decodeLogsProto)(body, c)
+    body = EMPTY
+
+    const outcome = await appendAll(env, tenant, c, signal, (slots, max) => c.build(slots, max))
+    if (outcome.status !== 'ok') return refusal(outcome, fail)
+    // 200: every span or record not counted as rejected is durably appended. Rejected ones
+    // are counted in partial_success, which senders must not retry (OTLP, "Partial Success").
+    const field = signal === 'traces' ? 'rejectedSpans' : 'rejectedLogRecords'
+    return new Response(signalResponse(json, c.rejectedTotal, c.rejectionSummary(), field), { status: 200, headers: { 'Content-Type': type } })
+  } catch (e) {
+    if (e instanceof HttpError) return fail(e.status, e.message, e.headers)
+    throw e
+  }
+}
+
+// ─────────────────────────────── Loki push ───────────────────────────────
+
+async function lokiPush(req: Request, env: Env, limits: Limits): Promise<Response> {
+  // Tenant from the credential only: Loki's X-Scope-OrgID header is never read.
+  const { tenant } = await authenticate(req, env.CONFIG, 'write')
+  const contentType = (req.headers.get('Content-Type') ?? 'application/x-protobuf').split(';')[0]!.trim().toLowerCase()
+  const json = contentType === 'application/json'
+  if (!json && contentType !== 'application/x-protobuf') {
+    return text(415, 'unsupported content type; expected application/x-protobuf (snappy) or application/json', { Accept: 'application/x-protobuf, application/json' })
+  }
+  const encoding = (req.headers.get('Content-Encoding') ?? (json ? 'identity' : 'snappy')).toLowerCase()
+  if (json ? encoding !== 'identity' && encoding !== 'gzip' : encoding !== 'snappy') {
+    return text(415, json ? 'unsupported content encoding; expected gzip or none' : 'unsupported content encoding; protobuf bodies are snappy-compressed')
+  }
+  const early = await refuseEarly(env, tenant, Date.now(), 'logs')
+  if (early) return refusal(early, (status, message, headers) => text(status, message, headers))
+
+  let body = await readBody(req, limits.maxBodyBytes)
+  if (!json) body = snappyDecompress(body, limits.maxDecompressedBytes)
+  else if (encoding === 'gzip') body = await gunzip(body, limits.maxDecompressedBytes)
+  else if (body.byteLength > limits.maxDecompressedBytes) throw tooLarge(`body exceeds the limit of ${limits.maxDecompressedBytes} bytes`)
+
+  const c = new LogCollector(limits, Date.now())
+  if (json) decodeLokiJson(body, c)
+  else decodeLokiProto(body, c)
+  body = EMPTY
+  const outcome = await appendAll(env, tenant, c, 'logs', (slots, max) => c.build(slots, max))
+  if (outcome.status !== 'ok') return refusal(outcome, (status, message, headers) => text(status, message, headers))
+  // Loki push has no partial success: entries a retry would not fix are refused with 400
+  // (not retried by senders), naming the reasons and how many entries were written.
+  if (c.rejectedTotal > 0) return text(400, `rejected ${c.rejectedTotal} of ${c.received} entries (${c.rejectionSummary()}); ${outcome.rows} written`)
+  return new Response(null, { status: 204 })
+}
+
 /** A request that was not (entirely) appended: never 2xx, always retryable with a hint. */
 function refusal(
   outcome: Exclude<Outcome, { status: 'ok' }>,
@@ -193,6 +285,12 @@ export default {
         if (req.method !== 'POST') return text(405, 'method not allowed', { Allow: 'POST' })
         const limits = limitsFrom(env.INGEST_LIMITS)
         return await (path === '/v1/metrics' ? otlpMetrics(req, env, limits) : remoteWrite(req, env, limits))
+      }
+      const signal = path === '/v1/traces' ? 'traces' : path === '/v1/logs' || path === '/loki/api/v1/push' ? 'logs' : null
+      if (signal !== null && signalEnabled(env, signal)) {
+        if (req.method !== 'POST') return text(405, 'method not allowed', { Allow: 'POST' })
+        const limits = limitsFrom(env.INGEST_LIMITS)
+        return await (path === '/loki/api/v1/push' ? lokiPush(req, env, limits) : otlpSignal(req, env, limits, signal))
       }
       return text(404, 'not found')
     } catch (e) {

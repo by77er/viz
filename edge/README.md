@@ -2,7 +2,9 @@
 
 The ingest Worker: it authenticates a sender, decodes Prometheus Remote Write or OTLP
 metrics into `VZB1` batches (`contracts/BATCH.md`), routes them to shard slots and answers
-only once every shard has durably appended. For now it ships in one script with the shard
+only once every shard has durably appended. Stage 1 of traces and logs (2026-11-19): OTLP
+traces, OTLP logs and Loki push decode into `VZB1` signals 2 and 3, behind `INGEST_SIGNALS`
+("Traces and logs" below). For now it ships in one script with the shard
 (`src/index.ts` re-exports `Shard`, bound as `SHARD`), so the tests run against the real
 Durable Object.
 
@@ -16,8 +18,12 @@ Durable Object.
 | `src/route.ts` | Pool maps, routing, concurrent appends, epoch refetch |
 | `src/pb.ts`, `src/snappy.ts` | Protobuf wire reader and snappy block decompressor; no dependencies |
 | `src/limits.ts` | Limits and the accept window, with defaults |
-| `src/meter.ts` | Decode limits counted before anything is built: values per item, JSON structural characters (D71) |
 | `src/recorded.ts` | `RecordedSamples`: the entrypoint the ruler writes recording-rule samples to over a service binding (contracts/ingest.ts) |
+| `src/otel.ts` | What OTLP traces and logs share: AnyValue and KeyValue decoding (protobuf, JSON), canonical OTLP JSON and plain JSON text, the typed attribute list encoding, a byte writer, partial-success bodies |
+| `src/spans.ts` | OTLP/HTTP traces (protobuf, JSON) → validated spans → `VZB1` signal 2 batches |
+| `src/logs.ts` | OTLP/HTTP logs (protobuf, JSON) and Loki push (protobuf, JSON) → validated log records → `VZB1` signal 3 batches; the OTLP-to-labels mapping |
+| `scripts/otel-corpus.mjs` | The cross-language corpus: random requests encoded with protobufjs, decoded by this code into batches, with the expected rows (`engine/storage/readback`) |
+| `bench/otel.mjs` | Decode CPU per request for traces, logs and Loki push |
 
 There are no runtime dependencies. `snappyjs` and `protobufjs` are dev dependencies, used
 only to cross-check the hand-written codecs.
@@ -28,6 +34,9 @@ only to cross-check the hand-written codecs.
 |---|---|
 | `POST /api/v1/write` | Remote Write 1.0: snappy block-compressed `prometheus.WriteRequest` |
 | `POST /v1/metrics` | OTLP/HTTP metrics, `application/x-protobuf` or `application/json`, optionally `Content-Encoding: gzip` |
+| `POST /v1/traces` | OTLP/HTTP traces, as `/v1/metrics`; only when `INGEST_SIGNALS` contains `traces` (else 404) |
+| `POST /v1/logs` | OTLP/HTTP logs, as `/v1/metrics`; only when `INGEST_SIGNALS` contains `logs` |
+| `POST /loki/api/v1/push` | Loki push: `application/x-protobuf` with a snappy block body, or `application/json` optionally gzipped; only when `INGEST_SIGNALS` contains `logs` |
 | `GET /healthz` | `200 ok` |
 
 And one RPC entrypoint, reachable only through a service binding (never over HTTP):
@@ -37,8 +46,10 @@ And one RPC entrypoint, reachable only through a service binding (never over HTT
 | `RecordedSamples` (contracts/ingest.ts) | `write(tenant, batches: SampleBatch[]): Promise<void>`: the ruler's recording-rule output |
 
 Bindings: `SHARD` (Durable Object namespace), `CONFIG` (KV), `DEFAULT_POOL` (JSON `PoolMap`
-for tenants without their own), and optionally `INGEST_LIMITS` (JSON overriding any field
-of `Limits`).
+for tenants without their own), optionally `INGEST_LIMITS` (JSON overriding any field
+of `Limits`), and optionally `INGEST_SIGNALS` (`traces`, `logs` or `traces,logs`; unset in
+every deployment: stage 2 drains those shards and stage 3 routes their paths through the
+gateway, but the flag goes on only as "Needed changes" 2 says).
 
 KV layout:
 
@@ -83,9 +94,9 @@ are counted in `partial_success`, with the reasons in `error_message`.
 |---|---|---|
 | `maxBodyBytes` (as received) | 8 MiB | 413 |
 | `maxDecompressedBytes` | 8 MiB (was 32 MiB; D71) | 413; checked before snappy allocates and while gzip inflates |
-| `maxDecodedBytes` | 16 MiB (D71) | 413, nothing appended: the series table (Remote Write and OTLP), counted as it is built |
+| `maxDecodedBytes` | 16 MiB (D71) | 413, nothing appended: the series table (metrics, Remote Write included), or the entries and rows (spans, logs), counted as they are built |
 | `maxJsonTokens` | 1,048,576 (D71) | 413 before parsing: structural characters (`{ [ , :`) of a JSON body outside strings |
-| values per item (constant, `DECODE.maxValues`) | 65,536 key-value entries and array elements of an OTLP resource or data point, as received | that data point is rejected ("label set too large to fit one batch"); a resource over it rejects all its points. Counted before anything is built ("Memory per request") |
+| values per item (constant, `DECODE.maxValues`) | 65,536 key-value entries and array elements, as received | that data point is rejected ("label set too large to fit one batch"); a resource over it rejects all its points. Counted before anything is built ("Memory per request") |
 | `maxSeries` per request | 100,000 | 413 |
 | `maxSamples` per request | 500,000 | 413 |
 | `maxLabelsPerSeries` | 128 (the contract's ceiling; cannot be raised) | that series is rejected |
@@ -134,11 +145,92 @@ shared pool.
 | New series over the active-series limit | 400 naming the limit (below); the rest is written | 200 with `partial_success` |
 | A shard status this code does not know, a newer key record, pool map or limits record | 503 with `Retry-After`; never counted as stored, never authenticated on a guess | same |
 | `stale_epoch` | map refetched once and the request re-routed; otherwise 503 with `Retry-After` | same |
-| Shard error, no pool, or a pool map naming a pool outside `POOL_NAME` (D38) | 503 with `Retry-After` | same |
+| Shard error, no pool, or a pool map naming a pool outside `POOL_NAME` (D38) or a pool ending in `/traces` or `/logs` (contracts/BATCH.md, "Streams per signal") | 503 with `Retry-After` | same |
 | Malformed body | 400 with a short reason | 400, body is a `Status` in the request's encoding |
 | Too large | 413 | 413 |
 
 A 2xx is sent only after every append has returned `ok`.
+
+## Traces and logs (stage 1, behind `INGEST_SIGNALS`)
+
+What `/v1/traces`, `/v1/logs` and `/loki/api/v1/push` do when enabled. Contracts:
+`contracts/BATCH.md` (signals 2 and 3, routing, "Streams per signal"), `contracts/TRACES.md`,
+`contracts/LOGS.md` §1; decisions D57 (batches and per-signal shards) and D58 (OTLP stream
+labels). Not enabled anywhere: since stage 2 flush drains these shards and the ledger lists
+their files, but the publisher must read those tables first ("Needed changes" 2).
+
+- **Tenant** only from the credential, as for metrics (`authenticate`). A resource attribute,
+  a stream label or structured metadata named `tenant`, Loki's `X-Scope-OrgID`, other headers
+  and the query string are never read.
+- **Decoding.** Hand-written protobuf readers (fields in any order; unknown fields skipped;
+  `key_strindex` and `string_value_strindex`, which are for profiles, ignored) and OTLP/JSON
+  readers (lowerCamelCase, hex ids case-insensitive, 64-bit integers as strings or numbers,
+  enums as integers and also as names). Strings are decoded leniently: invalid UTF-8 becomes
+  U+FFFD, as the OTLP specification recommends ("UTF-8 String Handling"). Doubles keep their
+  8 wire bytes. `gzip` for OTLP and Loki JSON; Loki protobuf is a snappy block body.
+- **Canonical form** (what flush copies): attributes typed and sorted by key in UTF-8 order,
+  the last of a repeated key kept; arrays, key-value lists, bytes and empty values as
+  canonical OTLP JSON; event and link attributes as canonical OTLP JSON lists; `resource_fp`
+  = FNV-1a 64 over the canonical resource list; `stream_id` = `series_id`'s function of the
+  stream labels.
+- **Spans.** One batch entry per (resource, scope). A span whose end is before its start is
+  stored with `end = start` and `viz.clamped_end = true`. Routed per resource by
+  `job=<namespace/name>\u0000instance=<service.instance.id>` to the tenant's slot in
+  `{pool}/traces`.
+- **OTLP logs.** Stream labels from the default resource attributes of D58 (`service_name =
+  "unknown_service"` when absent), metadata from everything else (flattened, named, joined),
+  timestamp `time_unix_nano` else `observed_time_unix_nano`, line = string body or plain
+  JSON. Routed per resource, as spans, to `{pool}/logs`.
+- **Loki push.** Labels parsed from `{name="value", …}` (Go escapes, `\xHH`, `\u`, octal,
+  trailing comma) or the JSON `stream` object; structured metadata from the protobuf field or
+  the JSON third element. Routed by the stream's `job` and `instance` labels.
+- **Batches** of at most `MAX_BATCH_BYTES` per slot in arrival order, fingerprinted with
+  SHA-256, appended with the same `appendAll` as metrics (whole-request retry, backpressure,
+  overload, `stale_epoch`, `too_large` re-split), without `seriesIds` (not metered).
+- **Wiring for stage 2** (2026-11-19, the only edge change of it): the derived pool's name comes
+  from `signalPool` in `shard/src/pool.ts` (`signalMap` keeps its 503 for a name outside
+  `POOL_NAME`), and `INGEST_SIGNALS` is read by `enabledSignals` there, so flush's full sweep and
+  the stack derive the same names and the same flag. `scripts/otel-corpus.mjs --requests` also
+  writes the requests it encodes, for the stack's end-to-end run through the real Worker
+  (`stack/tools/signals_readback.mjs`); without the flag its output is as before. Run after it
+  (2026-11-19): `npx vitest run`, **91 passed, 0 failed** (11 files); `tsc --noEmit` clean; the
+  corpus at seed 1 (no `--requests`) writes the same batches and expected rows as before (the
+  generator's draws are unchanged: requests are written after they are built).
+
+**Base pools (stage 3, 2026-11-19).** A pool map whose pool ends in `/traces` or `/logs`
+(`pool:<tenant>` or `DEFAULT_POOL`) is refused like one outside `POOL_NAME`: 503 with
+`Retry-After: 30`, for every signal, metrics included, and nothing is stored (`validBasePool`, in `shard/src/pool.ts` since
+review M-5 and shared with control, re-exported by `src/route.ts`; `contracts/BATCH.md`, "Streams per signal", changed first). Otherwise the metric
+shard `{pool}/{slot}` of a pool `p/logs` would be the very object, under the very name, of the log
+shard `p/logs/{slot}` of a pool `p`, and `query/` (which tells a shard's signal by its name, D62)
+would read it as a log shard. Names that only look alike are pools like any other (`…/tracesx`,
+`…/traces-1`, `…/logs/a`, `traces`). `query/` reads pool maps through this module's `poolMap`, so
+it refuses such a tenant's reads with 503 too (`stack/README.md`, "Through the gateway").
+
+**Per-item refusals.** A span or record that breaks a rule is refused on its own; the rest is
+stored. OTLP answers 200 with `partial_success` (`rejected_spans` / `rejected_log_records`
+and an `error_message` naming each reason with its count, at most 2,048 characters), as the
+OTLP specification requires ("OTLP/HTTP Response", "Partial Success": "the server MUST
+respond with HTTP 200 OK … MUST set the respective rejected_spans … or rejected_log_records
+field with the number of … it rejected"; "The client MUST NOT retry the request when it
+receives a partial success response"; read from opentelemetry-proto `docs/specification.md`
+on 2026-11-19). Loki push answers 400 with the counts and how many entries were written (as
+Remote Write: valid entries are stored, the sender does not retry 4xx). A body that does not
+decode is 400 (OTLP: a `google.rpc.Status` in the request's encoding); too large is 413.
+
+| Item | Refused when |
+|---|---|
+| span | `trace_id` not 16 bytes or all zero; `span_id` not 8 bytes or all zero; `parent_span_id` not 0 or 8 bytes; kind not 0–5; status code not 0–2; start or end past 2^63−1 ns; start outside the accept window (24 h back, 5 min ahead); name, trace_state, status message, event name or link trace_state over 8,192 bytes; more than 128 attributes in a list, an empty key, a key over 1,024 bytes, a value over 65,536 bytes; more than 128 events or links; a link id of the wrong length or all zero; an event time past 2^63−1; the span over 256 KiB |
+| all spans of a resource and scope | a resource or scope attribute list breaking the attribute rules; scope name or version over 8,192 bytes; the entry over 256 KiB |
+| log record | no timestamp; timestamp past 2^63−1 or outside the accept window (24 h back, 5 min ahead); severity number over 24; `trace_id` not 0 or 16 bytes, `span_id` not 0 or 8; line over 256 KiB; severity text over 1,024 bytes; a metadata name breaking `[A-Za-z_][A-Za-z0-9_]*` or over 1,024 bytes, a value over 8,192 bytes or with NUL, a repeated name (Loki), more than 128 entries or 64 KiB; an attribute with an empty key |
+| all records of a stream (or OTLP resource and scope) | a label name breaking the rule or repeated, a value over 8,192 bytes or with NUL, more than 32 labels, no labels; Loki labels that do not parse |
+| span, record or Loki entry (decode limits, D71) | more than 65,536 key-value entries and array elements as received (a span with its events and links; a record's body and attributes; an entry's metadata): refused once its ids, kind, status, timestamps and event and link counts pass, without the attribute checks; not built past the limit |
+| all spans, records or entries of it (decode limits) | a resource with one scope (spans), a log resource, a log scope or a Loki label set over the same limit |
+| the request (413) | more than `maxSpans` / `maxLogRecords` (200,000 each), the body limits of metrics, more than `maxDecodedBytes` decoded or `maxJsonTokens` in a JSON body |
+
+New limits (`INGEST_LIMITS` may set them): `maxSpans`, `maxLogRecords`, `spanAcceptBackMs`,
+`spanAcceptAheadMs`, `logAcceptBackMs`, `logAcceptAheadMs`. The contract's ceilings (attribute
+and field sizes) are constants and cannot be raised.
 
 ## Recorded samples over a service binding (contracts/ingest.ts, D45)
 
@@ -164,6 +256,12 @@ involved.
   `series_limit`, `too_large`, `backpressure`, `overloaded`, `unavailable`, `unauthorized`).
   Unlike Remote Write, a call with any invalid sample writes nothing at all. Re-sending is safe:
   identical batches are recognised by their fingerprint.
+- **Every error it sees carries a word** (review of D52, m-8; 2026-11-19). `writeRecorded` turns
+  anything thrown into a refusal (`asRefusal`): a refusal stays as it is, a request over the
+  limits (413) is `too_large`, and anything else (the limits configuration, the pool map or KV
+  unreadable, a shard unreachable, an unexpected error) is `unavailable`. A rejection without a
+  word therefore comes only from the platform (no entrypoint, the callee's CPU or memory limit, a
+  lost connection), which is when the ruler falls back to Remote Write (D52).
 
 ## Active-series limit
 
@@ -191,74 +289,92 @@ series: `design/DECISIONS.md` D21. `test/limit.test.ts` (6 tests); mutants in
 
 ## Memory per request (decode limits, D71; review M-3)
 
-What a metrics request holds is bounded whatever its body's shape (`contracts/BATCH.md`,
-"Decode limits"). Ported from the development branch (commit `2afd7c5`), which applies the same
-limits to OTLP traces and logs and Loki push; only the metrics part is here.
+What a request holds is bounded whatever its body's shape (`contracts/BATCH.md`, "Decode limits").
 
-- **Counted before built.** The OTLP metrics decoders (protobuf and JSON) count each key-value
-  entry and array element of a resource or a data point, at any depth, against it
-  (`src/meter.ts`) before building it. At 65,536 the item is refused ("label set too large to
-  fit one batch"; a resource refuses all its points), the decoder builds nothing more of it and
-  reads the rest only to check the wire (lengths, wire types, nesting, UTF-8), so a malformed
-  body is still 400. Items under the limit are checked exactly as before. `BUILT` counts what the
-  decoders build, for the tests. Remote Write was already bounded per series: its labels are
-  read into a fixed scratch and copied from the body as bytes.
-- **No offsets per child.** A protobuf level is read twice (first its scalar fields and how many
-  children it has, then the children), so nothing is kept per resource, metric or point between
-  the two passes.
-- **The series table** counts against `maxDecodedBytes` as it is built, and its buffer does not
-  double past it. A resource's labels are copied into every series of it, so before this a valid
-  157 KiB body (one 96 KiB resource, 2,000 points) built a 498 MiB table (below). `index.ts` lets
-  the body go once it is decoded, before the shards are written.
-- **A point's attribute names** are found in a `Map`, not with `indexOf`, which was quadratic in a
-  point's attributes.
+- **Counted before built.** Every decoder (OTLP metrics, traces and logs, protobuf and JSON; Loki
+  push, protobuf and JSON) counts each key-value entry and array element, at any depth, against
+  its item (`src/meter.ts`) before building it. At 65,536 the item is refused, the decoder builds
+  nothing more of it and reads the rest only to check the wire, so a malformed body is still 400.
+  Items under the limit are checked exactly as before. `BUILT` counts what the decoders build, for
+  the tests.
+- **No offsets per child.** A protobuf level is read twice (first what its children need and
+  how many there are, then the children), so an empty scope, span or record costs its two bytes
+  and nothing more. A resource is encoded once for all its scopes.
+- **Rows are bytes.** Accepted spans and records are laid out in one buffer (their fixed columns,
+  their lengths, their variable bytes), not one object each, and the buffer does not double past
+  `maxDecodedBytes`. A request's entries, streams, rows and series table count against that limit.
+  Nothing refers to the body after decoding, and `index.ts` lets it go before the shards are
+  written.
 - **JSON** is refused (413) above `maxJsonTokens` structural characters before `JSON.parse`, which
-  builds every value at once; realistic OTLP JSON has one per 10 to 35 bytes (measured on the
-  development branch's realistic bodies), hostile JSON one per 1.5.
+  builds every value at once; realistic OTLP and Loki JSON has one per 10 to 35 bytes (measured
+  on the bodies below), hostile JSON one per 1.5.
 
 **The model.** While it decodes, a request holds its body as received (at most `maxBodyBytes`,
 8 MiB) and decompressed (at most 8 MiB; gzip inflates through chunks of up to as much again), the
-series table so far (at most `maxDecodedBytes`, 16 MiB, in a buffer at most one series larger),
-and V8 heap: for protobuf, the item being decoded (at most 65,536 values; every protobuf body
-below peaks at 6.0 MiB or less in workerd), for JSON, the parse tree (28.2 MiB at the token limit,
-the worst shape found, measured on the development branch with a body of empty objects;
-`JSON.parse` builds that tree before any decoder sees it) and the body's text (up to 8 MiB more,
-modelled). While the shards are written it holds the series table and its batches (about as
-large again) and no body. All but the V8 heap are ArrayBuffers. With every limit reached at once
-that is about 50 MiB for protobuf and 80 MiB for JSON (modelled from the parts); two such requests
-do not fit one 128 MB isolate. Realistic requests of 8,200 points (measured here) peak at 3.2 MiB
-of V8 heap as protobuf and 8.8 MiB as JSON in workerd, and decode into 2.14 MiB.
+decoded data so far (at most `maxDecodedBytes`, 16 MiB, in a buffer at most one row larger), and
+V8 heap: for protobuf, the item being decoded (at most 65,536 values; every protobuf body measured
+peaks at 6.9 MiB or less in workerd), for JSON, the parse tree (28.2 MiB at the token limit, the
+worst shape found) and the body's text (up to 8 MiB more, modelled). While the shards are written
+it holds the decoded data and its batches (about as large again) and no body. All but the V8 heap
+are ArrayBuffers. With every limit reached at once that is about 50 MiB for protobuf and 80 MiB for
+JSON (modelled from the parts); two such requests do not fit one 128 MB isolate. Realistic
+requests of 8,200 items (measured here) peak at 1.4 to 3.2 MiB of V8 heap as protobuf and 8.1 to
+17.1 MiB as JSON in workerd, and decode into 1.9 to 3.7 MiB (`Decoded` in the harness).
 
-**Measured here** (2026-11-19, one run per case, on this branch's `src/` and, for "before", on
-`origin/main`'s at `9e56957`; the development branch's `bench/memory.mjs`, copied in for the run
-and not committed here, with its span and log imports left out). workerd 2026-11-17 local, V8
-heap only, from `--trace-gc`: "peak" is the largest heap a GC saw before collecting, garbage
-included. Node 22 alongside; Node does not compress pointers, so its heap is about twice
-workerd's, and only Node reports ArrayBuffers (bodies, the series table, batches) retained after
-the request. Hostile bodies are review M-3's shapes and those found while fixing them; realistic
-ones have 8,200 points in the shape of an instrumented HTTP service.
+**Measured here** (`node bench/memory.mjs`; 2026-11-19, one run per case; workerd 2026-11-17 local,
+V8 heap only, from `--trace-gc`: "peak" is the largest heap a GC saw before collecting, garbage
+included, "live" the largest it left. Node 22 alongside; Node does not compress pointers, so its
+numbers are about twice workerd's). Hostile bodies are 4 MiB decompressed, each a few bytes per
+item (review M-3's shapes and those found while fixing them); realistic ones have 8,200 items in
+the shape of `bench/otel.mjs`.
 
-| Body | Size | workerd peak, MiB: before → after | Node peak, MiB: before → after | Node ArrayBuffers retained, MiB: before → after | Outcome: before → after | Node decode time, ms: before → after |
-|---|---|---|---|---|---|---|
-| metrics: resource of empty KeyValues | 4.00 MiB | 119.7 → **6.0** | 181.2 → 7.8 | 0.0 → 0.0 | 0 stored → 0 stored | 774 → 44 |
-| metrics: resource attribute, array of empty values | 4.00 MiB | 43.1 → **1.3** | 71.4 → 1.5 | 4.0 → 4.0 | 0 stored → 0 stored | 197 → 25 |
-| metrics: a 96 KiB resource copied into 2,000 series | 157 KiB | 1.4 → **1.1** | 1.3 → 1.2 | **498.0 → 0.0** | 2,000 stored → 413 | 965 → 132 |
-| metrics: point of distinct attribute keys | 229 KiB | 2.8 → **3.2** | 4.4 → 5.1 | 0.0 → 0.3 | 0 stored, 1 refused → 0 stored, 1 refused | 262 → 41 |
-| metrics JSON: resource of empty attributes | 4.00 MiB | 135.4 → **0.0** | 222.0 → 0.1 | 0.0 → 0.0 | 0 stored → 413 | 718 → 14 |
-| realistic metrics, 8,200 points | 1.34 MiB | 3.2 → **3.2** | 4.1 → 4.1 | 5.3 → 5.3 | 8,200 stored → 8,200 stored | 104 → 138 |
-| realistic metrics JSON, 8,200 points | 3.06 MiB | 8.5 → **8.8** | 18.1 → 18.2 | 5.7 → 5.7 | 8,200 stored → 8,200 stored | 105 → 122 |
+| Body | Size | workerd peak, MiB: before → after | Node peak, MiB: before → after | Outcome: before → after | Node decode time, ms: before → after |
+|---|---|---|---|---|---|
+| traces: resource of empty KeyValues | 4.00 MiB | 139.2 → **2.7** | 245.2 → 5.3 | 0 stored → 0 stored | 878 → 44 |
+| traces: resource attribute, array of empty values | 4.00 MiB | 63.4 → **1.0** | 133.6 → 1.4 | 0 stored → 0 stored | 472 → 27 |
+| traces: empty scopes | 4.00 MiB | 49.2 → **0.2** | 69.8 → 0.3 | 0 stored → 0 stored | 16797 → 29 |
+| traces: span of empty attributes | 4.00 MiB | 159.2 → **3.4** | 270.3 → 6.4 | 0 stored, 1 refused → 0 stored, 1 refused | 1402 → 46 |
+| traces: span of empty events | 4.00 MiB | 115.7 → **0.1** | 213.5 → 0.3 | 0 stored, 1 refused → 0 stored, 1 refused | 993 → 29 |
+| traces: span name of 4 MiB | 4.00 MiB | 4.0 → **4.1** | 4.2 → 4.2 | 0 stored, 1 refused → 0 stored, 1 refused | 21 → 9 |
+| traces: minimal valid spans | 4.00 MiB | 64.9 → **3.6** | 67.8 → 6.1 | 107,546 stored → 107,546 stored | 523 → 302 |
+| traces: empty spans | 4.00 MiB | 44.4 → **1.1** | 69.8 → 1.2 | 0 stored, 2,097,152 refused → 0 stored, 2,097,152 refused | 913 → 360 |
+| traces: empty resources | 4.00 MiB | 1.0 → **1.0** | 0.8 → 0.6 | 0 stored → 0 stored | 24 → 28 |
+| traces: span attribute of nested key-value lists | 4.00 MiB | 49.0 → **6.0** | 83.7 → 11.8 | 1 stored → 0 stored, 1 refused | 391 → 89 |
+| logs: resource of empty KeyValues | 4.00 MiB | 123.7 → **2.7** | 232.9 → 5.3 | 0 stored → 0 stored | 1222 → 44 |
+| logs: empty records | 4.00 MiB | 33.8 → **1.1** | 69.8 → 1.2 | 0 stored, 2,097,152 refused → 0 stored, 2,097,152 refused | 825 → 465 |
+| logs: record of empty attributes | 4.00 MiB | 113.4 → **2.7** | 231.9 → 5.2 | 0 stored, 1 refused → 0 stored, 1 refused | 1244 → 38 |
+| logs: record body, array of empty values | 4.00 MiB | 71.4 → **1.2** | 147.5 → 1.7 | 0 stored, 1 refused → 0 stored, 1 refused | 669 → 34 |
+| logs: minimal valid records (200,000) | 2.10 MiB | 38.8 → **6.9** | 70.3 → 7.5 | 200,000 stored → 200,000 stored | 441 → 381 |
+| loki: entry of empty metadata | 4.00 MiB | 119.7 → **2.7** | 181.2 → 5.2 | 1 stored → 0 stored, 1 refused | 831 → 34 |
+| loki json: small entries | 4.00 MiB | 47.4 → **19.6** | 74.8 → 39.6 | 149,796 stored → 149,796 stored | 493 → 328 |
+| metrics: resource of empty KeyValues | 4.00 MiB | 119.7 → **5.2** | 181.2 → 8.4 | 0 stored → 0 stored | 996 → 39 |
+| metrics: resource attribute, array of empty values | 4.00 MiB | 43.1 → **1.3** | 71.4 → 1.6 | 0 stored → 0 stored | 235 → 27 |
+| metrics: a 96 KiB resource copied into 2,000 series (157 KiB body) | 157 KiB | 1.4 → **1.2** | 1.3 → 1.2 | 2,000 stored → 413 | 1250 → 113 |
+| metrics: point of distinct attribute keys, 256 KiB | 229 KiB | 2.8 → **3.2** | 4.4 → 4.9 | 0 stored, 1 refused → 0 stored, 1 refused | 363 → 36 |
+| traces json: resource of empty attributes | 4.00 MiB | 112.0 → **0.0** | 224.1 → 0.2 | 0 stored → 413 | 777 → 9 |
+| logs json: resource of empty attributes | 4.00 MiB | 112.0 → **0.0** | 224.1 → 0.2 | 0 stored → 413 | 916 → 9 |
+| metrics json: resource of empty attributes | 4.00 MiB | 135.3 → **0.0** | 222.0 → 0.2 | 0 stored → 413 | 929 → 7 |
+| traces json: attribute array of empty values | 4.00 MiB | 75.7 → **0.0** | 138.8 → 0.2 | 0 stored → 413 | 723 → 8 |
+| traces json: empty objects at the token limit | 1.50 MiB | 43.0 → **28.2** | 85.0 → 50.8 | 0 stored → 0 stored | 289 → 178 |
+| traces json: empty arrays at the token limit | 1.50 MiB | 13.5 → **11.5** | 25.6 → 21.6 | 400 → 400 | 121 → 120 |
+| realistic traces, 8,200 spans | 3.44 MiB | 7.6 → **1.6** | 12.9 → 2.6 | 8,200 stored → 8,200 stored | 180 → 151 |
+| realistic traces JSON, 8,200 spans | 7.11 MiB | 28.6 → **17.1** | 42.2 → 36.7 | 8,200 stored → 8,200 stored | 398 → 231 |
+| realistic logs, 8,200 records | 2.14 MiB | 6.4 → **1.6** | 11.9 → 2.6 | 8,200 stored → 8,200 stored | 172 → 138 |
+| realistic logs JSON, 8,200 records | 4.00 MiB | 16.8 → **12.7** | 25.4 → 14.6 | 8,200 stored → 8,200 stored | 274 → 166 |
+| realistic Loki push (snappy), 8,200 entries | 383 KiB | 3.3 → **1.4** | 6.0 → 1.6 | 8,200 stored → 8,200 stored | 139 → 112 |
+| realistic Loki push JSON, 8,200 entries | 1.64 MiB | 8.3 → **8.1** | 9.5 → 8.7 | 8,200 stored → 8,200 stored | 159 → 121 |
+| realistic metrics, 8,200 points | 1.34 MiB | 3.1 → **3.2** | 4.0 → 4.0 | 8,200 stored → 8,200 stored | 121 → 132 |
+| realistic metrics JSON, 8,200 points | 3.06 MiB | 8.5 → **9.2** | 18.1 → 18.2 | 8,200 stored → 8,200 stored | 117 → 124 |
 
-The fan-out row is the one live on `main` with a valid body: its V8 heap is small, and the 498 MiB
-are the series table, an ArrayBuffer, grown from a 157 KiB body. Two outcomes change, both as the
-contract now says: the fan-out and the hostile JSON body are 413. Every other outcome is the same,
-and so are the batches of every realistic body ("Verification"). A second run of the "after" column
-(`--check`) gave 5.2 MiB for the first row and within 0.4 MiB for the rest; every case was under
-its heap budget (16 MiB for protobuf, 32 MiB in workerd and 64 MiB in Node for JSON). Node decode
-time is wall time of one synchronous run on a shared machine at load 7 to 8. The same measurements
-on the development branch, with the span and log rows, are in its `edge/README.md`.
+Two outcomes change, both as the contract now says ("Decode limits": entries count as received):
+the span's key-value list repeats one key two million times (OTLP forbids repeated keys; before,
+the copies collapsed into one after all were built, and it was stored) and the Loki entry's two
+million metadata pairs have empty values (dropped by the mapping; before, the entry was stored
+without them). Every other outcome is the same, and so are the batches of every realistic body
+(`bench/differential.mjs`). Node decode time is wall time of one synchronous run on a shared machine at load 7 to 9.
 
 Not measured: anything on Cloudflare (the isolate's memory as Workers reports it, under concurrent
-requests); ArrayBuffers in workerd (no API).
+requests); ArrayBuffers in workerd (no API; the harness prints Node's).
 
 ## Not implemented
 
@@ -266,7 +382,15 @@ requests); ArrayBuffers in workerd (no API).
 - OTLP histograms, exponential histograms, summaries and delta sums (reported in
   `partial_success`). Scope attributes, `target_info`, start timestamps and exemplars
   are ignored. zstd is refused with 415.
-- OTLP traces and logs, OTLP/gRPC.
+- OTLP/gRPC. OTLP traces and logs and Loki push are decoded and appended, but only behind
+  `INGEST_SIGNALS` (off everywhere); stage 2 drains their shards into the ledger, `query/` reads
+  them behind `QUERY_SIGNALS` (D62), the gateway routes both (stage 3), and the publisher reads
+  them without publishing them (D64; "Needed changes" 2).
+- For traces and logs: OTLP `schema_url`, the span `type` field (OTLP 1.12, development), event
+  and link dropped-attribute counts, link flags, log `event_name`, resource `entity_refs`;
+  Loki's service-name discovery (a Loki stream without `service_name` keeps none); Loki's
+  `parsed` field; metering active log streams; truncating over-long values instead of
+  refusing the item; a per-tenant choice of OTLP stream labels.
 - Per-tenant limits: `INGEST_LIMITS` applies to every tenant of the deployment.
 - Rate limiting at the edge. Quotas are the shard's job; the edge relays its backpressure
   and, while every shard of a tenant is inside an overload `Retry-After`, refuses that
@@ -278,15 +402,15 @@ requests); ArrayBuffers in workerd (no API).
   their stored form; a JSON body is still parsed whole (bounded by `maxJsonTokens`). D71 has the
   alternatives.
 - Truncating an item over the decode limits instead of refusing it, and naming every rule an item
-  over them breaks (a point is named for the values limit once its metric's checks pass).
+  over them breaks (it is named for the values limit once its scalar checks pass).
 
 ## Verification
 
 ```
 npm install
-npx vitest run --maxWorkers=2   # 84 tests in 10 files, in workerd, against the real Shard
+npx vitest run --maxWorkers=2   # 62 tests in 8 files, in workerd, against the real Shard
 npm run typecheck               # clean
-node scripts/mutants.mjs        # 63 mutants, on a copy outside the git checkout (the script refuses to run in it)
+node scripts/mutants.mjs        # 43 mutants, on a copy outside the git checkout (the script refuses to run in it)
 npm run bench       # decode throughput, in Node
 npm run fixtures    # regenerate test/fixtures.json with protobufjs + snappyjs
 ```
@@ -417,6 +541,14 @@ default; a pool map naming a pool with `_` is 503 and nothing is stored (D38); R
 over the active-series limit is 400 and the existing series are written, also at the limit
 (R-4).
 
+**Registration before writes (D61).** A shard's `registering` refusal (the stream's
+registration is not yet logged) is answered 503 with `Retry-After`, never 429, for Remote
+Write and OTLP, and is not taken for an overloaded shard: the tenant's next request still
+reaches the shard (`test/overload.test.ts`, "a stream being registered (D61)…"). Mutants,
+run on a scratch copy and both caught by that test: `registering` answered 429 ("expected 429
+to be 503"), and `registering` noted as overload ("expected 1 to be 2"). This is release A's
+edge half of D61 (`shard/README.md`, "Needed changes elsewhere" 1).
+
 **Mutation check of 2026-11-19** (`node scripts/mutants.mjs` on a copy of `contracts/`,
 `shard/` and `edge/` in a scratch directory; each mutant against the whole suite): **41 of
 43 killed.** The eight added here and the test that failed for each: R-4 answered 429 again
@@ -446,85 +578,186 @@ apply (the earlier 43 were not re-run here).
 | new series over the limit resolve | new series over the tenant's active-series limit are refused (series_limit) |
 | values parsed with `Number()` (hex, empty accepted) | writes nothing at all (hex, empty); parses exactly Prometheus' text form |
 
+### Stage 3 of traces and logs (2026-11-19)
+
+The base-pool rule above. `npx vitest run --maxWorkers=2`: **92 passed, 0 failed** (11 files; one
+new test in `test/overload.test.ts`: two bad pools (`…/traces`, `…/logs`) as the tenant's map and
+as `DEFAULT_POOL`, each refused for Remote Write, OTLP metrics, OTLP traces and Loki push with
+nothing in the shard it names or in its derived pools; six look-alike names accepted and stored;
+the good map again stores spans in its traces pool). `npx tsc --noEmit` clean.
+`node scripts/mutants.mjs --check`: all 73 patterns apply (one older pattern, "spans appended to
+the metrics pool", no longer applied since stage 2 moved the derivation to `signalPool`; it now
+mutates `signalMap` to return the metrics pool). Run on a copy of the tree in a scratch directory,
+after the copy's suite passed 92 of 92, each against the whole suite:
+
+| Mutant | Killed by |
+|---|---|
+| a base pool ending in `/logs` is accepted | a base pool ending in /traces or /logs is refused (503) … |
+| a base pool ending in `/traces` or `/logs` is accepted | the same |
+| a pool map whose pool is outside `POOL_NAME` is used (pattern moved into `validBasePool`) | a pool map naming a pool outside POOL_NAME is refused (503) …|
+| spans appended to the metrics pool (retargeted at `signalMap`) | the base-pool test; stores every span exactly …; refuses each invalid span … |
+
+Through the gateway, the same rule is also checked end to end and the first mutant killed again
+there (`stack/README.md`, "Through the gateway").
+
+### Every error of the recorded-samples entrypoint carries a refusal word (2026-11-19)
+
+Review of D52, m-8: with any shard of the isolate marked hot, `writeRecorded` read the tenant's pool
+map in `refuseEarly` outside any `try`, so an unreadable map (invalid, of a newer version, a KV
+error) or a missing shared pool rejected with the bare error (`shard pool map is invalid`), and the
+ruler took the entrypoint for one that did not answer and sent the same batches by Remote Write.
+Errors other than 413 thrown while the samples were read were also rethrown bare. Now
+`writeRecorded` wraps the whole call and maps every error (`asRefusal`; the three inner `try`
+blocks it replaces mapped the same way). The `unavailable` row of `contracts/ingest.ts` now also
+names an unreadable limits record and an unexpected error, and says that every error the
+entrypoint sees carries a word (contract text first; no new word, since an older ruler would
+take a new one for no answer and fall back).
+
+Two tests in `test/recorded.test.ts`:
+
+- **Through the binding** (`RULER_SINK`, the review's case): a shard sheds load (`maxInFlight: 0`)
+  and the call is `overloaded`. The shard then takes load again, and a second `overloaded` proves
+  the isolate serving the entrypoint holds a hot shard. Then four tenants whose `pool:` record is
+  not JSON, names a pool outside `POOL_NAME`, names a pool ending in `/logs`, or is of a newer
+  version are each `unavailable: shard pool map …`.
+- **Each error path, with its word**, first with nothing hot and then with a shard hot: the limits
+  configuration not JSON, KV failing while the pool map is read, no shard pool configured, an
+  invalid pool map, a shard that cannot be reached, an unexpected error while the samples are read
+  (a value whose text form throws, only possible in a direct call: such a value cannot cross a
+  binding) are `unavailable`, more samples than a call may carry is `too_large`, and each word is
+  one the contract lists. With `unauthorized`, `invalid`, `series_limit`, `backpressure` and
+  `overloaded` tested above, every word is reached.
+
+**Before the change** (the 859e201 `src/recorded.ts`, in a scratch copy): both new tests fail,
+through the binding with exactly `expected 'shard pool map is invalid' to match /^unavailable:
+shard pool map /`, the table at the unexpected error (`'injected: no text form'`). **After**: `npx
+vitest run --maxWorkers=2`, **94 passed, 0 failed** (11 files); `npx tsc --noEmit` clean.
+
+**Mutants** (`node scripts/mutants.mjs recorded:` on a copy of `contracts/`, `shard/` and `edge/` in
+a scratch directory, after the copy's suite passed 94 of 94 and `--check` found all 76 patterns;
+each against the whole suite; the copy's sources compared with the shared tree afterwards: equal):
+**10 of 10 killed**, the seven earlier entrypoint mutants again (the three inner `try` blocks they
+sit beside were removed) and three new ones:
+
+| Mutant | Killed by |
+|---|---|
+| an error the entrypoint sees is rethrown without a refusal word | through the binding …; each error path …; every refusal word is one the contract lists |
+| only HTTP errors get a refusal word (KV and unexpected errors pass bare) | each error path … |
+| a request over the limits (413) is `unavailable`, not `too_large` | each error path …; every refusal word is one the contract lists |
+
 ### Decode limits and memory (2026-11-19, review M-3, D71)
 
 ```
 npx tsc --noEmit
-npx vitest run --maxWorkers=2       # test/decode-metrics.test.ts is new
-node scripts/mutants.mjs decode:    # on a copy outside the git checkout
+npx vitest run --maxWorkers=2                 # test/decode.test.ts is new
+node bench/memory.mjs                         # heap per request, Node and workerd (bodies: bench/bodies.mjs)
+MEM_SRC=/copy/of/old/src node bench/memory.mjs   # the same against another version of src/
+node bench/differential.mjs origin/main       # metrics: same batches as main (live)
+node bench/differential.mjs 530c1cd --seeds 1,2,3   # every signal: same batches as before this change
+node scripts/mutants.mjs decode:              # on a copy outside the git checkout
 ```
 
-The memory and differential harnesses are the development branch's (`bench/memory.mjs`,
-`bench/memory-run.mjs`, `bench/bodies.mjs`, `bench/differential.mjs`). They were copied into this
-tree for the runs below and are not committed here: they also build and decode spans and logs,
-which this tree does not have (for the runs, the copies skip those).
+**Last run** (2026-11-19): `npx vitest run --maxWorkers=2` **133 passed, 0 failed** (13 files, 39 tests new); `npx tsc --noEmit`
+clean. New: `test/decode.test.ts` (spans, logs, Loki) and `test/decode-metrics.test.ts` (metrics, kept
+apart so it carries over to a tree with metrics only), bodies written by hand in `test/wire.ts`:
 
-**Last run** (2026-11-19): `npx vitest run --maxWorkers=2` **84 passed, 0 failed** (10 files: the
-71 before and 13 new); `npx tsc --noEmit` clean. New: `test/decode-metrics.test.ts`, with request
-bodies written byte by byte in `test/wire.ts`, sharing nothing with `src/`:
-
-- **Each hostile shape is refused, cheaply**: a resource of empty `KeyValue`s, a data point of
-  empty attributes followed by a valid point, a point attribute that is an array of empty values
-  (protobuf), and a point of empty attributes followed by a valid point (JSON), each at 4N and 8N
-  entries (2N and 4N for JSON). Each is refused with "label set too large to fit one batch", the
-  valid point after it is stored, and `BUILT` (every entry and element a decoder creates, counted
-  apart from the meters) stays at most N + 64 and the same for both sizes: building stopped at
-  the limit.
-- **At the limit**: a data point of exactly 65,536 values (16 labels, each an array of 4,095
-  integers) is stored with every value read back from its batch, and one more is refused; exactly
-  `maxDecodedBytes` of series is accepted and a byte less is 413; exactly `maxJsonTokens` is
-  accepted and one less is 413.
-- **The rest is still read**: past the limit, invalid UTF-8 in a key (an overlong form) and in
-  a value (a surrogate) and a value nested 18 deep are still 400; JSON still checks every value's
-  type.
-- **Through the Worker**: a point over the limit is answered 200 with `partial_success` (1
-  rejected, with its reason) and the valid point is stored; a resource copied into more series
-  bytes than `maxDecodedBytes` is 413 with nothing stored, and all 50 series are stored under a
-  larger limit; a JSON body over `maxJsonTokens` is 413 with nothing stored.
+- **Each hostile shape is refused, cheaply**, for every path (OTLP traces, logs and metrics in
+  protobuf and JSON, Loki push in protobuf and JSON): a resource, scope, span, event, record,
+  entry, label set or data point of 4N and 8N empty entries or elements (2N and 4N for JSON) is
+  refused with its reason, the valid item after it is stored, and `BUILT` (every entry and element
+  a decoder creates, counted apart from the meters) stays at most N + 64 and the same for both
+  sizes: building stopped at the limit.
+- **At the limit**: an item of exactly 65,536 values is stored with every value (a span of four
+  arrays, a log record's body, a data point of 16 labels, a Loki entry, a Loki label set) and one
+  more is refused; a span of exactly 128 events and 128 links is stored with every one; a resource
+  and its scope are counted together; exactly `maxDecodedBytes` is accepted and a byte less is 413
+  (metrics, spans, logs); exactly `maxJsonTokens` is accepted and one less is 413 (each endpoint).
+- **The rest is still read**: past the limit a body nested 18 deep, a truncated field or invalid
+  UTF-8 (metrics) is still 400; JSON still checks every value's type.
+- **Through the Worker**: each endpoint answers with its status (OTLP `partial_success`, Loki 400)
+  and stores the rest; a resource copied into more series or entries than `maxDecodedBytes` is
+  413 and nothing is stored.
 - `validUtf8` agrees with a fatal `TextDecoder` on 20,000 random byte strings biased to the edges
   of multi-byte forms (more than 5,000 of them invalid, as the test checks).
 
-**Unchanged answers.** `node bench/differential.mjs origin/main`, run on this tree: **605 of 605
-metrics requests identical** to `main`'s decoders at `9e56957` (batches byte for byte, series ids,
-counts, refusal reasons): `test/fixtures.json` (Remote Write, and OTLP protobuf and gzip, encoded
-by protobufjs, snappyjs and `node:zlib`; 606 rows), the two realistic metrics bodies (8,200 points,
-protobuf and JSON), and 300 random OTLP metrics requests in protobuf and in JSON (every AnyValue
-kind, nested, repeated and colliding keys, empty values, NaN, unicode, every temporality,
-histograms, staleness flags; 5,618 points refused for their reasons, the same before and after).
-Its six span, log and Loki bodies were skipped: `main` has no decoder for them.
+**Unchanged answers.** `node bench/differential.mjs origin/main`: **605 of 605 metrics requests
+identical** to `main`'s decoders (batches byte for byte, series ids, counts, refusal reasons):
+`test/fixtures.json` (Remote Write and OTLP, protobufjs and snappyjs), the realistic metrics
+bodies, and 300 random OTLP metrics requests in protobuf and JSON (every AnyValue kind, nested,
+repeated and colliding keys, empty values, NaN, unicode, every temporality, histograms, staleness
+flags; 5,618 points refused for their reasons). `node bench/differential.mjs 530c1cd --seeds
+1,2,3` (the tree before this change): **1,294 of 1,294 identical**, also the realistic traces,
+logs and Loki bodies and `scripts/otel-corpus.mjs`'s 187 requests for three seeds, and 496 copies
+of its protobuf requests with one to three random bytes changed (33 items refused and 118 bodies
+refused whole, with the same reasons and messages before and after).
 
-**Memory**: the table in "Memory per request" (`node bench/memory.mjs --json metrics`, and with
-`MEM_SRC` at `origin/main`'s `edge/src` for "before"); `node bench/memory.mjs --check metrics`
-passes: every metrics case under its heap budget.
+**Memory**: the table in "Memory per request" (`node bench/memory.mjs`, before with
+`MEM_SRC` at the old sources); `node bench/memory.mjs --check` passes: every case under its heap budget, 16 MiB for
+protobuf in Node and workerd, 32 MiB (workerd) and 64 MiB (Node) for JSON, whose parse tree only the
+token limit bounds.
 
-**Mutants** (`node scripts/mutants.mjs` on a copy of `contracts/`, `shard/` and `edge/` in a
-scratch directory, after the copy's suite passed 84 of 84; each mutant against the whole suite;
-afterwards the copy's sources were compared with this tree byte for byte: equal). `--check`: all
-63 patterns apply. **Last run: 61 of 63 killed**; the two survivors are the equivalent ones
-described above ("2xx on shard error", "a shard status edge does not know counts as stored"). The
-13 new ones, all killed (11 are the development branch's metrics mutants; the two marked * are
-the metrics counterparts of its span mutants):
+**Mutants** (`node scripts/mutants.mjs <subset>` on a copy of `contracts/`, `shard/` and `edge/`
+outside the checkout, after the copy's suite passed 133 of 133 (13 files); each against the whole suite).
+`--check`: all 105 patterns apply. The four older patterns this change moved were re-anchored with
+the same intent (histograms silently dropped; a refused resource counted once; span attributes
+after the third dropped; resource and scope attributes dropped from log metadata).
+
+**Last run: 59 of 60 killed; the one survivor is killed by `bench/memory.mjs --check`.**
+Subsets: `decode:` (29), every `otel:` mutant (19, re-anchored ones included), and the metrics
+mutants this change could reach (histograms, delta sums, `exported_job`, label order, empty-valued
+labels, series ids, NaN payload, batch splitting, label sets over a batch, the snappy limit,
+Remote Write 204; 12). The other subsets do not touch the decoders.
 
 | Mutant (`decode:`) | Killed by (one of) |
 |---|---|
-| data point attributes built without the meter and counted afterwards | metrics: point of empty attributes, then a valid point: refused on its own, built no further than the limit however large it is |
-| array elements built past the limit (the check after the build) * | metrics: point attribute, an array of empty values: refused on its own, built no further than the limit … |
-| the meter is not incremented | metrics: resource of empty KeyValues: refused on its own, built no further than the limit … |
-| array elements not counted | metrics: point attribute, an array of empty values: …; stores a data point of exactly 65,536 values, and refuses one more |
-| off by one: an item of exactly the limit refused | stores a data point of exactly 65,536 values, and refuses one more |
-| off by one: an item one over the limit accepted | the same; refuses through the Worker with a partial success, and stores the rest |
-| a value past the limit not read (a malformed body accepted) * | still reads the rest of a point it has stopped building: a malformed body is 400 |
-| invalid UTF-8 in a key not built goes unchecked | the same |
-| overlong three-byte UTF-8 accepted | `validUtf8` agrees with a fatal TextDecoder on 20,000 random byte strings … |
-| UTF-8 surrogates accepted | still reads the rest of a point it has stopped building: a malformed body is 400 |
-| JSON tokens off by one (a body of exactly the limit refused) | JSON bodies: more than maxJsonTokens structural characters is 413 before parsing, as many is accepted; counts JSON structure outside strings only |
+| span attributes built without the meter and counted afterwards | traces: span of empty attributes, then a valid span: … built no further than the limit however large it is |
+| log record attributes built without the meter and counted afterwards | logs: record of empty attributes, then a valid record: … |
+| data point attributes built without the meter and counted afterwards (metrics) | metrics: point of empty attributes, then a valid point: … |
+| array elements built past the limit (the check after the build) | traces: span attribute, an array of empty values: … |
+| the meter is not incremented | traces: resource of empty KeyValues: … |
+| key-value list entries not counted | traces: span attribute, a key-value list of empty entries: … |
+| array elements not counted (metrics) | metrics: point attribute, an array of empty values: … |
+| Loki structured metadata not counted | Loki: entry of empty structured metadata, then a valid entry: … |
+| the span meter not reset per span | traces: span of empty attributes, then a valid span: … |
+| a scope counted without its resource | counts a resource and each of its scopes together (spans) |
+| off by one: an item of exactly the limit refused (`take` and `over` disagree: the last value is dropped and the item stored) | stores an item of exactly 65,536 values, and refuses one more (the stored content: this mutant **survived** the first run, which checked statuses only; the test now reads every value back) |
+| off by one: an item one over the limit accepted | stores a data point of exactly 65,536 values, and refuses one more |
+| off by one: a Loki label set of exactly the limit refused | stores an item of exactly 65,536 values, and refuses one more |
+| off by one: events past the 128th built (a span of 128 events loses one) | stores a span of exactly 128 events and 128 links, every one … (**survived** the first run; the test was added for it) |
+| off by one: links past the 128th built | the same |
+| a value past the limit not read (a malformed body accepted) | still reads the rest of an item it has stopped building: a malformed body is 400 |
+| invalid UTF-8 in a key not built goes unchecked (metrics) | still reads the rest of a point it has stopped building: a malformed body is 400 |
+| overlong three-byte UTF-8 accepted | `validUtf8` agrees with a fatal TextDecoder … (its first pattern deleted a line and broke the syntax, a kill that proved nothing; re-anchored to change the bound) |
+| UTF-8 surrogates accepted | still reads the rest of a point …; `validUtf8` agrees … |
+| JSON tokens off by one (a body of exactly the limit refused) | JSON bodies: more than maxJsonTokens … is 413 before parsing, as many is accepted |
 | JSON structure inside strings counted | the same |
-| series labels past maxDecodedBytes accepted | metrics: a resource copied into more series bytes than maxDecodedBytes is refused whole (413), nothing stored; takes exactly maxDecodedBytes of series, and refuses a byte less |
+| series labels past maxDecodedBytes accepted (metrics) | metrics: a resource copied into more series bytes than maxDecodedBytes is refused whole (413), nothing stored |
+| span entries not charged to maxDecodedBytes | spans: a resource copied into more entries than maxDecodedBytes allows is refused whole (413) … |
+| log rows not charged to maxDecodedBytes | takes exactly maxDecodedBytes, and refuses a byte less (spans, logs) |
+| off by one: a request of exactly maxDecodedBytes refused | the same |
+| span entries found again by scope alone (resource ignored) | routes by sender: a resource takes one slot … |
+| a span row read from the wrong place (parent from span_id) | stores every span exactly, in protobuf, JSON and gzip … |
+| a log row read from the wrong place (observed from ts) | Loki push: protobuf with snappy and JSON (also gzip) store exactly the entries |
+| JSON tokens counted after parsing (same answer, the body built first) | **survives the suite** (the status is the same by construction); killed by `node bench/memory.mjs --node --check "traces json"`: the JSON hostile bodies peak at 89.4 MiB in Node with it, 0.2 MiB without |
 
-"Histograms silently dropped" was re-anchored (the decoder now counts points instead of keeping
-their offsets) with the same intent, and is killed as before. Not carried: the development
-branch's "JSON tokens counted after parsing", which no test can kill (the status is the same by
-construction) and which its `bench/memory.mjs --check` kills; it is a span mutant there.
+The 31 others all killed: the four re-anchored ones (histograms silently dropped: "accepts a body
+produced by protobufjs"; a refused resource counted once: "refuses each invalid span on its own and
+counts it in partial_success"; span attributes after the third dropped: "stores every span
+exactly"; resource and scope attributes dropped from log metadata: "maps OTLP resources, scopes and
+records …"), the other 16 `otel:` mutants and the other 11 metrics ones, each by the test that killed it
+before.
+
+
+**The metrics part, for `main`** (where `/v1/metrics` is live). It is self-contained:
+`src/meter.ts` (new), `src/pb.ts` (`validUtf8`, `checkUtf8` appended), `src/otlp.ts` (the decoder:
+two passes per level, meters, the point's `Map`, JSON tokens), `src/batch.ts` (the `Collector`:
+the series table's limit, its growth capped, `decoded`), `src/limits.ts` (`maxDecodedBytes`,
+`maxJsonTokens`, `maxDecompressedBytes` 8 MiB), and in `src/index.ts` only the `EMPTY` constant and
+the two lines that let the body go in `remoteWrite` and `otlpMetrics`; tests `test/wire.ts` and
+`test/decode-metrics.test.ts`. Applied to `origin/main` as exported on 2026-11-19 (8 files, one
+patch, no conflicts): `npx tsc --noEmit` clean, `npx vitest run --maxWorkers=2` **84 passed**
+(main's 71 and these 13), and `bench/differential.mjs origin/main` above shows the decoded batches
+equal `main`'s. Its contract text is `contracts/BATCH.md`, "Decode limits" (the metrics bullets).
 
 ### Decode throughput
 
@@ -542,8 +775,110 @@ So roughly 4–7 µs of CPU per sample, or roughly 100–150 ms per megabyte of 
 Most of it is the series id: FNV-1a is one multiply per byte in a serial chain, about
 3.6 ms per MiB of label bytes here.
 
+### Traces and logs (2026-11-19)
+
+```
+npx vitest run --maxWorkers=2      # 90 tests in 11 files (19 new in test/traces.test.ts and test/logs.test.ts)
+npx tsc --noEmit                   # clean
+node scripts/mutants.mjs otel:     # on a copy outside the git checkout
+node bench/otel.mjs                # decode CPU per request
+node scripts/otel-corpus.mjs OUT 1 2   # then engine/storage/readback and tools/otel_independent_check.py
+```
+
+**Last run: 90 passed, 0 failed; `tsc --noEmit` clean.** The 71 metrics and entrypoint tests are
+unchanged and pass. New, all through the Worker against the real Shard, with requests written by
+test-side protobuf and JSON writers and batches read back by a test-side signal 2/3 decoder
+that share no code with `src/` (`test/otelhelpers.ts`), compared with an oracle of the
+contracts' mapping written separately:
+
+- **Round trips (properties):** 40 random OTLP traces requests (1–3 resources, 1–2 scopes, 1–8
+  spans each; attributes of every AnyValue kind with Unicode, astral characters, U+FFFF, NUL and
+  control characters, empty strings, NaN, ±Inf, −0, nested arrays and key-value lists, bytes;
+  events, links, clamped ends) and 36 OTLP logs requests, protobuf, JSON and gzip; 12 Loki
+  pushes (protobuf with snappy, JSON, gzip). Every stored row equals the input under the
+  contract's rules.
+- **Refusals:** 15 kinds of invalid span and 11 kinds of invalid log record, each refused on its
+  own with the rest stored, counted exactly in `partial_success` (protobuf and JSON bodies
+  decoded and checked), a refused resource counting each of its spans; Loki: 7 refused of 9
+  entries answered 400 with every reason and "2 written", unparseable labels, repeated label and
+  metadata names; 413 above `maxSpans`; 400 with a `Status` for bodies that do not decode; 415.
+- **Tenancy:** a resource attribute, stream label and metadata named `tenant`, `X-Scope-OrgID`,
+  other headers and a query string naming another tenant move nothing.
+- **Routing:** each resource's spans in the slot `slotFor` gives its `job`/`instance` key, the
+  same slot number its metrics take; Loki streams by `job`/`instance`; nothing in the metrics
+  pool; batches of at most 1 MiB in arrival order. A JSON request carrying the same spans as an
+  earlier protobuf one produced the same batch bytes and was stored once (fingerprint).
+- **Mapping:** OTLP labels, flattening, `;` joins, level precedence, `unknown_service`, body to
+  line, observed time, column fields; `stream_id` equal to values computed in Python.
+- **Flag:** 404 without `INGEST_SIGNALS`, and for the signal it does not name.
+
+**Cross-language:** `scripts/otel-corpus.mjs` encodes random requests with **protobufjs**
+(from .proto definitions; field numbers as in opentelemetry-proto and Loki's `pkg/push`, both
+Apache-2.0) and snappyjs, runs this code's decoders, and `engine/storage`'s strict decoder
+accepted every batch and re-encoded each to the same bytes; flushed, the files read back equal
+the generator's expected rows in Rust, PyArrow and DuckDB, and TraceQL and LogQL answer the
+same over them as over their in-memory sources (`engine/storage/README.md`, five seeds). That
+run found a bug here: a double inside an array or key-value list was read from the wrong bytes
+when the body was a Node `Buffer` (`slice` is a view there); fixed by copying.
+
+**Mutants (2026-11-19)**, `node scripts/mutants.mjs otel:` on a copy of `contracts/`, `shard/` and
+`edge/` in a scratch directory, each against the whole suite: **19 of 19 killed**; the two older
+mutants whose patterns this change moved (`no map refetch on stale_epoch`, `no re-split after
+too_large`) were updated and re-run: killed. `--check`: all 69 patterns apply.
+
+| Mutant | Killed by (one of) |
+|---|---|
+| tenant from the body (OTLP traces: a resource attribute `tenant`) | takes the tenant from the credential only |
+| tenant from the body (Loki push: a stream label `tenant`) | takes the tenant from the credential only (X-Scope-OrgID is ignored) |
+| tenant from `X-Scope-OrgID` (Loki push) | same |
+| partial success counts a refused resource once, not each span | refuses each invalid span on its own and counts it |
+| partial success says whether, not how many | the same, and its JSON and logs counterparts |
+| partial success omitted | the three partial-success tests |
+| Loki push 204 despite refused entries | Loki push: invalid entries … refused with 400 |
+| `stream_id` without the separator after each value | stream ids are series ids; Loki round trip; OTLP mapping |
+| `stream_id` over values only | same |
+| span attributes after the third dropped | stores every span exactly; round-trips random requests |
+| resource and scope attributes dropped from log metadata | OTLP mapping; OTLP logs round trip |
+| the first of a repeated key kept, not the last | logs and traces round trips |
+| end before start stored as is | traces round trips; refusals test (the clamped span) |
+| span accept window not applied | refuses each invalid span on its own |
+| an attribute with an empty key accepted | same |
+| OTLP log stream labels from every resource attribute | OTLP mapping; OTLP logs round trip |
+| a record without a timestamp stored at 0 | OTLP mapping; OTLP record refusals |
+| spans appended to the metrics pool | every test reading the signal pools |
+| routes served without `INGEST_SIGNALS` | the two flag tests |
+
+**Decode CPU per request** (`node bench/otel.mjs`, Node 22, V8 but not workerd or Cloudflare's
+CPU; 4 shared cores at load average 7 to 9; median of 15 runs after 3 warm-ups, range in
+brackets; decode, validation, mapping, batches and SHA-256, no gzip). Measured after removing
+per-item allocations (a profile showed GC 30% and `TextEncoder.encode` 30% before; the same
+table measured 2.5 to 4 times slower then):
+
+| Request | Items | Body | CPU per request | Per item |
+|---|---|---|---|---|
+| OTLP traces, protobuf | 1,000 spans, 10 resources, 9 attributes each | 432 KiB | 18.0 ms (8.6–27.0) | 18 µs |
+| OTLP traces, JSON | 1,000 | 892 KiB | 17.4 ms (14.4–45.9) | 17 µs |
+| OTLP traces, protobuf | 8,000 | 3,440 KiB | 128 ms (103–225) | 16 µs |
+| OTLP traces, JSON | 8,000 | 7,100 KiB | 173 ms (133–361) | 22 µs |
+| OTLP logs, protobuf | 1,000 records, 3 attributes, trace ids | 268 KiB | 12.9 ms (6.3–16.6) | 13 µs |
+| OTLP logs, JSON | 1,000 | 502 KiB | 15.6 ms (7.2–30.1) | 16 µs |
+| OTLP logs, protobuf | 8,000 | 2,142 KiB | 83 ms (54–247) | 10 µs |
+| OTLP logs, JSON | 8,000 | 3,995 KiB | 151 ms (71–225) | 19 µs |
+| Loki push, protobuf + snappy | 1,000 entries, 10 streams | 47 KiB | 4.9 ms (3.1–20.0) | 5 µs |
+| Loki push, JSON | 1,000 | 206 KiB | 2.8 ms (2.4–11.5) | 3 µs |
+| Loki push, protobuf + snappy | 8,000 | 373 KiB | 37 ms (29–81) | 5 µs |
+| Loki push, JSON | 8,000 | 1,637 KiB | 38 ms (22–90) | 5 µs |
+
+Spans cost three to four times a metric sample (4–7 µs): attributes are canonicalised and
+typed, and every request's resource is hashed over its canonical JSON.
+
 ## Known risks
 
+- **`unavailable` also covers ingest's own bugs.** An unexpected error in the entrypoint is
+  answered `unavailable` (retryable), so a bug that fails every call is retried by the ruler
+  within each tick (3 attempts) instead of being reported as `invalid`; the message carries the
+  error, and nothing is written. The alternative, a new word, would send every older ruler to
+  Remote Write (see above).
 - **A refused recorded-sample write is an `exception` in viz-ingest's metrics** (Trial 3 on
   Cloudflare, `deploy/README.md`): the caller received each refusal in 2–4 ms and nothing was
   written, but the callee's invocation ended "canceled … hung". Not understood; not seen in
@@ -571,25 +906,33 @@ Most of it is the series id: FNV-1a is one multiply per byte in a serial chain, 
   ms of CPU by the numbers above (modelled from Node). Nothing has been measured on
   Cloudflare, and nothing has been run under concurrent load.
 - **Memory.** Bounded per request ("Memory per request", D71): about 50 MiB (protobuf) or 80 MiB
-  (JSON) with every limit reached at once (modelled from measured parts), 3.2 to 8.8 MiB of V8
+  (JSON) with every limit reached at once (modelled from measured parts), 1.4 to 17.1 MiB of V8
   heap for realistic requests (measured here, local workerd). Two requests at every limit do not
   fit one 128 MB isolate; nothing was measured on Cloudflare or under concurrent requests.
 - **413 drops a sender's batch.** OTLP senders do not retry 413 (training knowledge: the
   Collector treats it as permanent and does not split the batch). A Collector whose batches
   exceed 8 MiB decompressed, or decode into more than 16 MiB, loses them and logs why; set its
-  batch processor's `send_batch_max_size` (8,200 points are 1.3 MiB as protobuf and 3.1 MiB as
-  JSON here). Metrics whose resources carry many attributes come closest to the decoded limit,
-  because each series copies its resource: a Kubernetes resource of about 25 attributes makes
-  8,192 points about 11.5 MiB of series table (modelled), near the 16 MiB cap.
-- **Decode limits name the values limit first.** A point over 65,536 values is refused for it
-  even when it also breaks a label rule or the accept window; a repeated key (which OTLP
-  forbids) and entries that the mapping drops (empty values) count like any other.
+  batch processor's `send_batch_max_size` (8,192 items is 1.3 to 7.1 MiB here). Metrics whose
+  resources carry many attributes come closest to the decoded limit, because each series copies
+  its resource (about 11.5 MiB for 8,192 points with a Kubernetes-sized resource, modelled).
+- **Decode limits name the values limit first.** An item over 65,536 values is refused for it
+  even when it also breaks an attribute rule; a repeated key (which OTLP forbids) and entries
+  that a mapping drops (empty values) count like any other.
 - **Caches are per isolate.** A disabled key keeps working for up to 60 s in each isolate
   that has it cached, and KV's own propagation delay comes on top.
 - **OTLP labels.** Resource attributes are copied onto every series rather than into
   `target_info`, which the compatibility spec prefers; high-cardinality resources make
   wide series. The `;` join of colliding attribute names follows arrival order, not the
   spec's sorted order.
+- **Traces and logs CPU.** An 8,000-span request costs 100 to 230 ms of CPU here (Node, noisy);
+  OTLP's recommended 64 MiB body would cost seconds. `maxDecompressedBytes` (8 MiB) bounds
+  it; nothing was measured on Cloudflare. Two million empty spans or records (4 MiB) cost
+  0.36 to 0.47 s in Node, the most CPU per byte found.
+- **Traces and logs are refused, not truncated**, when an attribute or field is over its limit;
+  senders with very long attribute values (SQL statements over 64 KiB) lose those spans and are
+  told why.
+- **Retries of logs and spans are safe only by row key**, as for metrics; a retry that falls on
+  the other side of the accept window is partly refused the second time.
 - **Series ids use a hand-written 64-bit multiply.** The contract's BigInt form exists as
   `fnv1a64` and the tests hold the two equal, but the hot path is the integer one.
 
@@ -635,27 +978,82 @@ The original list:
 
 In components others own; not made here.
 
-1. **ruler: write recorded samples through the entrypoint, with no stored key** (the ruler's
-   README, "Needed changes" 2). The ruler already prefers a `SINK` binding
-   (`ruler/src/ruler.ts`, `sink()`: `binding.write(this.tenant, batches)`, with the Ruler
-   object's own tenant, derived from its name). The whole change is one binding in
-   `ruler/wrangler.jsonc`, under `"services"`:
+1. **ruler: write recorded samples through the entrypoint. Done for writes (2026-11-19,
+   D52)**; the stored key remains for queries. The ruler binds `SINK` → viz-ingest's `RecordedSamples` with `props:
+   { caller: "viz-ruler" }` (`ruler/wrangler.jsonc`; `deploy/configure.mjs` keeps `entrypoint`
+   and `props` and refuses a release whose callee does not export the entrypoint), sends every
+   flush with the Ruler object's own tenant, reports `unauthorized`, `invalid` and
+   `series_limit` without retrying, splits on `too_large` and retries the rest after the hint
+   (`ruler/src/recorded.ts`). For one release, a rejection with no refusal word (an ingest
+   release without the entrypoint) goes through Remote Write over `INGEST` with the service key
+   instead; `INGEST` goes once every ingest release that may run has the entrypoint (the
+   ruler's README, "Needed changes"). The service key now writes only in that fallback; it needs
+   `read` for queries until query has its own entrypoint. Since 2026-11-19 (review of D52, m-8)
+   every error the entrypoint sees carries a word, so the fallback fires only for a missing
+   entrypoint or a platform failure. Still open in the ruler, from the same finding: fall back at
+   most once per tick (when the platform fails the call, each of a tick's 3 attempts costs one RPC
+   plus one Remote Write).
 
-   ```jsonc
-   // Recording rules: viz-ingest's RecordedSamples entrypoint (contracts/ingest.ts). The binding
-   // is the credential; the tenant is the Ruler object's own.
-   { "binding": "SINK", "service": "viz-ingest", "entrypoint": "RecordedSamples", "props": { "caller": "viz-ruler" } }
-   ```
+2. **Traces and logs, stage 2.** The write side is **built** (2026-11-19): the shard's tail
+   filter takes `signals` and never throws on a span or log batch (`shard/`); flush encodes a
+   span segment into `spans` files by hour and `trace_index` files by day, a log segment into
+   `logs` files by day, through `engine/wasm` ABI 3, one unit per segment (`flush/`); the ledger
+   lists, plans, logs and expires those tables (`contracts/ledger.ts` `LedgerTable`, `ledger/`);
+   the janitor expires them by `trace_days` / `log_days`, purges them and sweeps their orphans
+   (`janitor/`); flush's full sweep lists the derived pools of the signals `INGEST_SIGNALS`
+   enables. End to end through this Worker, and through viz-traceql and viz-logql:
+   `stack/README.md`, "Traces and logs end to end". What remains before `INGEST_SIGNALS` is set
+   in a deployment:
+   - **publisher** (must come first wherever a publisher runs): it refuses a ledger change that
+     adds or removes a file of a table it does not know (`publisher/src/log.ts` `check`,
+     `unsupported`) and stops that tenant's publication there, metrics included; and it then
+     releases none of the tenant's keys to the janitor. It needs at least to pass over the
+     `spans`, `trace_index` and `logs` files (or to publish them: Iceberg tables with hour
+     partitions from `start_time`, `contracts/TRACES.md`, `LOGS.md`), and its typecheck to name
+     `MetricTable`/`Table` for its metric definitions as it does now (`contracts/ledger.ts`
+     keeps `Table` the metric pair for that reason; `LedgerChange.removedFiles` stays typed
+     `Table` until it reads the other tables, see the note there).
+   - **query**: its metrics tail reads should pass `signals: [1]` (`TailFilter.signals`) and its
+     span and log reads `[2]` / `[3]`; the readers over files (`query/src/signals.ts`) find the
+     files listed now: `plan` answers for the three tables in milliseconds, the floor of the
+     files' nanosecond bounds, as its `msRange` assumes.
+   - **edge**: nothing; the mapping of `registering` to 503 (D61) already covers the derived
+     pools' new streams.
 
-   and the same in `ruler/wrangler.test.jsonc` pointing at the test script's stand-in (or at a
-   script exporting edge's `RecordedSamples`, as `edge/wrangler.jsonc` does for its tests), plus
-   `SINK` in the ruler's `RulerEnv` health check if it should count. `deploy/configure.mjs`
-   already maps `service: viz-ingest` per stage and keeps `entrypoint` and `props`; viz-ingest
-   deploys before viz-ruler. Then:
-   - a rejection is already "not written" to the ruler (it retries three times, then marks the
-     rule `sink: <message>`), which is what this entrypoint promises; the message starts with
-     the refusal word, so `invalid`, `series_limit` and `unauthorized` could be reported without
-     the retries;
-   - the service key needs only `read` (queries) until query has its own entrypoint (the
-     ruler's "Needed changes" 1); after both, no stored key at all, and `INGEST` can go once no
-     release that may run still uses it (callee first: keep `INGEST` for one release).
+   **Stage 3 (2026-11-19).** Done since: `query/` reads the tables and sends `signals` (D62); the
+   gateway routes `/v1/traces`, `/v1/logs` and `/loki/api/v1/push` here and Tempo's and Loki's
+   read paths to viz-query (`deploy/README.md`, "Topology and routes"); edge refuses base pools
+   ending in `/traces` or `/logs` (query's "Needed changes elsewhere" 4); the publisher reads the
+   tables without publishing them (D64, its README). What remains before the flag is set in
+   production is listed once, in `deploy/README.md` ("Needed changes in components", stage 3):
+   the publisher's rollback floor, a trial on Cloudflare, a client run.
+
+3. **control (and `shard/src/pool.ts` `dedicatedPool`): a tenant named `traces` or `logs`.** Its
+   dedicated pool is `tenant/traces` or `tenant/logs` (`control/src/ops-settings.ts` accepts
+   exactly `tenant/<tenant>`), which edge now refuses (503 for every request of that tenant).
+   Wanted: control refuses such a pool setting with a reason (or the dedicated pool gets a name
+   that cannot end so, e.g. `tenant/<tenant>/p`, with a migration for existing records). No
+   such tenant exists in any deployment; `TENANT_ID` allows the names.
+
+## Contract issues (traces and logs, 2026-11-19)
+
+What could not be settled here, or was settled in a way someone else must confirm:
+
+1. **Per-signal pools are a naming convention**, not part of the pool map
+   (`shard/src/pool.ts`, a contract this change does not own): `edge`, flush's sweep and query
+   must all derive `{pool}/traces` and `{pool}/logs` the same way. A field in the pool map
+   would be explicit (D57, "Would change if"). Since stage 3 the convention is unambiguous:
+   `contracts/BATCH.md` forbids a base pool ending in `/traces` or `/logs`, and edge enforces it
+   when it reads a map. `POOL_NAME` (`contracts/ledger.ts`) cannot say it (the derived pools end
+   so), and its comment does not mention it: the file was another engineer's while this was done.
+2. **`trace_index` counts over-count** a span stored by two units (`contracts/TRACES.md`,
+   "Duplicates across units"). Exact counts need the de-duplicated spans or a compaction that
+   re-aggregates fragments from them.
+3. **`contracts/ledger.ts` `Table`** did not name the new tables. **Resolved in stage 2** as
+   `LedgerTable` (`Table` stays the metric pair, for the code that maps every metric table).
+4. **Loki push semantics** for a request with some invalid entries (400, the rest written)
+   follow Remote Write and Loki's documentation; Loki's own behaviour was not observed here.
+5. **The token filter** has a format (`contracts/LOGS.md` §6) but no builder, reader, or
+   ledger fields for its object.
+6. **Fields not carried** (listed in "Not implemented") would need new columns.
+

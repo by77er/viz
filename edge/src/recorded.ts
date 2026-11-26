@@ -99,41 +99,56 @@ export function collectRecorded(tenant: string, batches: unknown, c: Collector):
 
 /**
  * Write recorded samples for `tenant`. Resolves only when every sample is durably appended;
- * otherwise throws a `RecordedSamplesError` (contracts/ingest.ts). Exported for the
- * entrypoint and its tests.
+ * otherwise throws a `RecordedSamplesError` (contracts/ingest.ts), whatever went wrong: every
+ * error seen here carries a refusal word (review of D52, m-8). Without one the ruler takes the
+ * entrypoint for one that did not answer and sends the same batches by Remote Write, a second
+ * write to an ingest that is already struggling. Exported for the entrypoint and its tests.
  */
 export async function writeRecorded(env: RecordedEnv, caller: unknown, tenant: unknown, batches: unknown, now = Date.now()): Promise<void> {
+  try {
+    await write(env, caller, tenant, batches, now)
+  } catch (e) {
+    throw asRefusal(e)
+  }
+}
+
+/** The message of anything thrown, even of a value whose conversion to text throws. */
+function messageOf(e: unknown): string {
+  try {
+    return e instanceof Error ? e.message : String(e)
+  } catch {
+    return 'an error that cannot be described'
+  }
+}
+
+/**
+ * Any error as a refusal: a refusal as it is; a request over the limits (413) `too_large`;
+ * anything else (the pool map or KV unreadable, an unexpected error) `unavailable`: nothing is
+ * promised about what was written, and the same call may succeed later.
+ */
+function asRefusal(e: unknown): RecordedSamplesError {
+  if (e instanceof RecordedSamplesError) return e
+  if (e instanceof HttpError && e.status === 413) return new RecordedSamplesError('too_large', e.message)
+  return new RecordedSamplesError('unavailable', messageOf(e))
+}
+
+async function write(env: RecordedEnv, caller: unknown, tenant: unknown, batches: unknown, now: number): Promise<void> {
   // The binding is the credential: only a binding whose config names an allowed caller.
   if (typeof caller !== 'string' || !RECORDED_SAMPLES_CALLERS.includes(caller)) refuse('unauthorized', 'this service binding does not name a caller allowed to write recorded samples')
   if (typeof tenant !== 'string' || !TENANT_ID.test(tenant)) refuse('invalid', 'tenant id must match [A-Za-z0-9_-]{1,64}')
   const t = tenant as string
-  let limits: Limits
-  try {
-    limits = limitsFrom(env.INGEST_LIMITS)
-  } catch (e) {
-    return refuse('unavailable', e instanceof Error ? e.message : String(e))
-  }
+  // From here on, whatever throws becomes a refusal in `asRefusal`: an unreadable limits
+  // configuration, pool map or KV (`unavailable`), the collector's request limits (413,
+  // `too_large`), a shard that cannot be reached (`unavailable`).
+  const limits: Limits = limitsFrom(env.INGEST_LIMITS)
   const early = await refuseEarly(env, t, now)
   if (early) refuse('overloaded', `ingest shard is overloaded; retry after ${early.retryAfterMs} ms`)
   const c = new Collector(limits, now)
-  let malformed: string | null
-  try {
-    malformed = collectRecorded(t, batches, c)
-  } catch (e) {
-    // The collector's request limits (series, samples per call).
-    if (e instanceof HttpError && e.status === 413) return refuse('too_large', e.message)
-    throw e
-  }
+  const malformed = collectRecorded(t, batches, c)
   if (malformed) refuse('invalid', `${malformed}; nothing was written`)
   if (c.rejectedTotal > 0) refuse('invalid', `rejected ${c.rejectedTotal} of ${c.received} samples (${c.rejectionSummary()}); nothing was written`)
   if (c.nRows === 0) return
-  let outcome: Awaited<ReturnType<typeof appendAll>>
-  try {
-    outcome = await appendAll(env, t, c)
-  } catch (e) {
-    if (e instanceof HttpError) return refuse(e.status === 413 ? 'too_large' : 'unavailable', e.message)
-    return refuse('unavailable', e instanceof Error ? e.message : String(e))
-  }
+  const outcome = await appendAll(env, t, c)
   if (outcome.status === 'backpressure') refuse('backpressure', `ingest buffer is full; retry after ${outcome.retryAfterMs} ms`)
   if (outcome.status === 'overloaded') refuse('overloaded', `ingest shard is overloaded; retry after ${outcome.retryAfterMs} ms`)
   if (outcome.status !== 'ok') refuse('unavailable', `${outcome.reason}; retry`)

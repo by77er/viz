@@ -18,8 +18,8 @@ export const DECODE = {
 } as const
 
 /**
- * What one item has built so far: an OTLP metric resource or a data point (on the development
- * branch also spans, log records and Loki entries). Decoders `take()` one value before building it.
+ * What one item has built so far: a span with its events and links, a resource and scope, a
+ * log record, a data point, a resource. Decoders `take()` one value before building it.
  */
 export class Meter {
   used = 0
@@ -43,8 +43,8 @@ export class Meter {
 }
 
 /**
- * Values built by every decoder in this isolate (key-value entries and array elements),
- * counted where each is created, apart from any meter. Tests read
+ * Values built by every decoder in this isolate (key-value entries, AnyValues, array elements,
+ * Loki labels and metadata), counted where each is created, apart from any meter. Tests read
  * it to check that a refused item stopped being built at the limit (edge/README.md, mutants).
  */
 export const BUILT = { n: 0 }
@@ -59,7 +59,7 @@ export const FREE: Meter = new Meter().reset(0, Number.POSITIVE_INFINITY)
  * Refuse (413) a JSON body with more than `max` structural characters (`{`, `[`, `,`, `:`
  * outside strings) before it is parsed. `JSON.parse` builds every value of a body at once,
  * so this is the only point at which a JSON body's object count can be bounded; realistic
- * OTLP JSON has one structural character per 10 to 35 bytes, hostile JSON one per
+ * OTLP and Loki JSON has one structural character per 10 to 35 bytes, hostile JSON one per
  * 1.5 (edge/README.md, "Memory per request").
  */
 export function checkJsonTokens(body: Uint8Array, max: number): void {

@@ -152,6 +152,81 @@ describe('recorded samples over a service binding (contracts/ingest.ts)', () => 
     expect(await refusalOf(writeRecorded(env, 'viz-ruler', tenant, [batch(tenant, 'r', [])]))).toBeNull()
   })
 
+  // Review of D52, m-8: every error the entrypoint itself sees carries a refusal word. A rejection
+  // without one makes the ruler send the same batches by Remote Write (ruler/src/recorded.ts).
+  it('with a shard marked hot, a pool map that cannot be read is `unavailable` through the binding, never a bare rejection', async () => {
+    const one = (t: string) => [batch(t, 'r', [{ labels: { __name__: 'x', job: 'j' }, timeMs: now, value: '1' }])]
+    // A shard that sheds load: the call is `overloaded`, and edge marks the shard hot.
+    const shed = await tenantWithPool(1)
+    await shardStub(shed.map, 0).configure({ maxInFlight: 0, overloadRetryMs: 600_000 })
+    try {
+      expect(await refusalOf(env.RULER_SINK.write(shed.tenant, one(shed.tenant)))).toMatch(/^overloaded: /)
+      // The shard takes load again, so a second `overloaded` can only be edge's early refusal: the
+      // isolate serving the entrypoint holds a hot shard, and from now on reads each call's pool
+      // map before anything else (`refuseEarly`).
+      await shardStub(shed.map, 0).configure({ maxInFlight: 64 })
+      expect(await refusalOf(env.RULER_SINK.write(shed.tenant, one(shed.tenant)))).toMatch(/^overloaded: /)
+      const records: [string, string][] = [
+        ['not JSON', '{'],
+        ['a pool name outside POOL_NAME', JSON.stringify({ pool: 'rec/bad_name', slots: 1, spread: 1, epoch: 1 })],
+        ['a pool ending in /logs', JSON.stringify({ pool: 'rec/x/logs', slots: 1, spread: 1, epoch: 1 })],
+        ['a map of a newer version', JSON.stringify({ v: 2, pool: 'rec/x', slots: 1, spread: 1, epoch: 1 })],
+      ]
+      for (const [why, record] of records) {
+        const t = newTenant('rec')
+        await env.CONFIG.put(`pool:${t}`, record)
+        expect(await refusalOf(env.RULER_SINK.write(t, one(t))), why).toMatch(/^unavailable: shard pool map /)
+      }
+    } finally {
+      await shardStub(shed.map, 0).configure({ maxInFlight: 64 })
+      clearCaches()
+    }
+  })
+
+  it('each error path of the entrypoint answers the refusal word the contract gives it', async () => {
+    const one = (t: string, value: unknown = '1') => [batch(t, 'r', [{ labels: { __name__: 'x', job: 'j' }, timeMs: now, value: value as string }])]
+    const fresh = async () => (await tenantWithPool(1)).tenant
+    const kvFails = new Proxy(env.CONFIG, {
+      get: (target, p) => (p === 'get' ? async () => { throw new Error('injected: KV get failed') } : Reflect.get(target, p).bind(target)),
+    })
+    const shardThrows = { idFromName: (n: string) => env.SHARD.idFromName(n), get: () => ({ append: async () => { throw new Error('injected: shard unreachable') } }) } as unknown as typeof env.SHARD
+    const paths: [string, () => Promise<string>, string][] = [
+      ['the limits configuration is not JSON', async () => { const t = await fresh(); return (await refusalOf(writeRecorded({ ...env, INGEST_LIMITS: '{' }, 'viz-ruler', t, one(t))))! }, 'unavailable'],
+      ['KV fails while the pool map is read', async () => { const t = newTenant('rec'); return (await refusalOf(writeRecorded({ ...env, CONFIG: kvFails }, 'viz-ruler', t, one(t))))! }, 'unavailable'],
+      ['no shard pool is configured', async () => { const t = newTenant('rec'); return (await refusalOf(writeRecorded({ ...env, DEFAULT_POOL: undefined }, 'viz-ruler', t, one(t))))! }, 'unavailable'],
+      ['the pool map is invalid', async () => { const t = newTenant('rec'); await env.CONFIG.put(`pool:${t}`, '{'); return (await refusalOf(writeRecorded(env, 'viz-ruler', t, one(t))))! }, 'unavailable'],
+      ['a shard cannot be reached', async () => { const t = await fresh(); return (await refusalOf(writeRecorded({ ...env, SHARD: shardThrows }, 'viz-ruler', t, one(t))))! }, 'unavailable'],
+      ['an unexpected error while the samples are read (a value whose text form throws)', async () => {
+        const t = await fresh()
+        return (await refusalOf(writeRecorded(env, 'viz-ruler', t, one(t, { toString: () => { throw new Error('injected: no text form') } }))))!
+      }, 'unavailable'],
+      ['more samples than one call may carry', async () => { const t = await fresh(); return (await refusalOf(writeRecorded({ ...env, INGEST_LIMITS: '{"maxSamples":1}' }, 'viz-ruler', t, [batch(t, 'r', [{ labels: { __name__: 'x' }, timeMs: now, value: '1' }, { labels: { __name__: 'y' }, timeMs: now, value: '1' }])])))! }, 'too_large'],
+    ]
+    const run = async (label: string) => {
+      for (const [why, call, word] of paths) {
+        const m = await call()
+        expect(m, `${label}: ${why}`).toMatch(new RegExp(`^${word}: `))
+        expect(RECORDED_SAMPLES_REFUSALS as readonly string[]).toContain(m.split(':')[0])
+      }
+    }
+    // With no shard marked hot: the pool map is read only when the samples are appended.
+    clearCaches()
+    await run('nothing hot')
+    // With a shard marked hot in this isolate (it shed load once): every call reads its pool map
+    // first, before the samples (`refuseEarly`), which is where the bare rejections came from.
+    const shed = await tenantWithPool(1)
+    await shardStub(shed.map, 0).configure({ maxInFlight: 0, overloadRetryMs: 600_000 })
+    try {
+      expect(await refusalOf(writeRecorded(env, 'viz-ruler', shed.tenant, one(shed.tenant)))).toMatch(/^overloaded: /)
+      await shardStub(shed.map, 0).configure({ maxInFlight: 64 })
+      expect(await refusalOf(writeRecorded(env, 'viz-ruler', shed.tenant, one(shed.tenant)))).toMatch(/^overloaded: /)
+      await run('a shard hot')
+    } finally {
+      await shardStub(shed.map, 0).configure({ maxInFlight: 64 })
+      clearCaches()
+    }
+  })
+
   it('parses exactly Prometheus\' text form of a value', () => {
     expect(parsePromValue('1')).toBe(1)
     expect(parsePromValue('-2.5e-3')).toBe(-0.0025)

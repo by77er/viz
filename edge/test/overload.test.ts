@@ -9,6 +9,7 @@ import type { PoolMap } from '../../shard/src/pool'
 import { Shard } from '../../shard/src/shard'
 import { clearCaches } from '../src/index'
 import { type PrwSeries, makeKey, newTenant, otlpProto, postOtlp, postWrite, setPool, sha256Hex, shardStub, tailOfSlot } from './helpers'
+import { postSignal, tracesProto } from './otelhelpers'
 
 async function tenant(slots = 1) {
   const t = newTenant('ovl')
@@ -41,6 +42,35 @@ describe('an overloaded shard', () => {
     expect((await postWrite(t.key, series(3))).status).toBe(204)
     expect((await postWrite(t.key, series(3))).status).toBe(204)
     expect((await tailOfSlot(t.map, 0, t.tenant)).batches).toHaveLength(1)
+  })
+
+  it('a stream being registered (D61) is 503 with Retry-After, never 429; nothing is stored; the retry once registered is stored once', async () => {
+    const t = await tenant()
+    const proto = Shard.prototype as unknown as { append: Shard['append'] }
+    const real = proto.append
+    let refuse = true
+    let calls = 0
+    proto.append = async function (this: Shard, req) {
+      calls++
+      return refuse ? { status: 'backpressure', scope: 'registering', retryAfterMs: 700 } : real.call(this, req)
+    }
+    try {
+      for (const res of [await postWrite(t.key, series(3)), await postOtlp(t.key, otlp(), 'application/x-protobuf')]) {
+        expect(res.status).toBe(503)
+        expect(res.headers.get('Retry-After')).toBe('1')
+      }
+      // One stream being registered is not an overloaded shard: the second request still reached
+      // the shard instead of being refused early (the early refusal stays keyed to `overload`).
+      expect(calls).toBe(2)
+      expect((await tailOfSlot(t.map, 0, t.tenant)).batches).toEqual([])
+      refuse = false
+      clearCaches()
+      expect((await postWrite(t.key, series(3))).status).toBe(204)
+      expect((await postWrite(t.key, series(3))).status).toBe(204) // a retry: stored once
+      expect((await tailOfSlot(t.map, 0, t.tenant)).batches).toHaveLength(1)
+    } finally {
+      proto.append = real
+    }
   })
 
   it('once every shard of the tenant has refused as overloaded, the next request is refused before its body is read or decoded', async () => {
@@ -117,6 +147,53 @@ describe('KV records edge reads', () => {
     clearCaches()
     expect((await postWrite(t.key, series(1))).status).toBe(204)
     expect((await tailOfSlot(t.map, 0, t.tenant)).samples).toHaveLength(1)
+  })
+
+  it('a base pool ending in /traces or /logs is refused (503) for every signal, nothing is stored, and the shard it would share with another pool\'s spans or logs holds nothing of it (contracts/BATCH.md, "Streams per signal")', async () => {
+    const t = await tenant()
+    const base = `ovl/${t.tenant}`
+    const spans = tracesProto([{ attrs: [['service.name', { s: 'svc' }]], scopes: [{ name: 'lib', spans: [{ traceId: new Uint8Array(16).fill(7), spanId: new Uint8Array(8).fill(8), name: 's', start: BigInt(now) * 1_000_000n, end: BigInt(now) * 1_000_000n + 5n, kind: 1 }] }] }])
+    const logs = JSON.stringify({ streams: [{ stream: { job: 'j' }, values: [[String(BigInt(now) * 1_000_000n), 'line']] }] })
+    for (const suffix of ['traces', 'logs']) {
+      // The metric shard `{base}/{suffix}/0` would be the span (or log) shard of the pool `{base}`.
+      const bad: PoolMap = { ...t.map, pool: `${base}/${suffix}` }
+      await env.CONFIG.put(`pool:${t.tenant}`, JSON.stringify(bad))
+      clearCaches()
+      for (const r of [
+        await postWrite(t.key, series(1)),
+        await postOtlp(t.key, otlp(), 'application/x-protobuf'),
+        await postSignal('/v1/traces', t.key, spans, 'application/x-protobuf'),
+        await postSignal('/loki/api/v1/push', t.key, logs, 'application/json'),
+      ]) {
+        // OTLP carries the message in a google.rpc.Status of the request's encoding.
+        expect([r.status, (await r.text()).includes('shard pool map is invalid')], `${bad.pool}`).toEqual([503, true])
+        expect(r.headers.get('Retry-After')).toBe('30')
+      }
+      expect(await shardStub(bad, 0).describe(t.tenant), `${bad.pool}/0`).toBeNull()
+      expect(await shardStub({ ...bad, pool: `${bad.pool}/traces` }, 0).describe(t.tenant)).toBeNull()
+      expect(await shardStub({ ...bad, pool: `${bad.pool}/logs` }, 0).describe(t.tenant)).toBeNull()
+      // Also as the deployment's default pool.
+      await env.CONFIG.delete(`pool:${t.tenant}`)
+      clearCaches()
+      const d = await postWrite(t.key, series(1), { env: { DEFAULT_POOL: JSON.stringify(bad) } })
+      expect([d.status, await d.text()]).toEqual([503, 'no shard pool is configured'])
+      expect(await shardStub(bad, 0).describe(t.tenant)).toBeNull()
+    }
+    // Names that only look alike are pools like any other: a suffix that is not a whole segment,
+    // the word as a middle segment or as the whole name.
+    for (const pool of [`${base}/tracesx`, `${base}/xlogs`, `${base}/traces-1`, `${base}/logs/a`, `traces`, `logs`]) {
+      const ok: PoolMap = { ...t.map, pool }
+      await setPool(t.tenant, ok)
+      clearCaches()
+      expect((await postWrite(t.key, series(1))).status, pool).toBe(204)
+      expect((await tailOfSlot(ok, 0, t.tenant)).samples.length, pool).toBeGreaterThan(0)
+    }
+    // The good map again: everything stored where it belongs.
+    await setPool(t.tenant, t.map)
+    clearCaches()
+    expect((await postWrite(t.key, series(1))).status).toBe(204)
+    expect((await postSignal('/v1/traces', t.key, spans, 'application/x-protobuf')).status).toBe(200)
+    expect(await shardStub({ ...t.map, pool: `${base}/traces` }, 0).describe(t.tenant)).not.toBeNull()
   })
 
   it('a pool map or limits record of a newer version is refused (503) unless this isolate holds the last good one; a limit is never loosened to the default', async () => {
