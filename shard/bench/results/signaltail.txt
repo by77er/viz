@@ -62,3 +62,92 @@ WALK {"case":"spans, 50 entries of 20 attributes, 3,000 rows","bytes":492360,"us
 WALK {"case":"logs, 5,000 rows","bytes":1065088,"usPerBatch":18.8}
 WALK {"case":"logs, 1 row","bytes":312,"usPerBatch":0.3}
  13:45:16 up 13:04,  0 user,  load average: 3.74, 3.58, 3.72
+
+## after the review of D72 (2026-11-26): as built (cd41a86, a scratch copy) against this change (partial index batch_time), alternating, two runs each, load 8 to 11 (other builds running)
+## asbuilt run 1 8.40 8.85 6.26 6/354 7930
+ROW {"case":"spans before: the read query makes today (signals only)","tailMB":18.74,"batches":48,"needed":48,"bytes":18736064,"bytesMB":18.74,"overMaxFetch16MiB":true,"calls":2,"scannedMB":19.13,"msMedian":46,"msMin":40,"msMax":84}
+ROW {"case":"spans after: span-local query (tags, span-local metrics), the hour","tailMB":18.74,"batches":6,"needed":6,"bytes":2343888,"bytesMB":2.34,"overMaxFetch16MiB":false,"calls":1,"scannedMB":2.34,"msMedian":6,"msMin":6,"msMax":8}
+ROW {"case":"spans after: search / whole-trace metrics / by ID with a hint, the hour ± 2 h margin","tailMB":18.74,"batches":30,"needed":30,"bytes":11719440,"bytesMB":11.72,"overMaxFetch16MiB":false,"calls":1,"scannedMB":11.72,"msMedian":26,"msMin":17,"msMax":38}
+ROW {"case":"spans after: an hour a day before the tail","tailMB":18.74,"batches":0,"needed":0,"bytes":0,"bytesMB":0,"overMaxFetch16MiB":false,"calls":1,"scannedMB":0,"msMedian":9,"msMin":4,"msMax":15}
+ROW {"case":"logs before: the read query makes today (signals only)","tailMB":16.79,"batches":48,"needed":48,"bytes":16791072,"bytesMB":16.79,"overMaxFetch16MiB":true,"calls":2,"scannedMB":17.14,"msMedian":46,"msMin":27,"msMax":51}
+ROW {"case":"logs after: a log query, the hour","tailMB":16.79,"batches":6,"needed":6,"bytes":2100928,"bytesMB":2.1,"overMaxFetch16MiB":false,"calls":1,"scannedMB":2.1,"msMedian":6,"msMin":6,"msMax":18}
+ROW {"case":"logs after: an hour a day before the tail","tailMB":16.79,"batches":0,"needed":0,"bytes":0,"bytesMB":0,"overMaxFetch16MiB":false,"calls":1,"scannedMB":0,"msMedian":5,"msMin":4,"msMax":6}
+APPEND {"run":0,"release":"this","appends":96,"MB":35.5,"msTotal":760,"msMedian":5,"msMax":56}
+APPEND {"run":0,"release":"before","appends":96,"MB":35.5,"msTotal":2549,"msMedian":6,"msMax":688}
+APPEND {"run":1,"release":"before","appends":96,"MB":35.5,"msTotal":790,"msMedian":6,"msMax":41}
+APPEND {"run":1,"release":"this","appends":96,"MB":35.5,"msTotal":1075,"msMedian":8,"msMax":54}
+APPEND {"run":2,"release":"this","appends":96,"MB":35.5,"msTotal":1719,"msMedian":12,"msMax":159}
+APPEND {"run":2,"release":"before","appends":96,"MB":35.5,"msTotal":1539,"msMedian":8,"msMax":181}
+## new run 1 11.01 9.58 6.72 11/388 10725
+ROW {"case":"spans before: the read query makes today (signals only)","tailMB":18.74,"batches":48,"needed":48,"bytes":18736064,"bytesMB":18.74,"overMaxFetch16MiB":true,"calls":2,"scannedMB":19.13,"msMedian":41,"msMin":32,"msMax":47}
+ROW {"case":"spans after: span-local query (tags, span-local metrics), the hour","tailMB":18.74,"batches":6,"needed":6,"bytes":2343888,"bytesMB":2.34,"overMaxFetch16MiB":false,"calls":1,"scannedMB":2.34,"msMedian":3,"msMin":2,"msMax":7}
+ROW {"case":"spans after: search / whole-trace metrics / by ID with a hint, the hour ± 2 h margin","tailMB":18.74,"batches":30,"needed":30,"bytes":11719440,"bytesMB":11.72,"overMaxFetch16MiB":false,"calls":1,"scannedMB":11.72,"msMedian":18,"msMin":14,"msMax":24}
+ROW {"case":"spans after: an hour a day before the tail","tailMB":18.74,"batches":0,"needed":0,"bytes":0,"bytesMB":0,"overMaxFetch16MiB":false,"calls":1,"scannedMB":0,"msMedian":1,"msMin":0,"msMax":1}
+ROW {"case":"logs before: the read query makes today (signals only)","tailMB":16.79,"batches":48,"needed":48,"bytes":16791072,"bytesMB":16.79,"overMaxFetch16MiB":true,"calls":2,"scannedMB":17.14,"msMedian":30,"msMin":20,"msMax":39}
+ROW {"case":"logs after: a log query, the hour","tailMB":16.79,"batches":6,"needed":6,"bytes":2100928,"bytesMB":2.1,"overMaxFetch16MiB":false,"calls":1,"scannedMB":2.1,"msMedian":3,"msMin":2,"msMax":4}
+ROW {"case":"logs after: an hour a day before the tail","tailMB":16.79,"batches":0,"needed":0,"bytes":0,"bytesMB":0,"overMaxFetch16MiB":false,"calls":1,"scannedMB":0,"msMedian":1,"msMin":1,"msMax":1}
+APPEND {"run":0,"release":"this","appends":96,"MB":35.5,"msTotal":719,"msMedian":5,"msMax":68}
+APPEND {"run":0,"release":"before","appends":96,"MB":35.5,"msTotal":571,"msMedian":4,"msMax":23}
+APPEND {"run":1,"release":"before","appends":96,"MB":35.5,"msTotal":493,"msMedian":4,"msMax":20}
+APPEND {"run":1,"release":"this","appends":96,"MB":35.5,"msTotal":582,"msMedian":4,"msMax":45}
+APPEND {"run":2,"release":"this","appends":96,"MB":35.5,"msTotal":736,"msMedian":5,"msMax":56}
+APPEND {"run":2,"release":"before","appends":96,"MB":35.5,"msTotal":845,"msMedian":6,"msMax":57}
+## asbuilt run 2 10.68 9.77 6.95 15/409 12874
+ROW {"case":"spans before: the read query makes today (signals only)","tailMB":18.74,"batches":48,"needed":48,"bytes":18736064,"bytesMB":18.74,"overMaxFetch16MiB":true,"calls":2,"scannedMB":19.13,"msMedian":38,"msMin":26,"msMax":40}
+ROW {"case":"spans after: span-local query (tags, span-local metrics), the hour","tailMB":18.74,"batches":6,"needed":6,"bytes":2343888,"bytesMB":2.34,"overMaxFetch16MiB":false,"calls":1,"scannedMB":2.34,"msMedian":10,"msMin":8,"msMax":11}
+ROW {"case":"spans after: search / whole-trace metrics / by ID with a hint, the hour ± 2 h margin","tailMB":18.74,"batches":30,"needed":30,"bytes":11719440,"bytesMB":11.72,"overMaxFetch16MiB":false,"calls":1,"scannedMB":11.72,"msMedian":20,"msMin":14,"msMax":29}
+ROW {"case":"spans after: an hour a day before the tail","tailMB":18.74,"batches":0,"needed":0,"bytes":0,"bytesMB":0,"overMaxFetch16MiB":false,"calls":1,"scannedMB":0,"msMedian":4,"msMin":4,"msMax":5}
+ROW {"case":"logs before: the read query makes today (signals only)","tailMB":16.79,"batches":48,"needed":48,"bytes":16791072,"bytesMB":16.79,"overMaxFetch16MiB":true,"calls":2,"scannedMB":17.14,"msMedian":44,"msMin":39,"msMax":55}
+ROW {"case":"logs after: a log query, the hour","tailMB":16.79,"batches":6,"needed":6,"bytes":2100928,"bytesMB":2.1,"overMaxFetch16MiB":false,"calls":1,"scannedMB":2.1,"msMedian":6,"msMin":6,"msMax":8}
+ROW {"case":"logs after: an hour a day before the tail","tailMB":16.79,"batches":0,"needed":0,"bytes":0,"bytesMB":0,"overMaxFetch16MiB":false,"calls":1,"scannedMB":0,"msMedian":5,"msMin":3,"msMax":5}
+APPEND {"run":0,"release":"this","appends":96,"MB":35.5,"msTotal":721,"msMedian":6,"msMax":64}
+APPEND {"run":0,"release":"before","appends":96,"MB":35.5,"msTotal":704,"msMedian":5,"msMax":31}
+APPEND {"run":1,"release":"before","appends":96,"MB":35.5,"msTotal":770,"msMedian":5,"msMax":42}
+APPEND {"run":1,"release":"this","appends":96,"MB":35.5,"msTotal":1015,"msMedian":7,"msMax":132}
+APPEND {"run":2,"release":"this","appends":96,"MB":35.5,"msTotal":899,"msMedian":7,"msMax":64}
+APPEND {"run":2,"release":"before","appends":96,"MB":35.5,"msTotal":756,"msMedian":4,"msMax":73}
+## new run 2 11.24 10.12 7.28 4/403 13663
+ROW {"case":"spans before: the read query makes today (signals only)","tailMB":18.74,"batches":48,"needed":48,"bytes":18736064,"bytesMB":18.74,"overMaxFetch16MiB":true,"calls":2,"scannedMB":19.13,"msMedian":27,"msMin":26,"msMax":44}
+ROW {"case":"spans after: span-local query (tags, span-local metrics), the hour","tailMB":18.74,"batches":6,"needed":6,"bytes":2343888,"bytesMB":2.34,"overMaxFetch16MiB":false,"calls":1,"scannedMB":2.34,"msMedian":3,"msMin":2,"msMax":3}
+ROW {"case":"spans after: search / whole-trace metrics / by ID with a hint, the hour ± 2 h margin","tailMB":18.74,"batches":30,"needed":30,"bytes":11719440,"bytesMB":11.72,"overMaxFetch16MiB":false,"calls":1,"scannedMB":11.72,"msMedian":15,"msMin":11,"msMax":18}
+ROW {"case":"spans after: an hour a day before the tail","tailMB":18.74,"batches":0,"needed":0,"bytes":0,"bytesMB":0,"overMaxFetch16MiB":false,"calls":1,"scannedMB":0,"msMedian":1,"msMin":0,"msMax":1}
+ROW {"case":"logs before: the read query makes today (signals only)","tailMB":16.79,"batches":48,"needed":48,"bytes":16791072,"bytesMB":16.79,"overMaxFetch16MiB":true,"calls":2,"scannedMB":17.14,"msMedian":28,"msMin":27,"msMax":41}
+ROW {"case":"logs after: a log query, the hour","tailMB":16.79,"batches":6,"needed":6,"bytes":2100928,"bytesMB":2.1,"overMaxFetch16MiB":false,"calls":1,"scannedMB":2.1,"msMedian":3,"msMin":2,"msMax":3}
+ROW {"case":"logs after: an hour a day before the tail","tailMB":16.79,"batches":0,"needed":0,"bytes":0,"bytesMB":0,"overMaxFetch16MiB":false,"calls":1,"scannedMB":0,"msMedian":1,"msMin":0,"msMax":1}
+APPEND {"run":0,"release":"this","appends":96,"MB":35.5,"msTotal":620,"msMedian":4,"msMax":45}
+APPEND {"run":0,"release":"before","appends":96,"MB":35.5,"msTotal":455,"msMedian":3,"msMax":26}
+APPEND {"run":1,"release":"before","appends":96,"MB":35.5,"msTotal":719,"msMedian":5,"msMax":44}
+APPEND {"run":1,"release":"this","appends":96,"MB":35.5,"msTotal":603,"msMedian":4,"msMax":27}
+APPEND {"run":2,"release":"this","appends":96,"MB":35.5,"msTotal":737,"msMedian":5,"msMax":37}
+APPEND {"run":2,"release":"before","appends":96,"MB":35.5,"msTotal":1004,"msMedian":7,"msMax":101}
+## the walk alone after the review (m-1 checks added; edge's worst shapes and the review's hostile ones), Node v22, three runs
+WALK {"case":"spans, 1 entry, 3,000 rows","bytes":441008,"rows":3000,"entries":1,"bounded":true,"usPerBatch":191}
+WALK {"case":"spans, 50 entries of 20 attributes, 3,000 rows","bytes":492360,"rows":3000,"entries":50,"bounded":true,"usPerBatch":24.9}
+WALK {"case":"logs, 5,000 rows","bytes":1065088,"rows":5000,"entries":1,"bounded":true,"usPerBatch":52}
+WALK {"case":"logs, 1 row","bytes":312,"rows":1,"entries":1,"bounded":true,"usPerBatch":1.5}
+WALK {"case":"spans, edge's worst: 1,289 resources of 128 attributes, a span each","bytes":1048224,"rows":1289,"entries":1289,"bounded":true,"usPerBatch":1487.3}
+WALK {"case":"logs, edge's worst: 12,465 one-label streams, a record each","bytes":1048464,"rows":12465,"entries":12465,"bounded":true,"usPerBatch":232.9}
+WALK {"case":"not edge: logs, 1 stream of 262,000 empty labels","bytes":1048576,"rows":1,"entries":1,"bounded":true,"usPerBatch":2335.6}
+WALK {"case":"not edge: spans, 58,000 empty entries","bytes":1048576,"rows":1,"entries":58249,"bounded":true,"usPerBatch":921.7}
+WALK {"case":"not edge: spans, 1 entry of 65,535 bool attributes with empty keys","bytes":1048576,"rows":1,"entries":1,"bounded":true,"usPerBatch":481}
+WALK {"case":"not edge: logs, 87,000 rows and no entry","bytes":1048576,"rows":87375,"entries":0,"bounded":false,"usPerBatch":0.1}
+WALK {"case":"spans, 1 entry, 3,000 rows","bytes":441008,"rows":3000,"entries":1,"bounded":true,"usPerBatch":11.8}
+WALK {"case":"spans, 50 entries of 20 attributes, 3,000 rows","bytes":492360,"rows":3000,"entries":50,"bounded":true,"usPerBatch":23.1}
+WALK {"case":"logs, 5,000 rows","bytes":1065088,"rows":5000,"entries":1,"bounded":true,"usPerBatch":17.5}
+WALK {"case":"logs, 1 row","bytes":312,"rows":1,"entries":1,"bounded":true,"usPerBatch":1.3}
+WALK {"case":"spans, edge's worst: 1,289 resources of 128 attributes, a span each","bytes":1048224,"rows":1289,"entries":1289,"bounded":true,"usPerBatch":1272.4}
+WALK {"case":"logs, edge's worst: 12,465 one-label streams, a record each","bytes":1048464,"rows":12465,"entries":12465,"bounded":true,"usPerBatch":188.5}
+WALK {"case":"not edge: logs, 1 stream of 262,000 empty labels","bytes":1048576,"rows":1,"entries":1,"bounded":true,"usPerBatch":2418.6}
+WALK {"case":"not edge: spans, 58,000 empty entries","bytes":1048576,"rows":1,"entries":58249,"bounded":true,"usPerBatch":942.9}
+WALK {"case":"not edge: spans, 1 entry of 65,535 bool attributes with empty keys","bytes":1048576,"rows":1,"entries":1,"bounded":true,"usPerBatch":484.6}
+WALK {"case":"not edge: logs, 87,000 rows and no entry","bytes":1048576,"rows":87375,"entries":0,"bounded":false,"usPerBatch":0.1}
+WALK {"case":"spans, 1 entry, 3,000 rows","bytes":441008,"rows":3000,"entries":1,"bounded":true,"usPerBatch":10.4}
+WALK {"case":"spans, 50 entries of 20 attributes, 3,000 rows","bytes":492360,"rows":3000,"entries":50,"bounded":true,"usPerBatch":22.7}
+WALK {"case":"logs, 5,000 rows","bytes":1065088,"rows":5000,"entries":1,"bounded":true,"usPerBatch":17.5}
+WALK {"case":"logs, 1 row","bytes":312,"rows":1,"entries":1,"bounded":true,"usPerBatch":1.3}
+WALK {"case":"spans, edge's worst: 1,289 resources of 128 attributes, a span each","bytes":1048224,"rows":1289,"entries":1289,"bounded":true,"usPerBatch":1317}
+WALK {"case":"logs, edge's worst: 12,465 one-label streams, a record each","bytes":1048464,"rows":12465,"entries":12465,"bounded":true,"usPerBatch":188.2}
+WALK {"case":"not edge: logs, 1 stream of 262,000 empty labels","bytes":1048576,"rows":1,"entries":1,"bounded":true,"usPerBatch":2323.8}
+WALK {"case":"not edge: spans, 58,000 empty entries","bytes":1048576,"rows":1,"entries":58249,"bounded":true,"usPerBatch":927.3}
+WALK {"case":"not edge: spans, 1 entry of 65,535 bool attributes with empty keys","bytes":1048576,"rows":1,"entries":1,"bounded":true,"usPerBatch":482.8}
+WALK {"case":"not edge: logs, 87,000 rows and no entry","bytes":1048576,"rows":87375,"entries":0,"bounded":false,"usPerBatch":0.1}

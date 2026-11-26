@@ -25,8 +25,8 @@ export const TAIL_SCAN_MAX_BYTES = 32 * 1024 * 1024
  * One call considers at most this many stored batches, skipped ones included; the rest is the next
  * page's (review of D72, M-1: a batch skipped by its time bounds costs no payload read, but its
  * index entries are still read, so their number is bounded too). Measured here (local workerd,
- * bench/skipread.node.mjs): about 0.1 KB of pages and 0.4 µs per skipped batch, so this many cost
- * about 3 MB and 13 ms at most.
+ * bench/skipread.node.mjs, 2,000 batches of 200 B): about 0.09 KB of pages and 0.65 µs per skipped
+ * batch, so this many cost about 3 MB and 21 ms at most (modelled from that).
  */
 export const TAIL_SCAN_MAX_BATCHES = 32_768
 
@@ -35,9 +35,9 @@ export const TAIL_SCAN_MAX_BATCHES = 32_768
  * outside the range. Decided from the partial index `batch_time` alone, which holds the bounds
  * without the payload (review of D72, M-1: in the row they follow the payload, so reading them
  * there reads every overflow page of it; measured in bench/skipread.node.mjs). Arguments:
- * the tenant, the range's `minTs`, its `maxTs`. `INDEXED BY` because SQLite's planner does not
- * pick a covering index by itself here (review M-1), and it fails the statement, never silently
- * reads the rows, if the index is missing.
+ * the tenant, the range's `minTs`, its `maxTs`. `INDEXED BY` so that no plan can fall back to the
+ * row's own bounds (the review found SQLite's planner does not pick a covering index by itself for
+ * them); if the index were missing the statement fails, it never silently reads the rows.
  */
 export const SKIPPED_BY_BOUNDS = `EXISTS (SELECT 1 FROM batch AS t INDEXED BY batch_time WHERE t.tenant = ? AND t.seq = b.seq
   AND t.min_ts IS NOT NULL AND t.max_ts IS NOT NULL AND (t.max_ts < ? OR t.min_ts > ?))`

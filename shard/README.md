@@ -125,23 +125,30 @@ dedicated tenants run the same code.
   an earlier release ignores the field and throws on a span or log batch under a series
   filter, so callers still read only their signal's shards by name.
 - **Time bounds of span and log batches** (D72, after review m-3 of
-  `design/reviews/signals-end-to-end.md`; contracts/BATCH.md "Tail reads of spans and log
-  records by time"). `append` reads a span batch's `start` column or a log batch's `ts` column
-  once (`batchTimeBounds`: the entry table is walked by its length fields to the column, which is
+  `design/reviews/signals-end-to-end.md`, revised after its own review
+  `design/reviews/d72-shard-bounds.md`; contracts/BATCH.md "Tail reads of spans and log records
+  by time"). `append` reads a span batch's `start` column or a log batch's `ts` column once
+  (`batchTimeBounds`: the entry table is walked by its length fields to the column, which is
   scanned as u32 pairs, exactly; no decoding, no strings) and stores the floor in milliseconds of
-  the smallest and largest value in the batch's own row (`batch.min_ts`, `batch.max_ts`; no
-  extra row). A metric batch, an empty one and one whose lengths do not lead to a whole column
-  inside it (or that holds a negative time) get NULL; the append is never refused for that. A
-  filtered read with `minTs`/`maxTs` skips, in its SQL, every batch whose bounds lie wholly
-  outside the range (`max_ts < minTs` or `min_ts > maxTs`), without reading its payload, and
-  keeps every batch with NULL bounds: rows from before schema 3, rows written by the release
-  before after a rollback, rows the walk could not follow. Pages, cursors (the range is part of
-  the filter they are bound to), `through`, the fence and every refusal are D48's; a skipped
-  batch is not examined (`scannedBatches`/`scannedBytes` leave it out) and `page_limit` names only
-  a kept batch. A trace query must send the bound it reads spans in (its window widened by
+  the smallest and largest value in the batch's row (`batch.min_ts`, `batch.max_ts`), which the
+  partial index `batch_time` also holds. The walk accepts only BATCH.md's layout: `flags` and
+  `reserved` zero, at least one entry, zero padding around the `entry` column (review m-1). Any
+  other batch, a metric batch, an empty one and one whose lengths do not lead to a whole column
+  inside it (or that holds a negative time) get NULL and no index entry; the append is never
+  refused for that. A filtered read with `minTs`/`maxTs` skips, in its SQL, every batch whose
+  bounds lie wholly outside the range, **deciding from the index, not the row**
+  (`TIMED_TAIL_SQL`, `INDEXED BY batch_time`): the bounds follow the payload in the row, so reading
+  them there read every skipped batch's payload from storage (review M-1; 33 MB to skip 48 batches,
+  now 20 KB). Every batch with NULL bounds is kept: rows from before schema 3, rows written by the
+  release before after a rollback, rows the walk does not accept. One call considers at most
+  `tailScanMaxBatches` (32,768) batches, skipped ones included, and examines at most
+  `tailScanMaxBytes`; a page may hold no batch and continue. Cursors (the range is part of the
+  filter they are bound to), `through`, the fence and every refusal are D48's; a skipped batch is
+  not examined (`scannedBatches`/`scannedBytes` leave it out); `page_limit` names only a kept batch
+  and carries `last` (review n-1): true when no batch after it up to `through` can be kept by its
+  bounds. A trace query must send the bound it reads spans in (its window widened by
   `traceMarginMs`, D62) as `floor(lo / 10⁶)`, `floor(hi / 10⁶)`; then every batch holding a span
-  that starts inside the bound is returned (tested, below). **The query does not send a time range
-  yet** ("Needed changes elsewhere"): until it does, nothing is skipped and m-3 stands.
+  that starts inside the bound is returned (tested, below).
 - **Segment reads bound to what was listed** (spec F12): `readSegment(tenant, seqLo,
   incarnation, seqHi)` answers null unless the stream is still that incarnation and the
   segment is exactly that range.
@@ -180,7 +187,10 @@ dedicated tenants run the same code.
   changes a stream row's incarnation, so what this release wrote stays true and its 0 is
   only conservative); version 3 (D72) adds `batch.min_ts` and `batch.max_ts` (nullable, additive,
   `readableFrom` 1: the release before names its columns when it inserts, so its rows get NULL,
-  which every time range keeps; nothing is backfilled and nothing relies on a value being there).
+  which every time range keeps; nothing is backfilled and nothing relies on a value being there)
+  and the partial index `batch_time` over them (review of D72, M-1; SQLite maintains it for every
+  writer, the release before included, whose rows get no entry; built over schema-2 rows it reads
+  their headers and writes nothing). Migration 3 had not shipped when the index was added to it.
   Storage of a newer release is
   refused: `append` answers retryable `overload`, every other method throws
   `schema_too_new`, nothing is written, the alarm is re-armed. The series-window bucket
@@ -293,7 +303,7 @@ per shard on an even share, so an unevenly spread tenant is refused before its w
 
 ```
 npm install
-npx vitest run --maxWorkers=2   # 98 tests in workerd, 11 files (2026-11-19, D72)
+npx vitest run --maxWorkers=2   # 109 tests in workerd, 12 files (2026-11-26, after the review of D72)
 npx tsc --noEmit                # clean
 node scripts/mutants.mjs        # on a copy outside the git checkout (see the script)
 npm run bench                   # the workerd counterfactual (bench/)
@@ -301,9 +311,40 @@ BENCH=tail npm run bench        # a 20 MB tail, read whole and filtered
 BENCH=registration npm run bench  # registration before writes (D61)
 BENCH=signaltail npm run bench    # a span or log query against eight hours of tail; appends (D72)
 node --experimental-strip-types --no-warnings bench/walk.node.mjs   # the bounds walk alone (Node)
+node --experimental-strip-types --no-warnings bench/skipread.node.mjs  # where the bounds are kept: bytes read to skip, rows written (workerd)
 ```
 
-**Last run, 2026-11-19, after D72: 98 passed, 0 failed (11 files); `tsc --noEmit` clean.**
+**Last run, 2026-11-26, after the review of D72: 109 passed, 0 failed (12 files); `tsc --noEmit`
+clean.** Run on the working tree at commit `76e065b` with this change's later edits to
+`src/tail.ts` (comments), `README.md`, `bench/` and `scripts/mutants.mjs` uncommitted; `shard/`'s
+code and tests are as in `76e065b`, whose snapshot carries them (review m-7: the runs below this one
+are tied to no commit). Stack, same tree: `npx tsc --noEmit` clean; `npx vitest run --maxWorkers=2`
+50 passed, 1 skipped (11 files); the gateway suite 4 of 4.
+
+- **The review of D72** (`design/reviews/d72-shard-bounds.md`; 2026-11-26):
+  - *M-1, deciding a skip* (`bounds.test.ts` "deciding a skip, and what one call reads"): the
+    index `batch_time` holds the bounds of exactly the span and log batches that have them (not a
+    metric batch, not one the walk refuses) and is partial; the read's plan uses it as a covering
+    index, and `TIMED_TAIL_SQL` never names the payload in its WHERE (there it would read every
+    row's record: 140 KB instead of 20 KB, measured below). With `tailScanMaxBatches` 3 a hull
+    read and an unranged read return the same batches as one call, each page only from its own
+    three batches, some pages empty and still moving on.
+  - *n-1*: `page_limit` carries `last` true when only skipped batches follow, false when a kept one
+    does, false without a range unless the batch is `through`, false when the look stops at the
+    batch window.
+  - *m-1* (`bounds.test.ts` "a batch of a layout the walk does not know…", and
+    `bounds.edge.test.ts` R2): flags 1, reserved 0x80 at 6 and 7, a non-zero byte in the padding
+    before and after the `entry` column, `n_entries` 0 with rows (twice, once with every other
+    byte zero): no bounds, the engine's strict decoder refuses each too, stored and kept by a range
+    holding none of their times. The review's modelled later layout (flag 1, a u64 after the entry
+    table): no bounds, and a read of exactly its last row's millisecond returns it (it returned
+    nothing before); the same bytes with the flag cleared still get wrong bounds, which is why
+    BATCH.md requires a later layout to signal itself.
+  - *m-6* (`bounds.edge.test.ts`, adopted from the review's R1 and R5b): 180 random OTLP/JSON
+    traces, OTLP/JSON logs and Loki push requests with adversarial content, decoded and encoded by
+    edge's own code: the walk equals the engine's flush on every batch, none unbounded; a batch at
+    the entry limits; the most expensive shapes edge builds for the walk (every span its own
+    resource of 128 attributes; every record its own stream), near 1 MiB.
 
 - **Time bounds of span and log batches** (`test/bounds.test.ts`, 11, D72). Span and log batches
   come from the engine's test encoder (no code shared with the shard or edge; a resource
@@ -370,11 +411,42 @@ node --experimental-strip-types --no-warnings bench/walk.node.mjs   # the bounds
   checked to have stored exactly what it was sent: 362–457 ms against 369–497 ms for the 96,
   median 3 ms each on both; no difference beyond the spread. Nothing was tuned. The walk alone,
   timed in Node 22 (workerd's clock does not move during synchronous work): 7.5–35 µs per batch of
-  0.4 to 1 MB, 0.3–1 µs for a one-row batch. What these do not show: the bytes and times are for a
+  0.4 to 1 MB, 0.3–1 µs for a one-row batch (typical shapes only: up to 1.5 ms for edge's worst,
+  review m-4, below). What these do not show: the bytes and times are for a
   tail whose batches each cover ten minutes; batches whose spans span hours (late senders, long
   spans) skip less. On Cloudflare the reads and the walk over SQLite's overflow pages to the
   bounds are not measured (experiment: the same tail and reads against a shard on Cloudflare, from
   a query Worker).
+- **Measured here after the review of D72** (2026-11-26):
+  - *Where the bounds are kept* (`bench/skipread.node.mjs`, local workerd through a Durable
+    Object, three runs, identical in bytes, `bench/results/skipread.txt`; every layout returned the
+    same batches for every read). Bytes: what the workerd process read (`rchar`) during one read
+    after SQLite's page cache was filled with other pages. 48 batches of 0.4 to 1 MB:
+
+    | Layout | Rows written per append (bounded / not) | Skip all 48 | One hour (8 kept) | Everything |
+    |---|---|---|---|---|
+    | as first built: in the row, after the payload | 3 / 3 | 33,004 KB, 7–10 ms | 37,532 KB | 65,870 KB |
+    | **partial index `batch_time` (built)** | **4 / 3** | **20 KB, under 1 ms** (0.05–0.09 warm) | 4,568 KB | 33,006 KB |
+    | the same, `payload IS NOT NULL` in the WHERE | 4 / 3 | 140 KB | 4,668 KB | 33,006 KB |
+    | full covering index | 4 / 4 | 16 KB | 4,564 KB | 33,002 KB |
+    | table of bounds | 4 / 3, and 2 rows per discard | 20 KB | 4,568 KB | 33,007 KB |
+    | bounds before the payload (table rebuilt) | 3 / 3 | 136 KB | 4,664 KB | 33,002 KB |
+
+    2,000 batches of about 200 B: skipping all read 580 KB as first built and 176 KB as built now,
+    but took 1.3 ms warm against 0.3–0.7 ms (about 0.65 µs per batch for the index lookup). Why the
+    partial index: D72 in `design/DECISIONS.md`. Billed: one more row written per span or log
+    append (modelled at list price: $1.00 per million such appends past the included 50 million
+    rows a month); none per metric append.
+  - *End to end* (`BENCH=signaltail`, this change against the first build from a scratch copy at
+    `cd41a86`, alternating, two runs each, load average 8 to 11; `bench/results/signaltail.txt`):
+    an hour a day before the tail 4–9 ms → 1 ms; the hour 6–10 → 3 ms; the hour with the margin
+    20–26 → 15–18 ms; appends of the 96 batches against the release before D72: 582–737 ms against
+    455–1,004 ms, no difference beyond the spread. Each read held every needed batch, byte for byte.
+  - *The walk* (`bench/walk.node.mjs`, Node 22, three runs; review m-4): 10–25 µs for typical 0.4 to
+    1 MB batches; **1.27–1.49 ms** for the worst shape edge builds (1,289 resources of 128
+    attributes, a span each, 1 MiB) and 0.19–0.23 ms for 12,465 one-label streams; shapes edge never
+    builds up to 2.4 ms. Linear, paid once per append by the sender's own bytes: documented, not
+    capped (a cap would only switch skipping off for such senders; D72 (i)).
 
 Last run, 2026-11-19: **78 passed, 0 failed**; `tsc --noEmit` clean. The suite now runs with
 the ledger in the same script (`wrangler.test.jsonc`; its drain only when a test asks).
@@ -614,11 +686,41 @@ copied as numbers" survives, as before, equivalent: above), "group commit: an ap
 before its group commits" (its pattern re-anchored to the new `Pending` field; killed) and the three
 `versions:` mutants (killed). The other mutants of the script were not re-run for this change.
 
+**Run of 2026-11-26, the review of D72** (`design/reviews/d72-shard-bounds.md`), on a copy of
+`contracts/`, `ledger/`, `edge/src/` and `engine/wasm/{js,test}` at `e90eee1` and this `shard/`, in
+the session's scratch directory (outside git), whose unmutated suite passed 109 of 109;
+`node scripts/mutants.mjs "D72"`, each against `test/bounds.test.ts` and, where named,
+`test/bounds.edge.test.ts` or `test/compat.test.ts`. The thirteen D72 mutants above, three of them
+re-anchored to the new SQL (both hull edges and "old rows dropped": now `t.max_ts <= ?`,
+`t.min_ts >= ?`, and `b.min_ts IS NOT NULL` added to `TIMED_TAIL_SQL`): **13 of 13 killed**. The
+review's: **13 of 13 killed**, one after a test was added.
+
+| Mutant | Killed by (`bounds.test.ts` unless named) |
+|---|---|
+| M-1: migration 3 creates no index `batch_time` | `compat.test.ts` golden; every ranged read ("a batch the walk cannot follow…", others: `no such index`) |
+| M-1: the index not partial (metric appends write an entry) | `compat.test.ts` golden; "the decision is made from the partial index…" |
+| M-1: the skip decided from the row, as first built | "the decision is made from the partial index…" (the plan) |
+| M-1: `payload IS NOT NULL` in the timed WHERE | the same (its WHERE) |
+| M-1: no per-call batch window | "one call considers at most tailScanMaxBatches batches…" |
+| M-1: a call ending at its window does not continue the read | the same |
+| m-1: flags and reserved not checked | "a batch of a layout the walk does not know…"; `bounds.edge.test.ts` R2 (both) |
+| m-1: reserved not checked (flags only) | the same |
+| m-1: padding before the `entry` column not checked | "a batch of a layout the walk does not know…" |
+| m-1: padding after the `entry` column not checked | the same |
+| m-1: a batch with rows and no entry walked | **survived** the first run (the test's only such batch was also caught by the padding check); killed after adding one whose other bytes are all zero |
+| n-1: `page_limit` always says `last` | "page_limit says whether its batch is the last…" |
+| n-1: a look that stops before `through` says `last` | the same |
+
+The twelve `tail:` mutants (one re-anchored to the new `page_limit`) and the three `versions:`
+ones, run again on the same copy because `tailPage` and migration 3 changed: 11 of 12 and 3 of 3
+killed; "values copied as numbers" survives, equivalent, as before. The other mutants of the
+script were not re-run for this change (no code they target moved).
+
 ## Not implemented yet
 
-- **The query does not send a time range on span and log reads** (`query/` is not this
-  component's; the exact change is under "Needed changes elsewhere"). Until it does, the bounds
-  are recorded and nothing is skipped: m-3's limit stands in production.
+- **`last` on `page_limit` is not read by query yet** ("Needed changes elsewhere"): until it is, a
+  422 for a tail whose later batches are all skipped says "at least N bytes" where N is exact
+  (review n-1). Query sends the time range now (its owner's change).
 - **Filtering rows inside span and log batches**: a batch the range keeps is returned whole, with
   any rows it holds outside the range (the reader selects rows). Batches whose spans spread over
   hours (late senders, long spans) are kept whole for any range they touch.
@@ -671,18 +773,23 @@ before its group commits" (its pattern re-anchored to the new `Pending` field; k
 ## Known risks
 
 - **Span and log bounds are only as good as the walk** (D72). The shard derives them from the
-  bytes every reader decodes, and a batch it cannot follow gets none (kept by every range). A
-  batch the walk follows to a wrong column would need lengths that lead somewhere other than
-  where the engine's strict decoder goes; then that decoder refuses the batch at flush as well
-  (`unreadable_segment`). Tested against the engine's flush on 150 random batches and the
-  contract's every attribute type; `edge`'s encoder itself is not run in these tests (the stack's
-  suite runs edge, shard and query together, but query sends no range yet).
-- **Deciding to skip a span or log batch walks SQLite's overflow pages to its bounds**, which the
-  record stores after the payload (training knowledge of SQLite's format). Here a read that
-  skipped 48 batches of 0.4 MB took 4–6 ms; on Cloudflare not measured.
+  bytes every reader decodes, and a batch it does not accept gets none (kept by every range). It
+  accepts only the layout BATCH.md defines up to the time column, with flags and reserved zero; a
+  later revision that changes that layout WITHOUT signalling it in the header would get wrong
+  bounds and skipped rows (BATCH.md requires the signal, or the shard updated first; the reader
+  list in COMPATIBILITY §3.3 does not name the shard yet: "Needed changes elsewhere"). Tested
+  against the engine's flush on 150 random batches of the engine's test encoder and 284 of edge's.
+  The walk does not check label or attribute contents (empty names, UTF-8): a batch edge never
+  builds can get bounds from a layout the strict decoder refuses, which then refuses it at flush.
+- **Rows written and SQLite's reads are measured in local workerd only.** On Cloudflare neither the
+  extra index row per span or log append nor the bytes read to skip are measured (experiment:
+  appends and reads against a deployed shard, rows written from the analytics API).
+- **A tail of many tiny span or log batches is decided about 1 ms per 2,000 batches slower** than
+  as first built (the index lookup per batch), while reading a third of the bytes; bounded per call
+  by `tailScanMaxBatches` (about 21 ms at most, modelled).
 
 - **A filtered read costs the shard CPU in proportion to its whole tail** (above; for a span or
-  log read with a time range, the batches it keeps, D72), once per query per shard, on the object
+  log read with a time range, the batches it keeps, D72, plus the index entries of those it skips), once per query per shard, on the object
   that acknowledges appends. 22 MB took 30–140 ms here. A tenant
   with many concurrent queries over a large tail adds that much to its shard's thread each.
 
@@ -705,86 +812,29 @@ before its group commits" (its pattern re-anchored to the new `Pending` field; k
 
 ## Needed changes elsewhere
 
-### Time bounds of span and log batches (D72; review m-3)
+### Time bounds of span and log batches (D72; review m-3, and the review of D72)
 
-**`query/`** (not edited here; its owner was re-reviewing it read-only). The shard side is done
-and needs nothing from callers to stay correct; this is what makes a span or log query take only
-the tail inside its range. One function and its four calls, in `query/src/signals.ts` (line
-numbers as of `0e75337`):
-
-1. `readSignalTail` (line 136) takes the nanosecond bound its caller reads rows in, and sends it
-   as the shard's time range, each end floored to milliseconds (`msRange`, already imported at
-   line 32):
+1. **`query/`: done by its owner** (not edited here). `readSignalTail` sends each read's
+   nanosecond bound as the shard's time range (`msRange`); the review's query-side findings (m-2,
+   de-duplicate after the window; m-3, an empty range reads no tail) are that builder's. The
+   proposal that stood here (2026-11-19) is in this file's history.
+2. **`query/`: read `last` from `page_limit`** (review of D72, n-1; not done). In
+   `query/src/tail.ts` `readPages`, where `page_limit` is handled:
 
    ```ts
-   /**
-    * The tails of a signal's shards above the plan's watermarks, under what the files leave of
-    * `maxFetchBytes`; null: refused, read the ledger again. `bound` is the nanosecond range the
-    * caller selects rows in (inclusive): the shard skips span and log batches whose time bounds,
-    * recorded at append, lie outside it (D72; contracts/BATCH.md "Tail reads of spans and log
-    * records by time"), and returns every other batch whole. A shard of an earlier release
-    * ignores the range for these batches and returns them all, as before.
-    */
-   async function readSignalTail(
-     c: Context,
-     signal: 'traces' | 'logs',
-     watermarks: Watermark[],
-     lakeBytes: number,
-     rf: ReturnType<typeof refusals>,
-     bound: { lo: bigint; hi: bigint },
-   ): Promise<Uint8Array[] | null> {
-     const shards = await signalShards(c.env, c.tenant, signal, watermarks)
-     c.cost.shardsAsked = shards.length
-     // The signal (`readTails` adds it) and the bound's milliseconds, each end floored: every batch
-     // holding a row inside the bound is returned (D72). Series fields stay unsent: they select
-     // metric rows only (shard/src/tail.ts). Paged under ONE budget over the signal's shards, each
-     // page checked against the query's deadline (`readShared`, review of D54 M-2 and m-7).
-     const t = await readTails(c, shards, watermarks, rf.known, rf.refused, msRange(bound.lo, bound.hi), c.limits.maxFetchBytes - lakeBytes, signalByte(signal))
-     if (t.again) return null
-     if (t.over) throw tooMuch(c, 'the data files in range plus the unflushed tail', lakeBytes + t.atLeast, !t.exact)
-     return t.reads.flatMap((r) => r.batches.map((b) => b.payload))
-   }
+   // The batch that did not fit is the last the read keeps: its bytes complete the read. A shard
+   // before the review of D72 sends no `last`: then only the tail's last batch is known to be.
+   out.overLast = typeof (r as { last?: unknown }).last === 'boolean' ? (r as { last: boolean }).last || r.seq === out.through : out.through !== null && r.seq === out.through
    ```
 
-2. The four calls pass the range their engine call selects rows in. **A trace query passes its
-   bound (the window widened by `traceMarginMs`), never the window or the hull**: the engine
-   reads every span starting inside the bound (D62).
-   - `logQuery` (line 200): `readSignalTail(c, 'logs', p.watermarks, r.bytes, rf, { lo, hi })`,
-     the selectors' hull computed at lines 185–186.
-   - `logLabels` (line 233): `readSignalTail(c, 'logs', p.watermarks, r.bytes, rf, { lo: startNs, hi: endNs })`.
-   - `traceRounds` (line 290): `readSignalTail(c, 'traces', first.watermarks, r1.bytes, rf, bound)`.
-   - `spansIn` (line 392): `readSignalTail(c, 'traces', p.watermarks, r.bytes, rf, window)`.
-
-   `msRange` clamps to `[0, floor(MAX_NS / 10⁶)]`, inside what `compileFilter` accepts; trace by ID
-   without a hint passes `[0, MAX_NS]`, which keeps everything.
-3. **Tests** (`query/test/`):
-   - `signals.test.ts` "max_spans and max_rows as the engine decodes: … the ones outside the query do
-     not": its `early` case (a search whose window, with the margin, ends days before the data)
-     expects `Tail-Bytes > 0`; after the change it is **0** (the tail is skipped: m-3's fix), while
-     the `logs` case (a selector no stream matches, over the data's time) keeps `> 0`. Split the
-     assertion accordingly.
-   - Add, next to it: a tenant whose span and log tails lie in one hour; a search, a tag query and
-     a log query an hour later than the data plus the margin answer 200 with `Tail-Bytes` 0, and
-     the same queries over the data's hour answer exactly as before (`completeness.test.ts`'s
-     answers, pruning on and off, are unchanged: the shard keeps every batch holding a span inside
-     the bound). With `shardSignalFilter.enabled = false` and with `tailHooks.previousRelease` (a
-     shard that ignores the range) the answers are the same.
-   - Mutant: pass the window instead of the bound in `traceRounds`. A test must fail: a trace
-     found in the window whose child span lies in the tail, in a batch of its own that starts
-     after the window and inside the margin (`completeness.test.ts` has a "child in the tail"
-     case; if its child's batch overlaps the window, add one whose batch does not).
-4. **Docs**: `query/README.md` "Traces and logs" and D62's cost paragraph (m-3's limit) then say
-   a query takes the tail inside its bound; the limit that remains is a backlog of more than
-   `maxFetchBytes` inside one bound (five hours for a one-hour search).
-5. **Release order**: none needed. The range is an existing field; a shard of the release before
-   ignores it for span and log batches (returns them all) and the engine selects the same rows,
-   so query and shard may deploy in either order.
-
-**Checked in a scratch copy** (2026-11-19; the tree at `b237b6b` with this shard and `contracts/`,
-items 1 and 2 applied to the copy's `query/src/signals.ts`, never to `query/` here): `tsc --noEmit`
-clean; `signals.test.ts`, `completeness.test.ts`, `sigcompat.test.ts` and `memory.test.ts`: 31
-passed, 1 failed, the one item 3 names (`early`: `Tail-Bytes` is now 0, the tail skipped);
-`signals.e2e.test.ts` (answers equal to the in-memory engines' over whole corpora): 2 of 2 passed.
+   and in `query/src/coordinator.ts` (line 585 at `76e065b`), keep `r.overLast` when a read's
+   `page_limit` set it instead of recomputing it from `through`. Then the 422 says the exact size
+   when every later batch is skipped. Test: a tail whose large kept batch is followed only by
+   batches outside the range: the 422 has no "at least". Release order: none (the field is
+   additive; an older shard sends none and the old rule applies).
+3. **`contracts/COMPATIBILITY.md` §3.3** (not this component's): add the shard to the readers a
+   `VZB1` signal 2 or 3 layout change must update first, unless the change signals itself in the
+   header (BATCH.md, "The one layout a shard reads").
 
 ### Registration before writes (D61)
 
