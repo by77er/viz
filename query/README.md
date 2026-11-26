@@ -1043,14 +1043,17 @@ one-stream query). Not measured: larger sizes through the Worker (a fixture modu
 
 **The re-review (R2) and the review of D72's query side**, on the final code (module SHA-256
 `f29e583a…`, 4,530,674 bytes, 1,446,413 gzip -9), 2026-11-26:
-- `npx tsc --noEmit` clean; `npx vitest run --maxWorkers=2`: **172 of 172** in 20 files (268 s).
-- `test/review-r2.test.ts` (8 tests, new): the re-review's reproductions through edge, the real
+- `npx tsc --noEmit` clean; `npx vitest run --maxWorkers=2`: **173 of 173** in 20 files (233 s).
+- `test/review-r2.test.ts` (9 tests, new): the re-review's reproductions through edge, the real
   flush, the ledger and the Worker (R2-M1, R2-M2 histogram, tag values, LogQL `label_format`,
   R2-M3b with its refusal text, R2-M4a) and D72 review m-3 and m-2. **Run on the code before this
   change** (`query/` and `engine/wasm-query/js` at `514828c`, the ABI 7 module, everything else
   linked; `qe/before/`): 7 of 8 fail, with 113.3, 512.8, 105.1 and 221.3 MiB of WASM memory and
   the 422s of R2-M3b and R2-M4a; m-3 passes there (the code before sent no range: it guards the
-  D72 change, and mutant 115 shows it has teeth).
+  D72 change, and mutant 115 shows it has teeth). The ninth, the review of D72's n-1 (`page_limit`'s
+  `last`, taken in from `shard/README.md` "Needed changes elsewhere" 2: a refusal gives the exact
+  size when every later batch is skipped), fails on the code before it ("at least 333712 bytes")
+  and passes after.
 - Updated: `signals.test.ts` (the `early` case takes no tail byte; a new test reads the tail inside
   each query's bound with the filter on, off and from a shard that ignores the range),
   `engine.test.ts` (ABI 8), `memory.test.ts` and `signals.test.ts` (refusal texts).
@@ -1586,7 +1589,18 @@ previous run's last mutant); fixed, and the whole set rerun.
 | 20 | R2-M2: the lines a log query keeps not charged | `r2_m2_tag_names_search_answers…` |
 
 *TypeScript*, mutants 111 to 117 of `tools/mutants.mjs` (`node tools/mutants.mjs 111 … 117`, scratch
-tree): TS_MUTANTS_RESULT
+tree, 2026-11-26): **7 of 7 killed**, the unmutated suite passing first, the shared tree's files
+unchanged (`3065dd00fc9054f9`).
+
+| # | Mutant | Killed by |
+|---|---|---|
+| 111 | R2-M1: the label calls get no budget | `review-r2` › R2-M1 (the tenant's 1 MiB reaches the call) |
+| 112 | R2-M3: spans planned over the hull (ranges not passed) | `review-r2` › R2-M3b |
+| 113 | R2-m5: a margin refusal advises narrowing the time range | `review-r2` › R2-M3b (the refusal text) |
+| 114 | R2-M4a: trace by ID checked by its row groups' rows before the fetch | `review-r2` › R2-M4a |
+| 115 | D72 m-3: an empty range sent to the shards | `review-r2` › m-3 |
+| 116 | D72: a trace query sends its window, not its bound | `completeness` › every trace named is whole … |
+| 117 | D72: a span or log read sends no range | `signals` › … the ones outside the query do not; … read inside each query's bound |
 
 **The review of spans and logs end to end, M-1, M-2, m-3, m-4 (2026-11-19, 12:41 to 13:14 UTC, load
 average 3 to 10, on scratch trees; `node tools/mutants.mjs 98 … 110`): 13 of 13 killed**, the

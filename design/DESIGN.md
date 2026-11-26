@@ -737,7 +737,10 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
   lets requests through within 100 ms (each check its own share; a slow list read affects its own
   key only) and is reported by `/healthz`. The
   fuses are per location: floods from several locations add up on one object. These limits assume
-  no Smart Placement for control and mcp. Until a sign-in
+  no Smart Placement for control and mcp, which the deploy refuses on both. The deploy also refuses
+  a production control without the six bindings (each deployment gets namespace ids of its own,
+  never one another script of the account binds), and will not put control's OAuth key on a version
+  without them (D70's gate). Until a sign-in
   exists the consent step is a call to the control API, and only an API key may approve.
   Fourteen tools: search telemetry, describe a metric, validate a query (with the query
   service's own plan: files, bytes, scan bound, refusal), run a query,
@@ -844,7 +847,10 @@ serving Worker does not read forward-only, and refuses a rollback that would lea
 restores under a version it does not read: one written since by a restored Worker, or one that a
 Worker the rollback leaves serving wrote or writes (D69, revised after its review). A switch that
 lets new data in (`INGEST_SIGNALS`) raises a rollback floor under every Worker that must read that
-data (D69). Only main is deployed, with main's own deploy tooling: the tooling of an older commit
+data (D69). Every production control carries `OAUTH_PUBLIC`, which holds control at the release whose
+credentials carry their expiry and whose dead credentials are listed (D70); a release that sets it
+over an older control is forward-only rather than refused, so the production first deployed before
+this rule can take it (D69, point 6). Only main is deployed, with main's own deploy tooling: the tooling of an older commit
 cannot judge rules added since. Every version a deploy run uploads carries a mark unique to the run, so the OAuth
 key is never promoted on another run's upload; a rollback across the key's creation or rotation is
 refused before anything moves (measured on Cloudflare in S9: the first leaves OAuth broken until

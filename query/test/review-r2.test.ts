@@ -198,6 +198,17 @@ describe('review of D72: the query side of the time range', () => {
     expect(JSON.parse(all.text).data.result).toHaveLength(1)
   }, 60_000)
 
+  it('n-1: when every batch after the one that does not fit is outside the range, the refusal gives the exact size (no "at least")', async () => {
+    const { t } = await tenant(64 << 20, 1)
+    // One batch of about 300 KB in the window, then small ones two hours later (outside it).
+    await post(t, traces(Array.from({ length: 300 }, (_, i) => span(hex(i + 1, 32), '0000000000000001', T0 + BigInt(i) * S, T0 + BigInt(i) * S + 1000n, [str('pad', 'p'.repeat(1000))]))))
+    for (let k = 0; k < 3; k++) await post(t, traces([span(hex(1000 + k, 32), '0000000000000001', T0 + 2n * HOUR + BigInt(k) * S, T0 + 2n * HOUR + BigInt(k) * S + 1000n)]))
+    await env.CONFIG.put(`limits:${t.name}`, JSON.stringify({ maxFetchBytes: 100_000 }))
+    clearLimitsCache()
+    const r = await query(t, '/api/search/tags', [['start', sec(T0)], ['end', sec(T0 + HOUR)]])
+    expect([r.status, /max_fetch_bytes: .* are \d+ bytes/.test(r.text), r.text.includes('at least')], r.text.slice(0, 300)).toEqual([422, true, false])
+  }, 60_000)
+
   it('m-2: tags, tag values and span-local metrics cut to their window before de-duplication: a later copy outside it changes nothing, whether its batch is skipped or read', async () => {
     const { t } = await tenant()
     const id = 'ab'.repeat(16)

@@ -582,7 +582,8 @@ async function learnEnd(c: Context, r: TailRead, known: Map<string, number>): Pr
   }
   if (d.discardedThrough > r.above) return `shard ${r.shard} has discarded rows above the watermark`
   r.through = d.nextSeq - 1
-  r.overLast = r.overSeq !== null && r.overSeq === r.through
+  // Kept when the read's `page_limit` said so (`last`, review of D72 n-1): every later batch was skipped.
+  r.overLast = r.overLast || (r.overSeq !== null && r.overSeq === r.through)
   return null
 }
 
