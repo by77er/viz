@@ -1,0 +1,10 @@
+// Spike s12: the design system v9 pages the v9 review measured, as static assets on workers.dev, so a real phone can open them.
+// Assets only: no script, no bindings, no routes on any zone. See README.md for what it costs and how to delete it.
+{
+  "name": "viz-spike-s12-reload",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "assets": { "directory": "./public", "html_handling": "auto-trailing-slash", "not_found_handling": "none" },
+  "observability": { "enabled": false }
+}
