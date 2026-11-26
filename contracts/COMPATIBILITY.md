@@ -161,7 +161,14 @@ Deploy order follows the same rule: **the reader of anything new deploys first.*
 method or request field: the callee. A new response field a caller needs: the callee may add
 it any time, the caller may depend on it only once every callee sends it. A new queue
 message version: the consumer. A new R2 or KV format: every reader (publisher, ledger
-rebuild, query, janitor, edge) before the writer. Callee-before-caller promotion is the
+rebuild, query, janitor, edge) before the writer. A change to the `VZB1` layout of spans (signal 2) or log records
+(signal 3) up to the `start` or `ts` column: every reader of that layout before the writer
+(edge), and since D72 the shard is one of them, with the engine in flush and in query: at append
+it walks the entry table by its length fields and reads that column (`batchTimeBounds`). The one
+exception is a change that signals itself in the header (a new magic, a new signal number, or a
+non-zero `flags` or `reserved` byte): a shard of this release records no bounds for such a batch
+and keeps it by every time range, so it needs no shard release first (`BATCH.md`, "The one layout
+a shard reads, and how a later one must say so"). Callee-before-caller promotion is the
 special case for RPC.
 
 ### 3.4 Derived identifiers are formats
