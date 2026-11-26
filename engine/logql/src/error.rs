@@ -14,6 +14,9 @@ pub enum Error {
     Limit(String),
     /// The log source failed.
     Source(String),
+    /// What the evaluation would hold passes `Options::max_bytes` (`eval::Meter`): refused
+    /// before `what` was made, with the bytes it would have held.
+    Memory { what: &'static str, max: u64, used: u64 },
 }
 
 impl Error {
@@ -22,7 +25,7 @@ impl Error {
         match self {
             Error::Parse { .. } => "bad_data",
             Error::Unsupported(_) => "unsupported",
-            Error::Eval(_) | Error::Limit(_) => "execution",
+            Error::Eval(_) | Error::Limit(_) | Error::Memory { .. } => "execution",
             Error::Source(_) => "internal",
         }
     }
@@ -36,6 +39,7 @@ impl fmt::Display for Error {
             Error::Eval(m) => write!(f, "{m}"),
             Error::Limit(m) => write!(f, "limit exceeded: {m}"),
             Error::Source(m) => write!(f, "source: {m}"),
+            Error::Memory { what, max, used } => write!(f, "the query's {what} would hold {used} bytes, more than the {max} it may hold"),
         }
     }
 }

@@ -264,8 +264,12 @@ impl<'a> Parser<'a> {
                         let regex_pos = self.pos();
                         let regex = self.string()?;
                         self.expect(Tok::RParen)?;
-                        crate::goregex::compile_anchored(&regex)
-                            .map_err(|e| self.err_at(regex_pos, format!("invalid regex in label_replace: {e}")))?;
+                        // Names kept, as the replacement may name groups: a name Go accepts and the
+                        // regex crate cannot hold (`(?P<1>…)`, a repeat) is Unsupported.
+                        crate::goregex::compile(&regex, crate::goregex::Wrap::Anchored, true, &crate::goregex::Limits::default()).map_err(|e| match e {
+                            crate::goregex::Error::Unsupported(m) => Error::Unsupported(format!("label_replace regex {regex:?}: {m}")),
+                            crate::goregex::Error::Invalid(m) => self.err_at(regex_pos, format!("invalid regex in label_replace: {m}")),
+                        })?;
                         let e = MetricExpr::LabelReplace { inner: Box::new(inner), dst, replacement, src, regex };
                         self.check_height(e.height(), pos)?;
                         Ok(Node::Metric(e, pos))
@@ -559,6 +563,11 @@ impl<'a> Parser<'a> {
                 "regexp" => {
                     let p = self.pos();
                     let re = self.string()?;
+                    // A group name Go accepts and the regex crate cannot hold (`(?P<1>…)`, a
+                    // repeat) cannot be extracted as Loki would: Unsupported, not a parse error.
+                    if let Err(crate::goregex::Error::Unsupported(m)) = crate::goregex::translate(&re, true) {
+                        return Err(Error::Unsupported(format!("regexp stage {re:?}: {m}")));
+                    }
                     crate::pipeline::check_regexp_parser(&re).map_err(|e| self.err_at(p, e))?;
                     Stage::Regexp(re)
                 }

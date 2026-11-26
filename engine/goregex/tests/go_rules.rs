@@ -2,7 +2,7 @@
 //! as a black box) and Tempo v3.1.1 (black box, `engine/traceql/testdata/regex_dialect.json`)
 //! gave. Patterns are compiled fully anchored, as TraceQL and label matchers use them.
 
-use viz_goregex::{compile, compile_plain, translate, Error, Limits, Wrap};
+use viz_goregex::{compile, compile_anchored, compile_plain, compile_unanchored, translate, Error, Limits, Wrap};
 
 fn anchored(p: &str) -> Result<regex::Regex, Error> {
     compile(p, Wrap::Anchored, false, &Limits::default())
@@ -101,6 +101,75 @@ fn flags_and_groups() {
     matches(r"\b*", &[""], &[]);
     matches("(?:a|ab)(?:b|)", &["ab", "a"], &[]);
     matches("a|ab", &["a", "ab"], &[]);
+    // Re-wrapped atoms inside a group that is itself re-wrapped (Go 1.24.7, black box).
+    matches("(?:a*(?i)*)*(?i)*", &["", "a", "aaa"], &["A"]);
+    matches("x(?:a*(?i)*)*(?i)*", &["x", "xaa"], &["xA"]);
+    matches("((a)*(?)*)*(?)*b", &["ab", "aab"], &["a"]);
+}
+
+/// Group names. Go's documentation (pkg.go.dev/regexp/syntax, go1.27.4; `go doc regexp/syntax`,
+/// Go 1.24.7) lists `(?P<name>re)` and `(?<name>re)` and the error `invalid named capture`, but
+/// not which names are valid; `go doc regexp.Regexp.SubexpIndex` says a name may be used twice.
+/// The rest is Go 1.24.7's `regexp` run as a black box (scratch programs, CLEANROOM.md), and
+/// Tempo v3.1.1's recorded answers for `(?P<1>a)`, `(?P<a>x)(?P<a>y)`, `(?P<é>a)` and
+/// `(?P<a.b>x)` (`engine/traceql/testdata/regex_dialect.json`): a name is one or more of
+/// `[A-Za-z0-9_]`, a leading digit included; anything else is refused.
+#[test]
+fn group_names_are_gos() {
+    matches("(?P<1>a)", &["a"], &["1", ""]);
+    matches("(?<1>a)(?P<0>b)(?P<123>c)(?P<1a>d)(?P<01>e)", &["abcde"], &[]);
+    matches("(?P<_>a)(?P<_1>b)(?P<A_b9>c)(?P<K>d)", &["abcd"], &[]);
+    matches("(?P<a>x)(?P<a>y)", &["xy"], &["x"]);
+    matches("(?P<a>x)|(?<a>y)", &["x", "y"], &["xy"]);
+    matches("(?P<a>b)>", &["b>"], &["b"]);
+    matches("(?<a>>b)", &[">b"], &["b"]);
+    // The forms that only match drop names, so they accept every name Go accepts.
+    assert!(compile_anchored("(?P<1>a)(?P<a>b)(?<a>c)").unwrap().is_match("abc"));
+    assert!(compile_unanchored("(?P<9>a)|(?P<9>b)", true).unwrap().is_match("xb"));
+    // Refused as Go refuses them, in Go's words (observed).
+    for (p, msg) in [
+        ("(?P<é>a)", "invalid named capture: `(?P<é>`"),
+        ("(?P<\u{661}>a)", "invalid named capture: `(?P<\u{661}>`"), // an Arabic-Indic digit
+        ("(?P<a.b>a)", "invalid named capture: `(?P<a.b>`"),
+        ("(?P<a b>a)", "invalid named capture: `(?P<a b>`"),
+        ("(?P<a-b>a)", "invalid named capture: `(?P<a-b>`"),
+        ("(?P<a[0]>x)", "invalid named capture: `(?P<a[0]>`"),
+        ("(?P<>a)", "invalid named capture: `(?P<>`"),
+        ("(?<>a)", "invalid named capture: `(?<>`"),
+        ("(?P<a", "invalid named capture: `(?P<a`"),
+        ("x(?P<1", "invalid named capture: `(?P<1`"),
+        ("(?P<a)", "invalid named capture: `(?P<a)`"),
+        ("(?<a", "invalid named capture: `(?<a`"),
+        ("(?<=a)", "invalid named capture: `(?<=a)`"),
+        ("(?<!a)", "invalid named capture: `(?<!a)`"),
+        ("(?<=a)>b", "invalid named capture: `(?<=a)>`"),
+        ("(?P<", "invalid or unsupported Perl syntax: `(?P`"),
+        ("(?<", "invalid or unsupported Perl syntax: `(?<`"),
+        ("(?P>a)", "invalid or unsupported Perl syntax: `(?P`"),
+        ("(?P=a)", "invalid or unsupported Perl syntax: `(?P`"),
+        ("(?P<a>", "missing closing ): `(?P<a>`"),
+        ("(?P<a>a", "missing closing ): `(?P<a>a`"),
+    ] {
+        assert_eq!(translate(p, false), Err(Error::Invalid(msg.to_string())), "{p:?}");
+        assert_eq!(translate(p, true), Err(Error::Invalid(msg.to_string())), "{p:?}, names kept");
+    }
+    // Keeping names (LogQL's `regexp` stage and templates), a name Go accepts and Rust cannot
+    // hold is Unsupported: not Rust's refusal, and not a different capture.
+    for p in ["(?P<1>a)", "(?<1a>a)", "(?P<a>x)(?P<a>y)", "(?P<a>x)|(?<a>y)", "(?P<_>a)(?P<_>b)"] {
+        assert!(matches!(translate(p, true), Err(Error::Unsupported(_))), "{p:?}");
+        assert!(compile_plain(p).is_err(), "{p:?}");
+    }
+    let r = compile_plain("(?P<_>a)(?P<a1>b)(?<x9_Z>c)(?P<K>d)").unwrap();
+    assert_eq!(r.capture_names().flatten().collect::<Vec<_>>(), vec!["_", "a1", "x9_Z", "K"]);
+    // Only a pattern Go accepts can be Unsupported for its names: Go's refusal of a later error
+    // comes first.
+    for (p, msg) in [
+        (r"(?P<1>a)\8", "invalid escape sequence: `\\8`"),
+        ("(?P<a>x)(?P<a>y)(", "missing closing ): `(?P<a>x)(?P<a>y)(`"),
+        ("(?P<1>a)(?P<é>b)", "invalid named capture: `(?P<é>`"),
+    ] {
+        assert_eq!(translate(p, true), Err(Error::Invalid(msg.to_string())), "{p:?}");
+    }
 }
 
 #[test]
@@ -181,4 +250,22 @@ fn translation_is_linear_and_bounded() {
     // Plain, unanchored use keeps names (LogQL's `regexp` stage).
     let r = compile_plain(r"(?P<a>\w+) (?<b>.*)").unwrap();
     assert_eq!(r.capture_names().flatten().collect::<Vec<_>>(), vec!["a", "b"]);
+}
+
+#[test]
+fn rewrapping_costs_linear_time() {
+    // Nested groups, each repeated, then repeated again after an empty construct:
+    // `((…(a)*(?)*)*(?)*…)`. Each second `*` wraps a whole group in `(?:…)`. Writing that `(?:`
+    // at the group's start moved the group's text on every wrap, which is quadratic: about 2 MiB
+    // took 9.3 s unoptimised and 1 MiB 1.9 s optimised (README, "Linear time"). Recorded and
+    // written once at the end, 2 MiB takes about 0.3 s unoptimised.
+    let d = 300_000;
+    let p = format!("{}a{}", "(".repeat(d), ")*(?)*".repeat(d));
+    let t = std::time::Instant::now();
+    let out = translate(&p, false).unwrap();
+    let took = t.elapsed();
+    // `(` x d `a` `)*(?)*` x d becomes `(?:(` x d `a` `)*)*` x d: one byte more per level.
+    assert_eq!(out.len(), p.len() + d);
+    assert!(out.starts_with("(?:((?:((?:(") && out.ends_with(")*)*)*)*"), "{}", &out[..40]);
+    assert!(took.as_secs_f64() < 3.0, "took {took:?}");
 }

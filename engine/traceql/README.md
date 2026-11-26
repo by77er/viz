@@ -35,12 +35,13 @@ let p = plan(query, start, end)?;                       // columns, predicates, 
 | Item | Purpose |
 |---|---|
 | `parse(query) -> RootExpr` | Parse and validate. Errors: `Parse{pos,line,col,msg}`, `Validation{…}`, `Unsupported(msg)` |
-| `search(source, query, &SearchRequest) -> SearchResponse` | `limit` (default 20, most recent traces first), `spans_per_spanset` (default 3; `matched` counts all), optional `[start, end]` window (traces that overlap it) |
-| `query_range(source, query, &RangeRequest)`, `query_range_with(…, &Limits)` | Metrics over `(start, end]` at `step`; `RangeRequest::instant(start, end)` for `/api/metrics/query`. `Limits`: series per query (10,000), points (11,000) |
+| `search(source, query, &SearchRequest) -> SearchResponse` | `limit` (default 20, most recent traces first), `spans_per_spanset` (default 3; `matched` counts all), optional `[start, end]` window (traces that overlap it). `search_with(…, &mut metrics::Meter)` (2026-11-19) charges each span result as it is made and releases the traces the limit cuts; past the meter, `Error::Memory` |
+| `query_range(source, query, &RangeRequest)`, `query_range_with(…, &Limits)` | Metrics over `(start, end]` at `step`; `RangeRequest::instant(start, end)` for `/api/metrics/query`. `Limits`: series per query (10,000), points (11,000), and (2026-11-19) `max_bytes` (default none): every series' accumulator and the output series it will make (one per quantile) charged when the group is made, a histogram's output series when its bucket first appears, buckets and exact-sum partials as they grow, the series of arithmetic between queries; refused with `Error::Memory` before the structure is built (`metrics::Meter`; the query Worker's budget, design/reviews/signals-end-to-end-r2.md R2-M2). `MetricsResponse::held_bytes` and `json_len()` let a caller charge the answer before it is written |
 | `query_instant(source, query, start, end)` | One point at `end` covering `(start, end]` |
 | `plan(query, start, end) -> ReadPlan` | What a query reads, from the text alone: `columns` (intrinsics and attributes by scope), `span_filter` (spans failing it can be dropped), `trace_filter` (traces with no span passing it can be dropped; `And` across different spans), `trace_window` (search), `span_window` (metrics; prunes spans only when `span_local`), `full_traces` (structural operators, `span:childCount`) |
 | `trait SpanSource { fn traces(&self, &ReadPlan, visit) }` | The only data seam. A source may return more than the plan admits, never less (contract in the doc comment) |
 | `MemSource` | In-memory source; `.pruning(true)` applies the plan as storage would (used to test that pruning never changes a result) |
+| `Span.resource: Resource` | A span's resource attributes, `Arc<Attrs>`: shared by every span of one resource, so a reader holds each distinct resource once (since 2026-11-19, the review of spans and logs, M-2: a 180 KB resource copied per span took 349 MiB for 2,000 spans in the query engine). Read as a slice (`attr(&span.resource, k)`); build one with `vec![…].into()` |
 | `align_request(&RangeRequest)` | Tempo's query-frontend alignment of range requests, as observed |
 | `SearchResponse::to_json`, `MetricsResponse::to_json` | Tempo's HTTP JSON (protobuf-JSON: 64-bit integers as strings, `AnyValue` objects, empty fields omitted) |
 | `matching_spansets(query, &Trace)` | Spansets of one trace (for storage-side checks) |
@@ -387,6 +388,26 @@ source tree is never modified. A suite that dies of a stack overflow is reported
 | 30 | a `{` that starts no repetition is an error, not a literal | regex_dialect, goregex (`go_only_escapes_and_literals`) |
 | 31 | an unmatched `)` passed through | **not caught** (equivalent, below) |
 | 32 | parentheses not balanced at all (unmatched `)` passed, unclosed `(` allowed) | regex_dialect, goregex (`what_go_refuses_is_refused`) |
+| 33 | a group name that starts with a digit is refused (in `engine/goregex`) | regex_dialect (`(?P<1>a)`, which Tempo accepts), goregex (`named_groups`) |
+| 34 | group names may hold any Unicode letter or digit | regex_dialect (`(?P<é>a)`, which Tempo refuses), goregex (`group_names_are_gos`, `what_go_refuses_is_refused`) |
+| 35 | names kept: a name the regex crate cannot hold is passed to it (its refusal, not Unsupported) | goregex (`named_groups`) |
+| 36 | names kept: a repeated name is passed to the regex crate | goregex (`named_groups`) |
+| 37 | `compile_anchored` keeps names (refuses a name Go accepts) | goregex (`named_groups`) |
+| 38 | `(?<=` and `(?<!` read as Perl syntax rather than as a named group (Go's wording) | goregex (`group_names_are_gos`) |
+| 39 | recorded re-wraps never written | regex_dialect, goregex (`rewraps_are_assembled_in_place`) |
+| 40 | a group's re-wrap linked after the last record, not before the records made inside it (out of offset order: a panic on nested re-wraps) | goregex (`rewraps_are_assembled_in_place`) |
+| 41 | a second re-wrap of the same atom not counted | goregex (`rewraps_are_assembled_in_place`) |
+| 42 | each re-wrap inserted at the atom's start again (the quadratic version; same output) | goregex (`rewrapping_costs_linear_time`) |
+| 43 | names kept: a leading digit is Unsupported at once, before Go's refusal of a later error | goregex (`group_names_are_gos`) |
+
+Mutants 33–43 (group names and re-wrapping in `engine/goregex`, the PR #4 review nits) were
+run on 2026-11-19 on the final code with `--only 33,…,43`: **11 of 11 caught**, the copies
+restored and re-run green, then deleted (an earlier run of 33–42 on an intermediate version,
+which sorted the re-wrap records, also caught 10 of 10). The goregex column names the failures
+of the first failing test binary (cargo stops there). Mutant 42 changes no output: only the
+timing test, on a 2 MiB nested pattern, can see it. The conformance suite skipped in these runs
+(Tempo's examples are not in the tree); fetched into a scratch copy and run separately after
+the changes, it gives the same table as before (282 valid queries accepted, 0 failures).
 
 **31 of 32 caught** on the final run of 2026-11-19 (final code: regex dialect, `MAX_DEPTH`
 100); the copies were restored and re-run green after each, then deleted. Mutants 1–24 are
@@ -416,8 +437,8 @@ under Node 22:
 
 | | |
 |---|---:|
-| `.wasm` | **1,275,756 B** (2026-11-19, with `engine/goregex` and `MAX_DEPTH` 100; 1,284,354 B before) |
-| gzip -9 (Node `zlib`, as `check.mjs` reports) | **428,833 B** (436,541 B before) |
+| `.wasm` | **1,281,885 B** (2026-11-19, after `engine/goregex`'s group-name and re-wrap changes; 1,276,692 B before them, same source and flags, both measured then; 1,275,756 B when `engine/goregex` and `MAX_DEPTH` 100 came in, 1,284,354 B before that) |
+| gzip -9 (Node `zlib`, as `check.mjs` reports) | **431,339 B** (429,017 B before the group-name and re-wrap changes; 428,833 B, and 436,541 B, at the earlier points) |
 | imports | **0** (instantiates with `{}`) |
 | exports | `memory`, `viz_tq_alloc`, `viz_tq_free`, `viz_tq_run` |
 | `new WebAssembly.Instance(module, {})` | 0.33 and 0.51 ms in two runs of the 2026-11-19 build at load average about 10; before, 0.23 ms at load average 5.5, 0.24–0.34 ms and 2.2 ms at 8–19 (means of 200) |
@@ -522,7 +543,11 @@ characters, NBSP, em space, U+FFFD, 1,000 `x`). It runs 289 patterns through Tem
 (`tools/godiff`) in four forms: `{ span.s =~ P }`, `{ span.s =~ P || span.zz = 1 }`,
 `{ name = "root" } > { span.s =~ P }` and `{ span.s !~ P }`, with `P` as a backtick string.
 All four forms agreed on every pattern, so Tempo's storage-side and evaluator-side matching
-are the same. The answers are recorded in `testdata/regex_dialect.json`;
+are the same. The answers are recorded in `testdata/regex_dialect.json`, whose `about` field
+says what its `subjects` and `cases` sections hold and what the patterns probe, and whose
+`tempo` field names the release and commit that answered (both rewritten on 2026-11-19 from
+the file itself, `tools/probes/regex_dialect.py` and `tools/godiff/`; the date of the
+recording and the Go toolchain of that build are not recorded, and the field says so);
 `tests/regex_dialect.rs` runs the same forms through viz (and a search with pruning on) and
 requires Tempo's answer. What Tempo does, and what changed:
 
@@ -545,24 +570,33 @@ from surrogate escapes, on which Go itself is inconsistent).
 
 ## Integration (not part of this crate; what it needs)
 
-- **Storage reader** (`engine/storage`): Parquet writer and reader for `spans` and
-  `trace_index` per `contracts/TRACES.md`; a `SpanSource` over files and tail batches that
-  applies `ReadPlan` (columns for projection, predicates on row-group statistics and the
-  `trace_id` bloom filter, `full_traces` → fetch every span of candidate traces by
-  `trace_id`), and the merged `TraceSummary` from `trace_index`. Test it with pruning on and
-  off and rows split between files and tail, as `engine/AGENTS.md` requires.
-- **Ingest**: an OTLP traces decoder in `edge` and a span batch format in `BATCH.md`
-  (`contracts/TRACES.md`, "Ingest batch").
-- **WASM binding**: operations in `engine/wasm-query` (C ABI like `viz_q_*`): search,
-  query_range/instant and plan, with spans passed as batches or files, typed errors
-  (`bad_data` for Parse/Validation, `unsupported`, `execution`), limits per call.
-- **Query Worker**: `/api/search`, `/api/metrics/query_range`, `/api/metrics/query` (Tempo's
-  parameters: `q`, `limit`, `spss`, `start`/`end` in seconds, `step`, `since`); apply
-  `align_request` to range queries as Tempo's frontend does; choose a default `step`;
-  `/api/traces/<id>` and tag search are lookups in storage.
-- **Split execution**: search splits by trace id hash (spans of a trace must meet); metrics
-  without structural operators split by span and merge per point (sums and counts add;
-  min/max; quantiles merge histograms; `topk` after merging).
+Built on 2026-11-19 (outside this crate, which did not change):
+
+- **Storage reader and WASM binding**: `engine/wasm-query` (ABI 6) reads `spans` and
+  `trace_index` files written by `engine/storage` (row group by row group, whole files or the byte
+  ranges a file plan fetched) and span tail batches into this crate's `Span`, de-duplicates on
+  `(trace_id, span_id)` with the later row winning, builds traces with `Trace::new` (summaries
+  from the spans read, not from `trace_index` counts) and evaluates through `MemSource`: `search`,
+  `query_range_with`, `matching_spansets` (filtered tag values), `plan` and `align_request`.
+  Typed errors (`bad_data` for Parse/Validation, `unsupported`, `execution`), limits per call.
+  Pruning uses the plan's window, `full_traces` and `span_local`; the predicates on row-group
+  statistics and the `trace_id` bloom filters are not used yet.
+- **Query Worker** (`query/`, behind `QUERY_SIGNALS`): `/api/search`, `/api/metrics/query_range`,
+  `/api/metrics/query`, `/api/traces/<id>` and v2, tag names and values (v1 and v2), with
+  Tempo's parameters; range requests aligned as Tempo's frontend does; a default `step` of the
+  range over 250 points (`query/README.md`, "Traces and logs"). Answers equal this crate's over
+  an in-memory `MemSource` of the same spans, over three seeds of edge's corpus, with pruning on
+  and off (`query/test/signals.test.ts`).
+
+What is still needed:
+
+- **Split execution**: search split by trace id hash (each part's top `limit`, merged), metrics
+  without structural operators split by span with partial aggregates that merge exactly (sums
+  and counts add; min/max; quantiles merge histograms; `topk` after merging). Until then one
+  isolate is the bound (`maxSpans`, D62).
+- **Projection by `ReadPlan::columns`** (the reader holds every attribute of every span: about
+  1.5 KiB of WASM memory a span, measured).
+- `with(extrapolate=true)` needs sampling weights stored (`contracts/TRACES.md`).
 
 ## Known risks
 
@@ -594,9 +628,9 @@ from surrogate escapes, on which Go itself is inconsistent).
 
 ## Contract issues
 
-- `contracts/engine.ts` defines no TraceQL shapes ("TraceQL and LogQL result shapes are not
-  defined yet"). The binding should return the JSON text of `to_json()` as `viz-promql`'s
-  `queryRangeJson` does.
+- `contracts/engine.ts` defines the TraceQL shapes since 2026-11-19 (`TempoSearchResponse`,
+  `TempoMetricsResponse`, `OtlpTrace`, the tag bodies) and the binding returns the JSON text of
+  `to_json()`, as `viz-promql`'s `queryRangeJson` does.
 - `contracts/TRACES.md` is new and proposed; storage does not implement it.
 
 ## Layout

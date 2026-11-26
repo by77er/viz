@@ -1,6 +1,8 @@
 /**
  * The JavaScript binding of the viz engine: the storage half of `contracts/engine.ts`
- * (`encodeSegment`, `select`, `mergeFiles`) over the C ABI documented in `../src/lib.rs`.
+ * (`encodeSegment`, `select`, `mergeFiles`), the flush of spans and logs
+ * (`SignalFlushEngine`: `encodeSpans`, `encodeLogs`, ABI 3) and their compaction
+ * (`SignalMergeEngine`: `mergeSignalFiles`, ABI 4) over the C ABI documented in `../src/lib.rs`.
  *
  * Number rules (contracts/engine.ts):
  *  - Times going in must be integers. `select` refuses a fractional or NaN bound instead of
@@ -16,10 +18,11 @@
  * A trap (the Rust side is built with panic=abort) leaves an instance in an unknown state.
  * The binding then drops the instance and creates a fresh one for the next call.
  */
-import type { EncodedFile, Engine, Matcher, ScanInput, SeriesData } from '../../../contracts/engine'
-import type { Table } from '../../../contracts/ledger'
+import type { EncodedFile, EncodedSignalFile, Engine, Matcher, ScanInput, SeriesData, SignalFlushEngine, SignalMergeEngine } from '../../../contracts/engine'
+import type { SignalTable, Table } from '../../../contracts/ledger'
 
-export const ABI_VERSION = 2
+/** `contracts/engine.ts`: `SignalFlushEngine` needs ABI 3, `SignalMergeEngine` ABI 4. */
+export const ABI_VERSION = 4
 
 interface Exports {
   memory: WebAssembly.Memory
@@ -30,6 +33,9 @@ interface Exports {
   viz_select(ptr: number, len: number): number
   viz_merge_files(ptr: number, len: number): number
   viz_free_file(ptr: number, cap: number): void
+  viz_encode_spans(ptr: number, len: number): number
+  viz_encode_logs(ptr: number, len: number): number
+  viz_merge_signal_files(ptr: number, len: number): number
 }
 
 /** An error the engine reported (malformed batch, bad matcher, corrupt file). */
@@ -37,7 +43,7 @@ export class EngineError extends Error {
   override name = 'EngineError'
 }
 
-export interface VizEngine extends Engine {
+export interface VizEngine extends Engine, SignalFlushEngine, SignalMergeEngine {
   /** Size of the instance's linear memory now, which is also its peak: it only grows. */
   memoryBytes(): number
   /** How many times a WASM instance has been created (1, plus one per trap). */
@@ -48,6 +54,12 @@ export interface VizEngine extends Engine {
 
 const OPS: Record<Matcher['op'], number> = { '=': 0, '!=': 1, '=~': 2, '!~': 3 }
 const TABLES: readonly Table[] = ['metric_samples', 'metric_series']
+/** Table bytes of an ABI 3 result (`viz_encode_spans`, `viz_encode_logs`). */
+const SIGNAL_TABLES: Record<number, EncodedSignalFile['table']> = { 2: 'spans', 3: 'trace_index', 4: 'logs' }
+const SIGNAL_TABLE_BYTES: Record<SignalTable, number> = { spans: 2, trace_index: 3, logs: 4 }
+const NS_PER_MS = 1_000_000n
+/** The floor of a Unix nanosecond in milliseconds (the ledger's bounds, contracts/engine.ts `EncodedSignalFile`). */
+const floorMs = (ns: bigint): number => Number(ns >= 0n ? ns / NS_PER_MS : -((-ns + NS_PER_MS - 1n) / NS_PER_MS))
 const I64_MIN = -(2n ** 63n)
 const I64_MAX = 2n ** 63n - 1n
 const utf8 = new TextEncoder()
@@ -85,7 +97,7 @@ export function createEngine(module: WebAssembly.Module): VizEngine {
    * Run one operation: `size` bytes of request written by `write`, result read by `read`.
    * Views over WASM memory are taken after every call that can grow it, never kept.
    */
-  function call<T>(op: 'viz_encode_segment' | 'viz_select' | 'viz_merge_files', size: number, write: (mem: Uint8Array, at: number) => void, read: (payload: Uint8Array) => T): T {
+  function call<T>(op: 'viz_encode_segment' | 'viz_select' | 'viz_merge_files' | 'viz_encode_spans' | 'viz_encode_logs' | 'viz_merge_signal_files', size: number, write: (mem: Uint8Array, at: number) => void, read: (payload: Uint8Array) => T): T {
     if (size > 0xffff_ffff) throw new RangeError('engine: request larger than 4 GiB')
     const w = instance()
     let req = 0
@@ -142,24 +154,68 @@ export function createEngine(module: WebAssembly.Module): VizEngine {
     return files
   }
 
-  function encodeSegment(batches: Uint8Array[]): EncodedFile[] {
+  /** `u32 n, (u32 len, batch)*`: the request of every encoder. */
+  const batchesSize = (batches: Uint8Array[]): number => {
     let size = 4
     for (const b of batches) size += 4 + b.byteLength
-    return call(
-      'viz_encode_segment',
-      size,
-      (mem, at) => {
-        const dv = new DataView(mem.buffer)
-        dv.setUint32(at, batches.length, true)
-        let p = at + 4
-        for (const b of batches) {
-          dv.setUint32(p, b.byteLength, true)
-          mem.set(b, p + 4)
-          p += 4 + b.byteLength
-        }
-      },
-      (payload) => readFiles(payload, 4, new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getUint32(0, true)),
+    return size
+  }
+  const writeBatches = (batches: Uint8Array[]) => (mem: Uint8Array, at: number) => {
+    const dv = new DataView(mem.buffer)
+    dv.setUint32(at, batches.length, true)
+    let p = at + 4
+    for (const b of batches) {
+      dv.setUint32(p, b.byteLength, true)
+      mem.set(b, p + 4)
+      p += 4 + b.byteLength
+    }
+  }
+
+  function encodeSegment(batches: Uint8Array[]): EncodedFile[] {
+    return call('viz_encode_segment', batchesSize(batches), writeBatches(batches), (payload) =>
+      readFiles(payload, 4, new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getUint32(0, true)),
     )
+  }
+
+  /**
+   * The files of an ABI 3 result. Times come out of the module in nanoseconds (i64); the
+   * ledger's `minTs`/`maxTs` are their floor in milliseconds, computed with BigInt (a Unix
+   * nanosecond does not fit a JS number), and the exact bounds are kept as decimal strings.
+   */
+  function readSignalFiles(payload: Uint8Array): EncodedSignalFile[] {
+    const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
+    let p = 4
+    const chunk = (): Uint8Array => {
+      const len = dv.getUint32(p, true)
+      p += 4 + len
+      return payload.subarray(p - len, p)
+    }
+    const n = dv.getUint32(0, true)
+    const files: EncodedSignalFile[] = []
+    for (let i = 0; i < n; i++) {
+      const table = SIGNAL_TABLES[payload[p]!]
+      if (!table) throw new Error('engine: unknown table in result')
+      const hourByte = payload[p + 1]!
+      const hour = hourByte === 255 ? null : hourByte
+      if ((table === 'spans') !== (hour !== null) || (hour !== null && hour > 23)) throw new Error('engine: a span file without its hour, or an hour on another table')
+      const rows = Number(dv.getBigUint64(p + 4, true))
+      const minNs = dv.getBigInt64(p + 12, true)
+      const maxNs = dv.getBigInt64(p + 20, true)
+      p += 28
+      const day = text.decode(chunk())
+      const index = text.decode(chunk())
+      const bytes = chunk().slice() // copy out of WASM memory before it is freed
+      files.push({ table, hour, day, bytes, rows, minTs: floorMs(minNs), maxTs: floorMs(maxNs), minNs: String(minNs), maxNs: String(maxNs), index })
+    }
+    return files
+  }
+
+  function encodeSpans(batches: Uint8Array[]): EncodedSignalFile[] {
+    return call('viz_encode_spans', batchesSize(batches), writeBatches(batches), readSignalFiles)
+  }
+
+  function encodeLogs(batches: Uint8Array[]): EncodedSignalFile[] {
+    return call('viz_encode_logs', batchesSize(batches), writeBatches(batches), readSignalFiles)
   }
 
   function mergeFiles(table: Table, files: Uint8Array[]): EncodedFile {
@@ -202,6 +258,63 @@ export function createEngine(module: WebAssembly.Module): VizEngine {
         const bytes = new Uint8Array(w.memory.buffer, ptr, len).slice() // the one copy out
         w.viz_free_file(ptr, cap)
         return { table: out, day, bytes, rows, minTs, maxTs, index }
+      },
+    )
+  }
+
+  /** `viz_merge_signal_files`: as `mergeFiles`, with the header of an ABI 3 signal file. */
+  function mergeSignalFiles(table: SignalTable, files: Uint8Array[]): EncodedSignalFile {
+    const t = SIGNAL_TABLE_BYTES[table]
+    if (t === undefined) throw new RangeError(`engine: unknown signal table ${String(table)}`)
+    let size = 8
+    for (const f of files) size += 4 + f.byteLength
+    return call(
+      'viz_merge_signal_files',
+      size,
+      (mem, at) => {
+        const dv = new DataView(mem.buffer)
+        dv.setUint32(at, t, true) // u8 table, u8[3] zero
+        dv.setUint32(at + 4, files.length, true)
+        let p = at + 8
+        for (const f of files) {
+          dv.setUint32(p, f.byteLength, true)
+          mem.set(f, p + 4)
+          p += 4 + f.byteLength
+        }
+      },
+      (payload) => {
+        const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
+        let p = 28
+        const str = (): string => {
+          const len = dv.getUint32(p, true)
+          p += 4 + len
+          return text.decode(payload.subarray(p - len, p))
+        }
+        const out = SIGNAL_TABLES[payload[0]!]
+        if (out !== table) throw new Error('engine: the merge answered another table')
+        const hourByte = payload[1]!
+        const hour = hourByte === 255 ? null : hourByte
+        if ((out === 'spans') !== (hour !== null) || (hour !== null && hour > 23)) throw new Error('engine: a span file without its hour, or an hour on another table')
+        const rows = Number(dv.getBigUint64(4, true))
+        const minNs = dv.getBigInt64(12, true)
+        const maxNs = dv.getBigInt64(20, true)
+        const day = str()
+        const index = str()
+        // The file in chunks: each copied out into one buffer and released at once (u64 each; wasm32 uses the low half).
+        const total = Number(dv.getBigUint64(p, true))
+        const n = dv.getUint32(p + 8, true)
+        p += 12
+        const w = instance()
+        const bytes = new Uint8Array(total)
+        let at = 0
+        for (let i = 0; i < n; i++, p += 24) {
+          const [ptr, len, cap] = [dv.getUint32(p, true), dv.getUint32(p + 8, true), dv.getUint32(p + 16, true)]
+          bytes.set(new Uint8Array(w.memory.buffer, ptr, len), at)
+          at += len
+          w.viz_free_file(ptr, cap)
+        }
+        if (at !== total) throw new Error(`engine: merged chunks hold ${at} bytes of ${total}`)
+        return { table: out, hour, day, bytes, rows, minTs: floorMs(minNs), maxTs: floorMs(maxNs), minNs: String(minNs), maxNs: String(maxNs), index }
       },
     )
   }
@@ -285,8 +398,11 @@ export function createEngine(module: WebAssembly.Module): VizEngine {
 
   return {
     encodeSegment,
+    encodeSpans,
+    encodeLogs,
     select,
     mergeFiles,
+    mergeSignalFiles,
     queryRange: () => notBuilt('queryRange'),
     queryInstant: () => notBuilt('queryInstant'),
     selectors: () => notBuilt('selectors'),

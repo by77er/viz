@@ -5,19 +5,21 @@ and a TypeScript binding (`js/`) that implements the storage half of `contracts/
 
 | Path | Contents |
 |---|---|
-| `src/lib.rs` | The C ABI: `viz_alloc`, `viz_free`, `viz_encode_segment`, `viz_select`, `viz_merge_files`, `viz_free_file`, `viz_abi_version` (2). The calling convention and both wire layouts are documented at the top of the file. |
-| `js/index.ts` | `createEngine(module)`: `encodeSegment`, `select`, `mergeFiles`; `queryRange`, `queryInstant`, `selectors` throw "not built yet" |
+| `src/lib.rs` | The C ABI: `viz_alloc`, `viz_free`, `viz_encode_segment`, `viz_select`, `viz_merge_files`, `viz_free_file`, `viz_encode_spans`, `viz_encode_logs`, `viz_merge_signal_files`, `viz_abi_version` (4). The calling convention and every wire layout are documented at the top of the file. |
+| `js/index.ts` | `createEngine(module)`: `encodeSegment`, `select`, `mergeFiles`, (ABI 3) `encodeSpans`, `encodeLogs` (`contracts/engine.ts` `SignalFlushEngine`) and (ABI 4) `mergeSignalFiles` (`contracts/engine.ts` `SignalMergeEngine`); `queryRange`, `queryInstant`, `selectors` throw "not built yet" |
 | `js/worker.ts` | A minimal Worker that imports the `.wasm` as a module (proof that it loads in workerd) |
 | `js/viz_engine.wasm` | Build output of `./build.sh`. Ignored by git: **build it before running any test in `engine/wasm`, `flush/` or `stack/`.** |
 | `tests/abi.rs` | The C ABI called natively with real pointers |
-| `test/` | The binding, tested inside workerd; `test/vzb1.ts` is an independent `VZB1` encoder used by these tests and by `flush/` and `stack/` |
+| `test/` | The binding, tested inside workerd; `test/vzb1.ts` is an independent `VZB1` encoder used by these tests and by `flush/` and `stack/`; `test/signal.ts` an independent encoder of span (signal 2) and log-record (signal 3) batches, used by these tests and by `shard/`, `flush/` and `janitor/` |
+| `tools/same_metrics.mjs` | Metrics byte for byte across an ABI change: the same workload through an old build (its binding and module) and this one |
 | `tools/measure.mjs` | Size, instantiate time, time and memory, in Node |
 | `tools/measure_merge.mjs` | Peak memory and time of `mergeFiles` for flush-shaped inputs, in Node |
 
 ```
 ./build.sh                 # release, fat LTO, +simd128,+bulk-memory → js/viz_engine.wasm
-CARGO_TARGET_DIR=$PWD/target cargo test      # 4 native ABI tests
-npm install && npm test    # 14 tests in workerd
+CARGO_TARGET_DIR=$PWD/target cargo test -j 2   # 7 native ABI tests
+npm install && npm test    # 19 tests in workerd
+node tools/same_metrics.mjs OLD_DIR              # metrics identical to an older build
 npx tsc --noEmit
 node tools/measure.mjs     # Node figures
 npx vitest run test/measure.test.ts --reporter=verbose    # workerd figures (printed as MEASURE …)
@@ -56,6 +58,22 @@ npx vitest run test/measure.test.ts --reporter=verbose    # workerd figures (pri
   `reset()` does the same on purpose, to give memory back.
 - **Label objects are safe.** Labels are defined with `Object.defineProperty`, so a label
   named `__proto__` is an ordinary own property.
+- **`encodeSpans(batches)`, `encodeLogs(batches)`** (ABI 3, 2026-11-19, stage 2 of traces and
+  logs) → `EncodedSignalFile[]` (`contracts/engine.ts`): `viz_storage::encode_spans` /
+  `encode_logs` behind the same request layout as `viz_encode_segment`. A result file carries a
+  table byte (2 spans, 3 trace_index, 4 logs), an hour byte (0–23 for spans, 255 otherwise) and
+  its bounds in NANOSECONDS; the binding keeps those as decimal strings (`minNs`, `maxNs`) and
+  gives the ledger's `minTs`/`maxTs` as their floor in milliseconds, computed with BigInt. A
+  batch of another signal is an `EngineError` naming it; `mergeFiles` still knows the metric
+  tables only. The metric operations are unchanged.
+- **`mergeSignalFiles(table, files)`** (ABI 4, 2026-11-19; compaction of spans, trace_index and
+  logs, design/DECISIONS.md D68) → one `EncodedSignalFile`: `viz_storage::merge_signal_files_chunked`
+  over inputs read in place from the request, lowest precedence first. The result's header is an
+  ABI 3 signal file's; the file itself stays where the writer wrote it, in chunks of at most 1 MiB,
+  which the binding copies into one `Uint8Array` and releases one by one, so the module never
+  holds the file twice (a joined buffer cost 16 MB more at the step budget). A `logs` output
+  carries its token filter (`contracts/LOGS.md` §6). Errors (no input, another table's file, two
+  partitions, unsorted input) are `EngineError`s; a metric table name is a `RangeError`.
 - **Loads in workerd** as an imported module (`import wasm from './viz_engine.wasm'`),
   instantiated synchronously and lazily. The module has **no imports**.
 
@@ -78,6 +96,9 @@ It did not "clearly pay for itself", so it was not used. Not measured: the size 
 of a wasm-bindgen build of the same thing.
 
 ## What is not implemented
+
+- **Reading spans and logs**: the read path's engine is `engine/wasm-query`, not this module.
+  (Compaction of spans and logs is built: ABI 4, `mergeSignalFiles`, D68.)
 
 - **`queryRange`, `queryInstant`, `selectors`.** They throw
   `engine: <name> is not built yet (the PromQL crate is not linked into this module)`.
@@ -128,7 +149,74 @@ Workload: 8 batches of 1,048,552 bytes each (2,000 series, 336,608 rows in total
 These are local numbers, not Cloudflare numbers; the spread is this machine's noise.
 The SIMD build was not compared with a non-SIMD build here.
 
+### ABI 3: span and log encoders (2026-11-19)
+
+- `cargo test -j 2`: **6 passed** (2 new): `spans_and_logs_through_the_abi_equal_the_library`
+  (two span batches with a rewritten span, across an hour and a day: 3 spans files then 2
+  trace_index files, every field and byte equal to `viz_storage::encode_spans`; a log batch
+  across midnight with a repeated row: 2 files, equal to `encode_logs`) and
+  `a_batch_of_another_signal_is_an_error_not_a_trap` (a log batch to the span encoder, a metric
+  batch after a span batch, a span batch to the log and metric encoders: errors naming the
+  batch; every prefix of a request an error; an empty request no files).
+- `npm test`: **18 passed** (4 new in `test/signal.test.ts`, the export list in
+  `engine.test.ts` updated): files read back with **hyparquet** (no code shared with viz): spans
+  by hour then trace_index by day, the later row winning, a span's child in the next hour,
+  `trace_index` counts, errors, root names and hours; `minTs`/`maxTs` the floor of `minNs`/`maxNs`
+  (a time with 123 ns past the millisecond); logs by day with rows equal on the row key as one;
+  errors keep the instance; output deterministic across instances. `tsc --noEmit` clean.
+- **Metrics byte for byte**: `node tools/same_metrics.mjs` against the ABI 2 build of this
+  directory (HEAD before the change, its binding and module): 21 of 21 comparisons equal
+  (8 × 1 MiB batches and a scrape batch with duplicates, a staleness marker and a NaN payload:
+  every file's bytes, table, day, rows, times and fragment; merges of both tables; select of
+  everything, one metric and a regex, value bits compared).
+- **Size**: 2,897,948 bytes raw, 861,430 bytes `gzip -9` (`./build.sh`), against 2,554,221 and
+  763,800 for ABI 2 (the build before, same flags): the span and log encoders add 344 KB raw, 98 KB gzip.
+
+### ABI 4: merges of spans, trace_index and logs (2026-11-19)
+
+- `cargo test -j 2`: **7 passed** (1 new): `signal_merges_through_the_abi_equal_the_library`
+  (two units of spans, their trace_index files and two log files with a repeated row: every
+  field and byte, joined from the chunks, equal to `viz_storage::merge_signal_files`; rows 3, 3, 3;
+  the logs output's fragment has `tok`; every prefix of a request, a metric table byte, a logs
+  file passed as spans, no input and two days are errors, never traps).
+- `npm test`: **19 passed** (1 new in `test/signal.test.ts`, the export lists updated): a spans
+  hour, a trace_index day and a logs day merged through the binding and read back with
+  **hyparquet**: the later span wins, trace 1's fragments become one row with the later root,
+  a file merged with itself is its rows once, `VZT1` at the fragment's `tok`; errors keep the
+  instance. `tsc --noEmit` clean.
+- **Metrics byte for byte**: `node tools/same_metrics.mjs` against the ABI 3 build (the module
+  and binding of HEAD before the change, copied to a scratch directory): **21 of 21** equal.
+- **Memory at the step budget** (`tools/measure_signal_merge.mjs`, flush files written by
+  `engine/storage`'s `otel_bench merge`, a fresh instance per merge so the figure is that merge's
+  peak; Node 22, this machine at load average 4 to 7; local, not Cloudflare):
+
+  | Table | Inputs | Input MB | Rows out | Output MB | Peak WASM MB | ms |
+  |---|---|---|---|---|---|---|
+  | spans | 8 | 15.4 | 177,860 | 15.8 | **61.6** | 3,987 |
+  | trace_index | 8 | 0.9 | 16,672 | 0.8 | 20.8 | 229 |
+  | logs | 8 | 11.1 | 200,000 | 15.2 | 62.3 | 1,758 |
+  | logs | 8 | 15.9 | 288,000 | 22.3 | **80.8** | 2,398 |
+  | trace_index | 8 | 1.2 | 24,000 | 1.2 | 21.9 | 435 |
+
+  How it got there (the same 8 spans inputs): 193 MB with 16 MiB output row groups decoded whole
+  and a contiguous output (one 1.9 MB input alone took 87 MB); 90 MB with 4 MiB groups, streamed
+  inputs, interned span entries and a chunked output joined in the module; 75 MB once the module
+  stopped joining it; 62 MB with 2 MiB groups. Logs at 16 MB: 95 → 91 (token builder of about 12
+  bytes a token) → 85 (the filter written into the file in pieces) → 81 (2 MiB groups). The
+  isolate also holds the inputs as fetched and the copied-out output on the JS side: about
+  62 + 16 + 16 MB for spans and 81 + 16 + 22 MB for logs at the budget (modelled), against
+  70 + 16 + 16 for metrics.
+- **Size**: 3,205,423 bytes raw, 927,821 bytes `gzip -9`, against 2,897,948 and 861,430 for ABI 3:
+  the merges and the token filter add 307 KB raw, 66 KB gzip.
+
 ## Known risks
+
+- **The largest logs merge is close to the isolate's 128 MB** with the JS side counted (about
+  119 MB modelled at 16 MB of input whose lines carry unique ids, so the token filter adds a
+  quarter to the output). Streaming the output to JS during the merge (an import) would take the
+  output out of the WASM peak; not built.
+- **Span and log segments in WASM memory.** `encodeSpans` holds the decoded segment and its
+  output, like `encodeSegment`; measured in flush/README.md ("Spans and logs").
 
 - **Memory is the caller's to bound.** Encode peaks at about 3.2 × the batch bytes
   (26.6 MB for 8.4 MB), select at about 68 × the Parquet bytes when it returns every

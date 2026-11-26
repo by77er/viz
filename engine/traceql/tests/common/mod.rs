@@ -277,7 +277,7 @@ pub fn dataset(seed: u64, o: &Opts) -> Vec<Trace> {
                 status_message: if status == Status::Error && r.chance(0.5) { "boom".into() } else { String::new() },
                 start_unix_nano: start,
                 end_unix_nano: start + dur,
-                resource,
+                resource: resource.into(),
                 attrs,
                 scope_name: sn.to_string(),
                 scope_version: sv.to_string(),

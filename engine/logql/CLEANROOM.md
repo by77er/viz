@@ -113,6 +113,17 @@ Loki was not run in this follow-up (the Loki harness was not rebuilt). Loki's th
 were fetched again by `tools/oracle/fetch.sh` into the git-ignored `testdata/loki-oracle/` and
 used as before, as an accept/reject and expected-output oracle. No git command was run.
 
+### Follow-up of 2026-11-19: regex group names (PR #4 review nit)
+
+Matchers, line filters, `label_replace` and the `regexp` stage now treat group names as
+`engine/goregex` does (sources in its `CLEANROOM.md`: Go's documentation, Go 1.24.7 and Tempo
+v3.1.1 as black boxes). No Loki source was read and Loki was not run. How Loki's `regexp`
+stage treats a name such as `1` or a repeated name was not observed; general knowledge of it
+was not used either: viz answers `Unsupported` for those names in the `regexp` stage and in
+`label_replace`, rather than guess. Loki's three test files were fetched by
+`tools/oracle/fetch.sh` into a scratch copy of this crate (not into the tree) for the
+conformance comparison, used as before, and deleted with the copy.
+
 ## Statement
 
 I followed the rules above. I did not read Loki's implementation source. Where this crate

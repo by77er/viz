@@ -32,7 +32,7 @@ fn span(id: u8, parent: Option<u8>, name: &str, svc: Option<&str>, kind: Kind, s
         status,
         start_unix_nano: S + start_ms * MS,
         end_unix_nano: S + (start_ms + dur_ms) * MS,
-        resource: res(svc),
+        resource: res(svc).into(),
         attrs,
         scope_name: "lib".into(),
         scope_version: "1.0".into(),

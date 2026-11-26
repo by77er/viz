@@ -34,6 +34,24 @@ Go's parser rule for nested counts was first recalled from general knowledge of 
 implements it; it was then established only from Go's documentation sentence above and the
 black-box results listed, which are what the code and `tests/go_rules.rs` follow.
 
+### Follow-up of 2026-11-19: group names and re-wrapping (PR #4 review nits)
+
+Same rules, same engineer. No Tempo, Loki or Go implementation source was read.
+
+| Source | Used for |
+|---|---|
+| https://pkg.go.dev/regexp/syntax (the page documents go1.27.4) and `go doc -all regexp/syntax` (Go 1.24.7, local) | `(?P<name>re)` and `(?<name>re)` are "named & numbered capturing group"; the error code `invalid named capture`. Neither says which names are valid or whether one may start with a digit |
+| `go doc regexp.Regexp.SubexpIndex` and `SubexpNames` (local) | "multiple subexpressions can be written using the same name, as in `(?P<bob>a+)(?P<bob>b+)`" |
+| Go 1.24.7's `regexp`, run as a black box (a scratch program printing `Compile`'s error or `SubexpNames` for 58 patterns, not committed) | a name is one or more of `[A-Za-z0-9_]`: `1`, `0`, `123`, `1a`, `01`, `_` are accepted; `é`, `١`, `a.b`, `a b`, `a-b`, `a[0]` and the empty name are refused; a repeated name is accepted; `(?<=a)` and `(?<!a)` are refused as `invalid named capture` (not as Perl syntax); a pattern ending in `(?P<` or `(?<` is refused as Perl syntax; the wording of each refusal; and the answers of four nested re-wrap patterns (three of them, `(?:a*(?i)*)*(?i)*` among them, are in `tests/go_rules.rs`) |
+| `tools/godiff` (Go 1.24.7, standard library), extended to compare group names with `SubexpNames` | 100,000 generated patterns, with group-name tokens (README, Verification) |
+| `engine/traceql/testdata/regex_dialect.json` (Tempo v3.1.1's recorded answers, no Tempo code) | Tempo accepts `(?P<1>a)` and `(?P<a>x)(?P<a>y)` and refuses `(?P<é>a)` and `(?P<a.b>x)` |
+
+The review note said a name that starts with a digit is an error in Go; the documentation does
+not say so and both black boxes accept it, so the rule followed is the observed one. That Go
+accepts `[A-Za-z0-9_]+`, a leading digit included, was also recalled from general knowledge of
+Go before the probes; as with nested counts above, the rule was established only from the
+black-box results listed, which are what the code and `tests/go_rules.rs` follow.
+
 ## Statement
 
 I followed the rules above: I did not read Tempo's, Loki's or Go's implementation source in

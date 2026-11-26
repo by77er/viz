@@ -18,8 +18,12 @@
 //!   and other unknown escapes, a single-digit octal (`\1`, a back-reference), stacked
 //!   repetitions (`a**`, `x{2}{3}`, `x*??`), counts above 1000 including nested counts whose
 //!   product exceeds 1000 (`(?:a{10}){101}`), an invalid POSIX class name, `\Q` or `\b` inside a
-//!   class, a range ending in a class (`[a-\d]`), and unbalanced parentheses (which must not
+//!   class, a range ending in a class (`[a-\d]`), a group name outside `[A-Za-z0-9_]+`
+//!   (`(?P<a.b>x)`, `(?P<é>x)`, lookbehind `(?<=a)`), and unbalanced parentheses (which must not
 //!   become valid when a caller wraps the pattern in an anchoring group).
+//! - Group names Go accepts and Rust does not (a name that starts with a digit, `(?P<1>x)`, or a
+//!   name used twice) are accepted: without names they become plain groups; a caller that keeps
+//!   names gets [`Error::Unsupported`] for them, because Rust cannot hold them.
 //! - Unicode classes (`\pL`, `\p{Greek}`, `\P…`) are not translated: Go and Rust differ in the
 //!   names they accept and in what a script name means (Rust's `\p{Greek}` is the Script
 //!   Extensions property), so [`Error::Unsupported`] is returned rather than a different match.
@@ -63,7 +67,9 @@ pub const MAX_REPEAT: u32 = 1000;
 /// How often one atom may be wrapped to repeat it again (`a*(?i)*(?i)*…`): each wrap nests it a
 /// level deeper, and Go refuses nesting deeper than about 1000 (observed: 999 stacked stars
 /// accepted, 1000 refused). The `regex` crate's nesting limit refuses such patterns far
-/// earlier; this bounds the translator's own work (each wrap moves the atom's text).
+/// earlier. A wrap costs the translator constant work whatever the atom's length: the `(?:`
+/// that opens it is recorded (`Open`), not inserted, and written when the output is assembled
+/// (`Translator::assemble`).
 const MAX_WRAPS: u32 = 1000;
 
 const DIGIT: &str = "0-9";
@@ -77,9 +83,12 @@ const NOTHING: &str = "[^\\x{0}-\\x{10FFFF}]";
 
 /// Translates a Go regular expression into Rust `regex` syntax with the same meaning.
 ///
-/// With `names`, named groups keep their names (`(?P<n>…)`; Go's `(?<n>…)` too); without, every
-/// group is a plain capture, which suits callers that only match (Go accepts names Rust does
-/// not, such as `1` or a repeated name).
+/// Go accepts a group name of one or more of `[A-Za-z0-9_]`, including one that starts with a
+/// digit (`(?P<1>x)`) and one used twice (`(?P<a>x)(?P<a>y)`); anything else is refused. With
+/// `names`, named groups keep their names (`(?P<n>…)`; Go's `(?<n>…)` too), and a name Rust
+/// cannot hold (one that starts with a digit, or a repeat) is [`Error::Unsupported`]. Without,
+/// every group is a plain capture and every name Go accepts is accepted, which suits callers
+/// that only match.
 pub fn translate(p: &str, names: bool) -> Result<String, Error> {
     Translator::new(p, names).run()
 }
@@ -133,19 +142,21 @@ pub fn compile(p: &str, wrap: Wrap, names: bool, limits: &Limits) -> Result<Rege
         })
 }
 
-/// Fully anchored, `.` matching a newline, as label matchers are (`^(?s:re)$`); names kept;
-/// default limits. (LogQL's matchers and label filters.)
+/// Fully anchored, `.` matching a newline, as label matchers are (`^(?s:re)$`); for matching
+/// only: names are dropped, so every name Go accepts is accepted (`(?P<1>x)`); default limits.
+/// (LogQL's matchers and label filters.)
 pub fn compile_anchored(p: &str) -> Result<Regex, String> {
-    Ok(compile(p, Wrap::Anchored, true, &Limits::default())?)
+    Ok(compile(p, Wrap::Anchored, false, &Limits::default())?)
 }
 
-/// Unanchored, as line filters and template functions use them; with `dot_nl`, `.` matches a
-/// newline too. Names kept; default limits.
+/// Unanchored, as line filters use them; with `dot_nl`, `.` matches a newline too. For matching
+/// only: names are dropped, as in [`compile_anchored`]; default limits.
 pub fn compile_unanchored(p: &str, dot_nl: bool) -> Result<Regex, String> {
-    Ok(compile(p, if dot_nl { Wrap::DotNl } else { Wrap::Plain }, true, &Limits::default())?)
+    Ok(compile(p, if dot_nl { Wrap::DotNl } else { Wrap::Plain }, false, &Limits::default())?)
 }
 
-/// Unanchored with Go's default flags, names kept (LogQL's `regexp` parser and templates).
+/// Unanchored with Go's default flags, names kept (LogQL's `regexp` parser and templates): a name
+/// Rust cannot hold is refused ([`translate`]).
 pub fn compile_plain(p: &str) -> Result<Regex, String> {
     Ok(compile(p, Wrap::Plain, true, &Limits::default())?)
 }
@@ -162,6 +173,10 @@ struct Atom {
     assertion: bool,
     /// Times it has been wrapped in a group to be repeated again.
     wraps: u32,
+    /// The re-wrap record its own record follows in offset order: the last record when the atom
+    /// began (records made inside a group come after it), and its own record once wrapped.
+    after: usize,
+    open: usize,
 }
 
 /// An open group.
@@ -169,7 +184,22 @@ struct Frame {
     start: usize,
     /// Largest `Atom::product` among the group's finished atoms, all branches.
     product: u32,
+    /// The last re-wrap record when the group began (`Atom::after` of the group).
+    after: usize,
 }
+
+/// `n` copies of `(?:` to write at byte `at` of the output, where an atom was re-wrapped to be
+/// repeated again (`a*(?i)*`). Records are linked in offset order from record 0 (`next`): an
+/// atom's record goes after the last record made before the atom began, which is before every
+/// record made inside it. So the output is assembled in one pass with no sort and no insert.
+struct Open {
+    at: usize,
+    n: u32,
+    next: usize,
+}
+
+/// No record: the end of the list, or an atom not wrapped yet.
+const NONE: usize = usize::MAX;
 
 struct Translator<'a> {
     src: &'a str,
@@ -188,6 +218,16 @@ struct Translator<'a> {
     /// Position of the next `:]` at or after `posix_from` (a monotone search: linear time).
     posix_from: usize,
     posix_next: Option<usize>,
+    /// Where a repetition re-wrapped an atom, recorded rather than inserted so that every offset
+    /// stays valid and a wrap costs constant work; [`Translator::assemble`] writes them at the
+    /// end. Record 0 heads the list; `last_open` has the largest offset so far.
+    opens: Vec<Open>,
+    last_open: usize,
+    /// With `names`: the names kept, and why the first one Rust cannot hold (a leading digit, or a
+    /// repeat) cannot be kept. Reported once the pattern is known to be valid in Go
+    /// (`names_held`), so that Go's refusal of a later error comes first.
+    kept: std::collections::BTreeSet<String>,
+    unholdable: Option<String>,
 }
 
 fn invalid(msg: impl Into<String>) -> Error {
@@ -202,12 +242,16 @@ impl<'a> Translator<'a> {
             i: 0,
             out: String::with_capacity(src.len() + 16),
             names,
-            frames: vec![Frame { start: 0, product: 0 }],
+            frames: vec![Frame { start: 0, product: 0, after: 0 }],
             last: None,
             just_repeated: false,
             pending_flags: String::new(),
             posix_from: 0,
             posix_next: None,
+            opens: vec![Open { at: 0, n: 0, next: NONE }],
+            last_open: 0,
+            kept: std::collections::BTreeSet::new(),
+            unholdable: None,
         }
     }
 
@@ -262,7 +306,39 @@ impl<'a> Translator<'a> {
         if self.frames.len() > 1 {
             return Err(invalid(format!("missing closing ): `{}`", self.src)));
         }
-        Ok(self.out)
+        self.names_held()?;
+        Ok(self.assemble())
+    }
+
+    /// With `names`, after a pattern Go accepts: Unsupported if a name cannot be kept in Rust
+    /// (one that starts with a digit, or one used twice).
+    fn names_held(&self) -> Result<(), Error> {
+        match &self.unholdable {
+            Some(why) => Err(Error::Unsupported(format!("{why} is valid in Go but cannot be kept as a group name"))),
+            None => Ok(()),
+        }
+    }
+
+    /// The output with every recorded `(?:` written at its offset: one pass along the list of
+    /// records, which is in offset order, linear in the output.
+    fn assemble(self) -> String {
+        if self.opens.len() == 1 {
+            return self.out;
+        }
+        let extra: usize = self.opens.iter().map(|o| 3 * o.n as usize).sum();
+        let mut s = String::with_capacity(self.out.len() + extra);
+        let (mut from, mut id) = (0, self.opens[0].next);
+        while id != NONE {
+            let o = &self.opens[id];
+            s.push_str(&self.out[from..o.at]);
+            for _ in 0..o.n {
+                s.push_str("(?:");
+            }
+            from = o.at;
+            id = o.next;
+        }
+        s.push_str(&self.out[from..]);
+        s
     }
 
     fn flush_flags(&mut self) {
@@ -285,7 +361,7 @@ impl<'a> Translator<'a> {
         self.finish_atom();
         let start = self.out.len();
         self.out.push_str(text);
-        self.last = Some(Atom { start, product: 1, repeated: false, assertion, wraps: 0 });
+        self.last = Some(Atom { start, product: 1, repeated: false, assertion, wraps: 0, after: self.last_open, open: NONE });
         self.just_repeated = false;
     }
 
@@ -337,7 +413,19 @@ impl<'a> Translator<'a> {
                 return Err(invalid(format!("expression nests too deeply: `{}`", self.src)));
             }
             a.wraps += 1;
-            self.out.insert_str(a.start, "(?:");
+            // The `(?:` goes before the atom: recorded, not inserted (`assemble`), since an
+            // insert here would move the atom's text once per wrap.
+            if a.open == NONE {
+                let id = self.opens.len();
+                self.opens.push(Open { at: a.start, n: 1, next: self.opens[a.after].next });
+                self.opens[a.after].next = id;
+                if self.last_open == a.after {
+                    self.last_open = id;
+                }
+                a.open = id;
+            } else {
+                self.opens[a.open].n += 1;
+            }
             self.out.push(')');
         }
         self.out.push_str(&op);
@@ -396,7 +484,7 @@ impl<'a> Translator<'a> {
         self.finish_atom();
         let start = self.out.len();
         self.out.push_str(text);
-        self.frames.push(Frame { start, product: 0 });
+        self.frames.push(Frame { start, product: 0, after: self.last_open });
         self.just_repeated = false;
     }
 
@@ -407,14 +495,20 @@ impl<'a> Translator<'a> {
             self.i += 1;
             return Ok(());
         }
+        // `(?P<` and `(?<` start a named group when anything follows the `<` (Go reports a
+        // pattern that ends there as Perl syntax, and reads `(?<=` and `(?<!` as a group whose
+        // name is invalid: observed, Go 1.24).
         match self.cs.get(i + 2) {
-            Some('P') if self.cs.get(i + 3) == Some(&'<') => self.named(i + 4),
-            Some('<') if !matches!(self.cs.get(i + 3), Some('=' | '!')) => self.named(i + 3),
+            Some('P') if self.cs.get(i + 3) == Some(&'<') && i + 4 < self.cs.len() => self.named(i + 4),
+            Some('<') if i + 3 < self.cs.len() => self.named(i + 3),
             _ => self.flags(i + 2),
         }
     }
 
-    /// A named group whose name starts at `from`.
+    /// A named group whose name starts at `from` and runs to the next `>`. Go accepts a name of
+    /// one or more of `[A-Za-z0-9_]`, a leading digit and a repeated name included (observed, Go
+    /// 1.24.7, and Tempo v3.1.1; Go's documentation does not say). Rust refuses a leading digit
+    /// and a repeat, so with `names` those are Unsupported; without, every group is plain.
     fn named(&mut self, from: usize) -> Result<(), Error> {
         let mut k = from;
         while let Some(&c) = self.cs.get(k) {
@@ -427,7 +521,20 @@ impl<'a> Translator<'a> {
         if k >= self.cs.len() || name.is_empty() || !name.chars().all(|c| c == '_' || c.is_ascii_alphanumeric()) {
             return Err(invalid(format!("invalid named capture: `{}`", self.text(self.i, k + 1))));
         }
-        let text = if self.names { format!("(?P<{name}>") } else { "(".to_string() };
+        let text = if self.names {
+            if self.unholdable.is_none() {
+                if name.starts_with(|c: char| c.is_ascii_digit()) {
+                    self.unholdable = Some(format!("the name in `{}`, which starts with a digit,", self.text(self.i, k + 1)));
+                } else if self.kept.contains(&name) {
+                    self.unholdable = Some(format!("`{name}`, a name used twice,"));
+                }
+            }
+            let text = format!("(?P<{name}>");
+            self.kept.insert(name);
+            text
+        } else {
+            "(".to_string()
+        };
         self.begin_group(&text);
         self.i = k + 1;
         Ok(())
@@ -489,7 +596,7 @@ impl<'a> Translator<'a> {
         self.finish_atom();
         let f = self.frames.pop().expect("an open group");
         self.out.push(')');
-        self.last = Some(Atom { start: f.start, product: f.product.max(1), repeated: false, assertion: false, wraps: 0 });
+        self.last = Some(Atom { start: f.start, product: f.product.max(1), repeated: false, assertion: false, wraps: 0, after: f.after, open: NONE });
         self.just_repeated = false;
         self.i += 1;
         Ok(())
@@ -782,5 +889,25 @@ mod tests {
         let r = compile(r"(?P<1>x)(?P<a>y)(?P<a>z)", Wrap::Anchored, false, &Limits::default()).unwrap();
         assert_eq!(r.capture_names().flatten().count(), 0);
         assert!(r.is_match("xyz"));
+        // The matching-only forms drop names, so they accept every name Go accepts.
+        assert!(compile_anchored("(?P<1>x)(?P<a>y)(?P<a>z)").unwrap().is_match("xyz"));
+        assert!(compile_unanchored("(?P<1>x)|(?<1>y)", false).unwrap().is_match("y"));
+        // Keeping names, a name Rust cannot hold is Unsupported, not Rust's refusal.
+        for p in ["(?P<1>x)", "(?<9a>x)", "(?P<a>x)(?P<a>y)", "(?P<a>x)|(?<a>y)", "(?P<_>x)(?P<_>y)"] {
+            assert!(matches!(translate(p, true), Err(Error::Unsupported(_))), "{p:?}");
+        }
+        // Every other name Go accepts is kept.
+        let r = compile(r"(?P<_>x)(?P<a1>y)(?<x9_Z>z)(?P<K>w)", Wrap::Plain, true, &Limits::default()).unwrap();
+        assert_eq!(r.capture_names().flatten().collect::<Vec<_>>(), vec!["_", "a1", "x9_Z", "K"]);
+    }
+
+    #[test]
+    fn rewraps_are_assembled_in_place() {
+        // A repetition after an empty construct wraps the atom before it; the `(?:` is written
+        // where the atom starts, inner atoms (recorded first) before their group.
+        assert_eq!(translate("a*(?i)*", false).unwrap(), "(?:a*)*(?i)");
+        assert_eq!(translate("a*(?)*(?)*", false).unwrap(), "(?:(?:a*)*)*");
+        assert_eq!(translate("x(?:a*(?i)*)*(?i)*", false).unwrap(), "x(?:(?:(?:a*)*(?i))*)*(?i)");
+        assert_eq!(translate("^*$*", false).unwrap(), "(?:^)*(?:$)*");
     }
 }
