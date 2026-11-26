@@ -1,5 +1,5 @@
 import { TENANT_ID } from '../../contracts/ledger'
-import { type PoolMap, shardName } from '../../shard/src/pool'
+import { type PoolMap, enabledSignals, shardName, signalPool } from '../../shard/src/pool'
 import { type FlushMessage, PENDING_MARKER_PREFIX, type Shard } from '../../shard/src/shard'
 import { FLUSH_MESSAGE_VERSION, type VersionedFlushMessage } from './consumer'
 
@@ -18,9 +18,13 @@ import { FLUSH_MESSAGE_VERSION, type VersionedFlushMessage } from './consumer'
  * (review R-7).
  *
  * `full: true` is the operator's variant for when a marker itself may be missing: it asks
- * EVERY shard named by a pool map in KV (`pool:<tenant>`) and by `DEFAULT_POOL`. That wakes
- * idle shards, so the cron does not use it. Its limit: a shard that only an older version
- * of a map named (the pool was renamed or its slot count reduced) is not found.
+ * EVERY shard named by a pool map in KV (`pool:<tenant>`) and by `DEFAULT_POOL`, and the shards
+ * of the derived pools `{pool}/traces` and `{pool}/logs` (contracts/BATCH.md, "Streams per
+ * signal") for each signal `INGEST_SIGNALS` enables. That wakes idle shards, so the cron does
+ * not use it. Its limits: a shard that only an older version of a map named (the pool was
+ * renamed or its slot count reduced) is not found, nor a derived pool's shard once its signal
+ * is no longer enabled. The cron's sweep finds every shard by its marker, derived pools
+ * included (a shard of `{pool}/traces` writes `flush-pending:{pool}/traces/{slot}`).
  */
 
 export interface SweepEnv {
@@ -28,6 +32,8 @@ export interface SweepEnv {
   CONFIG: KVNamespace
   FLUSH_QUEUE: Queue<FlushMessage>
   DEFAULT_POOL?: string
+  /** The signals edge appends besides metrics (edge/src/index.ts): their derived pools are swept by `full`. */
+  INGEST_SIGNALS?: string
 }
 
 /**
@@ -82,21 +88,23 @@ async function listKeys(kv: KVNamespace, prefix: string): Promise<string[]> {
   return out
 }
 
-function slotsOf(raw: string | null | undefined): string[] {
+function slotsOf(raw: string | null | undefined, signals: readonly ('traces' | 'logs')[]): string[] {
   if (!raw) return []
   try {
     const m = JSON.parse(raw) as PoolMap
     if (typeof m.pool !== 'string' || !Number.isInteger(m.slots) || m.slots < 1 || m.slots > 4096) return []
-    return Array.from({ length: m.slots }, (_, slot) => shardName(m, slot))
+    const maps = [m, ...signals.map((s) => signalPool(m, s)).filter((x): x is PoolMap => x !== null)]
+    return maps.flatMap((p) => Array.from({ length: p.slots }, (_, slot) => shardName(p, slot)))
   } catch {
     return []
   }
 }
 
-/** Every shard named by a pool map this deployment can see. */
-export async function shardsFromPoolMaps(env: Pick<SweepEnv, 'CONFIG' | 'DEFAULT_POOL'>): Promise<string[]> {
-  const names = new Set<string>(slotsOf(env.DEFAULT_POOL))
-  for (const key of await listKeys(env.CONFIG, 'pool:')) for (const n of slotsOf(await env.CONFIG.get(key))) names.add(n)
+/** Every shard named by a pool map this deployment can see, with its derived pools' for the enabled signals. */
+export async function shardsFromPoolMaps(env: Pick<SweepEnv, 'CONFIG' | 'DEFAULT_POOL' | 'INGEST_SIGNALS'>): Promise<string[]> {
+  const signals = enabledSignals(env.INGEST_SIGNALS)
+  const names = new Set<string>(slotsOf(env.DEFAULT_POOL, signals))
+  for (const key of await listKeys(env.CONFIG, 'pool:')) for (const n of slotsOf(await env.CONFIG.get(key), signals)) names.add(n)
   return [...names].sort()
 }
 

@@ -1,5 +1,5 @@
-import type { EncodedFile, Engine } from '../../contracts/engine'
-import { TENANT_ID, type FileEntry, type LiveFile, type Plan, type Table } from '../../contracts/ledger'
+import type { EncodedFile, EncodedSignalFile, Engine, SignalMergeEngine } from '../../contracts/engine'
+import { TENANT_ID, dataKeyPrefix, type FileEntry, type LedgerTable, type LiveFile, type Plan, type SignalTable, type Table } from '../../contracts/ledger'
 import { putFile } from '../../flush/src/flush'
 import { hex } from '../../flush/src/keys'
 import type { Ledger } from '../../ledger/src/ledger'
@@ -53,6 +53,14 @@ import type { Ledger } from '../../ledger/src/ledger'
  * The level-1 files are clustered by hour, not hour-pure: a pair's bucket is the hour of its
  * newest row, and late rows travel with it. Time pruning uses each file's own range.
  *
+ * Spans and logs (contracts/TRACES.md and LOGS.md, "Compaction"): when the metric tables have
+ * nothing to merge, the step looks at `spans`, `trace_index` and `logs` in turn, each table on
+ * its own (a unit is one file; nothing pairs them), with the same policy, budget, keys, inputs
+ * record and `replace`. `spans` files are hour-pure and stay so: a span merge takes files of one
+ * hour, and a closed day's spans become one level-2 file per hour. `trace_index` and `logs`
+ * merge per day as metrics do. The engine merges them (`mergeSignalFiles`, engine/wasm ABI 4);
+ * an engine without it compacts metrics only.
+ *
  * Precedence (contracts/ledger.ts `LiveFile`): when two files hold the same (series, ts),
  * the one with the higher precedence wins. Inputs are merged in ascending precedence, so the
  * output keeps every row's latest write, and the output covers its inputs' range. A group is
@@ -99,18 +107,30 @@ export const DEFAULT_POLICY: CompactPolicy = {
 const DAY_MS = 86_400_000
 const HOUR_MS = 3_600_000
 
-/** A samples file and the series file written with it. They enter and leave the ledger together. */
-export interface Pair {
-  samples: LiveFile
-  series: LiveFile
+/**
+ * What a merge takes or leaves whole: files that enter and leave the ledger together. A metric
+ * pair (two files), or one span, trace_index or log file.
+ */
+export interface Unit {
+  files: LiveFile[]
+  /** The key that orders units of equal precedence (a pair's samples key). */
+  key: string
   day: string
   level: number
   bytes: number
   minTs: number
   maxTs: number
-  /** The samples file's precedence range (the series file's is the same version range: contracts/ledger.ts `LiveFile`). */
+  /** The precedence range (a pair's files share one: contracts/ledger.ts `LiveFile`). */
   precedenceLow: number
   precedence: number
+  /** `spans` only: the hour partition (0 to 23) the file lies in. A merge never crosses it. */
+  hour?: number
+}
+
+/** A samples file and the series file written with it. They enter and leave the ledger together. */
+export interface Pair extends Unit {
+  samples: LiveFile
+  series: LiveFile
 }
 
 /** A live file a merge must not jump over in precedence, if it overlaps the merge in time. */
@@ -124,29 +144,29 @@ export interface Span {
 }
 
 const spanOf = (f: LiveFile): Span => ({ key: f.key, day: f.day, minTs: f.minTs, maxTs: f.maxTs, precedenceLow: f.precedenceLow, precedence: f.precedence })
-export const byPrecedence = (a: Pair, b: Pair): number => a.precedence - b.precedence || (a.samples.key < b.samples.key ? -1 : a.samples.key > b.samples.key ? 1 : 0)
+export const byPrecedence = (a: Unit, b: Unit): number => a.precedence - b.precedence || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)
 
 /**
  * Would merging `group` put its precedence range across a file outside it that could hold
  * the same rows (same day, overlapping time range)? Then an older row of the group would
  * beat that file's newer one. `universe` is every live file of the day.
  */
-export function jumpsOver(group: Pair[], universe: Span[]): string[] {
+export function jumpsOver(group: Unit[], universe: Span[]): string[] {
   const lo = Math.min(...group.map((p) => p.minTs))
   const hi = Math.max(...group.map((p) => p.maxTs))
   const plo = Math.min(...group.map((p) => p.precedenceLow))
   const phi = Math.max(...group.map((p) => p.precedence))
-  const inside = new Set(group.flatMap((p) => [p.samples.key, p.series.key]))
+  const inside = new Set(group.flatMap((p) => p.files.map((f) => f.key)))
   return universe.filter((o) => !inside.has(o.key) && o.maxTs >= lo && o.minTs <= hi && o.precedence >= plo && o.precedenceLow <= phi).map((o) => o.key)
 }
 
-export interface Job {
+export interface Job<T extends Unit = Pair> {
   day: string
   /** Level of the output. */
   level: 1 | 2
-  /** For level 1: the UTC hour (0–23) of the bucket. */
+  /** For level 1: the UTC hour (0–23) of the bucket. For `spans`, at both levels: the hour partition. */
   hour?: number
-  inputs: Pair[]
+  inputs: T[]
   why: 'closed_day' | 'l0_count' | 'l0_age'
 }
 
@@ -170,7 +190,7 @@ export function pairFiles(samples: LiveFile[], series: LiveFile[]): { pairs: Pai
       continue
     }
     byStem.delete(stem)
-    pairs.push({ samples: s, series: r, day: s.day, level: s.level, bytes: s.bytes + r.bytes, minTs: s.minTs, maxTs: s.maxTs, precedenceLow: s.precedenceLow, precedence: s.precedence })
+    pairs.push({ samples: s, series: r, files: [s, r], key: s.key, day: s.day, level: s.level, bytes: s.bytes + r.bytes, minTs: s.minTs, maxTs: s.maxTs, precedenceLow: s.precedenceLow, precedence: s.precedence })
   }
   for (const r of byStem.values()) unpaired.push(r.key)
   return { pairs, unpaired: unpaired.sort() }
@@ -178,13 +198,22 @@ export function pairFiles(samples: LiveFile[], series: LiveFile[]): { pairs: Pai
 
 const dayStart = (day: string): number => Date.parse(`${day}T00:00:00Z`)
 
+/** The hour partition of a `spans` key (`…/day=D/hour=HH/…`), or undefined for another table's. */
+export const spanHourOf = (key: string): number | undefined => {
+  const m = /\/data\/spans\/tenant=[^/]+\/day=\d{4}-\d{2}-\d{2}\/hour=(\d\d)\//.exec(key)
+  return m ? Number(m[1]) : undefined
+}
+
+/** One file of a span or log table as a unit of the policy. */
+export const signalUnit = (f: LiveFile): Unit => ({ files: [f], key: f.key, day: f.day, level: f.level, bytes: f.bytes, minTs: f.minTs, maxTs: f.maxTs, precedenceLow: f.precedenceLow, precedence: f.precedence, ...(f.table === 'spans' ? { hour: spanHourOf(f.key) ?? Math.floor((f.minTs - dayStart(f.day)) / HOUR_MS) } : {}) })
+
 /**
  * The group a merge starting at `candidates[start]` takes: candidates in ascending
  * precedence, each added only if the group still fits the budget and still jumps over no
  * live file that overlaps it in time (`jumpsOver`). Empty if the first pair alone is over
  * the budget.
  */
-function grow(candidates: Pair[], start: number, universe: Span[], policy: CompactPolicy): Pair[] {
+function grow<T extends Unit>(candidates: T[], start: number, universe: Span[], policy: CompactPolicy): T[] {
   const first = candidates[start]!
   if (first.bytes > policy.maxInputBytes) return []
   const group = [first]
@@ -205,8 +234,8 @@ function grow(candidates: Pair[], start: number, universe: Span[], policy: Compa
  * make a job). `strays` are live files that are not in a pair: a merge must not jump over
  * them either.
  */
-export function chooseJob(pairs: Pair[], now: number, policy: CompactPolicy = DEFAULT_POLICY, strays: Span[] = []): { job: Job | null; nextDueAt: number | null } {
-  const days = new Map<string, Pair[]>()
+export function chooseJob<T extends Unit = Pair>(pairs: T[], now: number, policy: CompactPolicy = DEFAULT_POLICY, strays: Span[] = []): { job: Job<T> | null; nextDueAt: number | null } {
+  const days = new Map<string, T[]>()
   for (const p of pairs) days.set(p.day, [...(days.get(p.day) ?? []), p])
   let nextDueAt: number | null = null
   const due = (t: number) => {
@@ -215,25 +244,31 @@ export function chooseJob(pairs: Pair[], now: number, policy: CompactPolicy = DE
 
   for (const day of [...days.keys()].sort()) {
     const list = days.get(day)!.sort(byPrecedence)
-    const universe = [...list.flatMap((p) => [spanOf(p.samples), spanOf(p.series)]), ...strays.filter((x) => x.day === day)]
+    const universe = [...list.flatMap((p) => p.files.map(spanOf)), ...strays.filter((x) => x.day === day)]
     const closesAt = dayStart(day) + DAY_MS + policy.closeAfterMs
     if (now >= closesAt) {
-      // Closed day: everything below level 2, and small level-2 pairs, in precedence order.
-      const candidates = list.filter((p) => p.level < 2 || p.bytes < policy.smallL2Bytes)
-      for (let i = 0; i < candidates.length; i++) {
-        const group = grow(candidates, i, universe, policy)
-        // Worth doing if it merges something, or lifts a lower-level pair to level 2.
-        if (group.length >= 2 || (group.length === 1 && group[0]!.level < 2)) return { job: { day, level: 2, inputs: group, why: 'closed_day' }, nextDueAt: null }
+      // Closed day: everything below level 2, and small level-2 pairs, in precedence order; for
+      // `spans`, each hour partition on its own (a merge never crosses an hour).
+      const partitions = new Map<number | undefined, T[]>()
+      for (const p of list.filter((p) => p.level < 2 || p.bytes < policy.smallL2Bytes)) partitions.set(p.hour, [...(partitions.get(p.hour) ?? []), p])
+      for (const hour of [...partitions.keys()].sort((a, b) => (a ?? -1) - (b ?? -1))) {
+        const candidates = partitions.get(hour)!
+        for (let i = 0; i < candidates.length; i++) {
+          const group = grow(candidates, i, universe, policy)
+          // Worth doing if it merges something, or lifts a lower-level pair to level 2.
+          if (group.length >= 2 || (group.length === 1 && group[0]!.level < 2)) return { job: { day, level: 2, ...(hour !== undefined ? { hour } : {}), inputs: group, why: 'closed_day' }, nextDueAt: null }
+        }
       }
       continue
     }
     if (list.some((p) => p.level < 2)) due(closesAt)
 
-    // Open day: hour buckets of level 0 and 1.
-    const buckets = new Map<number, Pair[]>()
+    // Open day: hour buckets of level 0 and 1 (a `spans` file's bucket is its hour partition;
+    // a trace_index file's newest end can lie in a later day: its bucket is then hour 23).
+    const buckets = new Map<number, T[]>()
     for (const p of list) {
       if (p.level > 1) continue
-      const hour = Math.floor((p.maxTs - dayStart(day)) / HOUR_MS)
+      const hour = p.hour ?? Math.min(23, Math.floor((p.maxTs - dayStart(day)) / HOUR_MS))
       buckets.set(hour, [...(buckets.get(hour) ?? []), p])
     }
     for (const hour of [...buckets.keys()].sort((a, b) => a - b)) {
@@ -273,6 +308,8 @@ export type StepResult =
   | { status: 'error'; job: JobSummary; reason: 'invalid' | 'row_count' | 'too_slow' | 'too_many_inputs'; detail: string }
 
 export interface JobSummary {
+  /** For a merge of a span or log table: which (a metric merge names both metric tables in `inputs`). */
+  table?: SignalTable
   day: string
   level: number
   hour?: number
@@ -288,7 +325,7 @@ export interface StepOptions {
   now?: number
   /** Fault-injection points. A hook that throws stands for a crash there. */
   hooks?: {
-    afterPlan?(job: Job): void | Promise<void>
+    afterPlan?(job: Job<Unit>): void | Promise<void>
     afterPut?(outputs: FileEntry[]): void | Promise<void>
   }
 }
@@ -326,11 +363,14 @@ async function fetchAll(bucket: R2Bucket, keys: string[]): Promise<Uint8Array[]>
  * the first 16 hex characters of the SHA-256 of the input keys of BOTH tables (sorted,
  * newline-separated), the same in the samples and the series key, which is what pairs them.
  */
-export function compactedKey(p: { cell: string; table: Table; tenant: string; day: string; level: number; hour?: number; inputs16: string; sha256Hex: string }): string {
+export function compactedKey(p: { cell: string; table: LedgerTable; tenant: string; day: string; level: number; hour?: number; inputs16: string; sha256Hex: string }): string {
   if (!TENANT_ID.test(p.tenant)) throw new Error('compact: tenant id must match [A-Za-z0-9_-]{1,64}')
   if (!/^\d{4}-\d{2}-\d{2}$/.test(p.day) || !/^[0-9a-f]{16}$/.test(p.inputs16) || !/^[0-9a-f]{64}$/.test(p.sha256Hex)) throw new Error('compact: bad key part')
-  const span = p.level === 1 ? `h${String(p.hour ?? 0).padStart(2, '0')}` : 'd'
-  return `${p.cell}/data/${p.table}/tenant=${p.tenant}/day=${p.day}/L${p.level}-${span}-${p.inputs16}-${p.sha256Hex.slice(0, 8)}.parquet`
+  // `spans` (contracts/TRACES.md, "Compaction"): under its hour, named after it at both levels.
+  if (p.table === 'spans' && (p.hour === undefined || !Number.isInteger(p.hour) || p.hour < 0 || p.hour > 23)) throw new Error('compact: a spans output needs its hour')
+  const hh = String(p.hour ?? 0).padStart(2, '0')
+  const span = p.table === 'spans' || p.level === 1 ? `h${hh}` : 'd'
+  return `${dataKeyPrefix(p.cell, p.table, p.tenant, p.day, p.table === 'spans' ? p.hour : undefined)}L${p.level}-${span}-${p.inputs16}-${p.sha256Hex.slice(0, 8)}.parquet`
 }
 
 const sha256 = (bytes: Uint8Array): Promise<ArrayBuffer> => crypto.subtle.digest('SHA-256', bytes as Uint8Array<ArrayBuffer>)
@@ -362,9 +402,9 @@ export const encodeCompactionInputs = (inputs: readonly string[]): string => JSO
  * list whose hash is not the key's `inputs16`: a reader that cannot tell must keep the object.
  */
 export async function decodeCompactionInputs(key: string, meta: string | undefined): Promise<{ inputs: string[] } | { unreadable: string }> {
-  const m = /^(.+)\/data\/metric_(?:samples|series)\/tenant=([A-Za-z0-9_-]{1,64})\/day=(\d{4}-\d{2}-\d{2})\/L[1-9]\d*-(?:h\d\d|d)-([0-9a-f]{16})-[0-9a-f]{8}\.parquet$/.exec(key)
-  if (!m) return { unreadable: 'not a compaction output key' }
-  const [, cell, tenant, day, inputs16] = m
+  const m = /^(.+)\/data\/(metric_samples|metric_series|spans|trace_index|logs)\/tenant=([A-Za-z0-9_-]{1,64})\/day=(\d{4}-\d{2}-\d{2})\/(?:hour=(\d\d)\/)?L[1-9]\d*-(?:h\d\d|d)-([0-9a-f]{16})-[0-9a-f]{8}\.parquet$/.exec(key)
+  if (!m || (m[2] === 'spans') !== (m[5] !== undefined)) return { unreadable: 'not a compaction output key' }
+  const [, cell, table, tenant, day, hour, inputs16] = m
   if (meta === undefined) return { unreadable: 'no inputs recorded' }
   let rec: { v?: unknown; inputs?: unknown }
   try {
@@ -375,8 +415,12 @@ export async function decodeCompactionInputs(key: string, meta: string | undefin
   if (typeof rec !== 'object' || rec === null) return { unreadable: 'inputs record is not an object' }
   if (rec.v !== COMPACTION_INPUTS_VERSION) return { unreadable: `inputs record version ${JSON.stringify(rec.v)}; this code reads ${COMPACTION_INPUTS_VERSION}` }
   const inputs = rec.inputs
-  const prefix = (t: string) => `${cell}/data/${t}/tenant=${tenant}/day=${day}/`
-  if (!Array.isArray(inputs) || inputs.length === 0 || !inputs.every((k) => typeof k === 'string' && (k.startsWith(prefix('metric_samples')) || k.startsWith(prefix('metric_series'))))) {
+  // A metric output's inputs are of both metric tables; a span or log output's of its own table
+  // (and, for `spans`, its own hour): always this tenant and day.
+  const prefixes = table!.startsWith('metric_')
+    ? (['metric_samples', 'metric_series'] as const).map((t) => dataKeyPrefix(cell!, t, tenant!, day!))
+    : [dataKeyPrefix(cell!, table as SignalTable, tenant!, day!, hour === undefined ? undefined : Number(hour))]
+  if (!Array.isArray(inputs) || inputs.length === 0 || !inputs.every((k) => typeof k === 'string' && prefixes.some((p) => k.startsWith(p) && !k.slice(p.length).includes('/')))) {
     return { unreadable: 'inputs are not keys of this tenant and day' }
   }
   if ((await inputsHash16(inputs as string[])) !== inputs16) return { unreadable: 'inputs do not hash to the key' }
@@ -395,7 +439,19 @@ export async function compactStep(env: CompactEnv, engine: Engine, tenant: strin
   const stray = new Set(unpaired)
   const strays = [...plans.samples.files, ...plans.series.files].filter((f) => stray.has(f.key)).map(spanOf)
   const { job, nextDueAt } = chooseJob(pairs, opts.now ?? started, policy, strays)
-  if (!job) return { status: 'idle', nextDueAt, unpaired }
+  if (!job) {
+    // Nothing for the metric tables: the span and log tables, each on its own.
+    const signals = signalEngine(engine)
+    let due = nextDueAt
+    if (signals) {
+      for (const table of SIGNAL_TABLES) {
+        const r = await signalStep(env, signals, ledger, tenant, table, cell, policy, started, opts)
+        if (r.status !== 'idle') return r
+        if (r.nextDueAt !== null) due = due === null ? r.nextDueAt : Math.min(due, r.nextDueAt)
+      }
+    }
+    return { status: 'idle', nextDueAt: due, unpaired }
+  }
   await opts.hooks?.afterPlan?.(job)
 
   // Inputs in ascending precedence, the order a query reads them in (the ledger's plan): the
@@ -464,6 +520,75 @@ export async function compactStep(env: CompactEnv, engine: Engine, tenant: strin
   if (r.status === 'conflict') return { status: 'conflict', job: summary, missing: r.missing, blocking: r.blocking ?? [] }
   // An answer this code does not know (a newer ledger, `schema_too_new`): fail closed, so the
   // maintenance run is retried; never take it for a conflict or a success.
+  throw new Error(`compact: the ledger answered replace with ${JSON.stringify((r as { status?: unknown }).status)}; nothing was swapped, retry`)
+}
+
+/** The span and log tables, in the order a step looks at them. */
+export const SIGNAL_TABLES: readonly SignalTable[] = ['spans', 'trace_index', 'logs']
+
+/** The engine's signal merge, if it has one (engine/wasm ABI 4); without it only metrics are compacted. */
+const signalEngine = (engine: Engine): (Engine & SignalMergeEngine) | null =>
+  typeof (engine as Partial<SignalMergeEngine>).mergeSignalFiles === 'function' ? (engine as Engine & SignalMergeEngine) : null
+
+/**
+ * One merge of a span or log table, by the rules of the metric step above (D30): plan, choose
+ * (`chooseJob` over one-file units; `spans` never across an hour), GET the inputs, merge them in
+ * ascending precedence, refuse a result that is not a merge of them, PUT the output with its
+ * inputs record under its content-hashed key (`If-None-Match: *`, adopting an identical object),
+ * then ONE `replace`. It never deletes an object. `idle` when the table has nothing to merge.
+ */
+async function signalStep(
+  env: CompactEnv,
+  engine: Engine & SignalMergeEngine,
+  ledger: DurableObjectStub<Ledger>,
+  tenant: string,
+  table: SignalTable,
+  cell: string,
+  policy: CompactPolicy,
+  started: number,
+  opts: StepOptions,
+): Promise<StepResult> {
+  const plan = await ledger.plan({ table, minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })
+  const { job, nextDueAt } = chooseJob(plan.files.map(signalUnit), opts.now ?? started, policy)
+  if (!job) return { status: 'idle', nextDueAt, unpaired: [] }
+  await opts.hooks?.afterPlan?.(job)
+  const ordered = [...job.inputs].sort(byPrecedence).map((u) => u.files[0]!)
+  const byKey = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
+  const summary: JobSummary = {
+    table,
+    day: job.day,
+    level: job.level,
+    ...(job.hour !== undefined ? { hour: job.hour } : {}),
+    why: job.why,
+    inputs: ordered.map((f) => f.key).sort(byKey),
+    inputBytes: ordered.reduce((a, f) => a + f.bytes, 0),
+    inputRows: ordered.reduce((a, f) => a + f.rows, 0),
+  }
+  const record = encodeCompactionInputs(summary.inputs)
+  if (new TextEncoder().encode(record).byteLength > COMPACTION_INPUTS_MAX_BYTES) {
+    return { status: 'error', job: summary, reason: 'too_many_inputs', detail: `the names of ${summary.inputs.length} inputs do not fit in ${COMPACTION_INPUTS_MAX_BYTES} bytes of object metadata; lower maxInputPairs` }
+  }
+  const out: EncodedSignalFile = engine.mergeSignalFiles(table, await fetchAll(env.BUCKET, ordered.map((f) => f.key)))
+  // A merge only removes duplicates (spans, logs) or joins one trace's rows (trace_index): never
+  // more rows than its inputs together, nor fewer than its largest input; one partition.
+  const largest = Math.max(...ordered.map((f) => f.rows))
+  if (out.rows > summary.inputRows || out.rows < largest || out.day !== job.day || out.table !== table || (table === 'spans' && out.hour !== job.hour)) {
+    return { status: 'error', job: summary, reason: 'row_count', detail: `${table}: merged ${out.rows} rows of day ${out.day} hour ${out.hour} from inputs of ${summary.inputRows} rows (largest ${largest}) of day ${job.day} hour ${job.hour}` }
+  }
+  const inputs16 = await inputsHash16(summary.inputs)
+  const digest = await sha256(out.bytes)
+  const key = compactedKey({ cell, table, tenant, day: out.day, level: job.level, hour: table === 'spans' ? out.hour! : job.hour, inputs16, sha256Hex: hex(digest) })
+  const output: FileEntry = { table, day: out.day, key, bytes: out.bytes.byteLength, rows: out.rows, minTs: out.minTs, maxTs: out.maxTs, level: job.level, index: out.index }
+  const put = await putFile(env.BUCKET, key, out.bytes, digest, { [COMPACTION_INPUTS_META]: record })
+  await opts.hooks?.afterPut?.([output])
+  if (Date.now() - started > policy.maxStepMs) {
+    return { status: 'error', job: summary, reason: 'too_slow', detail: `the step took longer than ${policy.maxStepMs} ms; its outputs are left for the orphan sweep` }
+  }
+  const r = await ledger.replace({ remove: summary.inputs, add: [output] })
+  if (r.status === 'ok') return { status: 'merged', job: summary, version: r.version, outputs: [output], put: [put] }
+  if (r.status === 'invalid') return { status: 'error', job: summary, reason: 'invalid', detail: r.reason }
+  // Conflict: nothing swapped, the output LEFT for the orphan sweep (D30), as for metrics.
+  if (r.status === 'conflict') return { status: 'conflict', job: summary, missing: r.missing, blocking: r.blocking ?? [] }
   throw new Error(`compact: the ledger answered replace with ${JSON.stringify((r as { status?: unknown }).status)}; nothing was swapped, retry`)
 }
 

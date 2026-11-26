@@ -1,5 +1,5 @@
-import type { EncodedFile, Engine } from '../../contracts/engine'
-import { TENANT_ID, type AddUnitResult, type FileEntry, type FlushUnit, type Table } from '../../contracts/ledger'
+import type { EncodedFile, EncodedSignalFile, Engine, SignalFlushEngine } from '../../contracts/engine'
+import { TENANT_ID, type AddUnitResult, type FileEntry, type FlushUnit, type LedgerTable } from '../../contracts/ledger'
 import type { Ledger } from '../../ledger/src/ledger'
 import type { Segment, Shard } from '../../shard/src/shard'
 import { dataFileKey, hex } from './keys'
@@ -11,7 +11,12 @@ import { dataFileKey, hex } from './keys'
  * For each pending segment, in sequence order:
  *
  *   1. shard.readSegment            the segment's batches
- *   2. engine.encodeSegment         one samples file and one series file per UTC day
+ *   2. engine.encodeSegment         one samples file and one series file per UTC day; for a
+ *                                   segment of span or log batches (a stream of a derived pool,
+ *                                   `{pool}/traces` or `{pool}/logs`: contracts/BATCH.md "Streams
+ *                                   per signal"), by the batches' signal byte, engine.encodeSpans
+ *                                   (one `spans` file per hour, one `trace_index` file per day) or
+ *                                   engine.encodeLogs (one `logs` file per day)
  *   3. PUT each file, If-None-Match the key contains the content hash (contracts/TABLES.md)
  *   4. ledger.addUnit               ALL files of the segment as ONE unit, admitted atomically
  *   5. ledger.loggedWatermarks      how far the ledger's R2 change log has got
@@ -32,6 +37,13 @@ import { dataFileKey, hex } from './keys'
  * The caller decides when to run this; see the README for what triggers it in production.
  */
 
+/**
+ * What flush needs of the engine: `encodeSegment` for metrics and, for the span and log streams
+ * (stage 2 of traces and logs), `encodeSpans` and `encodeLogs` (`engine/wasm`, ABI 3). An engine
+ * without them refuses those segments (retryably: `unreadable_segment`), never guesses.
+ */
+export type FlushEngine = Engine & Partial<SignalFlushEngine>
+
 export interface FlushEnv {
   SHARD: DurableObjectNamespace<Shard>
   LEDGER: DurableObjectNamespace<Ledger>
@@ -41,7 +53,7 @@ export interface FlushEnv {
 
 export interface FlushedFile {
   key: string
-  table: Table
+  table: LedgerTable
   day: string
   bytes: number
   rows: number
@@ -79,6 +91,13 @@ export type FlushFailure =
   | 'segment_incomplete'
   /** The ledger kept answering `not_contiguous` after the pending list was re-read. */
   | 'no_progress'
+  /**
+   * The segment's batches are not all of ONE signal this code flushes (1 metrics, 2 spans,
+   * 3 log records), or this engine has no encoder for it. Retried, never filed on a guess: a
+   * stream holds one signal (contracts/BATCH.md), so a mixed segment is a bug, and a signal
+   * this release does not know was written by a newer one. Added 2026-11-19.
+   */
+  | 'unreadable_segment'
 
 export interface FlushResult {
   status: 'ok' | 'error'
@@ -180,7 +199,7 @@ export async function putFile(bucket: R2Bucket, key: string, bytes: Uint8Array, 
 
 interface Ctx {
   env: FlushEnv
-  engine: Engine
+  engine: FlushEngine
   cell: string
   tenant: string
   shardName: string
@@ -205,7 +224,7 @@ async function writeSegment(c: Ctx, seg: Segment): Promise<{ unit: FlushUnit; fi
     batches !== null && batches.length === seg.seqHi - seg.seqLo + 1 && batches.every((b, i) => b.seq === seg.seqLo + i)
   if (!complete) throw new Stop('segment_incomplete', `segment ${seg.seqLo}..${seg.seqHi} is no longer fully held by the shard`)
 
-  const encoded: EncodedFile[] = c.engine.encodeSegment(batches.map((b) => b.payload))
+  const encoded = encode(c, seg, batches.map((b) => b.payload))
   const entries: FileEntry[] = []
   const puts: Promise<'created' | 'exists'>[] = []
   for (const f of encoded) {
@@ -221,6 +240,7 @@ async function writeSegment(c: Ctx, seg: Segment): Promise<{ unit: FlushUnit; fi
       seqLo: seg.seqLo,
       seqHi: seg.seqHi,
       sha256Hex: hex(digest),
+      ...(f.table === 'spans' ? { hour: (f as EncodedSignalFile).hour ?? -1 } : {}),
     })
     // The files of a segment are independent objects: their PUTs go out together (a PUT
     // costs about the same whatever its size), at most six at a time.
@@ -230,9 +250,45 @@ async function writeSegment(c: Ctx, seg: Segment): Promise<{ unit: FlushUnit; fi
   }
   const how = await Promise.all(puts)
   const written: FlushedFile[] = entries.map((e, i) => ({ key: e.key, table: e.table, day: e.day, bytes: e.bytes, rows: e.rows, put: how[i]! }))
-  // One unit per segment, holding every file of it: samples and series become visible together.
+  // One unit per segment, holding every file of it: samples and series become visible together,
+  // as do a segment's spans files and its trace_index files (contracts/TRACES.md, "Object keys").
   const unit: FlushUnit = { shard: c.shardName, incarnation: seg.incarnation, seqLo: seg.seqLo, seqHi: seg.seqHi, files: entries }
   return { unit, files: written }
+}
+
+/** The signal byte of a stored batch (contracts/BATCH.md, offset 4), or null when it has no `VZB1` header. */
+function signalOf(payload: Uint8Array): number | null {
+  if (payload.byteLength < 16 || payload[0] !== 0x56 || payload[1] !== 0x5a || payload[2] !== 0x42 || payload[3] !== 0x31) return null
+  return payload[4]!
+}
+
+/** Which tables each signal's encoder may produce: anything else is refused before a PUT. */
+const SIGNAL_TABLES: Record<1 | 2 | 3, readonly LedgerTable[]> = { 1: ['metric_samples', 'metric_series'], 2: ['spans', 'trace_index'], 3: ['logs'] }
+
+/**
+ * Step 2: the segment's files, by the signal of its batches. Every batch of a stream has the
+ * same signal (contracts/BATCH.md, "Streams per signal"); a segment that mixes signals, holds
+ * one this code does not flush, or meets an engine without the encoder is refused, never
+ * encoded as something else.
+ */
+function encode(c: Ctx, seg: Segment, payloads: Uint8Array[]): (EncodedFile | EncodedSignalFile)[] {
+  const signals = new Set(payloads.map(signalOf))
+  const signal = signals.size === 1 ? [...signals][0] : null
+  const where = `segment ${seg.seqLo}..${seg.seqHi} of ${c.shardName}`
+  if (signal !== 1 && signal !== 2 && signal !== 3) {
+    throw new Stop('unreadable_segment', `${where} holds batches of signals ${[...signals].map((x) => x ?? 'none').join(', ')}; a segment is flushed only when all its batches are of one signal (1, 2 or 3)`)
+  }
+  let files: (EncodedFile | EncodedSignalFile)[]
+  if (signal === 1) files = c.engine.encodeSegment(payloads)
+  else {
+    const encoder = signal === 2 ? c.engine.encodeSpans : c.engine.encodeLogs
+    if (!encoder) throw new Stop('unreadable_segment', `${where} holds signal ${signal} batches and this engine has no encoder for them`)
+    files = encoder(payloads)
+  }
+  for (const f of files) {
+    if (!SIGNAL_TABLES[signal].includes(f.table)) throw new Stop('unreadable_segment', `${where}: the engine produced a ${f.table} file from signal ${signal} batches`)
+  }
+  return files
 }
 
 /** Step 4, with every answer of the ledger handled. Returns how the segment stands. */
@@ -287,7 +343,7 @@ async function loggedWatermark(c: Ctx, incarnation: number): Promise<number> {
   return w && w.incarnation === incarnation ? w.seq : 0
 }
 
-export async function flushTenant(env: FlushEnv, engine: Engine, tenant: string, shardName: string, opts: FlushOptions = {}): Promise<FlushResult> {
+export async function flushTenant(env: FlushEnv, engine: FlushEngine, tenant: string, shardName: string, opts: FlushOptions = {}): Promise<FlushResult> {
   if (!TENANT_ID.test(tenant)) throw new Error('flush: tenant id must match [A-Za-z0-9_-]{1,64}')
   if (typeof shardName !== 'string' || shardName === '') throw new Error('flush: shard name must be a non-empty string')
   const c: Ctx = {

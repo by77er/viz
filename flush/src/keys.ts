@@ -1,10 +1,16 @@
-import { TENANT_ID, type Table } from '../../contracts/ledger'
+import { type LedgerTable, TENANT_ID, dataKeyPrefix } from '../../contracts/ledger'
 
 /**
  * Object keys for data files, exactly as contracts/TABLES.md states them:
  *
  *   {cell}/data/{table}/tenant={tenant}/day={YYYY-MM-DD}/L{level}-{shard}-{incarnation}-{seqLo}-{seqHi}-{hash8}.parquet
  *
+ * and for `spans`, one level deeper, the hour of the day every row's start time lies in
+ * (contracts/TRACES.md, "Object keys"; contracts/ledger.ts `dataKeyPrefix`):
+ *
+ *   {cell}/data/spans/tenant={tenant}/day={YYYY-MM-DD}/hour={HH}/L{level}-….parquet
+ *
+ * `trace_index` and `logs` are keyed by day, as the metric tables are.
  * `shard` is the shard name with `/` replaced by `_`; `hash8` is the first 8 hex characters
  * of the SHA-256 of the file bytes. Everything in a key comes from the segment and from
  * the bytes, so two attempts that produce the same bytes produce the same key, and two
@@ -12,7 +18,7 @@ import { TENANT_ID, type Table } from '../../contracts/ledger'
  */
 export interface KeyParts {
   cell: string
-  table: Table
+  table: LedgerTable
   tenant: string
   day: string
   level: number
@@ -22,6 +28,8 @@ export interface KeyParts {
   seqHi: number
   /** Lowercase hex SHA-256 of the file bytes. */
   sha256Hex: string
+  /** `spans` only, and required there: the UTC hour (0 to 23) of `day`. */
+  hour?: number
 }
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/
@@ -37,8 +45,11 @@ export function dataFileKey(p: KeyParts): string {
     throw new Error('flush: level, incarnation and sequence range must be non-negative integers with 1 <= seqLo <= seqHi')
   }
   if (p.cell === '' || p.cell.includes('/') || p.shard === '') throw new Error('flush: bad cell or shard name')
+  // A spans file is keyed by its hour, and nothing else is (contracts/TRACES.md "Object keys").
+  if ((p.table === 'spans') !== (p.hour !== undefined)) throw new Error(`flush: an hour is required for spans files and only for them (${p.table}, hour ${p.hour})`)
+  if (p.hour !== undefined && !(Number.isInteger(p.hour) && p.hour >= 0 && p.hour <= 23)) throw new Error(`flush: hour must be 0 to 23, got ${p.hour}`)
   const shard = p.shard.replaceAll('/', '_')
-  return `${p.cell}/data/${p.table}/tenant=${p.tenant}/day=${p.day}/L${p.level}-${shard}-${p.incarnation}-${p.seqLo}-${p.seqHi}-${p.sha256Hex.slice(0, 8)}.parquet`
+  return `${dataKeyPrefix(p.cell, p.table, p.tenant, p.day, p.hour)}L${p.level}-${shard}-${p.incarnation}-${p.seqLo}-${p.seqHi}-${p.sha256Hex.slice(0, 8)}.parquet`
 }
 
 export function hex(bytes: ArrayBuffer): string {

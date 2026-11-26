@@ -44,7 +44,29 @@ describe('golden formats: every format this component writes has a golden file f
       inputs16,
       level1: compactedKey({ ...base, table: 'metric_samples', level: 1, hour: 7 }),
       level2: compactedKey({ ...base, table: 'metric_series', level: 2 }),
+      // Added 2026-11-19 with compaction of the span and log tables (contracts/TRACES.md and
+      // LOGS.md, "Compaction"): the same format, for the new tables; the metric keys above are unchanged.
+      spansLevel1: compactedKey({ ...base, table: 'spans', level: 1, hour: 7 }),
+      spansLevel2: compactedKey({ ...base, table: 'spans', level: 2, hour: 7 }),
+      traceIndexLevel1: compactedKey({ ...base, table: 'trace_index', level: 1, hour: 7 }),
+      logsLevel2: compactedKey({ ...base, table: 'logs', level: 2 }),
     })
+    expect(() => compactedKey({ ...base, table: 'spans', level: 2 })).toThrow(/hour/)
+  })
+
+  it('r2.compaction-inputs: the record of a spans output names files of its own hour; the reader refuses another hour, another table, a metric key', async () => {
+    const spans = [0, 1].map((i) => `cell-0/data/spans/tenant=golden-tenant/day=2026-11-18/hour=07/L0-pool_traces_0-1763467200000123-${i + 1}-${i + 1}-0${i}0${i}0${i}0${i}.parquet`)
+    const key = compactedKey({ cell: 'cell-0', table: 'spans', tenant: 'golden-tenant', day: '2026-11-18', level: 1, hour: 7, inputs16: await inputsHash16(spans), sha256Hex: 'f'.repeat(64) })
+    expect(await decodeCompactionInputs(key, encodeCompactionInputs(spans))).toEqual({ inputs: spans })
+    const other = async (inputs: string[]) => decodeCompactionInputs(compactedKey({ cell: 'cell-0', table: 'spans', tenant: 'golden-tenant', day: '2026-11-18', level: 1, hour: 7, inputs16: await inputsHash16(inputs), sha256Hex: 'f'.repeat(64) }), encodeCompactionInputs(inputs))
+    expect(await other(spans.map((k) => k.replace('/hour=07/', '/hour=08/')))).toEqual({ unreadable: expect.stringContaining('tenant and day') })
+    expect(await other(spans.map((k) => k.replace('/spans/', '/logs/').replace('/hour=07/', '/')))).toEqual({ unreadable: expect.stringContaining('tenant and day') })
+    expect(await other(INPUTS)).toEqual({ unreadable: expect.stringContaining('tenant and day') })
+    // A logs output's inputs are logs files of its day.
+    const logs = spans.map((k) => k.replace('/spans/', '/logs/').replace('/hour=07/', '/'))
+    const lk = compactedKey({ cell: 'cell-0', table: 'logs', tenant: 'golden-tenant', day: '2026-11-18', level: 2, inputs16: await inputsHash16(logs), sha256Hex: 'f'.repeat(64) })
+    expect(await decodeCompactionInputs(lk, encodeCompactionInputs(logs))).toEqual({ inputs: logs })
+    expect(await decodeCompactionInputs(lk.replace('/logs/', '/spans/'), encodeCompactionInputs(logs))).toEqual({ unreadable: 'not a compaction output key' })
   })
 
   it('r2.compaction-inputs: the record, and that the reader takes it back for a key with that inputs16', async () => {
