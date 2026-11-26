@@ -15,7 +15,7 @@ and physical deletes wait. Nothing else.
 | `src/iceberg.ts` | Table schemas (the metric pair; the span and log tables with nested types and pinned nested field ids, `SIGNAL_DEFS`), name mappings, partition specs (`hour(start_time)` for `spans`), Avro schemas of v2 manifests and manifest lists, `metadata.json`, per-file statistics |
 | `src/avro.ts` | Avro object container reader and writer (about 300 lines, no dependency) |
 | `src/schema.ts` | The publisher's storage as versioned migrations (`PUBLISHER_SCHEMA`), and `FORMATS`: the versions of what it writes and reads |
-| `test/` | 138 tests in workerd with a simulated R2, against the real `Ledger` class (and the frozen as-built one for the first layout, and the frozen release before checkpoints in parts) |
+| `test/` | 139 tests in workerd with a simulated R2, against the real `Ledger` class (and the frozen as-built one for the first layout, and the frozen release before checkpoints in parts) |
 | `test/steps.test.ts` | Re-bases and rebuilds kept across invocations: twin cells, cut-offs at every R2 operation, a new ledger incarnation mid-way, the previous release on storage left mid-way |
 | `test/m6/` | This publisher as committed at `800b926`, frozen: review M-6's release (re-bases capped per publish, each one whole; a table rebuilt from R2 whole), release N-1 of re-bases in steps (`test/steps.test.ts`) |
 | `test/e2e-signals.ts` | The span and log end-to-end scenario, run by `e2e-signals.test.ts` (every publish whole, into `export/signals/`) and `e2e-signals-steps.test.ts` (re-bases in steps, into `export/signals-steps/`) |
@@ -629,7 +629,7 @@ contract change; see "Contract issues").
 npm install
 npm run fixtures     # Rust: writes test/fixtures/fixture.json (already committed)
 node tools/signal_fixture.mjs <scratch>/sigwork 1 1 6   # writes test/fixtures/signals.json (already committed)
-npm test             # 138 tests in workerd, 17 files, at most 2 workers; fills export/, export/signals/ and export/signals-steps/
+npm test             # 139 tests in workerd, 17 files, at most 2 workers; fills export/, export/signals/ and export/signals-steps/
 npm run typecheck
 # the re-base at scale (Measurements); one size and variant per process for clean memory figures:
 MINIFLARE_WORKERD_V8_FLAGS="--max-old-space-size=32 --max-semi-space-size=4" \
@@ -654,11 +654,14 @@ BENCH_FIRST_CAPPED=1 BENCH_UPGRADE=1x300000@100000 CPU_LOG=<scratch>/cpu.log \
   node bench/cpu.mjs -- npx vitest run -c vitest.bench.config.ts bench/upgrade.bench.test.ts --disableConsoleIntercept > <scratch>/up.out
 ```
 
-**Last run (2026-11-26, re-bases and rebuilds in steps): 138 passed, 0 failed** (17 files, `npx vitest
-run --maxWorkers=2`, 168 s at load average 10–10.6 from other builds); `tsc --noEmit` clean. New:
+**Last run (2026-11-26, re-bases and rebuilds in steps): 139 passed, 0 failed** (17 files, `npx vitest
+run --maxWorkers=2`, 69 s at load average 5.5–6.5; the run before it, without the last compat test,
+138 passed in 168 s at 10–10.6); `tsc --noEmit` clean. New:
 `test/steps.test.ts` (10: three twin-cell comparisons, the cut at each R2 operation, a new incarnation
 while staging and while writing ahead, the release before on storage left mid-way twice, the rebuild
-cut at each R2 operation and without cuts), `test/e2e-signals-steps.test.ts` (1; the scenario moved
+cut at each R2 operation and without cuts), one in `test/compat.test.ts` (after a lost storage, a table a
+newer publisher evolved is not rebuilt from, in steps either: written for mutant M18b, which survived
+without it), `test/e2e-signals-steps.test.ts` (1; the scenario moved
 into `test/e2e-signals.ts`, run unchanged by `e2e-signals.test.ts`), the schema golden of version 7.
 Changed: the two eviction tests of `checkpoints.test.ts` (a re-base cut off now keeps the parts it
 staged, and the next publishes read only the rest: they pinned the opposite), the version expected after
@@ -669,7 +672,11 @@ explained, reported here. The readers on this run's exports: **504 checks, 0 fai
 failed** on `export/signals/`; **1,542, 0 failed** on `export/signals-steps/` (its first stage's files in
 manifests written ahead), every content hash as in the tables, the same in both span and log exports.
 `tools/signals-check` not run (it reads what the Python readers write, the same rows). The benches:
-Measurements, "Re-bases in steps". Mutants: "Mutation checks".
+Measurements, "Re-bases in steps". Mutants: "Mutation checks". The components that import this one,
+against these sources: `janitor` typecheck clean and 33 passed (5 files); `stack` typecheck clean and its
+default suite 50 passed, 1 skipped (11 files; `vitest.gateway.config.ts` not run); `compact` and
+`spikes/s8-managed-catalog` typecheck clean; `spikes/s11-large-ledger` has no TypeScript configuration
+and was not checked.
 
 Before (2026-11-19, bounded work per publish, review M-6): **127 passed, 0 failed** (15 files,
 `npx vitest run --maxWorkers=2`, 67 s at load average 6.5–7.8); `tsc --noEmit` clean. New:
@@ -912,7 +919,7 @@ PyIceberg wrote itself (an optional `list<struct>` column with a null row reads 
 map stays null), so it is the reader's, not these tables'. TRACES.md's logical view and viz's
 reader treat a null and an empty `events` or `links` alike.
 
-### Workerd tests (138)
+### Workerd tests (139)
 
 | Area | Tests |
 |---|---|
@@ -936,7 +943,7 @@ reader treat a null and an empty `events` or `links` alike.
 | Driving (3) | `notify` then alarm, which leaves only the sweep's deadline and then none; a nudge during a running publish is kept; `locationPrefix` cannot change |
 | Smoke, end to end, measurements (3) | |
 | Versioned storage (`compat.test.ts`, 6) | a fresh object at the latest version (6 since review M-6) with the golden schema; migrations 1..N reproduce the golden of N; version 1 equals the pre-versioning `sqlite_master` (`test/fixtures/storage/v0.json`); that dump (a cell published once) adopted and migrated to 2 with every adopted row unchanged and served; a publisher left by pre-versioning code keeps publishing after adoption, verifies clean and is not migrated again after eviction; storage of a breaking N+1, with a tenant pending and due, refused by all 12 methods, alarm re-armed, every table unchanged; storage of an additive N+1 served, written, left at N+1 |
-| Newer Iceberg metadata (`compat.test.ts`, 1) | a table evolved by a newer publisher (schema 1 with a new field id, `viz.format-version` 2): publish refused and the tenant left pending, sweep refused, nothing under `iceberg/` changed, SQLite not rebuilt from it, `verify` reports it |
+| Newer Iceberg metadata (`compat.test.ts`, 2) | a table evolved by a newer publisher (schema 1 with a new field id, `viz.format-version` 2): publish refused and the tenant left pending, sweep refused, nothing under `iceberg/` changed, SQLite not rebuilt from it, `verify` reports it; after a lost storage, such a table is not rebuilt from either (no `live`, `rebuild` or `tbl` row), the tenant pending, nothing in R2 changed |
 | Versioned storage, migration 2 (`compat.test.ts`, +1) | storage at golden version 1 (no `due`) migrates to 2, keeps publishing, verifies clean, uses the new table, is not migrated twice; adoption of the pre-versioning dump now ends at version 2 with every adopted row unchanged |
 | Log objects this code does not know (`compat.test.ts`, 7) | five rewrites of one real segment as a newer ledger would write it (header `v` 2, unknown header kind, change `v` 2, unknown change kind, a file of table `profiles`, which no release knows; it was `spans` until this publisher read that table): each stops the tenant before that segment, twice in a row, with the earlier segments published and the later one unread; restored, it catches up. The same for a change object of the first layout. The reader's accept and refuse rules, and its pinned versions equal the contract's |
 | Segments (`segments.test.ts`, 9) | golden: the current ledger writes the checked-in segment bytes (only `at` differs); those bytes published stage by stage (two units in one segment; a compaction with a checkpoint beside it; retention and a unit in one segment; a new incarnation re-based from its base segment) and all at once; the first layout (as-built ledger) read, a hole in it stops the tenant, and the segment incarnation a current ledger starts on taking it over is followed; both layouts in one incarnation refused; whole segments only, and a cursor inside a segment (left by publishing through a `[5, 5]` holding the ledger's own line) finished from the holding segment once a later one exists, without re-applying the change at the cursor; overlapping segments refused before both; unreadable checkpoints ignored; `removedFiles` naming another table, or not matching `removed`, refused |
@@ -951,6 +958,44 @@ reader treat a null and an empty `events` or `links` alike.
 to the copy, runs the suites it names with at most 2 workers, and restores the copy's file.
 The shared tree is only read (AGENTS.md). `DRY=1` only checks that every mutant's text occurs
 exactly once in the source.
+
+**Run on 2026-11-26 on re-bases and rebuilds in steps: 37 mutants (13 new, 7 retargeted), 35 killed at
+first, 2 survived, both then killed by test changes** (`node tools/mutants.mjs` on a fresh copy under the
+session's scratch directory, load average 8–11.6; the new ones ran then under ids S1–S7, which the
+segment reader's mutants already had, so those seven ran too, all killed as before; they are P1–P7 now).
+Retargeted at the moved text, same mutation: M18 (now the conflict path's `resync`), U2b, V3b and V3c (the
+change application shared by both kinds of re-base, and the sink's insert into `rebase_stage`), R1, R1b
+(both places that count staged files), R2b (the new order), R4. Also run because they touch code that moved:
+M15, V6, V7b, R2, R3, R3b, R3c, R5, R5b, R6, R7, C4, K3, K4, K8; all killed. The four asked for: **progress not
+persisted** (P1, P1b), **the marker not advanced** (P2, P2b), **a stale half-stage used after an incarnation
+change** (P3, P3b), **the budget ignored** (P4, P4b, P4c, P4d).
+
+| # | Mutation | Result (tests failing) | A test that fails |
+|---|---|---|---|
+| P1 | progress not persisted: the stage of a kept re-base is emptied with every attempt's scratch | killed (9) | an eviction mid-stream: nothing is committed, the parts staged before it are kept with their progress, and the next publish reads only the rest |
+| P1b | progress not persisted: a part is staged without recording how far the re-base got | killed (9) | the same |
+| P2 | the marker not advanced: the parts staged are recorded, the next part to read is not | killed (9) | the same |
+| P2b | the marker not advanced: a manifest written ahead is recorded, how far its table got is not | killed (7) | upgrade: spread over several alarm runs within the budget, it ends exactly as one uncapped re-base; manifests written ahead survive a sweep |
+| P3 | a stale half-stage used after an incarnation change (staging): a kept re-base resumed whatever incarnation and checkpoint it was of | killed (1) | while staging: nothing kept from the old incarnation is used or committed; the re-base starts over on the new one |
+| P3b | a stale half-stage used after an incarnation change (writing ahead): the incarnation not listed again | killed (1) | while writing: the same |
+| P4 | the budget ignored while staging: a checkpoint in parts never stops at a part boundary | killed (4) | upgrade: spread over several alarm runs within the budget, … |
+| P4b | the budget ignored while writing ahead: every added file written in one publish | killed (3) | the same |
+| P4c | the budget ignored while rebuilding: a whole table rebuilt in one publish | killed (1) | without cuts: each publish within its budget, a table over several publishes, and no tenant re-based |
+| P4d | a re-base resumed from an earlier publish is committed whole when its staging ends (its added files written by that commit) | killed (6) | upgrade: spread over several alarm runs within the budget, … |
+| P5 | manifests written ahead committed without checking that they are still in R2 | killed (1) | the release before … ignores what was kept, and sweeps the manifests written ahead; rolled forward, this release writes them again and ends as the twin |
+| P6 | the sweep treats manifests written ahead as orphans | **survived**, then killed (1) | new incarnation: spread over several alarm runs within the budget, … manifests written ahead survive a sweep |
+| P7 | rebuild progress not persisted: a manifest decoded into `live` is not marked done | killed (2) | a few manifests per publish, within the budget, even cut off at every R2 operation; SQLite ends exactly as one rebuild leaves it, and the next commit is right |
+| M18b | rebuilds a lost table in steps from metadata a newer publisher wrote (no check in `rebuildStep`) | **survived**, then killed (1) | after a lost storage, a table a newer publisher evolved is not rebuilt from it (rebuilt in steps since storage version 7); publication waits |
+
+**What did not die at first.** **P6** survived: in two of the twin tests the tables had no snapshot yet when
+the sweep ran (a table with none is not swept), and in the third the mutant did delete a manifest written
+ahead, but of `metric_samples`, while the test looked only at the span and log tables' objects; the check
+before the commit then found it missing and wrote it again, so the cell still ended as its twin (the
+defence in depth hid it). The test now checks every table's objects; killed on a fresh copy. **M18b**
+survived: no test rebuilt a lost table from metadata a newer publisher wrote; a test was added
+(`test/compat.test.ts`), and M18b was run again on a fresh copy and killed. Not run again this time: the
+other mutants of earlier runs (their texts all apply: `DRY=1`, 88 mutants, 0 edits that do not apply, and
+the suites they name pass).
 
 **Run on 2026-11-19 on bounded work per publish (review M-6): every mutant, 74, all killed, 0
 survived** (`node tools/mutants.mjs` on a fresh copy under the session's scratch directory, 11:55 to

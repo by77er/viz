@@ -22,7 +22,9 @@
  *                   it advances over whole segments only. A re-base (no cursor in the newest
  *                   incarnation) streams the state it starts from into a `BaseSink` (the
  *                   publisher's SQLite), a part or a few hundred files at a time: nothing here
- *                   holds a state, whatever its size.
+ *                   holds a state, whatever its size. The sink may stop a checkpoint in parts at a
+ *                   part boundary (its budget) and resume it at a later invocation from the parts
+ *                   it kept (`BaseSink.begin`, `part`; README, "Re-bases and rebuilds in steps").
  *   replayAt        what `verify` uses: the ledger's whole live set at a cursor, rebuilt from
  *                   the incarnation's base with every change checked against the state before it.
  *                   It holds that set in memory (README, "Not implemented").
