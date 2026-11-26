@@ -991,6 +991,10 @@ and in a mixed stream both answers are allowed ("Contract issues" 2), so no test
 Texts in `contracts/` that this component may not edit (AGENTS.md, "Contracts first"). Each is
 the exact text proposed; none changes what the shard does.
 
+**Both were applied on 2026-11-26**, in a contracts commit of their own before this change's commit
+("contracts: the shard is a reader of the span and log batch layout; last for metric-only reads").
+They are kept here as the record of what was asked.
+
 1. **`contracts/COMPATIBILITY.md` §3.3 does not name the shard as a reader of the span and log
    batch layout** (review of D72, m-1; re-check r2-n-1; still open). `BATCH.md` ("The one layout a
    shard reads") carries the rule and points at §3.3, whose list of readers has no line for it.
@@ -1025,7 +1029,9 @@ the exact text proposed; none changes what the shard does.
 
 ### The re-check of D72 (2026-11-26)
 
-Not edited here (only `shard/` is this change's); the exact text for each owner.
+Not edited here (only `shard/` is this change's); the exact text for each owner. **Items 1 to 3 were
+applied on 2026-11-26** (`design/DECISIONS.md` D72 and `design/REVIEW.md`); item 4 is true of the
+page on main since pull request #9's design commit.
 
 1. **`design/DECISIONS.md`, D72, "Cost of it", its sentence on `last`** (r2-n-1). It reads
    "`last` on `page_limit` is used only once query reads it (`shard/README.md`, "Needed changes
