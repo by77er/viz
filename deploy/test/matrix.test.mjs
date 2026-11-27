@@ -96,3 +96,38 @@ test('every directory a component installs from is imported by one of its tests 
   assert.match(gen, /cargo build/)
   assert.match(readFileSync(join(REPO_ROOT, 'edge/scripts/otel-corpus.mjs'), 'utf8'), /from 'protobufjs'/)
 })
+
+test('app/ and design-system/ are checked by commands that exist, and by none that needs a browser (CI has none)', () => {
+  const root = fakeCheckout(TS.map((c) => c.dir))
+  try {
+    const m = matrix(root)
+    const app = m.ts.find((t) => t.dir === 'app')
+    const ds = m.ts.find((t) => t.dir === 'design-system')
+    // The app: design-system/ installed (the token check parses with its packages) and its dist/ generated before tsc.
+    assert.deepEqual([app.npm, app.tsc, app.install, app.prepare], [true, true, 'design-system', 'node scripts/ensure-design-system.mjs'])
+    assert.equal(app.commands, 'npm run check:tokens && npm run build && node ../deploy/ci/app-build.mjs dist')
+    // The design system has no TypeScript: no tsc step (npx would fetch an unrelated package named tsc).
+    assert.deepEqual([ds.npm, ds.tsc, ds.commands], [true, false, 'node tools/check.mjs --no-render'])
+    for (const t of m.ts.filter((t) => t.dir !== 'design-system')) assert.equal(t.tsc, true, t.dir)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+  // Each command names something that is there: a script of app/package.json, a file, a flag the tool reads.
+  const scripts = JSON.parse(readFileSync(join(REPO_ROOT, 'app/package.json'), 'utf8')).scripts
+  assert.match(scripts['check:tokens'], /check\.mjs --no-render/)
+  assert.match(scripts.build, /tsc --noEmit && vite build/)
+  assert.match(scripts.prebuild, /scripts\/ensure-design-system\.mjs/)
+  assert.match(scripts.test, /^vitest run$/)
+  assert.ok(readFileSync(join(REPO_ROOT, 'app/scripts/ensure-design-system.mjs'), 'utf8').includes('tools/build.mjs'))
+  assert.match(readFileSync(join(REPO_ROOT, 'design-system/tools/check.mjs'), 'utf8'), /args\.includes\('--no-render'\)/)
+  assert.ok(readFileSync(join(REPO_ROOT, 'deploy/ci/app-build.mjs'), 'utf8').includes('readBuild'))
+  const dsScripts = JSON.parse(readFileSync(join(REPO_ROOT, 'design-system/package.json'), 'utf8')).scripts
+  assert.match(dsScripts.test, /^node --test /)
+  // Nothing CI runs for either launches a browser: neither package depends on one.
+  for (const d of ['app', 'design-system']) {
+    const pkg = JSON.parse(readFileSync(join(REPO_ROOT, d, 'package.json'), 'utf8'))
+    assert.ok(!Object.keys({ ...pkg.dependencies, ...pkg.devDependencies }).some((n) => /playwright|puppeteer/.test(n)), d)
+  }
+  const ci = readFileSync(join(REPO_ROOT, '.github/workflows/ci.yml'), 'utf8')
+  assert.match(ci, /- name: Typecheck\n\s+if: matrix\.tsc\n/)
+})

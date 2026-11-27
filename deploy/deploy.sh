@@ -9,7 +9,12 @@
 #   VIZ_ACK_MIGRATIONS     acknowledged Durable Object migrations, e.g. "viz-ingest@v2"
 #   SMOKE_KEY              optional: an API key with write and read scopes, for the data check
 #   VIZ_WASM_PREBUILT=1    use the .wasm modules already in place (CI: built and tested by the checks)
-#   VIZ_SKIP_NPM_CI=1      use node_modules as they are (a shared checkout where others are working)
+#   VIZ_SKIP_NPM_CI=1      use node_modules as they are (a shared checkout where others are working);
+#                          the app's build then links app/ and design-system/'s node_modules into its export
+#   VIZ_WITHOUT_APP=1      a stage only: viz-gateway without the web app (recorded in the release
+#                          record); production always serves it (D74)
+#   VIZ_APP_NO_CARRY=1     keep no file of earlier app builds in this release (a page opened before
+#                          it then gets 404 for a chunk it has not loaded yet)
 #   VIZ_STAGE_EXPIRES_AT   a stage only: ISO time after which its ruler stops evaluating by itself
 #   VIZ_OAUTH_WITHOUT_RATE_LIMITS=1   a stage only: viz-control without D70's rate limits (recorded in the
 #                          release record; the key is then put without them); production never
@@ -19,14 +24,16 @@
 #                          (invalidates every registered OAuth client; see deploy/README.md). Without
 #                          it a generated secret is created only where it is missing, never replaced.
 #
-# Steps: build both WASM engines; npm ci in each deployed component; resources; configure;
-# release (upload every Worker, then promote callees first); smoke test through the public
-# URL. A failed smoke test rolls back to the previous release when the release applied no
+# Steps: build both WASM engines; npm ci in each deployed component; build the web app in an export
+# of its sources and stage it for viz-gateway (deploy/app.mjs); resources; configure; release (upload
+# every Worker, then promote callees first); smoke test through the public URL, the web app
+# included. A failed app build, like any failed step before the release, leaves the previous release
+# untouched (exit 1); a missing, stale or altered build is refused by the release itself (exit 3). A failed smoke test rolls back to the previous release when the release applied no
 # Durable Object migration and is not forward-only; otherwise it fails loudly instead. Exit codes:
 # 0 deployed and healthy; 1 failed; 3 refused before anything was promoted: an unacknowledged
 # migration, a rollback floor (INGEST_SIGNALS before its readers, a floor Worker below its floor
-# after the switch was on, the switch set as a secret), a rotation of a secret the release does not
-# generate, or, for a viz-control uploaded in phase 1 (every release once it exists), its generated
+# after the switch was on, the switch set as a secret), a web app build that is missing, stale or not
+# what was staged, a rotation of a secret the release does not generate, or, for a viz-control uploaded in phase 1 (every release once it exists), its generated
 # key set but missing from the upload, the newest version not this run's upload, or the key landing
 # on another run's upload. The same three key refusals for a viz-control that goes out with
 # `wrangler deploy` in phase 2 (new, or applying a migration) come after the Workers before it were
@@ -95,6 +102,19 @@ else
   note "npm ci: deploy and every deployed component"
 fi
 
+step "web app"
+if [ "${VIZ_WITHOUT_APP:-0}" = 1 ]; then
+  [ -n "$STAGE" ] || { echo "VIZ_WITHOUT_APP=1 is for a stage only: production serves the web app (D74)" >&2; exit 1; }
+  note "web app: NOT built (VIZ_WITHOUT_APP=1); this stage's viz-gateway serves none"
+else
+  APP_ARGS=()
+  if [ "${VIZ_APP_NO_CARRY:-0}" = 1 ]; then APP_ARGS=(--no-carry); fi
+  # Built in an export of the sources under deploy/generated/, never in app/; a failure stops here.
+  APP_BUILT=$(node deploy/app.mjs build ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"} --release "$VIZ_RELEASE_SHA" ${APP_ARGS[@]+"${APP_ARGS[@]}"})
+  # shellcheck disable=SC2016
+  note "web app: $(node -e 'const a=JSON.parse(process.argv[1]);console.log(`build ${a.build.slice(0,12)}, ${a.files} files, ${a.kept} kept from earlier builds${a.dropped?`, ${a.dropped} not kept (see above)`:""}`)' "$APP_BUILT")"
+fi
+
 step "resources"
 node deploy/resources.mjs ensure ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"}
 note "resources: present"
@@ -104,6 +124,7 @@ CONFIGURE_ARGS=()
 if [ -n "${VIZ_STAGE_EXPIRES_AT:-}" ]; then CONFIGURE_ARGS=(--expires "$VIZ_STAGE_EXPIRES_AT"); fi
 if [ "${VIZ_OAUTH_WITHOUT_RATE_LIMITS:-0}" = 1 ]; then CONFIGURE_ARGS+=(--oauth-without-rate-limits); fi
 if [ "${VIZ_OAUTH_PUBLIC:-0}" = 1 ]; then CONFIGURE_ARGS+=(--oauth-public); fi
+if [ "${VIZ_WITHOUT_APP:-0}" = 1 ]; then CONFIGURE_ARGS+=(--without-app); fi
 node deploy/configure.mjs ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"} ${CONFIGURE_ARGS[@]+"${CONFIGURE_ARGS[@]}"} --release "$VIZ_RELEASE_SHA" > /dev/null
 note "configure: deploy/generated/$TARGET"
 
@@ -112,7 +133,7 @@ set +e
 node deploy/release.mjs deploy ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"}
 rc=$?
 set -e
-if [ $rc -eq 3 ]; then note "release: REFUSED before promoting anything (see above: an unacknowledged Durable Object migration, a rollback floor, or a generated secret)"; exit 3; fi
+if [ $rc -eq 3 ]; then note "release: REFUSED before promoting anything (see above: an unacknowledged Durable Object migration, a rollback floor, the web app's build, or a generated secret)"; exit 3; fi
 if [ $rc -ne 0 ]; then note "release: FAILED during upload or promotion, or refused in phase 2 after promotion began (see above)"; exit 1; fi
 note "release: promoted; record deploy/generated/$TARGET/release.json"
 # Generated secrets, by name only (lib/secrets.mjs): kept, created or rotated.
@@ -130,7 +151,7 @@ FORWARD_ONLY=$(node -e 'const r=require(process.argv[1]);console.log((r.forwardO
 if [ $SMOKE -eq 0 ]; then note "smoke: skipped (--skip-smoke)"; exit 0; fi
 step "smoke test"
 if node deploy/smoke.mjs ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"} --expect-release "$VIZ_RELEASE_SHA"; then
-  note "smoke: passed$([ -z "${SMOKE_KEY:-}" ] && echo ' (health only: SMOKE_KEY not set)')"
+  note "smoke: passed$([ -z "${SMOKE_KEY:-}" ] && echo ' (no data check: SMOKE_KEY not set)')"
   exit 0
 fi
 note "smoke: FAILED"
@@ -152,7 +173,8 @@ step "automatic rollback to the previous release"
 if node deploy/release.mjs rollback ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"} --record "$OUT/previous.json" --reason "smoke test of $VIZ_RELEASE_SHA failed"; then
   note "rollback: previous release restored"
   PREVIOUS=$(node -e 'console.log(require(process.argv[1]).release??"")' "$OUT/previous.json")
-  if SMOKE_KEY="" node deploy/smoke.mjs ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"} --health-timeout 180 ${PREVIOUS:+--expect-release "$PREVIOUS"}; then note "after rollback: healthy"; else note "after rollback: NOT healthy"; fi
+  # --no-app: the manifest describes the release just rolled back, not the web app the previous one serves.
+  if SMOKE_KEY="" node deploy/smoke.mjs ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"} --no-app --health-timeout 180 ${PREVIOUS:+--expect-release "$PREVIOUS"}; then note "after rollback: healthy"; else note "after rollback: NOT healthy"; fi
 else
   note "rollback: FAILED or refused (see above)"
 fi

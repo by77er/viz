@@ -104,6 +104,8 @@ const LIST = [
   m('the palette\'s field has no visible label', ['keyboard'], 'src/shell/CommandPalette.tsx', '<span className="vz-label">Command</span>', '<span className="vz-label vz-sr">Command</span>'),
   m('a page in which something throws is left empty', ['flow'], 'src/shell/ErrorBoundary.tsx', 'if (!error) return this.props.children\n    return (', 'if (!error) return this.props.children\n    if (error) return null\n    return ('),
   m('an empty page box stands while the API is asked who the key is (the banner then moves it)', ['shift'], 'src/shell/AppShell.tsx', 'if (!wait.shown) return null', 'if (!wait.shown) return <div className="vz-page" />'),
+  m('the address is written with the router\'s default: the page goes to the top after a change of form', ['shift'], 'src/explore/ExplorePage.tsx', 'replace, resetScroll: false }),', 'replace }),'),
+  m('the table prepared for an earlier result is shown for a later one', ['flow'], 'src/explore/ExplorePage.tsx', 'if (have && have.aligned === a && have.chart === c) return have.table', 'if (have) return have.table'),
   // ---- what the gateway serves
   m('serve.json: /settings is not a document (a reload there would be a 404)', U, 'serve.json', '"documents": ["/", "/explore", "/help", "/settings"]', '"documents": ["/", "/explore", "/help"]'),
   m('serve.json: the policy allows inline scripts', U, 'serve.json', "script-src 'self';", "script-src 'self' 'unsafe-inline';"),

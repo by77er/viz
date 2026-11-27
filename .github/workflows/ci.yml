@@ -2,8 +2,13 @@
 # claude/** branches, and is called by deploy.yml before every production deploy.
 #
 # The component list and what each needs live in deploy/ci/matrix.mjs; a component that is
-# not in the checkout (app/ and design-system/ on main, for now) is skipped with a notice.
+# not in the checkout is skipped with a notice.
 # The two WASM engines are built once and shared with the jobs that import them.
+#
+# app/ and design-system/ are checked here too: the app's typecheck, unit tests, token check,
+# production build and that build read by app/serve.json's rules as the deploy reads it; the
+# design system's own tests and its check without the rendered audit. CI has no browser, so
+# neither's browser suites run here (deploy/README.md, "CI", says which).
 name: CI
 
 on:
@@ -174,7 +179,7 @@ jobs:
           PREPARE: ${{ matrix.prepare }}
         run: bash -c "$PREPARE"
       - name: Typecheck
-        if: matrix.npm
+        if: matrix.tsc
         working-directory: ${{ matrix.dir }}
         env:
           EXCLUDE: ${{ matrix.exclude }}

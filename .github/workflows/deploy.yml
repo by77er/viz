@@ -1,9 +1,11 @@
 # Every push to main deploys vis.bitcru.sh. deploy/README.md describes the whole path.
 #
 #   push to main ──► checks (ci.yml, the same jobs a pull request runs)
-#                ──► deploy: deploy/deploy.sh = resources, configure, upload every Worker,
-#                    promote callees first, smoke test; rollback to the previous release
-#                    if the smoke test fails and no Durable Object migration was applied
+#                ──► deploy: deploy/deploy.sh = build the web app from an export of this commit's
+#                    sources and stage it for viz-gateway, resources, configure, upload every
+#                    Worker, promote callees first, smoke test (the web app included); rollback
+#                    to the previous release if the smoke test fails and no Durable Object
+#                    migration was applied. A failed app build stops before anything is uploaded.
 #   manual run   ──► the same, with `acknowledge_migrations`; or, with `rollback_to`, restore
 #                    the release recorded for that commit (refused across a migration)
 #
@@ -87,6 +89,8 @@ jobs:
             stack/package-lock.json
             control/package-lock.json
             query/package-lock.json
+            app/package-lock.json
+            design-system/package-lock.json
       - name: WASM engines (built and tested by the checks)
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -121,11 +125,13 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-${{ github.sha }}
+          # app.json: the web app's build as it was staged (every file with its SHA-256; D74).
           path: |
             deploy/generated/production/release.json
             deploy/generated/production/previous.json
             deploy/generated/production/rollback.json
             deploy/generated/production/manifest.json
+            deploy/generated/production/app.json
           if-no-files-found: ignore
           retention-days: 90
 

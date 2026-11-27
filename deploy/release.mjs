@@ -610,7 +610,9 @@ export async function deploy({ stage, ackText = '', rotateText = '' }) {
   log(`run ${run}`)
   printPlan(manifest, plan, planned, before)
   for (const f of forwardOnly) log(`  FORWARD-ONLY: ${f.why}`)
-  const refusals = [...idsOptionalProblems(manifest), ...plan.problems, ...floors.problems, ...rotateProblems(rotate, specs), ...keyGateRefusals(gate, planned), ...appProblems(manifest, loadWorkersPlan())]
+  const refusals = [...idsOptionalProblems(manifest), ...plan.problems, ...floors.problems, ...rotateProblems(rotate, specs), ...keyGateRefusals(gate, planned)]
+  // The web app (D74): the build staged for this release, judged again here, whatever configure.mjs judged.
+  refusals.push(...appProblems(manifest, loadWorkersPlan()))
   if (refusals.length) {
     log('\nrelease: REFUSED before uploading or promoting anything:')
     for (const p of refusals) log(`  - ${p}`)

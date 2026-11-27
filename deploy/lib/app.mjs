@@ -328,7 +328,8 @@ export function carryPlan(serving, build, serve, keepBuilds) {
   const sameBuild = serving.build === build.hash
   const out = []
   if (!sameBuild && serving.files) for (const [path, hash] of serving.files) if (!current.has(path)) out.push({ path, sha256: hash, age: 1 })
-  for (const k of serving.kept) if (!current.has(k.path) && !out.some((o) => o.path === k.path)) out.push({ path: k.path, sha256: k.sha256, age: sameBuild ? k.age : k.age + 1 })
+  // What the version says it kept is data read from an account: an age that is no count of builds is no entry.
+  for (const k of serving.kept) if (Number.isInteger(k.age) && k.age >= 1 && !current.has(k.path) && !out.some((o) => o.path === k.path)) out.push({ path: k.path, sha256: k.sha256, age: sameBuild ? k.age : k.age + 1 })
   return out
     .filter((f) => Number.isInteger(f.age) && f.age >= 1 && f.age <= keepBuilds)
     // Only a hashed asset of a known type and a plain name is ever fetched and uploaded again.

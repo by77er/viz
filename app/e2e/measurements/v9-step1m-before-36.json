@@ -1,0 +1,289 @@
+{
+  "label": "v9-step1m-before",
+  "series": 36,
+  "query": "sum by (service, route, status) (rate(http_requests_total[5m]))",
+  "layout": "desktop",
+  "root": "/tmp/claude-0/-home-user-viz/3c79101e-93fd-5a8e-90a7-fca4d8b40aab/scratchpad/before/app",
+  "when": "2026-11-26T23:34:26.944Z",
+  "runs": 5,
+  "setup": "Chromium, CPU 4x, Fast 4G, 1440x900, fine pointer, fresh context per run",
+  "cores": 4,
+  "calibrationsMs": [
+    397.192996
+  ],
+  "summary": {
+    "load1": {
+      "p75": 2.88,
+      "median": 2.53,
+      "max": 3.04,
+      "min": 2.41
+    },
+    "loadEnd": {
+      "p75": 2.88,
+      "median": 2.75,
+      "max": 3.04,
+      "min": 2.41
+    },
+    "press": {
+      "p75": 13,
+      "median": 12.800000000745058,
+      "max": 13.899999998509884,
+      "min": 9.5
+    },
+    "busy": {
+      "p75": 39.69999999925494,
+      "median": 39.30000000074506,
+      "max": 71,
+      "min": 28.699999999254942
+    },
+    "runToPaint": {
+      "p75": 565.5999999996275,
+      "median": 550.9000000003725,
+      "max": 586.6999999992549,
+      "min": 522.3999999985099
+    },
+    "chartToTable": {
+      "p75": 86.69999999925494,
+      "median": 66,
+      "max": 116.90000000037253,
+      "min": 59
+    },
+    "tableToText": {
+      "p75": 49.69999999925494,
+      "median": 42.59999999962747,
+      "max": 60.600000001490116,
+      "min": 36.09999999962747
+    },
+    "textToChart": {
+      "p75": 34.29999999888241,
+      "median": 32.29999999888241,
+      "max": 34.70000000111759,
+      "min": 30.800000000745058
+    },
+    "legendToggle": {
+      "p75": 75.69999999925494,
+      "median": 72,
+      "max": 121.40000000037253,
+      "min": 64.19999999925494
+    },
+    "picker": {
+      "p75": 56.40000000037253,
+      "median": 55.20000000111759,
+      "max": 75.90000000037253,
+      "min": 39.399999998509884
+    },
+    "response": {
+      "p75": 40,
+      "median": 32.09999999962747,
+      "max": 41.29999999888241,
+      "min": 25.899999998509884
+    },
+    "responseFull": {
+      "p75": 69.5,
+      "median": 61.5,
+      "max": 81.39999999850988,
+      "min": 33.19999999925494
+    },
+    "inp": {
+      "p75": 112,
+      "median": 104,
+      "max": 120,
+      "min": 64
+    },
+    "inputDelay": {
+      "p75": 8.699999999254942,
+      "median": 5.700000001117587,
+      "max": 8.700000001117587,
+      "min": 4.900000000372529
+    },
+    "clsLoad": {
+      "p75": 0,
+      "median": 0,
+      "max": 0,
+      "min": 0
+    },
+    "clsRun": {
+      "p75": 0,
+      "median": 0,
+      "max": 0,
+      "min": 0
+    },
+    "clsRunAll": {
+      "p75": 0,
+      "median": 0,
+      "max": 0,
+      "min": 0
+    },
+    "judgedRuns": {
+      "count": 5,
+      "of": 5,
+      "cores": 4
+    },
+    "responseJudged": {
+      "p75": 40,
+      "median": 32.09999999962747,
+      "max": 41.29999999888241,
+      "min": 25.899999998509884,
+      "n": 5
+    },
+    "responseFullJudged": {
+      "p75": 69.5,
+      "median": 61.5,
+      "max": 81.39999999850988,
+      "min": 33.19999999925494,
+      "n": 5
+    },
+    "runToPaintJudged": {
+      "p75": 565.5999999996275,
+      "median": 550.9000000003725,
+      "max": 586.6999999992549,
+      "min": 522.3999999985099,
+      "n": 5
+    },
+    "chartToTableJudged": {
+      "p75": 86.69999999925494,
+      "median": 66,
+      "max": 116.90000000037253,
+      "min": 59,
+      "n": 5
+    },
+    "tableToTextJudged": {
+      "p75": 49.69999999925494,
+      "median": 42.59999999962747,
+      "max": 60.600000001490116,
+      "min": 36.09999999962747,
+      "n": 5
+    },
+    "pressJudged": {
+      "p75": 13,
+      "median": 12.800000000745058,
+      "max": 13.899999998509884,
+      "min": 9.5,
+      "n": 5
+    }
+  },
+  "bytes": {
+    "initialJs": {
+      "raw": 475979,
+      "gzip": 156578
+    },
+    "lazyJs": {
+      "raw": 449684,
+      "gzip": 142210
+    },
+    "css": {
+      "raw": 64227,
+      "gzip": 11524
+    },
+    "html": {
+      "raw": 1433,
+      "gzip": 816
+    },
+    "fonts": {
+      "raw": 128788,
+      "files": 2
+    }
+  },
+  "raw": [
+    {
+      "load1": 2.53,
+      "clsLoad": 0,
+      "press": 12.800000000745058,
+      "busy": 71,
+      "runToPaint": 586.6999999992549,
+      "response": 40,
+      "responseFull": 69.5,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 66,
+      "tableToText": 49.69999999925494,
+      "textToChart": 34.29999999888241,
+      "legendToggle": 121.40000000037253,
+      "picker": 45.399999998509884,
+      "inp": 112,
+      "inpEvent": "pointerup",
+      "inputDelay": 8.699999999254942,
+      "loadEnd": 2.49
+    },
+    {
+      "load1": 2.49,
+      "clsLoad": 0,
+      "press": 11.699999999254942,
+      "busy": 33.59999999962747,
+      "runToPaint": 550.9000000003725,
+      "response": 32.09999999962747,
+      "responseFull": 61.5,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 116.90000000037253,
+      "tableToText": 36.09999999962747,
+      "textToChart": 30.800000000745058,
+      "legendToggle": 75.69999999925494,
+      "picker": 56.40000000037253,
+      "inp": 120,
+      "inpEvent": "pointerup",
+      "inputDelay": 8.700000001117587,
+      "loadEnd": 2.41
+    },
+    {
+      "load1": 2.41,
+      "clsLoad": 0,
+      "press": 13.899999998509884,
+      "busy": 39.69999999925494,
+      "runToPaint": 565.5999999996275,
+      "response": 41.29999999888241,
+      "responseFull": 81.39999999850988,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 61.29999999888241,
+      "tableToText": 41.5,
+      "textToChart": 31.09999999962747,
+      "legendToggle": 64.19999999925494,
+      "picker": 75.90000000037253,
+      "inp": 104,
+      "inpEvent": "pointerup",
+      "inputDelay": 5.199999999254942,
+      "loadEnd": 3.04
+    },
+    {
+      "load1": 3.04,
+      "clsLoad": 0,
+      "press": 13,
+      "busy": 39.30000000074506,
+      "runToPaint": 532.7000000011176,
+      "response": 30.799999998882413,
+      "responseFull": 39.79999999888241,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 59,
+      "tableToText": 42.59999999962747,
+      "textToChart": 34.70000000111759,
+      "legendToggle": 72,
+      "picker": 55.20000000111759,
+      "inp": 64,
+      "inpEvent": "pointerup",
+      "inputDelay": 5.700000001117587,
+      "loadEnd": 2.88
+    },
+    {
+      "load1": 2.88,
+      "clsLoad": 0,
+      "press": 9.5,
+      "busy": 28.699999999254942,
+      "runToPaint": 522.3999999985099,
+      "response": 25.899999998509884,
+      "responseFull": 33.19999999925494,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "chartToTable": 86.69999999925494,
+      "tableToText": 60.600000001490116,
+      "textToChart": 32.29999999888241,
+      "legendToggle": 65.70000000111759,
+      "picker": 39.399999998509884,
+      "inp": 88,
+      "inpEvent": "pointerup",
+      "inputDelay": 4.900000000372529,
+      "loadEnd": 2.75
+    }
+  ]
+}

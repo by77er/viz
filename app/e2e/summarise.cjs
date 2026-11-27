@@ -33,8 +33,9 @@ const ROWS = [
   ['runToPaint', 'Release of Run query to the result painted, network included (not a budget figure)', null],
   ['inp', 'Worst interaction, Event Timing, before typing and crosshair', 200],
   ['inpAll', 'Worst interaction, Event Timing, the whole run', 200],
-  ['clsLoad', 'Layout shift, first load', 0.05],
-  ['clsRun', 'Layout shift, query run', 0.05],
+  ['clsLoad', 'Layout shift, first load (every entry: no input is given)', 0.05],
+  ['clsRun', 'Layout shift, query run (entries not marked as following input)', 0.05],
+  ['clsRunAll', 'Layout shift, query run (every entry, those marked as following the press included)', 0.05],
 ]
 const fmt = (k, v) => (v == null ? '–' : k.startsWith('cls') ? v.toFixed(4) : k === 'typingOver' ? v.toFixed(0) : `${Math.round(v)}`)
 const cell = (k, s) => (s ? `${fmt(k, s.p75)} (${fmt(k, s.median)}, ${fmt(k, s.max)})` : 'not measured')

@@ -186,6 +186,24 @@ async function main() {
       await page.click('[data-testid=start-state] .vz-links a')
       await ready(page)
       check('an example link runs its query', new URL(page.url()).searchParams.get('q') === Q_RATE)
+      // The table's rows are prepared in idle time after a result is painted: the table shows the result on screen, not the one it was prepared for.
+      {
+        const t = await newPage()
+        await t.page.goto(url(Q_RATE))
+        await ready(t.page)
+        await sleep(400) // idle time: the table of the four series is prepared, unseen
+        await runQuery(t.page, Q_MANY)
+        await t.page.waitForFunction((q) => document.querySelector('[data-testid=result-query]')?.textContent.trim() === q, Q_MANY)
+        await t.page.click('[data-testid=view-table]')
+        await t.page.waitForSelector('[data-testid=result-table] tbody tr')
+        const second = await t.page.evaluate(() => ({ rows: document.querySelectorAll('[data-testid=result-table] tbody tr').length, caption: document.querySelector('[data-testid=table-caption]').textContent.replace(/\s+/g, ' ').trim() }))
+        await runQuery(t.page, Q_RATE)
+        await t.page.waitForFunction((q) => document.querySelector('[data-testid=result-query]')?.textContent.trim() === q, Q_RATE)
+        await sleep(300)
+        const third = await t.page.evaluate(() => ({ rows: document.querySelectorAll('[data-testid=result-table] tbody tr').length, caption: document.querySelector('[data-testid=table-caption]').textContent.replace(/\s+/g, ' ').trim() }))
+        check('table: after another query it shows that query\'s series, whether the table was asked for before or after the result came', second.rows === 36 && second.caption.startsWith('36 of 36 series') && third.rows === 4 && third.caption.startsWith('4 of 4 series'), JSON.stringify([second, third]))
+        await t.ctx.close()
+      }
       await ctx.close()
 
       // Something in a page throws (here: the chart's script, replaced by one that fails): the page says so; it is not left empty.
@@ -553,7 +571,8 @@ async function main() {
       const small = []
       const covered = []
       let measured = 0
-      const visit = async (name) => { const h = await hitAreas(page); measured += h.count; for (const s of h.small) small.push(`${name}: ${s}`); for (const c of h.covered) covered.push(`${name}: ${c}`) }
+      const fine = [] // a state measured while the pointer was not coarse is not a measurement of touch
+      const visit = async (name) => { const h = await hitAreas(page); if (!h.coarse) fine.push(name); measured += h.count; for (const s of h.small) small.push(`${name}: ${s}`); for (const c of h.covered) covered.push(`${name}: ${c}`) }
       await visit('chart')
       await page.tap('[data-testid=view-table]'); await page.waitForSelector('[data-testid=result-table] tbody tr'); await visit('table')
       await page.tap('[data-testid=view-text]'); await visit('text')
@@ -565,7 +584,7 @@ async function main() {
       await page.goto(`${APP}/help`); await page.waitForSelector('h1'); await visit('help')
       await page.goto(`${APP}/settings`); await page.waitForSelector('[data-testid=sign-out]'); await visit('settings')
       await page.goto(KEYED + '/explore'); await page.waitForSelector('[data-testid=sign-in]'); await visit('sign-in')
-      check(`touch: every control has a 44 px hit area that is its own, in ten states (${measured} measured)`, small.length === 0 && covered.length === 0 && measured > 100, [...small, ...covered].slice(0, 8).join(' | '))
+      check(`touch: every control has a 44 px hit area that is its own, in ten states (${measured} measured)`, small.length === 0 && covered.length === 0 && measured > 100 && fine.length === 0, [...fine.map((n) => `${n}: the pointer was not coarse`), ...small, ...covered].slice(0, 8).join(' | '))
       // A tap toggles a legend row; a held finger shows the press; zoom is two buttons; the readout is under the plot.
       await page.goto(url(Q_RATE)); await ready(page)
       await page.tap('[data-testid=chart] tbody tr[data-key] .vz-series')
@@ -602,8 +621,8 @@ async function main() {
           await page.goto(u)
           await page.waitForSelector('h1')
           await sleep(300)
-          const m = await page.evaluate(() => ({ over: document.documentElement.scrollWidth - document.documentElement.clientWidth, smallest: Math.min(...[...document.querySelectorAll('body *')].filter((el) => el.getClientRects().length && [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim())).map((el) => parseFloat(getComputedStyle(el).fontSize))) }))
-          if (m.over > 0 || m.smallest < 11) o.push(`${u.replace(APP, '').slice(0, 30)}: over ${m.over}, smallest ${m.smallest}`)
+          const m = await page.evaluate(() => ({ coarse: matchMedia('(pointer: coarse)').matches, over: document.documentElement.scrollWidth - document.documentElement.clientWidth, smallest: Math.min(...[...document.querySelectorAll('body *')].filter((el) => el.getClientRects().length && [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim())).map((el) => parseFloat(getComputedStyle(el).fontSize))) }))
+          if (!m.coarse || m.over > 0 || m.smallest < 11) o.push(`${u.replace(APP, '').slice(0, 30)}: over ${m.over}, smallest ${m.smallest}${m.coarse ? '' : ', the pointer was not coarse'}`)
         }
         check(`${w} px: nothing scrolls the page sideways and no text is under 11 px, on six pages`, o.length === 0, o.join(' | '))
       }
@@ -643,7 +662,10 @@ async function main() {
     // ------------------------------------------------ nothing moves: layout shift on load, on a run, on a reload
     if (want('shift')) {
       const { ctx, page } = await newPage()
-      await ctx.addInitScript(() => { window.__shift = 0; new PerformanceObserver((l) => { for (const e of l.getEntries()) if (!e.hadRecentInput) window.__shift += e.value }).observe({ type: 'layout-shift', buffered: true }) })
+      const countShifts = () => { window.__shift = 0; new PerformanceObserver((l) => { for (const e of l.getEntries()) window.__shift += e.value }).observe({ type: 'layout-shift', buffered: true }) }
+      // Every entry is summed, those marked hadRecentInput too: this section gives no input, and the mark is set for the first 460 ms or so
+      // after a load under isMobile whether or not there was any (design-system/reviews/system-v9/confirmation.md).
+      await ctx.addInitScript(countShifts)
       await page.goto(url(Q_MANY))
       await ready(page)
       await sleep(600)
@@ -656,7 +678,29 @@ async function main() {
       await sleep(600)
       const drawn = await page.evaluate(() => ({ h: document.querySelector('[data-testid=chart]').getBoundingClientRect().height, shift: window.__shift }))
       await setMockDelay(0)
-      check('a first visit to a result shifts nothing (layout shift under 0.005; the budget is 0.05)', first < 0.005, first.toFixed(4))
+      check('a first visit to a result shifts nothing (layout shift under 0.005, every entry counted; the budget is 0.05)', first < 0.005, first.toFixed(4))
+      // The phone layout, first visit only. No reload here: under touch emulation the outgoing document loses its coarse pointer
+      // during a reload, so nothing may be read across one (the same review); the pointer is checked where the figure is read.
+      const phoneShift = await newPage({ viewport: { width: 400, height: 800 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 })
+      await phoneShift.ctx.addInitScript(countShifts)
+      await phoneShift.page.goto(url(Q_MANY))
+      await ready(phoneShift.page)
+      await sleep(900)
+      const onPhone = await phoneShift.page.evaluate(() => ({ shift: window.__shift, coarse: matchMedia('(pointer: coarse)').matches }))
+      check('phone layout (400 px, coarse pointer): a first visit shifts nothing, every entry counted', onPhone.coarse && onPhone.shift < 0.005, JSON.stringify(onPhone))
+      // The address follows a change of form 300 ms later, and a change of unit at once: the page stays where it was scrolled to.
+      // (Found by the speed runs: on a phone the forms are below the first screen, and the router's default for a navigation is the top of the page.)
+      const kept = {}
+      for (const [name, act] of [['table', (p) => p.tap('[data-testid=view-table]')], ['text', (p) => p.tap('[data-testid=view-text]')], ['unit', (p) => p.selectOption('[data-testid=unit]', 'none')]]) {
+        await phoneShift.page.locator(name === 'unit' ? '[data-testid=unit]' : `[data-testid=view-${name}]`).scrollIntoViewIfNeeded()
+        await sleep(500)
+        const y0 = await phoneShift.page.evaluate(() => Math.round(scrollY))
+        await act(phoneShift.page)
+        await sleep(700)
+        kept[name] = { y0, y: await phoneShift.page.evaluate(() => Math.round(scrollY)), address: new URL(phoneShift.page.url()).search.replace(/^.*?(&view=[a-z]+)?(&unit=[a-z]+)?$/, '$1$2') }
+      }
+      check('phone layout: a change of form or of unit leaves the page where it was scrolled to, also once the address has followed', Object.values(kept).every((k) => k.y0 > 100 && k.y === k.y0) && /view=table/.test(kept.table.address) && /view=text/.test(kept.text.address) && /unit=none/.test(kept.unit.address), JSON.stringify(kept))
+      await phoneShift.ctx.close()
       check('a reload reserves the chart\'s height from its last result before the data arrives, to the pixel, and shows the waiting line over it', /--legend-rows:\s*10/.test(reserved.style) && Math.abs(reserved.h - drawn.h) < 1 && drawn.shift < 0.05, JSON.stringify([reserved, drawn]))
       await ctx.close()
     }
@@ -747,6 +791,7 @@ async function main() {
       }
       const phone = await newPage({ viewport: { width: 400, height: 900 }, hasTouch: true, isMobile: true })
       await phone.page.goto(url(Q_RATE)); await ready(phone.page); await axe(phone.page, 'chart, 400 px, touch', check)
+      check('the phone run of axe had a coarse pointer', await phone.page.evaluate(() => matchMedia('(pointer: coarse)').matches))
       await phone.ctx.close()
       // The theme: chosen on the Settings page, applied before first paint from a script file.
       const dark = await newPage()

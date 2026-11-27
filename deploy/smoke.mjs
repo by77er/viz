@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The post-deploy smoke test, through the public URL.
 //
-//   node deploy/smoke.mjs [--stage S] [--url https://…] [--health-timeout 180] [--expect-release SHA]
+//   node deploy/smoke.mjs [--stage S] [--url https://…] [--health-timeout 180] [--expect-release SHA] [--no-app]
 //
 // 1. GET /healthz until it says healthy (the gateway asks every backend) and, with
 //    --expect-release, until the gateway answering is the release just promoted: right after a
@@ -130,10 +130,10 @@ export async function checkApp(base, app, { fetchImpl = fetch } = {}) {
       const post = await ask(path, { method: 'POST', body: 'x' })
       if (post.status === 200) problems.push(`POST ${path}: 200; only GET and HEAD are served`)
     }
-    const first = refs.find((p) => p.startsWith(serve.assetsPrefix))
+    // (Paths with dot segments are not asked here: this client's URL parser removes them before
+    // sending. test/app-serve.test.mjs sends them raw to a local workerd.)
     const never = [
       [`${serve.assetsPrefix}viz-smoke-missing-00000000.js`, 'a hashed asset this version does not hold'],
-      ...(first ? [[`${serve.assetsPrefix}%2e%2e${first}`, 'a path that leaves the asset prefix']] : []),
       ['/index.html', 'index.html itself'],
       ['/api/v1/viz-smoke-unknown', 'an unknown API path'],
       [`${serve.documents.find((d) => d !== '/') ?? '/viz-smoke'}/`, 'a document path with a trailing slash'],
@@ -141,8 +141,7 @@ export async function checkApp(base, app, { fetchImpl = fetch } = {}) {
     for (const [path, what] of never) {
       const r = await ask(path, { headers: { Accept: 'text/html,*/*;q=0.8', 'Sec-Fetch-Mode': 'navigate' } })
       checked++
-      // A path that leaves the prefix may be normalised to the file it names and served as that file; it must never be a page.
-      if (what === 'a path that leaves the asset prefix' ? /text\/html/.test(r.headers.get('content-type') ?? '') || /<!doctype/i.test(r.body.toString()) : !isJson404(r)) {
+      if (!isJson404(r)) {
         problems.push(`GET ${path} (${what}): ${r.status} ${r.headers.get('content-type')}, cache-control ${JSON.stringify(r.headers.get('cache-control'))}; it must be the gateway's JSON 404, never a page, never kept`)
       }
     }
@@ -164,7 +163,7 @@ export function manifestApp(manifest) {
   return { app: w.app }
 }
 
-export async function smoke({ stage, url, healthTimeoutMs = 180_000, expectRelease, appTimeoutMs = 60_000 }) {
+export async function smoke({ stage, url, healthTimeoutMs = 180_000, expectRelease, appTimeoutMs = 60_000, checkWebApp = true }) {
   const base = url ?? (await publicUrl(stage))
   log(`smoke: ${base}${expectRelease ? ` (expecting release ${expectRelease})` : ''}`)
   const h = await waitHealthy(base, healthTimeoutMs, expectRelease)
@@ -175,7 +174,8 @@ export async function smoke({ stage, url, healthTimeoutMs = 180_000, expectRelea
   log(`smoke: /healthz healthy after ${h.attempts} attempt(s) (release ${h.body.release}; ${Object.entries(h.body.backends).map(([k, v]) => `${k} ${v.status} ${v.ms} ms`).join(', ')})`)
   // The web app (D74), where this release serves one. Another location may still run the previous
   // version for some seconds after the one that answered /healthz: asked again until it passes.
-  const { app, why } = manifestApp(loadManifest(stage))
+  // `checkWebApp: false` (--no-app): after a rollback, when what serves is not the manifest's release.
+  const { app, why } = checkWebApp ? manifestApp(loadManifest(stage)) : { app: null, why: 'not asked (--no-app)' }
   let web = 'skipped'
   if (!app) log(`smoke: the web app was not checked: ${why}`)
   else {
@@ -206,9 +206,9 @@ export async function smoke({ stage, url, healthTimeoutMs = 180_000, expectRelea
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    const args = parseArgs(process.argv.slice(2), { options: ['stage', 'url', 'health-timeout', 'expect-release'] })
+    const args = parseArgs(process.argv.slice(2), { flags: ['no-app'], options: ['stage', 'url', 'health-timeout', 'expect-release'] })
     checkStage(args.stage)
-    const r = await smoke({ stage: args.stage, url: args.url, healthTimeoutMs: Number(args['health-timeout'] ?? 180) * 1000, expectRelease: args['expect-release'] })
+    const r = await smoke({ stage: args.stage, url: args.url, healthTimeoutMs: Number(args['health-timeout'] ?? 180) * 1000, expectRelease: args['expect-release'], checkWebApp: !args['no-app'] })
     process.exit(r.ok ? 0 : 1)
   } catch (e) {
     log(`smoke: ${e.message}`)

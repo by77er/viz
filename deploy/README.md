@@ -14,14 +14,18 @@ changes no component: everything it needs from one is under "Needed changes".
 | `lib/floors.mjs` | Rollback floors a switch raises (`INGEST_SIGNALS`; `OAUTH_PUBLIC`): which Workers, how each is judged (schema version or a `VIZ_FLOORS` stamp), and the deploy and rollback refusals, or a forward-only mark where a rule says so (D64, D69) |
 | `lib/secrets.mjs` | Worker secrets the deploy generates (viz-control's `OAUTH_CLIENT_KEY`): put on the release's upload only where missing, value on wrangler's stdin, replaced only when asked, never on another run's upload, never on a viz-control without its rate limits (D70); rollbacks across its creation or rotation refused ("Worker secrets the deploy generates") |
 | `lib/schemas.mjs` | Reads every Durable Object class's `SchemaSpec` from the component sources (esbuild, no Worker run) for the manifest, the `VIZ_SCHEMAS` var of each version, and the rollback check |
-| `deploy.sh` | The whole deploy: WASM, `npm ci`, resources, configure, release, smoke test, automatic rollback |
-| `smoke.mjs` | `/healthz` until the release just promoted answers, then a real Remote Write and a query that must return it within 60 s |
+| `app.mjs`, `lib/app.mjs` | The web app (D74, "The web app"): reads `app/serve.json` (the specification of how the build is served; anything in it this code does not know is refused), builds the app in an export of its sources, never in `app/`, stages what wrangler uploads (the build's files and a generated `_headers`, never `index.html`), writes the stamp `generated/<target>/app.json`, keeps the earlier builds' files a page already open may ask for, and says why a build may not be released |
+| `deploy.sh` | The whole deploy: WASM, `npm ci`, the web app's build, resources, configure, release, smoke test, automatic rollback |
+| `smoke.mjs` | `/healthz` until the release just promoted answers, then the web app as `app/serve.json` says it is served (where the release serves one), then a real Remote Write and a query that must return it within 60 s |
 | `bootstrap.mjs` | A tenant's first API key, through a one-time token |
 | `load.mjs` | Steady write and read load with a cutover report (used by the trial) |
 | `gateway/` | `viz-gateway`, the Worker on `vis.bitcru.sh`, and its tests |
 | `stage/` | The one shim a staged deployment needs (queue names, see "Needed changes" 1) |
 | `trial/` | Trial 2: `sink/index.ts`, a webhook receiver Worker for a stage, and `trial2.mjs`, which drives a stage end to end (monitors, alerting, MCP) and reports. Trial 3: `probe/index.ts`, a stand-in for the ruler's `SINK` binding |
 | `ci/matrix.mjs` | Which components CI checks in this checkout |
+| `ci/app-build.mjs` | CI, in `app/` after its build: the build read by `app/serve.json`'s rules as the deploy reads it |
+| `scripts/mutants-app.mjs` | Mutation check of the web app's path from sources to a release (`lib/app.mjs`, `app.mjs`, its use in `configure.mjs`, `release.mjs`, `smoke.mjs`, `deploy.sh`, the CI matrix; run on a copy). The Worker's part is in `gateway/scripts/mutants.mjs` |
+| `test/app.test.mjs`, `test/app-serve.test.mjs`, `gateway/test/app.test.ts`, `test/fixtures/app-build/` | The web app: the build pipeline and the release gate against the fake account; the gateway with the staged build in local workerd (`wrangler dev --local`), requests sent raw; the Worker's part under vitest. All three read `app/serve.json` itself. The fixture is a seven-file build laid out as the app's |
 | `scripts/mutants-release.mjs` | Mutation check of the schema, format and floor rules in `release.mjs`, `configure.mjs`, `lib/schemas.mjs`, `lib/formats.mjs`, `lib/floors.mjs`, of the class-binding allowlist and viz-mcp's bindings, of the workflow's main-only gate, of D70's gate in `configure.mjs` and of the rate-limit ids in `resources.mjs` (run on a copy) |
 | `scripts/mutants-secrets.mjs` | Mutation check of the generated secrets (`lib/secrets.mjs`, its use in `release.mjs`, stdin in `lib/wrangler.mjs`, the API timeout in `lib/cf.mjs`, D70's gate on the key; run on a copy) |
 | `test/fake-wrangler.mjs` | A stand-in for wrangler that the end-to-end tests (`secrets`, `release-checks`, `review-d69`, `workflow`, `oauth-gate`, `upgrade-production`) run as a real child process (`VIZ_WRANGLER_BIN`, tests only), with `test/fake-account.mjs` answering the Cloudflare API from the same state (versions show their vars, secrets and Rate Limiting bindings) |
@@ -44,22 +48,30 @@ push to main
                the release serving now (read from the version tag on Cloudflare)
             3. deploy/deploy.sh
                  npm ci (deploy/, stack/, control/, query/, ruler/, mcp/)
+                 app.mjs build              the web app, built in an export of this commit's sources
+                                            (npm ci and `npm run build` there, never in app/), read by
+                                            app/serve.json's rules and staged for viz-gateway; a failed
+                                            build stops here, before anything on Cloudflare is touched
                  resources.mjs ensure       R2 viz-lake, KV viz-config, queues viz-flush, viz-maint,
                                             viz-flush-dlq, viz-maint-dlq; viz-control's six Rate Limiting
                                             namespace ids (the account's bindings read, nothing created)
                  configure.mjs              generated/production/*.jsonc + manifest.json; refuses a
-                                            viz-control without its rate limits (D70)
-                 release.mjs deploy         plan → refuse unacknowledged migrations (exit 3)
+                                            viz-control without its rate limits (D70), and a web app
+                                            build that is missing, stale or altered (D74)
+                 release.mjs deploy         plan → refuse unacknowledged migrations, and again a web
+                                            app build that is not this release's (exit 3)
                                             phase 1: upload every Worker (serves nothing); viz-control's
                                                      OAUTH_CLIENT_KEY put on its upload if missing
                                             phase 2: promote viz-publisher, viz-ingest, viz-control,
                                                      viz-query, viz-ruler, viz-mcp, viz-gateway
-                 smoke.mjs                  /healthz until the new release answers; Remote Write +
-                                            query with SMOKE_KEY
+                 smoke.mjs                  /healthz until the new release answers; the web app as
+                                            app/serve.json says it is served; Remote Write + query
+                                            with SMOKE_KEY
                  on smoke failure           no migration in the release → roll back to the previous
                                             release and fail; migration → fail loudly, no rollback
-            4. upload the release record as artifact release-<sha> (90 days) and print it in the
-               job summary
+            4. upload the release record, and the web app's stamp (app.json: every file of the
+               build with its SHA-256), as artifact release-<sha> (90 days) and print the record
+               in the job summary
 ```
 
 A manual run (`workflow_dispatch`) does the same with an `acknowledge_migrations` input, or,
@@ -71,7 +83,7 @@ with `rollback_to: <sha>`, restores the release recorded for that commit instead
 ```
                        vis.bitcru.sh (Workers custom domain; no DNS record is created by hand)
                                    │
-                              viz-gateway  ── routes by path, adds x-viz-route, nothing else
+                              viz-gateway  ── routes by path, adds x-viz-route; serves the web app (D74)
      ┌───────────────┬─────────────┼──────────────┬─────────────────┬──────────────┬──────────────────────┐
   INGEST           QUERY         CONTROL          RULER             MCP          TENANT (DO, by script_name)
      │               │             │                │                 │          only for /api/v1/bootstrap
@@ -107,7 +119,9 @@ with `rollback_to: <sha>`, restores the release recorded for that commit instead
 | `/.well-known/oauth-authorization-server`, `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke` (exactly) | viz-control | The OAuth authorization server for MCP clients (D44; methods in `control/README.md`). `/oauth/register` answers 503 and is not advertised while viz-control has no `OAUTH_CLIENT_KEY`, which the deploy generates ("Worker secrets the deploy generates"), and only on a viz-control with its six Rate Limiting bindings ("Rate limits in front of OAuth"). In production `configure.mjs` sets `PUBLIC_URL` for viz-control (the issuer) and viz-mcp (the resource's origin) from `workers.json`'s `domain`, overriding a component that disagrees with a warning, so the two cannot differ; a stage keeps the component's value |
 | `GET /healthz` | the gateway | asks each backend's own `GET /healthz` through its service binding (ingest, query, control, ruler, mcp; none is public, since the gateway answers `/healthz` itself); 200 `healthy` or 503 naming the backend. The ruler's and mcp's say 503 when a binding they need is missing |
 | `POST /api/v1/bootstrap` | the gateway | exists only while the one-time secret is set ("Bootstrap") |
-| anything else | the gateway | 404, JSON listing the entry points. No web UI and no page: the UI comes later, through design review |
+| `GET`, `HEAD` `/`, `/explore`, `/help`, `/settings` (the `documents` of `app/serve.json`, exactly) | the gateway | the web app's document, from the gateway's `VIZ_APP` variable, with the document headers of `app/serve.json` (the Content-Security-Policy, `Cache-Control: no-cache`, `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`, `Cross-Origin-Opener-Policy`), an `ETag`, and `x-viz-route: app`; 304 to a revalidation that names the tag. Any other method: the 404 below ("The web app") |
+| `GET`, `HEAD` `/assets/<file>`, `/favicon.svg`, where the file is in this version's build | Cloudflare, **not the Worker** | viz-gateway's static assets, by exact path: `Cache-Control: public, max-age=31536000, immutable` and `nosniff` for a hashed asset, a day for the icon, the content type `app/serve.json` names for the extension. No `x-viz-route`. Another method: 405 from Cloudflare, no body |
+| anything else | the gateway | 404, JSON listing the entry points, `Cache-Control: no-store`. Also an unknown API path opened in a browser, a hashed asset this version does not hold, `/index.html`, `/explore/`: never the document |
 
 The gateway is transparent: the incoming `Request` is handed to the backend as it arrived
 (method, URL with query string, headers, body stream) and the backend's `Response` comes back
@@ -388,6 +402,208 @@ viz-control, and it reads no `x-real-ip`: nothing changed there. Optional and by
 deploy: a WAF rate-limiting rule on `vis.bitcru.sh` for the four `/oauth/` paths, above the Worker's
 source limit, that leaves Cloudflare's Workers address alone (`control/README.md`).
 
+## The web app (D74)
+
+`vis.bitcru.sh` (and a stage's gateway) serves the web app, `app/`, a single-page app whose build
+is `index.html`, hashed files under `assets/` and an icon. **`app/serve.json` is the
+specification** of how that build is served: which paths are documents, the asset prefix, the
+other files, the headers of each kind, the content type per extension. `app/e2e/prod.cjs` is the
+app's reference server for it. The gateway serves by exactly those rules, with two stated
+differences from the reference server, both for a path that is a file of the build: a method
+other than GET or HEAD is answered 405 with no body by Cloudflare, where the reference answers its
+JSON 404, and a `Range` request gets the whole file with 200. Nothing here edits `app/` or
+`design-system/`. Decision and alternatives: `design/DECISIONS.md` D74.
+
+| Path | Answered by | With |
+|---|---|---|
+| a `documents` path of serve.json, exactly, GET or HEAD | the Worker | 200, the document of this version's build (from its `VIZ_APP` variable), exactly the `headers.document` of serve.json, plus `ETag` and `x-viz-route: app`; 304 when `If-None-Match` names the tag |
+| a file of this version's build under `assetsPrefix` | Cloudflare (static assets), no Worker invocation | 200, `headers.asset` and the extension's `contentTypes` entry, from the generated `_headers`; Cloudflare adds `ETag` |
+| a `files` path that is in the build (`/favicon.svg`) | Cloudflare, no Worker invocation | 200, `headers.file` and its content type |
+| any API path `routeOf` knows | the Worker, as before, **first** | forwarded unchanged; a document path can never be one (`parseApp` refuses a `VIZ_APP` that names one) |
+| everything else: an unknown API path (also when a browser navigates to it), a hashed asset this version does not hold, `/index.html`, `/explore/`, `/Explore`, `/_headers`, a POST to a document | the Worker | the gateway's JSON 404, `Cache-Control: no-store`: never the document, never kept |
+
+**How it is put together.**
+
+- `deploy/app.mjs build` (run by `deploy.sh` before anything else touches Cloudflare):
+  1. lists the sources: what git tracks or does not ignore under `app/` and `design-system/`, less
+     what `workers.json` says no build reads (`not_built_from`: review images, screenshots, the
+     end-to-end tests and their measurements, design fixtures and flows); hashes paths and contents;
+  2. exports them to `deploy/generated/<target>/app-build/` and builds there: `npm ci` in
+     `design-system/` and `app/`, then the app's own `npm run build` (its `prebuild` generates the
+     design system's `dist/`; then `tsc --noEmit && vite build`). Never in `app/` itself: a build
+     there rewrites generated files under whoever is working in it and can pick up ignored files no
+     fresh checkout has. The build gets no Cloudflare credential in its environment;
+  3. reads `dist/` by serve.json's rules and refuses what they do not cover: a file that is neither
+     `index.html`, under the prefix, nor listed; an extension without a content type; a link; a
+     document that asks for a file the build does not hold or for another origin; an inline script;
+  4. keeps the earlier builds' files ("Update in place");
+  5. stages `deploy/generated/<target>/app/` (the build's files and `_headers`; **not**
+     `index.html`) and writes `deploy/generated/<target>/app.json`: release, target, source hash
+     and commit, build hash, every file with its SHA-256, the two variables.
+- `configure.mjs` gives the Worker that declares `app` in `workers.json` (viz-gateway, and no
+  other): `assets: { directory: "app", html_handling: "none", not_found_handling: "none",
+  run_worker_first: false }` (no binding: the Worker never reads a file), `VIZ_APP` (the
+  document, its headers, the document paths, the build, an entity tag) and `VIZ_APP_FILES` (every
+  file of the version with its SHA-256, and the kept ones with their age). Only configure sets
+  these: a component config with `assets`, or a `VIZ_APP` from a component or `VIZ_STAGE_VARS`, is
+  refused.
+- `release.mjs` uploads the gateway's version with that config (`wrangler versions upload`, or
+  `wrangler deploy` for a new Worker), so the build, the document and the code are one version:
+  promoted together, rolled back together.
+
+**What is refused, and where.** All before anything is uploaded.
+
+| Where | Refused |
+|---|---|
+| `app.mjs build` (exit 1; `deploy.sh` stops) | the build command fails; `dist/` is not a build serve.json covers; production with a release that is a commit while the checkout is at another commit or its app sources differ from it; `--dist` (a build made elsewhere) for production; serve.json with a rule `lib/app.mjs` does not know, a document without a Content-Security-Policy or one a cache may keep, a header that is not one line, a path that is not plain |
+| `configure.mjs` (exit 1) | no stamp for this release (`app.json` missing: the app was not built); a stamp of another release or target (left in `generated/` by another run: stale); sources or serve.json changed since the build (stale); the staged directory is not what was stamped (a file altered, added or gone); a production stamp that is `prebuilt`; `--without-app` for production. With `--ids-optional` (a manifest that is never deployed) a missing build is left out instead, and the manifest says `notBuilt` |
+| `release.mjs deploy` and `plan` (exit 3) | every stamp problem above, checked again; a manifest whose viz-gateway says nothing of a build (configure forgot, or was not run); `withoutApp` for production, or for a stage not configured so; a generated config whose `assets` is not exactly the staged directory served asset-first by exact path, or whose `VIZ_APP` or `VIZ_APP_FILES` is not the stamp's; a manifest configured with another build than the staged one |
+| the Worker, at run time | a `VIZ_APP` without a policy, with a document a cache may keep, with a header over two lines, without an entity tag, or naming an API path as a document: no page is served at all (the 404), and the gateway logs it |
+
+A stage may go without the app: `VIZ_WITHOUT_APP=1 deploy/deploy.sh --stage S` (configure
+`--without-app`); the manifest and the release record say `withoutApp`. A stage may also be given
+a build made elsewhere (`app.mjs build --stage S --dist <dir>`); its stamp says `prebuilt` and the
+plan prints `PREBUILT`.
+
+**What Cloudflare does, and how each fact is known.** "Read" is Cloudflare's documentation on
+2026-11-26; "observed" is `wrangler dev --local` (wrangler 4.164.0, miniflare's asset router and
+asset worker) on this machine the same day, which is what `test/app-serve.test.mjs` runs; "not
+verified" has neither and waits for a deploy to a stage, where `smoke.mjs` checks it.
+
+| Fact | Known how | What depends on it |
+|---|---|---|
+| "A Worker version includes your code, configuration, and static assets"; "Each asset request uses the files from the selected version"; the binding "does not search other versions' assets" | read: [Version skew and static assets](https://developers.cloudflare.com/workers/versions-and-deployments/version-skew/), [Configuration and Bindings](https://developers.cloudflare.com/workers/static-assets/binding/) | the document and the files of a release are one version; a rollback restores both; "Update in place" |
+| By default a path that matches an asset is served "without invoking Worker code"; "If no asset matches, Cloudflare invokes that version's `fetch()` handler … A missing asset does not automatically produce a `404`" | read: [Static Assets](https://developers.cloudflare.com/workers/static-assets/), [Worker script](https://developers.cloudflare.com/workers/static-assets/routing/worker-script/); observed | assets cost no Worker request; a missing asset gets the gateway's own 404 |
+| `html_handling: "none"`: only the exact path of a file is served, no redirect, no `index.html` for `/` | read: [HTML handling](https://developers.cloudflare.com/workers/static-assets/routing/advanced/html-handling/); observed | `/assets/`, `/assets`, `/explore/` reach the Worker |
+| `not_found_handling` defaults to `"none"`; with `"single-page-application"` a browser navigating to an API path "will be served an HTML file" | read: [wrangler configuration](https://developers.cloudflare.com/workers/wrangler/configuration/#assets), [Single Page Application](https://developers.cloudflare.com/workers/static-assets/routing/single-page-application/) | why it is `"none"`, set explicitly and checked by `release.mjs` |
+| With `run_worker_first: ["/*", "!/assets/*"]`, a path under `/assets/` that is **no file** is answered by the asset layer, not the Worker: an empty 404 **carrying the `_headers` of the path** (`Cache-Control: public, max-age=31536000, immutable`) | **observed** (the documentation says such paths "follow the default asset-first routing behavior") | why the Worker is not "first except under /assets/": D74 (b). `scripts/mutants-app.mjs` has this configuration as a mutant |
+| `_headers` in the asset directory is parsed, not served; its rules apply to asset responses and "override what Cloudflare ordinarily sends"; a header set twice for one path is joined with a comma; 100 rules, 2,000 characters a line; "not applied to responses generated by your Worker code" | read: [Headers](https://developers.cloudflare.com/workers/static-assets/headers/), [Limits](https://developers.cloudflare.com/workers/platform/limits/#static-assets); observed (`Content-Type` is replaced, `/_headers` is a 404) | the asset headers and content types; one header per path in the generated file; the document's headers come from the Worker |
+| Default asset headers: `Cache-Control: public, max-age=0, must-revalidate`, `ETag`, and a content type "based on its extension" at upload | read: Headers | why `_headers` sets the caching and every content type itself |
+| A method other than GET or HEAD on a path that is a file: 405, no body. A `Range` request: 200 with the whole file | observed (405); read: [Billing and Limitations](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/) (Range) | the two differences from `app/e2e/prod.cjs` stated above |
+| A path that names a file another way (`/assets//x.js`, `/assets/x%2ejs`, `/assets/%2e%2e/assets/x.js`): 307 to the file's one path, or the file; `/assets/..%2f…`, `%5c`, `%00`, another case: no file, so the Worker's 404 | observed | nothing but the build's files is in the directory, so nothing else can be reached |
+| "Requests to static assets are free and unlimited"; with Workers Caching enabled, cached asset responses are billed as requests | read: [Pricing](https://developers.cloudflare.com/workers/platform/pricing/), Billing and Limitations | the cost in D74; Workers Caching is not enabled |
+| 20,000 files per version (free; 100,000 paid), 25 MiB per file; a variable holds 5 KB | read: Limits | `lib/app.mjs` refuses a file over 25 MiB and a `VIZ_APP` over 4,500 bytes; `VIZ_APP_FILES` drops kept files to fit |
+| `wrangler versions upload` and `wrangler deploy` take the config's `assets` (and an `--assets` option) | read: [wrangler commands](https://developers.cloudflare.com/workers/wrangler/commands/workers/#versions-upload); observed with `--dry-run` for both ("Read 9 files from the assets directory") | phase 1 uploads the gateway's version with its assets; nothing serves until phase 2 |
+| Deployment changes "take up to a few seconds to reach every location"; until then HTML and its assets "can use different versions, even when you deploy to 100% of traffic" | read: Version skew | "Update in place": the seconds after a promotion |
+| Versions are "kept for 30 days" unless among the 100 most recent or deployed | read: [Versions and deployments](https://developers.cloudflare.com/workers/versions-and-deployments/#version-retention) | a rollback target's assets exist as long as the version does (this README's "Cloudflare keeps 100" elsewhere predates the 30-day rule) |
+| That an **uploaded, real** version serves the files with these headers, that Cloudflare's edge in front of the Worker normalises paths as the local run does, that automatic compression leaves `ETag` and `Content-Type` as tested, that the zone adds nothing to the document, that a rollback serves the older version's files | **not verified** | `smoke.mjs` checks the first three and the document's bytes on every deploy; the rollback is in "What a first deploy to a stage should check" |
+
+### Update in place
+
+What a browser tab opened before a deploy sees afterwards, and during it. The build splits code
+(measured here, 2026-11-26: `index-….js` 455.5 kB, loaded by the document; `PromqlEditor-….js`
+449.7 kB, loaded when the editor is first shown; `theme-….js`; one stylesheet; two fonts, the
+mono one fetched when first drawn), so a page can ask for a file long after it loaded. Two builds
+of one commit (a8f3230: CI's commands in a fresh export, and `app.mjs build` in its own export of
+that export) gave the same seven file names and the same build hash, and the build already in
+`app/dist` of the shared tree had the same seven names (measured here, three builds): a release
+that does not change the app changes no file name. Not shown: that a build on a GitHub runner
+gives the same names as one here.
+
+| A page… | asks for… | and gets |
+|---|---|---|
+| opened before a release, everything it needs already loaded | only the API | the API of the new release: one release of skew, which every API keeps (`contracts/COMPATIBILITY.md`) |
+| opened before a release, then shows the editor for the first time | the old build's chunk, from the new version | **the chunk**: the new version keeps the files of the three builds before it that it no longer has (`keep_builds`), byte for byte, with the same headers |
+| opened more than three app-changing releases ago | a chunk no version holds any more | the JSON 404, `no-store` (never the document, never kept by the browser). The app must tell the person to reload ("Needed changes in app/") |
+| reloaded, or opened anew | the document | the current one: `no-cache` makes the browser ask every time; its hashed files follow |
+| loaded from a location already on the new version, in the seconds while the deployment spreads | a new chunk, from a location still on the old version | the JSON 404, `no-store`, from the old version (it cannot hold the new build's files). Nothing the gateway alone can prevent; a reload after those seconds works, and nothing was cached. Cloudflare's own remedy is two deployments per release (the files first, the document later), not done here (D74, "would change if") |
+| opened under a release that is then rolled back | the newer build's chunk, from the older version | the JSON 404 (the older version never had it); the rollback's log says so |
+
+How the files are kept: `app.mjs build` reads the serving gateway version's `VIZ_APP_FILES`
+(Cloudflare's API, read only), takes the files the serving build had and the new one has not
+(age 1) and those it had itself kept (age + 1 when the build changed), drops what is older than
+`keep_builds`, fetches each from the deployment's own URL and keeps it only if its SHA-256 is the
+recorded one. Only a path under the asset prefix with a plain name and a known content type is
+ever fetched, whatever the variable says. A file that cannot be had (the serving version does not
+hold it, as after a rollback to a version from before the app; the network; other bytes) is
+dropped, logged as a WARNING and listed in the stamp and the record (`dropped`); it never fails a
+release. `VIZ_APP_NO_CARRY=1` skips it. Kept files that would not fit `VIZ_APP_FILES` (a 5 kB
+variable) are dropped oldest first; a build whose own file list does not fit names none, and the
+next release keeps nothing (today: 7 files, 658 bytes of 4,500).
+
+**Rolling viz-gateway back alone** (`release.mjs rollback --record … --only viz-gateway`, or the
+workflow's `rollback_only`). Allowed like any gateway rollback: it writes no recorded format and
+has no schema, floor or generated secret, and nothing was added to or taken from D69's checks.
+Its version's assets and variables come back with it:
+
+- **to fb77292's version** (what production serves today: no assets, no `VIZ_APP`): every page
+  and asset path answers the JSON 404 until a release with the app serves again; the API routes
+  that version knew work as they did (routes added since, such as `/api/echo`, are its 404).
+  Pages already open keep working against the API until they load another chunk or are reloaded.
+  `release.mjs` prints `NOTE: viz-gateway goes back to a version WITHOUT the web app …` and the
+  rollback record says `app: [{ worker, build: null }]`. The next release keeps no earlier
+  files (the serving version names none);
+- **to an earlier release with the app**: that build's document and files serve again; the log
+  names both builds; a page of the newer build gets 404 for a chunk it has not loaded.
+
+The app is in the last Worker promoted and the first rolled back, so as a caller of the API it
+never runs ahead of a whole release. It can after a partial rollback of a callee (`--only
+viz-query`): the app then calls an older API (below).
+
+### Needed changes in app/
+
+Nothing here edits `app/`; these are what the app must do for the behaviour above to be complete.
+
+1. **A chunk that fails to load is "viz was updated", not a crash.** A dynamic import, a
+   stylesheet or a font can get the JSON 404 (a page older than three builds, the seconds of a
+   promotion, a rollback). Wanted: catch a failed dynamic import (the rejected `import()`, and
+   Vite's `vite:preloadError` event, which is training knowledge here, not checked against
+   Vite 8), say that a new version is there and offer a reload, once
+   (a guard in `sessionStorage` against a reload loop), keeping the query in the address.
+2. **Notice a new build before a chunk is missing.** `HEAD /` answers the document's `ETag`
+   (and 304 to `If-None-Match`): the app can remember the tag it was loaded with and compare now
+   and then (on focus, or before a lazy import), then offer the reload at a quiet moment.
+3. **The entry script itself can be the 404** in those seconds; then no code of the app runs.
+   The document's first script (`theme-….js`, which rarely changes) could listen for a failed
+   script or stylesheet load and reload once after a second. An inline script cannot do it: the
+   policy forbids one.
+4. **Tolerate the API of the release before.** After a partial rollback, or while a promotion
+   spreads, the app can be one release ahead of a Worker it calls: a new route must be treated as
+   optional for one release (a 404 from it is "not available yet"), as `COMPATIBILITY.md` §4 asks
+   of every client.
+5. **What the app stores in the browser** (the key and the identity in `sessionStorage`, the
+   theme in `localStorage`, anything later) and the addresses people share (`/explore?q=…`) are
+   formats that cross releases in both directions (a reload after a deploy reads what the older
+   app stored in the tab; a rollback serves an older app over newer stored values). They
+   are recorded nowhere here; the app should version what it stores and ignore what it does not
+   know.
+6. **`app/serve.json` is read strictly.** A new key, a new kind of header block, a document path
+   with a trailing slash, a file without a content type for its extension, a build output that
+   serve.json does not cover (a source map, an image under another directory): each fails
+   `deploy/` (its tests, CI's `app-build.mjs`, the release) until `deploy/lib/app.mjs` serves by
+   it. Add to serve.json and to `deploy/` together.
+7. **The document must fit a variable.** `index.html` is 921 bytes today and `VIZ_APP` 1,609;
+   `VIZ_APP` is refused above 4,500 bytes (so about 3.6 kB of document). Inlining styles or data into
+   `index.html` would hit it; D74 says what then.
+8. **Dependencies for a browser are not in `package.json`.** `e2e/` needs Playwright, which no
+   lockfile here installs, so CI cannot run the end-to-end suites, `e2e/prod.cjs` (the check of
+   the app under the policy) among them.
+
+### What a first deploy to a stage should check
+
+Nothing of this change has been deployed. `deploy/deploy.sh --stage <name>` runs all of it; its
+smoke test fails the deploy if any of 1 to 5 is not so:
+
+1. every document path: 200, exactly serve.json's document headers, the released document's
+   bytes (so: no zone feature rewrote the page);
+2. every file the document asks for: 200, `immutable` and `nosniff`, the content type by
+   extension; `/favicon.svg` with its day;
+3. a hashed asset that does not exist, `/index.html`, `/explore/`: the JSON 404, `no-store`;
+4. an unknown API path with a browser's navigation headers: the JSON 404, not a page;
+5. POST to a document: the 404; POST to an asset: not 200.
+
+By hand, once, since the smoke test cannot: (6) the Workers requests and asset requests of the
+stage's gateway for a known number of page loads, from Cloudflare's analytics API (assets must
+not count as Worker requests: the cost in D74 is modelled until then); (7) a second release that
+changes a chunk: the first build's chunk still answers 200 from the new version, and the release
+record lists it under `kept`; (8) `release.mjs rollback --only` of the gateway to the first
+release: its document and chunk names serve again; and to a version from before the app
+(`--without-app` first, then with): the 404s, and the next release's `carry` says why nothing was
+kept; (9) raw paths with dot segments and encoded separators against the deployed stage
+(`curl --path-as-is`): never a page, never anything but a file of the build; (10) the response
+headers of a 304 from Cloudflare for an asset and for the document through the edge's
+compression (the tag may come back weak, `W/"…"`, which the Worker accepts).
+
 ## Class bindings across Workers (`binds_classes`)
 
 A Durable Object binding to another Worker's class (by `script_name`) can call every method of
@@ -453,8 +669,17 @@ these five (Trial 2 measured the four before viz-publisher was deployed).
   "run": "<the VIZ_DEPLOY_RUN of every version this run uploaded>",
   "oauth": [{ "worker": "viz-control", "ratelimits": { "OAUTH_RL_SOURCE": "7594", "…": "…" }, "withoutRateLimits": false, "public": true }],
   "oauthWithoutRateLimits": false,
+  "app": [{ "worker": "viz-gateway", "build": "<sha256 over the build's files>", "document": { "sha256": "…", "bytes": 921, "etag": "\"…\"" }, "files": 7, "bytes": 1092684,
+    "kept": [{ "path": "/assets/index-….js", "age": 1 }], "dropped": [], "via": "export",
+    "sources": { "hash": "…", "commit": "<sha>", "dirty": false, "files": 164 }, "carry": { "from": "https://vis.bitcru.sh", "servingBuild": "…", "wanted": 2 } }],
+  "withoutApp": false,
   "workers": [{ "name": "viz-ingest", "versionId": "…", "migrationTag": "v2", "release": "<sha>" }, "…"] }
 ```
+
+`app` (D74): the web app's build each app Worker was released with, or `{ worker, withoutApp: true }`
+for a stage configured `--without-app`; `previous.json` has `app: [{ worker, build }]` for what
+served before (empty when it served no app), and a rollback's record the build, or `null`, each
+restored version serves ("The web app").
 
 **Schema versions and forward-only releases** (contracts/COMPATIBILITY.md §6; design/DECISIONS.md
 D46; added 2026-11-19). `deploy/workers.json` declares, for every Durable Object class a Worker defines,
@@ -699,6 +924,9 @@ which is why the `production` environment allows deployments from main only ("On
 A rollback restores versions: code, bindings and vars, and the secrets each version carries (a
 version from before viz-control's generated key has none, which is why such a rollback is refused
 unless accepted). It does not restore routes, crons or queue consumers (not versioned), nor data.
+For viz-gateway a version also holds the **web app** it was released with (its static assets, and
+the document in `VIZ_APP`), so a rollback of the gateway brings back that build, or none: nothing
+is refused for it, and the log says which ("The web app", "Rolling viz-gateway back alone").
 
 ## When a deploy fails
 
@@ -708,6 +936,9 @@ unless accepted). It does not restore routes, crons or queue consumers (not vers
 | Refused (exit 3): a rollback floor, the switch about to go on (`INGEST_SIGNALS` set while a floor Worker in this release, or serving, is below its floor) | the previous release, untouched | release the Workers at their floors without the switch first, let them serve, then set it ("Rollback floors") |
 | Refused (exit 3): a rollback floor with the switch already on in the serving release (a floor Worker off its floor as it serves: a gradual deployment or a `wrangler rollback` by hand) | the previous release, untouched; every later release is refused the same way | restore that Worker alone: the workflow with `rollback_to` and `rollback_only: viz-query`, or `release.mjs rollback --record <a record where it is at its floor> --only viz-query` ("Rollback floors", m-8); turning the switch off is not needed |
 | Refused (exit 3): a floor Worker of this release below its floor after the switch was on, or `INGEST_SIGNALS` (or `OAUTH_PUBLIC`) a secret on its writer | the previous release, untouched | deploy that Worker at or above its floor; remove the secret and set the switch as a var |
+| `app.mjs build` failed (exit 1, before resources, configure and the release): the app does not build (its typecheck, Vite), its build holds something `app/serve.json` does not cover, or production is asked to release a commit the checkout is not at | the previous release, untouched; nothing on Cloudflare was read for writing or changed | fix the app, or serve.json and `deploy/lib/app.mjs` together ("The web app") |
+| Refused (exit 3) or configure failed (exit 1): the web app's build is missing, of another release, stale against the sources or serve.json, or not what was staged | the previous release, untouched | run the deploy again from a clean checkout (`deploy.sh` builds the app itself); never edit `deploy/generated/` |
+| Smoke test, "FAILED at the web app": a document or a file is not served as serve.json says | as for any failed smoke test: the previous release restored automatically, unless the release is forward-only or applied a migration; then the new release keeps serving, API included | read the listed problems. Where the whole release cannot go back, the gateway alone can: `rollback_to` with `rollback_only: viz-gateway`, or `release.mjs rollback --record <previous.json> --only viz-gateway` |
 | configure.mjs failed (exit 1, before the release): a viz-control without its six rate limits, a bad limit, period or id, `placement` on viz-control or viz-mcp, `OAUTH_PUBLIC` set by a component | the previous release, untouched | fix `control/wrangler.jsonc` (or the component); for a missing id run `resources.mjs ensure` ("Rate limits in front of OAuth") |
 | Refused (exit 3): the key would be created or rotated on a viz-control without its rate limits, or the manifest was configured `--ids-optional` | the previous release, untouched | configure again without `--ids-optional`, after `resources.mjs ensure`; a stage that is to run without the rate limits: `--oauth-without-rate-limits` |
 | Stopped (exit 1) before anything changed: a serving viz-control version could not be read, so whether its key is set is unknown | the previous release, untouched | deploy again (S9 saw such reads fail for a moment) |
@@ -874,8 +1105,22 @@ called by the deploy. Jobs: `discover` (runs `deploy/ci/matrix.mjs` on the check
 `wasm-engines`), `rust` (`cargo test -j 2` per crate: engine/storage, promql, query,
 traceql, wasm, wasm-query), and `typescript` (per component: `npm ci`, `npx tsc --noEmit`,
 `npm test`; the WASM artifact for flush, compact, janitor, stack, query, engine/wasm).
-Components not in the checkout are skipped with a notice: on `main` today that is `app/`
-and `design-system/` (and `app/` also needs `design-system/`). One test file imports from a
+Components not in the checkout are skipped with a notice: on `main` until this change's pull
+request that is `app/` and `design-system/` (and `app/` also needs `design-system/`).
+
+**`app/` and `design-system/`** (2026-11-26; the matrix entries that were there before had never
+run, and would have failed: `npx tsc` in `design-system/`, which has no TypeScript, and
+`node tools/check.mjs` with its rendered audit, which needs a browser):
+
+| Job | Runs | Does not run in CI |
+|---|---|---|
+| `app` | `npm ci` in `app/` and in `design-system/`; `node scripts/ensure-design-system.mjs` (generates `design-system/dist/`, which the sources import and git ignores); `npx tsc --noEmit`; `npm test` (vitest, 2 workers); `npm run check:tokens` (the token check on `src` and `index.html`, without the rendered audit); `npm run build`; `node ../deploy/ci/app-build.mjs dist` (the build read by `app/serve.json`'s rules, as the deploy reads it: a file serve.json does not cover fails the pull request, not the deploy) | everything that needs a browser: `npm run e2e` (`e2e/app.cjs`, `errors.cjs`, `prod.cjs`, the check of the app under the content security policy), `e2e:real`, `contract`, `measure`; Playwright is in no lockfile |
+| `design-system` | `npm ci`; `npm test` (`node --test`: the checks' mutation corpus, except the mutants only a browser can catch, which it skips unless `VIZ_SLOW=1`); `node tools/check.mjs --no-render` (contrast, structure, literal values). No `tsc`: it is plain Node (`tsc: false` in the matrix) | the rendered audit (step 3 of `check.mjs`), `tools/audit.mjs`, the slow mutants, the images (`tools/shots.mjs`), the speed measurements (`tools/speed.mjs`), the reference build |
+| `deploy` | as before, and now: the gateway's app tests under vitest, `test/app.test.mjs`, and `test/app-serve.test.mjs`, which starts `wrangler dev --local` (workerd from `deploy/node_modules`; no account, no network) on port 18960 | a deploy to Cloudflare |
+
+The deploy job builds the app itself, inside `deploy.sh` (`app.mjs build`: an export of the
+commit, its own `npm ci`); it does not reuse the `app` job's build. All of the above was run from
+a fresh export of the tree with no ignored file present ("How it was verified"). One test file imports from a
 directory that may be absent and is excluded, with a warning, when it is:
 `stack/test/e2e.test.ts` (imports hyparquet from `bench/node_modules`, so `bench/` is
 `npm ci`'d for stack, and for flush, compact and engine/wasm, whose tests read their files back
@@ -1649,7 +1894,14 @@ the scratch directory; the shared tree's `resources.json` was never written.
 Modelled, not read from Cloudflare's analytics (Trial 3 read invocation counts from it, above). Production idle: three Durable Object
 Workers and the gateway cost nothing while unused; the hourly cron reads KV only
 (`stack/README.md`, "Idle means free"); storage is whatever `viz-lake` and the queues hold.
-Per deploy: about 8 to 12 API calls and 4 to 8 version uploads; no charge beyond requests. Since
+The web app (D74; modelled at list prices read 2026-11-26, not measured on Cloudflare): its
+hashed files and icon are static assets, $0 per request and for storage; each navigation or
+reload is one request to viz-gateway ($0.30 per million past the included 10 million) for a
+1 kB document served from memory. The experiment that settles it is item 6 of "What a first
+deploy to a stage should check".
+Per deploy: about 8 to 12 API calls and 4 to 8 version uploads; no charge beyond requests. With
+the app: one deployment read and one version read of the gateway, and one GET to the deployment
+itself per earlier file kept (0 to about 10). Since
 D70's ids, `resources.mjs ensure` also reads the account's scripts' bindings: about 4 GET calls per
 script (about 110 for the 28 scripts on the account on 2026-11-26), modelled, not counted on Cloudflare. The Rate
 Limiting binding itself has no price on its page (read 2026-11-19): worst case of the bindings,
@@ -1797,10 +2049,38 @@ recorded in `workers.json` but not asked by the gateway, which has no binding to
 viz-mcp are deployed since Trial 2 (below): viz-ruler after viz-control, viz-query and
 viz-ingest, which it calls; viz-mcp after viz-ruler; the gateway last. A test
 (`test/configure.test.mjs`) fails if any deployed Worker binds one that is not deployed
-before it. The UI (`app/`, `design-system/`) is not part of this
-deployment and nothing here needs it: the gateway has no page and no static assets.
+before it. The web app (`app/`, built with `design-system/`) is part of the deployment since D74
+(2026-11-26): it is built at each release and served by viz-gateway ("The web app"). **Nothing of
+that has been deployed yet**: production serves fb77292, whose gateway has no page.
 
 ## Not implemented
+
+- **The web app (D74), not done:**
+  - **No deploy.** Nothing of it has run on Cloudflare; what is read, observed and not verified is
+    tabled in "The web app".
+  - **Nothing closes the seconds of a promotion**, when a document of the new build can ask a
+    location still on the old version for a new file and get the 404: that needs two deployments
+    per release, or a store shared by versions (D74 (f)). The gateway only makes that 404 never
+    kept, and the app must offer the reload ("Needed changes in app/", none of them made).
+  - **No browser in any check here.** `app/e2e/prod.cjs`, the app's own check of the build under
+    the content security policy in a real browser, serves `dist/` itself; it was not run against
+    the gateway, and CI runs no browser suite at all. Whether the app works under the policy **as
+    the gateway sends it** rests on the headers being byte-equal to serve.json's (tested), not on
+    a browser run.
+  - **A rollback does not judge the app.** It says which build comes back; it does not refuse a
+    gateway rollback that removes the app, and does not compare what an older app reads of
+    `localStorage` or of the API with what is there ("Needed changes in app/" 4 and 5).
+  - **The smoke test after a rollback does not check the app** (`--no-app`): the manifest at hand
+    describes the release rolled back, not what serves. The workflow's rollback job checks health
+    only for the same reason.
+  - **Kept files are not kept by age in time**, only by count of builds (3), and only as far as
+    `VIZ_APP_FILES` fits a variable; a page left open across four app-changing releases in one
+    afternoon gets the 404 for an unloaded chunk.
+  - **No measurement of the gateway's time** to answer a document, here or on Cloudflare (it is a
+    set lookup and a response from memory); local workerd answered documents and assets in 5 to
+    20 ms end to end, which says nothing of Cloudflare.
+  - **`design/artifact/viz-design.html` is not updated** (not this change's to edit): its status
+    for the gateway should now say that it serves the web app, undeployed.
 
 - **A WAF rate-limiting rule** on `vis.bitcru.sh` for the `/oauth/` paths (D70 (c)): by hand, outside
   the deploy; not made.
@@ -1859,6 +2139,31 @@ deployment and nothing here needs it: the gateway has no page and no static asse
   from a declaration a test holds to a few signatures.
 
 ## Known risks
+
+- **The web app's serving rests on asset-layer behaviour seen only in local workerd** (D74): the
+  405 for other methods, the redirects for paths that name a file another way, `_headers`
+  replacing the uploader's `Content-Type`, and above all a missing file reaching the Worker. If a
+  deployed version answered a missing asset itself with the path's `_headers` (as the
+  `run_worker_first` variant does locally), browsers would keep a 404 for a year. The smoke test
+  asks for a missing asset on every deploy and fails on a 404 a cache may keep; until a stage has
+  passed it, production should not take this release.
+- **The first production release with the app is forward-only for another reason** (the
+  `oauth-public` floor, "The first release over the 2026-11-19 production"), so a failed app
+  check in its smoke test does **not** roll anything back: the new gateway keeps serving, with a
+  page that may be broken while the API works. The way back is `rollback_only: viz-gateway`,
+  which is allowed. Deploy to a stage first.
+- **Kept files are fetched from the public deployment and uploaded again.** They are checked
+  against SHA-256 values that come from the serving version's own variable, so what is trusted is
+  the account's previous release, not the network. A serving version whose variables were set by
+  hand could name any file under `/assets/` with any hash; only names and types serve.json covers
+  are taken, and nothing outside the prefix.
+- **A document rewritten on the way** (a zone feature that injects a script or minifies HTML)
+  would break under the policy; the smoke test compares the document's bytes with the release's
+  and fails if they differ, which on the first deploy means no automatic rollback (above).
+- **`deploy/generated/<target>/app-build/`** holds an `npm ci` of the app (164 MB measured here)
+  per target; it is build output, ignored by git, and deleted at the next build.
+- **The gateway's tests need `app/serve.json`** (and CI's `deploy` job with them): a checkout
+  without `app/` fails them, deliberately, since `workers.json` says the gateway serves the app.
 
 - **The Rate Limiting binding's shape in Cloudflare's version API is not verified** (D70's ids; review
   of D69, round 2, M2-2). The scan reads bindings of type `ratelimit` with `namespace_id` (or

@@ -81,6 +81,9 @@ describe('documents', () => {
     expect(res.status).toBe(200)
     for (const [name, value] of Object.entries(DOCUMENT_HEADERS)) expect(res.headers.get(name), name).toBe(value)
     expect(await res.text()).toBe('')
+    // The runtime drops a body given to a HEAD request; the Worker gives none in the first place.
+    const made = await handle(new Request(`${BASE}/`, { method: 'HEAD' }), env as unknown as Env)
+    expect([made.status, made.body]).toEqual([200, null])
   })
 
   it('the query string is the page\'s own: /explore?q=… is the document', async () => {

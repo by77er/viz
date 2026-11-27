@@ -101,6 +101,8 @@ const CORES = os.cpus().length
 const calibrate = () => { const t0 = performance.now(); let x = 0; for (let i = 0; i < 3e7; i++) x += Math.sqrt(i) % 7; return [performance.now() - t0, x] }
 const FAST_4G = { offline: false, latency: 165, downloadThroughput: (9e6 / 8) * 0.9, uploadThroughput: (1.5e6 / 8) * 0.9 }
 
+// How long a finger is held at least before it is lifted. VIZ_HOLD_MS is for showing what a long hold does (it is not a tap).
+const HOLD_MS = Number(process.env.VIZ_HOLD_MS || 60)
 const p75 = (xs) => { const s = xs.filter((x) => x != null && Number.isFinite(x)).sort((a, b) => a - b); return s.length ? s[Math.min(s.length - 1, Math.ceil(0.75 * s.length) - 1)] : null }
 const median = (xs) => { const s = xs.filter((x) => x != null && Number.isFinite(x)).sort((a, b) => a - b); return s.length ? s[Math.floor((s.length - 1) / 2)] : null }
 
@@ -174,6 +176,13 @@ function instrument() {
   m.arm = (done) => {
     const rec = (m.rec = { t0: null, tUp: null, press: null, busy: null, done: null, resultAt: null, shiftFrom: performance.now(), armedAt: performance.now() })
     m.resp = null; m.respPaint = null; m.respFull = null; m.frames = []; m.viaWorker = false
+    // What the press became, for the message of a press that never completes (a touch held too long is a long press, not a tap).
+    rec.became = []
+    rec.scrollAtArm = Math.round(scrollY)
+    rec.scrolls = []
+    const onScroll = () => { if (rec.scrolls.length < 12) rec.scrolls.push(`${Math.round(scrollY)} at ${Math.round(performance.now() - rec.armedAt)} ms`); else window.removeEventListener('scroll', onScroll) }
+    window.addEventListener('scroll', onScroll, { passive: true })
+    for (const type of ['click', 'contextmenu', 'pointercancel', 'touchcancel']) window.addEventListener(type, (e) => { rec.became.push(`${type} at ${Math.round(e.timeStamp - (rec.t0 ?? e.timeStamp))} ms`) }, { capture: true, once: true })
     window.addEventListener('pointerdown', (e) => {
       rec.t0 = e.timeStamp
       afterFrame((t) => { rec.press = t - rec.t0 })
@@ -204,12 +213,15 @@ async function click(page, selector, done, cdp) {
   await page.waitForTimeout(100)
   await page.evaluate((d) => window.__m.arm(d), done)
   const box = await target.boundingBox()
+  let held = null
   const x = box.x + box.width / 2
   const y = box.y + box.height / 2
   if (PHONE) {
     // A touch: down, held until the pressed frame (and at least 60 ms), then up; the browser makes the tap a click.
+    const down = Date.now()
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] })
-    await Promise.all([page.waitForFunction(() => window.__m.rec.press !== null), page.waitForTimeout(60)])
+    await Promise.all([page.waitForFunction(() => window.__m.rec.press !== null), page.waitForTimeout(HOLD_MS)])
+    held = Date.now() - down
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
   } else {
     await page.mouse.move(x, y)
@@ -218,7 +230,24 @@ async function click(page, selector, done, cdp) {
     await Promise.all([page.waitForFunction(() => window.__m.rec.press !== null), page.waitForTimeout(60)])
     await page.mouse.up()
   }
-  await page.waitForFunction(() => window.__m.rec.done !== null, null, { timeout: 30000 })
+  try {
+    await page.waitForFunction(() => window.__m.rec.done !== null, null, { timeout: 30000 })
+  } catch (e) {
+    const seen = await page.evaluate(([x, y]) => {
+      const at = document.elementFromPoint(x, y)
+      const say = (el) => (el ? `${el.tagName.toLowerCase()}${el.dataset.testid ? `[${el.dataset.testid}]` : ''}.${String(el.className.baseVal ?? el.className).split(' ').join('.')}` : 'nothing')
+      return {
+        became: window.__m.rec.became, scrollAtArm: window.__m.rec.scrollAtArm, scrollsSinceArm: window.__m.rec.scrolls, press: window.__m.rec.press, up: window.__m.rec.tUp !== null, coarse: matchMedia('(pointer: coarse)').matches,
+        atThePoint: `${say(at)} in ${say(at && at.parentElement)}`, view: document.querySelector('.vz-panel-body[data-view]')?.dataset.view ?? null,
+        chosen: [...document.querySelectorAll('[data-testid^=view-]')].filter((b) => b.getAttribute('aria-pressed') === 'true' || b.getAttribute('aria-checked') === 'true' || b.getAttribute('aria-selected') === 'true').map((b) => b.dataset.testid),
+        tableRows: document.querySelectorAll('[data-testid=result-table] tbody tr').length, scrollY: Math.round(scrollY), focus: say(document.activeElement),
+      }
+    }, [x, y]).catch((err) => String(err))
+    if (process.env.VIZ_FAIL_SHOT) await page.screenshot({ path: process.env.VIZ_FAIL_SHOT }).catch(() => {})
+    console.error(`the press on ${selector} at ${Math.round(x)},${Math.round(y)} never reached ${done}: ${held === null ? 'a mouse press' : `a touch held ${held} ms`}; in the page: ${JSON.stringify(seen)}`)
+    e.message = `${e.message}\n  the press on ${selector} never reached ${done}: ${held === null ? 'a mouse press' : `a touch held ${held} ms`}; in the page: ${JSON.stringify(seen)}`
+    throw e
+  }
   const rec = await page.evaluate(() => ({ ...window.__m.rec, respPaint: window.__m.respPaint, respFull: window.__m.respFull, paintAt: window.__m.paintAt, viaWorker: window.__m.viaWorker }))
   // A worker fetched the body: its own Resource Timing has the last byte, on its own clock.
   if (done === 'result' && rec.viaWorker && rec.paintAt != null) {
@@ -265,7 +294,9 @@ async function measureCase(browser, SERIES) {
       await page.waitForSelector(UI.drawn, { state: 'attached' })
       await page.waitForSelector('.cm-content')
       await page.waitForTimeout(1200)
-      const r = { load1, clsLoad: await page.evaluate(() => window.__m.shifts.reduce((a, s) => a + s.value, 0)) }
+      // The phone layout is a coarse pointer or it is not the phone layout (a touch context can lose it across a reload; there is none here, and this says so per run).
+      if (PHONE && !(await page.evaluate(() => matchMedia('(pointer: coarse)').matches))) throw new Error('the phone layout does not have a coarse pointer: the run is void')
+      const r = { at: new Date().toISOString(), load1, clsLoad: await page.evaluate(() => window.__m.shifts.reduce((a, s) => a + s.value, 0)) }
       const hasTable = !!(await page.$('[data-testid=view-table]'))
 
       // ---- run a query

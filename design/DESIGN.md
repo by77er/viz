@@ -84,7 +84,7 @@ per-tenant ledger has none of those problems and is a far smaller thing to prove
 | `Notifier` | Durable Object, one per tenant | Routing, grouping, inhibition, silences, and the delivery outbox. One per tenant because grouping spans that tenant's rulers | when alerts change, and on its group timers |
 | `Scraper` | Durable Object, one per target group | Pull ingest | every scrape interval |
 | `Tenant` | Durable Object, one per tenant | Keys, dashboards and revisions, proposed changes, settings (retention, limits, pool, notifications), audit log; publishes what the data path needs to KV; issues service keys to the ruler and gives it the default notification destination over its binding (`contracts/control.ts`, D39); OAuth grants and tokens (D44), which the agent surface checks through control's `OAuthIntrospection` entrypoint, never through this object's binding. Rule groups are held by the `Ruler` | per control-plane request; the data path reads its KV records, never the object; the ruler asks it when it has no key and at most once a minute while notifying |
-| `app` | Worker + static assets | UI, REST and Prometheus/Tempo-compatible APIs, OAuth | per request |
+| `app` | Worker + static assets | UI, REST and Prometheus/Tempo-compatible APIs, OAuth. As built, this is the gateway (`deploy/gateway`, viz-gateway on `vis.bitcru.sh`): it routes each API path to the Worker that serves it and serves the web app's build, the hashed files as its own static assets without running, the document itself (D74) | per request |
 | `mcp` | Worker | The agent surface: a stateless MCP server and the same tools as JSON under `/api/v1/agent/…`; no Durable Object (§8, D25–D27) | per agent call |
 | `LiveTail` | Durable Object | Hibernating WebSockets for live log tail | while a viewer is connected |
 | `jobs` | Workflows | Compaction, rollups, retention, orphan sweep, scrubbing, investigations. As built, compaction, retention and deletion are a per-tenant maintenance run on a queue (§5.2) | scheduled or triggered |
@@ -764,6 +764,15 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
   Query; CodeMirror 6 with PromQL and TraceQL grammars; uPlot behind an internal chart
   interface; custom canvas for heatmap, flame graph and trace waterfall. Arrow IPC for large
   results. Coarse data first, refined in place.
+- **Serving, as built (D74, 2026-11-26; not yet deployed).** `app/serve.json` says how the
+  build is served and the gateway serves by it: files under `/assets/` (content-hashed, kept
+  for good) and the icon are viz-gateway's static assets, answered by Cloudflare by exact path
+  without invoking the Worker; the four documents come from the Worker with the content
+  security policy and `no-cache`; the API's paths come first, and every other path, an unknown
+  API path and a missing asset included, is the JSON 404, never the document. A release
+  carries the build it was made with, verified against its sources before upload, and the
+  files of the three builds before it for pages still open; a rollback of the gateway brings
+  back the build its version held (`deploy/README.md`, "The web app").
 
 ## 9. Auth, tenancy, limits
 

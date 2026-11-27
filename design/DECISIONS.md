@@ -4274,3 +4274,143 @@ a control appears: a control that can do nothing is not offered.
 
 **Would change if** people look for the control to confirm that the largest are coloured (then (b),
 as a state of the legend, not a button).
+
+
+## D74. viz-gateway serves the web app: hashed assets and the icon as its own Workers Static Assets, by exact path, without invoking the Worker; the documents from the Worker, out of a variable; every other path, an unknown API path and a missing asset included, the JSON 404; a release carries the build it was made with, verified before upload, and the earlier builds' files a page already open may still ask for
+
+(Written 2026-11-26. The owner's leaning was "Static Assets, the Worker first only on non-asset
+paths"; this is that in cost and in who answers what, but not in configuration: the obvious
+configuration of it, `run_worker_first: ["/*", "!/assets/*"]`, was observed to answer a missing
+asset with a 404 that carries the asset's caching, see (b). Code: `deploy/lib/app.mjs`,
+`deploy/app.mjs`, `deploy/gateway/src/index.ts`, `deploy/configure.mjs`, `deploy/release.mjs`,
+`deploy/smoke.mjs`, `deploy/deploy.sh`, `deploy/workers.json`. Not deployed: every platform fact
+below is labelled read (Cloudflare's documentation, 2026-11-26), observed (local workerd, wrangler
+4.164.0) or not verified; `deploy/README.md`, "The web app", has the table.)
+
+**Decision.** `app/serve.json` is the specification of how the app's build is served; the gateway
+serves by it and by nothing else.
+
+1. **Who answers.** viz-gateway's version holds the build as its static assets, routed asset-first
+   by exact path: `assets: { directory, html_handling: "none", not_found_handling: "none",
+   run_worker_first: false }`, no binding. A path that is a file of the build (everything under
+   `/assets/`, and `/favicon.svg`) is answered by Cloudflare without invoking the Worker, with the
+   headers of a generated `_headers` file (`Cache-Control: public, max-age=31536000, immutable`
+   and `nosniff` for assets, the content type set per extension from serve.json rather than left to
+   the uploader). Every other path invokes the Worker, which routes exactly as before: the API first
+   (`routeOf`), then the app's documents (`/`, `/explore`, `/help`, `/settings`; GET and HEAD
+   only), then the JSON 404 it always gave. So an unknown API path, a hashed asset this version
+   does not hold, `/index.html`, `/explore/` and a POST to a page are all that 404, `no-store`,
+   never the document.
+2. **The document is not an asset.** `index.html` is never uploaded. The Worker serves it from a
+   variable, `VIZ_APP` (`{ v, build, etag, documents, headers, document }`, about 1.6 kB of the
+   5 kB a variable holds), which `configure.mjs` writes from serve.json and the build. The asset
+   directory then holds nothing but public files, so no path, however encoded, reaches anything
+   else through the asset layer; the document always carries serve.json's document headers (the
+   Content-Security-Policy, `no-cache`, `nosniff`, `X-Frame-Options`, the rest) because only the
+   Worker can send it, and the Worker refuses to serve a `VIZ_APP` without a policy, with a
+   cacheable document, or naming an API path. It adds an `ETag` (the document's hash) and answers
+   a matching `If-None-Match` with 304. A gateway without the variable (another harness, a version
+   from before this) has no app and answers as it always did.
+3. **A release carries its build.** `deploy/app.mjs build` exports the app's sources (what git
+   tracks or does not ignore under `app/` and `design-system/`, less what no build reads), builds
+   there with the app's own `npm run build`, never in the checkout, reads the result by
+   serve.json's rules (anything they do not cover is refused), stages the upload directory and
+   writes a stamp: release, source hash, commit, build hash, every file's SHA-256. `configure.mjs`
+   takes the build only if the stamp is of this release and target, the sources and serve.json are
+   unchanged since, and the staged directory is what was stamped; `release.mjs` checks the same
+   again, and that the generated config uploads exactly that directory with exactly those
+   variables, before anything is uploaded (exit 3). Production, when the release is a commit: the
+   checkout is that commit with unchanged app sources, and the build was made here, not handed in.
+   A stage may go without the app only when configured `--without-app`, and its record says so.
+   The release record names the build (hash, document hash, files, kept files, sources).
+4. **A page opened before a deploy.** A version serves only its own assets (read). So each release
+   also carries the hashed files of the previous `keep_builds` (3) builds that the new build no
+   longer has: read from the serving version's `VIZ_APP_FILES` variable, fetched from the
+   deployment itself, kept only if their SHA-256 is the recorded one, aged and dropped after three
+   later builds. A file that cannot be had is dropped and named, never a failure. What the gateway
+   cannot do, and what the app must then do, is in `deploy/README.md`, "Update in place" and
+   "Needed changes in app/".
+5. **Rollback (D69 unchanged).** A version's assets and variables come back with it, so a rollback
+   of viz-gateway restores the app that version served, or none. No check is added or removed: the
+   gateway writes no recorded format and has no schema or floor. `release.mjs rollback` says which
+   build, or none, the restored gateway serves; a rollback of viz-gateway alone to fb77292's
+   version (no assets, no variable) is allowed and leaves every page and asset path the JSON 404
+   until a release with the app serves again, the API untouched. The app is a caller of the API in
+   the last Worker promoted and the first rolled back, as D69's order wants.
+
+**Alternatives.**
+
+(a) *Static Assets with the Worker first on every path* (`run_worker_first: true`, the Worker
+fetching each file through the binding). Exact control of every answer, and the simplest to
+reason about. Rejected on cost and on the critical path: every asset of a first load is a billed
+Worker request plus a binding call (7 files today; modelled at list price, $0.30 per million
+requests past the 10 million included, up to $2.10 per million first loads against $0 for (b′)),
+and each waits for a Worker invocation. Would be taken if the asset layer's answers ever differ
+from serve.json in a way `_headers` cannot fix.
+
+(b) *The Worker first except under the asset prefix* (`run_worker_first: ["/*", "!/assets/*"]`,
+the document fetched through the binding). The same cost as the decision. **Rejected on an
+observation**: a request that matches a negative pattern goes to the asset layer whether or not
+the file exists, and a missing file is then answered by Cloudflare, not by the Worker, as an
+empty 404 **with the `_headers` rules of the path attached**: `Cache-Control: public,
+max-age=31536000, immutable` on a 404 (observed locally, 2026-11-26; the documentation says such
+paths "follow the default asset-first routing behavior", which reads as if the Worker were
+invoked). A browser that asked a not yet updated location for a new build's chunk, or an old
+page asking for an old chunk, would keep that 404 for a year. It also needs `index.html` among
+the assets, where a path that normalises to it is served without its policy unless the Worker is
+first there too.
+
+(c) *Assets first with `not_found_handling: "single-page-application"` and `_headers`.* The
+cheapest: documents are free too. Rejected: every unknown path a browser navigates to, API paths
+included, gets `index.html` with 200 (read: navigation requests are served the fallback without
+invoking the Worker), which is exactly what must not happen; serve.json lists four documents, not
+"anything". A variant with one HTML file per document and no fallback keeps the JSON 404 but
+answers `/explore/` and `/index.html` with redirects and a POST with 405, and leaves the policy to
+a file format with a line limit; it saves one Worker request per navigation ($0.30 per million,
+modelled), against a page load that then makes several API requests through the same Worker.
+
+(d) *A separate `viz-app` Worker* on the same hostname. Two Workers on one custom domain need
+routes by path, a second release unit and a second rollback target, and the API-before-app
+precedence would live in route patterns instead of one function with tests. Nothing is gained:
+static assets are free on either Worker.
+
+(e) *Every file embedded in the script.* No asset layer at all, but 1.1 MB of script (measured:
+today's build), every asset a billed request, and the script re-parsed for it. Only the document
+is embedded, as data in a variable.
+
+(f) *The hashed files in KV or R2, shared by all versions.* Would make every version able to
+serve every build's files, which is the one thing Static Assets cannot do (4, and the seconds of
+propagation). Rejected for now: a store to fill before each promotion and to empty some day, a
+read on a path that is free today, and the six-connection and R2 latency rules to respect; kept
+as what would replace point 4.
+
+**Why.** The two requirements, minimum cost and "an unknown API path stays a JSON 404", are both
+met by letting Cloudflare answer only what cannot be anything else: an exact path of a file of
+the build. Everything that needs a decision reaches the code that has the tests. Keeping the
+document out of the asset directory removes the class of path tricks instead of enumerating them,
+and makes the policy a property of the only code that can send the page. The build is tied to the
+release by hashes checked where the upload happens, because a generated directory outlives the
+run that made it and a stale one would otherwise be released silently.
+
+**Cost of it** (modelled at Cloudflare's list prices, read 2026-11-26; not measured on
+Cloudflare). Asset requests: $0 ("Requests to static assets are free and unlimited"; unless
+Workers Caching is enabled for the Worker, which bills cached asset responses as requests: it is
+not). Documents: one Worker request per navigation or reload, $0.30 per million past the included
+10 million, and well under a millisecond of CPU (a set lookup and a response from memory; not
+measured). Storage of assets: $0. The release: one more `npm ci` and build per deploy (measured
+here: 4.8 s for the export build with a warm npm cache, on the shared machine at load 1 to 2;
+on a GitHub runner not measured, modelled 30 to 90 s with a cold cache), and up to
+`keep_builds` builds' changed files fetched from the deployment (a few requests). The experiment
+that settles the request counts: N loads of the app on a stage, then Workers requests and asset
+requests of `viz-<stage>-gateway` read from Cloudflare's analytics API for that window.
+
+**Would change if.** The document outgrows a variable (`configure` refuses at 4,500 bytes: then a
+text module bundled into the script at configure time, or the binding with the Worker first on
+the document's own path only). Cloudflare's asset layer is seen, on a stage, to answer anything
+differently from the local run (a content type, a method, a normalised path): then (a) for the
+affected paths. Version skew at promotion or a page older than three builds shows in real use
+(broken chunk loads in the app's error reports): then (f), or a release in two promotions (files
+first, document second) as Cloudflare's guide describes. The app gains a login flow or
+per-tenant pages: the document stops being one static file and the Worker serves it from code.
+A second front end appears: then (d) per front end. `app/serve.json` gains a rule: `deploy/lib/app.mjs`
+refuses it until the gateway serves by it.

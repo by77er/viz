@@ -103,6 +103,48 @@ const QueryRow = memo(function QueryRow({
   )
 })
 
+type Aligned = ReturnType<typeof alignSeries>
+type Drawn = ReturnType<typeof toSpec>
+interface PreparedTable {
+  rows: TableRow[]
+  unit: string
+  columns: string[]
+  common: Record<string, string>
+}
+
+/** The table of a result: the latest value of each series, in the chart's unit and number format. */
+function tableOf(aligned: Aligned, chart: Drawn): PreparedTable {
+  const naming = nameSeries(aligned.series.map((s) => s.labels))
+  const stats = aligned.series.map((s) => seriesStats(aligned.xs, s.values))
+  let lo = 0
+  let hi = 0
+  for (const s of stats) {
+    if (s.min != null && s.min < lo) lo = s.min
+    if (s.max != null && s.max > hi) hi = s.max
+  }
+  const format = figureFormat(chartRules(), chart.unit, lo, hi)
+  const rows: TableRow[] = aligned.series.map((s, i) => ({ id: s.key, full: naming.names[i]!.full, labels: s.labels, last: stats[i]!.last, lastAt: stats[i]!.lastAt, text: format.value(stats[i]!.last) }))
+  // The columns: the labels that differ, most distinguishing first. A single series shows every label.
+  let columns = naming.distinguishing
+  let common = naming.common
+  if (columns.length === 0) {
+    const keys = Object.keys(aligned.series[0]?.labels ?? {}).sort()
+    columns = keys.includes('__name__') ? ['__name__', ...keys.filter((k) => k !== '__name__')] : keys
+    common = {}
+  }
+  return { rows, unit: format.unit, columns, common }
+}
+
+/** Run `work` when the page has nothing to paint or answer (within a second at the latest). Returns its cancellation. */
+function whenIdle(work: () => void): () => void {
+  if (typeof requestIdleCallback === 'function') {
+    const id = requestIdleCallback(work, { timeout: 1000 })
+    return () => cancelIdleCallback(id)
+  }
+  const id = setTimeout(work, 200)
+  return () => clearTimeout(id)
+}
+
 export function ExplorePage() {
   countRender('ExplorePage')
   const rawSearch = exploreRoute.useSearch()
@@ -114,7 +156,8 @@ export function ExplorePage() {
 
   const setSearch = useCallback(
     (patch: Partial<ExploreSearch>, replace = false) =>
-      void navigate({ to: '/explore', search: (prev) => ({ ...prev, ...patch }), replace }),
+      // The address follows what the page already shows: the page stays where it is. (The router's default for a navigation is the top of the page.)
+      void navigate({ to: '/explore', search: (prev) => ({ ...prev, ...patch }), replace, resetScroll: false }),
     [navigate],
   )
 
@@ -274,30 +317,25 @@ export function ExplorePage() {
   const [view, setViewState] = useState<ResultView>(search.view)
 
   // ---- the table: the latest value of each series, in the chart's unit and number format.
-  // Prepared when the table is the form shown, not with every result: the names and the
-  // statistics of 200 series are 10 ms at 4x CPU that the chart's first paint does not need.
-  const table = useMemo(() => {
-    if (view !== 'table' || !aligned || !chart) return null
-    const naming = nameSeries(aligned.series.map((s) => s.labels))
-    const stats = aligned.series.map((s) => seriesStats(aligned.xs, s.values))
-    let lo = 0
-    let hi = 0
-    for (const s of stats) {
-      if (s.min != null && s.min < lo) lo = s.min
-      if (s.max != null && s.max > hi) hi = s.max
+  // The names and the statistics of 200 series are 10 ms at 4x CPU. Neither the chart's first
+  // paint nor the change to the table pays them: they are prepared once the result has been
+  // painted and the page is idle, and at once only if the table is asked for before that.
+  const prepared = useRef<{ aligned: Aligned; chart: Drawn; table: PreparedTable } | null>(null)
+  const prepare = useCallback((a: Aligned, c: Drawn): PreparedTable => {
+    const have = prepared.current
+    if (have && have.aligned === a && have.chart === c) return have.table
+    const made = tableOf(a, c)
+    prepared.current = { aligned: a, chart: c, table: made }
+    return made
+  }, [])
+  useEffect(() => {
+    if (!aligned || !chart) {
+      prepared.current = null
+      return
     }
-    const format = figureFormat(chartRules(), chart.unit, lo, hi)
-    const rows: TableRow[] = aligned.series.map((s, i) => ({ id: s.key, full: naming.names[i]!.full, labels: s.labels, last: stats[i]!.last, lastAt: stats[i]!.lastAt, text: format.value(stats[i]!.last) }))
-    // The columns: the labels that differ, most distinguishing first. A single series shows every label.
-    let columns = naming.distinguishing
-    let common = naming.common
-    if (columns.length === 0) {
-      const keys = Object.keys(aligned.series[0]?.labels ?? {}).sort()
-      columns = keys.includes('__name__') ? ['__name__', ...keys.filter((k) => k !== '__name__')] : keys
-      common = {}
-    }
-    return { rows, unit: format.unit, columns, common }
-  }, [view, aligned, chart])
+    return whenIdle(() => void prepare(aligned, chart))
+  }, [aligned, chart, prepare])
+  const table = useMemo(() => (view === 'table' && aligned && chart ? prepare(aligned, chart) : null), [view, aligned, chart, prepare])
 
   const onRange = useCallback((from: string, to: string) => setSearch({ from, to }), [setSearch])
 
