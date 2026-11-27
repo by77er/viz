@@ -73,3 +73,42 @@ export interface ApiResult<T> {
   infos: string[]
   cost: ApiCost
 }
+
+/** Who did something, as control records it (control/README.md, "Kind"): a key or an agent, by name. */
+export interface Actor {
+  subject: string
+  /** `key`, `agent`, `user` or `system`. */
+  kind: string
+  name: string | null
+}
+
+/** One dashboard as control's list answers it (control/README.md, "Dashboards"). The spec is not part of it. */
+export interface DashboardSummary {
+  id: string
+  name: string
+  intent: string
+  tags: string[]
+  owner: string | null
+  panels: number
+  /** The content hash of the current revision, and its number counting from 1. */
+  revision: string
+  number: number
+  lastChangedAt: string
+  lastChangedBy: Actor
+}
+
+export interface DashboardList {
+  items: DashboardSummary[]
+  /** How many dashboards match, of which `items` is one page. */
+  total: number
+  /** The cursor of the next page, or null when `items` ends the list. */
+  next: string | null
+}
+
+/** One dashboard with its spec, as `GET /dashboards/{id}` answers. The spec is not trusted until the model has validated it. */
+export interface DashboardDocument {
+  dashboard: DashboardSummary
+  number: number
+  revision: string
+  spec: unknown
+}

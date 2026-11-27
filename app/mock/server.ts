@@ -1,7 +1,7 @@
 /**
  * Development mock of the viz query API. NOT a real backend: synthetic data, PromQL subset.
  *
- *   npx tsx mock/server.ts [--port 8821] [--require-token secret] [--readless-token other] [--delay 0]
+ *   npx tsx mock/server.ts [--port 8821] [--require-token secret] [--readless-token other] [--dashboards-token third] [--delay 0]
  *
  * Artificial latency, to exercise the waiting states:
  *   --delay <ms> or VIZ_MOCK_DELAY=<ms>   every response waits this long
@@ -55,7 +55,8 @@ let failure: { kind: string; left: number } = { kind: '', left: 0 }
 let warning: { text: string; left: number } = { text: '', left: 0 }
 const requireToken = arg('require-token', '') || undefined
 const readlessToken = arg('readless-token', '') || undefined
-const api = createMockApi({ requireToken, readlessToken })
+const dashboardsToken = arg('dashboards-token', '') || undefined
+const api = createMockApi({ requireToken, readlessToken, dashboardsToken })
 
 const FAILURES: Record<string, () => MockResponse & { text?: string }> = {
   // query/src/index.ts answers every `unavailable` ApiError with Retry-After: 1 (since 2026-11-19; it had none before).

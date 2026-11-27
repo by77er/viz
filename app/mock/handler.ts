@@ -11,6 +11,7 @@
  * reproduce is listed in README.md ("What is mocked").
  */
 import { syntheticStorage } from './data'
+import { dashboardsApi, DASHBOARDS_PATH } from './dashboards'
 import { durationSeconds, matchLabels, parseSelector, PromQLError, queryInstant, queryRange, type Matcher } from './promql'
 import type { Labels, SeriesSource, Storage } from './storage'
 
@@ -33,6 +34,8 @@ export interface MockOptions {
   requireToken?: string
   /** A key that authenticates but lacks the `read` scope: answered 403, as the real API does. */
   readlessToken?: string
+  /** A key with `read` and `dashboards:read`. (`requireToken` has `read` only, as the real stack's `app-read` key.) */
+  dashboardsToken?: string
 }
 
 /**
@@ -224,9 +227,35 @@ export function createMockApi(opts: MockOptions = {}) {
     if (!h) return fail('unauthorized', 'missing API key', challenge)
     const token = /^Bearer\s+(.+)$/i.exec(h)?.[1]?.trim()
     if (opts.readlessToken && token === opts.readlessToken) return fail('forbidden', 'API key lacks the read scope')
-    if (token !== opts.requireToken) return fail('unauthorized', 'invalid API key', challenge)
+    if (token !== opts.requireToken && !(opts.dashboardsToken && token === opts.dashboardsToken)) return fail('unauthorized', 'invalid API key', challenge)
     return null
   }
+
+  /**
+   * Who a request's key is: its name and scopes, or null for a key that is missing or unknown.
+   * Without `requireToken` the mock needs no key and answers for a key of its own, which may
+   * read metrics and dashboards.
+   */
+  function keyOf(headers: Record<string, string | undefined>): { name: string; scopes: string[] } | null {
+    if (!opts.requireToken) return { name: 'mock key', scopes: ['read', 'dashboards:read'] }
+    const token = /^Bearer\s+(.+)$/i.exec(headers.authorization ?? '')?.[1]?.trim()
+    if (opts.readlessToken && token === opts.readlessToken) return { name: 'write-only key', scopes: ['write'] }
+    if (opts.dashboardsToken && token === opts.dashboardsToken) return { name: 'dashboards key', scopes: ['read', 'dashboards:read'] }
+    if (token === opts.requireToken) return { name: 'read key', scopes: ['read'] }
+    return null
+  }
+  const unauthenticated = (): MockResponse => ({
+    status: 401,
+    body: {
+      type: 'https://vis.bitcru.sh/problems/unauthenticated',
+      title: 'Not authenticated',
+      status: 401,
+      code: 'unauthenticated',
+      detail: 'The API key is missing, malformed, unknown, disabled or expired.',
+      fix: 'Send "Authorization: Bearer viz_<keyId>_<secret>" with a key that is enabled and not expired.',
+    },
+    headers: { 'Content-Type': 'application/problem+json', 'WWW-Authenticate': 'Bearer realm="viz"' },
+  })
 
   /**
    * @param method  HTTP method
@@ -248,20 +277,20 @@ export function createMockApi(opts: MockOptions = {}) {
       headers: { 'Content-Type': 'application/problem+json', ...extra },
     })
     if (method !== 'GET') return problem(405, 'method-not-allowed', 'Method not allowed', `${method} is not supported here.`, 'Use one of: GET.', { Allow: 'GET' })
-    const identity = (name: string, scopes: string[]): MockResponse => ({ status: 200, body: { tenant: MOCK_TENANT, subject: `key:${name}`, kind: 'key', name, scopes, mayApply: false, mock: true } })
-    if (!opts.requireToken) return identity('mock key', ['read'])
-    const token = /^Bearer\s+(.+)$/i.exec(headers.authorization ?? '')?.[1]?.trim()
-    if (opts.readlessToken && token === opts.readlessToken) return identity('write-only key', ['write'])
-    if (token === opts.requireToken) return identity('read key', ['read'])
-    return problem(401, 'unauthenticated', 'Not authenticated', 'The API key is missing, malformed, unknown, disabled or expired.', 'Send "Authorization: Bearer viz_<keyId>_<secret>" with a key that is enabled and not expired.', {
-      'WWW-Authenticate': 'Bearer realm="viz"',
-    })
+    const key = keyOf(headers)
+    if (!key) return unauthenticated()
+    return { status: 200, body: { tenant: MOCK_TENANT, subject: `key:${key.name}`, kind: 'key', name: key.name, scopes: key.scopes, mayApply: false, mock: true } }
   }
 
   function handle(method: string, url: string, body = '', headers: Record<string, string | undefined> = {}): MockResponse {
     const u = new URL(url, 'http://mock.invalid')
     const path = u.pathname
     if (path === WHOAMI_PATH) return whoami(method, headers)
+    // control's dashboard read routes (mock/dashboards.ts): the key first, as control identifies before it routes a known path.
+    if (path === DASHBOARDS_PATH || path.startsWith(`${DASHBOARDS_PATH}/`)) {
+      const key = keyOf(headers)
+      return key ? dashboardsApi(method, u, key.scopes) : unauthenticated()
+    }
     const values = LABEL_VALUES.exec(path)
     const methods = values ? ['GET'] : ROUTES[path]
     if (!methods) return fail('not_found', 'not found')

@@ -1,7 +1,11 @@
 import type {
+  Actor,
   ApiCost,
   ApiResult,
   BuildInfo,
+  DashboardDocument,
+  DashboardList,
+  DashboardSummary,
   Identity,
   Metric,
   MetricMetadata,
@@ -27,6 +31,20 @@ export class PromApiError extends Error {
     this.errorType = errorType
     this.status = status
     this.retryAfterMs = retryAfterMs
+  }
+}
+
+/**
+ * A refusal by the control plane: its problem body (RFC 9457 with viz's `code` and `fix`,
+ * control/src/errors.ts). `errorType` is the problem's code ("missing-scope", "not-found"),
+ * the message its `detail`, and `fix` what control says to do next.
+ */
+export class ControlApiError extends PromApiError {
+  readonly fix: string
+  constructor(code: string, detail: string, status: number, fix: string, retryAfterMs: number | null = null) {
+    super(code, detail, status, retryAfterMs)
+    this.name = 'ControlApiError'
+    this.fix = fix
   }
 }
 
@@ -208,6 +226,54 @@ export class PromClient {
     }
   }
 
+  /**
+   * The tenant's dashboards: control's `GET /api/v1/control/dashboards` (needs `dashboards:read`).
+   * `q` searches name, id, intent, owner and tags; `tag` keeps the dashboards that carry it.
+   */
+  async dashboards(params: { q?: string; tag?: string; limit?: number } = {}, opts?: RequestOptions): Promise<DashboardList> {
+    const qs = new URLSearchParams()
+    if (params.q) qs.set('q', params.q)
+    if (params.tag) qs.set('tag', params.tag)
+    if (params.limit !== undefined) qs.set('limit', String(params.limit))
+    const v = await this.control<{ items?: unknown; total?: unknown; next?: unknown }>(`/api/v1/control/dashboards${qs.size ? `?${qs}` : ''}`, opts)
+    if (!v || !Array.isArray(v.items) || typeof v.total !== 'number') throw new PromApiError('parse', 'The answer is not a list of dashboards', 200)
+    const items: DashboardSummary[] = []
+    for (const raw of v.items) {
+      const d = readSummary(raw)
+      if (!d) throw new PromApiError('parse', 'The answer is not a list of dashboards', 200)
+      items.push(d)
+    }
+    return { items, total: v.total, next: typeof v.next === 'string' ? v.next : null }
+  }
+
+  /** One dashboard and its spec: control's `GET /api/v1/control/dashboards/{id}`. The spec is returned as it arrived, unvalidated. */
+  async dashboard(id: string, opts?: RequestOptions): Promise<DashboardDocument> {
+    const v = await this.control<{ dashboard?: unknown; number?: unknown; revision?: unknown; spec?: unknown }>(`/api/v1/control/dashboards/${encodeURIComponent(id)}`, opts)
+    const dashboard = v ? readSummary(v.dashboard) : null
+    if (!v || !dashboard || typeof v.revision !== 'string' || typeof v.spec !== 'object' || v.spec === null) throw new PromApiError('parse', 'The answer is not a dashboard', 200)
+    return { dashboard, number: typeof v.number === 'number' ? v.number : dashboard.number, revision: v.revision, spec: v.spec }
+  }
+
+  /** A GET to the control plane: its JSON, or its problem as a `ControlApiError`. */
+  private async control<T>(path: string, opts?: RequestOptions): Promise<T | undefined> {
+    const res = await this.send(path, { method: 'GET' }, opts)
+    const text = await res.text()
+    let body: unknown
+    try {
+      body = text ? JSON.parse(text) : undefined
+    } catch {
+      body = undefined
+    }
+    if (!res.ok) {
+      const p = (body ?? {}) as { code?: unknown; detail?: unknown; fix?: unknown }
+      const retryAfter = parseRetryAfter(res.headers.get('Retry-After'))
+      if (typeof p.code === 'string' && typeof p.detail === 'string') throw new ControlApiError(p.code, p.detail, res.status, typeof p.fix === 'string' ? p.fix : '', retryAfter)
+      throw new PromApiError('http', `HTTP ${res.status} ${res.statusText}`.trim(), res.status, retryAfter)
+    }
+    if (body === undefined || body === null || typeof body !== 'object') throw new PromApiError('parse', 'The answer is not JSON', res.status)
+    return body as T
+  }
+
   private get<T>(path: string, params: [string, string][], opts?: RequestOptions): Promise<ApiResult<T>> {
     const qs = new URLSearchParams(params).toString()
     return this.request<T>(path + (qs ? `?${qs}` : ''), { method: 'GET' }, opts)
@@ -306,6 +372,32 @@ export class PromClient {
       throw new PromApiError('parse', 'The response is not a Prometheus API envelope', res.status)
     }
     return { data: body.data, warnings: body.warnings ?? [], infos: body.infos ?? [], cost: costOf(res.headers) }
+  }
+}
+
+const text = (v: unknown): string | null => (typeof v === 'string' ? v : null)
+
+function readActor(v: unknown): Actor {
+  const a = (v ?? {}) as Partial<Actor>
+  return { subject: text(a.subject) ?? '', kind: text(a.kind) ?? 'key', name: text(a.name) }
+}
+
+/** A dashboard of control's list, or null when it is not one. */
+function readSummary(v: unknown): DashboardSummary | null {
+  if (!v || typeof v !== 'object') return null
+  const d = v as Record<string, unknown>
+  if (typeof d.id !== 'string' || typeof d.name !== 'string') return null
+  return {
+    id: d.id,
+    name: d.name,
+    intent: text(d.intent) ?? '',
+    tags: Array.isArray(d.tags) ? d.tags.filter((t): t is string => typeof t === 'string') : [],
+    owner: text(d.owner),
+    panels: typeof d.panels === 'number' ? d.panels : 0,
+    revision: text(d.revision) ?? '',
+    number: typeof d.number === 'number' ? d.number : 0,
+    lastChangedAt: text(d.lastChangedAt) ?? '',
+    lastChangedBy: readActor(d.lastChangedBy),
   }
 }
 

@@ -97,7 +97,7 @@ describe('whoami through the client, against the mock (control\'s route)', () =>
     expect((await viaMock({ requireToken: 's3cret', readlessToken: 'w' }, 'w').client.whoami()).scopes).toEqual(['write'])
   })
   it('the mock without a required key answers for a key of its own', async () => {
-    expect((await viaMock({}).client.whoami()).scopes).toEqual(['read'])
+    expect((await viaMock({}).client.whoami()).scopes).toEqual(['read', 'dashboards:read'])
   })
   it('an answer that is not an identity is refused, not trusted', async () => {
     const f = vi.fn(async () => new Response('<html>hello</html>', { status: 200 }))
