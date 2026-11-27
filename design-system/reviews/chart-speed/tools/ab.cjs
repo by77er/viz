@@ -1,3 +1,6 @@
+// ab.cjs: app/e2e/measure.cjs (the header below is its own) with the builds taken in turn, run by run.
+//   node ab.cjs --builds before=<app dir>,after=<app dir> [--series 200,36] [--runs 20] [--phone] [--nobuffer] [--skip typing,crosshair,local] --out <file.json>
+// Ports: VIZ_E2E_MOCK_PORT (8931) for the mock, VIZ_AB_PORT (8940) upward for the builds. See ../PR.md.
 /* eslint-disable */
 // Measures the design system's speed budgets on a built app, against the mock.
 //   node e2e/measure.cjs [--root <app dir>] [--label after] [--runs 20] [--series 4,36,200] [--append] [--phone]
