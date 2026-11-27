@@ -99,6 +99,57 @@ async function main() {
     await page.goto(at(real, 'limitk(1, up)'))
     await page.waitForSelector('[data-testid=error-state]')
     check('real API: PromQL viz does not run is said as such', (await page.textContent('[data-testid=error-advice]')).includes('viz does not run this part of PromQL yet'), await page.textContent('[data-testid=error-advice]'))
+    // ---- dashboards: control's list and specs, and every panel's queries on the real query API
+    await page.goto(`${real}/dashboards`)
+    await page.waitForSelector('[data-testid=no-permission]')
+    const refusedText = (await page.textContent('[data-testid=no-permission]')).replace(/\s+/g, ' ')
+    check('real API: the key that reads metrics only is told, in control\'s words, that it cannot read dashboards', refusedText.includes('This needs one of the scopes: admin, dashboards:read, dashboards:write, dashboards:apply.') && refusedText.includes('has read.'), refusedText)
+    const dashCtx = await lib.contextWithKey(browser, keys.dash)
+    const onReal = await dashCtx.newPage()
+    onReal.on('pageerror', (e) => errors.push(e.message))
+    const mockCtx = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+    const onMock = await mockCtx.newPage()
+    const list = (p) => p.evaluate(() => [...document.querySelectorAll('[data-testid=dashboard-row]')].map((tr) => [...tr.querySelectorAll('td')].slice(0, 4).map((td) => td.textContent.replace(/\s+/g, ' ').trim()).join(' | ')))
+    await onReal.goto(`${real}/dashboards`)
+    await onReal.waitForSelector('[data-testid=dashboard-row]')
+    await onMock.goto(`${mock}/dashboards`)
+    await onMock.waitForSelector('[data-testid=dashboard-row]')
+    const lists = [await list(onReal), await list(onMock)]
+    check('real API: the dashboards list from control is the mock\'s list: the same four names, intents, tags and owners', lists[0].length === 4 && JSON.stringify(lists[0]) === JSON.stringify(lists[1]), lists[0].map((r) => r.split(' | ')[0]).join(', '))
+    const changed = await onReal.evaluate(() => document.querySelector('[data-testid=dashboard-row] td[data-priority]').textContent.replace(/\s+/g, ' ').trim())
+    check('real API: who changed a dashboard last is the key that created it, by name', /by /.test(changed) && !/undefined|null/.test(changed), changed)
+    // What a person reads off a dashboard: each panel's state, figures, table, legend and text. Ages and the mock's banner are not part of it.
+    const board = async (p, origin, id, n) => {
+      await p.goto(`${origin}/dashboards?id=${id}&from=${T0}&to=${T1}`)
+      await p.waitForFunction((n) => document.querySelectorAll('[data-testid=panel]').length >= n && !document.querySelector('[data-testid=panel][data-state=waiting], [data-testid=panel][data-state=idle]'), n, { timeout: 60000 })
+      return p.evaluate(() => [...document.querySelectorAll('[data-testid=panel]')].map((el) => ({
+        id: el.dataset.panel,
+        kind: el.dataset.kind,
+        state: el.dataset.state,
+        stats: [...el.querySelectorAll('[data-testid=stat-value], [data-testid=stat-context]')].map((x) => x.textContent.replace(/\s+/g, ' ').trim()),
+        table: [...el.querySelectorAll('[data-testid=panel-table] tr')].map((tr) => [...tr.cells].map((c) => c.textContent.trim()).join(' | ')),
+        legend: [...el.querySelectorAll('tbody tr[data-key]')].map((tr) => [...tr.cells].map((c) => c.textContent.trim()).join(' | ')),
+        digest: el.querySelector('[data-testid=panel-not-drawn] [data-testid=panel-digest]')?.textContent ?? '',
+        empty: !!el.querySelector('[data-testid=panel-empty]'),
+        error: el.querySelector('[data-testid=panel-error]')?.textContent.replace(/\s+/g, ' ') ?? '',
+      })))
+    }
+    for (const [id, n] of [['services_overview', 12], ['service_red', 5], ['checkout_path', 4], ['pod_capacity', 6]]) {
+      const [r, m] = [await board(onReal, real, id, n), await board(onMock, mock, id, n)]
+      const same = (x) => JSON.stringify(x.map((p) => ({ ...p, error: p.error ? 'an error' : '' })))
+      const differing = r.filter((p, i) => same([p]) !== same([m[i]])).map((p) => p.id)
+      check(`real API: ${id} reads the same on the real API as on the mock, panel by panel (state, figures, table, legend, text)`, r.length === n && differing.length === 0, differing.length ? `differs in ${differing.join(', ')}: real ${JSON.stringify(r.find((p) => p.id === differing[0])).slice(0, 300)} / mock ${JSON.stringify(m.find((p) => p.id === differing[0])).slice(0, 300)}` : r.map((p) => `${p.id}:${p.state}`).join(' '))
+      if (id === 'pod_capacity') {
+        const failedPanel = r.find((p) => p.id === 'sample')
+        check('real API: the query viz does not run fails its panel only, with the API\'s own answer; the query that matches nothing is an empty state', failedPanel.state === 'failed' && failedPanel.error.includes('The API answered unsupported with HTTP 422.') && r.filter((p) => p.state === 'answered').length === 5 && r.find((p) => p.id === 'restarts').empty, failedPanel.error)
+      }
+    }
+    await onReal.goto(`${real}/dashboards?id=service_red&from=${T0}&to=${T1}`)
+    await onReal.waitForFunction(() => document.querySelectorAll('#var-service option').length >= 5, null, { timeout: 30000 })
+    check('real API: a query variable\'s values come from the real label-values endpoint', (await onReal.evaluate(() => [...document.querySelectorAll('#var-service option')].map((o) => o.textContent).join(','))) === 'All,auth,catalog,checkout,orders')
+    check('real API: the dashboards key was sent only as a header, to this origin', !sent.some((u) => u.includes(keys.dash.split('_')[2])))
+    await dashCtx.close()
+    await mockCtx.close()
     check('real API: no uncaught error', errors.length === 0, errors.join(' | '))
     await ctx.close()
   } finally {

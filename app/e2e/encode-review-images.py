@@ -2,6 +2,7 @@
 """Shrink design-review images so the review directory stays small enough to commit.
 
     python3 e2e/encode-review-images.py ../design-system/reviews/app-restyle
+    python3 e2e/encode-review-images.py ../design-system/reviews/app-dashboards --flat
 
 before/ and after/ are halved (they are captured at device scale factor 2); compare/ keeps
 its size. All are stored with a 256-colour palette made of every colour in tokens.json plus
@@ -55,6 +56,11 @@ def encode(path, scale):
     out.putpalette([x for c in colours for x in c] + [0] * (768 - 3 * len(colours)))
     out.save(path, optimize=True)
 
-for d, scale in (('compare', 1), ('before', 0.5), ('after', 0.5)):
-    for f in glob.glob(os.path.join(root, d, '*.png')):
-        encode(f, scale)
+if '--flat' in sys.argv:
+    # Images captured at device scale 1 straight into the directory (e2e/dashboards-shots.cjs): the palette only.
+    for f in sorted(glob.glob(os.path.join(root, '*.png'))):
+        encode(f, 1)
+else:
+    for d, scale in (('compare', 1), ('before', 0.5), ('after', 0.5)):
+        for f in glob.glob(os.path.join(root, d, '*.png')):
+            encode(f, scale)

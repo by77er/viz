@@ -62,3 +62,11 @@ KILLED    serve.json: /dashboards is not a document (a reload there would be a 4
             unit: caught it; e2e/prod.cjs: caught it
 
 23 of 23 killed, 0 survived, 0 not applied
+
+Note (2026-11-27 01:33 UTC). In the run above three mutants were caught by e2e/dashboards.cjs stopping rather than by a
+named check ("a failed panel shows nothing", "every kind counts as drawn", "a heatmap is drawn as a line chart": the
+check read a property of an element that was not there). The checks were made to fail by name (a missing element is ""),
+and the three were run again alone (ONLY=...): each KILLED by "[isolated] one panel's query is refused: that panel shows
+the API's message ..." or "[kind] a heatmap is not drawn as anything else ..." (and "[kind] a text note is shown as the
+model's text for it, and says so"). Four other e2e catches above are the suite stopping at a 30 s wait (a panel that never
+settles, a page that never shows): the mutant is caught, by a timeout and not by a sentence.

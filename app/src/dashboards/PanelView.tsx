@@ -134,6 +134,12 @@ export const PanelView = memo(function PanelView({ id, span, resolved, store, fr
         {progress}
         {body}
       </div>
+      {/* Its place is kept before the first answer (not seen, not reachable), so the panel is as tall waiting as answered. */}
+      {drawn && !failed && !result && (
+        <div className="vz-details is-reserved" aria-hidden="true">
+          <summary>Text form</summary>
+        </div>
+      )}
       {drawn && result && !failed && (
         <details className="vz-details" onToggle={(e) => setTextOpen((e.target as HTMLDetailsElement).open)} data-testid="panel-text">
           <summary>Text form</summary>
@@ -206,7 +212,9 @@ const ChartBody = memo(function ChartBody({ id, result, panel }: { id: string; r
     const aligned = alignedOf(result, panel)
     const shiftMs = zoneShiftMs(LOCAL, result.window.end * 1000)
     const queries = panel.kind === 'text' ? [] : panel.queries
-    const query = result.resolved.queries[queries[0] ?? '']?.expr ?? panel.title
+    // A series with no labels is named by what the dashboard calls its query ("p95") when it gives it a fixed name, else by the query itself, as in Explore.
+    const first = result.resolved.queries[queries[0] ?? '']
+    const query = first?.legend && !first.legend.includes('{{') ? first.legend : (first?.expr ?? panel.title)
     let max = 0
     if (panel.kind === 'timeseries' && panel.unit === 'bytes/s') for (const s of aligned.series) for (let i = 0; i < s.values.length; i++) if (Math.abs(s.values[i]!) > max) max = Math.abs(s.values[i]!)
     const unit = chartUnitOf(panel.kind === 'timeseries' ? panel.unit : undefined, max)

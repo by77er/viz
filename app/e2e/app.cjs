@@ -501,7 +501,7 @@ async function main() {
         await page.keyboard.press('Tab')
       }
       const names = stops.map((s) => s.name)
-      const order = ['Skip to content', 'Explore', 'Help', 'Settings', 'query editor', 'run', 'preset-15m', 'preset-1h', 'preset-6h', 'preset-24h', 'preset-7d', 'earlier', 'later', 'time-from', 'time-to', 'step', 'unit', 'view-chart', 'view-table', 'view-text', 'view-json']
+      const order = ['Skip to content', 'Explore', 'Dashboards', 'Help', 'Settings', 'query editor', 'run', 'preset-15m', 'preset-1h', 'preset-6h', 'preset-24h', 'preset-7d', 'earlier', 'later', 'time-from', 'time-to', 'step', 'unit', 'view-chart', 'view-table', 'view-text', 'view-json']
       check('keyboard: the stops come in reading order, from the skip link through the query, the range and the forms to the chart', order.every((n, i) => names[i] === n), names.join(' > '))
       check('keyboard: the plot is one stop, the zoom buttons follow, each sortable head is one, and the legend is one', names.slice(order.length).join(' > ') === [names[order.length], 'Zoom in', 'Series', 'Last, /s', 'Min', 'Max', names[names.length - 1]].join(' > ') && names[order.length].startsWith('Query result: ') && names.length === order.length + 7, names.slice(order.length).join(' > '))
       check('keyboard: the ring is drawn at every stop, and focus never falls to the document', stops.every((s) => s.ring && s.name !== 'body'), stops.filter((s) => !s.ring).map((s) => s.name).join(', '))

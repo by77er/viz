@@ -38,8 +38,10 @@ what it is for.
 app's, not part of this change). Each state is captured in both themes at 1440 px (mouse) and
 at 400 px (touch emulation: coarse pointer), so each name below is four files:
 `<name>-light-1440.png`, `<name>-dark-1440.png`, `<name>-light-400.png`, `<name>-dark-400.png`.
-Every image is the whole page at device scale 1, stored as captured (lossless PNG, no palette
-reduction). The dashboards are shown over a fixed range, 18 Nov 2026 09:30 to 12:30 UTC, so
+Every image is the whole page at device scale 1, stored with a 256-colour palette that holds
+every token colour exactly (`app/e2e/encode-review-images.py --flat`; as captured the sixty
+were 10.3 MB, stored 3.3 MB): flat colours and text are exact, the anti-aliased edges of
+lines and letters are the nearest of the palette's colours. The dashboards are shown over a fixed range, 18 Nov 2026 09:30 to 12:30 UTC, so
 two captures draw the same data; the 12-minute rise in checkout's errors and latency at
 09:40 and the gap in one pod's CPU line at 10:50 are in the mock's data. `images.json` lists
 every file with its size and the page height.
@@ -57,7 +59,7 @@ every file with its size and the page height.
 | `09-dashboard-variables` | A dashboard with variables: Service (a query variable, a select) set to orders, Status (an enum, a segmented control) set to 500; the first chart's "Text form" open |
 | `10-dashboard-panel-states` | Panel states on one dashboard ("Pod capacity", an explicit grid): a heatmap and a text note (kinds not drawn), a query the API refuses (the panel's error), a query that matches nothing (the panel's empty state), beside a chart of 12 series and a stat |
 | `11-dashboard-waiting` | Waiting on a new range: "6 h" was pressed and the API is slow; about 2.6 s in, every panel keeps its previous answer, its head says "Showing the previous range", and the waiting line offers Cancel |
-| `12-dashboard-first-load` | Waiting on a first load: a dashboard opened on a slow API, about 1 s in: the panels' places are reserved and each says what it waits for |
+| `12-dashboard-first-load` | Waiting on a first load: "Services overview" opened from the list on a slow API, about 1.6 s in (its own range, the last 3 h): the panels' places are reserved and each says what it waits for |
 | `13-dashboard-text` | The whole dashboard as text (the dashboard model's digest), with the panel that failed named as not in it |
 | `14-dashboard-missing` | Error: an address with an id no dashboard has |
 | `15-dashboard-fragments` | A dashboard made of one fragment used twice, each under its row's heading |

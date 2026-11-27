@@ -310,6 +310,199 @@ dashboard and read, panel by panel, whether it is healthy over a time range*.
 - Not run against a deployed viz, Safari or Firefox, real touch hardware, a screen reader by
   ear, or at 200% zoom.
 
+### Verification (dashboards)
+
+Run on 2026-11-27 between 01:48 and 02:05 UTC on the final source (last source change
+01:48:33, `src/dashboards/PanelView.tsx`; built 01:48:37), Node 22.23, Chromium (Playwright's
+headless shell), on a machine of 4 cores and 16 GB shared with other builders; one browser job
+of this work at a time, two test workers at most. Ports were moved off the defaults
+(`VIZ_E2E_APP_PORT=18720 VIZ_E2E_MOCK_PORT=18721`, `VIZ_REAL_PORT=18851`) because another
+session's servers held them.
+
+| Check | Result |
+|---|---|
+| `npm test` | 224 tests in 20 files pass (56 new, in five new files: `mock/dashboards.test.ts` 8, `src/dashboards/` model 23, scheduler 15, store 8, `src/api/limiter.test.ts` 2) |
+| `npx tsc --noEmit` | passes (`allowImportingTsExtensions` was added: the dashboard model imports its own files as `.ts`) |
+| `npm run check:tokens` | passes: 0 literal values in 69 files; contrast and structure 759 of 759 |
+| `npm run build` | passes. The shell is 175.7 kB compressed (gzip 9, as `e2e/prod.cjs` counts it; the limit is 200 kB): 29.7 kB more than before this change (146.0), the dashboard model and the views. 24 kB are left |
+| `node e2e/dashboards.cjs` (new) | **100 of 100** checks pass, in eight sections: the list, its states, a dashboard, panel kinds and failures, variables, requests, the key, the phone layout and the second theme; axe (WCAG 2.2 AA and best practice) finds no serious or critical violation on the list, the first run, no permission, a twelve-panel dashboard, a dashboard with failed, empty and undrawn panels, and both in the dark theme |
+| `node e2e/app.cjs` | 130 of 130 (one expectation changed: the tab order now passes "Dashboards" in the navigation) |
+| `node e2e/errors.cjs` | 14 of 14 |
+| `node e2e/prod.cjs` | 21 of 21 (two more than before: `/dashboards` is served as a document, and under the content security policy the list and a twelve-panel dashboard work; `/dashboards/`, `/dashboards/services_overview`, `/dashboard` and `/monitors` are the JSON 404). Its mock key now has `read` and `dashboards:read` |
+| `node e2e/contract.cjs` | **116 of 116**: the 82 checks of the query API as before, and 34 new ones on control's dashboard read routes (33 requests sent to the real control plane and to the mock, bodies compared whole except who created a dashboard and when; and the second page by each side's own cursor). No difference was found, so the mock was not changed by it |
+| `node e2e/real.cjs` | 25 of 25 (9 new): on the real API (control, query, the write path, `wrangler dev --local`) the key with `read` only is refused dashboards in control's words; the list is the mock's list; each of the four dashboards reads the same on the real API as on the mock, panel by panel (state, figures, table, legend, text); the query viz does not run fails its panel only (422 `unsupported`); a query variable's values come from the real label-values endpoint |
+| `real/seed.ts` | the real control plane accepted the mock's four specs (`POST /api/v1/control/dashboards`, 201 each, no lint warning): control's own validation is an implementation of the check the mock's unit test makes |
+| `e2e/mutants-dashboards.cjs` | 23 of 23 killed, on a copy in the scratch area (below) |
+| `cd ../deploy && npx vitest run --maxWorkers=2` | 255 of 255 in 4 files, with the changed `serve.json` (`deploy/` was not edited by this change) |
+| `cd ../deploy && node --test --test-concurrency=2 'test/*.test.mjs'` | 189 of 189 (`deploy`'s own `test:scripts`). `node --test test/`, as the task wrote it, does not start on Node 22.23 ("Cannot find module …/deploy/test": a directory is read as a module there); that is not a failure of a test. A first run at 01:56 had one failure, `app/serve.json is read as the specification…`, expecting `app.needs` to be `['design-system']` and finding `['design-system', 'dashboard/src']`: `deploy/workers.json` and `deploy/test/app.test.mjs` were being changed by `deploy/`'s own builder during that run (both written at 01:56:01, to export `dashboard/src` for this app's build); the rerun at 01:57 is the 189 |
+
+Not run: the suites against a deployed viz; Safari and Firefox; a real phone; 200% zoom.
+
+### Mutants of the dashboards change
+
+`VIZ_MUTANT_DIR=<scratch>/app-dash/mutants node e2e/mutants-dashboards.cjs` copies the app to
+the scratch area, breaks one property at a time there, runs the checks the mutant names (the
+whole unit suite; sections of `e2e/dashboards.cjs` on a build of the copy; `e2e/prod.cjs`) and
+restores the file. Nothing is edited in the shared tree. The record is
+`e2e/measurements/mutants-dashboards.txt` (01:32 UTC, on the source as it was then; the two
+later source changes are a series' name and a reserved line, in neither a mutant's text).
+**23 of 23 killed, none survived.** Where two kinds of check are named, each caught it alone.
+
+| Property | Mutant | Caught by |
+|---|---|---|
+| The key | It is sent in the address of the dashboards list (`?key=`) | unit (`the key goes in the Authorization header of every request and in no URL or body`) and e2e (`the key is in no address…`) |
+| | It is sent in the address of a dashboard | unit and e2e, the same two |
+| | The dashboard page keeps the client, key included, in `sessionStorage` | e2e (`the key is kept where it was before this change and nowhere else…`) |
+| | "Open in Explore" carries the key in its address | e2e, the same check (it finds the key in the page: the link's address) |
+| Six in flight | The limiter starts every request at once | unit (10 tests) and e2e (the server's count of requests it is answering: 6 at most) |
+| | The limit is twelve | unit (7) |
+| | A place that frees lets one too many start | unit (6) |
+| | The client sends past the page's limiter | unit (`ten requests from two clients: six are sent…`). The dashboard's own limiter still holds its six, so no e2e check can see this one |
+| | The dashboard has no limiter of its own | unit (the store's own count). The client's limiter still holds the page's six: no e2e check can see this one either |
+| Superseded | An answer for an earlier range is delivered to the panel | unit (8, among them a request that ignores its abort and answers after the new one) and e2e |
+| | A new range does not cancel the requests of the one before | unit (5) and e2e (`changing the range again cancels the requests of the range before…`) |
+| | Leaving the dashboard does not cancel its requests | unit and e2e (`leaving the dashboard aborts its requests in flight…`) |
+| | While a new range waits, the old answer is shown as if current | unit and e2e (`…says "Showing the previous range"…`) |
+| | "The last hour" is dropped from a dashboard's address (it would then mean the dashboard's own range) | unit and e2e |
+| Isolated | One panel's failure cancels the whole load | unit (6) and e2e (the suite stops at a 30 s wait: the other panels never settle) |
+| | One panel's failure takes the page down | e2e (stops at the same wait) |
+| | A failed panel shows nothing | e2e (`one panel's query is refused: that panel shows the API's message…`) |
+| | A failure is recorded on every panel | unit and e2e |
+| Kind | Every kind counts as drawn (a heatmap gets an empty body) | unit and e2e |
+| | A heatmap is drawn as a line chart | e2e (`a heatmap is not drawn as anything else: no plot, no figure, no table…`) |
+| | A spec is drawn without the model's validation | unit and e2e (stops: the page never says the spec is invalid) |
+| | A panel that is not drawn does not say so | e2e (two checks) |
+| Served | `/dashboards` is not in `serve.json` | unit (`lists every route of the router as a document`) and `e2e/prod.cjs` |
+
+What the run showed about the checks themselves: three mutants were first caught by
+`e2e/dashboards.cjs` *stopping* on an element that was not there, not by a named check; the
+checks were made to fail by name and those three run again alone (the note at the end of the
+record). Four e2e catches are still a 30 s timeout, not a sentence. Two halves of one
+condition are equivalent and were not counted as mutants: the loader drops an outcome when its
+generation is old **or** its load was aborted, and a superseded load is always both (removing
+either half alone changes nothing; removing both is the first "Superseded" mutant). No mutant
+breaks the model's escaping of a variable's value: that is `../dashboard/`'s own property and
+its own mutants; here one e2e check sends a hostile value through the address and reads the
+query that was sent.
+
+### Speed (dashboards)
+
+**Measured here**, by `e2e/measure-dashboards.cjs`: the built app on the mock, 4x CPU slowdown
+and Fast 4G (165 ms latency) as `e2e/measure.cjs` sets them, 20 runs a layout, the 75th
+percentile with the median and the worst run in brackets; milliseconds, layout shift as a
+score. One run is a fresh tab: the list is loaded, "Services overview" (12 panels, 14 queries,
+its own range: the last 3 h) is opened from it, and when it has drawn "1 h" is pressed. The
+phone layout is 400 x 800 with touch emulation; nothing is read across a reload or another
+change of document (`design-system/reviews/system-v9/confirmation.md`), every run checks that
+the pointer is coarse, and layout shift is given with **every** entry counted, those the
+browser marks as following input included. The figures are the application's, not the
+system's fixture page.
+
+| What | Limit | desktop, before the fix | desktop, after the fix | desktop, final build | phone, after the fix | phone, final build |
+|---|---|---|---|---|---|---|
+| Opens a dashboard from the list: the page with its name, intent and waiting region is painted (`viewChange`) | 100 ms | 91 (77, 106) | 77 (69, 113) | 87 (73, 174) | 98 (87, 164) | 108 (95, 145) |
+| That press, as the browser reports it (Interaction to Next Paint) (`viewInp`) | 200 ms | 88 (72, 104) | 72 (64, 104) | 88 (72, 160) | 96 (80, 152) | 112 (88, 144) |
+| The first panel answered: its body arrived to painted (`firstPaint`) | 100 ms | 48 (33, 73) | 40 (34, 160) | 44 (30, 74) | 41 (31, 137) | 38 (32, 64) |
+| The slowest of the twelve panels on that load: body arrived to painted (`paintWorst`) | 100 ms | 197 (145, 263) | 180 (144, 336) | 168 (100, 326) | 144 (72, 202) | 156 (76, 266) |
+| Presses "1 h": the first request of the new range is sent (`rangeSend`) | 100 ms | 66 (49, 91) | 54 (47, 70) | 62 (54, 104) | 72 (63, 118) | 71 (62, 103) |
+| Presses "1 h": the frame in which all twelve panels are marked waiting and say "Showing the previous range" (`rangeBusy`) | 100 ms | 148 (122, 172) | 127 (122, 191) | 165 (132, 453) | 159 (134, 237) | 155 (130, 260) |
+| That press, as the browser reports it (`rangeInp`) | 200 ms | 160 (128, 184) | 144 (128, 200) | 168 (136, 448) | 160 (136, 232) | 152 (128, 256) |
+| The slowest of the twelve panels of the new range: body arrived to painted (`rangePaintWorst`) | 100 ms | 107 (77, 189) | 72 (45, 93) | 83 (68, 131) | 85 (62, 113) | 72 (53, 96) |
+| Layout shift from the press on the list until the dashboard has drawn, every entry counted (worst run) (`clsView.all`) | 0.05 | 0.0095 (0.0095) | 0.0095 (0.0095) | 0.0032 (0.0032) | 0.0000 (0.0000) | 0.0000 (0.0000) |
+| Layout shift from the press on "1 h" until every panel has drawn, every entry counted (worst run) (`clsRange.all`) | 0.05 | 0.2836 (0.2864) | 0.0008 (0.0010) | 0.0009 (0.0011) | 0.0010 (0.0010) | 0.0011 (0.0011) |
+| Context, no budget: press to the panels standing in their places (the spec has arrived: one round trip at 165 ms latency) (`panelsShown`) |  | 425 (396, 461) | 403 (378, 514) | 400 (380, 494) | 423 (407, 550) | 425 (396, 528) |
+| Context: press to the first answered panel painted (`firstVisible`) |  | 651 (620, 697) | 624 (587, 731) | 628 (590, 749) | 636 (613, 804) | 642 (630, 778) |
+| Context: press to all twelve panels painted (`allPainted`) |  | 1497 (1398, 1620) | 1423 (1315, 1739) | 1448 (1300, 1813) | 1302 (1264, 1569) | 1349 (1287, 1647) |
+| Context: press on "1 h" to all twelve painted (`rangeAllPainted`) |  | 882 (835, 1122) | 830 (803, 917) | 841 (819, 1373) | 832 (793, 939) | 834 (781, 1196) |
+| 1-minute load at the samples (median); samples above 4 | | 1.12 to 3.33 (1.85); 0 of 20 | 1.66 to 3.24 (2.32); 0 of 20 | 1.96 to 4.05 (3.42); 2 of 20 | 1.00 to 2.09 (1.83); 0 of 20 | 3.71 to 6.01 (4.82); 20 of 20 |
+| Judged by the load rule | | yes | yes | yes | yes | **no: timing rows not judged** |
+| When (UTC), calibration task | | 01:12, 344 ms | 01:17, 334 ms | 02:02, 332 ms | 01:24, 336 ms | 02:04, 442 ms |
+| Runs void; the page stayed where it was scrolled on the range change | | 0; 20 of 20 | 0; 20 of 20 | 0; 20 of 20 | 0; 20 of 20 | 0; 20 of 20 |
+
+Five runs, and why. The desktop layout was measured once (01:10), which found two rows over
+their limit and a layout shift of 0.28 on a range change when every entry is counted; **one
+fix was made** (the head's meta keeps one place for both of its wordings, need D7) and
+both layouts were measured after it (01:14 and 01:21). Two small changes followed (an
+unlabelled series is named by the dashboard's word for its query; the "Text form" line keeps
+its place before the first answer), so both layouts were measured once more on the final
+build (01:59 and 02:02). The machine was not quiet: another session's `e2e/measure.cjs` ran
+during the whole of "desktop, after the fix" and from 13 s into "phone, after the fix" (I
+waited for it to end before each run, 13 minutes the first time, and it was started again
+after my check), and `deploy/`'s tests ran during the final runs. **The final phone run was
+taken at a load of 3.7 to 6.0 and its timing rows are not judged**; its layout shift is.
+
+**Met** (in every judged run): opening a dashboard paints its page within 100 ms (77 to 98;
+the worst single runs are 106 to 174); the first panel is painted 40 to 48 ms after its body
+arrives; the first request of a new range leaves 54 to 72 ms after the press; Interaction to
+Next Paint is 72 to 96 ms for opening and 144 to 168 ms for the range (limit 200; single runs
+reached 232 on the phone, and 448 once on the desktop at a load of 3.4 to 3.6); layout shift is
+0.01 at most on opening and 0.001 on a range change after the fix, with every entry counted,
+at both layouts; the page stays where it was scrolled on a range change in 100 of 100 runs.
+
+**Open, over the limit:**
+
+1. **The slowest panel of twelve is painted 144 to 197 ms after its body arrives** (limit
+   100; the median panel takes 5 to 7 ms). Six answers arrive together (six are in flight)
+   and each chart is built by the design system's chart script in the task that receives it
+   (its model, its SVG, its legend table), so the last of a burst waits for the others: the
+   slow ones are always charts (`errors_by_service`, `latency_by_service`). No fix was tried.
+   The candidate is not to build a chart that is off screen in the same task as those on
+   screen (build it when the page is idle or when it nears the viewport); it changes what an
+   off-screen panel's head may say about a chart not yet redrawn, which is a design decision,
+   and it needs the harness to time the drawing separately. After the range change the same
+   row is 72 to 107 (met in three of four judged runs).
+2. **The frame in which all twelve panels say they are waiting comes 127 to 165 ms after the
+   press** (limit 100, if that frame is what "show the region's waiting state" means; the
+   request itself leaves in time, and the pressed segment is painted by the system's press
+   script at `pointerdown`). The fix that was tried, keeping the head's height, took the
+   relayout of every panel out of that frame (148 to 127 on the desktop in the next run; 165
+   in the final one, at a higher load) and did not bring it under the limit. What remains is
+   the router's navigation, the model's `resolve` (which hashes the spec for its revision on
+   every call) and twelve panels rendering again; none was profiled.
+
+Not measured: the list's search (a round trip), a change of variable, the "Panels | Text"
+switch, the first load of `/dashboards?id=…` as a document, and anything on a real phone or
+behind the gateway.
+
+### Known risks (dashboards)
+
+- **Over HTTP/1.1, six slow queries hold every connection the browser gives the origin.**
+  Seen while capturing the review images on `vite preview` with a 20 s artificial delay: a
+  dashboard opened as a new document waited 19 s for a font (the preview server makes the
+  browser revalidate it) behind its own six queries. Behind the gateway (HTTP/2, assets
+  served `immutable`) connections are not the limit and nothing is revalidated; it was not
+  tried there. A limit of five, or the mono font preloaded as the sans is, would remove it
+  locally.
+- **The shell grew by 29.7 kB to 175.7 kB of 200 kB.** The dashboard model is in the entry
+  chunk (so that opening a dashboard from the list costs no chunk load); the next view of this
+  size does not fit, and one of them will have to be a lazy chunk.
+- **A page of twelve panels is long** (3,335 px at 1440 px, 8,173 px at 400 px for "Services
+  overview"): every chart carries the system's legend table (need D9).
+- **The app now imports `../dashboard/src`**, so a build of the app needs that directory
+  beside it ("Needed from deploy/ (dashboards)").
+- **One step for every panel** (30 s over 3 h): a stat's "last value" is the last 30 s step's,
+  and a table reduces 361 points a series where one instant query would do.
+- The mock's "changed by" and "changed at" are fixed values; on the real stack every
+  dashboard was changed by the key that seeded it. `state` is always `null` on both.
+- The phone layout's timing on the final build is not judged (above).
+
+### Needed from deploy/ (dashboards)
+
+`deploy/` was not edited.
+
+- **`serve.json` lists a fifth document, `/dashboards`.** Nothing else in it changed. The
+  gateway's tests pass with it (above); `deploy/README.md` asks that `serve.json` and
+  `deploy/` change together (its item 6), and this is that change's other half.
+- **A dashboard is `/dashboards?id=<id>`: the query string must reach the document**
+  unchanged (it does in `e2e/prod.cjs`'s server, which follows `serve.json`), and
+  `/dashboards/<anything>` stays the JSON 404.
+- **The app's build needs `dashboard/src`** next to `app/` and `design-system/` (it is
+  imported by relative path, with no build step of its own). `deploy/`'s builder had already
+  added it to `deploy/workers.json` (`app.needs`) in their working tree when this was written.
+- The policy is unchanged: the dashboards views add no inline script and load nothing from
+  another origin; they do set style attributes (a reserved table's row count), which the
+  policy's existing allowance for inline styles covers.
+
 ### Needed from the design system (dashboards)
 
 Nothing under `design-system/` was edited. Where the views needed something the system does
@@ -326,7 +519,7 @@ not have, the closest existing thing is used and the rule that fills the gap is 
 | D6 | **Reserving a stat's and a table's height before their data.** "Before its data arrives a panel reserves its body's final height (… a table from its row count)", with no class or property for either | A hidden `vz-stat` with a figure and a context line; `.panel-rows` (`min-height` from `--strip`, `--row` and a `--rows` property) |
 | D7 | **"Showing the previous query" in a narrow panel.** The note makes the meta longer; in a three-column panel it wraps and the head grows, so every panel under it moves when a wait begins and again when it ends (measured: a layout shift of 0.28 on a range change, counted with the entries the browser marks as following input) | Both wordings of the meta lie in one grid cell sized by the longer (`.meta-hold`); the note replaces the step and age instead of joining them, and the previous range is its `title` and its text for a screen reader. Measured after: 0.001 |
 | D8 | **Thresholds on a chart from an application.** The chart can draw markers and thresholds in the system's previews; nothing documents how an application hands it one | Not drawn ("Not implemented") |
-| D9 | **A compact legend.** Every chart has the legend as a table of toggles; twelve charts make a page 2,800 px tall at 1440 px, most of it legends. The model has `legend: list | table | hidden` | The legend is always the system's table |
+| D9 | **A compact legend.** Every chart has the legend as a table of toggles; six charts, four stats and two tables make a page 3,335 px tall at 1440 px, much of it legends. The model has `legend: list | table | hidden` | The legend is always the system's table |
 | D10 | **A dashboard's controls**: no pattern for a range and variables together | `RangeControls`, then a `vz-grid` of fields: the range (six columns) and each variable (three) |
 | D11 | **`tools/shots.mjs` captures with `fullPage`**, and `.vz-chart` is `content-visibility: auto`: on a page taller than a few screens the charts far from the viewport are not painted in the capture | `e2e/dashboards-shots.cjs` makes the viewport as tall as the page before it captures |
 
@@ -620,6 +813,9 @@ is the move to design system v9 (2026-11-26).
 | 3 | Cost | 34 `X-Viz-*` headers: five more since 2026-11-19 (`X-Viz-Pruning`, `X-Viz-Tail-Mode`, `X-Viz-Series-Reads`, `X-Viz-Scan-Rows`, `X-Viz-Rows-Decoded`) | 29 | mock: the same 34 names |
 | 3 | Compression | `Vary: Origin, Accept-Encoding` on every answer (item 8 of "Needed changes in query/", since done there) | `Vary: Origin` | mock: the same |
 | 3 | Time limit, the words | `query timed out after 0.001 s (the timeout parameter)`: the limit is now said (item 4, since done) | `query timed out` | reported by the contract test as a difference of wording, not failed; the mock's words were left |
+| 4 | Dashboards, the read routes (pass 4 is the dashboards change, 2026-11-27) | control's `GET /api/v1/control/dashboards` and `/dashboards/<id>`: the list (`items`, `total`, `next`), `q`, `tag`, `owner`, `deleted`, `limit`, the cursor; `view=spec|outline|resolved` with `var.<name>`; `revision`; the `ETag`; 400 `bad-limit`, `bad-view`, `tenant-not-accepted`; 404 `not-found` for a dashboard and for a revision; 401 `unauthenticated`; 403 `missing-scope` with the scopes needed and held | not served (404) | mock: `mock/dashboards.ts`, written from control's source and README and then compared: 33 requests, bodies whole (but who created a dashboard and when), and a second page by each side's cursor. **No difference found** |
+| 4 | Dashboards, who may read | a key needs `dashboards:read` (or `dashboards:write`, `dashboards:apply`, `admin`); `read` alone is 403 | the mock's keys had `read` or `write` only | mock: `--dashboards-token` (a key with `read` and `dashboards:read`); without `--require-token` its own key has both. real: `real/stack.mjs` makes `app-dash` with both; `app-read` stays `read` only and is the no-permission case on both sides |
+| 4 | Dashboards, PromQL the API does not run, in a panel | `limitk(3, …)`: 422 `unsupported` "limitk / limit_ratio aggregations" | 422 `unsupported` "aggregation "limitk" (not implemented by the viz mock backend)" | a difference of wording, reported and left: the panel shows the API's own words under the same kind of error on both |
 
 ## Needed changes in query/
 
@@ -691,6 +887,10 @@ do to serve the app. The same statement is in `serve.json`, as data; `e2e/prod.c
 `dist/` by exactly these rules from a small static server and drives the app in a browser
 under them (19 checks, "Verification"), and `src/shell/serve.test.ts` fails if the router gains
 a route the list lacks.
+
+**Since 2026-11-27 `serve.json` lists five documents** (`/dashboards` was added; a dashboard
+is `/dashboards?id=<id>`, never a path of its own) and the app's build also needs
+`dashboard/src` beside it: "Needed from deploy/ (dashboards)".
 
 **What is served.** The output of `npm run build` in `app/` (`app/dist/`): `index.html`,
 `favicon.svg`, and `assets/` (six files today, each with a content hash in its name:

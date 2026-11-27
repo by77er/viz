@@ -38,7 +38,12 @@ const STATES = [
   ['09-dashboard-variables', 'A dashboard with variables: Service (from a query) set to orders, Status (an enum) to 500; one panel\'s text form open', async (page) => { await page.goto(`${APP}/dashboards?id=service_red${RANGE}&var.service=orders&var.status=500`); await settled(page, 5); await page.waitForFunction(() => document.querySelectorAll('#var-service option').length >= 5); await page.click('[data-panel=rate] [data-testid=panel-text] summary'); await page.waitForSelector('[data-panel=rate] [data-testid=panel-digest]') }],
   ['10-dashboard-panel-states', 'Panel states on one dashboard: a kind not drawn (heatmap; text note), a query the API refuses (error), a query that matches nothing (empty), beside a chart and a stat', async (page) => { await page.goto(`${APP}/dashboards?id=pod_capacity${RANGE}`); await settled(page, 6) }],
   ['11-dashboard-waiting', 'Waiting: the range was changed to the last 6 h and the API is slow; 2.6 s in, every panel keeps its previous answer and says so', async (page) => { await page.goto(`${APP}/dashboards?id=checkout_path${RANGE}`); await settled(page, 4); await delay(20000); await page.click('[data-testid=preset-6h]'); await page.waitForSelector('[data-testid=panel-cancel]'); await sleep(400) }, { after: () => delay(0) }],
-  ['12-dashboard-first-load', 'Waiting: a dashboard opened on a slow API, 1 s in: the panels\' places are reserved, each says what it waits for', async (page) => { await delay(20000); await page.goto(`${APP}/dashboards?id=services_overview${RANGE}`); await page.waitForSelector('[data-testid=panel-progress]'); await sleep(500) }, { after: () => delay(0) }],
+  ['12-dashboard-first-load', 'Waiting: a dashboard opened on a slow API, 1 s in: the panels\' places are reserved, each says what it waits for', async (page) => {
+    // Opened from the list, as a person opens it: the document and its fonts are already there. (A new document asked for while six
+    // slow queries hold every HTTP/1.1 connection of the preview server waits for one of them to revalidate its font: README, "Known risks (dashboards)".)
+    await page.goto(`${APP}/dashboards`); await page.waitForSelector('[data-testid=dashboard-row]'); await page.evaluate(() => document.fonts.ready)
+    await delay(20000); await page.click('[data-testid=open-services_overview]'); await page.waitForSelector('[data-testid=panel-progress]'); await sleep(500)
+  }, { after: () => delay(0) }],
   ['13-dashboard-text', 'The whole dashboard as text (the model\'s digest)', async (page) => { await page.goto(`${APP}/dashboards?id=pod_capacity${RANGE}`); await settled(page, 6); await page.click('[data-testid=form-text]'); await page.waitForSelector('[data-testid=dashboard-digest]') }],
   ['14-dashboard-missing', 'Error: an id no dashboard has', async (page) => { await page.goto(`${APP}/dashboards?id=billing_overview`); await page.waitForSelector('[data-testid=dashboard-error]') }],
   ['15-dashboard-fragments', 'A dashboard made of one fragment used twice', async (page) => { await page.goto(`${APP}/dashboards?id=checkout_path${RANGE}`); await settled(page, 4) }],
@@ -46,8 +51,8 @@ const STATES = [
 
 async function main() {
   fs.mkdirSync(OUT, { recursive: true })
-  for (const f of fs.readdirSync(OUT)) if (/\.png$/.test(f)) fs.rmSync(path.join(OUT, f))
   const only = (process.env.VIZ_ONLY || '').split(',').filter(Boolean)
+  if (only.length === 0) for (const f of fs.readdirSync(OUT)) if (/\.png$/.test(f)) fs.rmSync(path.join(OUT, f))
   const stops = [await lib.startServers()]
   stops.push(await lib.startMock(KEYED_MOCK_PORT, ['--require-token', READ]))
   stops.push(await lib.startPreview(KEYED_APP_PORT, `http://127.0.0.1:${KEYED_MOCK_PORT}`))
@@ -61,8 +66,10 @@ async function main() {
           const layout = width === 400 ? { viewport: { width: 400, height: 800 }, hasTouch: true, isMobile: true } : { viewport: { width: 1440, height: 900 } }
           const ctx = opts.keyed ? await lib.contextWithKey(browser, READ, { ...layout, colorScheme: theme }) : await browser.newContext({ ...layout, colorScheme: theme })
           const page = await ctx.newPage()
+          const began = Date.now()
           try {
             await go(page)
+            const reached = Date.now() - began
             await page.evaluate(() => document.fonts.ready)
             const height = Math.max(layout.viewport.height, await page.evaluate(() => document.documentElement.scrollHeight))
             await page.setViewportSize({ width, height })
@@ -70,6 +77,7 @@ async function main() {
             const file = `${name}-${theme}-${width}.png`
             await page.screenshot({ path: path.join(OUT, file) })
             written.push({ file, what, bytes: fs.statSync(path.join(OUT, file)).size, height })
+            if (process.env.VIZ_SHOTS_LOG) console.log(`  ${file}: state reached after ${reached} ms, captured after ${Date.now() - began} ms`)
           } finally {
             if (opts.after) await opts.after()
             await ctx.close()
@@ -83,7 +91,11 @@ async function main() {
     for (const stop of stops.reverse()) stop()
   }
   const total = written.reduce((a, w) => a + w.bytes, 0)
-  fs.writeFileSync(path.join(OUT, 'images.json'), JSON.stringify({ when: new Date().toISOString(), range: [new Date(T0).toISOString(), new Date(T1).toISOString()], images: written }, null, 1) + '\n')
+  // A run of some states (VIZ_ONLY) replaces their entries and keeps the others.
+  const index = path.join(OUT, 'images.json')
+  const kept = only.length && fs.existsSync(index) ? JSON.parse(fs.readFileSync(index, 'utf8')).images.filter((i) => !written.some((w) => w.file === i.file)) : []
+  const images = [...kept, ...written].sort((a, b) => (a.file < b.file ? -1 : 1))
+  fs.writeFileSync(index, JSON.stringify({ when: new Date().toISOString(), range: [new Date(T0).toISOString(), new Date(T1).toISOString()], images }, null, 1) + '\n')
   console.log(`\n${written.length} images, ${(total / 1e6).toFixed(2)} MB, in ${OUT}`)
 }
 
