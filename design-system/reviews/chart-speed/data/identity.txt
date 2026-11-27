@@ -1,0 +1,53 @@
+before: light, 1440 px done (27 states so far)
+before: dark, 1440 px done (54 states so far)
+before: light, 400 px done (78 states so far)
+before: dark, 400 px done (102 states so far)
+after: light, 1440 px done (27 states so far)
+after: dark, 1440 px done (54 states so far)
+after: light, 400 px done (78 states so far)
+after: dark, 400 px done (102 states so far)
+control: light, 1440 px done (27 states so far)
+control: dark, 1440 px done (54 states so far)
+control: light, 400 px done (78 states so far)
+control: dark, 400 px done (102 states so far)
+102 states per build, 3 builds; every light image differs from its dark one: true
+before vs after: 19 states differ
+  app 4 series, light, 1440 px, readout by keyboard: png
+  app 4 series, light, 1440 px, readout by pointer: png
+  app 36 series, light, 1440 px, text: png
+  system preview/Chart.html, light, 1440 px, rest: png
+  system fixture/index.html, light, 1440 px, rest: charts
+  system fixture/index.html, light, 1440 px, readout by keyboard on every chart: charts
+  app 4 series, dark, 1440 px, readout by keyboard: png
+  app 4 series, dark, 1440 px, readout by pointer: png
+  app 4 series, dark, 1440 px, zoomed in: png
+  app 4 series, dark, 1440 px, a legend row chosen: png
+  app 4 series, dark, 1440 px, table: png
+  app 4 series, dark, 1440 px, text: png
+  app 200 series, dark, 1440 px, text: png
+  system fixture/index.html, dark, 1440 px, rest: charts
+  system fixture/index.html, dark, 1440 px, readout by keyboard on every chart: charts
+  system fixture/index.html, light, 400 px, rest: png, charts
+  system fixture/index.html, light, 400 px, readout by keyboard on every chart: charts
+  system fixture/index.html, dark, 400 px, rest: charts
+  system fixture/index.html, dark, 400 px, readout by keyboard on every chart: charts
+before vs control: 19 states differ
+  app 4 series, light, 1440 px, readout by keyboard: png
+  app 4 series, light, 1440 px, readout by pointer: png
+  app 4 series, light, 1440 px, a legend row chosen: png
+  app 36 series, light, 1440 px, text: png
+  app 200 series, light, 1440 px, text: png
+  system fixture/index.html, light, 1440 px, rest: charts
+  system fixture/index.html, light, 1440 px, readout by keyboard on every chart: charts
+  app 4 series, dark, 1440 px, readout by keyboard: png
+  app 4 series, dark, 1440 px, readout by pointer: png
+  app 4 series, dark, 1440 px, zoomed in: png
+  app 4 series, dark, 1440 px, a legend row chosen: png
+  app 4 series, dark, 1440 px, table: png
+  app 4 series, dark, 1440 px, text: png
+  system fixture/index.html, dark, 1440 px, rest: charts
+  system fixture/index.html, dark, 1440 px, readout by keyboard on every chart: charts
+  system fixture/index.html, light, 400 px, rest: charts
+  system fixture/index.html, light, 400 px, readout by keyboard on every chart: charts
+  system fixture/index.html, dark, 400 px, rest: charts
+  system fixture/index.html, dark, 400 px, readout by keyboard on every chart: charts

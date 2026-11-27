@@ -1,0 +1,31 @@
+--- a/app/e2e/measure.cjs
++++ b/app/e2e/measure.cjs
+@@ -86,6 +86,16 @@
+ const EXTRA = arg('extra', '')
+ const PHONE = process.argv.includes('--phone')
+ /**
++ * --nobuffer: DevTools keeps no copy of response bodies. With the Network domain enabled (Playwright
++ * enables it for every page, and this script enables it again for its own session) each agent buffers
++ * the body and decodes it on the page's main thread when the load finishes, for Network.getResponseBody:
++ * at 4x CPU that is about 70 ms for the 200-series body (3.4 MB), between the last byte and the page's
++ * next task, and no browser without DevTools open does it (design-system/reviews/chart-speed/PR.md).
++ * It reaches into Playwright's own session, which is not a public interface: a figure taken this way
++ * says so, and the default stays as it was.
++ */
++const NOBUFFER = process.argv.includes('--nobuffer')
++/**
+  * --ui v4: the app before design system v9 (uPlot canvas, its own legend, a time picker
+  * menu); the default is the app on v9 (the system's chart). What is pressed and what counts
+  * as done is the same act in both; only where it is found differs.
+@@ -283,7 +293,10 @@
+       const page = await ctx.newPage()
+       await page.addInitScript(instrument)
+       const cdp = await ctx.newCDPSession(page)
+-      await cdp.send('Network.enable')
++      if (NOBUFFER) {
++        const impl = page._connection.toImpl(page)
++        await (impl.delegate || impl._delegate)._mainFrameSession._client.send('Network.enable', { maxTotalBufferSize: 0, maxResourceBufferSize: 0 })
++      } else await cdp.send('Network.enable')
+       await cdp.send('Network.emulateNetworkConditions', FAST_4G)
+       await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 })
+       const load1 = os.loadavg()[0]

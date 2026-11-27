@@ -1,0 +1,148 @@
+    change at +276.7 ms, frame ended +307.4 ms: childList div.vz-panel-body.region | attributes(aria-busy) section[result].vz-panel | attributes(viewBox) svg.vz-plot | childList svg.vz-plot | childList table.vz-table.vz-legend-table | childList thead. | childList tbody. | childList div.vz-legend-note | attributes(aria-pressed) button.vz-series | attributes(tabindex) button.vz-series | childList button.vz-sort | childList td.vz-num.vz-right
+    change at +279.3 ms, frame ended +307.4 ms: childList button.vz-sort | attributes(aria-label) svg.vz-plot | attributes(aria-label) button.vz-series | childList button.vz-series | childList li.
+[200] run 1: load 4.5 bodyRead->paint 157 ms, lastByte->paint 307 ms, lastByte->bodyRead 150, bodyRead->firstChange 127, frames 2
+    change at +187.9 ms, frame ended +219.0 ms: childList div.vz-panel-body.region | attributes(aria-busy) section[result].vz-panel | attributes(viewBox) svg.vz-plot | childList svg.vz-plot | childList table.vz-table.vz-legend-table | childList thead. | childList tbody. | childList div.vz-legend-note | attributes(aria-pressed) button.vz-series | attributes(tabindex) button.vz-series | childList button.vz-sort | childList td.vz-num.vz-right
+    change at +191.3 ms, frame ended +219.2 ms: childList button.vz-sort | attributes(aria-label) svg.vz-plot | attributes(aria-label) button.vz-series | childList button.vz-series | childList li.
+[200] run 2: load 4.5 bodyRead->paint 124 ms, lastByte->paint 219 ms, lastByte->bodyRead 95, bodyRead->firstChange 93, frames 2
+    change at +219.0 ms, frame ended +245.8 ms: childList div.vz-panel-body.region | attributes(aria-busy) section[result].vz-panel | attributes(viewBox) svg.vz-plot | childList svg.vz-plot | childList table.vz-table.vz-legend-table | childList thead. | childList tbody. | childList div.vz-legend-note | attributes(aria-pressed) button.vz-series | attributes(tabindex) button.vz-series | childList button.vz-sort | childList td.vz-num.vz-right
+    change at +222.9 ms, frame ended +245.8 ms: childList button.vz-sort | attributes(aria-label) svg.vz-plot | attributes(aria-label) button.vz-series | childList button.vz-series | childList li.
+[200] run 3: load 4.5 bodyRead->paint 148 ms, lastByte->paint 246 ms, lastByte->bodyRead 98, bodyRead->firstChange 121, frames 2
+    change at +228.9 ms, frame ended +265.6 ms: childList div.vz-panel-body.region | attributes(aria-busy) section[result].vz-panel | attributes(viewBox) svg.vz-plot | childList svg.vz-plot | childList table.vz-table.vz-legend-table | childList thead. | childList tbody. | childList div.vz-legend-note | attributes(aria-pressed) button.vz-series | attributes(tabindex) button.vz-series | childList button.vz-sort | childList td.vz-num.vz-right
+    change at +230.4 ms, frame ended +266.2 ms: childList button.vz-sort | attributes(aria-label) svg.vz-plot | attributes(aria-label) button.vz-series | childList button.vz-series | childList li.
+[200] run 4: load 4.8 bodyRead->paint 4 ms, lastByte->paint 266 ms, lastByte->bodyRead 263, bodyRead->firstChange -34, frames 2
+    change at +279.3 ms, frame ended +311.2 ms: childList div.vz-panel-body.region | attributes(aria-busy) section[result].vz-panel | attributes(viewBox) svg.vz-plot | childList svg.vz-plot | childList table.vz-table.vz-legend-table | childList thead. | childList tbody. | childList div.vz-legend-note | attributes(aria-pressed) button.vz-series | attributes(tabindex) button.vz-series | childList button.vz-sort | childList td.vz-num.vz-right
+    change at +282.6 ms, frame ended +311.3 ms: childList button.vz-sort | attributes(aria-label) svg.vz-plot | attributes(aria-label) button.vz-series | childList button.vz-series | childList li.
+[200] run 5: load 4.8 bodyRead->paint 186 ms, lastByte->paint 311 ms, lastByte->bodyRead 126, bodyRead->firstChange 154, frames 2
+
+== 200 series, desktop: median of 5 runs; load 4.5 4.5 4.5 4.8 4.8
+  body read -> painted 148 ms (157, 124, 148, 4, 186); last byte -> painted 266 ms (307, 219, 246, 266, 311); last byte -> body read 126 ms
+  timeline, self time, from body read
+      113.8 ms  FunctionCall
+       14.2 ms  Layout
+        4.0 ms  ParseHTML
+        2.7 ms  Paint
+        2.2 ms  RunTask
+        1.5 ms  PrePaint
+        0.9 ms  UpdateLayoutTree
+        0.8 ms  V8.GC_SCAVENGER_SCAVENGE_PARALLEL
+        0.5 ms  V8.GC_SCAVENGER_SCAVENGE_ROOTS
+        0.5 ms  v8.callFunction
+  timeline, self time, from last byte
+      117.7 ms  RunTask
+      114.2 ms  FunctionCall
+       15.1 ms  Layout
+        4.6 ms  ParseHTML
+        2.8 ms  Paint
+        2.5 ms  v8.callFunction
+        1.6 ms  V8.GC_SCAVENGER_SCAVENGE_ROOTS
+        1.5 ms  PrePaint
+        1.1 ms  Layerize
+        0.9 ms  UpdateLayoutTree
+        0.8 ms  V8.GC_SCAVENGER_SCAVENGE_PARALLEL
+        0.8 ms  V8.GC_SCAVENGER_SCAVENGE_WEAK_GLOBAL_HANDLES_IDENTIFY
+        0.3 ms  V8.GC_SCAVENGER_FREE_REMEMBERED_SET
+  JS self, from body read
+       26.6 ms  (program)
+       17.6 ms  alignSeries @index.js:25871
+        9.5 ms  (anonymous) @index.js:24480
+        6.6 ms  (anonymous) @index.js:23950
+        6.4 ms  (garbage collector)
+        6.0 ms  drawPlot @index.js:24907
+        4.1 ms  legend @index.js:25072
+        3.5 ms  toSpec @index.js:23948
+        2.8 ms  get clientWidth
+        2.7 ms  path @index.js:24883
+        2.5 ms  chartModel @index.js:24478
+        2.3 ms  model @index.js:24791
+        2.1 ms  bandMarkup @index.js:24962
+        2.1 ms  (anonymous) @index.js:27141
+        1.9 ms  lineMarkup @index.js:24902
+        1.5 ms  setAttribute
+        1.1 ms  textLines @index.js:24655
+        1.1 ms  setItem
+        1.0 ms  key @index.js:24036
+        1.0 ms  seriesKey @index.js:25853
+        0.9 ms  abs @index.js:24464
+        0.7 ms  rng @index.js:25138
+        0.4 ms  seriesName @index.js:25857
+        0.4 ms  cursor @index.js:25185
+        0.3 ms  measure @index.js:24735
+        0.3 ms  distinguish @index.js:24343
+        0.3 ms  y @index.js:24838
+  JS inclusive, from body read
+      148.2 ms  (root)
+      111.9 ms  performWorkOnRoot @index.js:7791
+      111.9 ms  processRootScheduleInMicrotask @index.js:8555
+      111.9 ms  (anonymous) @index.js:8625
+      111.9 ms  flushSyncWorkAcrossRoots_impl @index.js:8529
+      111.8 ms  performSyncWorkOnRoot @index.js:8620
+       67.9 ms  commitRoot @index.js:8247
+       67.9 ms  completeRoot @index.js:8230
+       67.9 ms  completeRootWhenReady @index.js:7870
+       65.3 ms  (anonymous) @index.js:25710
+       65.3 ms  commitHookEffectListMount @index.js:6167
+       65.3 ms  commitLayoutEffectOnFiber @index.js:6682
+       65.3 ms  recursivelyTraverseLayoutEffects @index.js:7334
+       65.3 ms  flushLayoutEffects @index.js:8344
+       65.1 ms  drawChart @index.js:25609
+       65.1 ms  draw @index.js:24992
+       65.1 ms  setData @index.js:25464
+       42.2 ms  workLoopSync @index.js:8041
+       42.2 ms  renderRootSync @index.js:7993
+       42.1 ms  beginWork @index.js:5640
+       41.1 ms  ExplorePage @index.js:26988
+       41.1 ms  renderWithHooks @index.js:3819
+       41.1 ms  updateFunctionComponent @index.js:5218
+       36.0 ms  updateMemo @index.js:4423
+       36.0 ms  exports.useMemo @index.js:416
+       26.6 ms  (program)
+       21.1 ms  (anonymous) @index.js:27141
+       20.0 ms  alignSeries @index.js:25871
+       19.9 ms  model @index.js:24791
+       16.3 ms  chartModel @index.js:24478
+       15.7 ms  drawPlot @index.js:24907
+       11.4 ms  (anonymous) @index.js:24480
+        9.6 ms  legend @index.js:25072
+        8.7 ms  toSpec @index.js:23948
+        8.7 ms  (anonymous) @index.js:27145
+        6.6 ms  (anonymous) @index.js:23950
+        6.4 ms  (garbage collector)
+        4.7 ms  lineMarkup @index.js:24902
+        4.7 ms  (anonymous) @index.js:24929
+        3.6 ms  bandMarkup @index.js:24962
+        2.8 ms  get clientWidth
+        2.7 ms  path @index.js:24883
+        2.2 ms  textForm @index.js:25229
+        1.5 ms  setAttribute
+        1.3 ms  textLines @index.js:24655
+  JS inclusive, from last byte
+      268.9 ms  (root)
+      140.7 ms  (program)
+      111.9 ms  performWorkOnRoot @index.js:7791
+      111.9 ms  processRootScheduleInMicrotask @index.js:8555
+      111.9 ms  (anonymous) @index.js:8625
+      111.9 ms  flushSyncWorkAcrossRoots_impl @index.js:8529
+      111.8 ms  performSyncWorkOnRoot @index.js:8620
+       69.7 ms  commitRoot @index.js:8247
+       69.7 ms  completeRoot @index.js:8230
+       69.7 ms  completeRootWhenReady @index.js:7870
+       66.9 ms  commitHookEffectListMount @index.js:6167
+       66.7 ms  (anonymous) @index.js:25710
+       66.7 ms  commitLayoutEffectOnFiber @index.js:6682
+       66.7 ms  recursivelyTraverseLayoutEffects @index.js:7334
+       66.7 ms  flushLayoutEffects @index.js:8344
+       65.2 ms  drawChart @index.js:25609
+       65.1 ms  draw @index.js:24992
+       65.1 ms  setData @index.js:25464
+       42.2 ms  workLoopSync @index.js:8041
+       42.2 ms  renderRootSync @index.js:7993
+       42.1 ms  beginWork @index.js:5640
+       41.1 ms  ExplorePage @index.js:26988
+       41.1 ms  renderWithHooks @index.js:3819
+       41.1 ms  updateFunctionComponent @index.js:5218
+       36.0 ms  updateMemo @index.js:4423
+       36.0 ms  exports.useMemo @index.js:416
+       24.2 ms  model @index.js:24791
+       21.5 ms  (anonymous) @index.js:27141
+       20.0 ms  alignSeries @index.js:25871
+       18.6 ms  chartModel @index.js:24478

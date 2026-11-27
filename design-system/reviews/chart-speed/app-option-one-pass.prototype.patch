@@ -1,0 +1,149 @@
+--- a/app/src/charts/spec.ts
++++ b/app/src/charts/spec.ts
+@@ -8,7 +8,7 @@
+  * into a unit the chart knows, and times are moved by the local offset so that the chart's
+  * clock reads local time.
+  */
+-import type { AlignedData } from '../lib/series'
++import { seriesName, type AlignedData, type SampleColumns } from '../lib/series'
+ import type { UnitId } from '../lib/units'
+ import type { ChartRules, ChartSpec, SpecSeries } from './systemChart'
+ 
+@@ -118,3 +118,38 @@
+   const fmt = rules.numberFormat(ax.step, scaled.suffix, scaled.div)
+   return { unit: scaled.unit, value: (raw) => (raw == null || !Number.isFinite(raw) ? '' : fmt.value(raw * unit.scale)) }
+ }
++
++/**
++ * PROTOTYPE (design-system/reviews/chart-speed, option 1): the chart's arrays straight from the
++ * result as it was read, in one pass, for the usual case in which every sample is on the grid
++ * (the same test and the same order as `alignSeries`, then `toSpec`). Null when a sample is off
++ * the grid or the unit is scaled by the largest value: the caller then takes the two-pass way.
++ */
++export function specOfMatrix(result: readonly SampleColumns[], start: number, end: number, step: number, unit: UnitId, query: string, shiftMs: number): { spec: ChartSpec; unit: ChartUnit } | null {
++  if (unit === 'bytes/s') return null
++  const u = chartUnit(unit, 0)
++  const tolerance = 5e-6 / step
++  const n = Math.floor((end - start) / step + Math.max(1e-9, tolerance)) + 1
++  if (!(n > 0 && n <= 1_000_000)) return null
++  const scale = u.scale
++  const made: { name: string; at: number; s: SpecSeries }[] = []
++  for (let s = 0; s < result.length; s++) {
++    const r = result[s]!
++    const times = r.times
++    const vs = r.values
++    const len = times.length
++    const values = new Array<number | null>(n)
++    for (let k = 0; k < len; k++) {
++      const pos = (times[k]! - start) / step
++      const i = Math.round(pos)
++      if (i < 0 || i >= n || Math.abs(pos - i) > tolerance) return null
++      const v = vs[k]!
++      values[i] = v - v === 0 ? v * scale : null
++    }
++    // A step with no sample is a gap.
++    if (len !== n) for (let i = 0; i < n; i++) if (values[i] === undefined) values[i] = null
++    made.push({ name: seriesName(r.metric), at: s, s: { labels: chartLabels(r.metric, query), values } })
++  }
++  made.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : a.at - b.at))
++  return { spec: { unit: u.name, agg: NO_AGGREGATE, t0: Math.round(start * 1000) + shiftMs, step: Math.round(step * 1000), series: made.map((m) => m.s) }, unit: u }
++}
+--- a/app/src/charts/index.ts
++++ b/app/src/charts/index.ts
+@@ -1,3 +1,3 @@
+ export { Chart, type ChartProps, type ShownRange } from './Chart'
+-export { chartUnit, figureFormat, toSpec, type ChartUnit } from './spec'
++export { chartUnit, figureFormat, toSpec, specOfMatrix, type ChartUnit } from './spec'
+ export { chartRules, type ChartSpec } from './systemChart'
+--- a/app/src/explore/ExplorePage.tsx
++++ b/app/src/explore/ExplorePage.tsx
+@@ -5,7 +5,7 @@
+ import { answerLine, busyLine, errorAdvice, errorKind, retryDelayMs, shouldRetry } from '../api/errors'
+ import type { ParsedMatrix } from '../api/matrix'
+ import type { ApiCost } from '../api/types'
+-import { Chart, figureFormat, toSpec, type ShownRange } from '../charts'
++import { Chart, figureFormat, specOfMatrix, toSpec, type ShownRange } from '../charts'
+ import { reservedStyle } from '../charts/Chart'
+ import { chartRules } from '../charts/systemChart'
+ import type { PromqlEditorHandle } from '../editor/PromqlEditor'
+@@ -292,11 +292,12 @@
+   else if (query.data) lastResult.current = query.data
+   const result = q === '' ? undefined : (query.data ?? (query.isError ? lastResult.current : undefined))
+   const description = useMemo(() => (result ? describeResult(result, { unit: search.unit }, current) : null), [result, search.unit, current])
+-  const aligned = useMemo(
+-    () => (result ? alignSeries(result.matrix.series, result.window.start, result.window.end, result.window.step) : null),
+-    [result],
+-  )
+-  const hasData = !!aligned && aligned.series.length > 0
++  // PROTOTYPE: the result on its grid is made when something asks for it (the table, in idle time), not before the chart is drawn.
++  const alignedOf = useMemo(() => {
++    let made: Aligned | null = null
++    return result ? () => (made ??= alignSeries(result.matrix.series, result.window.start, result.window.end, result.window.step)) : null
++  }, [result])
++  const hasData = !!result && result.matrix.series.length > 0
+   const isEmpty = !!result && result.matrix.series.length === 0
+ 
+   // ---- the chart: the design system's, given the result as it takes one (charts/spec.ts).
+@@ -306,9 +307,10 @@
+   const chart = useMemo(
+     () =>
+       hasData && result && description
+-        ? toSpec({ data: aligned!, start: result.window.start, step: result.window.step, unit: description.unit, query: result.request.q, shiftMs })
++        ? (specOfMatrix(result.matrix.series, result.window.start, result.window.end, result.window.step, description.unit, result.request.q, shiftMs) ??
++          toSpec({ data: alignedOf!(), start: result.window.start, step: result.window.step, unit: description.unit, query: result.request.q, shiftMs }))
+         : null,
+-    [hasData, aligned, result, description, shiftMs],
++    [hasData, alignedOf, result, description, shiftMs],
+   )
+   const [shownRange, setShownRange] = useState<ShownRange | null>(null)
+ 
+@@ -329,13 +331,13 @@
+     return made
+   }, [])
+   useEffect(() => {
+-    if (!aligned || !chart) {
++    if (!alignedOf || !chart) {
+       prepared.current = null
+       return
+     }
+-    return whenIdle(() => void prepare(aligned, chart))
+-  }, [aligned, chart, prepare])
+-  const table = useMemo(() => (view === 'table' && aligned && chart ? prepare(aligned, chart) : null), [view, aligned, chart, prepare])
++    return whenIdle(() => void prepare(alignedOf(), chart))
++  }, [alignedOf, chart, prepare])
++  const table = useMemo(() => (view === 'table' && alignedOf && chart ? prepare(alignedOf(), chart) : null), [view, alignedOf, chart, prepare])
+ 
+   const onRange = useCallback((from: string, to: string) => setSearch({ from, to }), [setSearch])
+ 
+--- a/app/src/charts/specOfMatrix.test.ts
++++ b/app/src/charts/specOfMatrix.test.ts
+@@ -0,0 +1,29 @@
++import { describe, expect, it } from 'vitest'
++import { alignSeries } from '../lib/series'
++import { specOfMatrix, toSpec } from './spec'
++
++const lcg = (seed: number) => { let s = seed >>> 0; return () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296 }
++
++describe('specOfMatrix (prototype)', () => {
++  it('gives what alignSeries then toSpec give, or declines', () => {
++    const r = lcg(42)
++    let direct = 0
++    for (let c = 0; c < 400; c++) {
++      const step = [15, 30, 60, 0.5, 0.001][Math.floor(r() * 5)]!, n = 1 + Math.floor(r() * 60), start = 1795000000 + Math.floor(r() * 1000) * step, end = start + (n - 1) * step
++      const offGrid = r() < 0.1
++      const series = Array.from({ length: 1 + Math.floor(r() * 12) }, (_, i) => {
++        const times: number[] = [], values: number[] = []
++        for (let k = 0; k < n; k++) { if (r() < 0.15) continue; times.push(start + k * step + (offGrid && r() < 0.2 ? step / 3 : 0)); values.push(r() < 0.05 ? NaN : r() < 0.03 ? Infinity : (r() - 0.3) * 100) }
++        const metric: Record<string, string> = r() < 0.1 ? {} : { __name__: 'm', pod: 'p' + Math.floor(r() * 6), i: String(i % 3) }
++        return { metric, times: Float64Array.from(times), values: Float64Array.from(values) }
++      })
++      const unit = (['none', 'seconds', 'percentunit', 'bytes', 'bytes/s'] as const)[Math.floor(r() * 5)]!
++      const old = toSpec({ data: alignSeries(series, start, end, step), start, step, unit, query: 'q', shiftMs: 3600000 })
++      const got = specOfMatrix(series, start, end, step, unit, 'q', 3600000)
++      if (got === null) continue
++      direct++
++      expect(got).toEqual(old)
++    }
++    expect(direct).toBeGreaterThan(200)
++  })
++})

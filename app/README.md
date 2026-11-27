@@ -84,6 +84,8 @@ VIZ_MUTANT_DIR=<scratch dir> node e2e/mutants-dashboards.cjs          # the dash
 node e2e/dashboards-shots.cjs               # the design-review images of the dashboards views
 VIZ_SLOW=1 node e2e/app.cjs                 # also the 10 s and 60 s rows of the waiting table
 node e2e/prod.cjs                           # the build served as the gateway is to serve it, under the policy
+SET=review2 VIZ_MUTANT_DIR=<scratch dir> node e2e/mutants.cjs   # the mutants of the second review's fixes
+node e2e/measure-review2.cjs                # one 20-run timing of the two paths those fixes touch
 npm run measure -- --series 4,36,200        # the speed budgets on the built app (--phone; --ui v4 --root <dir> for the app before v9)
 node e2e/summarise.cjs --before v9-before --after v9-after            # before/after tables from e2e/measurements
 VIZ_MUTANT_DIR=<scratch dir> node e2e/mutants.cjs                     # this change's mutants, on a copy outside the tree
@@ -175,6 +177,8 @@ vitest 5 · fast-check 4 · axe-core 4.14.
 | `e2e/measure.cjs`, `summarise.cjs` | The speed budgets, desktop or phone, for 4, 36 and 200 series, on either build; tables with the load of every column |
 | `e2e/mutants.cjs` | Breaks one property at a time, on a copy outside the tree, and records which check catches it |
 | `e2e/v9-shots.cjs` | Before/after images for design review |
+| `e2e/measure-review2.cjs` | One timing of "Show 50 more" and "Copy link" at both layouts (the second review's fixes) |
+| `src/lib/scrollKeeper.ts` | A reload lands where the page was scrolled to |
 
 ## The views that exist
 
@@ -184,13 +188,137 @@ vitest 5 · fast-check 4 · axe-core 4.14.
 | `/dashboards` | **Dashboards**, read-only: the tenant's dashboards (name, intent, tags, owner, last change and by whom), searched and filtered by tag; empty, first-run, waiting, error and no-permission states |
 | `/dashboards?id=<id>` | **One dashboard**, read-only: title and intent, the time range, its variables as controls, its panels as the spec lays them out; `from`, `to` and `var.<name>` in the address. The same document path as the list: a dashboard is never named in the path |
 | `/explore` | **Explore**: a PromQL query over a time range, its result as a chart, a table, the chart's text form or the API's JSON; the start state before any query; empty, waiting, cancelled and error states. Without an accepted key the **sign-in form** stands here, at this address |
-| `/help` | what Explore does, the keyboard, API keys, and the button that opens the command palette |
+| `/help` | what Explore does, the keyboard, which commands the palette has on which page, API keys, and the button that opens the command palette |
 | `/settings` | whose key this is, Sign out, the theme, the API's address and version |
 | (anywhere) | the command palette (`Ctrl/Cmd+K`), the app's only dialog |
 
 There is no monitors, alerts, logs or traces view, no editing of dashboards and no key
 management ("Not implemented"). The gateway serves five document paths (`serve.json`): `/`,
 `/explore`, `/dashboards`, `/help`, `/settings`.
+
+## The second design review: fixes (2026-11-27)
+
+The independent review of the app on v9 (`../design-system/reviews/app-v9/review.md`) rejected
+it: three blockers, three majors, thirteen minors. This section is what was changed for it, how
+each fix is held, and what is left. The finding-by-finding disposition for the re-review is
+`../design-system/reviews/app-v9/response.md`, "The second review". **B1 (a result with many
+series is painted late) is not fixed here**: the design system's chart is being changed for it
+by another builder (`../design-system/reviews/chart-speed/`), and nothing in this section
+claims it.
+
+### What was changed
+
+| Finding | Cause | Fix | Where |
+|---|---|---|---|
+| **B2** "Show 50 more of 200" took a tap on 34.5 px of its 44 | The row of controls stood straight under the table (`vz-table-wrap`, a positioned box that scrolls): the upper 9.5 px of the small button's hit area lay over the table's last row, which took the tap | What follows the table (the shared labels, the button) is a `vz-stack` with it: `space-4` clear of the last row, with either pointer. No new component, no app CSS | `src/explore/ResultTable.tsx` |
+| **B3** a reload landed at the top | Two causes. (1) The browser restores a scroll position while the document loads, and at `load` this page is one window tall: the app draws after its script has run and the API has said whose key the tab holds. (2) The router scrolls the window to the top when its first page has rendered (`@tanstack/router-core`, `scroll-restoration.js`: `scroll.n` starts true and the `onRendered` handler is installed whether or not `scrollRestoration` is set); `resetScroll: false` on the app's own navigations does not reach the first render. `content-visibility` and the reserved heights were not a cause: the reserved layout is to the pixel, which is what makes the fix land exactly | `src/lib/scrollKeeper.ts`: the position is written to the tab's `sessionStorage` at `pagehide` and when the page is hidden; after a reload (or a return through the history to the same address) it is put back in the first frame in which the page is tall enough to hold it (a `ResizeObserver`, which runs after layout and before paint), and held for 1 s against the router's reset. The person's first input (wheel, touch, pointer, key) ends it at once. A link opened afresh starts at the top | `src/lib/scrollKeeper.ts`, `src/main.tsx` |
+| **M1** the palette opened only with Ctrl/Cmd K, and "Copy a link to this view" had no control | The command was registered with no control on the page; Help did not say which commands the palette has where | Explore's page head has **Copy link** (the system's small button, in the head's actions; it says "Copied" or "Could not copy" as the two Copy buttons do), which copies the address with the form now shown. The palette's command presses that button. Help says the palette lists the commands of the page it is opened on and that every command is also a control. The palette stays a keyboard shortcut: no "Commands" button was added to Explore, because with Copy link every command it lists is a control on the page (checked by listing them, below) | `src/explore/ExplorePage.tsx`, `CopyButton.tsx`, `src/shell/HelpPage.tsx` |
+| **M2** the text form and the chart's name left out the day and a warning | The chart writes a range inside one day as clock times and knows nothing of the API's warnings; the head added both, the name and the text form did not | The day the head states is put before the range in the chart's accessible name and in the text form's first line (also when zoomed, and under "The latest query failed"); when the API sent a warning the name ends "The API sent a warning: the result may be incomplete." and the text form has the head's own sentence as its second line. The copied text carries both | `src/charts/fixups.ts`, `src/charts/Chart.tsx`, `src/explore/ExplorePage.tsx` |
+| **M3** five designed states were not in the images | They were checked and not pictured | `e2e/v9-shots.cjs` pictures them: `partial-answer`, `waiting-10s-alternative`, `stopped-at-60s`, `busy-asking-again`, `api-unreachable`, and `sign-in-api-unreachable`; and `touch-table-200-show-more` (B2's control, measured and outlined) | `e2e/v9-shots.cjs` |
+| m1 the empty result's head read "18 Nov, · every 15 s" | The range in the head is written by the chart, and an empty result has none | The page writes the range where no chart does (`rangeWords`: the chart's form, and both days when they differ) | `src/lib/timeInput.ts`, `ExplorePage.tsx` |
+| m2 the Step field's placeholder "30 s" beside "now 15 s" | An example that read as the value | No placeholder; the help line says the step in use | `src/explore/TimeRangeField.tsx` |
+| m3 Tab stopped on the palette's list | A scroller is a tab stop of the browser's making | `tabIndex={-1}` on the list | `src/shell/CommandPalette.tsx` |
+| m4 "Copy a link" said nothing; the palette's placeholder named a command some pages lack | The command copied without a word and swallowed a refusal | The command presses the page's Copy link button, which takes the focus and says what happened; the field has no placeholder | `ExplorePage.tsx`, `CommandPalette.tsx` |
+| m10 a checkbox labelled with a statement | | "Show the key" | `src/shell/SignIn.tsx` |
+| m12 an unreachable API raised no banner and nothing asked again | The banner hung on the build-information probe alone, asked once in five minutes | A query that gets no answer asks the probe again at once: if that fails too the banner is shown and the probe is asked every 10 s (as before); when it answers after having failed, the query that failed for want of it is asked again by itself. A query that fails alone while the probe answers is not repeated | `ExplorePage.tsx` |
+
+**`src/charts/` (for the chart-speed patch).** Against commit `7469d5a`, `git diff -U0`:
+`fixups.ts`: 6 comment lines added after line 16; `withDay`, `PARTIAL_NAME` and `withPartial`
+added after `fixText` (9 lines after line 23). `Chart.tsx`: line 3 (the import); 4 lines added
+after line 32 (the props `day` and `partial`); line 65 (the destructuring); 2 lines added after
+line 69 (`live.current.day`, `.partial`, and `live`'s initial value); lines 87 to 89 (the
+accessible name: the two unit-less lines became four that also add the day and the warning);
+lines 114 to 117 (`fixForm`: the line that names the result, then the warning's line).
+`spec.test.ts`: the import and one `describe` at the end. Nothing else in `src/charts/` was
+touched; `systemChart.ts`, `spec.ts` and `index.ts` are as they were. The same diff is kept as
+a patch in the session's scratch area (`app-fix/charts-M2.patch`).
+
+### How each fix is held
+
+New checks: section `review2` of `e2e/app.cjs` (@@R2@@ checks: M1, M2, m1 to m4, m10, m12),
+section `reload` (5 checks: B3), one check and three more states in section `touch` (B2), and
+in `e2e/dashboards.cjs` section `reload` (3 checks) and the hit-area measure at 1500 px with a
+finger on each dashboard (3 checks). Unit: `src/lib/scrollKeeper.test.ts`, and cases in
+`timeInput.test.ts` and `charts/spec.test.ts`.
+
+- **B2**: at 400, 320 and 1500 px with a coarse pointer, on the table of 200 series, a tap
+  16 px above the button's centre and one 16 px below each show the next 50 rows; and the
+  page's hit-area measure (`lib.cjs` `hitAreas`: what the page says is at each point) passes
+  with that table among its states. The same measure ran over the dashboards views: at 400 px
+  it was already there and passes; **at 1500 px with a finger it found one control under 44
+  px on every dashboard that has a chart: the legend's "Min" sort head, 43 px wide.** That is
+  the design system's chart, the same 1 px the review recorded under B2 ("Same row, the
+  design system's component"); the app does not draw it. The check says so in its name and
+  counts them, and fails on anything else. It is a follow-up for the system's owner.
+- **B3**: four pages (Explore's chart of 36 series, the table of 200, Explore signed in with
+  a key on the API that needs one, Help), each loaded in a page of its own, scrolled until an
+  anchor is 120 px under the top, reloaded, read 1.5 s after it has drawn: the same scroll
+  position, the anchor within 1 px, layout shift under 0.05 with every entry counted. At
+  1500 px and 400 px with a fine pointer, and at 400 px with a coarse pointer made coarse in
+  Blink (`--blink-settings`, `isMobile`, no `hasTouch`), with the guard that the pointer is
+  coarse before and after (`lib.cjs`, `COARSE_IN_BLINK`, `reloadLandings`; as
+  `design-system/tools/audit.mjs` does). The same for two dashboards (the last panel and one
+  in the middle of `services_overview`, the last of `pod_capacity`) and the list. Also: an
+  address opened afresh starts at the top in a tab that remembers a position; the reloaded
+  page is in place before its answer arrives (the mock answering 1.5 s late); a wheel turned
+  meanwhile is not undone.
+- **M1**: the palette is opened on Explore and every command it lists (19) is matched to a
+  control that is on the page and visible; a command with no control fails the check. Copy
+  link copies the address with the form shown and says "Copied"; the palette's command leaves
+  the focus on that button, which says "Copied". Its hit area is measured with every other
+  control's in section `touch`.
+- **M2**: the head, the name and the text form's first line all say "18 Nov, 09:30 to 12:30";
+  zoomed in, the day stays before the new range, once; with a warning from the mock
+  (`/__mock/warn`) the banner's sentence is the text form's second line, once, the name ends
+  with the warning, the copied text has both, and the next whole answer removes them.
+
+### Mutants of these fixes
+
+`SET=review2 VIZ_MUTANT_DIR=<scratch dir> node e2e/mutants.cjs`: each undoes one fix on a
+copy in the session's scratch area (never in the tree), builds it and runs the checks named.
+Results: `e2e/measurements/mutants-review2.txt`.
+
+@@MUTANTS@@
+
+### Images
+
+`../design-system/reviews/app-v9/compare/` was made again whole from the final build
+(@@IMAGES@@). The "before" images are the ones of 26 Nov (the build before does not change:
+`VIZ_SHOTS_KEEP_BEFORE=1`), and the build before was pictured for the new states it can reach.
+The pairs that were there before and are no longer produced were removed (none: every earlier
+state is still pictured).
+
+### Speed of the two paths touched
+
+Not a series, and not a before/after: one run of 20 at each layout, of the two interaction
+paths these fixes touch, by `e2e/measure-review2.cjs` (the reference setup of `measure.cjs`:
+CPU slowed 4x, Fast 4G, the built app on the mock, a fresh context per run), on the table of
+200 series. **Measured here**, on the shared machine of 4 cores, while other builders' jobs
+ran on it; `pgrep -f measure` found no other timing job when it started.
+
+@@SPEED@@
+
+### Follow-ups left (the review's ids)
+
+| Id | What | Why not now |
+|---|---|---|
+| **B1** | A result with many series is painted late | In progress elsewhere: the design system's chart (`../design-system/reviews/chart-speed/`). Not worked on here |
+| B2, second part | The legend's "Min" sort head is 43 px wide at 1500 px with a coarse pointer | The design system's chart. Now also counted by `e2e/dashboards.cjs` at 1500 px |
+| m5 | The table gives values under 1 as "< 1" (it takes the chart's number format) | A decision for the system's Number rules: the table's own precision |
+| m6 | After a failure, Table, Text and JSON show the message alone; the Unit select follows the failed query there | More than a few lines: the previous table kept under the message, one rule for the select |
+| m7 | At 320 px the legend drops the label that tells rows apart; the kept place of "Query the chart's range" leaves an empty band; the tenant's name breaks | The legend is the design system's chart. The kept place: dropping it below `breakpoint-narrow` trades the band for a row that appears and moves the page when the chart is zoomed; not decided here |
+| m8 | Other cannot be closed until every member is listed | The design system's chart |
+| m9 | The address does not carry the colour map | The system's algorithm and a question for its owner; more than a few lines in the app |
+| m11 | A range across midnight reads "18:49 to 00:49" in the head | The chart writes that range. Where the page writes it (a result with no series) both days are now said (`rangeWords`) |
+| m13 | Fields are 15 px with a coarse pointer; iOS zooms a focused field under 16 px | Needs a device; then the system's decision |
+
+Known limits of the B3 fix: a position past the end of the reloaded page is not restored (a
+table lengthened by "Show 50 more", Other opened in the legend: neither is in the address, so
+the reloaded page is shorter); a scrollbar dragged within the 1 s the position is held is
+pulled back once (a drag gives the page no input event in every browser; `mousedown` is not
+among the events that end it); the position is kept per tab and per path, one at a time.
+Known limit of m12: the banner is inserted above the page as before, so the page moves down
+by its height when the API stops answering.
 
 ## Dashboards, read-only
 
@@ -1087,8 +1215,6 @@ overrule. Each is a choice between real alternatives.
   coarse-then-refine loading.
 - The `X-Viz-*` cost of a query is kept and shown nowhere, and the app does not ask
   `/api/v1/plan` what a query would cost before running it.
-- The 10 s and 60 s rows of the waiting table are checked (`VIZ_SLOW=1 node e2e/app.cjs`) but
-  not imaged.
 - Not run against: a deployed (Cloudflare) viz; Grafana-style clients; Safari and Firefox;
   real touch hardware; a screen reader by ear; 200% zoom beyond the one image.
 

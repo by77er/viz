@@ -1,0 +1,81 @@
+--- a/design-system/project/components/Chart/preview.html
++++ b/design-system/project/components/Chart/preview.html
+@@ -202,12 +202,17 @@
+      what the view's filter hides), the Other band, and the unit. Pure: the page and the tests both call it. */
+   function chartModel(spec, map, view) {
+     const i0 = Math.round((view.t0 - spec.t0) / spec.step), i1 = Math.round((view.t1 - spec.t0) / spec.step), n = i1 - i0 + 1
+-    const result = spec.series.map((s) => { const v = s.values.slice(i0, i1 + 1); let last = null, min = Infinity, max = -Infinity; for (const x of v) if (x != null) { last = x; if (x < min) min = x; if (x > max) max = x } return { labels: s.labels, key: key(s.labels), v, last, min: last == null ? null : min, max: last == null ? null : max, rank: last == null ? -Infinity : max } })
++    // The loops over every value are plain indexed loops: a result of 200 series is 144,000 values, read here once for each series' figures
++    // and once for the band, and as for-of and step by step these two passes were over a quarter of a 200-series draw (reviews/chart-speed).
++    const result = spec.series.map((s) => { const v = s.values.slice(i0, i1 + 1); let last = null, min = Infinity, max = -Infinity; for (let i = 0, len = v.length; i < len; i++) { const x = v[i]; if (x != null) { last = x; if (x < min) min = x; if (x > max) max = x } } return { labels: s.labels, key: key(s.labels), v, last, min: last == null ? null : min, max: last == null ? null : max, rank: last == null ? -Infinity : max } })
+     assignSeries(map, result, { visible: view.filter, filteredOut: view.filteredOut })
+     for (const s of result) s.slot = slotOf(map, s.key)
+     const listed = view.filter ? result.filter(view.filter) : result
+     const coloured = listed.filter((s) => s.slot).sort((a, b) => a.slot - b.slot), other = listed.filter((s) => !s.slot).sort(byRank)
+-    const lo = [], hi = []; for (let i = 0; i < n; i++) { let a = Infinity, b = -Infinity; for (const s of other) { const p = s.v[i]; if (p != null) { if (p < a) a = p; if (p > b) b = p } } lo.push(a === Infinity ? null : a); hi.push(b === -Infinity ? null : b) }
++    // the band: the lowest and highest folded value at each step, gathered series by series (each series' values lie together in memory)
++    const bn = Math.max(0, n), bl = new Float64Array(bn).fill(Infinity), bh = new Float64Array(bn).fill(-Infinity)
++    for (let k = 0; k < other.length; k++) { const v = other[k].v; for (let i = 0, len = Math.min(bn, v.length); i < len; i++) { const p = v[i]; if (p != null) { if (p < bl[i]) bl[i] = p; if (p > bh[i]) bh[i] = p } } }
++    const lo = [], hi = []; for (let i = 0; i < n; i++) { lo.push(bl[i] === Infinity ? null : bl[i]); hi.push(bh[i] === -Infinity ? null : bh[i]) }
+     const smallest = coloured.length ? Math.min(...coloured.map((s) => s.max ?? -Infinity)) : null, larger = smallest == null ? [] : other.filter((s) => (s.max ?? -Infinity) > smallest)
+     // where the slots not drawn are: owned by a series the filter hides, or by one not in this result
+     const onScreen = new Set(listed.map((s) => s.key)), inResult = new Set(result.map((s) => s.key)), out = view.filteredOut || (() => false)
+@@ -281,7 +286,8 @@
+     let full = null, version = 0
+     const st = { t0: 0, t1: 0, filter: null, filterId: 0, picked: new Set(), pickOrder: [], cursor: null, py: null, sort: { col: 'rank', dir: -1 }, open: 0, brush: null, focusRow: 0, emph: null, error: null }
+     const ctx = document.createElement('canvas').getContext('2d')
+-    const widths = new Map(), measure = (text, font) => { const k = font + '\u0000' + text; let w = widths.get(k); if (w == null) { ctx.font = font; w = ctx.measureText(text).width; widths.set(k, w) } return w }
++    // text widths, kept per font: one map for each font, so a look-up builds no key (the legend asks for every series' name on every draw)
++    const widths = new Map(), measure = (text, font) => { let byFont = widths.get(font); if (!byFont) widths.set(font, (byFont = new Map())); let w = byFont.get(text); if (w == null) { ctx.font = font; w = ctx.measureText(text).width; byFont.set(text, w) } return w }
+     let g = null, cache = null, lastW = 0, lastH = 0, tok = null, liveTimer = 0, cursorWas = null; const sizes = { legendW: 0, readW: 0 }
+     /* Every token the drawing reads, read once per draw. The spaces are read here too, not on each use: a read of a computed style in the
+        crosshair's handler, after it has written the readout, made the browser restyle the page on every move (v9: 7 ms a move at 4x CPU,
+@@ -322,13 +328,22 @@
+       const R = labels ? t.gutter : t.sp(2), plotW = W - L - R, x = (i) => L + plotW * i / Math.max(1, m.n - 1), xt = (tm) => L + plotW * (tm - st.t0) / (st.t1 - st.t0)
+       return { m, vis, L, T, B, R, plotW, plotH, x, xt, y, ax, labels, fmt: numberFormat(ax.step, m.unit.suffix, div), long: st.t1 - st.t0 > D, sig: ax.top + '|' + ax.bottom + '|' + ax.step + '|' + !!labels }
+     }
+-    const path = (v, x, y) => { let d = '', pen = false, dots = ''; v.forEach((p, i) => { if (p == null) { pen = false; return } if (v[i - 1] == null && v[i + 1] == null) dots += `<circle cx="${x(i).toFixed(1)}" cy="${y(p).toFixed(1)}" r="2"/>`; d += (pen ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(p).toFixed(1); pen = true }); return { d, dots } }
+-    const lineMarkup = (s, ds, pattern, x, y, hidden) => { const p = path(s.v, x, y); return `<g class="vz-series-g" data-key="${esc(s.key)}"${hidden ? ' display="none"' : ''}><path class="vz-line" data-series="${ds}"${pattern ? ` data-pattern="${pattern}"` : ''} d="${p.d}"/>${p.dots ? `<g class="vz-dot" data-series="${ds}">${p.dots}</g>` : ''}</g>` }
++    /* Path data. Every series of a draw shares its x positions, so each is written as text once per draw (`xs`), not once per series; a y
++       is written once per value (`ys`, when the caller has them already: the band's edges are also its area's outline). The text is the
++       same as before, character for character: `x(i).toFixed(1) + ' ' + y(p).toFixed(1)`. A step with no element at all (a sparse array)
++       is skipped without lifting the pen, as `forEach` skipped it. */
++    const xText = (gg) => { if (!gg.xs) { const n = gg.m.n, xs = (gg.xs = new Array(n)); for (let i = 0; i < n; i++) xs[i] = gg.x(i).toFixed(1) } return gg.xs }
++    const path = (v, xs, y, ys) => { let d = '', pen = false, dots = ''
++      for (let i = 0, len = v.length; i < len; i++) { const p = v[i]; if (p == null) { if (p === undefined && !(i in v)) continue; pen = false; continue }
++        const px = xs[i], py = ys ? ys[i] : y(p).toFixed(1)
++        if (v[i - 1] == null && v[i + 1] == null) dots += `<circle cx="${px}" cy="${py}" r="2"/>`; d += (pen ? 'L' : 'M') + px + ' ' + py; pen = true }
++      return { d, dots } }
++    const lineMarkup = (s, ds, pattern, xs, y, hidden) => { const p = path(s.v, xs, y); return `<g class="vz-series-g" data-key="${esc(s.key)}"${hidden ? ' display="none"' : ''}><path class="vz-line" data-series="${ds}"${pattern ? ` data-pattern="${pattern}"` : ''} d="${p.d}"/>${p.dots ? `<g class="vz-dot" data-series="${ds}">${p.dots}</g>` : ''}</g>` }
+     const patternOf = (k) => PATTERNS[pickedOther(cache.m).map((s) => s.key).indexOf(k)]
+ 
+     /* The plot: every layer rebuilt. Called when the geometry, the range, the data or the value axis changes; a toggle that keeps the axis does not call it. */
+     function drawPlot(gg) {
+-      const t = tokens(), { m, vis, L, T, plotW, plotH, x, xt, y, ax, labels, fmt, long } = gg; let o = ''
++      const t = tokens(), { m, vis, L, T, plotW, plotH, xt, y, ax, labels, fmt, long } = gg, xs = xText(gg); let o = ''
+       for (const v of ax.ticks) o += `<line class="${v === 0 ? 'vz-baseline' : 'vz-gridline'}" x1="${L}" x2="${L + plotW}" y1="${y(v * m.unit.div)}" y2="${y(v * m.unit.div)}"/><text x="${L - t.sp(2)}" y="${y(v * m.unit.div) + 4}" text-anchor="end">${fmt.tick(v)}</text>`
+       // the unit: over the tick numbers when it fits the axis gutter, else from the chart's left edge into the strip, never off the page
+       const uw = measure(m.unit.unit, t.micro), ufits = uw <= L - t.sp(2)
+@@ -343,7 +358,7 @@
+       // Other: one band from the lowest to the highest folded series at each step, under the lines
+       o += `<g data-layer="band"${vis.band ? '' : ' display="none"'}>` + bandMarkup(gg) + '</g>'
+       // lines: every coloured series (hidden ones with display none, so a toggle only flips it), last slot first so slot 1 is on top; picked members of Other in ink with their pattern
+-      o += '<g data-layer="lines">' + [...m.coloured].reverse().map((s) => lineMarkup(s, s.slot, null, x, y, !vis.lines.includes(s))).join('') + vis.picked.map((s) => lineMarkup(s, 'picked', patternOf(s.key), x, y, false)).join('') + '</g>'
++      o += '<g data-layer="lines">' + [...m.coloured].reverse().map((s) => lineMarkup(s, s.slot, null, xs, y, !vis.lines.includes(s))).join('') + vis.picked.map((s) => lineMarkup(s, 'picked', patternOf(s.key), xs, y, false)).join('') + '</g>'
+       // markers: a hairline with its word above the plot; words that would collide are dropped (the readout names a marker under the crosshair)
+       // a marker an agent placed says "Agent:" and carries the agent's rule before its word
+       let lastEnd = -1e9, words = ''; for (const k of [...(spec.markers || [])].sort((a, b) => a.t - b.t)) { const px = xt(k.t); if (px < L || px > L + plotW) continue; const label = k.agent && !/^Agent:/.test(k.label) ? 'Agent: ' + k.label : k.label, pad = k.agent ? t.sp(2) : 0, w = measure(label, t.micro) + pad, left = px + 3 + w <= L + plotW ? px + 3 : Math.max(L, px - 3 - w), ty = T - t.sp(2) - 2
+@@ -356,9 +371,10 @@
+       svg.setAttribute('viewBox', `0 0 ${lastW} ${lastH}`); svg.innerHTML = o
+       if (st.emph) emphasise(st.emph)
+     }
+-    function bandMarkup(gg) { const { m, x, y } = gg, { lo, hi } = m.band; if (!m.other.length) return ''; let area = ''
+-      for (let i = 0, start = -1; i <= m.n; i++) { if (i < m.n && hi[i] != null) { if (start < 0) start = i } else if (start >= 0) { let d = ''; for (let k = start; k < i; k++) d += (k === start ? 'M' : 'L') + x(k).toFixed(1) + ' ' + y(hi[k]).toFixed(1); for (let k = i - 1; k >= start; k--) d += 'L' + x(k).toFixed(1) + ' ' + y(lo[k]).toFixed(1); area += d + 'Z'; start = -1 } }
+-      return `<path class="vz-other-band" d="${area}"/><path class="vz-other-edge" d="${path(hi, x, y).d}"/><path class="vz-other-edge" d="${path(lo, x, y).d}"/>` }
++    function bandMarkup(gg) { const { m, y } = gg, { lo, hi } = m.band; if (!m.other.length) return ''; let area = ''
++      const xs = xText(gg), yh = new Array(m.n), yl = new Array(m.n); for (let i = 0; i < m.n; i++) { yh[i] = hi[i] == null ? null : y(hi[i]).toFixed(1); yl[i] = lo[i] == null ? null : y(lo[i]).toFixed(1) }
++      for (let i = 0, start = -1; i <= m.n; i++) { if (i < m.n && hi[i] != null) { if (start < 0) start = i } else if (start >= 0) { let d = ''; for (let k = start; k < i; k++) d += (k === start ? 'M' : 'L') + xs[k] + ' ' + yh[k]; for (let k = i - 1; k >= start; k--) d += 'L' + xs[k] + ' ' + yl[k]; area += d + 'Z'; start = -1 } }
++      return `<path class="vz-other-band" d="${area}"/><path class="vz-other-edge" d="${path(hi, xs, y, yh).d}"/><path class="vz-other-edge" d="${path(lo, xs, y, yl).d}"/>` }
+     function labelMarkup(gg) { if (!gg.labels) return ''; const t = tokens(), x1 = gg.L + gg.plotW, room = gg.R - t.sp(4) - t.sp(1); let o = ''
+       for (const e of gg.labels) { const text = fit([gg.m.names.order.map((k) => e.s.labels[k] ?? '')[0]], room, (s) => measure(s, t.small))
+         o += `<polyline class="vz-leader" points="${x1 + 2},${e.want.toFixed(1)} ${x1 + t.sp(2)},${e.at.toFixed(1)} ${x1 + t.sp(3)},${e.at.toFixed(1)}"/><text class="vz-direct" x="${x1 + t.sp(4)}" y="${(e.at + 4).toFixed(1)}">${esc(text)}</text>` }
