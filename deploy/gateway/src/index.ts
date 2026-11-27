@@ -33,12 +33,18 @@
  *                                                                 hashed asset this version does not hold
  *
  * The API comes first: a path `routeOf` routes is never the app's, whatever VIZ_APP says, and an
- * unknown API path is the JSON 404, never a page (design/DECISIONS.md D74).
+ * unknown API path is the JSON 404, never a page (design/DECISIONS.md D74). The API's part of the
+ * path space is `api-roots.json` (`/api/`, `/v1/`, `/loki/`, `/oauth/`, `/.well-known/`, `/mcp`,
+ * `/healthz`): `routeOf` routes nothing outside it, no document may lie inside it, and
+ * deploy/lib/app.mjs reads the same file to refuse an app/serve.json that would put a static file
+ * there (the asset layer answers a file before this Worker runs; review of D74, m-4).
  *
  * Transparency: the request object is passed on as it arrived (method, URL, headers, body
  * stream), and the backend's response is returned with its status, status text, headers and
  * body stream; the only change is the added `x-viz-route` header. Nothing is buffered.
  */
+
+import API_ROOTS from './api-roots.json'
 
 export interface Env {
   INGEST: Fetcher
@@ -121,8 +127,19 @@ const AGENT_ROOT = '/api/v1/agent'
 const MCP_OAUTH_PATHS = new Set(['/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/mcp'])
 const CONTROL_OAUTH_PATHS = new Set(['/.well-known/oauth-authorization-server', '/oauth/register', '/oauth/authorize', '/oauth/token', '/oauth/revoke'])
 
+/**
+ * Whether a path is in the API's part of the path space (api-roots.json): under a prefix (or the
+ * prefix without its slash), or an exact root or anything under it. The web app has nothing there.
+ */
+export function underApiRoot(path: string): boolean {
+  return API_ROOTS.prefixes.some((p) => path.startsWith(p) || `${path}/` === p) || API_ROOTS.exact.some((p) => path === p || path.startsWith(`${p}/`))
+}
+
 /** Which handler a path goes to, or null for 404. Exact paths (one segment for a path parameter), except the prefixes. */
 export function routeOf(path: string): Route | null {
+  // Nothing outside the API's roots is ever routed to a backend: a new route under a new root must
+  // be added to api-roots.json, where the app's serve.json is then held clear of it.
+  if (!underApiRoot(path)) return null
   if (path === '/healthz') return 'health'
   if (path === '/api/v1/bootstrap') return 'bootstrap'
   if (INGEST_PATHS.has(path) || SIGNAL_INGEST_PATHS.has(path)) return 'ingest'
@@ -317,8 +334,9 @@ function notFound(): Response {
 
 /**
  * VIZ_APP, parsed and checked; null when it is absent or not what configure.mjs writes (then there
- * is no app, rather than a page with headers guessed). A document path is a plain path that
- * `routeOf` does not route: the API's paths are never the app's.
+ * is no app, rather than a page with headers guessed). A document path is a plain path outside the
+ * API's roots (so one `routeOf` can never route, now or after a route is added): the API's paths
+ * are never the app's.
  */
 export function parseApp(raw: string | undefined): App | null {
   if (!raw) return null
@@ -326,7 +344,7 @@ export function parseApp(raw: string | undefined): App | null {
     const v = JSON.parse(raw) as { v?: unknown; build?: unknown; etag?: unknown; documents?: unknown; headers?: unknown; document?: unknown }
     if (v.v !== 1 || typeof v.build !== 'string' || typeof v.document !== 'string' || v.document === '') return null
     if (typeof v.etag !== 'string' || !/^"[0-9a-f]{8,64}"$/.test(v.etag)) return null
-    if (!Array.isArray(v.documents) || v.documents.length === 0 || !v.documents.every((p) => typeof p === 'string' && p.startsWith('/') && routeOf(p) === null)) return null
+    if (!Array.isArray(v.documents) || v.documents.length === 0 || !v.documents.every((p) => typeof p === 'string' && p.startsWith('/') && !underApiRoot(p) && routeOf(p) === null)) return null
     if (typeof v.headers !== 'object' || v.headers === null || Array.isArray(v.headers)) return null
     const headers: Record<string, string> = {}
     for (const [name, value] of Object.entries(v.headers)) {
@@ -364,8 +382,12 @@ function matchesEtag(header: string | null, etag: string): boolean {
 /**
  * A document of the web app: 200 with the build's document and exactly the headers app/serve.json
  * gives a document, for GET and HEAD of a listed path; null for everything else (the caller
- * answers 404). The path is compared as it was sent: `/explore/`, `/Explore` and `/index.html` are
- * not documents. A revalidation that names the document's entity tag gets 304.
+ * answers 404). The path is compared exactly, as the URL parser gives it: `/explore/`, `/Explore`,
+ * `/%65xplore` and `/index.html` are not documents. That parser has already removed dot segments
+ * (also percent-encoded ones), so `/assets/..` and `/api/v1/%2e%2e/%2e%2e/explore` arrive here as
+ * `/` and `/explore` and ARE the document, with its policy; the same parsing sends
+ * `/assets/../api/v1/query` to the API, as before D74 (review of D74, n-2; observed in local
+ * workerd). A revalidation that names the document's entity tag gets 304.
  */
 function appDocument(req: Request, env: Env, path: string): Response | null {
   const app = appOf(env)

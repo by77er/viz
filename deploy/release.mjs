@@ -62,15 +62,20 @@
 //   is released only with the build deploy/app.mjs staged for this release: its stamp names this
 //   release, the sources and app/serve.json are unchanged since it was built, the staged directory
 //   is what was stamped, and the generated config uploads exactly that directory and those vars.
-//   Anything else (missing, stale, altered, a build handed in for production) is refused before
-//   anything is uploaded; a stage may go without the app only when configured so, and the record
-//   says so. The record names the build; a rollback says which build, or none, each restored
-//   version serves (it never refuses for the app: a version's assets come back with it).
+//   Anything else (missing, stale, altered, a build handed in for production with nothing that
+//   ties it to the sources) is refused before anything is uploaded; a stage may go without the app
+//   only when configured so, and the record says so. The record names the build; a rollback says
+//   which build, or none, each restored version serves (it never refuses for the app: a version's
+//   assets come back with it).
+// - The first production release with the web app (the viz-gateway serving now has none) is refused
+//   unless a stage went before it: a committed entry in deploy/records/app-stage-evidence.json for
+//   this release's serving code, or the owner's override with a reason, logged and recorded
+//   (`appStageProblems`; review of D74, M-2).
 import { randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { APP_FILES_VAR, APP_VAR, appWorker, assetsConfig, parseAppFiles, stagedDir, stampProblems } from './lib/app.mjs'
+import { APP_FILES_VAR, APP_VAR, appWorker, assetsConfig, parseAppFiles, readServe, servingFingerprint, stagedDir, stampProblems } from './lib/app.mjs'
 import { currentDeployment, listScripts, listVersions, versionInfo } from './lib/cf.mjs'
 import { DEPLOY_DIR, GENERATED_DIR, REPO_ROOT, checkStage, log, parseArgs, readJsonc, stagedName, targetName } from './lib/common.mjs'
 import { floorDeployProblems, floorRollbackProblems, floorRules, floorsOfVersion } from './lib/floors.mjs'
@@ -158,12 +163,93 @@ export function appProblems(manifest, plan, { repoRoot = REPO_ROOT, readConfig =
   return out
 }
 
+/** The committed record of stage deploys that showed, on Cloudflare, how the web app is served (review of D74, M-2). */
+export const APP_STAGE_EVIDENCE = join(DEPLOY_DIR, 'records', 'app-stage-evidence.json')
+/** The owner's override: a reason, in words, for a first production release with the app that no stage went before. */
+export const APP_STAGE_OVERRIDE_ENV = 'VIZ_APP_WITHOUT_STAGE_EVIDENCE'
+/** The checks of deploy/README.md, "What a first deploy to a stage should check", that only a person can make. */
+export const APP_STAGE_BY_HAND = ['6', '7', '8', '9', '10']
+
+/** What an evidence entry lacks to count; empty when it is complete. Its truth is the signer's: only its shape is checked here. */
+export function evidenceGaps(e) {
+  const gaps = []
+  if (typeof e?.stage !== 'string' || !/^[a-z][a-z0-9]{1,15}$/.test(e.stage)) gaps.push('the stage\'s name')
+  if (typeof e?.release !== 'string' || e.release === '') gaps.push('the release deployed to it')
+  if (typeof e?.deployedAt !== 'string' || Number.isNaN(Date.parse(e.deployedAt))) gaps.push('when it was deployed')
+  if (typeof e?.by !== 'string' || e.by.trim() === '') gaps.push('who vouches for it ("by")')
+  if (e?.smoke?.passed !== true || e.smoke.app !== true) gaps.push('a smoke test that passed with the web app checked (smoke.passed and smoke.app)')
+  for (const n of APP_STAGE_BY_HAND) {
+    const item = e?.byHand?.[n]
+    if (item?.result !== 'pass' || typeof item.note !== 'string' || item.note.trim() === '') gaps.push(`by-hand check ${n} (result "pass" and a note of what was seen)`)
+  }
+  return gaps
+}
+
+/**
+ * The first production release that carries the web app needs a stage to have gone before it
+ * (review of D74, M-2): everything the serving rests on was seen in local workerd only, and that
+ * release is forward-only for another reason, so a failed app check rolls nothing back. "First" is
+ * read from the account: the viz-gateway serving now has no app. Then this release is refused
+ * unless deploy/records/app-stage-evidence.json holds a complete entry (a stage's release, its
+ * passed smoke test with the app checked, and the by-hand checks 6 to 10) whose `serving` is this
+ * release's serving fingerprint (lib/app.mjs `servingFingerprint`: the gateway's source, the asset
+ * configuration, `_headers`, the document's headers, wrangler's version), or the owner overrides
+ * with a reason, which is logged and recorded. The entry is a person's committed statement, bound
+ * to the code by the fingerprint; nothing here can prove the stage existed.
+ * Returns `{ first, problems, notes, record }`; `record` goes into the release record (`appStage`).
+ */
+export function appStageProblems(manifest, live, plan, { repoRoot = REPO_ROOT, evidenceFile = APP_STAGE_EVIDENCE, override = '' } = {}) {
+  const none = { first: false, problems: [], notes: [], record: null }
+  const found = appWorker(plan)
+  if (!found || manifest.stage) return none
+  const w = manifest.workers.find((x) => x.canonical === found.worker.name && x.deploy !== false && manifest.order.includes(x.name))
+  if (!w || typeof w.app?.build !== 'string') return none
+  if (typeof live[w.name]?.app === 'string') return none
+  let fingerprint
+  try {
+    fingerprint = servingFingerprint({ repoRoot, serve: readServe(join(repoRoot, found.app.serve)), worker: found.worker }).fingerprint
+  } catch (e) {
+    return { first: true, problems: [`${w.name}: ${e.message}`], notes: [], record: null }
+  }
+  const where = relative(repoRoot, evidenceFile)
+  let entries = []
+  if (existsSync(evidenceFile)) {
+    try {
+      const v = JSON.parse(readFileSync(evidenceFile, 'utf8'))
+      if (v?.v !== 1 || !Array.isArray(v.evidence)) throw new Error('not { "v": 1, "evidence": [...] }')
+      entries = v.evidence
+    } catch (e) {
+      return { first: true, problems: [`${w.name}: ${where} cannot be read (${e.message})`], notes: [], record: null }
+    }
+  }
+  const mine = entries.filter((e) => e?.serving === fingerprint)
+  const complete = mine.find((e) => evidenceGaps(e).length === 0)
+  if (complete) {
+    return { first: true, problems: [], notes: [`first production release with the web app: stage "${complete.stage}" went before it (release ${complete.release}, deployed ${complete.deployedAt}, smoke test passed, by-hand checks ${APP_STAGE_BY_HAND.join(', ')} passed; vouched for by ${complete.by}; ${where})`], record: { first: true, fingerprint, evidence: { stage: complete.stage, release: complete.release, deployedAt: complete.deployedAt, by: complete.by } } }
+  }
+  const reason = String(override ?? '').trim()
+  if (reason) {
+    return { first: true, problems: [], notes: [`WARNING: first production release with the web app WITHOUT a stage before it, by override (${APP_STAGE_OVERRIDE_ENV}): "${reason}". How Cloudflare serves the app has been seen in local workerd only; this release's smoke test is its first check on Cloudflare`], record: { first: true, fingerprint, override: reason } }
+  }
+  const why = mine.length
+    ? `its entry for this serving code (stage "${mine[0].stage ?? '?'}") lacks: ${evidenceGaps(mine[0]).join('; ')}`
+    : entries.length
+      ? `it has ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}, none for this release's serving code (fingerprint ${fingerprint.slice(0, 12)}: the gateway's source, the asset configuration, \`_headers\`, the document's headers or wrangler changed since)`
+      : existsSync(evidenceFile) ? 'it has no entry' : 'it does not exist'
+  return {
+    first: true,
+    problems: [`${w.name}: this is the first production release that carries the web app (the ${w.name} serving now has none), and no stage is recorded to have gone before it: ${where}: ${why}. Deploy to a stage first (deploy/deploy.sh --stage <name>), make the checks of deploy/README.md, "A stage before production", and commit its entry (node deploy/scripts/app-stage-evidence.mjs --stage <name>); or the owner overrides with a reason (${APP_STAGE_OVERRIDE_ENV}="…", the workflow's app_without_stage_evidence input), which is logged and recorded`],
+    notes: [],
+    record: null,
+  }
+}
+
 /** What the record says of the web app (D74): the build each app Worker serves, or that a stage went without. */
 const appOfManifest = (manifest) =>
   manifest.order
     .map((n) => manifest.workers.find((w) => w.name === n))
     .filter((w) => w?.app)
-    .map((w) => (w.app.withoutApp ? { worker: w.name, withoutApp: true } : typeof w.app.build !== 'string' ? { worker: w.name, notBuilt: true } : { worker: w.name, build: w.app.build, document: w.app.document, files: w.app.files, bytes: w.app.bytes, kept: w.app.kept, dropped: w.app.dropped, via: w.app.via, sources: w.app.sources, carry: w.app.carry }))
+    .map((w) => (w.app.withoutApp ? { worker: w.name, withoutApp: true } : typeof w.app.build !== 'string' ? { worker: w.name, notBuilt: true } : { worker: w.name, build: w.app.build, document: w.app.document, files: w.app.files, bytes: w.app.bytes, kept: w.app.kept, dropped: w.app.dropped, via: w.app.via, install: w.app.install ?? null, handover: w.app.handover ?? null, filesNamed: w.app.filesNamed !== false, sources: w.app.sources, carry: w.app.carry, serving: w.app.serving?.fingerprint ?? null }))
 
 /** The app build each Worker serves now, for `previous.json` and the plan: `[{ worker, build }]` of those that serve one. */
 const appOfLive = (manifest, live) => manifest.order.filter((n) => live[n]?.app).map((n) => ({ worker: n, build: live[n].app }))
@@ -585,7 +671,7 @@ const oauthOfManifest = (manifest) =>
  */
 const liveNames = (manifest, rules) => [...new Set([...manifest.order, ...manifest.workers.map((w) => w.name), ...rules.flatMap((r) => [r.writer, ...r.floors.map((f) => f.worker)])])]
 
-export async function deploy({ stage, ackText = '', rotateText = '' }) {
+export async function deploy({ stage, ackText = '', rotateText = '', appStageOverride = '', appStageEvidence = APP_STAGE_EVIDENCE }) {
   const manifest = loadManifest(stage)
   const release = manifest.release
   const tag = release.slice(0, 40)
@@ -613,6 +699,10 @@ export async function deploy({ stage, ackText = '', rotateText = '' }) {
   const refusals = [...idsOptionalProblems(manifest), ...plan.problems, ...floors.problems, ...rotateProblems(rotate, specs), ...keyGateRefusals(gate, planned)]
   // The web app (D74): the build staged for this release, judged again here, whatever configure.mjs judged.
   refusals.push(...appProblems(manifest, loadWorkersPlan()))
+  // The first production release with the app: a stage went before it, or the owner says why not (review of D74, M-2).
+  const appStage = appStageProblems(manifest, before, loadWorkersPlan(), { override: appStageOverride, evidenceFile: appStageEvidence })
+  for (const n of appStage.notes) log(`  ${n}`)
+  refusals.push(...appStage.problems)
   if (refusals.length) {
     log('\nrelease: REFUSED before uploading or promoting anything:')
     for (const p of refusals) log(`  - ${p}`)
@@ -732,6 +822,8 @@ export async function deploy({ stage, ackText = '', rotateText = '' }) {
     // D74: the web app's build (its hash, its document, its files and those kept from earlier builds), or that a stage went without it (--without-app).
     app: appOfManifest(manifest),
     withoutApp: manifest.withoutApp === true,
+    // M-2 of the review of D74: for the first production release with the app, the stage that went before it, or the owner's override.
+    appStage: appStage.record,
   })
   for (const w of record.workers) if (w.versionId !== uploaded[w.name]) log(`  warning: ${w.name} serves ${w.versionId}, expected ${uploaded[w.name]}`)
   const file = writeRecord(stage, 'release.json', record)
@@ -825,7 +917,8 @@ function printPlan(manifest, plan, secrets = [], live = {}) {
   for (const s of secrets) log(`  ${s.line}`)
   for (const a of appOfManifest(manifest)) {
     const was = live[a.worker]?.app ?? null
-    log(`  web app on ${a.worker}: ${a.withoutApp ? 'NONE (a stage configured --without-app)' : a.notBuilt ? 'NOT BUILT' : `build ${a.build.slice(0, 12)}, ${a.files} files${a.kept.length ? ` and ${a.kept.length} kept from earlier builds` : ''}${a.via === 'prebuilt' ? ' (PREBUILT: not tied to the sources)' : ''}`}; serving now: ${was === null ? 'no app' : was === a.build ? 'the same build' : `build ${was.slice(0, 12)}`}`)
+    log(`  web app on ${a.worker}: ${a.withoutApp ? 'NONE (a stage configured --without-app)' : a.notBuilt ? 'NOT BUILT' : `build ${a.build.slice(0, 12)}, ${a.files} files${a.kept.length ? ` and ${a.kept.length} kept from earlier builds` : ''}${a.via === 'prebuilt' ? ' (PREBUILT: not tied to the sources)' : a.via === 'handover' ? ' (handed over by a job without secrets, verified against the sources)' : ''}${a.install === 'linked' ? ' (dependencies LINKED from the checkout, not installed from the lockfiles)' : ''}`}; serving now: ${was === null ? 'no app' : was === a.build ? 'the same build (the same bytes, served by the same rules)' : `build ${was.slice(0, 12)}`}`)
+    if (a.build && a.filesNamed === false) log(`  WARNING: ${a.worker}: this build's file list does not fit VIZ_APP_FILES, so the NEXT release keeps none of its files ("Update in place" is lost for pages opened under it)`)
   }
 }
 
@@ -833,7 +926,7 @@ function printPlan(manifest, plan, secrets = [], live = {}) {
  * `release.mjs plan`: what deploy would do, changing nothing (no wrangler call; Cloudflare's API
  * is only read). A generated secret that is not set yet is reported as "would be created".
  */
-export async function planOnly({ stage, ackText = '', rotateText = '' }) {
+export async function planOnly({ stage, ackText = '', rotateText = '', appStageOverride = '', appStageEvidence = APP_STAGE_EVIDENCE }) {
   const manifest = loadManifest(stage)
   const rules = floorRules(loadWorkersPlan(), stage)
   const live = await liveState(liveNames(manifest, rules), stage)
@@ -844,7 +937,10 @@ export async function planOnly({ stage, ackText = '', rotateText = '' }) {
   const floors = await floorDeployProblems(rules, manifest, live, FLOOR_API, varsOfGenerated)
   const forwardOnly = [...forwardOnlyReasons(manifest, live), ...floors.forwardOnly]
   const problems = [...idsOptionalProblems(manifest), ...plan.problems, ...floors.problems, ...rotateProblems(rotate, specs), ...keyGateRefusals(keyGateProblems(manifest, configOfGenerated), secrets), ...appProblems(manifest, loadWorkersPlan())]
+  const appStage = appStageProblems(manifest, live, loadWorkersPlan(), { override: appStageOverride, evidenceFile: appStageEvidence })
+  problems.push(...appStage.problems)
   printPlan(manifest, plan, secrets, live)
+  for (const n of appStage.notes) log(`  ${n}`)
   for (const f of forwardOnly) log(`  FORWARD-ONLY: ${f.why}`)
   for (const p of problems) log(`  - ${p}`)
   return { exit: problems.length ? EXIT_REFUSED : 0, plan, secrets: secrets.map(({ worker, name, action }) => ({ worker, name, action })), forwardOnly, problems }
@@ -865,7 +961,8 @@ function summary(record, previous) {
     '',
     record.secrets?.length ? `Generated secrets: ${record.secrets.map((s) => `${s.name} on ${s.worker} ${s.action}${s.action === 'kept' ? '' : ` (version \`${s.versionId}\`)`}`).join(', ')}` : '',
     '',
-    record.app?.length ? `Web app: ${record.app.map((a) => `${a.worker} ${a.withoutApp ? 'without it (a stage)' : a.build ? `build \`${a.build.slice(0, 12)}\`${a.files !== undefined ? `, ${a.files} files${a.kept?.length ? `, ${a.kept.length} kept from earlier builds` : ''}` : ''}` : 'no app'}`).join(', ')}` : '',
+    record.app?.length ? `Web app: ${record.app.map((a) => `${a.worker} ${a.withoutApp ? 'without it (a stage)' : a.build ? `build \`${a.build.slice(0, 12)}\`${a.files !== undefined ? `, ${a.files} files${a.kept?.length ? `, ${a.kept.length} kept from earlier builds` : ''}` : ''}${a.via ? ` (${a.via}${a.install && a.install !== 'ci' ? `, install ${a.install}` : ''})` : ''}${a.filesNamed === false ? '; **its file list does not fit VIZ_APP_FILES: the next release keeps none of its files**' : ''}` : 'no app'}`).join(', ')}` : '',
+    record.appStage?.override ? `**First production release with the web app, without a stage before it**, by override: "${record.appStage.override}"` : record.appStage?.evidence ? `First production release with the web app; stage \`${record.appStage.evidence.stage}\` went before it (vouched for by ${record.appStage.evidence.by}).` : '',
     '',
     '| Worker | Version | Migration tag in force | Previous version |',
     '|---|---|---|---|',
@@ -883,9 +980,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const cmd = args._[0]
     const ackText = [args.ack ?? '', process.env.VIZ_ACK_MIGRATIONS ?? ''].join(' ')
     const rotateText = [args['rotate-secret'] ?? '', process.env[ROTATE_ENV] ?? ''].join(' ')
-    if (cmd === 'deploy') process.exit((await deploy({ stage: args.stage, ackText, rotateText })).exit)
+    // The owner's reason for a first production release with the app that no stage went before (review of D74, M-2).
+    const appStageOverride = process.env[APP_STAGE_OVERRIDE_ENV] ?? ''
+    if (cmd === 'deploy') process.exit((await deploy({ stage: args.stage, ackText, rotateText, appStageOverride })).exit)
     else if (cmd === 'plan') {
-      const r = await planOnly({ stage: args.stage, ackText, rotateText })
+      const r = await planOnly({ stage: args.stage, ackText, rotateText, appStageOverride })
       console.log(JSON.stringify({ migrations: r.plan.migrations.map((s) => ({ worker: s.name, ...s.migration, ack: s.ack })), secrets: r.secrets, refused: r.exit !== 0 }))
       process.exit(r.exit)
     } else if (cmd === 'rollback') {

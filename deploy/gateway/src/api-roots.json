@@ -1,0 +1,5 @@
+{
+  "comment": "The paths that are the API's, whatever else viz-gateway serves (design/DECISIONS.md D74; review of D74, m-4). routeOf routes nothing outside them, parseApp refuses a document under one, and deploy/lib/app.mjs refuses an app/serve.json whose asset prefix, files or documents lie under one: the asset layer answers a path that is a file BEFORE the Worker runs, so a file there would sit in front of the API. A prefix covers itself without its slash too (/api); an exact path covers everything under it (/mcp/x).",
+  "prefixes": ["/api/", "/v1/", "/loki/", "/oauth/", "/.well-known/"],
+  "exact": ["/mcp", "/healthz"]
+}

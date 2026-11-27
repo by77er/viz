@@ -14,9 +14,11 @@ changes no component: everything it needs from one is under "Needed changes".
 | `lib/floors.mjs` | Rollback floors a switch raises (`INGEST_SIGNALS`; `OAUTH_PUBLIC`): which Workers, how each is judged (schema version or a `VIZ_FLOORS` stamp), and the deploy and rollback refusals, or a forward-only mark where a rule says so (D64, D69) |
 | `lib/secrets.mjs` | Worker secrets the deploy generates (viz-control's `OAUTH_CLIENT_KEY`): put on the release's upload only where missing, value on wrangler's stdin, replaced only when asked, never on another run's upload, never on a viz-control without its rate limits (D70); rollbacks across its creation or rotation refused ("Worker secrets the deploy generates") |
 | `lib/schemas.mjs` | Reads every Durable Object class's `SchemaSpec` from the component sources (esbuild, no Worker run) for the manifest, the `VIZ_SCHEMAS` var of each version, and the rollback check |
-| `app.mjs`, `lib/app.mjs` | The web app (D74, "The web app"): reads `app/serve.json` (the specification of how the build is served; anything in it this code does not know is refused), builds the app in an export of its sources, never in `app/`, stages what wrangler uploads (the build's files and a generated `_headers`, never `index.html`), writes the stamp `generated/<target>/app.json`, keeps the earlier builds' files a page already open may ask for, and says why a build may not be released |
-| `deploy.sh` | The whole deploy: WASM, `npm ci`, the web app's build, resources, configure, release, smoke test, automatic rollback |
-| `smoke.mjs` | `/healthz` until the release just promoted answers, then the web app as `app/serve.json` says it is served (where the release serves one), then a real Remote Write and a query that must return it within 60 s |
+| `app.mjs`, `lib/app.mjs` | The web app (D74, "The web app"): reads `app/serve.json` (the specification of how the build is served; anything in it this code does not know, or that lies in the API's part of the path space, is refused). `app.mjs handover` builds the app in an export of its sources outside the checkout, where no credential is, and writes the build with a description (`dist/`, `build.json`); `app.mjs build --from` takes that as data, verifies it against the checkout, stages what wrangler uploads (the build's files and a generated `_headers`, never `index.html`), writes the stamp `generated/<target>/app.json`, keeps the earlier builds' files a page already open may ask for, and says why a build may not be released ("Who can read the Cloudflare token") |
+| `deploy.sh` | The whole deploy: WASM, `npm ci` (no install scripts, no credentials in their environment), the web app's build taken over or made without credentials, resources, configure, release, smoke test, automatic rollback. `--install-only`: the installs alone, for a step without secrets |
+| `smoke.mjs` | `/healthz` until the release just promoted answers, then the web app as `app/serve.json` says it is served (where the release serves one; every file of the version compared byte for byte with what was staged), and a real Remote Write and a query that must return it within 60 s; both run whatever the other found. Writes `generated/<target>/smoke.json` |
+| `gateway/src/api-roots.json` | The API's part of the path space (`/api/`, `/v1/`, `/loki/`, `/oauth/`, `/.well-known/`, `/mcp`, `/healthz`): the gateway routes nothing outside it and serves no document inside it, and `lib/app.mjs` reads the same file to refuse a `serve.json` that puts a file there |
+| `records/app-stage-evidence.json`, `scripts/app-stage-evidence.mjs` | The record that a stage went before the first production release with the web app, and the script that writes a stage's entry from what its deploy left in `generated/` ("A stage before production"). The file does not exist until a stage has been deployed |
 | `bootstrap.mjs` | A tenant's first API key, through a one-time token |
 | `load.mjs` | Steady write and read load with a cutover report (used by the trial) |
 | `gateway/` | `viz-gateway`, the Worker on `vis.bitcru.sh`, and its tests |
@@ -24,8 +26,8 @@ changes no component: everything it needs from one is under "Needed changes".
 | `trial/` | Trial 2: `sink/index.ts`, a webhook receiver Worker for a stage, and `trial2.mjs`, which drives a stage end to end (monitors, alerting, MCP) and reports. Trial 3: `probe/index.ts`, a stand-in for the ruler's `SINK` binding |
 | `ci/matrix.mjs` | Which components CI checks in this checkout |
 | `ci/app-build.mjs` | CI, in `app/` after its build: the build read by `app/serve.json`'s rules as the deploy reads it |
-| `scripts/mutants-app.mjs` | Mutation check of the web app's path from sources to a release (`lib/app.mjs`, `app.mjs`, its use in `configure.mjs`, `release.mjs`, `smoke.mjs`, `deploy.sh`, the CI matrix; run on a copy). The Worker's part is in `gateway/scripts/mutants.mjs` |
-| `test/app.test.mjs`, `test/app-serve.test.mjs`, `gateway/test/app.test.ts`, `test/fixtures/app-build/` | The web app: the build pipeline and the release gate against the fake account; the gateway with the staged build in local workerd (`wrangler dev --local`), requests sent raw; the Worker's part under vitest. All three read `app/serve.json` itself. The fixture is a seven-file build laid out as the app's |
+| `scripts/mutants-app.mjs` | Mutation check of the web app's path from sources to a release (`lib/app.mjs`, `app.mjs`, its use in `configure.mjs`, `release.mjs`, `smoke.mjs`, `deploy.sh`, the CI matrix, the deploy workflow's job boundary; run on a copy of the whole tracked tree; `--check` lists mutants that no longer apply and changes nothing). The Worker's part is in `gateway/scripts/mutants.mjs` |
+| `test/app.test.mjs`, `test/app-http.test.mjs`, `test/app-serve.test.mjs`, `gateway/test/app.test.ts`, `test/fixtures/app-build/` | The web app: the build pipeline, the handover and the release gate against the fake account; how a kept file is fetched and what the smoke test asks and compares, against a small server that misbehaves in one chosen way (the real `fetch`); the gateway with the staged build in local workerd (`wrangler dev --local`), requests sent raw; the Worker's part under vitest. All read `app/serve.json` itself. The fixture is a seven-file build laid out as the app's |
 | `scripts/mutants-release.mjs` | Mutation check of the schema, format and floor rules in `release.mjs`, `configure.mjs`, `lib/schemas.mjs`, `lib/formats.mjs`, `lib/floors.mjs`, of the class-binding allowlist and viz-mcp's bindings, of the workflow's main-only gate, of D70's gate in `configure.mjs` and of the rate-limit ids in `resources.mjs` (run on a copy) |
 | `scripts/mutants-secrets.mjs` | Mutation check of the generated secrets (`lib/secrets.mjs`, its use in `release.mjs`, stdin in `lib/wrangler.mjs`, the API timeout in `lib/cf.mjs`, D70's gate on the key; run on a copy) |
 | `test/fake-wrangler.mjs` | A stand-in for wrangler that the end-to-end tests (`secrets`, `release-checks`, `review-d69`, `workflow`, `oauth-gate`, `upgrade-production`) run as a real child process (`VIZ_WRANGLER_BIN`, tests only), with `test/fake-account.mjs` answering the Cloudflare API from the same state (versions show their vars, secrets and Rate Limiting bindings) |
@@ -40,43 +42,56 @@ changes no component: everything it needs from one is under "Needed changes".
 ```
 push to main
   └─ .github/workflows/deploy.yml   (concurrency group deploy-production; one run at a time)
-       ├─ checks: ci.yml, the same jobs a pull request runs; builds both WASM engines once
-       └─ deploy (GitHub environment "production"):
+       ├─ checks: ci.yml, the same jobs a pull request runs; builds both WASM engines once. No secret
+       ├─ app-build (no secret, no environment): app.mjs handover = the web app built in an export
+       │    of this commit's sources outside the checkout (npm ci and `npm run build` there), read by
+       │    app/serve.json's rules, uploaded as artifact app-build-<sha>: dist/ and build.json
+       └─ deploy (GitHub environment "production"; no secret in the job's env, see "Who can read
+          the Cloudflare token"):
             0. refuse any ref but main (an older commit's own tooling never runs: "Rollback")
-            1. download the WASM modules the checks built and tested
-            2. acknowledgements: dispatch input + "Migration:" trailers of every commit since
-               the release serving now (read from the version tag on Cloudflare)
-            3. deploy/deploy.sh
-                 npm ci (deploy/, stack/, control/, query/, ruler/, mcp/)
-                 app.mjs build              the web app, built in an export of this commit's sources
-                                            (npm ci and `npm run build` there, never in app/), read by
-                                            app/serve.json's rules and staged for viz-gateway; a failed
-                                            build stops here, before anything on Cloudflare is touched
+            1. download the WASM modules the checks built and tested, and the web app's build, the
+               latter outside the checkout
+            2. deploy.sh --install-only    npm ci --ignore-scripts (deploy/, stack/, control/,
+                                            query/, ruler/, mcp/), in a step without secrets
+            3. acknowledgements: dispatch input + "Migration:" trailers of every commit since
+               the release serving now (read from the version tag on Cloudflare)   [token]
+            4. deploy/deploy.sh                                                     [token]
+                 app.mjs build --from       the handed-over build, taken as data: verified against
+                                            this checkout (the sources' hash, serve.json, every
+                                            file's SHA-256) and staged for viz-gateway; no npm, no
+                                            code of app/ runs here. A build that is refused stops
+                                            here, before anything on Cloudflare is changed
                  resources.mjs ensure       R2 viz-lake, KV viz-config, queues viz-flush, viz-maint,
                                             viz-flush-dlq, viz-maint-dlq; viz-control's six Rate Limiting
                                             namespace ids (the account's bindings read, nothing created)
                  configure.mjs              generated/production/*.jsonc + manifest.json; refuses a
                                             viz-control without its rate limits (D70), and a web app
                                             build that is missing, stale or altered (D74)
-                 release.mjs deploy         plan → refuse unacknowledged migrations, and again a web
-                                            app build that is not this release's (exit 3)
+                 release.mjs deploy         plan → refuse unacknowledged migrations, again a web
+                                            app build that is not this release's, and the first
+                                            release with the web app when no stage is recorded to
+                                            have gone before it (exit 3)
                                             phase 1: upload every Worker (serves nothing); viz-control's
                                                      OAUTH_CLIENT_KEY put on its upload if missing
                                             phase 2: promote viz-publisher, viz-ingest, viz-control,
                                                      viz-query, viz-ruler, viz-mcp, viz-gateway
                  smoke.mjs                  /healthz until the new release answers; the web app as
-                                            app/serve.json says it is served; Remote Write + query
-                                            with SMOKE_KEY
+                                            app/serve.json says it is served, every file byte for
+                                            byte; Remote Write + query with SMOKE_KEY (both run)
                  on smoke failure           no migration in the release → roll back to the previous
                                             release and fail; migration → fail loudly, no rollback
-            4. upload the release record, and the web app's stamp (app.json: every file of the
+            5. upload the release record, and the web app's stamp (app.json: every file of the
                build with its SHA-256), as artifact release-<sha> (90 days) and print the record
                in the job summary
 ```
 
 A manual run (`workflow_dispatch`) does the same with an `acknowledge_migrations` input, or,
 with `rollback_to: <sha>`, restores the release recorded for that commit instead. Either only on
-`main`: a run on any other ref is refused before checkout (D69; review of D69, M-2).
+`main`: a run on any other ref is refused before checkout (D69; review of D69, M-2). Two more
+inputs are the web app's: `app_drop_kept_files` (keep no file of earlier builds in this release:
+how a known-bad build's files stop being served, "Update in place") and
+`app_without_stage_evidence` (the owner's reason to make the first production release with the
+app although no stage is recorded to have gone before it, "A stage before production").
 
 ## Topology and routes
 
@@ -419,27 +434,55 @@ JSON 404, and a `Range` request gets the whole file with 200. Nothing here edits
 | a `documents` path of serve.json, exactly, GET or HEAD | the Worker | 200, the document of this version's build (from its `VIZ_APP` variable), exactly the `headers.document` of serve.json, plus `ETag` and `x-viz-route: app`; 304 when `If-None-Match` names the tag |
 | a file of this version's build under `assetsPrefix` | Cloudflare (static assets), no Worker invocation | 200, `headers.asset` and the extension's `contentTypes` entry, from the generated `_headers`; Cloudflare adds `ETag` |
 | a `files` path that is in the build (`/favicon.svg`) | Cloudflare, no Worker invocation | 200, `headers.file` and its content type |
-| any API path `routeOf` knows | the Worker, as before, **first** | forwarded unchanged; a document path can never be one (`parseApp` refuses a `VIZ_APP` that names one) |
+| any API path `routeOf` knows | the Worker, as before, **first** | forwarded unchanged; a document path can never be one (`parseApp` refuses a `VIZ_APP` that names one, or any path in the API's part of the path space, `gateway/src/api-roots.json`: `/api/`, `/v1/`, `/loki/`, `/oauth/`, `/.well-known/`, `/mcp`, `/healthz`). Nor can a static file sit in front of one: the asset layer answers a path that is a file before the Worker runs, so `readServe` refuses an asset prefix, file or document under those roots, reading the same file the gateway routes by |
 | everything else: an unknown API path (also when a browser navigates to it), a hashed asset this version does not hold, `/index.html`, `/explore/`, `/Explore`, `/_headers`, a POST to a document | the Worker | the gateway's JSON 404, `Cache-Control: no-store`: never the document, never kept |
 
 **How it is put together.**
 
-- `deploy/app.mjs build` (run by `deploy.sh` before anything else touches Cloudflare):
+- `deploy/app.mjs handover` makes the build and nothing else. It runs where no credential is (the
+  workflow's `app-build` job; from `deploy.sh`, a process whose environment has none), and refuses
+  to start beside one:
   1. lists the sources: what git tracks or does not ignore under `app/` and `design-system/`, less
      what `workers.json` says no build reads (`not_built_from`: review images, screenshots, the
-     end-to-end tests and their measurements, design fixtures and flows); hashes paths and contents;
-  2. exports them to `deploy/generated/<target>/app-build/` and builds there: `npm ci` in
-     `design-system/` and `app/`, then the app's own `npm run build` (its `prebuild` generates the
-     design system's `dist/`; then `tsc --noEmit && vite build`). Never in `app/` itself: a build
-     there rewrites generated files under whoever is working in it and can pick up ignored files no
-     fresh checkout has. The build gets no Cloudflare credential in its environment;
+     end-to-end tests and their measurements, design fixtures and flows); hashes paths and
+     contents. A link is never a source. For production with a release that is a commit, git must
+     be able to read the checkout, at that commit, with those sources unchanged: where it cannot
+     (no work tree, a checkout owned by another user) nothing is built, rather than whatever the
+     directory holds;
+  2. exports them to a new directory under the system's temporary directory, **outside the
+     checkout**, and builds there: `npm ci` in `design-system/` and `app/`, then the app's own
+     `npm run build` (its `prebuild` generates the design system's `dist/`; then `tsc --noEmit &&
+     vite build`). Never in `app/` itself, and never under the repository: a build there rewrites
+     generated files under whoever is working in it, can pick up ignored files no fresh checkout
+     has, and resolves modules and tool configuration by walking up into `deploy/node_modules`, so
+     that a dependency missing from the app's lockfile would build here and nowhere else. The
+     export is removed afterwards. `VIZ_SKIP_NPM_CI=1` links the checkout's `node_modules` instead
+     of installing; the result says `install: "linked"`, and production refuses that for a
+     release that is a commit;
   3. reads `dist/` by serve.json's rules and refuses what they do not cover: a file that is neither
      `index.html`, under the prefix, nor listed; an extension without a content type; a link; a
-     document that asks for a file the build does not hold or for another origin; an inline script;
-  4. keeps the earlier builds' files ("Update in place");
-  5. stages `deploy/generated/<target>/app/` (the build's files and `_headers`; **not**
-     `index.html`) and writes `deploy/generated/<target>/app.json`: release, target, source hash
-     and commit, build hash, every file with its SHA-256, the two variables.
+     document that asks for a file the build does not hold or for another origin, or has a
+     reference that is not double-quoted (it could not be checked); an inline script;
+  4. writes `<out>/dist/` and `<out>/build.json`: the release, the sources' hash and commit, how
+     the dependencies were installed, serve.json's hash, and every file with its SHA-256.
+- `deploy/app.mjs build --from <out>` (run by `deploy.sh` before anything else touches
+  Cloudflare) takes that build **as data**; it runs no `npm` and no code of `app/` or
+  `design-system/`:
+  1. lists and hashes the sources of its own checkout, as above (git and SHA-256 of file bytes;
+     nothing of the app is executed for it), with the same demands for production;
+  2. verifies the handed-over build (`readHandover`): its description is of this release, of
+     sources with **this checkout's hash**, of this checkout's serve.json, and for production of
+     this commit, clean, listed by git, installed from the lockfiles; `dist/` reads by serve.json's
+     rules and is, file by file, what the description names (paths, sizes, SHA-256, the document,
+     the build hash). Anything else is refused with every reason, and nothing is staged;
+  3. keeps the earlier builds' files ("Update in place"); this is the step that reads Cloudflare;
+  4. stages `deploy/generated/<target>/app/` (the build's files and `_headers`; **not**
+     `index.html`) and writes `deploy/generated/<target>/app.json`: release, target, how the
+     build came (`via`) and how it was installed, source hash and commit, build hash, every file
+     with its SHA-256, the two variables, the serving fingerprint.
+- `deploy/app.mjs build` with neither `--from` nor `--dist` does both parts in one process, for a
+  stage by hand (`via: "export"`). `--dist <dir>` (a stage only) stages a bare `dist/` that
+  nothing ties to the sources (`via: "prebuilt"`).
 - `configure.mjs` gives the Worker that declares `app` in `workers.json` (viz-gateway, and no
   other): `assets: { directory: "app", html_handling: "none", not_found_handling: "none",
   run_worker_first: false }` (no binding: the Worker never reads a file), `VIZ_APP` (the
@@ -451,19 +494,74 @@ JSON 404, and a `Range` request gets the whole file with 200. Nothing here edits
   `wrangler deploy` for a new Worker), so the build, the document and the code are one version:
   promoted together, rolled back together.
 
+**"The build" is the bytes and the rules.** The build hash (in `VIZ_APP`, `VIZ_APP_FILES`, the
+record, the plan's "the same build") covers `index.html`, every file, and serve.json's rules as a
+browser can tell them apart: the documents, the prefix, the files, all three header blocks and
+the content types (not the comment). The document's `ETag` is a hash of its bytes and of the
+document's headers. So a release that only tightens the policy is another build with another
+tag: a revalidation gets 200 with the new headers, not a 304 a browser may not take them from
+(review of D74, m-3; Chromium's handling of headers on a 304 is training knowledge, not checked).
+A headers-only release also ages the kept files by one build, as any change of build does.
+
+### Who can read the Cloudflare token
+
+The app's build runs third-party code: `npm ci` runs the install scripts of 158 packages
+(`app/package-lock.json`; 5 more in `design-system/`), and `npm run build` runs Vite and its
+plugins. **Removing a variable from a child's environment is not isolation**: a process running
+as the same user can read an ancestor's environment (the review of D74, M-1, did so with a dummy
+value three processes up), and can rewrite files a later step runs. What separates that code from
+the token is therefore not `buildEnv`, but where it runs:
+
+| Where | What runs third-party code there | What it can reach |
+|---|---|---|
+| The workflow, job `app-build` | the app's and the design system's `npm ci` (with install scripts: the build needs them, esbuild's among them) and `npm run build` | **no secret**: the job names none, has no `environment` (the Cloudflare secrets are the `production` environment's, "One-time setup"), and its checkout leaves no token on disk (`persist-credentials: false`). The workflow's own token for that job is read-only on contents. It can produce any build: see "what is trusted" below |
+| The workflow, job `deploy`, the step `deploy.sh --install-only` | `npm ci --ignore-scripts` in `deploy/` and the deployed components: no package's script runs; files are unpacked | no secret in the step's environment, and none in the job's (`env` is set per step). But the unpacked files stay: **a locked dependency could carry a file that a later, token-holding step loads** (`wrangler` and what it imports run with the token, by design; so do esbuild and workerd, which wrangler starts) |
+| The workflow, job `deploy`, the steps `Migration acknowledgements` and `deploy/deploy.sh` | viz's own scripts and `wrangler` | the token and the account id; `SMOKE_KEY` in the second. These steps run no `npm` and no code of `app/` or `design-system/`: the build arrives as an artifact, outside the checkout, and is read, hashed and copied |
+| The workflow, job `rollback` | `npm ci --ignore-scripts` in `deploy/` (no secret); then `release.mjs rollback` (the token) and `smoke.mjs` (`SMOKE_KEY` only) | as for `deploy` |
+| `deploy.sh` on a person's machine (a stage, or production by hand) | the installs and `app.mjs handover`, each started with every credential removed from its environment by name (`CLOUDFLARE_*`, `CF_API*`, `WRANGLER_*`, `SMOKE_KEY`, and any name with TOKEN, SECRET, PASSWORD, CREDENTIAL or KEY) | **weaker**: the same user, the same machine, and `deploy.sh` and the shell above it hold the token in their environment. The scrub keeps a credential out of the build's own environment and logs; it does not stop code that goes looking. That is the trust a local deploy places in the locked dependencies; production should come from the workflow |
+
+What is trusted, plainly:
+
+- **The locked dependencies of the app decide what the page is.** The handover is verified
+  against the build's own description and the checkout's source hash: that shows the deploy job
+  holds the intact output of the job that says it built this commit's sources. It does not show
+  that the output is what those sources mean; a malicious build dependency could ship any
+  script to the browser. The boundary protects the Cloudflare token and the deploy tooling, not
+  the page.
+- **The locked dependencies of `deploy/` and the deployed components are trusted with the
+  token**, because `wrangler` runs with it and bundles their code. `--ignore-scripts` removes
+  the install-time scripts, not that trust.
+- **GitHub's separation of jobs** (a fresh runner per job, environment secrets given only to
+  jobs that name the environment) is training knowledge and GitHub's documentation, not
+  something a test here can show. `test/workflow.test.mjs` holds the workflow text to the
+  shape above: no job with a secret in its `env`, no installing or building step with one, the
+  build job with none at all and no environment, the deploy job building nothing.
+- Installing without scripts works for `deploy/` (wrangler 4.164.0, workerd and esbuild start;
+  their binaries come from optional dependencies) and for the deployed components; measured from
+  a fresh export, "How it was verified".
+
 **What is refused, and where.** All before anything is uploaded.
 
 | Where | Refused |
 |---|---|
-| `app.mjs build` (exit 1; `deploy.sh` stops) | the build command fails; `dist/` is not a build serve.json covers; production with a release that is a commit while the checkout is at another commit or its app sources differ from it; `--dist` (a build made elsewhere) for production; serve.json with a rule `lib/app.mjs` does not know, a document without a Content-Security-Policy or one a cache may keep, a header that is not one line, a path that is not plain |
-| `configure.mjs` (exit 1) | no stamp for this release (`app.json` missing: the app was not built); a stamp of another release or target (left in `generated/` by another run: stale); sources or serve.json changed since the build (stale); the staged directory is not what was stamped (a file altered, added or gone); a production stamp that is `prebuilt`; `--without-app` for production. With `--ids-optional` (a manifest that is never deployed) a missing build is left out instead, and the manifest says `notBuilt` |
-| `release.mjs deploy` and `plan` (exit 3) | every stamp problem above, checked again; a manifest whose viz-gateway says nothing of a build (configure forgot, or was not run); `withoutApp` for production, or for a stage not configured so; a generated config whose `assets` is not exactly the staged directory served asset-first by exact path, or whose `VIZ_APP` or `VIZ_APP_FILES` is not the stamp's; a manifest configured with another build than the staged one |
-| the Worker, at run time | a `VIZ_APP` without a policy, with a document a cache may keep, with a header over two lines, without an entity tag, or naming an API path as a document: no page is served at all (the 404), and the gateway logs it |
+| `app.mjs handover` (exit 1; `deploy.sh` and the `app-build` job stop) | a deploy credential in its environment; the build command fails; `dist/` is not a build serve.json covers; production with a release that is a commit while git cannot read the checkout, the checkout is at another commit, or its app sources differ from it; a linked install (`VIZ_SKIP_NPM_CI`) for such a release; a temporary directory inside the checkout; an `--out` directory that holds something else; serve.json with a rule `lib/app.mjs` does not know, an asset prefix, file or document in the API's part of the path space, a document without a Content-Security-Policy or one a cache may keep, a header that is not one line, a path that is not plain |
+| `app.mjs build --from` (exit 1; `deploy.sh` stops) | the same demands on its own checkout; a handed-over build that is of another release, of other sources than this checkout holds, of another serve.json, or (production, a commit) says another commit, changed sources, sources git did not list or a linked install; a file of `dist/` whose bytes are not the description's, one the description does not name, one it names that is missing; another document; a link; no `build.json`. `--dist` (a bare build) for production |
+| `configure.mjs` (exit 1) | no stamp for this release (`app.json` missing: the app was not built); a stamp of another release or target (left in `generated/` by another run: stale); sources or serve.json changed since the build (stale); a stamp that names another directory than the one uploaded; the staged directory is not what was stamped (a file altered, added or gone); a production stamp that is `prebuilt` (nothing ties it to the sources: `export` and `handover` are taken, because their stamps carry the hash of the sources they were made from and it is compared with the checkout's again); for production with a commit: git cannot read the checkout, sources git did not list, a linked install; `--without-app` for production. With `--ids-optional` (a manifest that is never deployed) a missing build is left out instead, and the manifest says `notBuilt` |
+| `release.mjs deploy` and `plan` (exit 3) | every stamp problem above, checked again; a manifest whose viz-gateway says nothing of a build (configure forgot, or was not run); `withoutApp` for production, or for a stage not configured so; a generated config whose `assets` is not exactly the staged directory served asset-first by exact path, or whose `VIZ_APP` or `VIZ_APP_FILES` is not the stamp's; a manifest configured with another build than the staged one; **the first production release with the app when no stage is recorded to have gone before it** ("A stage before production") |
+| the Worker, at run time | a `VIZ_APP` without a policy, with a document a cache may keep, with a header over two lines, without an entity tag, or naming as a document an API path or any path under the API's roots: no page is served at all (the 404), and the gateway logs it |
 
 A stage may go without the app: `VIZ_WITHOUT_APP=1 deploy/deploy.sh --stage S` (configure
 `--without-app`); the manifest and the release record say `withoutApp`. A stage may also be given
 a build made elsewhere (`app.mjs build --stage S --dist <dir>`); its stamp says `prebuilt` and the
 plan prints `PREBUILT`.
+
+**"Handed in" for production** (D74, point 3, after its review). Before, production refused
+every build it had not made in the same process. Now the rule is about what ties a build to the
+release, not about which process made it: production takes a build only with a stamp whose
+source hash is the hash of this checkout's sources at the release's commit (computed here, by git
+and SHA-256 of file bytes, running nothing of the app), and, when it was handed over, whose every
+file has the SHA-256 its description names. `prebuilt`, which has no such description, stays
+refused.
 
 **What Cloudflare does, and how each fact is known.** "Read" is Cloudflare's documentation on
 2026-11-26; "observed" is `wrangler dev --local` (wrangler 4.164.0, miniflare's asset router and
@@ -479,8 +577,9 @@ verified" has neither and waits for a deploy to a stage, where `smoke.mjs` check
 | With `run_worker_first: ["/*", "!/assets/*"]`, a path under `/assets/` that is **no file** is answered by the asset layer, not the Worker: an empty 404 **carrying the `_headers` of the path** (`Cache-Control: public, max-age=31536000, immutable`) | **observed** (the documentation says such paths "follow the default asset-first routing behavior") | why the Worker is not "first except under /assets/": D74 (b). `scripts/mutants-app.mjs` has this configuration as a mutant |
 | `_headers` in the asset directory is parsed, not served; its rules apply to asset responses and "override what Cloudflare ordinarily sends"; a header set twice for one path is joined with a comma; 100 rules, 2,000 characters a line; "not applied to responses generated by your Worker code" | read: [Headers](https://developers.cloudflare.com/workers/static-assets/headers/), [Limits](https://developers.cloudflare.com/workers/platform/limits/#static-assets); observed (`Content-Type` is replaced, `/_headers` is a 404) | the asset headers and content types; one header per path in the generated file; the document's headers come from the Worker |
 | Default asset headers: `Cache-Control: public, max-age=0, must-revalidate`, `ETag`, and a content type "based on its extension" at upload | read: Headers | why `_headers` sets the caching and every content type itself |
-| A method other than GET or HEAD on a path that is a file: 405, no body. A `Range` request: 200 with the whole file | observed (405); read: [Billing and Limitations](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/) (Range) | the two differences from `app/e2e/prod.cjs` stated above |
-| A path that names a file another way (`/assets//x.js`, `/assets/x%2ejs`, `/assets/%2e%2e/assets/x.js`): 307 to the file's one path, or the file; `/assets/..%2f…`, `%5c`, `%00`, another case: no file, so the Worker's 404 | observed | nothing but the build's files is in the directory, so nothing else can be reached |
+| A method other than GET or HEAD on a path that is a file: 405, no body, **carrying the path's `_headers`** (`Cache-Control: public, max-age=31536000, immutable` on a 405 for `POST` and `OPTIONS`). A `Range` request: 200 with the whole file | observed (405, and its headers: review of D74, n-1); read: [Billing and Limitations](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/) (Range) | the two differences from `app/e2e/prod.cjs` stated above. Harmless here: a 405 is not a response a cache reuses for a GET, and it exists only for a path that is a file |
+| A path that names a file another way (`/assets//x.js`, `/assets/x%2ejs`, `/assets/%2e%2e/assets/x.js`): 307 to the file's one path, or the file; `/assets/..%2f…`, `%5c`, `%00`, another case: no file, so the Worker's 404. **The 307 carries the asset headers too** (`immutable`), and its `Location` is always a file of the build | observed (the headers on the redirect: review of D74, n-1) | nothing but the build's files is in the directory, so nothing else can be reached, and no redirect leaves the origin. This is the same mechanism as the cacheable 404 that made D74 reject (b): the asset layer attaches a path's `_headers` to whatever it answers itself. It answers a 404 itself only in (b)'s configuration |
+| The Worker compares a path as the URL parser gives it, dot segments already removed: `/assets/..`, `/favicon.svg/..` and `/api/v1/%2e%2e/%2e%2e/explore` are `/` and `/explore`, the document with its policy; `/assets/../api/v1/query` is the API's, as before D74 | observed (review of D74, n-2) | "exactly" in the table above means after that parsing; `/explore/`, `/Explore`, `/%65xplore` are still not documents |
 | "Requests to static assets are free and unlimited"; with Workers Caching enabled, cached asset responses are billed as requests | read: [Pricing](https://developers.cloudflare.com/workers/platform/pricing/), Billing and Limitations | the cost in D74; Workers Caching is not enabled |
 | 20,000 files per version (free; 100,000 paid), 25 MiB per file; a variable holds 5 KB | read: Limits | `lib/app.mjs` refuses a file over 25 MiB and a `VIZ_APP` over 4,500 bytes; `VIZ_APP_FILES` drops kept files to fit |
 | `wrangler versions upload` and `wrangler deploy` take the config's `assets` (and an `--assets` option) | read: [wrangler commands](https://developers.cloudflare.com/workers/wrangler/commands/workers/#versions-upload); observed with `--dry-run` for both ("Read 9 files from the assets directory") | phase 1 uploads the gateway's version with its assets; nothing serves until phase 2 |
@@ -504,7 +603,7 @@ gives the same names as one here.
 |---|---|---|
 | opened before a release, everything it needs already loaded | only the API | the API of the new release: one release of skew, which every API keeps (`contracts/COMPATIBILITY.md`) |
 | opened before a release, then shows the editor for the first time | the old build's chunk, from the new version | **the chunk**: the new version keeps the files of the three builds before it that it no longer has (`keep_builds`), byte for byte, with the same headers |
-| opened more than three app-changing releases ago | a chunk no version holds any more | the JSON 404, `no-store` (never the document, never kept by the browser). The app must tell the person to reload ("Needed changes in app/") |
+| opened more than three app-changing releases ago, or more than 30 days before the latest release (`keep_days`) | a chunk no version holds any more | the JSON 404, `no-store` (never the document, never kept by the browser). The app must tell the person to reload ("Needed changes in app/") |
 | reloaded, or opened anew | the document | the current one: `no-cache` makes the browser ask every time; its hashed files follow |
 | loaded from a location already on the new version, in the seconds while the deployment spreads | a new chunk, from a location still on the old version | the JSON 404, `no-store`, from the old version (it cannot hold the new build's files). Nothing the gateway alone can prevent; a reload after those seconds works, and nothing was cached. Cloudflare's own remedy is two deployments per release (the files first, the document later), not done here (D74, "would change if") |
 | opened under a release that is then rolled back | the newer build's chunk, from the older version | the JSON 404 (the older version never had it); the rollback's log says so |
@@ -517,9 +616,31 @@ recorded one. Only a path under the asset prefix with a plain name and a known c
 ever fetched, whatever the variable says. A file that cannot be had (the serving version does not
 hold it, as after a rollback to a version from before the app; the network; other bytes) is
 dropped, logged as a WARNING and listed in the stamp and the record (`dropped`); it never fails a
-release. `VIZ_APP_NO_CARRY=1` skips it. Kept files that would not fit `VIZ_APP_FILES` (a 5 kB
-variable) are dropped oldest first; a build whose own file list does not fit names none, and the
-next release keeps nothing (today: 7 files, 658 bytes of 4,500).
+release. Kept files that would not fit `VIZ_APP_FILES` (a 5 kB variable) are dropped oldest
+first. A kept path that needs a directory where the new build has a file is dropped and named
+too.
+
+**Two bounds, and the operator's switch** (review of D74, m-6).
+- *By builds*: a kept file leaves after `keep_builds` (3) later builds.
+- *By time*: each kept file carries the day it stopped being a current build's, and leaves
+  `keep_days` (30) after it, whatever the count of builds since. This is judged at each release,
+  also one that does not change the app; it is not a timer, so a file can outlive the bound by
+  the time until the next release. A day a serving version names that is in the future, or is
+  no day, counts as today.
+- *Now*: `VIZ_APP_NO_CARRY=1`, or the workflow's `app_drop_kept_files` input, keeps nothing in
+  this release. **This is how a known-bad build's files stop being served** after the bad build
+  was reverted: without it they stay at their addresses, `immutable`, until one of the two bounds
+  above. Pages opened before that release then get the 404 for a chunk they have not loaded. A
+  gateway rollback to an older version brings back that version's kept files and their days.
+
+**A build of more than about 50 files loses "Update in place", loudly** (m-5). When the build's
+own file list does not fit `VIZ_APP_FILES` (4,500 bytes; the largest list that fits is 52 files
+with 35-character paths, measured by the review; today: 7 files, 658 bytes), the version names
+none of its files, so the next release can keep nothing of it. `app.mjs` logs a WARNING that says
+what is lost and when, the stamp, the manifest and the release record say `filesNamed: false`
+(`filesVar` in the stamp, with the sizes), `release.mjs plan`, `deploy.sh`'s summary and the job
+summary repeat it, and the kept files that had to go are listed under `dropped` with that reason.
+D74's "would change if" names the limit.
 
 **Rolling viz-gateway back alone** (`release.mjs rollback --record … --only viz-gateway`, or the
 workflow's `rollback_only`). Allowed like any gateway rollback: it writes no recorded format and
@@ -528,7 +649,10 @@ Its version's assets and variables come back with it:
 
 - **to fb77292's version** (what production serves today: no assets, no `VIZ_APP`): every page
   and asset path answers the JSON 404 until a release with the app serves again; the API routes
-  that version knew work as they did (routes added since, such as `/api/echo`, are its 404).
+  that version knew work as they did (**routes added since, such as `/api/echo`, are its 404**:
+  the gateway comes back whole, not only without the page, while the backends stay on the new
+  release. The smoke test's hint after a failed app check says this where it suggests the
+  rollback).
   Pages already open keep working against the API until they load another chunk or are reloaded.
   `release.mjs` prints `NOTE: viz-gateway goes back to a version WITHOUT the web app …` and the
   rollback record says `app: [{ worker, build: null }]`. The next release keeps no earlier
@@ -579,10 +703,53 @@ Nothing here edits `app/`; these are what the app must do for the behaviour abov
    lockfile here installs, so CI cannot run the end-to-end suites, `e2e/prod.cjs` (the check of
    the app under the policy) among them.
 
+### A stage before production
+
+Everything the serving rests on was seen in local workerd and read in documentation, and the
+first production release with the app is forward-only for another reason ("The first release
+over the 2026-11-19 production"), so a failed app check there rolls nothing back. The review of
+D74 (M-2) found that "a stage first" was a sentence only. It is now a refusal:
+
+- **The rule.** `release.mjs deploy` and `plan`, for production, when the viz-gateway serving
+  now has no web app (read from the account: this is "the first release that carries the app",
+  also after a rollback to a version without it), refuse the release (exit 3, before anything is
+  uploaded) unless `deploy/records/app-stage-evidence.json` holds a **complete entry for this
+  release's serving code**.
+- **An entry** names a stage, the release deployed to it and when, a smoke test that passed with
+  the app checked, the five by-hand checks 6 to 10 below each with `"result": "pass"` and a note
+  of what was seen, and who vouches for it (`by`).
+- **"This release's serving code"** is a fingerprint (`lib/app.mjs` `servingFingerprint`, in the
+  stamp and the record): a hash over the gateway's source (`gateway/src/`), the asset
+  configuration, the generated `_headers` (so the asset headers and content types), the
+  document's headers, and wrangler's version. The build's content and the list of document paths
+  are not part of it. If any of those change between the stage and the merge, the entry no
+  longer counts and the stage is deployed again.
+- **How to make one**: `deploy/deploy.sh --stage <name>` (its smoke test checks 1 to 5); then
+  `node deploy/scripts/app-stage-evidence.mjs --stage <name> --by "<who>"`, which reads
+  `generated/stage-<name>/release.json` and `smoke.json`, refuses a stage that went without the
+  app or whose smoke test did not pass with the app checked, and writes the entry with the
+  by-hand checks **empty**; make checks 6 to 10, fill them in, commit the file with the change,
+  delete the stage (`resources.mjs destroy --stage <name>`).
+- **The override.** The owner may instead give a reason:
+  `VIZ_APP_WITHOUT_STAGE_EVIDENCE="<reason>"` for `deploy.sh` and `release.mjs`, or the
+  workflow's `app_without_stage_evidence` input on a manual run. It is logged as a WARNING and
+  written into the release record (`appStage.override`) and the job summary.
+- **After the first release** nothing is asked: the serving gateway has an app.
+
+**What this is and is not.** The entry is a person's committed, reviewable statement, bound to
+the code by a hash; the tool checks its shape and its fingerprint, and nothing can prove from
+inside the repository that the stage existed. It is not theatre for one reason: the default is
+now a refusal. Today no stage has been deployed and the file does not exist, so **merging to
+main does not deploy the app by itself**: the push's deploy is refused at the plan with this
+reason, production keeps serving what it serves, and the owner either commits the evidence or
+dispatches the workflow with the override. Why not on every change of the serving code: that
+would ask for a stage on every new API route; D74's "would change if" says when to widen it.
+
 ### What a first deploy to a stage should check
 
 Nothing of this change has been deployed. `deploy/deploy.sh --stage <name>` runs all of it; its
-smoke test fails the deploy if any of 1 to 5 is not so:
+smoke test fails the deploy if any of 1 to 5 is not so (and, since the review, if any file of
+the version, a lazy chunk or a kept file included, is not byte for byte what was staged):
 
 1. every document path: 200, exactly serve.json's document headers, the released document's
    bytes (so: no zone feature rewrote the page);
@@ -679,7 +846,13 @@ these five (Trial 2 measured the four before viz-publisher was deployed).
 `app` (D74): the web app's build each app Worker was released with, or `{ worker, withoutApp: true }`
 for a stage configured `--without-app`; `previous.json` has `app: [{ worker, build }]` for what
 served before (empty when it served no app), and a rollback's record the build, or `null`, each
-restored version serves ("The web app").
+restored version serves ("The web app"). Since the review of D74 an entry also says how the build
+came (`via`: `export`, `handover` or `prebuilt`; `handover`: when it was built and from which
+source hash), how its dependencies were installed (`install`: `ci` or `linked`), whether the
+version names its own files (`filesNamed`), and its serving fingerprint (`serving`). `appStage`:
+for the first production release with the app, `{ first, fingerprint, evidence: { stage, release,
+deployedAt, by } }` or `{ first, fingerprint, override: "<the owner's reason>" }`; `null` otherwise
+("A stage before production").
 
 **Schema versions and forward-only releases** (contracts/COMPATIBILITY.md §6; design/DECISIONS.md
 D46; added 2026-11-19). `deploy/workers.json` declares, for every Durable Object class a Worker defines,
@@ -936,9 +1109,11 @@ is refused for it, and the log says which ("The web app", "Rolling viz-gateway b
 | Refused (exit 3): a rollback floor, the switch about to go on (`INGEST_SIGNALS` set while a floor Worker in this release, or serving, is below its floor) | the previous release, untouched | release the Workers at their floors without the switch first, let them serve, then set it ("Rollback floors") |
 | Refused (exit 3): a rollback floor with the switch already on in the serving release (a floor Worker off its floor as it serves: a gradual deployment or a `wrangler rollback` by hand) | the previous release, untouched; every later release is refused the same way | restore that Worker alone: the workflow with `rollback_to` and `rollback_only: viz-query`, or `release.mjs rollback --record <a record where it is at its floor> --only viz-query` ("Rollback floors", m-8); turning the switch off is not needed |
 | Refused (exit 3): a floor Worker of this release below its floor after the switch was on, or `INGEST_SIGNALS` (or `OAUTH_PUBLIC`) a secret on its writer | the previous release, untouched | deploy that Worker at or above its floor; remove the secret and set the switch as a var |
-| `app.mjs build` failed (exit 1, before resources, configure and the release): the app does not build (its typecheck, Vite), its build holds something `app/serve.json` does not cover, or production is asked to release a commit the checkout is not at | the previous release, untouched; nothing on Cloudflare was read for writing or changed | fix the app, or serve.json and `deploy/lib/app.mjs` together ("The web app") |
-| Refused (exit 3) or configure failed (exit 1): the web app's build is missing, of another release, stale against the sources or serve.json, or not what was staged | the previous release, untouched | run the deploy again from a clean checkout (`deploy.sh` builds the app itself); never edit `deploy/generated/` |
-| Smoke test, "FAILED at the web app": a document or a file is not served as serve.json says | as for any failed smoke test: the previous release restored automatically, unless the release is forward-only or applied a migration; then the new release keeps serving, API included | read the listed problems. Where the whole release cannot go back, the gateway alone can: `rollback_to` with `rollback_only: viz-gateway`, or `release.mjs rollback --record <previous.json> --only viz-gateway` |
+| The `app-build` job failed, or `app.mjs handover` (exit 1): the app does not build (its typecheck, Vite), its build holds something `app/serve.json` does not cover, or production is asked to release a commit the checkout is not at or git cannot read | the previous release, untouched; the deploy job never started (or `deploy.sh` stopped before touching Cloudflare) | fix the app, or serve.json and `deploy/lib/app.mjs` together ("The web app") |
+| `app.mjs build --from` refused the handed-over build (exit 1, before resources, configure and the release): not this release's, not this checkout's sources, or a file that is not what its description names | the previous release, untouched; nothing on Cloudflare was changed | run the workflow again (a new run builds anew); never repair an artifact by hand |
+| Refused (exit 3) or configure failed (exit 1): the web app's build is missing, of another release, stale against the sources or serve.json, or not what was staged | the previous release, untouched | run the deploy again from a clean checkout; never edit `deploy/generated/` |
+| Refused (exit 3): "the first production release that carries the web app … no stage is recorded to have gone before it" | the previous release, untouched; nothing was uploaded | deploy to a stage, make its checks, commit its entry; or the owner dispatches the workflow with `app_without_stage_evidence` and a reason ("A stage before production") |
+| Smoke test, "FAILED at the web app": a document or a file is not served as serve.json says, or a file's bytes are not the ones staged | as for any failed smoke test: the previous release restored automatically, unless the release is forward-only or applied a migration; then the new release keeps serving, API included | read the listed problems, and the line after them: the data check ran too and says whether writes and reads work. Where the whole release cannot go back, the gateway alone can: `rollback_to` with `rollback_only: viz-gateway`, or `release.mjs rollback --record <previous.json> --only viz-gateway`. **That brings the previous gateway back whole**: every route it gained since answers 404 again, not only the page ("Rolling viz-gateway back alone") |
 | configure.mjs failed (exit 1, before the release): a viz-control without its six rate limits, a bad limit, period or id, `placement` on viz-control or viz-mcp, `OAUTH_PUBLIC` set by a component | the previous release, untouched | fix `control/wrangler.jsonc` (or the component); for a missing id run `resources.mjs ensure` ("Rate limits in front of OAuth") |
 | Refused (exit 3): the key would be created or rotated on a viz-control without its rate limits, or the manifest was configured `--ids-optional` | the previous release, untouched | configure again without `--ids-optional`, after `resources.mjs ensure`; a stage that is to run without the rate limits: `--oauth-without-rate-limits` |
 | Stopped (exit 1) before anything changed: a serving viz-control version could not be read, so whether its key is set is unknown | the previous release, untouched | deploy again (S9 saw such reads fail for a moment) |
@@ -1116,10 +1291,13 @@ run, and would have failed: `npx tsc` in `design-system/`, which has no TypeScri
 |---|---|---|
 | `app` | `npm ci` in `app/` and in `design-system/`; `node scripts/ensure-design-system.mjs` (generates `design-system/dist/`, which the sources import and git ignores); `npx tsc --noEmit`; `npm test` (vitest, 2 workers); `npm run check:tokens` (the token check on `src` and `index.html`, without the rendered audit); `npm run build`; `node ../deploy/ci/app-build.mjs dist` (the build read by `app/serve.json`'s rules, as the deploy reads it: a file serve.json does not cover fails the pull request, not the deploy) | everything that needs a browser: `npm run e2e` (`e2e/app.cjs`, `errors.cjs`, `prod.cjs`, the check of the app under the content security policy), `e2e:real`, `contract`, `measure`; Playwright is in no lockfile |
 | `design-system` | `npm ci`; `npm test` (`node --test`: the checks' mutation corpus, except the mutants only a browser can catch, which it skips unless `VIZ_SLOW=1`); `node tools/check.mjs --no-render` (contrast, structure, literal values). No `tsc`: it is plain Node (`tsc: false` in the matrix) | the rendered audit (step 3 of `check.mjs`), `tools/audit.mjs`, the slow mutants, the images (`tools/shots.mjs`), the speed measurements (`tools/speed.mjs`), the reference build |
-| `deploy` | as before, and now: the gateway's app tests under vitest, `test/app.test.mjs`, and `test/app-serve.test.mjs`, which starts `wrangler dev --local` (workerd from `deploy/node_modules`; no account, no network) on port 18960 | a deploy to Cloudflare |
+| `deploy` | as before, and now: the gateway's app tests under vitest, `test/app.test.mjs`, `test/app-http.test.mjs` (a server on 127.0.0.1, the real `fetch`), and `test/app-serve.test.mjs`, which starts `wrangler dev --local` (workerd from `deploy/node_modules`; no account, no network) on port 18960 | a deploy to Cloudflare |
 
-The deploy job builds the app itself, inside `deploy.sh` (`app.mjs build`: an export of the
-commit, its own `npm ci`); it does not reuse the `app` job's build. All of the above was run from
+The deploy workflow builds the app for the release in a job of its own, `app-build`
+(`app.mjs handover`: an export of the commit outside the checkout, its own `npm ci`), which holds
+no secret; the deploy job takes that build as an artifact and verifies it ("Who can read the
+Cloudflare token"). It does not reuse the `app` job's build of the checks, which is made in place
+for the tests. All of the above was run from
 a fresh export of the tree with no ignored file present ("How it was verified"). One test file imports from a
 directory that may be absent and is excluded, with a warning, when it is:
 `stack/test/e2e.test.ts` (imports hyparquet from `bench/node_modules`, so `bench/` is

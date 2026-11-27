@@ -48,3 +48,6 @@ dialog.palette::backdrop { background: var(--scrim); }
 .panel-rows { min-height: calc(var(--strip) + var(--row) * (var(--rows) + 1)); }
 /* A text note's digest is sentences, not a table: it wraps instead of scrolling sideways. */
 .vz-query.is-prose { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* A panel head's meta: what it says with an answer and what it says while a new range waits lie in one place, sized by the longer. */
+.meta-hold { display: inline-grid; justify-items: end; min-width: 0; }
+.meta-hold > * { grid-area: 1 / 1; }

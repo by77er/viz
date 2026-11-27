@@ -79,7 +79,8 @@ const LIST = [
 
 const only = process.env.ONLY
 const part = process.env.PART
-const list = only ? LIST.filter(([name]) => name.includes(only)) : LIST
+// PART=unit: only the mutants a unit test is asked to catch.
+const list = (only ? LIST.filter(([name]) => name.includes(only)) : LIST).filter(([, checks]) => part !== 'unit' || checks.includes('unit'))
 const run = (cmd, args, env = {}) => spawnSync(cmd, args, { cwd: ROOT, encoding: 'utf8', env: { ...process.env, ...env }, maxBuffer: 64 * 1024 * 1024 })
 const BASE = Number(process.env.VIZ_MUTANT_PORT || 18860)
 const E2E_ENV = { VIZ_E2E_APP_PORT: String(BASE), VIZ_E2E_MOCK_PORT: String(BASE + 1), VIZ_PROD_PORT: String(BASE + 40) }

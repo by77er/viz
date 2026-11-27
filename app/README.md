@@ -1,9 +1,18 @@
 # viz web app
 
-The viz frontend: an **Explore** view for metrics, with sign-in by API key, built to be served
-as static files by the gateway at `vis.bitcru.sh/` and to call the API on the same origin
-(`/api/v1/query_range`, `/query`, `/labels`, `/label/<name>/values`, `/series`, `/metadata`,
-`/status/buildinfo`, and control's `/api/v1/control/whoami`).
+The viz frontend: an **Explore** view for metrics and **Dashboards, read-only** (the list, and
+one dashboard at a time), with sign-in by API key, built to be served as static files by the
+gateway at `vis.bitcru.sh/` and to call the API on the same origin (`/api/v1/query_range`,
+`/query`, `/labels`, `/label/<name>/values`, `/series`, `/metadata`, `/status/buildinfo`, and
+control's `/api/v1/control/whoami`, `/api/v1/control/dashboards` and
+`/api/v1/control/dashboards/<id>`).
+
+> **Dashboards (2026-11-27) is the newest slice and its design is not reviewed.** What it is,
+> how it was checked, its mutants, its speed and what it leaves out are under "Dashboards,
+> read-only"; the images for the design reviewer are in
+> `../design-system/reviews/app-dashboards/`. The sections after it describe the app as it
+> was before (Explore, sign-in, the move to design system v9), and where they say "the one
+> working view" or count tests, they count that state.
 
 > **It is not deployed.** The build is ready to serve and this README says exactly what the
 > gateway has to do with it ("Needed changes in deploy/", and `serve.json` as data); `deploy/`
@@ -68,7 +77,11 @@ npm run build         # design system if needed, tsc --noEmit, vite build  -> di
 npm test              # vitest unit tests (two workers at most)
 npx tsc --noEmit      # typecheck
 npm run check:tokens  # no literal colours, lengths, durations or opacity in src/ and index.html
-npm run e2e           # e2e/app.cjs, e2e/errors.cjs, e2e/prod.cjs (Playwright + axe); needs `npm run build`
+npm run e2e           # e2e/app.cjs, errors.cjs, dashboards.cjs, prod.cjs (Playwright + axe); needs `npm run build`
+node e2e/dashboards.cjs                     # the dashboards views alone (VIZ_ONLY=list,states,dashboard,panels,variables,requests,key,narrow)
+node e2e/measure-dashboards.cjs [--phone]   # the speed budgets on the dashboards views (20 runs)
+VIZ_MUTANT_DIR=<scratch dir> node e2e/mutants-dashboards.cjs          # the dashboards views' mutants, on a copy outside the tree
+node e2e/dashboards-shots.cjs               # the design-review images of the dashboards views
 VIZ_SLOW=1 node e2e/app.cjs                 # also the 10 s and 60 s rows of the waiting table
 node e2e/prod.cjs                           # the build served as the gateway is to serve it, under the policy
 npm run measure -- --series 4,36,200        # the speed budgets on the built app (--phone; --ui v4 --root <dir> for the app before v9)
@@ -88,9 +101,11 @@ the mock and `vite preview` (or their own static server) themselves and stop the
 `VIZ_E2E_MOCK_PORT` are set (plus app port + 20 and mock port + 10 for a mock that requires a
 key); `e2e/prod.cjs` uses `VIZ_PROD_PORT` (18940) and the two after it.
 
-Mock options: `--port`, `--require-token <t>`, `--readless-token <t>` (a key that is valid but
-lacks the read scope), `VIZ_MOCK_LOG=1` (logs requests), and artificial latency to exercise
-the waiting states:
+Mock options: `--port`, `--require-token <t>` (a key that reads metrics only), `--readless-token <t>`
+(a key that is valid but lacks the read scope), `--dashboards-token <t>` (a key with `read` and
+`dashboards:read`), `VIZ_MOCK_LOG=1` (logs requests), `GET /__mock/inflight[?reset=1]` (how many
+API requests the mock is answering now, and the most at once), and artificial latency to
+exercise the waiting states:
 
 | Switch | Effect |
 |---|---|
@@ -136,6 +151,8 @@ vitest 5 · fast-check 4 · axe-core 4.14.
 | `src/charts/Chart.tsx`, `fixups.ts` | The React element around the chart: a new result, an error, the range it shows; the words of the chart's that a query result needs otherwise |
 | `src/editor/` | CodeMirror PromQL editor (a lazy-loaded chunk) |
 | `src/explore/` | Explore: the page, the time range and step fields, the table, the text and JSON forms, the waiting logic |
+| `src/dashboards/` | Dashboards, read-only: the list, one dashboard, its panels; `model.ts` (between the `viz.dashboard/v1` model in `../dashboard/src` and the views), `scheduler.ts` (what is sent, cancelled and delivered), `store.ts` (each panel's state) |
+| `src/api/limiter.ts` | At most six requests in flight: the one limiter every request of the page goes through |
 | `src/shell/session.tsx`, `SignIn.tsx` | Sign-in: the key, where it is kept, who gets in |
 | `src/shell/` | Navigation, command palette, Settings and Help pages, theme |
 | `src/lib/timeInput.ts` | Times and durations as typed and read ("18 Nov 09:16", "now - 6 h", "1 h 30 min"), in a zone |
@@ -144,11 +161,16 @@ vitest 5 · fast-check 4 · axe-core 4.14.
 | `serve.json` | What a server must do with `dist/`: document paths, asset prefix, headers. The statement `deploy/` is asked to implement |
 | `scripts/ensure-design-system.mjs` | Generates `design-system/dist` when it is missing or stale |
 | `mock/` | Mock backend: synthetic data, PromQL subset, the real API's HTTP surface, control's `whoami`; fails on request as the real API fails |
+| `mock/dashboards.ts` | Four `viz.dashboard/v1` dashboards over the mock's series, and control's dashboard read routes; the same specs are what `real/seed.ts` creates in the real control plane |
 | `real/` | The real viz API on one machine: `wrangler dev --local` of gateway, write path, query Worker and control plane; the seed |
 | `e2e/app.cjs` | End-to-end checks of the app on v9: flows, colour, B1, the waiting table, the chart, keyboard, touch, zoom, time zone, layout shift, sign-in, axe |
 | `e2e/errors.cjs` | What a person sees when the API refuses, is busy or stops a query, and when the key stops working mid-session |
+| `e2e/dashboards.cjs` | The dashboards views end to end: the list and its states, a dashboard, panel kinds and failures, variables, what is sent and cancelled, the key, the phone layout, the second theme |
+| `e2e/measure-dashboards.cjs` | The speed budgets on the dashboards views, desktop or phone |
+| `e2e/mutants-dashboards.cjs` | The dashboards views' safety properties broken one at a time, on a copy outside the tree |
+| `e2e/dashboards-shots.cjs` | The images for design review of the dashboards views |
 | `e2e/prod.cjs` | The build served by `serve.json`'s rules, with the app driven under the content security policy |
-| `e2e/contract.cjs` | The contract test: the same 60 requests to the real API and to the mock, compared (82 checks) |
+| `e2e/contract.cjs` | The contract test: the same requests to the real API and to the mock, compared: 60 to the query API and 37 to control's dashboard read routes |
 | `e2e/real.cjs` | The app on the real API: sign-in against control, the same reading of the same data as on the mock, refusals |
 | `e2e/measure.cjs`, `summarise.cjs` | The speed budgets, desktop or phone, for 4, 36 and 200 series, on either build; tables with the load of every column |
 | `e2e/mutants.cjs` | Breaks one property at a time, on a copy outside the tree, and records which check catches it |
@@ -159,13 +181,168 @@ vitest 5 · fast-check 4 · axe-core 4.14.
 | Address | What it is |
 |---|---|
 | `/` | goes to `/explore` |
-| `/explore` | **Explore**, the one working view: a PromQL query over a time range, its result as a chart, a table, the chart's text form or the API's JSON; the start state before any query; empty, waiting, cancelled and error states. Without an accepted key the **sign-in form** stands here, at this address |
+| `/dashboards` | **Dashboards**, read-only: the tenant's dashboards (name, intent, tags, owner, last change and by whom), searched and filtered by tag; empty, first-run, waiting, error and no-permission states |
+| `/dashboards?id=<id>` | **One dashboard**, read-only: title and intent, the time range, its variables as controls, its panels as the spec lays them out; `from`, `to` and `var.<name>` in the address. The same document path as the list: a dashboard is never named in the path |
+| `/explore` | **Explore**: a PromQL query over a time range, its result as a chart, a table, the chart's text form or the API's JSON; the start state before any query; empty, waiting, cancelled and error states. Without an accepted key the **sign-in form** stands here, at this address |
 | `/help` | what Explore does, the keyboard, API keys, and the button that opens the command palette |
 | `/settings` | whose key this is, Sign out, the theme, the API's address and version |
 | (anywhere) | the command palette (`Ctrl/Cmd+K`), the app's only dialog |
 
-There is no dashboards, monitors, alerts, logs or traces view, and no key management ("Not
-implemented"). The gateway serves the four addresses above as documents (`serve.json`).
+There is no monitors, alerts, logs or traces view, no editing of dashboards and no key
+management ("Not implemented"). The gateway serves five document paths (`serve.json`): `/`,
+`/explore`, `/dashboards`, `/help`, `/settings`.
+
+## Dashboards, read-only
+
+Added 2026-11-27. **Not reviewed for design** (the images for the reviewer are in
+`../design-system/reviews/app-dashboards/`, with `PR.md` saying what each shows) and **not
+deployed**. The question the views answer: *someone on call wants to open their service's
+dashboard and read, panel by panel, whether it is healthy over a time range*.
+
+### What exists
+
+**The list, `/dashboards`.** From control's `GET /api/v1/control/dashboards` (`limit=200`):
+
+- A table of the tenant's dashboards: name (the link, which fills its cell), intent, tags,
+  owner ("nobody" when there is none), and when it last changed and by whom, an agent marked
+  as one ("18 Nov 13:20 by incident-agent (agent)"). Below 1200 px of table width it folds
+  (`data-fold="wide"`): the name and "Changed" stay as columns, the rest become labelled
+  lines under the name, and the whole row is the name's target.
+- The caption says what is under it: "4 dashboards, by name" (every dashboard is here, so the
+  app orders them by name), "1 of 4 dashboards match, by name" for a search, and "200 of 431
+  dashboards, the first by id. Search to narrow the list." when the answer is one page of more
+  (the API's order then; paging is not built).
+- **Search** (the API's `q`: name, id, intent, owner, tags) is asked 250 ms after the last
+  keystroke and kept in the address; **Tag** is a select of the tags of every dashboard. The
+  previous rows stay while a search is being answered, the caption saying so.
+- **States.** *Waiting*: nothing new for 400 ms but a busy region, then a line "Asking the
+  API for the dashboards." with the seconds (unmeasured work: no bar, no skeleton, no
+  spinner). *Empty* (a search that matches nothing): what was asked, how many dashboards there
+  are in all, "Show every dashboard". *First run* (no dashboards at all): what a dashboard is,
+  and, truthfully, that this app cannot make one yet and what can. *Error*: the API's own
+  words, its status, "Ask again". *No permission* (403 `missing-scope`): control's refusal,
+  the scopes the key has, the scope it needs, that Explore still works, "Sign in with another
+  key". The app asks the API rather than judge from the stored identity, which may be old.
+
+**One dashboard, `/dashboards?id=<id>`.** From `GET /api/v1/control/dashboards/<id>`:
+
+- The spec is given to the model's `validate` (`../dashboard/src`); a spec it refuses is not
+  drawn at all, and the page shows the model's first three errors with their pointers. Its
+  `resolve` expands fragments and writes the variables' values into the queries (with its own
+  escaping); the page resolves again, locally, when the range or a variable changes.
+- Head: the title, the intent, "Revision 1, changed 24 Nov 16:12 by Dana.", and a measured
+  count: "12 panels, 7 answered so far." / "all answered." / "5 answered and 1 not.". The name
+  and intent are shown from the list's answer, if this tab has one, before the dashboard's own
+  arrives. Actions: Panels | Text (the whole dashboard as the model's digest), and Refresh
+  (busy while panels are being asked; a second press is ignored). No blue button: nothing here
+  is the view's one action.
+- **Time range**: the spec's own (`time.from`, `time.to`) unless the address has `from` and
+  `to`; Explore's controls unchanged (`RangeControls`, `TimeRangeField`: presets, earlier,
+  later, two typed times read back with their zone).
+- **Variables** as controls beside the range, values in the address as `var.<name>`: an
+  `enum` (or `interval`) of up to six choices is a segmented control, a longer one a select; a
+  `query` variable is a select whose values are asked of the API in the window on screen
+  (`label_values(<selector>, <label>)` and `label_values(<label>)` only: any other expression
+  gets a help line saying its values cannot be listed, and the value in use stays). "All" is
+  offered where the model allows it. A `text` variable is shown, not editable.
+- **Panels** in the spec's layout: a row is a section with its heading, a fragment instance
+  continues as its own rows, an explicit grid is one section in reading order. Widths are the
+  design system's grid (twelve columns from 1200 px of dashboard width, six from 640, one
+  below): a span is rounded to the 3, 4, 6 or 12 the grid has.
+  - `timeseries`: the design system's chart through `src/charts/` (`toSpec`, `Chart`), in the
+    panel's declared unit; several queries share one chart, each series also named by its
+    query (a fixed legend such as "p95", else the query id).
+  - `stat`: `vz-stat` per series (four at most, the rest counted and in the text form): the
+    model's reduced value in the chart's number format, and a context line that starts with
+    what the figure covers ("Last value of 18 Nov, 09:30 to 12:30.") and, with thresholds, the
+    state as a status mark and words; the figure stays `ink`.
+  - `table`: one row per label set, one column per query (the model's reduced values), the
+    unit once in each column head, sorted and cut as the spec says, the caption saying both
+    ("8 of 12 rows, highest Requests first").
+  - **Every other kind of the model's catalog (`heatmap`, `text`)**: the title, a sentence
+    ("This panel is a heatmap, a kind this app does not draw yet. This is its text form.") and
+    the model's digest of the panel. It is never drawn as another kind.
+  - Every drawn panel has "Text form" (a disclosure: the block the model's `renderDigest`
+    writes for that panel, computed when opened) and, per query, "Open in Explore" with the
+    resolved query and the dashboard's range.
+  - What a panel says about its data (queries, step, age, range, figures, text) comes from
+    the answer that is drawn, which carries its own resolution and window. While a new range
+    or value waits, the previous answer stays, the head says "Showing the previous range"
+    (in a place that both wordings share, so nothing moves), and after 400 ms a line says
+    "Waiting for the query." with the seconds, and from 2 s offers Cancel for that panel.
+  - **A panel's failure is that panel's**: the API's message, its error type and status, what
+    it means, and "Run this panel again" where asking again can change the answer (not for a
+    query viz does not run, or one the model could not write). A query that matches nothing is
+    an empty state with the range, not an error. The 60 s stop of the waiting table ends each
+    panel still waiting, and says so.
+- **Requests.** Every panel query goes through `PromClient` (`queryRangeMatrix`; `query` for
+  a query marked `instant`), one window and one step for the whole dashboard (the automatic
+  step of a chart 600 px wide). **At most six requests are in flight, in total**: the API
+  client has one limiter of six for everything the page sends (`src/api/limiter.ts`, from the
+  request leaving until its body is read), and the dashboard's own loader has another of six,
+  which keeps the order. A change of range or of a variable, and leaving the view, abort what
+  is in flight and never send what was waiting; an answer or failure of an earlier load is
+  dropped by its generation, also when its request ignored the abort (`scheduler.ts`).
+
+### Not implemented (dashboards)
+
+- **No editing, no proposals, no revisions UI.** Nothing is written to control; a dashboard's
+  earlier revisions, its proposals and "who may apply" are not shown. The list has no "New
+  dashboard", no delete or restore, no owner change.
+- **No paging of the list** past the first 200, no sorting by column, no "Mine" filter, and no
+  state column (control's `state` is `null` until something computes it).
+- **Variables**: one value or all, never several at once (`multi`); `text` variables cannot be
+  typed; a `query` variable that is not `label_values(…)` cannot be listed.
+- **Panel options are not honoured**: `stack`, `style` (area, bars), `yScale`, `yMin`/`yMax`,
+  `maxSeries`, `legend` on a timeseries; `sparkline` and `decimals` on a stat. **Thresholds
+  are not drawn on charts** (a stat states its threshold state; a table does not). A query's
+  `legend` template does not name chart series: the chart names them by the labels that
+  differ, as in Explore.
+- **`heatmap` and `text` panels are not drawn** (shown as their digest; a text note's
+  markdown is not rendered, and the model's digest cuts it at 400 characters).
+- **TraceQL and LogQL queries are not run** (the panel says so); the spec's `time.refresh` is
+  ignored: nothing refreshes by itself.
+- **The waiting table's 10 s row** (a cheaper alternative) is not offered on a dashboard, and
+  **a busy answer (503, 429) is not retried** for a panel as Explore retries it: it is that
+  panel's error with "Run this panel again".
+- A chart's zoom stays inside its panel: there is no "apply this range to the dashboard", and
+  no shared crosshair between panels.
+- Not run against a deployed viz, Safari or Firefox, real touch hardware, a screen reader by
+  ear, or at 200% zoom.
+
+### Needed from the design system (dashboards)
+
+Nothing under `design-system/` was edited. Where the views needed something the system does
+not have, the closest existing thing is used and the rule that fills the gap is in
+`src/app.css` (five rules, token values only) or in `src/dashboards/PanelView.tsx`.
+
+| # | What the views needed | What the app does meanwhile |
+|---|---|---|
+| D1 | **The tenant in the navigation folds.** `span.vz-nav-end` is not `flex: none; white-space: nowrap` as the links are; with a fifth item ("Dashboards") a tenant name wrapped onto two lines at 400 px instead of the strip scrolling | One rule in `app.css` gives the span what the links have |
+| D2 | **Grid spans other than 3, 4, 6 and 12.** The dashboard model gives a span in twelfths (1 to 12) and a grid item any width; `vz-grid` has `data-span` 3, 4 and 12 and a default of 6 | A span is rounded to the nearest the grid has (`gridSpan`): 5 to 8 are 6, 9 and more are 12 |
+| D3 | **A panel's foot**: where a panel's own text form and its links go. Panel has a head, a description and a body; Chart has a text form of its own (sentences in `vz-text-form`), and nothing says where a link out of a panel stands | Under the body: `vz-details` "Text form", then `vz-links`. With a coarse pointer both are 44 px tall and do not overlap (measured, `e2e/dashboards.cjs`) |
+| D4 | **A digest as text.** The model's digest is preformatted (a markdown table); `vz-text-form` styles a list of sentences | It is a `pre` in `vz-query` (the code well, which scrolls sideways); a text note's digest wraps (`.vz-query.is-prose`) |
+| D5 | **A panel of a kind that is not drawn**: no pattern for "this exists and is not shown as a picture" | A `vz-secondary` sentence, then the digest. No mark: it is not an error |
+| D6 | **Reserving a stat's and a table's height before their data.** "Before its data arrives a panel reserves its body's final height (… a table from its row count)", with no class or property for either | A hidden `vz-stat` with a figure and a context line; `.panel-rows` (`min-height` from `--strip`, `--row` and a `--rows` property) |
+| D7 | **"Showing the previous query" in a narrow panel.** The note makes the meta longer; in a three-column panel it wraps and the head grows, so every panel under it moves when a wait begins and again when it ends (measured: a layout shift of 0.28 on a range change, counted with the entries the browser marks as following input) | Both wordings of the meta lie in one grid cell sized by the longer (`.meta-hold`); the note replaces the step and age instead of joining them, and the previous range is its `title` and its text for a screen reader. Measured after: 0.001 |
+| D8 | **Thresholds on a chart from an application.** The chart can draw markers and thresholds in the system's previews; nothing documents how an application hands it one | Not drawn ("Not implemented") |
+| D9 | **A compact legend.** Every chart has the legend as a table of toggles; twelve charts make a page 2,800 px tall at 1440 px, most of it legends. The model has `legend: list | table | hidden` | The legend is always the system's table |
+| D10 | **A dashboard's controls**: no pattern for a range and variables together | `RangeControls`, then a `vz-grid` of fields: the range (six columns) and each variable (three) |
+| D11 | **`tools/shots.mjs` captures with `fullPage`**, and `.vz-chart` is `content-visibility: auto`: on a page taller than a few screens the charts far from the viewport are not painted in the capture | `e2e/dashboards-shots.cjs` makes the viewport as tall as the page before it captures |
+
+### Decisions in the dashboards change, for `design/DECISIONS.md`
+
+Not yet entered there (this change edits `app/` only).
+
+| Decision | Alternatives | Why | Would change if |
+|---|---|---|---|
+| A dashboard's address is `/dashboards?id=<id>` | `/dashboards/<id>` | The gateway serves only the exact document paths of `serve.json`; a path per dashboard would need a pattern there and in `deploy/` | The gateway learns path patterns |
+| The app fetches the spec (`view=spec`) and resolves it itself with `../dashboard/src` | Ask control for `view=resolved&var.…` on every change | A change of variable or range must not cost a round trip before the panels are asked, and the app needs the model anyway (validation, digests). The same `resolve` runs in control, so the two cannot disagree; the contract test compares `view=resolved` too | The model becomes too large for the shell (it added about 29 kB compressed) |
+| One window and one step for the whole dashboard (the automatic step of a 600 px chart) | A step per panel from its width | Every panel on one grid; a resize does not ask twelve panels again | Panels as wide as the page lose visible detail |
+| One limiter of six for everything the page sends, in the API client | A limiter for the dashboard only | "At most six in flight, in total" is then true for the shell's requests and Explore's too, and cannot be forgotten by the next view | HTTP/2 from the gateway and a backend budget above six |
+| A kind that is not drawn is shown as its digest and says so | Hide the panel; draw the nearest kind | A dashboard that silently lacks a panel, or shows a heatmap as lines, misleads | The kind is drawn |
+| Permission is the API's answer (403), not read from the stored identity | Hide "Dashboards" for keys without the scope | The identity in the tab can be older than the key's scopes; the refusal carries control's own reason | Scopes become part of a session the app can trust |
+| A busy answer is the panel's error, not retried | Retry as Explore does (three times) | Twelve panels retrying together is a load the API asked not to have; kept simple for this slice | The API says how a client should spread retries |
 
 ## What is implemented
 
@@ -351,13 +528,28 @@ implemented"). The gateway serves the four addresses above as documents (`serve.
   fails; training knowledge, not verified). `/__mock/warn` adds `warnings` to the next
   answers, which the viz API never sends. A delay longer than the query's time limit (30 s,
   or a `timeout` parameter) is answered 503 `timeout`, as the real API does.
+- control's dashboard read routes (`mock/dashboards.ts`): `GET /api/v1/control/dashboards`
+  (`q`, `tag`, `owner`, `deleted`, `limit`, `cursor`) and `GET /api/v1/control/dashboards/<id>`
+  (`view=spec|outline|resolved` with `var.<name>`, `revision`), with control's statuses,
+  problem bodies and wording (401, 403 `missing-scope`, 404, 400 `bad-view`, `bad-limit`,
+  `tenant-not-accepted`) and the `ETag`. Four dashboards over the mock's series: **Services
+  overview** (twelve panels: four stats, six charts, two tables), **Service: rate, errors,
+  duration** (a `query` variable and an `enum`), **Pod capacity** (an explicit grid with a
+  heatmap and a text note, a query viz does not run, a query that matches nothing) and
+  **Checkout path** (one fragment used twice). Validation, resolution and the revision hash
+  are the model's own (`../dashboard/src`). **Not in the mock:** every write (answered 405;
+  the real API takes them), revisions and proposals; each dashboard has one revision, and who
+  changed it and when are fixed values. `real/seed.ts` creates the same four specs in the real
+  control plane, and `e2e/contract.cjs` compares the answers.
 - control's `GET /api/v1/control/whoami`, which sign-in asks: the identity
   (`{ tenant: "viz-mock", subject, kind, name, scopes, mayApply }`, and the mock's own
   `mock: true`) for any valid key whatever its scopes, or control's problem body with 401
   (`application/problem+json`, `WWW-Authenticate: Bearer realm="viz"`). Without
   `--require-token` the mock needs no key and answers for a key of its own, so the app opens
-  without sign-in in development. With `--readless-token` that key is told who it is and has
-  the `write` scope only. The shapes are the real control's, seen on the local stack
+  without sign-in in development (that key has `read` and `dashboards:read`). With
+  `--require-token` the key has `read` only, as the real stack's `app-read` key; with
+  `--dashboards-token` a second key has `read` and `dashboards:read`; with `--readless-token`
+  that key is told who it is and has the `write` scope only. The shapes are the real control's, seen on the local stack
   (`e2e/real.cjs` signs in against it).
 
 ## The real viz API, locally
@@ -370,11 +562,12 @@ credentials are removed from wrangler's environment and every binding is local.
 ```sh
 node real/stack.mjs start     # wrangler dev --local on 127.0.0.1:8851; provisions tenant viz-app-e2e through the
                               # gateway's one-time bootstrap (control's Tenant.provision) and creates the keys
-                              # app-read [read] and app-write [write]
+                              # app-read [read], app-write [write] and app-dash [read, dashboards:read]
 node real/stack.mjs seed      # real/seed.ts: 13 Remote Write requests (snappy protobuf, through edge), 472,360
                               # samples: every series of the mock, sample for sample, 08:00 to 14:00 UTC on
                               # 2026-11-18 (counters, a classic histogram, gauges with a 12-minute gap, `up`,
-                              # and the 200 `viz_synthetic_series` gauges)
+                              # and the 200 `viz_synthetic_series` gauges); then the mock's four
+                              # dashboards, created through control's POST /api/v1/control/dashboards
 VIZ_API_TARGET=http://127.0.0.1:8851 npx vite preview   # the app on it; sign in with the read key (real/.wrangler/keys.json)
 node real/stack.mjs stop
 ```
@@ -662,9 +855,10 @@ overrule. Each is a choice between real alternatives.
 
 ## Not implemented
 
-- **Everything outside metrics Explore: dashboards, monitors, logs, traces, alerts, the agent
-  surface.** The navigation has Explore, Help and Settings only. The design system's flow
-  screens for dashboards and monitors (`../design-system/flows/`) are not built.
+- **Everything outside metrics Explore and read-only dashboards: monitors, logs, traces,
+  alerts, the agent surface, and every change to a dashboard** (what the dashboards views
+  leave out is under "Not implemented (dashboards)"). The design system's flow screens for
+  monitors, investigations, proposed changes and keys (`../design-system/flows/`) are not built.
 - **Deployment.** The build is ready and the gateway's part is specified ("Needed changes in
   deploy/"); nothing was deployed and no Cloudflare call was made. The eight things
   `deploy/README.md` asks of the app (a failed chunk load as "viz was updated", noticing a

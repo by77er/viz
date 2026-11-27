@@ -14,7 +14,8 @@ import { env, exports } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
 import SERVE from '../../../app/serve.json'
 import DOCUMENT from '../../test/fixtures/app-build/index.html?raw'
-import { type Env, handle, parseApp, routeOf } from '../src/index'
+import API_ROOTS from '../src/api-roots.json'
+import { type Env, handle, parseApp, routeOf, underApiRoot } from '../src/index'
 
 const BASE = 'https://vis.bitcru.sh'
 const call = (path: string, init?: RequestInit) => exports.default.fetch(new Request(`${BASE}${path}`, init))
@@ -45,6 +46,27 @@ describe('app/serve.json is the specification', () => {
   it('names no path of the API: no document, file or asset prefix is something routeOf routes', () => {
     for (const p of [...DOCUMENTS, ...SERVE.files, SERVE.assetsPrefix, `${SERVE.assetsPrefix}index-00000000.js`]) expect(routeOf(p), p).toBeNull()
     for (const p of [...DOCUMENTS, ...SERVE.files]) expect(p.startsWith('/api/') || p === '/api', p).toBe(false)
+  })
+
+  it('the API has a part of the path space of its own (api-roots.json, which deploy/lib/app.mjs reads too): nothing of the app lies in it, and no document may (review of D74, m-4)', () => {
+    expect(API_ROOTS.prefixes).toEqual(['/api/', '/v1/', '/loki/', '/oauth/', '/.well-known/'])
+    expect(API_ROOTS.exact).toEqual(['/mcp', '/healthz'])
+    // The same table as deploy/test/app.test.mjs holds lib/app.mjs's copy of the rule to.
+    for (const p of ['/api', '/api/', '/api/x', '/v1', '/v1/traces', '/loki/api/v1/push', '/oauth/token', '/.well-known/x', '/mcp', '/mcp/x', '/healthz', '/healthz/x']) expect(underApiRoot(p), p).toBe(true)
+    for (const p of ['/', '/explore', '/assets/', '/assets/x.js', '/favicon.svg', '/mcp.svg', '/apix', '/v10/x', '/healthzz']) expect(underApiRoot(p), p).toBe(false)
+    for (const p of [...DOCUMENTS, ...SERVE.files, SERVE.assetsPrefix]) expect(underApiRoot(p), p).toBe(false)
+    // Every path the gateway routes is inside the roots (so a static file outside them is in front of no route).
+    for (const p of ['/healthz', '/api/v1/bootstrap', '/api/v1/write', '/v1/metrics', '/v1/traces', '/v1/logs', '/loki/api/v1/push', '/api/v1/query', '/api/v1/label/x/values', '/api/echo', '/api/traces/abc', '/loki/api/v1/labels', '/api/v1/control/keys', '/oauth/token', '/.well-known/oauth-authorization-server', '/api/v1/rules', '/api/v1/monitors/x', '/mcp', '/api/v1/agent/x', '/.well-known/oauth-protected-resource/mcp']) {
+      expect(routeOf(p), p).not.toBeNull()
+      expect(underApiRoot(p), p).toBe(true)
+    }
+    // A document inside the roots is refused even where no route exists today: a route added later could not be shadowed by a page.
+    const app = real()
+    for (const p of ['/api/not-a-route-today', '/api', '/v1', '/loki', '/mcp/x', '/healthz/x', '/oauth/anything', '/.well-known/x']) {
+      expect(routeOf(p), p).toBeNull()
+      expect(parseApp(JSON.stringify({ ...app, documents: ['/', p] })), p).toBeNull()
+    }
+    expect(parseApp(JSON.stringify({ ...app, documents: ['/', '/mcp.svg'] }))).not.toBeNull()
   })
 
   it('the test Worker was configured from it: VIZ_APP holds its documents and document headers, and the fixture document', () => {
@@ -119,8 +141,9 @@ describe('everything else is the JSON 404, never the document', () => {
   // serves the files that exist without invoking it (test/app-serve.test.mjs).
   const notDocuments = [
     '/explore/', '/explorer', '/Explore', '/EXPLORE', '/explore.html', '/index.html', '/index', '/explore/x', '/explore%2F', '/explore%20', '//explore', '/explore//', '/help/', '/settings/keys',
-    '/dashboards', '/logs', '/traces', '/.env', '/.git/config', '/src/main.tsx', '/package.json', '/serve.json', '/_headers', '/robots.txt', '/favicon.ico', '/assets', '/static/x.js',
-  ]
+    '/dashboard', '/dashboards/', '/dashboards/x', '/logs', '/traces', '/.env', '/.git/config', '/src/main.tsx', '/package.json', '/serve.json', '/_headers', '/robots.txt', '/favicon.ico', '/assets', '/static/x.js',
+    // A path serve.json makes a document later (as it did /dashboards, 2026-11-27) leaves this list by itself.
+  ].filter((p) => !DOCUMENTS.includes(p))
   it.each(notDocuments)('GET %s', async (path) => {
     await expectJson404(await call(path), path)
   })

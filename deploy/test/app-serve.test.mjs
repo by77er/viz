@@ -279,7 +279,8 @@ test('smoke.mjs: a release that serves the web app is checked for it after /heal
     const failed = await quiet(() => smoke({ stage: 'servetest', url: url(bad), expectRelease: 'serve-1', healthTimeoutMs: 10_000, appTimeoutMs: 0 }))
     assert.equal(failed.r.ok, false, failed.log)
     assert.match(failed.log, /FAILED at the web app .*\n {2}- GET \/: Content-Security-Policy is null/)
-    assert.match(failed.log, /viz-gateway alone can: release\.mjs rollback --record <previous\.json> --only viz-gateway/)
+    assert.match(failed.log, /viz-gateway alone can go back: release\.mjs rollback --record <previous\.json> --only viz-gateway/)
+    assert.match(failed.log, /the web app FAILED; the data path was not checked \(no SMOKE_KEY\)/)
     // After a rollback (--no-app), and for a manifest without a build, the app is not asked.
     const skipped = await quiet(() => smoke({ stage: 'servetest', url: url(bad), expectRelease: 'serve-1', healthTimeoutMs: 10_000, appTimeoutMs: 0, checkWebApp: false }))
     assert.deepEqual([skipped.r.ok, skipped.r.web], [true, 'skipped'])

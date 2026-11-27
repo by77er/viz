@@ -6,7 +6,7 @@
 // also allow main only (deploy/README.md, One-time setup: a repository setting, not checked here).
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { test } from 'node:test'
@@ -59,7 +59,7 @@ test('M-2 (RV-3): only main is deployed, with main\'s own tooling: both jobs wit
   const prod = jobsOf(yml).filter((j) => /environment:\s*\n\s+name: production/.test(j.text))
   assert.deepEqual(prod.map((j) => j.name).sort(), ['deploy', 'rollback'])
   for (const job of prod) {
-    assert.match(job.text, /CLOUDFLARE_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/, `${job.name} holds the credentials`)
+    assert.match(job.text, /CLOUDFLARE_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/, `${job.name} has steps that hold the credentials`)
     const steps = stepsOf(job.text)
     assert.match(steps[0], /name: Only main, with main's own deploy tooling/, `${job.name}: the first step is the gate`)
     const script = runOf(steps[0])
@@ -122,7 +122,7 @@ test('M-2 (RV-3): the release b322599 would make (a viz-query from before D62) i
   }
 })
 
-test('D74: deploy.sh builds the web app before anything is created or uploaded, stops if the build fails, and the workflow keeps the build\'s stamp', () => {
+test('D74: deploy.sh stages the web app before anything is created or uploaded, stops if that fails, and the workflow keeps the build\'s stamp', () => {
   const sh = readFileSync(join(REPO_ROOT, 'deploy', 'deploy.sh'), 'utf8')
   assert.match(sh, /^set -euo pipefail$/m)
   const at = (text) => {
@@ -130,10 +130,11 @@ test('D74: deploy.sh builds the web app before anything is created or uploaded, 
     assert.ok(i >= 0, `deploy.sh no longer runs: ${text}`)
     return i
   }
-  // The build's failure is the script's (an assignment from a failed command substitution, under set -e).
-  const build = at('APP_BUILT=$(node deploy/app.mjs build ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"} --release "$VIZ_RELEASE_SHA"')
-  const order = [build, at('node deploy/resources.mjs ensure'), at('node deploy/configure.mjs'), at('node deploy/release.mjs deploy'), at('node deploy/smoke.mjs')]
-  assert.deepEqual(order, [...order].sort((a, b) => a - b), 'the app is built first, then resources, configure, release, smoke')
+  // The build's failure, and the staging's, are the script's (a failed command, and an assignment from a failed command substitution, under set -e).
+  const handover = at('node deploy/app.mjs handover ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"} --release "$VIZ_RELEASE_SHA" --out "$HANDOVER"')
+  const build = at('APP_BUILT=$(node deploy/app.mjs build ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"} --release "$VIZ_RELEASE_SHA" --from "$HANDOVER"')
+  const order = [handover, build, at('node deploy/resources.mjs ensure'), at('node deploy/configure.mjs'), at('node deploy/release.mjs deploy'), at('node deploy/smoke.mjs')]
+  assert.deepEqual(order, [...order].sort((a, b) => a - b), 'the app is built and staged first, then resources, configure, release, smoke')
   // Only a stage may go without the app, and configure is then told so.
   assert.match(sh, /VIZ_WITHOUT_APP:-0\}" = 1 \]; then\n {2}\[ -n "\$STAGE" \] \|\| \{ echo "VIZ_WITHOUT_APP=1 is for a stage only/)
   assert.match(sh, /VIZ_WITHOUT_APP:-0\}" = 1 \]; then CONFIGURE_ARGS\+=\(--without-app\); fi/)
@@ -141,62 +142,206 @@ test('D74: deploy.sh builds the web app before anything is created or uploaded, 
   assert.match(sh, /smoke\.mjs \$\{STAGE_ARGS\[@\]\+"\$\{STAGE_ARGS\[@\]\}"\} --no-app --health-timeout/)
   const yml = readFileSync(WORKFLOW, 'utf8')
   const deployJob = jobsOf(yml).find((j) => j.name === 'deploy').text
-  assert.match(deployJob, /run: deploy\/deploy\.sh/)
+  assert.match(deployJob, /run: deploy\/deploy\.sh$/m)
   assert.match(deployJob, /deploy\/generated\/production\/app\.json/)
   assert.match(deployJob, /fetch-depth: 0/)
-  // The job never builds in app/ itself, and never hands deploy.sh a build made elsewhere.
-  assert.doesNotMatch(yml, /working-directory: app|cd app|--dist|VIZ_WITHOUT_APP|VIZ_APP_NO_CARRY/)
+  // The job never builds in app/ itself, never hands deploy.sh a bare dist/, and production never goes without the app.
+  assert.doesNotMatch(yml, /working-directory: app|cd app|--dist|VIZ_WITHOUT_APP/)
 })
 
-test('D74: deploy.sh, run: a failed app build stops it before resources, configure and the release; a stage only goes without the app, and configure is told', () => {
-  // deploy.sh itself, in a tree of its own, with `node` replaced by a stub that records each call
-  // and fails where the test says: what runs, in which order, and what a failure stops.
+/** The text of a job before its `steps:` (its own settings: environment, permissions, env). */
+const settingsOf = (jobText) => jobText.slice(0, jobText.indexOf('\n    steps:'))
+/** A step's name, or what it uses. */
+const nameOf = (stepText) => /name: (.+)/.exec(stepText)?.[1].trim() ?? /uses: ([^@\s]+)/.exec(stepText)?.[1] ?? '?'
+/** A step that installs, builds or otherwise runs code of a package: nothing a secret may sit beside. */
+const RUNS_PACKAGES = /\bnpm\b|\bnpx\b|\bpnpm\b|\byarn\b|--install-only|app\.mjs handover|\bnode_modules\/\.bin\b/
+const SECRET = /secrets\.|github\.token|GITHUB_TOKEN/
+
+test('M-1: the web app is built in a job that is given no secret and no environment, and handed to the deploy job as data; no step that installs or builds has a secret; no job has one in its env', () => {
+  const yml = readFileSync(WORKFLOW, 'utf8')
+  const jobs = jobsOf(yml)
+  assert.deepEqual(jobs.map((j) => j.name), ['checks', 'app-build', 'deploy', 'rollback'])
+  const job = (name) => jobs.find((j) => j.name === name)
+
+  // The build job: nothing in it names a secret, the workflow's token or an environment.
+  const b = job('app-build')
+  assert.doesNotMatch(b.text, SECRET, 'app-build is given no secret')
+  assert.doesNotMatch(b.text, /^\s*environment:/m, 'app-build has no environment (so no environment secret either)')
+  assert.doesNotMatch(settingsOf(b.text), /^\s*env:/m)
+  assert.match(settingsOf(b.text), /permissions:\n {6}contents: read$/)
+  assert.doesNotMatch(b.text, /contents: write|id-token|actions: write/)
+  const bSteps = stepsOf(b.text)
+  assert.deepEqual(bSteps.map(nameOf), ['actions/checkout', 'actions/setup-node', 'Build from an export of this commit\'s sources (deploy/app.mjs handover)', 'Hand the build over'])
+  for (const st of bSteps) assert.doesNotMatch(st, /^\s+env:/m, `app-build: ${nameOf(st)} sets no env`)
+  assert.match(bSteps[2], /run: node deploy\/app\.mjs handover --release "\$GITHUB_SHA" --out "\$RUNNER_TEMP\/app-build"$/m)
+  assert.match(bSteps[3], /uses: actions\/upload-artifact@[0-9a-f]{40}/)
+  assert.match(bSteps[3], /name: app-build-\$\{\{ github\.sha \}\}\n\s+path: \$\{\{ runner\.temp \}\}\/app-build\n\s+if-no-files-found: error/)
+  // It builds this run's commit, never another ref.
+  assert.doesNotMatch(b.text, /^\s+ref:/m)
+
+  // No job holds a secret in its own env: a job-level variable is in every step's environment.
+  for (const j of jobs) assert.doesNotMatch(settingsOf(j.text), SECRET, `${j.name}: a secret at job level reaches every step`)
+  // The called checks get none either, and ask for none.
+  assert.doesNotMatch(job('checks').text, /secrets:/)
+  assert.doesNotMatch(readFileSync(join(REPO_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8'), /secrets\.|secrets: inherit|github\.token/)
+
+  // Step by step: a step that installs, builds or runs a package's code never has a secret, and
+  // every install is without install scripts. The steps that do hold one are exactly these.
+  const holders = {}
+  for (const j of jobs) {
+    for (const st of stepsOf(j.text)) {
+      const where = `${j.name}: ${nameOf(st)}`
+      if (RUNS_PACKAGES.test(st)) assert.doesNotMatch(st, SECRET, `${where} installs or builds, and has a secret`)
+      // What the step runs (its `run:`), apart from its name.
+      const command = /^\s+run: \|\s*$/m.test(st) ? runOf(st) : (/^\s+run: (.+)$/m.exec(st)?.[1] ?? '')
+      if (/\bnpm (ci|install|i)\b/.test(command)) assert.match(command, /npm ci --ignore-scripts /, `${where}: an install with install scripts`)
+      assert.doesNotMatch(command, /\bnpm run\b|\bnpm (install|i)\b|\bnpx\b/, `${where}: runs a package script`)
+      if (SECRET.test(st)) (holders[j.name] ??= []).push(nameOf(st))
+    }
+  }
+  assert.deepEqual(holders, {
+    deploy: ['Migration acknowledgements', 'deploy/deploy.sh'],
+    // The record is found with the workflow's own token (actions: read); the two Cloudflare steps follow it.
+    rollback: ['Find the release record of ${{ inputs.rollback_to }}', 'Roll back (callers first; refused across a Durable Object migration)', 'Smoke test'],
+  })
+  // No checkout leaves the workflow's token on disk, where a later step's packages could read it (n-6).
+  const checkouts = jobs.flatMap((j) => stepsOf(j.text).filter((st) => /actions\/checkout@/.test(st)))
+  assert.equal(checkouts.length, 3)
+  for (const st of checkouts) assert.match(st, /persist-credentials: false/)
+
+  // The deploy job: waits for the build, takes it as an artifact outside the checkout, installs in
+  // a step without secrets, and tells deploy.sh where the build is and that nothing is left to install.
+  const d = job('deploy')
+  assert.match(settingsOf(d.text), /needs: \[checks, app-build\]/)
+  const dSteps = stepsOf(d.text)
+  const names = dSteps.map(nameOf)
+  const idx = (re) => {
+    const i = names.findIndex((n) => re.test(n))
+    assert.ok(i >= 0, `the deploy job has no step ${re}`)
+    return i
+  }
+  const [download, install, acks, run] = [idx(/^The web app's build \(made by app-build/), idx(/^npm ci \(deploy tooling and the deployed components; no secrets, no install scripts\)/), idx(/^Migration acknowledgements/), idx(/^deploy\/deploy\.sh$/)]
+  assert.deepEqual([download, install, acks, run], [...[download, install, acks, run]].sort((x, y) => x - y), 'download, install, then the steps that hold the token')
+  assert.match(dSteps[download], /name: app-build-\$\{\{ github\.sha \}\}\n(\s+#.*\n)*\s+path: \$\{\{ runner\.temp \}\}\/app-build/)
+  assert.doesNotMatch(dSteps[download], /run-id|repository:|github-token/, 'the artifact of this run, and no other')
+  assert.match(dSteps[install], /run: deploy\/deploy\.sh --install-only$/m)
+  assert.doesNotMatch(dSteps[install], /^\s+env:/m)
+  assert.match(dSteps[run], /VIZ_APP_BUILD: \$\{\{ runner\.temp \}\}\/app-build/)
+  assert.match(dSteps[run], /VIZ_SKIP_NPM_CI: '1'/)
+  // The deploy job runs no code of app/ or design-system/, and installs nothing of theirs.
+  assert.doesNotMatch(d.text, /app\/package-lock\.json|design-system\/package-lock\.json|app\.mjs (handover|build)|working-directory: (app|design-system)/)
+  // m-6 and M-2: the operator's two switches reach deploy.sh from the dispatch form.
+  assert.match(yml, /app_drop_kept_files:\n\s+description: .*\n\s+type: boolean\n\s+default: false/)
+  assert.match(dSteps[run], /VIZ_APP_NO_CARRY: \$\{\{ inputs\.app_drop_kept_files && '1' \|\| '0' \}\}/)
+  assert.match(yml, /app_without_stage_evidence:\n\s+description: .*\n\s+type: string\n\s+default: ''/)
+  assert.match(dSteps[run], /VIZ_APP_WITHOUT_STAGE_EVIDENCE: \$\{\{ inputs\.app_without_stage_evidence \}\}/)
+
+  // deploy.sh's own installs: no install scripts, and (run whole) without the credentials in their environment.
+  const sh = readFileSync(join(REPO_ROOT, 'deploy', 'deploy.sh'), 'utf8')
+  for (const line of sh.split('\n').filter((l) => /\bnpm (ci|install)\b/.test(l) && !/^\s*(#|echo |note |step )/.test(l))) assert.match(line, /npm ci --ignore-scripts /, line)
+  assert.doesNotMatch(sh.split('\n').filter((l) => !l.trim().startsWith('#')).join('\n'), /\bnpm run\b|\bnpx\b/)
+  // The README no longer reads as isolation, and says what the remaining trust is.
+  const readme = readFileSync(join(REPO_ROOT, 'deploy', 'README.md'), 'utf8')
+  assert.doesNotMatch(readme, /The build gets no Cloudflare credential in its environment;/)
+  assert.match(readme, /### Who can read the Cloudflare token/)
+  assert.match(readme, /Removing a variable from a child's environment is not isolation/)
+})
+
+test('D74, M-1: deploy.sh, run: installs and the app\'s build get no credential in their environment; a handed-over build is only staged; a failure stops before resources, configure and the release', () => {
+  // deploy.sh itself, in a tree of its own, with `node` and `npm` replaced by stubs that record each
+  // call, whether the (dummy) credentials were in its environment, and fail where the test says.
   const tmp = mkdtempSync(join(tmpdir(), 'viz-deploy-sh-'))
   try {
     mkdirSync(join(tmp, 'deploy'), { recursive: true })
     writeFileSync(join(tmp, 'deploy', 'deploy.sh'), readFileSync(join(REPO_ROOT, 'deploy', 'deploy.sh')), { mode: 0o755 })
+    writeFileSync(join(tmp, 'deploy', 'workers.json'), JSON.stringify({ workers: [{ name: 'viz-a', component: 'compa' }, { name: 'viz-off', component: 'compoff', deploy: false }, { name: 'viz-gateway', component: 'deploy/gateway' }] }))
+    for (const d of ['compa', 'compoff', 'handed']) mkdirSync(join(tmp, d))
     for (const f of ['engine/wasm/js/viz_engine.wasm', 'engine/wasm-query/js/viz_query.wasm']) {
       mkdirSync(join(tmp, f, '..'), { recursive: true })
       writeFileSync(join(tmp, f), 'wasm')
     }
     mkdirSync(join(tmp, 'bin'))
     const calls = join(tmp, 'calls.log')
+    // Whether a credential is in THIS call's environment (dummies; only "yes" or "no" is written).
+    const held = 'if [ -n "${CLOUDFLARE_API_TOKEN:-}${CLOUDFLARE_ACCOUNT_ID:-}${SMOKE_KEY:-}${SOME_SERVICE_TOKEN:-}" ]; then held=CREDENTIALS; else held=clean; fi'
     writeFileSync(
       join(tmp, 'bin', 'node'),
       `#!/bin/sh
 # deploy.sh's own one-line programs (node -e) run for real; every script it starts is recorded.
 case "$1" in -e) exec "${process.execPath}" "$@" ;; esac
-echo "$*" >> "${calls}"
+${held}
+echo "$* [$held]" >> "${calls}"
 case "$*" in
-  "deploy/app.mjs build"*) if [ "$FAIL_APP" = 1 ]; then echo "app: npm run build failed" >&2; exit 1; fi; echo '{"build":"abcdef0123456789","files":7,"kept":0,"dropped":0}' ;;
+  "deploy/app.mjs handover"*) if [ "$FAIL_APP" = 1 ]; then echo "app: npm run build failed" >&2; exit 1; fi; echo '{"build":"abcdef0123456789"}' ;;
+  "deploy/app.mjs build"*) if [ "$FAIL_STAGE" = 1 ]; then echo "app: the handed-over app build is refused" >&2; exit 1; fi; echo '{"build":"abcdef0123456789","files":7,"kept":0,"dropped":0,"via":"handover","install":"ci","filesNamed":true}' ;;
   "deploy/release.mjs deploy"*) for t in production stage-trial; do mkdir -p "${join(tmp, 'deploy', 'generated')}/$t"; echo '{}' > "${join(tmp, 'deploy', 'generated')}/$t/release.json"; done ;;
 esac
 exit 0
 `,
       { mode: 0o755 },
     )
-    const run = (args, env = {}) => {
+    writeFileSync(join(tmp, 'bin', 'npm'), `#!/bin/sh\n${held}\necho "npm $* in $(basename "$PWD") [$held]" >> "${calls}"\nexit 0\n`, { mode: 0o755 })
+    const DUMMY = 'DUMMY-not-a-credential-123'
+    const run = (args, env = {}, { skipSmoke = true } = {}) => {
       writeFileSync(calls, '')
-      const r = spawnSync('bash', [join(tmp, 'deploy', 'deploy.sh'), '--skip-smoke', ...args], {
+      const r = spawnSync('bash', [join(tmp, 'deploy', 'deploy.sh'), ...(skipSmoke ? ['--skip-smoke'] : []), ...args], {
         encoding: 'utf8',
-        env: { PATH: `${join(tmp, 'bin')}:${process.env.PATH}`, HOME: tmp, CLOUDFLARE_API_TOKEN: 'fake-token-not-a-credential', CLOUDFLARE_ACCOUNT_ID: 'fake-account', VIZ_RELEASE_SHA: 'rel-1', VIZ_WASM_PREBUILT: '1', VIZ_SKIP_NPM_CI: '1', ...env },
+        env: { PATH: `${join(tmp, 'bin')}:${process.env.PATH}`, HOME: tmp, TMPDIR: tmp, CLOUDFLARE_API_TOKEN: DUMMY, CLOUDFLARE_ACCOUNT_ID: DUMMY, SMOKE_KEY: DUMMY, SOME_SERVICE_TOKEN: DUMMY, VIZ_RELEASE_SHA: 'rel-1', VIZ_WASM_PREBUILT: '1', VIZ_SKIP_NPM_CI: '1', ...env },
       })
-      return { status: r.status, out: r.stdout + r.stderr, calls: readFileSync(calls, 'utf8').split('\n').filter(Boolean).map((l) => l.split(' ').slice(0, 2).join(' ')), lines: readFileSync(calls, 'utf8') }
+      const lines = readFileSync(calls, 'utf8')
+      return { status: r.status, out: r.stdout + r.stderr, lines, all: lines.split('\n').filter(Boolean), calls: lines.split('\n').filter(Boolean).map((l) => l.split(' ').slice(0, 2).join(' ')) }
     }
     const ok = run([])
     assert.equal(ok.status, 0, ok.out)
-    assert.deepEqual(ok.calls, ['deploy/app.mjs build', 'deploy/resources.mjs ensure', 'deploy/configure.mjs --release', 'deploy/release.mjs deploy'])
-    assert.match(ok.lines, /deploy\/app\.mjs build --release rel-1\n/)
-    assert.match(ok.out, /web app: build abcdef012345, 7 files, 0 kept from earlier builds/)
-    // The build fails: nothing after it runs, and the script fails.
+    assert.deepEqual(ok.calls, ['deploy/app.mjs handover', 'deploy/app.mjs build', 'deploy/resources.mjs ensure', 'deploy/configure.mjs --release', 'deploy/release.mjs deploy'])
+    // The build (third-party code) ran without the credentials in its environment; the staging, which reads Cloudflare for the kept files, with them.
+    assert.match(ok.lines, /^deploy\/app\.mjs handover --release rel-1 --out (\S+viz-app-handover\.\S+) \[clean\]\ndeploy\/app\.mjs build --release rel-1 --from \1 \[CREDENTIALS\]\n/)
+    assert.match(ok.out, /web app: build abcdef012345, 7 files, 0 kept from earlier builds \(built here without credentials in the build's environment\)/)
+    assert.deepEqual(readdirSync(tmp).filter((n) => n.startsWith('viz-app-handover.')), [], 'the build it made itself is removed at the end')
+    assert.doesNotMatch(ok.out + ok.lines, new RegExp(DUMMY), 'no credential is printed')
+    // The build fails: nothing after it runs, and the script fails. The same when the staging refuses the build.
     const failed = run([], { FAIL_APP: '1' })
     assert.equal(failed.status, 1, failed.out)
-    assert.deepEqual(failed.calls, ['deploy/app.mjs build'], 'resources, configure and the release never ran')
+    assert.deepEqual(failed.calls, ['deploy/app.mjs handover'], 'staging, resources, configure and the release never ran')
     assert.match(failed.out, /exit 1/)
+    const refused = run([], { FAIL_STAGE: '1' })
+    assert.equal(refused.status, 1, refused.out)
+    assert.deepEqual(refused.calls, ['deploy/app.mjs handover', 'deploy/app.mjs build'], 'resources, configure and the release never ran')
+
+    // A build handed over (the workflow): nothing is built here, it is only verified and staged.
+    const handed = run([], { VIZ_APP_BUILD: join(tmp, 'handed'), GITHUB_ACTIONS: 'true' })
+    assert.equal(handed.status, 0, handed.out)
+    assert.deepEqual(handed.calls, ['deploy/app.mjs build', 'deploy/resources.mjs ensure', 'deploy/configure.mjs --release', 'deploy/release.mjs deploy'])
+    assert.match(handed.lines, new RegExp(`^deploy/app\\.mjs build --release rel-1 --from ${join(tmp, 'handed')} \\[CREDENTIALS\\]\\n`))
+    assert.equal(existsSync(join(tmp, 'handed')), true, 'a build handed over is not this script\'s to remove')
+    // Under GitHub Actions the job that holds the token never builds: without a handed-over build it stops.
+    const inCi = run([], { GITHUB_ACTIONS: 'true' })
+    assert.equal(inCi.status, 1, inCi.out)
+    assert.deepEqual(inCi.calls, [], 'nothing ran')
+    assert.match(inCi.out, /under GitHub Actions the web app is built by the job that holds no secret \(app-build\) and handed over: VIZ_APP_BUILD is not set/)
+    assert.equal(run([], { VIZ_APP_BUILD: join(tmp, 'no-such-dir') }).status, 1)
+
+    // The installs: every deployed component and deploy/, without install scripts, without the credentials.
+    const installs = run([], { VIZ_SKIP_NPM_CI: '0' })
+    assert.equal(installs.status, 0, installs.out)
+    assert.deepEqual(installs.all.filter((l) => l.startsWith('npm ')), ['npm ci --ignore-scripts --no-audit --no-fund --loglevel=error in deploy [clean]', 'npm ci --ignore-scripts --no-audit --no-fund --loglevel=error in compa [clean]'])
+    // --install-only: the same and nothing else, with no credential needed; beside one it refuses.
+    const only = spawnSync('bash', [join(tmp, 'deploy', 'deploy.sh'), '--install-only'], { encoding: 'utf8', env: { PATH: `${join(tmp, 'bin')}:${process.env.PATH}`, HOME: tmp } })
+    writeFileSync(calls, '')
+    const again = spawnSync('bash', [join(tmp, 'deploy', 'deploy.sh'), '--install-only'], { encoding: 'utf8', env: { PATH: `${join(tmp, 'bin')}:${process.env.PATH}`, HOME: tmp } })
+    assert.deepEqual([only.status, again.status], [0, 0], only.stdout + only.stderr)
+    assert.deepEqual(readFileSync(calls, 'utf8').split('\n').filter(Boolean), ['npm ci --ignore-scripts --no-audit --no-fund --loglevel=error in deploy [clean]', 'npm ci --ignore-scripts --no-audit --no-fund --loglevel=error in compa [clean]'])
+    writeFileSync(calls, '')
+    const beside = spawnSync('bash', [join(tmp, 'deploy', 'deploy.sh'), '--install-only'], { encoding: 'utf8', env: { PATH: `${join(tmp, 'bin')}:${process.env.PATH}`, HOME: tmp, CLOUDFLARE_API_TOKEN: DUMMY } })
+    assert.equal(beside.status, 2)
+    assert.match(beside.stderr, /--install-only: CLOUDFLARE_API_TOKEN is set, and an install is where it must not be/)
+    assert.doesNotMatch(beside.stdout + beside.stderr, new RegExp(DUMMY))
+    assert.equal(readFileSync(calls, 'utf8'), '', 'nothing was installed')
+
     // A stage: built for the stage; without the app only when asked, and configure is told; production never.
     const stage = run(['--stage', 'trial'])
     assert.equal(stage.status, 0, stage.out)
-    assert.match(stage.lines, /deploy\/app\.mjs build --stage trial --release rel-1\n/)
+    assert.match(stage.lines, /deploy\/app\.mjs handover --stage trial --release rel-1 --out \S+ \[clean\]\ndeploy\/app\.mjs build --stage trial --release rel-1 --from \S+ \[CREDENTIALS\]\n/)
     assert.doesNotMatch(stage.lines, /--without-app/)
     const without = run(['--stage', 'trial'], { VIZ_WITHOUT_APP: '1' })
     assert.equal(without.status, 0, without.out)
@@ -206,8 +351,11 @@ exit 0
     assert.equal(production.status, 1, production.out)
     assert.deepEqual(production.calls, [], 'nothing ran')
     assert.match(production.out, /VIZ_WITHOUT_APP=1 is for a stage only/)
+    // m-6: the operator's way to drop a bad build's kept files, said in the summary.
     const noCarry = run([], { VIZ_APP_NO_CARRY: '1' })
-    assert.match(noCarry.lines, /deploy\/app\.mjs build --release rel-1 --no-carry\n/)
+    assert.match(noCarry.lines, /deploy\/app\.mjs build --release rel-1 --from \S+ --no-carry \[CREDENTIALS\]\n/)
+    assert.match(noCarry.out, /web app: NO file of earlier builds kept, as asked \(VIZ_APP_NO_CARRY=1\)/)
+    assert.doesNotMatch(ok.out, /NO file of earlier builds kept/)
   } finally {
     rmSync(tmp, { recursive: true, force: true })
   }

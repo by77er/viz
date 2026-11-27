@@ -44,9 +44,9 @@ const panels = (page) =>
       plots: p.querySelectorAll('svg.vz-plot').length,
       stats: p.querySelectorAll('.vz-stat-value').length,
       tables: p.querySelectorAll('[data-testid=panel-table] table').length,
-      notDrawn: p.querySelector('[data-testid=panel-not-drawn]')?.textContent.replace(/\s+/g, ' ') ?? null,
-      error: p.querySelector('[data-testid=panel-error]')?.textContent.replace(/\s+/g, ' ') ?? null,
-      empty: p.querySelector('[data-testid=panel-empty]')?.textContent.replace(/\s+/g, ' ') ?? null,
+      notDrawn: p.querySelector('[data-testid=panel-not-drawn]')?.textContent.replace(/\s+/g, ' ') ?? '',
+      error: p.querySelector('[data-testid=panel-error]')?.textContent.replace(/\s+/g, ' ') ?? '',
+      empty: p.querySelector('[data-testid=panel-empty]')?.textContent.replace(/\s+/g, ' ') ?? '',
       meta: p.querySelector('[data-testid=panel-meta]')?.textContent.replace(/\s+/g, ' ').trim() ?? null,
       stale: !!p.querySelector('[data-testid=panel-stale]'),
       links: [...p.querySelectorAll('[data-testid=open-in-explore]')].map((a) => a.getAttribute('href')),
@@ -318,7 +318,7 @@ async function main() {
       const ps = Object.fromEntries((await panels(page)).map((p) => [p.id, p]))
       const facts = await text(page, '[data-testid=load-summary]')
       check('[isolated] one panel\'s query is refused: that panel shows the API\'s message, its error type and status, and what it means', ps.sample.state === 'failed' && ps.sample.error.includes('This panel\'s query could not run') && ps.sample.error.includes('limitk') && ps.sample.error.includes('The API answered unsupported with HTTP 422.') && ps.sample.error.includes('viz does not run this part of PromQL yet'), ps.sample.error)
-      check('[isolated] the other five panels are answered and drawn, and the page says five answered and one not', ['cpu', 'durations', 'memory', 'notes', 'restarts'].every((id) => ps[id].state === 'answered' && ps[id].error === null) && ps.cpu.lines >= 8 && ps.memory.stats === 1 && facts === '6 panels, 5 answered and 1 not.' && (await text(page, '[data-testid=dashboard-title]')) === 'Pod capacity', facts)
+      check('[isolated] the other five panels are answered and drawn, and the page says five answered and one not', ['cpu', 'durations', 'memory', 'notes', 'restarts'].every((id) => ps[id].state === 'answered' && ps[id].error === '') && ps.cpu.lines >= 8 && ps.memory.stats === 1 && facts === '6 panels, 5 answered and 1 not.' && (await text(page, '[data-testid=dashboard-title]')) === 'Pod capacity', facts)
       check('[isolated] a refusal that asking again would not change offers no "Run this panel again"; the panel keeps its link to Explore', !(await page.$('[data-panel=sample] [data-testid=panel-retry]')) && ps.sample.links.length === 1)
       check('[kind] a heatmap is not drawn as anything else: no plot, no figure, no table; it says it is a heatmap this app does not draw, and shows the model\'s text for it', ps.durations.kind === 'heatmap' && ps.durations.plots === 0 && ps.durations.stats === 0 && ps.durations.tables === 0 && ps.durations.notDrawn.includes('This panel is a heatmap, a kind this app does not draw yet.') && ps.durations.notDrawn.includes('Request duration distribution — durations (heatmap, s)') && ps.durations.notDrawn.includes('12 series'), ps.durations.notDrawn.slice(0, 220))
       check('[kind] a text note is shown as the model\'s text for it, and says so', ps.notes.kind === 'text' && ps.notes.plots === 0 && ps.notes.notDrawn.includes('This panel is a text note, a kind this app does not draw yet.') && ps.notes.notDrawn.includes('CPU is in cores, memory in bytes.') && ps.notes.links.length === 0, ps.notes.notDrawn)
@@ -419,7 +419,7 @@ async function main() {
         await sleep(450)
         const mid = await panels(page)
         const midProgress = await text(page, '[data-testid=panel-progress]')
-        check('while a new range waits, every panel keeps its previous answer, says "Showing the previous range" with that range, and after 400 ms a line says what is waited for', mid.every((p) => p.state === 'waiting' && p.stale && p.meta.startsWith('Showing the previous range· 18 Nov, 09:30 to 12:30 ·')) && mid.filter((p) => p.kind === 'timeseries').every((p) => p.lines >= 4) && /^Waiting for (the query|2 queries)\.\s?\d\.\d s$/.test(midProgress), `${mid[0].meta} / ${midProgress}`)
+        check('while a new range waits, every panel keeps its previous answer, says "Showing the previous range" with that range, and after 400 ms a line says what is waited for', mid.every((p) => p.state === 'waiting' && p.stale && p.meta === 'Showing the previous range: 18 Nov, 09:30 to 12:30') && mid.filter((p) => p.kind === 'timeseries').every((p) => p.lines >= 4) && /^Waiting for (the query|2 queries)\.\s?\d\.\d s$/.test(midProgress), `${mid[0].meta} / ${midProgress}`)
         const firstRange = queries(w.sent).length
         await page.click('[data-testid=preset-15m]')
         await sleep(100)

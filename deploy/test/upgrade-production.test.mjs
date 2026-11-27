@@ -95,6 +95,9 @@ function deployShForwardOnly(recordFile) {
 }
 
 const ACK = '' // no Durable Object migration between fb77292 and this tree (the test checks it)
+/** No stage has been deployed, so none is recorded: the first release with the web app goes out by the owner's override (review of D74, M-2). */
+const NO_EVIDENCE = join(tmp, 'no-app-stage-evidence.json')
+const FIRST = { appStageEvidence: NO_EVIDENCE, appStageOverride: 'test: the owner accepts the first contact with Cloudflare in production' }
 /** VIZ_TEST_SHOW=1 prints what each step logged (deploy/README.md quotes it). */
 const show = (label, r) => process.env.VIZ_TEST_SHOW && process.stderr.write(`\n===== ${label}\n${r.log}\n`)
 
@@ -128,8 +131,19 @@ test('the first release over the 2026-11-19 production (fb77292): ids allocated 
   // No Durable Object migration since fb77292: nothing to acknowledge.
   for (const w of FB.workers) assert.equal(m.workers.find((x) => x.name === w.name).migrationTag, w.migrationTag, w.name)
 
+  // 3a. It is also the first production release with the web app (fb77292's gateway serves none), in a
+  // release that is forward-only: refused, by that one problem, until a stage is recorded to have gone
+  // before it or the owner overrides with a reason (review of D74, M-2). Nothing is uploaded.
+  const bare = await captured(() => planOnly({ stage: undefined, ackText: ACK, appStageEvidence: NO_EVIDENCE }))
+  assert.equal(bare.result?.exit, 3, bare.log)
+  assert.equal(bare.result.problems.length, 1, bare.result.problems.join('\n'))
+  assert.match(bare.result.problems[0], /viz-gateway: this is the first production release that carries the web app \(the viz-gateway serving now has none\), and no stage is recorded to have gone before it/)
+  const bareDeploy = await captured(() => deploy({ stage: undefined, ackText: ACK, appStageEvidence: NO_EVIDENCE }))
+  assert.equal(bareDeploy.result?.exit, 3, bareDeploy.log)
+  assert.equal(readState().calls.length, 0, 'refused before anything is uploaded')
+
   // 3. plan: not refused; forward-only by format and by the oauth-public floor; the key kept.
-  const plan = await captured(() => planOnly({ stage: undefined, ackText: ACK }))
+  const plan = await captured(() => planOnly({ stage: undefined, ackText: ACK, ...FIRST }))
   show('release.mjs plan', plan)
   assert.equal(plan.error, undefined, `${plan.error?.stack}\n${plan.log}`)
   assert.equal(plan.result.exit, 0, plan.log)
@@ -141,8 +155,9 @@ test('the first release over the 2026-11-19 production (fb77292): ids allocated 
   assert.equal(readState().calls.length, 0, 'plan changes nothing')
 
   // 4. deploy: every Worker uploaded, then promoted; the record says why it is forward-only.
-  const r = await captured(() => deploy({ stage: undefined, ackText: ACK }))
+  const r = await captured(() => deploy({ stage: undefined, ackText: ACK, ...FIRST }))
   show('release.mjs deploy', r)
+  assert.deepEqual(r.result?.record?.appStage?.override, FIRST.appStageOverride, 'the record carries the override and its reason')
   assert.equal(r.error, undefined, `${r.error?.stack}\n${r.log}`)
   assert.equal(r.result.exit, 0, r.log)
   const rec = r.result.record
@@ -180,8 +195,10 @@ test('the first release over the 2026-11-19 production (fb77292): ids allocated 
   assert.ok(again.result.notes.every((x) => / kept \(bound by viz-control\)/.test(x)), again.result.notes.join('\n'))
   appBuilt({ release: 'rel-b' }) // the web app's build, staged as deploy/app.mjs stages it (D74; the fixture build)
   configure({ release: 'rel-b', quiet: true })
-  const next = await captured(() => deploy({ stage: undefined, ackText: ACK }))
+  // The app serves now: no stage is asked for, and no override is given.
+  const next = await captured(() => deploy({ stage: undefined, ackText: ACK, appStageEvidence: NO_EVIDENCE }))
   show('next release', next)
+  assert.equal(next.result?.record?.appStage, null)
   assert.equal(next.result?.exit, 0, next.log)
   assert.equal(next.result.record.forwardOnly, false, next.log)
   assert.deepEqual(next.result.record.floors.find((f) => f.name === 'oauth-public').workers, [{ worker: 'viz-control', atFloor: true, servingAtFloor: true }])
@@ -203,7 +220,7 @@ async function firstRelease() {
   await ensureRateLimitIds(undefined, cfApi)
   appBuilt({ release: 'rel-a' }) // the web app's build, staged as deploy/app.mjs stages it (D74; the fixture build)
   configure({ release: 'rel-a', quiet: true })
-  const r = await captured(() => deploy({ stage: undefined, ackText: ACK }))
+  const r = await captured(() => deploy({ stage: undefined, ackText: ACK, ...FIRST }))
   assert.equal(r.result?.exit, 0, r.log)
   return { fb, r }
 }

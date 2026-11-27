@@ -11,17 +11,21 @@
 //    query that must return exactly those samples within 60 s.
 // 3. Where the release serves the web app (the manifest's viz-gateway has an app build; D74): the
 //    app as app/serve.json says it is served, through the public URL: every document with its
-//    headers and the released document's bytes, every file the document asks for with its headers
-//    and content type, a missing hashed asset and an unknown API path as the JSON 404 (never the
-//    document, never stored), and nothing but GET and HEAD served. This is where what was only
-//    read in Cloudflare's documentation or seen in local workerd is checked on Cloudflare, at
-//    every deploy.
+//    headers and the released document's bytes; EVERY file of the version (the build's, also those
+//    no document names, and the ones kept from earlier builds) with its headers, its content type
+//    and the bytes the release staged (SHA-256; review of D74, m-7); a missing hashed asset and an
+//    unknown API path as the JSON 404 (never the document, never stored); nothing but GET and HEAD
+//    served. This is where what was only read in Cloudflare's documentation or seen in local
+//    workerd is checked on Cloudflare, at every deploy.
+// Steps 2 and 3 both run whatever the other found, and both results are reported (m-8).
 // Exit 0 when everything ran and passed; non-zero otherwise. The key is never printed.
+// The result is also written to deploy/generated/<target>/smoke.json (no key, no body).
 import { createHash } from 'node:crypto'
-import { extname } from 'node:path'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { extname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { workersSubdomain } from './lib/cf.mjs'
-import { checkStage, log, parseArgs } from './lib/common.mjs'
+import { GENERATED_DIR, checkStage, log, parseArgs, targetName } from './lib/common.mjs'
 import { instantQuery, remoteWrite } from './lib/prw.mjs'
 import { loadManifest } from './release.mjs'
 
@@ -130,6 +134,21 @@ export async function checkApp(base, app, { fetchImpl = fetch } = {}) {
       const post = await ask(path, { method: 'POST', body: 'x' })
       if (post.status === 200) problems.push(`POST ${path}: 200; only GET and HEAD are served`)
     }
+    // Every file of the version, byte for byte: what the release hashed before the upload is what
+    // Cloudflare serves after it (nothing changed the directory in between, and nothing between here
+    // and the asset layer rewrites a script). The kept files of earlier builds too.
+    const hashes = [...Object.entries(app.fileHashes ?? {}), ...(app.kept ?? []).filter((k) => k.sha256).map((k) => [k.path, k.sha256])]
+    if (app.fileHashes === undefined) problems.push('the manifest names no file hashes for the web app (configured by an older deploy/configure.mjs): the files\' bytes cannot be compared')
+    for (const [path, want] of hashes) {
+      const r = await ask(path)
+      checked++
+      if (r.status !== 200) {
+        problems.push(`GET ${path}: ${r.status}; it is a file of this version`)
+        continue
+      }
+      if (!refs.includes(path)) expectHeaders(`GET ${path}`, r, { ...(path.startsWith(serve.assetsPrefix) ? serve.headers.asset : serve.headers.file), 'Content-Type': serve.contentTypes[extname(path)] })
+      if (createHash('sha256').update(r.body).digest('hex') !== want) problems.push(`GET ${path}: the body is not the file the release staged (its SHA-256 differs: the directory changed before the upload, another version answered, or something between here and Cloudflare rewrote it)`)
+    }
     // (Paths with dot segments are not asked here: this client's URL parser removes them before
     // sending. test/app-serve.test.mjs sends them raw to a local workerd.)
     const never = [
@@ -163,7 +182,7 @@ export function manifestApp(manifest) {
   return { app: w.app }
 }
 
-export async function smoke({ stage, url, healthTimeoutMs = 180_000, expectRelease, appTimeoutMs = 60_000, checkWebApp = true }) {
+export async function smoke({ stage, url, healthTimeoutMs = 180_000, expectRelease, appTimeoutMs = 60_000, checkWebApp = true, write = writeAndRead }) {
   const base = url ?? (await publicUrl(stage))
   log(`smoke: ${base}${expectRelease ? ` (expecting release ${expectRelease})` : ''}`)
   const h = await waitHealthy(base, healthTimeoutMs, expectRelease)
@@ -188,20 +207,38 @@ export async function smoke({ stage, url, healthTimeoutMs = 180_000, expectRelea
     if (!web.ok) {
       log(`smoke: FAILED at the web app (build ${app.build.slice(0, 12)}), ${web.problems.length} problem(s) after ${appTimeoutMs / 1000} s:`)
       for (const p of web.problems.slice(0, 20)) log(`  - ${p}`)
-      log('  The API is not affected by this. If the release cannot be rolled back as a whole (forward-only), viz-gateway alone can: release.mjs rollback --record <previous.json> --only viz-gateway (deploy/README.md, "The web app").')
-      return { ok: false, health: h, web }
-    }
-    log(`smoke: the web app (build ${app.build.slice(0, 12)}) is served as app/serve.json says: ${web.checked} requests`)
+    } else log(`smoke: the web app (build ${app.build.slice(0, 12)}) is served as app/serve.json says: ${web.checked} requests, every file with the bytes the release staged`)
   }
+  // The data check runs whatever the app check found: a broken page must not hide whether writes
+  // and reads work, least of all after a release that cannot be rolled back (review of D74, m-8).
+  const webOk = web === 'skipped' || web.ok
   const key = process.env.SMOKE_KEY
-  if (!key) {
-    log('smoke: SMOKE_KEY not set; the write-and-read check was skipped')
-    return { ok: true, health: h, web, data: 'skipped' }
+  let data = 'skipped'
+  if (!key) log('smoke: SMOKE_KEY not set; the write-and-read check was skipped')
+  else {
+    data = await write(base, key)
+    if (!data.ok) log(`smoke: FAILED at ${data.step}: write ${data.writeStatus}${data.queryStatus ? `, query ${data.queryStatus}` : ''}: ${data.detail ?? ''}`)
+    else log(`smoke: Remote Write ${data.writeStatus} in ${data.writeMs} ms; all ${data.samples} samples returned by a query ${data.visibleAfterMs} ms after the acknowledgement`)
   }
-  const d = await writeAndRead(base, key)
-  if (!d.ok) log(`smoke: FAILED at ${d.step}: write ${d.writeStatus}${d.queryStatus ? `, query ${d.queryStatus}` : ''}: ${d.detail ?? ''}`)
-  else log(`smoke: Remote Write ${d.writeStatus} in ${d.writeMs} ms; all ${d.samples} samples returned by a query ${d.visibleAfterMs} ms after the acknowledgement`)
-  return { ok: d.ok, health: h, web, data: d }
+  const dataOk = data === 'skipped' || data.ok
+  if (!webOk) {
+    log(`smoke: the web app FAILED; the data path ${data === 'skipped' ? 'was not checked (no SMOKE_KEY)' : data.ok ? 'PASSED (writes and reads work)' : 'FAILED too'}.`)
+    log('  If the release cannot be rolled back as a whole (forward-only), viz-gateway alone can go back: release.mjs rollback --record <previous.json> --only viz-gateway, or the workflow\'s rollback_only.')
+    log('  What that costs: the gateway of the previous release comes back WHOLE, not only without this page. Every route the gateway gained since that version answers 404 again (after the first release over the 2026-11-19 production: no web app at all, and routes such as /api/echo), while the backends stay on the new release. Read deploy/README.md, "Rolling viz-gateway back alone", before choosing between that and a fix forward.')
+  }
+  return { ok: webOk && dataOk, health: h, web, data }
+}
+
+/** What a smoke test found, for the record of a stage that went before production (no key, no response body). */
+export function writeSmokeRecord(stage, result, { release = null, base = null, at = new Date().toISOString() } = {}) {
+  const dir = join(GENERATED_DIR, targetName(stage))
+  mkdirSync(dir, { recursive: true })
+  const web = result.web && result.web !== 'skipped' ? { ok: result.web.ok, checked: result.web.checked, problems: result.web.problems.slice(0, 20) } : 'skipped'
+  const data = result.data && result.data !== 'skipped' ? { ok: result.data.ok, samples: result.data.samples ?? null } : (result.data ?? null)
+  const record = { v: 1, at, target: targetName(stage), release: result.health?.body?.release ?? release, expected: release, base, ok: result.ok === true, healthy: result.health?.ok === true, web, data }
+  const file = join(dir, 'smoke.json')
+  writeFileSync(file, JSON.stringify(record, null, 2) + '\n')
+  return { file, record }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -209,6 +246,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const args = parseArgs(process.argv.slice(2), { flags: ['no-app'], options: ['stage', 'url', 'health-timeout', 'expect-release'] })
     checkStage(args.stage)
     const r = await smoke({ stage: args.stage, url: args.url, healthTimeoutMs: Number(args['health-timeout'] ?? 180) * 1000, expectRelease: args['expect-release'], checkWebApp: !args['no-app'] })
+    // Not after a rollback (--no-app): that run describes another release than the manifest's.
+    if (!args['no-app']) writeSmokeRecord(args.stage, r, { release: args['expect-release'] ?? null, base: args.url ?? null })
     process.exit(r.ok ? 0 : 1)
   } catch (e) {
     log(`smoke: ${e.message}`)

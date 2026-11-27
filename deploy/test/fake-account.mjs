@@ -148,12 +148,12 @@ export const WITHOUT_APP = Object.freeze({ manifest: { withoutApp: true }, worke
  * `configFile`) and `manifest` (the manifest Worker's `app`).
  */
 export function appBuilt({ stage = null, release, configFile = null, dist = APP_FIXTURE, via = 'export', kept = [], plan = JSON.parse(readFileSync(join(DEPLOY_DIR, 'workers.json'), 'utf8')), repoRoot = REPO_ROOT }) {
-  const { app } = appWorker(plan)
+  const { app, worker } = appWorker(plan)
   const target = targetName(stage ?? undefined)
   const targetDir = join(GENERATED_DIR, target)
   const listed = listSources(repoRoot, app)
   const sources = { hash: hashSources(repoRoot, listed.files), files: listed.files.length, commit: listed.commit, dirty: listed.dirty, by: listed.by }
-  const stamp = stampBuild({ targetDir, repoRoot, release, target, serveFile: join(repoRoot, app.serve), dist, sources, via, kept })
+  const stamp = stampBuild({ targetDir, repoRoot, release, target, serveFile: join(repoRoot, app.serve), dist, sources, via, worker, kept })
   return {
     stamp,
     config: { assets: assetsConfig(relative(dirname(configFile ?? join(targetDir, 'x.jsonc')), stagedDir(targetDir))), vars: { [APP_VAR]: stamp.vars[APP_VAR], [APP_FILES_VAR]: stamp.vars[APP_FILES_VAR] } },

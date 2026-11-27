@@ -1,0 +1,64 @@
+Mutants of the dashboards views (e2e/mutants-dashboards.cjs), applied to a copy in the session's scratch area.
+2026-11-27T01:32:08.424Z
+
+KILLED    [key] the key is sent in the address of the dashboards list
+            checks run: unit; e2e/dashboards.cjs (key); caught by 2 (unit and e2e), e.g. unit: the key goes in the Authorization header of every request and in no URL or body | e2e: [key] the key is in no address (of the page or of any request) and in no request body
+            unit: caught it; e2e/dashboards.cjs (key): caught it
+KILLED    [key] the key is sent in the address of a dashboard
+            checks run: unit; e2e/dashboards.cjs (key); caught by 2 (unit and e2e), e.g. unit: the key goes in the Authorization header of every request and in no URL or body | e2e: [key] the key is in no address (of the page or of any request) and in no request body
+            unit: caught it; e2e/dashboards.cjs (key): caught it
+KILLED    [key] the dashboard page keeps the client, key included, in sessionStorage
+            checks run: e2e/dashboards.cjs (key); caught by 1 (e2e), e.g. e2e: [key] the key is kept where it was before this change and nowhere else: sessionStorage's viz.key only; not localStorage, a cookie 
+KILLED    [key] "Open in Explore" carries the key in its address
+            checks run: e2e/dashboards.cjs (key); caught by 1 (e2e), e.g. e2e: [key] the key is kept where it was before this change and nowhere else: sessionStorage's viz.key only; not localStorage, a cookie 
+KILLED    [six] the limiter starts every request at once
+            checks run: unit; e2e/dashboards.cjs (requests); caught by 12 (unit and e2e), e.g. unit: starts six of twenty, and one more each time one ends, in the order asked | unit: a failure frees its place like an answer | e2e: [superseded] changing the range again cancels the requests of the range before: those in flight are aborted, those waiting are nev | e2e: [superseded] leaving the dashboard aborts its requests in flight and sends none of the ones that waited
+            unit: caught it; e2e/dashboards.cjs (requests): caught it
+KILLED    [six] the limit is twelve
+            checks run: unit; caught by 7 (unit), e.g. unit: twelve panels and fourteen queries: never more than six requests in flight, every panel answered | unit: leaving the view aborts every request in flight, sends none of the waiting ones, and nothing is delivered afterwards
+KILLED    [six] a place that frees lets one too many start
+            checks run: unit; caught by 6 (unit), e.g. unit: twelve panels and fourteen queries: never more than six requests in flight, every panel answered | unit: starts six of twenty, and one more each time one ends, in the order asked
+KILLED    [six] the client sends its requests past the page's limiter (the dashboard's own limiter still holds its six)
+            checks run: unit; caught by 2 (unit), e.g. unit: ten requests from two clients: six are sent, the rest when one has been answered and read | unit: a request cancelled while it waits for its turn is never sent
+KILLED    [six] the dashboard has no limiter of its own (the client's still holds the page's six)
+            checks run: unit; caught by 1 (unit), e.g. unit: twelve panels and fourteen queries: never more than six requests in flight, every panel answered
+KILLED    [superseded] an answer for an earlier range is delivered to the panel
+            checks run: unit; e2e/dashboards.cjs (requests); caught by 10 (unit and e2e), e.g. unit: a superseded answer is never delivered, even when its request ignored the abort and answers after the new one | unit: a superseded failure is not delivered either | e2e: [superseded] what is painted in the end is the last range's answer in every panel: its step, no "previous range", and no answer of | e2e: [superseded] leaving the dashboard aborts its requests in flight and sends none of the ones that waited
+            unit: caught it; e2e/dashboards.cjs (requests): caught it
+KILLED    [superseded] a new range does not cancel the requests of the one before
+            checks run: unit; e2e/dashboards.cjs (requests); caught by 7 (unit and e2e), e.g. unit: a new load aborts the requests of the one before it, and never sends the ones still waiting | unit: a superseded answer is never put into a panel: the range changed while the first answers were on their way | e2e: [superseded] changing the range again cancels the requests of the range before: those in flight are aborted, those waiting are nev | e2e: [superseded] what is painted in the end is the last range's answer in every panel: its step, no "previous range", and no answer of
+            unit: caught it; e2e/dashboards.cjs (requests): caught it
+KILLED    [superseded] leaving the dashboard does not cancel its requests
+            checks run: unit; e2e/dashboards.cjs (requests); caught by 3 (unit and e2e), e.g. unit: leaving the view aborts every request in flight, sends none of the waiting ones, and nothing is delivered afterwards | unit: Cancel ends one panel's wait and no other's; running it again answers it | e2e: [superseded] leaving the dashboard aborts its requests in flight and sends none of the ones that waited
+            unit: caught it; e2e/dashboards.cjs (requests): caught it
+KILLED    [superseded] while a new range waits, the old answer is shown as if it were current
+            checks run: unit; e2e/dashboards.cjs (requests); caught by 4 (unit and e2e), e.g. unit: while a new range waits, the answer drawn stays and is marked as the earlier range's; a refresh of the same range is not | unit: leaving the view aborts every request in flight, sends none of the waiting ones, and nothing is delivered afterwards | e2e: while a new range waits, every panel keeps its previous answer, says "Showing the previous range" with that range, and after 400 m
+            unit: caught it; e2e/dashboards.cjs (requests): caught it
+KILLED    [superseded] the range in a dashboard's address is dropped when it is Explore's default
+            checks run: unit; e2e/dashboards.cjs (requests); caught by 2 (unit and e2e), e.g. unit: a dashboard's address keeps a range that is Explore's default: left out, it would mean the dashboard's own | e2e: the address carries the range, also when it is Explore's default
+            unit: caught it; e2e/dashboards.cjs (requests): caught it
+KILLED    [isolated] one panel's failure cancels the whole load
+            checks run: unit; e2e/dashboards.cjs (panels); caught by 7 (unit and e2e), e.g. unit: one panel's failure is that panel's outcome; the others are delivered as if it had not happened | unit: a query that throws before it is sent fails its panel only | e2e: the run stopped (page.waitForFunction: Timeout 30000ms exceeded.)
+            unit: caught it; e2e/dashboards.cjs (panels): caught it
+KILLED    [isolated] one panel's failure takes the page down
+            checks run: e2e/dashboards.cjs (panels); caught by 1 (e2e), e.g. e2e: the run stopped (page.waitForFunction: Timeout 30000ms exceeded.)
+KILLED    [isolated] a failed panel shows nothing: no error, its place left empty
+            checks run: e2e/dashboards.cjs (panels); caught by 1 (e2e), e.g. e2e: the run stopped (TypeError: Cannot read properties of null (reading 'includes'))
+KILLED    [isolated] a failure is recorded on every panel
+            checks run: unit; e2e/dashboards.cjs (panels); caught by 4 (unit and e2e), e.g. unit: one panel's refused query is that panel's error; the other five panels are answered | unit: a query the model could not write is not sent, and fails its panel only | e2e: [isolated] the other five panels are answered and drawn, and the page says five answered and one not
+            unit: caught it; e2e/dashboards.cjs (panels): caught it
+KILLED    [kind] every kind counts as drawn: a heatmap gets an empty body and no word about it
+            checks run: unit; e2e/dashboards.cjs (panels); caught by 2 (unit and e2e), e.g. unit: the kinds this app draws are three of the model's five; the others are known and not drawn | e2e: the run stopped (TypeError: Cannot read properties of null (reading 'includes'))
+            unit: caught it; e2e/dashboards.cjs (panels): caught it
+KILLED    [kind] a heatmap is drawn as a line chart
+            checks run: e2e/dashboards.cjs (panels); caught by 1 (e2e), e.g. e2e: the run stopped (TypeError: Cannot read properties of null (reading 'slice'))
+KILLED    [kind] a spec is drawn without the model's validation
+            checks run: unit; e2e/dashboards.cjs (dashboard); caught by 2 (unit and e2e), e.g. unit: is a dashboard only when the model's validate says so | e2e: the run stopped (page.waitForSelector: Timeout 30000ms exceeded.)
+            unit: caught it; e2e/dashboards.cjs (dashboard): caught it
+KILLED    [kind] a panel that is not drawn does not say so
+            checks run: e2e/dashboards.cjs (panels); caught by 2 (e2e), e.g. e2e: [kind] a heatmap is not drawn as anything else: no plot, no figure, no table; it says it is a heatmap this app does not draw, and  | e2e: [kind] a text note is shown as the model's text for it, and says so
+KILLED    serve.json: /dashboards is not a document (a reload there would be a 404)
+            checks run: unit; e2e/prod.cjs; caught by 2 (unit and prod), e.g. unit: lists every route of the router as a document | prod: the run stopped
+            unit: caught it; e2e/prod.cjs: caught it
+
+23 of 23 killed, 0 survived, 0 not applied

@@ -98,30 +98,36 @@ export const PanelView = memo(function PanelView({ id, span, resolved, store, fr
         <Heading className="vz-panel-title" id={titleId}>
           {panel.title}
         </Heading>
-        {result && !failed ? (
-          <span className="vz-panel-meta" data-testid="panel-meta">
-            {state.stale && (
-              <>
-                <span className="vz-panel-note" data-testid="panel-stale">
-                  Showing the previous range
-                </span>
-                <span data-testid="panel-range">· {rangeWords(result.window.start, result.window.end, now)} ·</span>
-              </>
-            )}
-            {hasQueries && (
+        {/*
+          The meta has one place for both things it can say, as wide and as tall as the longer of them, so the head is the same
+          height before the first answer, with an answer, and while a new range waits: nothing under it moves when the words change.
+        */}
+        <span className="meta-hold">
+          {state.stale && result && !failed ? (
+            <span className="vz-panel-meta" data-testid="panel-meta">
+              <span className="vz-panel-note" data-testid="panel-stale" title={rangeWords(result.window.start, result.window.end, now)}>
+                Showing the previous range<span className="vz-sr">: {rangeWords(result.window.start, result.window.end, now)}</span>
+              </span>
+            </span>
+          ) : (
+            <span className="vz-panel-meta is-reserved" aria-hidden="true">
+              <span className="vz-panel-note">Showing the previous range</span>
+            </span>
+          )}
+          {result && !failed && !state.stale && hasQueries ? (
+            <span className="vz-panel-meta" data-testid="panel-meta">
               <span>
                 every <span className="vz-qty">{stepWords(result.window.step)}</span>
               </span>
-            )}
-            {hasQueries && <Age at={result.receivedAt} />}
-          </span>
-        ) : (
-          // The meta's place before the first answer, so the head is the same height when it lands.
-          <span className="vz-panel-meta is-reserved" aria-hidden="true">
-            <span>every 30 s</span>
-            <span>· updated just now</span>
-          </span>
-        )}
+              <Age at={result.receivedAt} />
+            </span>
+          ) : (
+            <span className="vz-panel-meta is-reserved" aria-hidden="true">
+              <span>every 30 s</span>
+              <span>· updated just now</span>
+            </span>
+          )}
+        </span>
       </div>
       {'description' in panel && panel.description ? <p className="vz-panel-desc">{panel.description}</p> : null}
       <div className="vz-panel-body" data-view={panel.kind === 'timeseries' ? 'chart' : panel.kind}>

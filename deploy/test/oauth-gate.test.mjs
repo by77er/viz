@@ -62,7 +62,8 @@ function release(name, { stage = 'gatetest', gated = {}, manifest: extra = {} } 
 }
 const ship = async (name, opts = {}, args = {}) => {
   const r = release(name, opts)
-  const out = await captured(() => deploy({ stage: r.stage, ackText: `viz-control@v1`, ...args }))
+  // This file is not about the web app: the stage-before-production rule is overridden (review of D74, M-2).
+  const out = await captured(() => deploy({ stage: r.stage, ackText: `viz-control@v1`, appStageOverride: 'a test about the OAuth gate', ...args }))
   return { ...out, ...r, exit: out.result?.exit, record: out.result?.record }
 }
 const shipped = async (name, opts, args) => {

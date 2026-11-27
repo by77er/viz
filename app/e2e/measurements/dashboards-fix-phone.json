@@ -1,0 +1,855 @@
+{
+ "label": "dashboards-fix",
+ "layout": "phone",
+ "dashboard": "services_overview",
+ "when": "2026-11-27T01:24:06.241Z",
+ "runs": 20,
+ "voided": [],
+ "cores": 4,
+ "calibrationMs": 336.099467,
+ "setup": "CPU 4x slowdown, Fast 4G (165 ms latency, 9 Mbit/s down, 1.5 up), the built app on the mock",
+ "load": {
+  "min": 1,
+  "max": 2.09,
+  "median": 1.83,
+  "samplesAboveCores": 0
+ },
+ "judged": true,
+ "scrollKept": 20,
+ "firstPanels": [
+  "requests",
+  "requests",
+  "requests",
+  "requests",
+  "requests",
+  "requests",
+  "requests",
+  "requests",
+  "requests",
+  "requests",
+  "requests",
+  "requests",
+  "requests",
+  "requests",
+  "requests",
+  "requests",
+  "requests",
+  "requests",
+  "requests",
+  "requests"
+ ],
+ "summary": {
+  "viewChange": {
+   "p75": 98.29999999701977,
+   "median": 87.09999999776483,
+   "max": 164.09999999776483,
+   "min": 68.5,
+   "n": 20
+  },
+  "viewInp": {
+   "p75": 96,
+   "median": 80,
+   "max": 152,
+   "min": 64,
+   "n": 20
+  },
+  "panelsShown": {
+   "p75": 422.70000000298023,
+   "median": 406.80000000074506,
+   "max": 550.3999999985099,
+   "min": 323.29999999701977,
+   "n": 20
+  },
+  "firstPaint": {
+   "p75": 40.599999997764826,
+   "median": 31.199999999254942,
+   "max": 137.19999999925494,
+   "min": 1.5999999977648258,
+   "n": 20
+  },
+  "paintMedian": {
+   "p75": 5.100000001490116,
+   "median": 4.200000002980232,
+   "max": 9.899999998509884,
+   "min": 0.6999999992549419,
+   "n": 20
+  },
+  "paintWorst": {
+   "p75": 143.69999999925494,
+   "median": 71.90000000223517,
+   "max": 202,
+   "min": 36.5,
+   "n": 20
+  },
+  "firstVisible": {
+   "p75": 636.3000000007451,
+   "median": 613.3000000007451,
+   "max": 804.3999999985099,
+   "min": 536.8999999985099,
+   "n": 20
+  },
+  "allPainted": {
+   "p75": 1301.8999999985099,
+   "median": 1263.7999999970198,
+   "max": 1568.8999999985099,
+   "min": 1133.699999999255,
+   "n": 20
+  },
+  "rangeSend": {
+   "p75": 72.5,
+   "median": 62.69999999925494,
+   "max": 118.5,
+   "min": 46.19999999925494,
+   "n": 20
+  },
+  "rangeBusy": {
+   "p75": 158.69999999925494,
+   "median": 134.19999999925494,
+   "max": 236.80000000074506,
+   "min": 109,
+   "n": 20
+  },
+  "rangeInp": {
+   "p75": 160,
+   "median": 136,
+   "max": 232,
+   "min": 112,
+   "n": 20
+  },
+  "rangeFirstPaint": {
+   "p75": 29.400000002235174,
+   "median": 18.100000001490116,
+   "max": 49.899999998509884,
+   "min": 6.899999998509884,
+   "n": 20
+  },
+  "rangePaintMedian": {
+   "p75": 5.899999998509884,
+   "median": 3.600000001490116,
+   "max": 13.100000001490116,
+   "min": 1.4000000022351742,
+   "n": 20
+  },
+  "rangePaintWorst": {
+   "p75": 85.30000000074506,
+   "median": 62,
+   "max": 113.10000000149012,
+   "min": 26.899999998509884,
+   "n": 20
+  },
+  "rangeAllPainted": {
+   "p75": 831.9000000022352,
+   "median": 793.1999999992549,
+   "max": 939.3999999985099,
+   "min": 718.6000000014901,
+   "n": 20
+  },
+  "clsList": {
+   "p75": 0.00024976123046874997,
+   "median": 0.00024976123046874997,
+   "max": 0.00024976123046874997
+  },
+  "clsView.unmarked": {
+   "p75": 0,
+   "median": 0,
+   "max": 0
+  },
+  "clsView.all": {
+   "p75": 0,
+   "median": 0,
+   "max": 0
+  },
+  "clsRange.unmarked": {
+   "p75": 0,
+   "median": 0,
+   "max": 0
+  },
+  "clsRange.all": {
+   "p75": 0.0010436249999999998,
+   "median": 0.0010436249999999998,
+   "max": 0.0010436249999999998
+  }
+ },
+ "samples": [
+  {
+   "at": "2026-11-27T01:21:36.439Z",
+   "load1": 1.01,
+   "clsList": 0.00024976123046874997,
+   "viewChange": 93.10000000149012,
+   "panelsShown": 407.30000000074506,
+   "viewInp": 88,
+   "firstPaint": 33.5,
+   "firstPanel": "requests",
+   "firstVisible": 594.1000000014901,
+   "paintWorst": 64.19999999925494,
+   "paintWorstPanel": "memory",
+   "paintMedian": 4.100000001490116,
+   "allPainted": 1133.699999999255,
+   "panelsTimed": 12,
+   "clsView": {
+    "unmarked": 0,
+    "all": 0
+   },
+   "rangeSend": 63.900000002235174,
+   "rangeBusy": 151.69999999925494,
+   "rangeInp": 152,
+   "rangePaintWorst": 105,
+   "rangePaintWorstPanel": "cpu",
+   "rangePaintMedian": 5.899999998509884,
+   "rangeFirstPaint": 25,
+   "rangeAllPainted": 734.1999999992549,
+   "rangeScrollKept": true,
+   "clsRange": {
+    "unmarked": 0,
+    "all": 0.001043265625
+   },
+   "loadEnd": 1
+  },
+  {
+   "at": "2026-11-27T01:21:43.795Z",
+   "load1": 1,
+   "clsList": 0.00024976123046874997,
+   "viewChange": 99.19999999925494,
+   "panelsShown": 401.80000000074506,
+   "viewInp": 96,
+   "firstPaint": 40.599999997764826,
+   "firstPanel": "requests",
+   "firstVisible": 635.5999999977648,
+   "paintWorst": 75.39999999850988,
+   "paintWorstPanel": "memory",
+   "paintMedian": 3.899999998509884,
+   "allPainted": 1301.8999999985099,
+   "panelsTimed": 12,
+   "clsView": {
+    "unmarked": 0,
+    "all": 0
+   },
+   "rangeSend": 72,
+   "rangeBusy": 137.5,
+   "rangeInp": 136,
+   "rangePaintWorst": 100.10000000149012,
+   "rangePaintWorstPanel": "cpu",
+   "rangePaintMedian": 7.5,
+   "rangeFirstPaint": 13.399999998509884,
+   "rangeAllPainted": 741.8000000007451,
+   "rangeScrollKept": true,
+   "clsRange": {
+    "unmarked": 0,
+    "all": 0.001043265625
+   },
+   "loadEnd": 1.08
+  },
+  {
+   "at": "2026-11-27T01:21:51.288Z",
+   "load1": 1.08,
+   "clsList": 0.00024976123046874997,
+   "viewChange": 90.39999999850988,
+   "panelsShown": 323.29999999701977,
+   "viewInp": 88,
+   "firstPaint": 61.100000001490116,
+   "firstPanel": "requests",
+   "firstVisible": 644.3999999985099,
+   "paintWorst": 70.70000000298023,
+   "paintWorstPanel": "rate_by_route",
+   "paintMedian": 3.300000000745058,
+   "allPainted": 1263.7999999970198,
+   "panelsTimed": 12,
+   "clsView": {
+    "unmarked": 0,
+    "all": 0
+   },
+   "rangeSend": 46.19999999925494,
+   "rangeBusy": 125.30000000074506,
+   "rangeInp": 128,
+   "rangePaintWorst": 68.19999999925494,
+   "rangePaintWorstPanel": "cpu",
+   "rangePaintMedian": 3.600000001490116,
+   "rangeFirstPaint": 11.600000001490116,
+   "rangeAllPainted": 807.0999999977648,
+   "rangeScrollKept": true,
+   "clsRange": {
+    "unmarked": 0,
+    "all": 0.001043265625
+   },
+   "loadEnd": 1.72
+  },
+  {
+   "at": "2026-11-27T01:21:58.977Z",
+   "load1": 1.72,
+   "clsList": 0.00024976123046874997,
+   "viewChange": 78.40000000223517,
+   "panelsShown": 369.5,
+   "viewInp": 72,
+   "firstPaint": 10.600000001490116,
+   "firstPanel": "requests",
+   "firstVisible": 565.2000000029802,
+   "paintWorst": 65.30000000074506,
+   "paintWorstPanel": "latency_by_service",
+   "paintMedian": 4.900000002235174,
+   "allPainted": 1224,
+   "panelsTimed": 12,
+   "clsView": {
+    "unmarked": 0,
+    "all": 0
+   },
+   "rangeSend": 57.400000002235174,
+   "rangeBusy": 132.80000000074506,
+   "rangeInp": 152,
+   "rangePaintWorst": 49.899999998509884,
+   "rangePaintWorstPanel": "requests",
+   "rangePaintMedian": 3.300000000745058,
+   "rangeFirstPaint": 49.899999998509884,
+   "rangeAllPainted": 757.6000000014901,
+   "rangeScrollKept": true,
+   "clsRange": {
+    "unmarked": 0,
+    "all": 0.0010436249999999998
+   },
+   "loadEnd": 1.61
+  },
+  {
+   "at": "2026-11-27T01:22:06.445Z",
+   "load1": 1.61,
+   "clsList": 0.00024976123046874997,
+   "viewChange": 87.09999999776483,
+   "panelsShown": 416.5,
+   "viewInp": 80,
+   "firstPaint": 10.399999998509884,
+   "firstPanel": "requests",
+   "firstVisible": 601.6999999992549,
+   "paintWorst": 81.69999999925494,
+   "paintWorstPanel": "rate_by_route",
+   "paintMedian": 5.100000001490116,
+   "allPainted": 1269.8999999985099,
+   "panelsTimed": 12,
+   "clsView": {
+    "unmarked": 0,
+    "all": 0
+   },
+   "rangeSend": 60.100000001490116,
+   "rangeBusy": 113.10000000149012,
+   "rangeInp": 112,
+   "rangePaintWorst": 113.10000000149012,
+   "rangePaintWorstPanel": "cpu",
+   "rangePaintMedian": 10.099999997764826,
+   "rangeFirstPaint": 13.199999999254942,
+   "rangeAllPainted": 718.6000000014901,
+   "rangeScrollKept": true,
+   "clsRange": {
+    "unmarked": 0,
+    "all": 0.0010436249999999998
+   },
+   "loadEnd": 1.64
+  },
+  {
+   "at": "2026-11-27T01:22:13.929Z",
+   "load1": 1.64,
+   "clsList": 0.00024976123046874997,
+   "viewChange": 76.80000000074506,
+   "panelsShown": 383.3999999985099,
+   "viewInp": 72,
+   "firstPaint": 35.29999999701977,
+   "firstPanel": "requests",
+   "firstVisible": 588.8999999985099,
+   "paintWorst": 66.5,
+   "paintWorstPanel": "latency_by_service",
+   "paintMedian": 5.899999998509884,
+   "allPainted": 1257.699999999255,
+   "panelsTimed": 12,
+   "clsView": {
+    "unmarked": 0,
+    "all": 0
+   },
+   "rangeSend": 58.400000002235174,
+   "rangeBusy": 134.19999999925494,
+   "rangeInp": 136,
+   "rangePaintWorst": 48.30000000074506,
+   "rangePaintWorstPanel": "cpu",
+   "rangePaintMedian": 2,
+   "rangeFirstPaint": 36.899999998509884,
+   "rangeAllPainted": 831.9000000022352,
+   "rangeScrollKept": true,
+   "clsRange": {
+    "unmarked": 0,
+    "all": 0.0010436249999999998
+   },
+   "loadEnd": 1.62
+  },
+  {
+   "at": "2026-11-27T01:22:21.459Z",
+   "load1": 1.62,
+   "clsList": 0.00024976123046874997,
+   "viewChange": 90,
+   "panelsShown": 426.30000000074506,
+   "viewInp": 80,
+   "firstPaint": 66.90000000223517,
+   "firstPanel": "requests",
+   "firstVisible": 642.8000000007451,
+   "paintWorst": 157.80000000074506,
+   "paintWorstPanel": "errors_by_service",
+   "paintMedian": 4.100000001490116,
+   "allPainted": 1300.8999999985099,
+   "panelsTimed": 12,
+   "clsView": {
+    "unmarked": 0,
+    "all": 0
+   },
+   "rangeSend": 60.399999998509884,
+   "rangeBusy": 155.59999999776483,
+   "rangeInp": 160,
+   "rangePaintWorst": 85.30000000074506,
+   "rangePaintWorstPanel": "rate_by_route",
+   "rangePaintMedian": 5.700000002980232,
+   "rangeFirstPaint": 28.799999997019768,
+   "rangeAllPainted": 854.0999999977648,
+   "rangeScrollKept": true,
+   "clsRange": {
+    "unmarked": 0,
+    "all": 0.0010436249999999998
+   },
+   "loadEnd": 1.73
+  },
+  {
+   "at": "2026-11-27T01:22:29.138Z",
+   "load1": 1.73,
+   "clsList": 0.00024976123046874997,
+   "viewChange": 74.89999999850988,
+   "panelsShown": 406.80000000074506,
+   "viewInp": 72,
+   "firstPaint": 5.299999997019768,
+   "firstPanel": "requests",
+   "firstVisible": 536.8999999985099,
+   "paintWorst": 165.5,
+   "paintWorstPanel": "errors_by_service",
+   "paintMedian": 4.199999999254942,
+   "allPainted": 1247.800000000745,
+   "panelsTimed": 12,
+   "clsView": {
+    "unmarked": 0,
+    "all": 0
+   },
+   "rangeSend": 62.69999999925494,
+   "rangeBusy": 117.19999999925494,
+   "rangeInp": 120,
+   "rangePaintWorst": 67,
+   "rangePaintWorstPanel": "latency",
+   "rangePaintMedian": 4.100000001490116,
+   "rangeFirstPaint": 6.899999998509884,
+   "rangeAllPainted": 793.1999999992549,
+   "rangeScrollKept": true,
+   "clsRange": {
+    "unmarked": 0,
+    "all": 0.0010436249999999998
+   },
+   "loadEnd": 1.84
+  },
+  {
+   "at": "2026-11-27T01:22:36.662Z",
+   "load1": 1.84,
+   "clsList": 0.00024976123046874997,
+   "viewChange": 68.5,
+   "panelsShown": 352.69999999925494,
+   "viewInp": 64,
+   "firstPaint": 1.5999999977648258,
+   "firstPanel": "requests",
+   "firstVisible": 549.0999999977648,
+   "paintWorst": 63,
+   "paintWorstPanel": "errors_by_service",
+   "paintMedian": 4.199999999254942,
+   "allPainted": 1153.7999999970198,
+   "panelsTimed": 12,
+   "clsView": {
+    "unmarked": 0,
+    "all": 0
+   },
+   "rangeSend": 51.5,
+   "rangeBusy": 116.59999999776483,
+   "rangeInp": 112,
+   "rangePaintWorst": 61.600000001490116,
+   "rangePaintWorstPanel": "latency",
+   "rangePaintMedian": 3,
+   "rangeFirstPaint": 29.400000002235174,
+   "rangeAllPainted": 727.1999999992549,
+   "rangeScrollKept": true,
+   "clsRange": {
+    "unmarked": 0,
+    "all": 0.0010436249999999998
+   },
+   "loadEnd": 2.02
+  },
+  {
+   "at": "2026-11-27T01:22:44.003Z",
+   "load1": 2.02,
+   "clsList": 0.00024976123046874997,
+   "viewChange": 121.5,
+   "panelsShown": 426.5,
+   "viewInp": 112,
+   "firstPaint": 10.800000000745058,
+   "firstPanel": "requests",
+   "firstVisible": 613.3000000007451,
+   "paintWorst": 108.60000000149012,
+   "paintWorstPanel": "errors_by_service",
+   "paintMedian": 9.899999998509884,
+   "allPainted": 1339.9000000022352,
+   "panelsTimed": 12,
+   "clsView": {
+    "unmarked": 0,
+    "all": 0
+   },
+   "rangeSend": 58.79999999701977,
+   "rangeBusy": 120.89999999850988,
+   "rangeInp": 120,
+   "rangePaintWorst": 106.90000000223517,
+   "rangePaintWorstPanel": "cpu",
+   "rangePaintMedian": 6.399999998509884,
+   "rangeFirstPaint": 20.600000001490116,
+   "rangeAllPainted": 744.2999999970198,
+   "rangeScrollKept": true,
+   "clsRange": {
+    "unmarked": 0,
+    "all": 0.0010436249999999998
+   },
+   "loadEnd": 2.01
+  },
+  {
+   "at": "2026-11-27T01:22:51.552Z",
+   "load1": 2.01,
+   "clsList": 0.00024976123046874997,
+   "viewChange": 74.60000000149012,
+   "panelsShown": 369.69999999925494,
+   "viewInp": 72,
+   "firstPaint": 35.30000000074506,
+   "firstPanel": "requests",
+   "firstVisible": 565.3000000007451,
+   "paintWorst": 36.5,
+   "paintWorstPanel": "errors_by_service",
+   "paintMedian": 5.600000001490116,
+   "allPainted": 1204.300000000745,
+   "panelsTimed": 12,
+   "clsView": {
+    "unmarked": 0,
+    "all": 0
+   },
+   "rangeSend": 94,
+   "rangeBusy": 170.19999999925494,
+   "rangeInp": 168,
+   "rangePaintWorst": 50.899999998509884,
+   "rangePaintWorstPanel": "memory",
+   "rangePaintMedian": 6.800000000745058,
+   "rangeFirstPaint": 11.400000002235174,
+   "rangeAllPainted": 833.5999999977648,
+   "rangeScrollKept": true,
+   "clsRange": {
+    "unmarked": 0,
+    "all": 0.0010436249999999998
+   },
+   "loadEnd": 2.09
+  },
+  {
+   "at": "2026-11-27T01:22:59.141Z",
+   "load1": 2.09,
+   "clsList": 0.00024976123046874997,
+   "viewChange": 69.5,
+   "panelsShown": 384.30000000074506,
+   "viewInp": 64,
+   "firstPaint": 31.199999999254942,
+   "firstPanel": "requests",
+   "firstVisible": 634.3000000007451,
+   "paintWorst": 71.90000000223517,
+   "paintWorstPanel": "cpu",
+   "paintMedian": 4.200000002980232,
+   "allPainted": 1277.4000000022352,
+   "panelsTimed": 12,
+   "clsView": {
+    "unmarked": 0,
+    "all": 0
+   },
+   "rangeSend": 118.5,
+   "rangeBusy": 215,
+   "rangeInp": 216,
+   "rangePaintWorst": 39.600000001490116,
+   "rangePaintWorstPanel": "error_ratio",
+   "rangePaintMedian": 3.2000000029802322,
+   "rangeFirstPaint": 17.200000002980232,
+   "rangeAllPainted": 848.8999999985099,
+   "rangeScrollKept": true,
+   "clsRange": {
+    "unmarked": 0,
+    "all": 0.0010436249999999998
+   },
+   "loadEnd": 2.08
+  },
+  {
+   "at": "2026-11-27T01:23:06.695Z",
+   "load1": 2.08,
+   "clsList": 0.00024976123046874997,
+   "viewChange": 80.5,
+   "panelsShown": 387.69999999925494,
+   "viewInp": 80,
+   "firstPaint": 2.100000001490116,
+   "firstPanel": "requests",
+   "firstVisible": 547,
+   "paintWorst": 60.5,
+   "paintWorstPanel": "cpu",
+   "paintMedian": 4.899999998509884,
+   "allPainted": 1149,
+   "panelsTimed": 12,
+   "clsView": {
+    "unmarked": 0,
+    "all": 0
+   },
+   "rangeSend": 65.69999999925494,
+   "rangeBusy": 122.10000000149012,
+   "rangeInp": 120,
+   "rangePaintWorst": 42.30000000074506,
+   "rangePaintWorstPanel": "memory",
+   "rangePaintMedian": 4.599999997764826,
+   "rangeFirstPaint": 17.800000000745058,
+   "rangeAllPainted": 770,
+   "rangeScrollKept": true,
+   "clsRange": {
+    "unmarked": 0,
+    "all": 0.0010436249999999998
+   },
+   "loadEnd": 1.99
+  },
+  {
+   "at": "2026-11-27T01:23:14.094Z",
+   "load1": 1.99,
+   "clsList": 0.00024976123046874997,
+   "viewChange": 76.80000000074506,
+   "panelsShown": 431.69999999925494,
+   "viewInp": 72,
+   "firstPaint": 20.300000000745058,
+   "firstPanel": "requests",
+   "firstVisible": 597.5,
+   "paintWorst": 153.30000000074506,
+   "paintWorstPanel": "errors_by_service",
+   "paintMedian": 6.5,
+   "allPainted": 1281.6000000014901,
+   "panelsTimed": 12,
+   "clsView": {
+    "unmarked": 0,
+    "all": 0
+   },
+   "rangeSend": 50.80000000074506,
+   "rangeBusy": 109,
+   "rangeInp": 112,
+   "rangePaintWorst": 83,
+   "rangePaintWorstPanel": "latency",
+   "rangePaintMedian": 3.100000001490116,
+   "rangeFirstPaint": 31.300000000745058,
+   "rangeAllPainted": 787.4000000022352,
+   "rangeScrollKept": true,
+   "clsRange": {
+    "unmarked": 0,
+    "all": 0.0010436249999999998
+   },
+   "loadEnd": 1.83
+  },
+  {
+   "at": "2026-11-27T01:23:21.223Z",
+   "load1": 1.83,
+   "clsList": 0.00024976123046874997,
+   "viewChange": 98.29999999701977,
+   "panelsShown": 376.0999999977648,
+   "viewInp": 96,
+   "firstPaint": 63.30000000074506,
+   "firstPanel": "requests",
+   "firstVisible": 661.6999999992549,
+   "paintWorst": 63.30000000074506,
+   "paintWorstPanel": "requests",
+   "paintMedian": 0.8000000007450581,
+   "allPainted": 1182.8999999985099,
+   "panelsTimed": 12,
+   "clsView": {
+    "unmarked": 0,
+    "all": 0
+   },
+   "rangeSend": 78.69999999925494,
+   "rangeBusy": 200.30000000074506,
+   "rangeInp": 200,
+   "rangePaintWorst": 26.899999998509884,
+   "rangePaintWorstPanel": "latency_by_service",
+   "rangePaintMedian": 1.4000000022351742,
+   "rangeFirstPaint": 10.300000000745058,
+   "rangeAllPainted": 894.4000000022352,
+   "rangeScrollKept": true,
+   "clsRange": {
+    "unmarked": 0,
+    "all": 0.0010436249999999998
+   },
+   "loadEnd": 1.93
+  },
+  {
+   "at": "2026-11-27T01:23:28.416Z",
+   "load1": 1.93,
+   "clsList": 0.00024976123046874997,
+   "viewChange": 120.89999999850988,
+   "panelsShown": 550.3999999985099,
+   "viewInp": 112,
+   "firstPaint": 103.5,
+   "firstPanel": "requests",
+   "firstVisible": 749.8999999985099,
+   "paintWorst": 143.69999999925494,
+   "paintWorstPanel": "errors_by_service",
+   "paintMedian": 4.800000000745058,
+   "allPainted": 1494.2999999970198,
+   "panelsTimed": 12,
+   "clsView": {
+    "unmarked": 0,
+    "all": 0
+   },
+   "rangeSend": 82,
+   "rangeBusy": 183.30000000074506,
+   "rangeInp": 184,
+   "rangePaintWorst": 92.39999999850988,
+   "rangePaintWorstPanel": "error_ratio",
+   "rangePaintMedian": 2.899999998509884,
+   "rangeFirstPaint": 9.600000001490116,
+   "rangeAllPainted": 939.3999999985099,
+   "rangeScrollKept": true,
+   "clsRange": {
+    "unmarked": 0,
+    "all": 0.0010436249999999998
+   },
+   "loadEnd": 1.93
+  },
+  {
+   "at": "2026-11-27T01:23:36.387Z",
+   "load1": 1.93,
+   "clsList": 0.00024976123046874997,
+   "viewChange": 164.09999999776483,
+   "panelsShown": 508.5,
+   "viewInp": 152,
+   "firstPaint": 137.19999999925494,
+   "firstPanel": "requests",
+   "firstVisible": 804.3999999985099,
+   "paintWorst": 202,
+   "paintWorstPanel": "errors_by_service",
+   "paintMedian": 3.899999998509884,
+   "allPainted": 1568.8999999985099,
+   "panelsTimed": 12,
+   "clsView": {
+    "unmarked": 0,
+    "all": 0
+   },
+   "rangeSend": 72.5,
+   "rangeBusy": 158.69999999925494,
+   "rangeInp": 160,
+   "rangePaintWorst": 62,
+   "rangePaintWorstPanel": "cpu",
+   "rangePaintMedian": 13.100000001490116,
+   "rangeFirstPaint": 18.100000001490116,
+   "rangeAllPainted": 825.9000000022352,
+   "rangeScrollKept": true,
+   "clsRange": {
+    "unmarked": 0,
+    "all": 0.0010436249999999998
+   },
+   "loadEnd": 1.94
+  },
+  {
+   "at": "2026-11-27T01:23:44.295Z",
+   "load1": 1.94,
+   "clsList": 0.00024976123046874997,
+   "viewChange": 91.39999999850988,
+   "panelsShown": 411.3999999985099,
+   "viewInp": 96,
+   "firstPaint": 27.300000000745058,
+   "firstPanel": "requests",
+   "firstVisible": 616.3000000007451,
+   "paintWorst": 152.80000000074506,
+   "paintWorstPanel": "errors_by_service",
+   "paintMedian": 5.199999999254942,
+   "allPainted": 1311.199999999255,
+   "panelsTimed": 12,
+   "clsView": {
+    "unmarked": 0,
+    "all": 0
+   },
+   "rangeSend": 65.39999999850988,
+   "rangeBusy": 152.19999999925494,
+   "rangeInp": 152,
+   "rangePaintWorst": 38.79999999701977,
+   "rangePaintWorstPanel": "requests",
+   "rangePaintMedian": 3,
+   "rangeFirstPaint": 38.79999999701977,
+   "rangeAllPainted": 817.6999999992549,
+   "rangeScrollKept": true,
+   "clsRange": {
+    "unmarked": 0,
+    "all": 0.0010436249999999998
+   },
+   "loadEnd": 1.87
+  },
+  {
+   "at": "2026-11-27T01:23:51.521Z",
+   "load1": 1.87,
+   "clsList": 0.00024976123046874997,
+   "viewChange": 80.70000000298023,
+   "panelsShown": 422.70000000298023,
+   "viewInp": 80,
+   "firstPaint": 38.5,
+   "firstPanel": "requests",
+   "firstVisible": 636.3000000007451,
+   "paintWorst": 71.39999999850988,
+   "paintWorstPanel": "memory",
+   "paintMedian": 0.6999999992549419,
+   "allPainted": 1237.4000000022352,
+   "panelsTimed": 12,
+   "clsView": {
+    "unmarked": 0,
+    "all": 0
+   },
+   "rangeSend": 61.399999998509884,
+   "rangeBusy": 121.30000000074506,
+   "rangeInp": 120,
+   "rangePaintWorst": 49.100000001490116,
+   "rangePaintWorstPanel": "error_ratio",
+   "rangePaintMedian": 4.099999997764826,
+   "rangeFirstPaint": 33.80000000074506,
+   "rangeAllPainted": 724.6999999992549,
+   "rangeScrollKept": true,
+   "clsRange": {
+    "unmarked": 0,
+    "all": 0.0010436249999999998
+   },
+   "loadEnd": 1.8
+  },
+  {
+   "at": "2026-11-27T01:23:58.542Z",
+   "load1": 1.8,
+   "clsList": 0.00024976123046874997,
+   "viewChange": 103.30000000074506,
+   "panelsShown": 420,
+   "viewInp": 96,
+   "firstPaint": 12.400000002235174,
+   "firstPanel": "requests",
+   "firstVisible": 617.2000000029802,
+   "paintWorst": 106.39999999850988,
+   "paintWorstPanel": "latency_by_service",
+   "paintMedian": 4.700000002980232,
+   "allPainted": 1412.5,
+   "panelsTimed": 12,
+   "clsView": {
+    "unmarked": 0,
+    "all": 0
+   },
+   "rangeSend": 82.5,
+   "rangeBusy": 236.80000000074506,
+   "rangeInp": 232,
+   "rangePaintWorst": 82.19999999925494,
+   "rangePaintWorstPanel": "latency_by_service",
+   "rangePaintMedian": 3.400000002235174,
+   "rangeFirstPaint": 29.300000000745058,
+   "rangeAllPainted": 808.8000000007451,
+   "rangeScrollKept": true,
+   "clsRange": {
+    "unmarked": 0,
+    "all": 0.0010436249999999998
+   },
+   "loadEnd": 1.83
+  }
+ ]
+}
