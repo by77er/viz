@@ -1,6 +1,6 @@
 {
   "comment": "What a server must do with the build in dist/ (README.md, \"Needed changes in deploy/\"). e2e/prod.cjs serves dist/ by exactly these rules and checks the app under them; src/shell/serve.test.ts checks that the documents are the router's routes.",
-  "documents": ["/", "/explore", "/help", "/settings"],
+  "documents": ["/", "/explore", "/dashboards", "/help", "/settings"],
   "assetsPrefix": "/assets/",
   "files": ["/favicon.svg"],
   "headers": {

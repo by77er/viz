@@ -95,7 +95,8 @@ const servicesOverview: Dashboard = {
     kind: 'rows',
     rows: [
       { title: 'Health', items: [{ panel: 'requests', span: 3 }, { panel: 'error_ratio', span: 3 }, { panel: 'latency', span: 3 }, { panel: 'pods', span: 3 }] },
-      { title: 'Traffic', items: ['rate_by_service', 'errors_by_service', 'latency_by_service', 'rate_by_route'] },
+      { title: 'Traffic', items: ['rate_by_service', 'errors_by_service'] },
+      { title: 'Latency and routes', items: ['latency_by_service', 'rate_by_route'] },
       { title: 'Pods', items: ['cpu', 'memory'] },
       { title: 'Detail', items: ['routes', 'capacity'] },
     ],

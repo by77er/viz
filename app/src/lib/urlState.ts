@@ -78,10 +78,13 @@ export function parseSearchString(searchStr: string): Record<string, string> {
 
 export function stringifySearch(search: Record<string, unknown>): string {
   const p = new URLSearchParams()
+  // A dashboard's address (it has an `id`) keeps every field: the range left out there means the
+  // dashboard's own, not Explore's default, so "the last hour" must stay in the address.
+  const dashboard = str(search.id) !== undefined
   for (const [k, v] of Object.entries(search)) {
     const s = str(v)
     if (s === undefined) continue
-    if (k in DEFAULT_SEARCH && DEFAULT_SEARCH[k as keyof ExploreSearch] === s) continue
+    if (!dashboard && k in DEFAULT_SEARCH && DEFAULT_SEARCH[k as keyof ExploreSearch] === s) continue
     p.set(k, s)
   }
   const out = p.toString()

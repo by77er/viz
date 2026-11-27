@@ -114,9 +114,97 @@ const CASES = [
   ['CORS request from the app', 'POST', '/api/v1/query', { query: '1' }, 'read', { Origin: 'http://127.0.0.1:8820' }],
 ]
 
+// ---- control's dashboard read routes (control/README.md, "Dashboards"; mock/dashboards.ts). The real stack holds the
+// mock's own dashboards (real/seed.ts creates them through control's API), so the answers are compared whole.
+// [name, path under /api/v1/control, credential (default dash: a key with read and dashboards:read)]
+const D = '/api/v1/control/dashboards'
+const DASHBOARD_CASES = [
+  ['dashboards: the list', D],
+  ['dashboards: search by name', `${D}?q=CAPACITY`],
+  ['dashboards: search by owner', `${D}?q=payments`],
+  ['dashboards: search by a word of the intent', `${D}?q=purchase`],
+  ['dashboards: search that matches nothing', `${D}?q=zzz-nothing`],
+  ['dashboards: a tag', `${D}?tag=on-call`],
+  ['dashboards: part of a tag is not the tag', `${D}?tag=call`],
+  ['dashboards: an owner', `${D}?owner=platform`],
+  ['dashboards: search and tag', `${D}?q=checkout&tag=on-call`],
+  ['dashboards: the first page of two', `${D}?limit=2`],
+  ['dashboards: the limit the app asks with', `${D}?limit=200`],
+  ['dashboards: a limit of 0', `${D}?limit=0`],
+  ['dashboards: a limit of 201', `${D}?limit=201`],
+  ['dashboards: deleted ones (none)', `${D}?deleted=true`],
+  ['dashboards: a tenant in the query', `${D}?tenant=someone-else`],
+  ['dashboard: its spec', `${D}/service_red`],
+  ['dashboard: twelve panels', `${D}/services_overview`],
+  ['dashboard: a fragment used twice', `${D}/checkout_path`],
+  ['dashboard: its outline', `${D}/pod_capacity?view=outline`],
+  ['dashboard: resolved with defaults', `${D}/service_red?view=resolved`],
+  ['dashboard: resolved with a variable', `${D}/service_red?view=resolved&var.service=orders&var.status=500`],
+  ['dashboard: resolved with a value that must be escaped', `${D}/service_red?view=resolved&var.service=${encodeURIComponent('x"} or up{a="')}`],
+  ['dashboard: resolved, fragments expanded', `${D}/checkout_path?view=resolved`],
+  ['dashboard: a view it does not have', `${D}/service_red?view=png`],
+  ['dashboard: revision 1', `${D}/service_red?revision=1`],
+  ['dashboard: a revision it does not have', `${D}/service_red?revision=2`],
+  ['dashboard: an id nothing has', `${D}/no_such_board`],
+  ['dashboards: no key', D, 'none'],
+  ['dashboards: a key that does not exist', D, 'bad'],
+  ['dashboards: a key that reads metrics only', D, 'read'],
+  ['dashboards: a key that only writes', D, 'readless'],
+  ['dashboard: a key that reads metrics only', `${D}/service_red`, 'read'],
+  ['dashboard: no key', `${D}/service_red`, 'none'],
+]
+
+/** What two answers about dashboards must agree on: everything but who created them and when (the seed's key and time in the real stack). */
+function dashboardBody(json) {
+  const strip = (d) => {
+    if (!d || typeof d !== 'object') return d
+    const { createdAt, createdBy, lastChangedAt, lastChangedBy, ...rest } = d
+    return { ...rest, has: { createdAt: typeof createdAt, createdBy: shape(createdBy), lastChangedAt: typeof lastChangedAt, lastChangedBy: shape(lastChangedBy) } }
+  }
+  if (!json || typeof json !== 'object') return json
+  const out = { ...json }
+  if (Array.isArray(out.items)) out.items = out.items.map(strip)
+  if (out.dashboard) out.dashboard = strip(out.dashboard)
+  // A cursor is each side's own; that there is one, or none, is compared.
+  if ('next' in out) out.next = out.next === null ? null : 'a cursor'
+  return out
+}
+const stable = (v) => JSON.stringify(v, (_k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map((k) => [k, x[k]])) : x))
+
+async function dashboardCases(check, keys, mockKeys, record) {
+  if (!keys.dash) throw new Error('real/.wrangler/keys.json has no "dash" key: the stack was started before the dashboards key existed. Run: node real/stack.mjs stop; node real/stack.mjs start; node real/stack.mjs seed')
+  for (const [name, p, cred = 'dash'] of DASHBOARD_CASES) {
+    const c = [name, 'GET', p, null, cred]
+    const [r, m] = await Promise.all([call(REAL, 'real', c, keys, mockKeys), call(MOCK, 'mock', c, keys, mockKeys)])
+    record.push({ name, request: { method: 'GET', path: p, body: null, credential: cred, headers: {} }, status: r.status, headers: Object.fromEntries(Object.entries(r.headers).filter(([k]) => !/^(date|content-length|transfer-encoding|connection|keep-alive)$/.test(k))), body: r.text.length > 2000 ? `${r.text.slice(0, 2000)}… (${r.text.length} bytes)` : r.text })
+    const diffs = []
+    if (r.status !== m.status) diffs.push(`status ${r.status} vs mock ${m.status}`)
+    const type = (h) => (h['content-type'] || '').split(';')[0]
+    if (type(r.headers) !== type(m.headers)) diffs.push(`content-type ${type(r.headers)} vs mock ${type(m.headers)}`)
+    for (const h of ['www-authenticate', 'allow', 'etag']) if ((r.headers[h] ?? null) !== (m.headers[h] ?? null)) diffs.push(`${h}: ${r.headers[h]} vs mock ${m.headers[h]}`)
+    if (!r.json || !m.json) diffs.push(`JSON ${!!r.json} vs mock ${!!m.json}`)
+    else {
+      const a = stable(dashboardBody(r.json)), b = stable(dashboardBody(m.json))
+      if (a !== b) {
+        // Say where: the first key whose value differs.
+        const ra = dashboardBody(r.json), mb = dashboardBody(m.json)
+        const keysOf = [...new Set([...Object.keys(ra), ...Object.keys(mb)])].filter((k) => stable(ra[k]) !== stable(mb[k]))
+        diffs.push(`body differs in ${keysOf.join(', ')}: real ${stable(ra[keysOf[0]]).slice(0, 160)} / mock ${stable(mb[keysOf[0]]).slice(0, 160)}`)
+      }
+    }
+    check(`contract: ${name}`, diffs.length === 0, diffs.join('; ') || `${r.status}${r.json && r.json.code ? ` ${r.json.code}` : r.json && Array.isArray(r.json.items) ? `, ${r.json.items.length} of ${r.json.total}` : ''}`)
+  }
+  // The second page, each side with its own cursor.
+  const first = await Promise.all([call(REAL, 'real', ['', 'GET', `${D}?limit=3`, null, 'dash'], keys, mockKeys), call(MOCK, 'mock', ['', 'GET', `${D}?limit=3`, null, 'dash'], keys, mockKeys)])
+  const second = await Promise.all([call(REAL, 'real', ['', 'GET', `${D}?limit=3&cursor=${encodeURIComponent(first[0].json.next)}`, null, 'dash'], keys, mockKeys), call(MOCK, 'mock', ['', 'GET', `${D}?limit=3&cursor=${encodeURIComponent(first[1].json.next)}`, null, 'dash'], keys, mockKeys)])
+  const ids = (x) => (x.json && x.json.items ? x.json.items.map((d) => d.id).join(',') : `HTTP ${x.status}`)
+  check('contract: dashboards, the second page by each side\'s own cursor', ids(second[0]) === ids(second[1]) && ids(second[0]) === 'services_overview' && second[0].json.next === null && second[1].json.next === null, `real ${ids(second[0])} / mock ${ids(second[1])}`)
+}
+
 function credential(which, side, keys, mockKeys) {
   if (which === 'none') return null
   if (which === 'bad') return 'viz_AAAAAAAAAAAAAAAA_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+  if (which === 'dash') return side === 'real' ? keys.dash : mockKeys.dash
   if (side === 'real') return which === 'readless' ? keys.write : keys.read
   return which === 'readless' ? mockKeys.readless : mockKeys.read
 }
@@ -208,9 +296,9 @@ async function main() {
   }
   const keys = JSON.parse(fs.readFileSync(KEYS, 'utf8'))
   // ---- the mock, with a key and a key without the read scope (random: these are not secrets of anything)
-  const mockKeys = { read: `mock_${crypto.randomBytes(8).toString('hex')}`, readless: `mock_${crypto.randomBytes(8).toString('hex')}` }
+  const mockKeys = { read: `mock_${crypto.randomBytes(8).toString('hex')}`, readless: `mock_${crypto.randomBytes(8).toString('hex')}`, dash: `mock_${crypto.randomBytes(8).toString('hex')}` }
   if (await up(`${MOCK}/__mock/delay`)) throw new Error(`port ${MOCK_PORT} is in use (set VIZ_E2E_MOCK_PORT)`)
-  const mock = spawn(process.execPath, ['--import', 'tsx', 'mock/server.ts', '--port', String(MOCK_PORT), '--require-token', mockKeys.read, '--readless-token', mockKeys.readless], { cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'] })
+  const mock = spawn(process.execPath, ['--import', 'tsx', 'mock/server.ts', '--port', String(MOCK_PORT), '--require-token', mockKeys.read, '--readless-token', mockKeys.readless, '--dashboards-token', mockKeys.dash], { cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'] })
   started.push(() => mock.kill('SIGTERM'))
   for (let i = 0; i < 100 && !(await up(`${MOCK}/__mock/delay`)); i++) await sleep(100)
 
@@ -243,6 +331,7 @@ async function main() {
         check(`same data, same answer: ${name}`, /^equal/.test(v), v)
       }
     }
+    await dashboardCases(check, keys, mockKeys, record)
     // A refusal with Retry-After, from the real API itself: an unreadable limits record makes
     // it refuse every query with 503 and Retry-After: 30 (query/src/config.ts). The record is
     // put in the stack's local KV, and the mock is told to fail the same way.

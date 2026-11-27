@@ -13,6 +13,7 @@ import type {
   PromMatrixData,
   PromQueryData,
 } from './types'
+import { Limiter } from './limiter'
 import { MatrixParser, NotAMatrix, type ParsedMatrix } from './matrix'
 import type { WorkerReply } from './matrixWorker'
 
@@ -66,6 +67,15 @@ export function costOf(headers: Headers): ApiCost {
   })
   return cost
 }
+
+/**
+ * Every request this page sends goes through this one limiter, whichever client sends it (a
+ * new client is made when the key changes): at most six are in flight, in total, from the
+ * request leaving until its body has been read.
+ */
+export const REQUESTS = new Limiter()
+/** For a request nobody can cancel. */
+const NEVER = new AbortController().signal
 
 export interface PromClientOptions {
   /** e.g. `https://viz.example.com` or empty for same origin. A trailing slash is ignored. */
@@ -206,8 +216,10 @@ export class PromClient {
    * or expired).
    */
   async whoami(opts?: RequestOptions): Promise<Identity> {
-    const res = await this.send('/api/v1/control/whoami', { method: 'GET' }, opts)
-    const text = await res.text()
+    const { res, text } = await this.limited(opts, async () => {
+      const res = await this.send('/api/v1/control/whoami', { method: 'GET' }, opts)
+      return { res, text: await res.text() }
+    })
     if (!res.ok) throw new PromApiError('http', `HTTP ${res.status}`, res.status, parseRetryAfter(res.headers.get('Retry-After')))
     let v: Partial<Identity> | undefined
     try {
@@ -256,8 +268,10 @@ export class PromClient {
 
   /** A GET to the control plane: its JSON, or its problem as a `ControlApiError`. */
   private async control<T>(path: string, opts?: RequestOptions): Promise<T | undefined> {
-    const res = await this.send(path, { method: 'GET' }, opts)
-    const text = await res.text()
+    const { res, text } = await this.limited(opts, async () => {
+      const res = await this.send(path, { method: 'GET' }, opts)
+      return { res, text: await res.text() }
+    })
     let body: unknown
     try {
       body = text ? JSON.parse(text) : undefined
@@ -296,7 +310,11 @@ export class PromClient {
    * `JSON.parse`: what the Explore view uses. Errors, and any answer that is not a matrix,
    * are reported exactly as `queryRange` reports them.
    */
-  async queryRangeMatrix(query: string, start: number, end: number, step: number, opts?: RequestOptions): Promise<MatrixResult> {
+  queryRangeMatrix(query: string, start: number, end: number, step: number, opts?: RequestOptions): Promise<MatrixResult> {
+    return this.limited(opts, () => this.readRangeMatrix(query, start, end, step, opts))
+  }
+
+  private async readRangeMatrix(query: string, start: number, end: number, step: number, opts?: RequestOptions): Promise<MatrixResult> {
     if (this.makeWorker) return this.viaWorker(new URLSearchParams({ query, start: String(start), end: String(end), step: String(step) }).toString(), opts)
     const res = await this.send(
       '/api/v1/query_range',
@@ -344,9 +362,16 @@ export class PromClient {
     }
   }
 
-  private async request<T>(path: string, init: RequestInit, opts?: RequestOptions): Promise<ApiResult<T>> {
-    const res = await this.send(path, init, opts)
-    return this.read<T>(res, await res.text())
+  private request<T>(path: string, init: RequestInit, opts?: RequestOptions): Promise<ApiResult<T>> {
+    return this.limited(opts, async () => {
+      const res = await this.send(path, init, opts)
+      return this.read<T>(res, await res.text())
+    })
+  }
+
+  /** One of the page's six: `work` (a request and the reading of its body) starts when fewer than six are in flight, and never if its signal is aborted first. */
+  private limited<T>(opts: RequestOptions | undefined, work: () => Promise<T>): Promise<T> {
+    return REQUESTS.run(work, opts?.signal ?? NEVER)
   }
 
   /** An answer as an envelope: its data, or the error it reports, or why it is not one. */

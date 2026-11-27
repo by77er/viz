@@ -85,11 +85,13 @@ export interface SpecInput {
   query: string
   /** Added to every time, in ms, so that the chart's UTC clock reads local time (lib/timeInput `zoneShiftMs`). */
   shiftMs: number
+  /** The chart's unit when the caller knows it by another name than a `UnitId` (a dashboard panel declares its unit: dashboards/model.ts `chartUnitOf`). */
+  as?: ChartUnit
 }
 
-export function toSpec({ data, start, step, unit, query, shiftMs }: SpecInput): { spec: ChartSpec; unit: ChartUnit } {
+export function toSpec({ data, start, step, unit, query, shiftMs, as }: SpecInput): { spec: ChartSpec; unit: ChartUnit } {
   // Only bytes per second are scaled by size here (the chart scales bytes and seconds itself): no pass over the values for the others.
-  const u = chartUnit(unit, unit === 'bytes/s' ? largest(data) : 0)
+  const u = as ?? chartUnit(unit, unit === 'bytes/s' ? largest(data) : 0)
   const series: SpecSeries[] = data.series.map((s) => {
     const src = s.values
     const values = new Array<number | null>(src.length)

@@ -24,6 +24,7 @@
  *     timeout   503 timeout "query timed out"
  *     ratelimit 429, plain text, Retry-After: 10 (NOT the viz API: a rate limit in front of it)
  *   GET /__mock/fail?count=0                 clears it
+ *   GET /__mock/inflight[?reset=1]           how many API requests are being answered now, and the most at once since the last reset
  *   GET /__mock/warn?text=<t>&count=<n>       the next n successful query answers carry `warnings: [t]`, as a
  *                                            Prometheus-compatible store with a partial answer sends them (the
  *                                            viz API sends none: it refuses instead of answering in part)
@@ -53,6 +54,9 @@ let stall = false
 let failure: { kind: string; left: number } = { kind: '', left: 0 }
 /** Set at run time through /__mock/warn: Prometheus `warnings` added to the next query answers (the viz API sends none). */
 let warning: { text: string; left: number } = { text: '', left: 0 }
+/** API requests being answered now, and the most at once since the last reset (`GET /__mock/inflight?reset=1`). */
+let inFlight = 0
+let peak = 0
 const requireToken = arg('require-token', '') || undefined
 const readlessToken = arg('readless-token', '') || undefined
 const dashboardsToken = arg('dashboards-token', '') || undefined
@@ -109,6 +113,17 @@ const server = createServer((req, res) => {
     }
     res.writeHead(200, { ...c, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify({ queryDelayMs: queryDelay, stall }))
     return
+  }
+  if (reqUrl.pathname === '/__mock/inflight') {
+    // What the server sees of the page's "at most six requests in flight": API requests received and not yet answered.
+    if (reqUrl.searchParams.get('reset') === '1') peak = inFlight
+    res.writeHead(200, { ...c, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify({ inFlight, peak }))
+    return
+  }
+  if (reqUrl.pathname.startsWith('/api/')) {
+    inFlight++
+    if (inFlight > peak) peak = inFlight
+    res.on('close', () => void inFlight--)
   }
   if (reqUrl.pathname === '/__mock/fail') {
     const kind = reqUrl.searchParams.get('kind') ?? ''

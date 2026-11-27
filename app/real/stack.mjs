@@ -4,7 +4,8 @@
 // through the gateway's one-time bootstrap, its keys, and the seed data.
 //
 //   node real/stack.mjs start  [--port 8851]   start wrangler dev in the background, provision, make keys
-//   node real/stack.mjs seed                   real/seed.ts: Remote Write the mock's data and 200 synthetic series
+//   node real/stack.mjs seed                   real/seed.ts: Remote Write the mock's data and 200 synthetic series,
+//                                              and create the mock's dashboards (mock/dashboards.ts) in the control plane
 //   node real/stack.mjs status                 is it up; which keys exist (names only)
 //   node real/stack.mjs stop                   stop wrangler dev
 //
@@ -109,13 +110,14 @@ async function start() {
   const admin = boot.json.key
   const keys = { tenant: TENANT, admin }
   // A key per use: the app reads, the seed writes, and one of each kind lacks the other scope.
-  for (const [name, scopes] of [['read', ['read']], ['write', ['write']]]) {
+  // `dash` is what a person's key is: it reads metrics and dashboards. `read` reads metrics only (a dashboard is refused it).
+  for (const [name, scopes] of [['read', ['read']], ['write', ['write']], ['dash', ['read', 'dashboards:read']]]) {
     const r = await post(`${BASE}/api/v1/control/keys`, admin, { name: `app-${name}`, scopes, kind: 'key' })
     if (r.status !== 201) throw new Error(`create key ${name}: HTTP ${r.status} ${JSON.stringify(r.json)}`)
     keys[name] = r.json.secret
   }
   fs.writeFileSync(KEYS, JSON.stringify(keys, null, 2), { mode: 0o600 })
-  console.log(`stack: tenant ${TENANT} provisioned; keys admin, read, write written to ${path.relative(APP, KEYS)} (not printed)`)
+  console.log(`stack: tenant ${TENANT} provisioned; keys admin, read, write, dash written to ${path.relative(APP, KEYS)} (not printed)`)
 }
 
 function stop() {

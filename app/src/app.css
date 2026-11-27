@@ -40,3 +40,8 @@ dialog.palette::backdrop { background: var(--scrim); }
 .palette .vz-menu { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); }
 .palette-list { max-height: calc(var(--row) * 12); overflow-y: auto; }
 .palette-none { padding: var(--space-2); color: var(--ink-secondary); }
+
+/* Dashboards. A table panel's place before its first answer: its caption strip, its head and its rows (Panel: a table reserves its height from its row count). */
+.panel-rows { min-height: calc(var(--strip) + var(--row) * (var(--rows) + 1)); }
+/* A text note's digest is sentences, not a table: it wraps instead of scrolling sideways. */
+.vz-query.is-prose { white-space: pre-wrap; overflow-wrap: anywhere; }
