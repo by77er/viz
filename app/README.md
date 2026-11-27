@@ -1,37 +1,55 @@
 # viz web app
 
-The viz frontend. First slice: an **Explore** view for metrics against a Prometheus-compatible
-HTTP API (`/api/v1/query_range`, `/query`, `/labels`, `/label/<name>/values`, `/series`,
-`/metadata`, `/status/buildinfo`).
+The viz frontend: an **Explore** view for metrics, with sign-in by API key, built to be served
+as static files by the gateway at `vis.bitcru.sh/` and to call the API on the same origin
+(`/api/v1/query_range`, `/query`, `/labels`, `/label/<name>/values`, `/series`, `/metadata`,
+`/status/buildinfo`, and control's `/api/v1/control/whoami`).
 
+> **It is not deployed.** The build is ready to serve and this README says exactly what the
+> gateway has to do with it ("Needed changes in deploy/", and `serve.json` as data); `deploy/`
+> is another builder's, who is building the gateway to serve the app by `serve.json`
+> (`../deploy/README.md`). The app was not run behind that gateway here.
+> **Its design is not reviewed.** The move to design system v9 is described in
+> `../design-system/reviews/app-v9/response.md`, status "not reviewed"; it goes to an
+> independent design reviewer next and is not ready to merge until then (AGENTS.md, "Design
+> changes", 5).
+>
 > **The backend used for development and most tests is a mock** (`mock/`): synthetic data and
-> a subset of PromQL. It is not the viz query backend. The UI shows a banner whenever it is
-> connected to it. The app also runs against the **real viz API**, served locally by
-> `wrangler dev --local` (`real/`, "The real viz API, locally"): `e2e/real.cjs` runs the app
-> on it, and `e2e/contract.cjs` sends the same requests to it and to the mock and compares
-> the answers ("Mock and real API").
+> a subset of PromQL. It is not the viz query backend, and the UI shows a banner whenever it
+> is connected to it. The app also runs against the **real viz API**, served locally by
+> `wrangler dev --local` (`real/`): `e2e/real.cjs` runs the app on it, sign-in included, and
+> `e2e/contract.cjs` sends the same requests to it and to the mock and compares the answers
+> ("Mock and real API").
 
 ## Design system
 
-The app uses the viz design system (`../design-system`) and nothing else for its look.
-`src/main.tsx` imports `design-system/dist/viz.css` (tokens, components and the two self-hosted
-fonts; Vite copies the WOFF2 files into the build and `vite.config.ts` adds the preload link
-for the sans file to `index.html`), `index.html` puts `class="vz"` on the root, and
-`src/app.css` holds layout only. No literal colour, length, duration or opacity is left in
-`src/`: `npm run check:tokens` (`node ../design-system/tools/check.mjs src`) must pass.
-`design-system/dist/` is generated and not committed, so `npm run dev` and `npm run build`
-build it first (`npm run design-system`).
+The app is on the viz design system, version 9 (`../design-system`), and takes its look and
+its chart from it:
 
-Tailwind was removed rather than mapped onto the tokens: its reset and default scales emit
-literal `rem`, colour and opacity values, and what the app used it for (layout) is now about
-150 lines of token-only CSS.
+- `src/main.tsx` imports `design-system/dist/viz.css` (tokens, components, the two
+  self-hosted fonts; Vite copies the WOFF2 files into the build and `vite.config.ts` adds the
+  preload link for the sans file). `index.html` puts `class="vz"` on the root.
+- **The chart is the system's own** (`design-system/dist/viz-chart.js`, the reference chart
+  built from the Chart component's preview), not a chart of the app's. `src/charts/` hands it
+  a result and listens to it; it draws nothing. So the Chart rules hold by construction: the
+  colour map ("what a person sees wins"), one Other band and one legend row past eight
+  series, "Colour the eight largest" offered only when it would change a colour (D73), direct
+  labels in a gutter, the readout in the foot, zoom by button, the legend as a table of
+  toggles, the text form, and the height the chart reserves for itself. uPlot is gone.
+- `design-system/dist/viz-press.js` is loaded with it: a press is painted from `pointerdown`,
+  for a finger as for a mouse.
+- `src/app.css` is 40 lines of what the system leaves to an application (the query well
+  around an editor, the parked chart, the command palette's dialog, a reserved place).
+  Every value is a token: `npm run check:tokens`
+  (`node ../design-system/tools/check.mjs --no-render src index.html`) must pass, and does.
+- `design-system/dist/` is generated and not committed. `npm run dev` and `npm run build`
+  first run `scripts/ensure-design-system.mjs`, which generates it only when a file the app
+  takes from it is missing or older than its source, so a build of the app does not rewrite
+  the design system's files under someone else's work. `npm run design-system` generates it
+  unconditionally.
 
-The change that applied the system, with its before/after images, measurements and the
-presence test, is described in `../design-system/reviews/app-restyle/PR.md`. The review
-rejected it (`../design-system/reviews/app-restyle/review.md`); the fixes to its logic
-findings, with images, measurements and mutants, are in
-`../design-system/reviews/app-restyle/fixes/FIXES.md`. Its styling and chart-drawing
-findings wait for the design system's revision (see "Known issues").
+What the app adds around the system's chart, and why, is in "Needed changes in the design
+system". Every such addition is in `src/charts/Chart.tsx` and `src/charts/fixups.ts`.
 
 ## Run
 
@@ -39,42 +57,40 @@ findings wait for the design system's revision (see "Known issues").
 npm install
 
 # development: two terminals
-npm run mock          # mock API on http://127.0.0.1:8821
-npm run dev           # builds the design system, then the app on http://127.0.0.1:8820, proxying /api to the mock
+npm run mock          # mock API on http://127.0.0.1:8821 (needs no key)
+npm run dev           # the app on http://127.0.0.1:8820, /api proxied to the mock
 
-# on other ports (8820/8821 taken)
-npx tsx mock/server.ts --port 8841
+# a mock that needs a key, as viz does (then sign in with the key)
+npx tsx mock/server.ts --port 8841 --require-token viz_devKey00000000000_devSecret
 VIZ_API_TARGET=http://127.0.0.1:8841 npx vite --port 8840
 
-# against another backend
-VIZ_API_TARGET=https://prometheus.example.com npm run dev   # proxy target, or
-# open Settings in the app and enter the API base URL and bearer token (needs CORS)
-
-npm run build         # design system, tsc --noEmit, vite build  -> dist/
-npm test              # vitest unit tests
+npm run build         # design system if needed, tsc --noEmit, vite build  -> dist/
+npm test              # vitest unit tests (two workers at most)
 npx tsc --noEmit      # typecheck
-npm run check:tokens  # no literal colours, lengths, durations or opacity in src/
-npm run e2e           # e2e/run.cjs, e2e/design.cjs, e2e/fixes.cjs (Playwright + axe); needs `npm run build` first
-npm run measure       # the speed budgets on the built app (see "Speed"); --series 4,36,200, --phone
-node e2e/summarise.cjs                      # before/after tables from e2e/measurements
-node e2e/fingerprint.cjs --root <app> --label <name>   # what a build renders, to compare two builds
-MUTANTS=fixes node e2e/mutants.cjs          # the review fixes' mutants (unit + e2e/fixes.cjs)
-MUTANTS=real node e2e/mutants.cjs           # this change's mutants (unit + e2e/errors.cjs)
-node e2e/errors.cjs                         # error, busy and retry states against the mock's failures
+npm run check:tokens  # no literal colours, lengths, durations or opacity in src/ and index.html
+npm run e2e           # e2e/app.cjs, e2e/errors.cjs, e2e/prod.cjs (Playwright + axe); needs `npm run build`
+VIZ_SLOW=1 node e2e/app.cjs                 # also the 10 s and 60 s rows of the waiting table
+node e2e/prod.cjs                           # the build served as the gateway is to serve it, under the policy
+npm run measure -- --series 4,36,200        # the speed budgets on the built app (--phone; --ui v4 --root <dir> for the app before v9)
+node e2e/summarise.cjs --before v9-before --after v9-after            # before/after tables from e2e/measurements
+VIZ_MUTANT_DIR=<scratch dir> node e2e/mutants.cjs                     # this change's mutants, on a copy outside the tree
 
 # the real viz API, locally (no Cloudflare account is used; see "The real viz API, locally")
 node real/stack.mjs start && node real/stack.mjs seed
 node e2e/contract.cjs                       # the same requests to the real API and to the mock, compared
-node e2e/real.cjs                           # the app on the real API (needs `npm run build`)
+node e2e/real.cjs                           # the app on the real API, sign-in included (needs `npm run build`)
 node real/stack.mjs stop
 ```
 
 The end-to-end scripts use the globally installed Playwright (`require('playwright')`), start
-the mock and `vite preview` themselves and stop them afterwards. They use ports 8820 and 8821
-unless `VIZ_E2E_APP_PORT` and `VIZ_E2E_MOCK_PORT` are set.
+the mock and `vite preview` (or their own static server) themselves and stop them afterwards.
+`e2e/app.cjs` and `e2e/errors.cjs` use ports 8820 and 8821 unless `VIZ_E2E_APP_PORT` and
+`VIZ_E2E_MOCK_PORT` are set (plus app port + 20 and mock port + 10 for a mock that requires a
+key); `e2e/prod.cjs` uses `VIZ_PROD_PORT` (18940) and the two after it.
 
-Mock options: `--port`, `--require-token <t>`, `VIZ_MOCK_LOG=1` (logs requests), and artificial
-latency to exercise the waiting states:
+Mock options: `--port`, `--require-token <t>`, `--readless-token <t>` (a key that is valid but
+lacks the read scope), `VIZ_MOCK_LOG=1` (logs requests), and artificial latency to exercise
+the waiting states:
 
 | Switch | Effect |
 |---|---|
@@ -82,235 +98,217 @@ latency to exercise the waiting states:
 | `?delay=<ms>` on a request | that response waits this long |
 | `GET /__mock/delay?ms=<ms>` | from now on, `query` and `query_range` responses wait this long; `0` turns it off |
 
-`curl 'http://127.0.0.1:8821/__mock/delay?ms=3000'`, then press Run query, shows the progress
-line and Cancel.
-
 ### Design-review images
 
 ```sh
-npx tsx mock/server.ts --port 8841 &
-VIZ_API_TARGET=http://127.0.0.1:8841 npx vite --config e2e/vite.shots.config.ts --port 8840 &
-e2e/capture.sh after                                             # ../design-system/tools/shots.mjs, one call per view
-VIZ_E2E_APP_PORT=8840 VIZ_E2E_MOCK_PORT=8841 node e2e/states.cjs ../design-system/reviews/<change>/after
-node ../design-system/tools/shots.mjs compare <before> <after> <compare>
-python3 e2e/encode-review-images.py ../design-system/reviews/<change>   # palette-encode, keeps token colours exact
+node e2e/v9-shots.cjs <before app dir with dist/> <after app dir with dist/> <work dir> ../design-system/reviews/<change>/compare
 ```
 
-This change's images (what it alters on screen, below) are taken by `e2e/real-api-shots.cjs`
-through `shots.mjs` scenarios, before and after on the same mock and the same failures:
-
-```sh
-node e2e/real-api-shots.cjs <before app dir with dist/> <after app dir with dist/> reviews/real-api
-node ../design-system/tools/shots.mjs compare reviews/real-api/before reviews/real-api/after reviews/real-api/compare
-python3 e2e/encode-review-images.py reviews/real-api
-```
-
-`shots.mjs` can only open a URL, so `e2e/vite.shots.config.ts` adds a script to the dev page
-(never to a build) that opens the time picker, the command palette or the settings dialog when
-the URL carries `#shot=timepicker|palette|settings`. `e2e/states.cjs` takes the images
-`shots.mjs` cannot: waiting states, focus rings, pressed and hover, and the coarse-pointer view.
-
-### What this change alters on screen, for design review
-
-No new component, token or style: `src/app.css` and `design-system/` are untouched. The text
-inside existing components changes, and one button's action:
-
-- **Error state** (`vz-empty`): the line that says who answered ("The API answered bad_data
-  with HTTP 400." only for the API's own error; "The answer was HTTP 503 with no API error in
-  it." otherwise), the advice by kind (a missing, refused or read-less key; a step too small
-  for the range; each limit; PromQL viz does not run; the time limit; a busy API with its
-  tries), and the button: "Open settings" for a key, "Use the automatic step" for too many
-  points (it clears the step and runs), "Go to character N" now also on the viz API (from the
-  editor's parser), else "Run the query again".
-- **Waiting line** (`vz-progress`): while a busy answer is retried, "The API is busy (HTTP
-  503). Asking again in 1 s." or "The API is limiting requests (HTTP 429). …".
-- **Warnings banner** (`vz-banner`): "The API sent a warning with this result, so it may be
-  incomplete: …" before the API's words.
-- **Shell banner** (`vz-banner`): "The API needs an API key." / "The API did not accept the
-  API key." / "The API key in settings cannot read metrics." instead of one sentence about
-  rejected credentials.
-
-Images: `reviews/real-api/compare/real-api-<state>-<1440|400>-<light|dark>.png` (before on
-the left: the app at commit `060d3bd`; after on the right), with the separate images in
-`before/` and `after/`, for nine states: a parse error, no key (401), a key without the read
-scope (403), an unknown key (401), the time limit (503 `timeout`), busy with `Retry-After: 1`
-(the waiting line at 0.7 s), the platform's 503 after four tries (the error state), a step too
-small (400) and a warning. Both themes, 1440 and 400 px. **Not reviewed yet**: no expert
-design review was held in this session; the change is not ready to merge until one is
-(AGENTS.md, "Design changes", 5).
+runs one `design-system/tools/shots.mjs` scenario per build (every state in the script, both
+themes, 1440 and 400 px, the same mock and the same steps), composes the pairs with
+`shots.mjs compare`, and stores them with a palette that holds every token colour exactly.
+A state names how the same act is done in each build where they differ; a state one build
+cannot reach has no "before".
 
 ## Stack
 
 Vite 8.3 · React 19.3 · TypeScript 7.0 · TanStack Router 1.170 and Query 5.108 ·
-the viz design system · uPlot 1.6.32 · CodeMirror 6 · vitest 5 · fast-check 4 · axe-core 4.14.
+the viz design system 9 (its stylesheet, its chart, its press script) · CodeMirror 6 ·
+vitest 5 · fast-check 4 · axe-core 4.14.
 
 - **PromQL editor package:** `@prometheus-io/codemirror-promql` 0.316.0 (the official
-  Prometheus package; it installed without trouble). Autocomplete goes through an adapter
-  (`src/editor/promClient.ts`) onto the app's own API client, so it uses the configured base
-  URL and token.
+  Prometheus package). Autocomplete goes through an adapter (`src/editor/promClient.ts`) onto
+  the app's own API client, so it carries the key.
 - **Not used, deliberately, to keep the bundle small:** shadcn/Base UI, cmdk, TanStack
-  Table/Virtual. Dialogs are native `<dialog>`; the command palette and tables are hand-written.
-- uPlot is an npm dependency, not vendored. Only `src/charts/` imports it. Its stylesheet is not
-  loaded (it carries literal colours); the dozen rules it needs are in `src/app.css`.
+  Table/Virtual, any chart library. The command palette is a native `<dialog>`; tables are
+  hand-written on the system's classes.
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `src/api/` | Typed Prometheus client: AbortSignal, error envelope, base URL, bearer token, `Retry-After`, the `X-Viz-*` cost |
+| `src/api/` | Typed Prometheus client: AbortSignal, error envelope, bearer key, `Retry-After`, the `X-Viz-*` cost; `whoami` |
 | `src/api/matrix.ts` | The range-query body read into Float64Arrays as it arrives (`JSON.parse` is the fallback) |
-| `src/api/matrixWorker.ts` | The same in a dedicated worker; built and tested, not used by the app (see "Speed") |
+| `src/api/matrixWorker.ts` | The same in a dedicated worker; built and tested, not used by the app |
 | `src/api/errors.ts` | What a failure means for the person: its kind, the advice, whether and when to ask again |
-| `src/charts/` | Internal chart interface (`types.ts`) and the uPlot implementation |
-| `src/editor/` | CodeMirror PromQL editor (lazy-loaded chunk) |
-| `src/explore/` | Explore view: time picker, legend, table, JSON, text view, waiting logic (`waiting.tsx`) |
-| `src/shell/` | App shell, command palette, settings, theme, help page |
-| `src/lib/` | Pure logic: downsampling, step selection, colours, URL state, digest, units, time |
-| `src/lib/describe.ts` | What a result says about itself (query, range, unit, chart name, digest title) and whether it still answers the current request |
-| `src/lib/naming.ts` | Display names of the series of one result: full, distinguishing, middle-truncated |
-| `src/lib/assign.ts` | Which series get one of the eight colours, which slot, and the one Other group |
-| `src/lib/focusKeeper.ts` | Moves focus to a stand-in when the focused control goes away |
-| `src/lib/pointer.ts`, `src/lib/renders.ts` | Coarse pointer and tap toggling; render counts read by the e2e checks |
-| `mock/` | Mock backend: synthetic data, PromQL subset, HTTP handler, Node server; fails on request as the real API fails |
+| `src/charts/systemChart.ts` | The design system's chart and press script, imported and typed; one chart per element |
+| `src/charts/spec.ts` | A result as the chart takes it (null gaps, a unit it knows, the zone's clock), and the chart's number format for the table |
+| `src/charts/Chart.tsx`, `fixups.ts` | The React element around the chart: a new result, an error, the range it shows; the words of the chart's that a query result needs otherwise |
+| `src/editor/` | CodeMirror PromQL editor (a lazy-loaded chunk) |
+| `src/explore/` | Explore: the page, the time range and step fields, the table, the text and JSON forms, the waiting logic |
+| `src/shell/session.tsx`, `SignIn.tsx` | Sign-in: the key, where it is kept, who gets in |
+| `src/shell/` | Navigation, command palette, Settings and Help pages, theme |
+| `src/lib/timeInput.ts` | Times and durations as typed and read ("18 Nov 09:16", "now - 6 h", "1 h 30 min"), in a zone |
+| `src/lib/` | Step selection, URL state, series alignment and names, what a result says about itself, the focus keeper |
+| `src/theme-init.js` | The stored theme applied before first paint; built as a file of its own |
+| `serve.json` | What a server must do with `dist/`: document paths, asset prefix, headers. The statement `deploy/` is asked to implement |
+| `scripts/ensure-design-system.mjs` | Generates `design-system/dist` when it is missing or stale |
+| `mock/` | Mock backend: synthetic data, PromQL subset, the real API's HTTP surface, control's `whoami`; fails on request as the real API fails |
 | `real/` | The real viz API on one machine: `wrangler dev --local` of gateway, write path, query Worker and control plane; the seed |
-| `src/app.css` | Layout, and uPlot/CodeMirror/`<dialog>` adapted to the tokens. Tokens only |
-| `e2e/run.cjs` | End-to-end and accessibility checks of the behaviour |
-| `e2e/design.cjs` | Design-system checks: colour, waiting, keyboard, touch, narrow |
-| `e2e/fixes.cjs` | Checks of the fixes to the design review (B1, B3, M2 to M5, M7) |
-| `e2e/errors.cjs` | What a person sees when the API refuses, is busy or stops a query (against the mock's failures) |
+| `e2e/app.cjs` | End-to-end checks of the app on v9: flows, colour, B1, the waiting table, the chart, keyboard, touch, zoom, time zone, layout shift, sign-in, axe |
+| `e2e/errors.cjs` | What a person sees when the API refuses, is busy or stops a query, and when the key stops working mid-session |
+| `e2e/prod.cjs` | The build served by `serve.json`'s rules, with the app driven under the content security policy |
 | `e2e/contract.cjs` | The contract test: the same 60 requests to the real API and to the mock, compared (82 checks) |
-| `e2e/real.cjs` | The app on the real API: flows, the same reading of the same data as on the mock, every refusal |
-| `e2e/real-api-shots.cjs` | Before/after images of what this change alters on screen |
-| `e2e/measure.cjs` | Speed budgets, desktop or phone (`--phone`), for 4, 36 and 200 series (`e2e/measurements/*.json`) |
-| `e2e/fingerprint.cjs` | What a build renders for the three speed cases (canvas pixels, legend, table, text, JSON), to compare builds |
-| `e2e/summarise.cjs` | Prints speed tables from the measurement files, with the load of every column |
-| `e2e/mutants.cjs` | Breaks one property at a time and records which check catches it (two sets) |
-| `e2e/fix-shots.cjs` | Before/after images of the B1 and focus cases |
-| `e2e/capture.sh`, `e2e/states.cjs` | Design-review images |
-| `screenshots/` | Written by the e2e run |
+| `e2e/real.cjs` | The app on the real API: sign-in against control, the same reading of the same data as on the mock, refusals |
+| `e2e/measure.cjs`, `summarise.cjs` | The speed budgets, desktop or phone, for 4, 36 and 200 series, on either build; tables with the load of every column |
+| `e2e/mutants.cjs` | Breaks one property at a time, on a copy outside the tree, and records which check catches it |
+| `e2e/v9-shots.cjs` | Before/after images for design review |
+
+## The views that exist
+
+| Address | What it is |
+|---|---|
+| `/` | goes to `/explore` |
+| `/explore` | **Explore**, the one working view: a PromQL query over a time range, its result as a chart, a table, the chart's text form or the API's JSON; the start state before any query; empty, waiting, cancelled and error states. Without an accepted key the **sign-in form** stands here, at this address |
+| `/help` | what Explore does, the keyboard, API keys, and the button that opens the command palette |
+| `/settings` | whose key this is, Sign out, the theme, the API's address and version |
+| (anywhere) | the command palette (`Ctrl/Cmd+K`), the app's only dialog |
+
+There is no dashboards, monitors, alerts, logs or traces view, and no key management ("Not
+implemented"). The gateway serves the four addresses above as documents (`serve.json`).
 
 ## What is implemented
 
+**Sign-in**
+- A viz API key, typed into a form that stands in Explore's place, at Explore's address, until
+  a key is accepted: a shared link opens what it names once the reader has signed in.
+- The key is checked with control's `GET /api/v1/control/whoami` (which any valid key may
+  ask). A key the API refuses (401) is said at the field; a valid key without the `read`
+  scope is refused with its tenant and scopes named (the query API checks `read` literally;
+  `admin` is not `read`); an API that does not answer is said as that, and nothing is stored.
+- **Where the key lives:** in the page's memory and in `sessionStorage` (`viz.key`), beside
+  what the API said the key is (`viz.identity`: tenant, key name, kind, scopes; no secret).
+  A reload stays signed in; closing the tab forgets; another tab is not signed in. It is never
+  in `localStorage`, a cookie, a URL, a query key or a log line, and it is sent only as an
+  `Authorization` header to the origin the page came from. The field has no `name` and the
+  form's method is POST, so the key cannot reach an address even if the script fails; the
+  policy's `form-action 'none'` then blocks the post as well.
+- A tab that holds a key starts signed in and sends its query at once, while the API is asked
+  again who the key is; a refusal then removes the key and shows the form, which says "The
+  API no longer accepts this tab's key". A tab without a key asks first, because the
+  development mock needs none. If the API does not answer, a tab with a key carries on (each
+  query says whether the key is accepted) and a tab without one gets the form and "Ask the
+  API again".
+- A query answered 401 or 403 in the middle of a session says what happened to the key, and
+  its button, "Sign in again", forgets the key and shows the form.
+- The token the app before this one kept in `localStorage` (`viz.settings`) is removed on
+  start and never sent.
+- Settings (a page, `/settings`): whose key this is (tenant, key name with its public part
+  `viz_<keyId>_…`, kind, scopes), Sign out, the theme, the API's address and version. The
+  navigation shows the tenant as text.
+
 **Explore**
-- Query editor in the system's query well: one ink (the system does not colour tokens by
-  type), errors underlined in `status-critical`, autocomplete of metric names, label names and
-  label values from the API; it scrolls sideways instead of wrapping; `Ctrl/Cmd+Enter` runs.
-  The editor owns the text being typed: the page reads it when the query is run, so a
-  keystroke renders no React component (checked by render counts in `e2e/fixes.cjs`). Its
-  extensions are built once. Label and series lookups for autocomplete wait 150 ms and a newer
-  lookup of the same kind replaces (and aborts) an older one; metric names and metadata are
-  fetched once per connection.
-- Run query is the view's one blue button. While a query runs it is `aria-busy`, keeps its
-  pressed fill and ignores further presses (pointer, shortcut or keyboard).
-- Waiting follows the system's table: nothing new under 400 ms; then an unmeasured
-  `vz-progress` line ("Waiting for the query" and the running time) kept at least 300 ms;
-  Cancel from 2 s, wired to the request's `AbortSignal`; from 10 s the line suggests a shorter
-  range; at 60 s the request is stopped and the line says so, with Retry. The previous result
-  stays visible and usable throughout. The mock reports nothing measurable, so there is never
-  a bar.
-- A result carries what describes it (`src/lib/describe.ts`): the request it answers (query
-  text, from, to, step), the window that was queried, the unit its query implies and when it
-  arrived. Everything that describes the data on screen is derived from that, never from the
-  editor or the URL: the panel head (range, unit, age), the axis format, the legend and table
-  heads and cells, the crosshair readout, the chart's accessible name, the text digest's
-  title, the JSON, the "Automatic" unit option and the caption. While the result on screen is
-  not the answer to the current request (a query waits, was cancelled, stopped at 60 s, or
-  the range changed), the head says "Showing the previous query" (or "time range") and the
-  caption names that query. After an error nothing of the earlier result is shown.
-- The head's age counts once a second and reads "updated now" under 5 s. The waiting line and
-  the result region keep their height with or without content, and the mock banner's space is
-  reserved while the backend is being identified, so nothing moves when data arrives.
-- Focus never falls to the document when the control that had it goes away
-  (`src/lib/focusKeeper.ts`): Cancel hands it to Retry, Retry to Run query, a removed button
-  to the control named in its `data-focus-after`, anything inside the result region to the
-  pressed "Show as" segment, and otherwise Run query. The keeper reads layout only when a DOM
-  change can have removed or hidden the focused control.
-- Time range: relative presets and absolute from/to in a menu, show earlier / later, zoom in
-  (half the range around its middle), zoom out (twice, never past now) and reset zoom (back to
-  the range before the first zoom). The three zoom buttons sit in the time-range group; that
-  placement is provisional until the system defines the chart's range control.
+- The page is the system's: navigation, page head, a stack of controls, one panel. The query
+  editor sits in the system's query well beside Run query, the view's one blue button; under
+  it the ranges one press away ("Last 15 min, 1 h, 6 h, 24 h, 7 d" as one segmented control),
+  Show earlier and Show later; then the time range, the step and the unit as labelled fields.
+- Query editor: one ink (the system does not colour tokens by type), errors underlined in
+  `status-critical`, autocomplete of metric names, label names and label values from the API,
+  bounded by the page's time range; it scrolls sideways instead of wrapping; `Ctrl/Cmd+Enter`
+  runs. The editor owns the text being typed: the page reads it when the query is run, so a
+  keystroke renders no React component. With a coarse pointer the well is 44 px tall with
+  body-size text, which the editor inherits.
+- Time range: two typed fields, From and To, in the system's forms ("18 Nov 09:16", "09:16"
+  for today, "now", "now - 6 h"; also ISO dates), with a help line that echoes what was read,
+  its length and the zone, once ("Read as 18 Nov, 09:30 to 12:30, 3 h, UTC+1."). A field that
+  cannot be read keeps the range, is marked, and says what it takes. No browser date picker.
+  Times are in the device's zone. The step is typed as a duration in any form ("30 s",
+  "1 min", "5m") and echoed in the system's; empty is automatic, and the help line says what
+  that is now.
 - URL state: `q`, `from`, `to`, `step`, `unit`, `view` as flat search params (defaults
-  omitted). `view` is `chart`, `table`, `text` or `json`; old `tab=json` links still open the
-  JSON form. Credentials are never in the URL.
-- Step: automatic by default (the smallest "nice" step giving at most one point per pixel
-  column, never below 15 s; chart width bucketed to 100 px). An explicit step can be typed.
-- Chart: drawn at the size of its region in device pixels from the tokens (2 px lines, `rule`
-  gridlines, `rule-control` baseline, `micro` axis text); up to four series are labelled
-  directly at the line ends; crosshair readout by pointer, touch drag or arrow keys;
-  drag-to-zoom writes the time range to the URL (Back undoes it); legend table with
-  last/min/max and sortable columns; select a row to isolate, Shift/Ctrl-select to toggle. On
-  a coarse pointer (or any touch or pen press) a tap toggles the row with no modifier, and
-  the hint does not mention Shift. The crosshair and its readout are drawn outside React.
-- Series names (`src/lib/naming.ts`, property-tested): labels every series shares are dropped
-  and stated once (the table's caption); the rest are ordered by how many distinct values
-  they take, most first; when one label tells the series apart its value is the whole name
-  ("checkout"). Long values are cut in the middle, and only when no two series end up with the
-  same name. One series, and series that differ only in the metric name, keep the full name.
-  The legend shows the short form, the full label set in the row's title and under the table
-  for the row that has focus or was tapped; the text digest and the JSON carry full names.
-- Colour (`src/lib/assign.ts`, a pure `assignSeries(series, previous, policy)`): a series that
-  already has a slot keeps it; the others take free slots in palette order (`series-1`
-  first) in the order they appear; when more want a slot than are free, they are ranked by a
-  size measure (default: mean over the result's window, ties by name) and the rest fold into
-  ONE Other group. By default Other is listed under one legend row ("Other, 28 series", which
-  opens to list its members 50 at a time) and its members are not drawn until selected; the
-  policy can instead carry their sum for drawing, which is right only for values that add up.
-  The assignment is kept in `sessionStorage`, so a filter does not repaint the survivors and
-  a reload reproduces the colours. Never more than eight coloured series.
-- Units (`src/lib/units.ts`): the formatter returns the number and the unit apart. The unit
-  is stated once per legend column head ("Last, /s"), table column head, axis (in the panel
-  head: "bytes, in MiB") and readout value; cells and ticks are numbers in one scale. A
-  column whose values need different scales (2 ms beside 3 h) keeps the unit on every value
-  instead. CPU cores carry their unit ("1.42 cores", "357 millicores"). Byte axes tick on
-  powers of two.
-- Gaps and downsampling as before; when columns are reduced to min/max the caption under
-  the chart says so with the point counts.
-- Forms of the result, one segmented control: chart, table (latest value per series, one
-  column per distinguishing label, most distinguishing first, sortable; the shared timestamp
-  and the labels every series has are said once in the caption; 50 rows, then "Show 50
-  more"), text digest, raw JSON (with the response time, moved here from the panel). The
-  chart stays mounted while another form is shown; the digest and the JSON text are computed
-  the first time their form is shown for a result and kept for that result. The URL's `view`
-  follows 300 ms after the last switch (on `pagehide` at once), so the router's work does
-  not land in the frames right after the press.
-- States: start (examples are links), empty and error as `vz-empty`, warnings as a banner.
-- The error state says who answered and what to do (`src/api/errors.ts`): "The API answered
-  <type> with HTTP <status>" only for the API's own error envelope; "No answer came back",
-  "The answer was HTTP 503 with no API error in it" or "The answer (HTTP 200) was not an API
-  response" otherwise. The advice follows the kind of failure: a key that is missing ("No API
-  key is set"), refused or without the read scope (the button opens Settings); a step too
-  small for the range (the advice names the step and the 11,000 points, and the button is
-  "Use the automatic step"); a limit, by which one (`max_query_bytes`: shorten the query;
-  `max_depth`: simplify it; `max_output_points`, `max_step_points`: a larger step or a shorter
-  range; what the query reads: narrow the range or select fewer series); PromQL viz does not
-  run; the API's time limit; a busy API, with how many tries over how long; a parse error,
-  with "Go to character N" from the API's position or, as the viz API gives none, from the
-  editor's own parser. The shell's banner says the same about the key (needed, refused,
-  without the read scope).
+  omitted), in the forms they always had (`now-6h`, an epoch in milliseconds, `1m`), so old
+  links stay good. Credentials are never in the URL.
+- Run query: while a query runs the button is `aria-busy`, keeps its pressed fill and ignores
+  further presses. Waiting follows the system's table: nothing new under 400 ms; then an
+  unmeasured `vz-progress` line ("Waiting for the query." and the running time) kept at least
+  300 ms; Cancel from 2 s, wired to the request's `AbortSignal`; from 10 s "Still waiting for
+  the query." and the cheaper range as a control; at 60 s the request is stopped and the line
+  says so, with Retry. **The line lies over the strip of words every form of the result starts
+  with** (a chart's strip above its plot, right of the value axis; a table's caption): nothing
+  is reserved for it and nothing moves. The mock reports nothing measurable, so there is never
+  a bar.
+- **The panel describes the data on screen** (`src/lib/describe.ts`): its title is "Query
+  result" with the result's query (heard by a screen reader, and used by the chart for its
+  accessible name and its text form), a line under the head shows that query, and the meta
+  states the range that is drawn, its step and its age ("18 Nov, 09:30 to 12:30 · every 15 s ·
+  updated 12 s ago"; "just now" under 5 s). While the result is not the answer to the current
+  request (a query waits, was cancelled, stopped at 60 s or failed, or the range changed) the
+  meta starts with "Showing the previous query" (or "time range"). The head and the query
+  line keep their place while nothing is drawn, so nothing moves when a result lands.
+- **Chart: the system's** (Chart component). At most eight series in colour, in the system's
+  slots (1 to 4 solid, 5 to 8 dashed), given by size as series first appear and kept while a
+  series stays on screen; the rest are one Other band and one legend row that opens 20 at a
+  time and lets up to three members be picked out in ink; "Colour the eight largest" is
+  offered only when one of the eight largest is not coloured (D73). Direct labels in a gutter
+  at the right, each joined to its own line, or none (and none below 640 px). The unit once
+  on the axis and once in the legend's head; ticks and figures bare, in one precision; bytes
+  in one binary unit with binary-round ticks. Gaps drawn as gaps. The readout is one line
+  under the plot (time, the nearest series, the highest), by pointer, touch drag or arrow
+  keys; a legend row is a toggle for every pointer, and the legend is one tab stop with arrow
+  keys. Zoom in and Zoom out, a drag across the plot, plus and minus zoom **within the
+  result**; while the chart is zoomed, "Query the chart's range" (beside Show later, its
+  place kept) asks the API for that range itself and puts it in the address. The colour map
+  is kept for the tab's session, so a reload reproduces the colours.
+- The chart reserves its height: it sets its legend's rows and note lines on itself whenever
+  it draws, and the app remembers them for the tab (`viz.chart.reserve:explore`), so the next
+  load reserves the same height before its data arrives.
+- An error after a result was drawn is the chart's error state: the message lies over the
+  plot at its height, the legend keeps the previous figures, inert, with hollow swatches, the
+  head says "Showing the previous query", and the text form says first that the latest query
+  failed. An error with nothing drawn takes the plot's place and states no age.
+- Forms of the result, one segmented control in the panel head: chart; table (the latest
+  value of each series, one column per label that tells the series apart, the value in the
+  chart's unit and number format, sortable, opening highest value first; the caption says how
+  many rows of how many and in what order; 50 rows, then "Show 50 more"); text (the chart's
+  own text form: the same model as the plot, the legend and the readout, with the step said
+  as it is); JSON (the API's answer, with its size and the time it took). The chart stays laid
+  out and drawn while another form is shown. The URL's `view` follows 300 ms after the last
+  switch (on `pagehide` at once). **The page stays where it was scrolled to** when the address
+  follows a change of form, range, step or unit (the router's default for a navigation is the
+  top of the page, which on a phone, where the forms are below the first screen, threw the
+  reader back to the top 300 ms after every change of form: found by the speed runs, fixed,
+  checked at 400 px).
+- The table's rows (names, the latest value and its time for every series) are prepared in
+  idle time after a result has been painted, so that neither the result's first paint nor the
+  change to the table pays for them; a table asked for before that is prepared at once
+  ("Speed", the table's rows).
+- States: before any query, the system's first-run block (what will appear, two steps, and on
+  the mock five example links); empty ("No series matched", what was asked and between which
+  times, "Show the last 24 h"); error; a warning the API sent with a result as a banner.
+- The error state says who answered and what to do (`src/api/errors.ts`), as before: the
+  API's own error type and status only for its own envelope; advice by kind (the key; a step
+  too small for the range, with "Use the automatic step"; each limit by name; PromQL viz does
+  not run; the time limit; a busy API with its tries); a parse error with "Go to character N".
 - A busy answer (429, 502, 503 other than the time limit) is asked again after its
   `Retry-After`, else after 1, 2 and 4 s, at most three times and never past the 60 s stop;
-  the waiting line says so over the previous result ("The API is busy (HTTP 503). Asking again
-  in 1 s.") and Cancel works throughout. The API's time limit (503 `timeout`) is not retried.
-- The range-query body is read as it arrives into Float64Arrays (`src/api/matrix.ts`): a
-  specialised scanner for `data.result`, exact for every number (property-tested equal to
-  `JSON.parse` and `Number`, the body cut into pieces anywhere); anything it does not read
-  falls back to `JSON.parse` with the same answer. Series values stay in Float64Arrays from
-  the parser to the legend, table and digest (a gap is NaN); the chart converts the series it
-  draws (eight by default) to arrays with `null` gaps, which is what uPlot takes.
-- The query window is computed in whole milliseconds, as the API evaluates it (start and end
-  rounded to the millisecond, the step a whole number of milliseconds), so a sub-second step
-  asks for the grid the API answers on.
-- Autocomplete lookups (`labels`, `label values`, `series`) carry the page's window, widened
-  to whole hours; without one the viz API reads every file of the tenant.
+  the waiting line says so over the previous result.
+- The range-query body is read as it arrives into Float64Arrays (`src/api/matrix.ts`), exact
+  for every number (property-tested against `JSON.parse`); the chart is handed plain arrays
+  with `null` gaps, which is what it takes.
 - The `X-Viz-*` cost headers are kept with each result (`cost`); nothing shows them yet.
 
 **Shell**
-- `vz-nav` with Explore and Help, a Commands button and Settings. Light and dark follow the
-  system setting; the manual choice (System, Light, Dark, in Settings or the command palette)
-  sets `data-theme` on the root and is stored in localStorage.
-- Command palette (`Ctrl/Cmd+K`): the system's menu with a field above it.
-- Settings: API base URL and bearer token in localStorage; "Test connection".
-- Help page with the keyboard shortcuts.
+- `vz-nav`: the name, Explore, Help, then the tenant and Settings at the right. A skip link.
+  Light and dark follow the system setting; the choice (System, Light, Dark, on the Settings
+  page or in the command palette) sets `data-theme` on the root, is stored in localStorage,
+  and is applied before first paint by a script file of its own.
+- Command palette (`Ctrl/Cmd+K`, or the button on the Help page): the system's menu with a
+  labelled field above it, in a native dialog with the scrim.
+- Help page: what Explore does, the keyboard, API keys.
+- While the API cannot be reached, one banner at the top says so, what is on screen stays,
+  and the page asks again every 10 s by itself.
+- A page in which something throws (a component, or the chart's script on a result it cannot
+  draw) shows "This page stopped working", the message and "Load the page again"; the
+  navigation stays and another page works.
+- Focus never falls to the document when the control that had it goes away
+  (`src/lib/focusKeeper.ts`): Cancel hands it to Retry, a removed button to the control named
+  in its `data-focus-after`, the sign-in form to Run query.
+
+**The build**
+- `npm run build` writes `dist/`: `index.html`, `favicon.svg`, and `assets/` holding, each
+  with a content hash in its name, the shell script, the editor chunk, the stylesheet, the
+  theme script and the two fonts. `index.html` has no inline script and no inline style and
+  asks for nothing from another origin.
 
 ## What is mocked
 
@@ -338,8 +336,8 @@ the viz design system · uPlot 1.6.32 · CodeMirror 6 · vitest 5 · fast-check 
   editor's linter knows full PromQL, so it will accept queries the mock rejects.
 - Its HTTP surface is the real API's, checked request by request by `e2e/contract.cjs`
   ("Mock and real API"): methods and statuses per endpoint, error types and wording (no
-  position in parse errors), `WWW-Authenticate`, the 29 `X-Viz-*` cost headers (most are 0:
-  the mock reads no files), CORS, gzip, sorted label sets, label endpoints bounded by `start`
+  position in parse errors), `WWW-Authenticate`, the 34 `X-Viz-*` cost headers (most are 0:
+  the mock reads no files), CORS, gzip with `Vary: Origin, Accept-Encoding`, sorted label sets, label endpoints bounded by `start`
   and `end`, the query-size and nesting limits, times and steps in whole milliseconds, and,
   with `--require-token` / `--readless-token`, the 401 and 403 answers. Values agree with
   the real API's for the same data to 1e-9 relative (the seed writes the mock's own data).
@@ -353,6 +351,14 @@ the viz design system · uPlot 1.6.32 · CodeMirror 6 · vitest 5 · fast-check 
   fails; training knowledge, not verified). `/__mock/warn` adds `warnings` to the next
   answers, which the viz API never sends. A delay longer than the query's time limit (30 s,
   or a `timeout` parameter) is answered 503 `timeout`, as the real API does.
+- control's `GET /api/v1/control/whoami`, which sign-in asks: the identity
+  (`{ tenant: "viz-mock", subject, kind, name, scopes, mayApply }`, and the mock's own
+  `mock: true`) for any valid key whatever its scopes, or control's problem body with 401
+  (`application/problem+json`, `WWW-Authenticate: Bearer realm="viz"`). Without
+  `--require-token` the mock needs no key and answers for a key of its own, so the app opens
+  without sign-in in development. With `--readless-token` that key is told who it is and has
+  the `write` scope only. The shapes are the real control's, seen on the local stack
+  (`e2e/real.cjs` signs in against it).
 
 ## The real viz API, locally
 
@@ -369,7 +375,7 @@ node real/stack.mjs seed      # real/seed.ts: 13 Remote Write requests (snappy p
                               # samples: every series of the mock, sample for sample, 08:00 to 14:00 UTC on
                               # 2026-11-18 (counters, a classic histogram, gauges with a 12-minute gap, `up`,
                               # and the 200 `viz_synthetic_series` gauges)
-VIZ_API_TARGET=http://127.0.0.1:8851 npx vite preview   # the app on it; paste the read key in Settings
+VIZ_API_TARGET=http://127.0.0.1:8851 npx vite preview   # the app on it; sign in with the read key (real/.wrangler/keys.json)
 node real/stack.mjs stop
 ```
 
@@ -390,8 +396,8 @@ count the stack as up when ingest, query and control answer).
 Found by sending the same requests to both (`e2e/contract.cjs`: 60 requests, 82 checks; the
 real answers are kept in `e2e/measurements/contract-real.json`) and by running the app on
 both (`e2e/real.cjs`). "Mock" is the mock as it was before the change that found the
-difference. The first column says which pass found it: 1 is the first pass (the change
-before this one), 2 is this one.
+difference. The first column says which pass found it: 1 and 2 are the two changes of 2026-11-19, 3
+is the move to design system v9 (2026-11-26).
 
 | Pass | Where | Real API | Mock (before) | Done |
 |---|---|---|---|---|
@@ -417,10 +423,15 @@ before this one), 2 is this one.
 | 1, 2 | Compression | gzip when the client accepts it, with `Vary: Origin` only (under `wrangler dev`) | none; then gzip with `Vary: Origin, Accept-Encoding` | mock: gzip, `Vary: Origin` as the real API sends it |
 | 1 | `warnings`, `infos` | never sent: a part of an answer is refused (503), never returned as partial | never | app: the warnings banner says the result may be incomplete before the API's words; `infos` are read (not shown); mock: `/__mock/warn` |
 | 1 | Values, timestamps | for the same data, equal to 1e-14 relative; times to the millisecond | equal | the contract compares values for 22 requests |
+| 3 | Who the key is | `GET /api/v1/control/whoami` (control, through the gateway): 200 `{ tenant, subject, kind, name, scopes, mayApply }` for any valid key whatever its scopes; 401 `application/problem+json` for a key that is missing, malformed, unknown, disabled or expired | not served (404) | app: sign-in asks it; mock: the same route and answers, plus its own `mock: true`. Checked on the real stack by `e2e/real.cjs`, not by the contract test (it compares the query API) |
+| 3 | Cost | 34 `X-Viz-*` headers: five more since 2026-11-19 (`X-Viz-Pruning`, `X-Viz-Tail-Mode`, `X-Viz-Series-Reads`, `X-Viz-Scan-Rows`, `X-Viz-Rows-Decoded`) | 29 | mock: the same 34 names |
+| 3 | Compression | `Vary: Origin, Accept-Encoding` on every answer (item 8 of "Needed changes in query/", since done there) | `Vary: Origin` | mock: the same |
+| 3 | Time limit, the words | `query timed out after 0.001 s (the timeout parameter)`: the limit is now said (item 4, since done) | `query timed out` | reported by the contract test as a difference of wording, not failed; the mock's words were left |
 
 ## Needed changes in query/
 
-`query/` was not edited. Each item is a request to the real stack (`real/stack.mjs`, tenant
+`query/` was not edited. The list is from 2026-11-19; two items have been done there since
+and are struck through; the others were not checked again. Each item is a request to the real stack (`real/stack.mjs`, tenant
 `viz-app-e2e`, a key with the `read` scope as `Authorization: Bearer …`, window
 `start=1794994200&end=1795005000` unless said) and its answer (`e2e/measurements/contract-real.json`
 holds every answer of the last contract run). Prometheus' behaviour is training knowledge
@@ -441,7 +452,8 @@ from its source and documentation, not checked against a running Prometheus.
 3. **`unsupported` messages are fragments.** `query=limitk(1, up)` answers
    `422 unsupported "limitk / limit_ratio aggregations"`: no verb. Wanted: a sentence, e.g.
    "limitk and limit_ratio are not supported by viz".
-4. **A timeout does not say the limit.** `query=viz_synthetic_series&step=15&timeout=1ms`
+4. ~~A timeout does not say the limit.~~ **Done in `query/` since** (seen 2026-11-26: "query timed
+   out after 0.001 s (the timeout parameter)"). As it was written: `query=viz_synthetic_series&step=15&timeout=1ms`
    answers `503 timeout "query timed out"`; after the tenant's 30 s limit a person sees the
    same words and cannot tell a limit from a stall. Wanted: "query timed out after 30 s (the
    tenant's limit)".
@@ -459,7 +471,8 @@ from its source and documentation, not checked against a running Prometheus.
    `X-Viz-Samples-Loaded: 0` (known in `query/README.md`).
 7. **`/api/v1/metadata` is always `{}`.** The editor completes metric names without type or
    help text on the real API. Known in `query/README.md`; listed because the app runs on it.
-8. **Compressed answers do not vary on `Accept-Encoding`.** Under `wrangler dev` every answer
+8. ~~Compressed answers do not vary on `Accept-Encoding`.~~ **Done since**: every answer of the
+   local stack carries `Vary: Origin, Accept-Encoding` (2026-11-26). As it was written: Under `wrangler dev` every answer
    is gzip with `Vary: Origin` only. A shared cache keyed by `Vary` could hand gzip to a
    client that did not ask for it. Probably workerd's automatic compression rather than
    `query/` (not checked on Cloudflare, where the edge compresses); listed so that the
@@ -478,32 +491,871 @@ An earlier draft of this list (in the session before this one) said the isolate-
 refusal "the query service is busy" has no `Retry-After`. That was true when written and is
 no longer: `query/` now sends `Retry-After: 1` with it, and the item was dropped.
 
+## Needed changes in deploy/
+
+`deploy/` was not edited. This is what the gateway (`deploy/gateway`, `vis.bitcru.sh`) has to
+do to serve the app. The same statement is in `serve.json`, as data; `e2e/prod.cjs` serves
+`dist/` by exactly these rules from a small static server and drives the app in a browser
+under them (19 checks, "Verification"), and `src/shell/serve.test.ts` fails if the router gains
+a route the list lacks.
+
+**What is served.** The output of `npm run build` in `app/` (`app/dist/`): `index.html`,
+`favicon.svg`, and `assets/` (six files today, each with a content hash in its name:
+`index-*.js`, `PromqlEditor-*.js`, `index-*.css`, `theme-*.js`, two `.woff2`; 1.1 MB on
+disk). Building needs `design-system/dist`, which `npm run build` generates if it is
+missing. Nothing in `dist/` is a secret or names a tenant.
+
+**Paths.** `GET` and `HEAD` only. Every other path, and every other method on these paths,
+stays exactly as the gateway answers it today (its JSON 404, or a backend).
+
+| Path | Answer |
+|---|---|
+| `/`, `/explore`, `/help`, `/settings` (exactly; a query string is the app's) | 200, `dist/index.html`, the document headers below |
+| `/assets/<file>` for a file that exists in `dist/assets/` | 200, that file, the asset headers below |
+| `/assets/<anything else>` | the gateway's JSON 404. **Never `index.html`**: a script URL from an older deploy must fail as a 404, not parse as HTML |
+| `/favicon.svg` | 200, that file, the file headers below |
+| everything else (`/explore/`, `/index.html`, `/dashboards`, …) | unchanged: the gateway's JSON 404 |
+
+The API's paths are decided first, as now (`routeOf`): no document or asset path overlaps
+one (`/api/…`, `/v1/…`, `/loki/…`, `/mcp`, `/oauth/…`, `/.well-known/…`, `/healthz`), and
+none may be added under `/assets/` or at the four document paths. The list of documents is
+`serve.json`'s `documents`; when the app gains a page, that list gains a path and the gateway
+needs it too (the unit test fails until `serve.json` has it).
+
+**Headers on the document** (`index.html`, at each of the four paths):
+
+```
+Content-Type: text/html; charset=utf-8
+Cache-Control: no-cache
+Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+X-Content-Type-Options: nosniff
+X-Frame-Options: DENY
+Referrer-Policy: no-referrer
+Cross-Origin-Opener-Policy: same-origin
+```
+
+- `no-cache` with a validator (an `ETag`): the document is revalidated on every load, so a
+  deploy is picked up by the next navigation, and a 304 costs one round trip.
+- The policy, by directive: scripts only from this origin, and **no inline script** (the
+  build has none: the theme script is a file); styles from this origin **and inline**, because
+  the query editor (CodeMirror) writes its styles as `<style>` elements and the design
+  system's chart writes its legend's column widths as `style` attributes, and neither can
+  carry a nonce from a static file; images (the icon), fonts and requests (`fetch` to
+  `/api/…`) from this origin only; no `<base>`; no form may post anywhere (the sign-in form
+  is handled by script; this stops the key leaving if the script fails); no framing.
+  `e2e/prod.cjs` runs the app under this exact string with no violation, and under the same
+  string without `'unsafe-inline'` it reports violations, so the check can fail.
+- `Referrer-Policy: no-referrer`: the address holds the query, which is a tenant's own.
+- `Strict-Transport-Security` if the zone does not already send it (not checked here).
+
+**Headers on `/assets/*`:** `Cache-Control: public, max-age=31536000, immutable`,
+`X-Content-Type-Options: nosniff`, and the type by extension: `.js` `text/javascript;
+charset=utf-8`, `.css` `text/css; charset=utf-8`, `.woff2` `font/woff2`. A file's name changes
+when its content does, so it is kept for good. **On `/favicon.svg`:** `Cache-Control: public,
+max-age=86400`, `Content-Type: image/svg+xml`, `nosniff`. Compressed (Brotli or gzip) by
+whatever serves them, except the fonts, which already are.
+
+**The API, as the app uses it** (nothing to change; stated so that it stays so): same origin,
+so no CORS; the key as `Authorization: Bearer …` on every `/api/v1/…` request, and nowhere
+else; no cookie is set or read; `GET /api/v1/control/whoami` must reach control and answer
+200 with `{ tenant, subject, kind, name, scopes }` or 401, without a redirect; the `X-Viz-*`
+headers are read from the response. A 401 carries `WWW-Authenticate: Bearer`, which opens no
+browser prompt.
+
+**Releases.** The document and the assets must go out together: `index.html` names the
+hashed files of its own build. With `Cache-Control: no-cache` on the document, a browser
+holding an old document asks again and gets the new one; a tab that is open across a deploy
+keeps working from files it has already loaded, but its editor chunk (`PromqlEditor-*.js`,
+fetched when Explore first shows the editor) is requested by its old name, so the old assets
+should stay reachable for a while after a deploy, or that tab's editor does not load until it
+is reloaded (the query is then shown as text in the well, and Run query still works). Keeping
+the previous release's `assets/` files answers this; how is `deploy/`'s choice.
+
+**How, on Cloudflare** (training knowledge, not verified here: no Cloudflare call was made).
+A Worker's static assets (`assets: { directory, binding }` in its wrangler configuration) can
+be bound as `env.ASSETS` and fetched from the Worker's own `fetch`, with the Worker run first
+for every request, so that `routeOf` still decides; the asset server's own handling of
+missing paths and of `index.html` must not be what answers (no single-page fallback for
+unknown paths; the headers above are the Worker's to set, since the asset server chooses its
+own `Cache-Control`). `deploy/` owns whether that is how it is done.
+
+**What a smoke test can ask of a deployed app** (as `e2e/prod.cjs` asks locally): the four
+document paths answer 200 with the policy; an asset named in `index.html` answers 200 and
+`immutable`; `/assets/nope.js` is a JSON 404; `GET /api/v1/control/whoami` without a key is
+401 and with a read key names the tenant.
+
+### What `deploy/README.md` asks of the app ("Needed changes in app/", eight items)
+
+Written by the gateway's builder; read on 2026-11-27. **None was started.** The state of each
+on this tree:
+
+| # | Asked | State |
+|---|---|---|
+| 1 | A chunk that fails to load is "viz was updated", with a reload offered once | **Not done.** The app has one lazy chunk, the editor. If it cannot be loaded the query stays readable as plain text in the well and nothing says why or offers a reload; no `vite:preloadError` listener, no guard against a reload loop |
+| 2 | Notice a new build by the document's `ETag` before a chunk is missing | **Not done** |
+| 3 | The entry script can be the 404: the first script reloads once | **Not done.** `theme-*.js` only applies the theme |
+| 4 | Tolerate the API of the release before (a new route is optional for one release) | **Partly, by construction.** The only route newer than the query API that the app calls is control's `whoami`: a 404 from it is "this API has no sign-in" (a tab with a key carries on unchecked; a tab without one is told the key could not be checked), and `/status/buildinfo` is optional. Nothing states it as a rule for routes to come |
+| 5 | Version what the app stores in the browser, and ignore what it does not know | **Not done as versions.** What is stored (`viz.key`, `viz.identity`, `viz.chart.reserve:<view>` and the chart's `vz-series8:<view>` in `sessionStorage`; `viz.theme` in `localStorage`) is read defensively (a value of the wrong shape is ignored) and carries no version; the earlier app's `viz.settings` is removed on start. The address's parameters are unchanged from the earlier app |
+| 6 | `serve.json` is read strictly: change it and `deploy/` together | **Holds today.** `serve.json` has been unchanged since early in this change (one change then: the policy's `style-src 'self' 'unsafe-inline'` in place of `style-src 'self'; style-src-attr 'unsafe-inline'`, because the editor adds `<style>` elements); `e2e/prod.cjs` fails if the build writes a file `serve.json` does not cover; the build writes no source map |
+| 7 | The document must fit a variable (about 3.6 kB) | **Holds today**: `dist/index.html` is 921 bytes, with no inline script or style. Nothing in the build enforces the limit |
+| 8 | The browser the suites need is in no `package.json` | **Not done.** `e2e/` uses the Playwright installed on this machine; no lockfile installs it, so CI cannot run `e2e/app.cjs`, `errors.cjs` or `prod.cjs` |
+
+## Needed changes in the design system
+
+`design-system/` was not edited. The app uses the closest existing thing in each case; every
+workaround is in `src/charts/Chart.tsx`, `src/charts/fixups.ts` or `src/app.css` and is
+listed here so that it can be deleted when the system covers it.
+
+| # | What an application needs | What the app does meanwhile |
+|---|---|---|
+| 1 | **A time zone for the reference chart.** `viz-chart.js` formats every time in UTC (`getUTCHours`): the axis, the readout, the legend's "At 13:02", the head's range, the text form. An application shows the reader's zone, or must say UTC everywhere | `spec.ts` adds the zone's offset at the window's end to every time it hands the chart, so the chart's UTC clock reads local time, and takes it off what it reads back. A window that spans a clock change is off by the change before it (twice a year, an hour) |
+| 2 | **The text form assumes steps of whole minutes and an aggregate**: "every 0.25 min, max". A range query's step is often 15 s, and it has no aggregate over the step | The app gives the chart a placeholder aggregate and rewrites that phrase of the first line to "one value every 15 s" (`fixText`) |
+| 3 | **A result with no unit**: the chart writes "Last, " (and "At 13:02, "), an accessible name "title, , range" and the same in the text form | The comma that introduces the missing unit is removed (`fixHead`, `fixName`, `fixText`) |
+| 4 | **A legend row's accessible name does not hold the words it shows** (it is the full label set, `route="/product", service="catalog"`, while the row shows "/product · catalog"): WCAG 2.5.3, and axe-core's `label-content-name-mismatch` (serious) on every chart with more than one distinguishing label. Other's row is two elements with no space between: its text reads "Other28 series" | The name is made "words shown: full label set" (`fixRowName`), Other's "Other 28 series, as one band", and a space is put between Other's two elements |
+| 5 | **No way to hear what the chart did or tell it what to do**: the range it shows after a zoom, its error's button, a new result's reservation | The app listens for `click`, `pointerup` and `keydown` on the chart after the chart's own handlers and reads `state.t0`/`t1`; it puts its own error message into the chart's `.vz-empty` (found by a MutationObserver, because the chart makes a new one on every draw) |
+| 6 | **No rule for more samples than pixel columns.** The chart draws every sample. The app's automatic step asks for at most one per column, but a typed step can ask for 11,000 a series | Nothing: they are drawn, slowly ("Speed", the typed step of 1 s: 10,801 samples a series). The app before reduced each column to its minimum and maximum, which the Chart rules do not describe |
+| 7 | **`.vz-panel-body:has(> .vz-chart) > .vz-progress`** starts the waiting line right of the axis only when the chart is the body's own child; a chart inside any wrapper loses it, and so does a body that holds a table while the chart is parked | One rule in `app.css` does the same by the form shown (`.vz-panel-body[data-view="chart"]`) |
+| 8 | **A parked chart**: an application that keeps the chart drawn while another form is shown (the text form is written by the chart; coming back is a style change) has no class for it; `hidden` stops the chart drawing | `.is-parked` in `app.css` (absolute, no height, not seen), with `inert` |
+| 9 | **`text-body-size` is 15 px.** The system gives inputs and the query well body-size text with a coarse pointer "because smaller text makes mobile browsers zoom the page on focus"; the threshold in iOS Safari is 16 px (training knowledge, not checked on a device), so 15 px would still zoom | Nothing: the app follows the system (B2 below is "fixed as the system specifies") |
+| 10 | **The chart writes `style` attributes** (`<col style="width:…">`), so a page's content security policy must allow inline styles for it (CodeMirror needs the same for its `<style>` elements) | The policy allows inline styles; scripts stay strict |
+| 11 | **A shared link carrying the colour map** (Chart, "Series colour", 2) needs a way to read the map from the chart and give it one | Not done: the same link opened in a fresh tab colours by size afresh |
+| 12 | **Segmented: arrow keys within the group** (the first review's m7, its second half). The legend is one tab stop in v9; a segmented control is still one stop per segment | Nothing: each segment is a tab stop, as in the system's own pages |
+| 13 | **A sign-in pattern.** The system has Secret (a key shown once) and FirstRun, and no screen that asks for a credential | The form is composed from FirstRun (`vz-start`: what is missing, one sentence), Field, a `vz-check` and Notice |
+| 14 | **A chart cannot be removed**: `vzChart(root)` adds listeners to the root, a ResizeObserver and a `document.fonts` listener with no way to take them off | One chart per element for the element's life (`drawChart`); a new result is `setData` |
+| 15 | **The chart's cost on a result of Explore's size.** The fixture's charts have 61 samples a series; Explore's automatic step asks for one per pixel column (721 at 1440 px). After the last byte the chart's model (a copy of every series, its figures, the Other band over every folded series) and its SVG and legend are most of the script the app runs, and the browser then parses, styles, lays out and paints them: response to paint is slower than with the app's canvas chart was ("Speed") | The app prepares its table's rows in idle time after the result is painted, and passes over the values for the unit only for bytes per second. Nothing in the chart |
+
+## Decisions in this change, for `design/DECISIONS.md`
+
+`design/` is not this component's, so these are recorded here for the lead to enter or
+overrule. Each is a choice between real alternatives.
+
+1. **The app's chart is the design system's reference chart, not a chart of its own.**
+   Alternatives: keep uPlot (canvas) and implement the Chart rules on it; write an SVG chart
+   in the app from the rules' pure functions. Why: the rules (colour map, Other, D73, labels,
+   readout, reserved height, text form) are 500 lines that the system tests as properties and
+   audits as rendered; a second implementation is a second set of findings, and the first
+   review's chart findings (M1, M2, M4, M5, M7) were all of that kind. Cost: the fifteen
+   needs above, the slower first paint of a result among them ("Speed"). Would change if the chart must draw what the reference does not (stacked
+   charts, heatmaps), if a typed step's 11,000 points a series prove too slow in SVG, or if
+   the system ships a chart package with a zone and events.
+2. **The key is kept in `sessionStorage`**, with the identity the API gave it. Alternatives:
+   memory only (a reload signs out, and a reload is how a link is opened); `localStorage`
+   (survives the tab; the app before did this). Why: a link and a reload are Explore's main
+   path, and a tab is the smallest lifetime that keeps them. Would change when control's
+   `identify` gains its second branch (a person signing in): then a session cookie the page
+   cannot read.
+3. **The content security policy allows inline styles.** Alternatives: a nonce (the document
+   would have to be rewritten per request and could not be revalidated to a 304); the editor
+   in a shadow root, where CodeMirror uses constructed stylesheets, plus a chart that sets
+   widths through the CSSOM. Why: scripts are what the policy is for, and they are strict.
+   Would change if either dependency stops writing inline styles.
+4. **Times are shown in the device's zone**, as before, by moving the chart's clock (need 1).
+   Alternative: UTC everywhere, stated. Would change if the lead prefers UTC for an
+   operations tool, or when the chart takes a zone.
+5. **A zoom on the chart stays inside the result**, as the Chart rules say, and a separate
+   control asks the API for that range. Before, a drag asked the API at once. Would change if
+   people expect the drag to refetch (the evidence: how often "Query the chart's range" is
+   pressed right after a zoom).
+6. **The gateway serves the document at a fixed list of paths**, not for every unknown path.
+   Why: the gateway's JSON 404 for an unknown API path is part of the API's behaviour, and a
+   mistyped API path must not answer 200 with HTML.
+
 ## Not implemented
 
-- Everything outside metrics Explore: dashboards, logs, traces, alerts, the agent surface.
-- No Worker/Hono/Cloudflare deployment config; this is a static SPA build only.
-- No auto-refresh, query history, multiple queries per view, exemplars or annotations.
-- The table is derived from the range result (last sample per series), not from a separate
-  instant query. Scalar and string instant results have no dedicated rendering.
-- Neither the legend nor the table is virtualised; both are capped instead. The legend has at
-  most eight coloured rows and one Other row whose members are listed 50 at a time; the table
-  shows 50 rows at a time.
-- The range-query body is read on the main thread, as it arrives (`src/api/matrix.ts`); the
-  worker that would read it off the main thread (`src/api/matrixWorker.ts`) is built and
-  tested but not used (see "Speed": the harness cannot measure it fairly). Instant queries,
-  label endpoints and every error are read with `JSON.parse`.
-- No Arrow transport, no coarse-then-refine loading.
-- No login flow; the key is pasted into Settings and sent as a bearer token.
-- The `X-Viz-*` cost of a query is kept but shown nowhere (where it belongs is a design
-  question), and the app cannot ask what a query would cost before running it (the viz API
-  has no plan-only endpoint).
-- Instant queries (`/api/v1/query`) are in the client but no view uses them.
-- Not run against the real API: Grafana-style clients other than the app, a deployed
-  (Cloudflare) viz, and the refusals that need concurrent load (the isolate's byte budget)
-  or a broken component (a missing file, a leaf failing twice); the mock's `busy` and
-  `storage` failures stand in for them, with the answers read from `query/src`.
+- **Everything outside metrics Explore: dashboards, monitors, logs, traces, alerts, the agent
+  surface.** The navigation has Explore, Help and Settings only. The design system's flow
+  screens for dashboards and monitors (`../design-system/flows/`) are not built.
+- **Deployment.** The build is ready and the gateway's part is specified ("Needed changes in
+  deploy/"); nothing was deployed and no Cloudflare call was made. The eight things
+  `deploy/README.md` asks of the app (a failed chunk load as "viz was updated", noticing a
+  new build, versioned storage, a browser for CI and the rest) are not done; their state is
+  listed under "Needed changes in deploy/".
+- **Speed is not measured on the final build** except at the desktop layout for 36 and 200
+  series in one tuning run; the phone layout of the final build is unmeasured ("Speed").
+- **Sign-in by a person.** There is only the API key; control has no user identity yet. No key
+  can be made, listed or revoked from the app (control's Keys API is not used).
+- No auto-refresh, query history, multiple queries per view, exemplars, thresholds, markers
+  or annotations (the chart can draw the last three; nothing feeds them).
+- The table is derived from the range result (the last sample of each series), not from an
+  instant query. Scalar and string instant results have no rendering; `/api/v1/query` is in
+  the client and no view uses it.
+- A shared link does not carry the colour map (need 11): the same link in a fresh tab
+  colours by size afresh.
+- More samples than pixel columns are drawn as they are (need 6); the app before reduced each
+  column to its minimum and maximum, and said so in a caption.
+- The legend's full label set for a row is its title and its accessible name; on a touch
+  screen it is not shown as such. Every label is on screen somewhere: the ones that differ in
+  the row (or as columns of the table), the shared ones in the legend's note.
+- Neither the legend nor the table is virtualised; both are capped (the legend: eight rows,
+  Other, and its members 20 at a time; the table: 50 rows at a time).
+- The range-query body is read on the main thread; the worker reader
+  (`src/api/matrixWorker.ts`) is built, tested and not used. No Arrow transport, no
+  coarse-then-refine loading.
+- The `X-Viz-*` cost of a query is kept and shown nowhere, and the app does not ask
+  `/api/v1/plan` what a query would cost before running it.
+- The 10 s and 60 s rows of the waiting table are checked (`VIZ_SLOW=1 node e2e/app.cjs`) but
+  not imaged.
+- Not run against: a deployed (Cloudflare) viz; Grafana-style clients; Safari and Firefox;
+  real touch hardware; a screen reader by ear; 200% zoom beyond the one image.
 
 ## Verification
+
+Run on 2026-11-26 and 27 (UTC), Node 22.23, Chromium (Playwright's headless shell), on a
+machine of 4 cores and 16 GB shared with other builders. Every suite in this table was run on
+the final source and build (after the last source change, 2026-11-27 00:13 UTC), one browser
+of this work at a time; `e2e/contract.cjs` compares the mock with the real API and does not
+load the app, and was not run again after 22:36.
+
+| Check | Result |
+|---|---|
+| `npm test` | 168 tests in 15 files pass (two workers at most) |
+| `npx tsc --noEmit` | passes |
+| `npm run build` | passes: `dist/` is `index.html`, `favicon.svg` and six hashed files under `assets/` |
+| `node ../design-system/tools/check.mjs --no-render src index.html` (`npm run check:tokens`) | **passes**: contrast and structure 759/759, 0 literal values in 58 files. Before this change it failed on four values in `src/app.css` |
+| `node e2e/app.cjs` | 130 of 130 checks pass |
+| `VIZ_SLOW=1 node e2e/app.cjs` | 132 of 132: the same, and the cheaper range offered as a control at 10 s and the stop at 60 s |
+| `node e2e/errors.cjs` | 14 of 14 checks pass |
+| `node e2e/prod.cjs` | 19 of 19 checks pass: the build's shape, every path and header of `serve.json`, the app driven under the content security policy with no violation, and the same flow under the policy without `'unsafe-inline'` for styles reporting violations (so the check can fail) |
+| `node e2e/real.cjs` | 15 of 15 checks pass on the real API under `wrangler dev --local` (the working tree of `query/`, `edge/`, `control/` and the gateway at 2026-11-27 00:18 UTC; the stack starts empty, so it was started and seeded first): sign-in against control's `whoami` with a read key, a write-only key and a key control never made; the same legend, unit, axis, note and text form for the same data from the real API and from the mock (4 series, a gap, 36 series); a parse error, a step too small, an empty result, PromQL viz does not run |
+| `node e2e/contract.cjs` | 82 of 82 checks pass, after the mock was brought up to the real API (five more cost headers, `Vary: Origin, Accept-Encoding`; it failed 59 of 82 before that); one difference of wording reported, not failed (the time limit's message) |
+| axe-core 4.14 | 0 serious or critical violations in 17 runs (`e2e/app.cjs`: chart with 36 series, table, text form, error, start, help and the command palette in both themes; the chart at 400 px with touch; sign-in; Settings). One was found and fixed on the way: the legend rows' accessible names (need 4) |
+| `e2e/mutants.cjs` | 60 mutants, each applied to a copy in the scratch area. First run (58): 53 killed, 5 survived; every survivor answered (four with a stronger check; one was not a violation and was replaced); two added for the two late changes; both parts run again whole on the final source: 60 of 60 killed (below) |
+| Images | 170 before/after pairs in `../design-system/reviews/app-v9/compare/` (14 MB): every view and state, both themes, 1440 and 400 px, the same mock, data and steps; `shots.mjs` measured no sideways overflow, no text under 11 px and no hit area under 44 px at 400 and 320 px with a coarse pointer. **Made at 20:37 to 20:45 UTC on 26 Nov and not made again after the later source changes** ("Known issues and risks") |
+
+**What the checks of the earlier suites became.** `e2e/run.cjs` (54 checks), `e2e/design.cjs`
+(52) and `e2e/fixes.cjs` (37) drove the app's own chart, legend, time picker and Settings
+dialog, which are gone; they were removed, and `e2e/app.cjs` (130 checks) checks the same
+properties on what replaced them:
+
+| Property | Before | Now (`e2e/app.cjs`) |
+|---|---|---|
+| Flows: a link opens the chart; the four forms; reload keeps the form; empty, error, start | `run.cjs` | section `flow` (18 checks, with a page in which something throws, and the table after a second and a third query) |
+| One blue button; no computed colour outside the tokens, every state, both themes | `design.cjs` | section `colour`: 14 states a theme, SVG paint included |
+| B1: old data keeps its own labels (waiting, cancelled, after an error, 60 s stop) | `fixes.cjs` | section `b1` (9 checks); the 60 s stop under `VIZ_SLOW=1` |
+| The waiting table: 150 ms, 800 ms, held 300 ms (an answer at 480 ms), Cancel at 2 s and its abort, a second press ignored | `design.cjs` | section `waiting` (9 checks), timed in the page from the press |
+| M2: colours in palette order, kept by survivors and by a reload, never more than eight, one Other | `fixes.cjs`, on the app's own assignment | section `chart`: the system's algorithm as rendered, and D73 (offered only when it would change a colour; pressed; withdrawn) |
+| M1, M5, M7: labels, names, units | `fixes.cjs` | section `chart` (12 checks) |
+| Keyboard: reading order, the ring at every stop, focus never on the body | `design.cjs` (27 stops) | section `keyboard`: 28 stops; the plot and the legend are one stop each, with their arrow keys |
+| B3: typing renders no React component | `fixes.cjs` | section `keyboard` |
+| Touch: 44 px hit areas with no overlap; tap toggles; zoom by button | `design.cjs`, `fixes.cjs`, from computed boxes | section `touch`: hit areas found by asking the page what is at each point (as `shots.mjs` does), ten states; a held finger's pressed fill on four controls |
+| No sideways scroll at 400 px; no text under 11 px | `design.cjs` | section `touch`, at 400 and 320 px, six pages |
+| Reduced motion | `design.cjs` | section `axe` |
+| Autocomplete debounce and abort | `fixes.cjs` and unit | unit only (`promClient.test.ts`); autocomplete appearing under the policy in `e2e/prod.cjs` |
+| The URL's form after a quick round trip and Back | `fixes.cjs` | **not carried over** (the code is unchanged; `flow` checks that the address follows the form and a reload opens it) |
+| Focus after 27 interactions | `fixes.cjs` | **partly**: Cancel to Retry, sign-in to Run query, the error's button to the editor, and the keyboard walk; the long walk of interactions was not rewritten |
+
+New in this change: sign-in (section `signin`, 15 checks), the time fields and the step
+(`keyboard`), zoom and "Query the chart's range" (`zoom`), the time zone (`zone`), layout
+shift on a first visit at both layouts and on a reload with the reserved height, and the
+scroll position kept through a change of form at 400 px (`shift`), the page under the
+content security policy (`e2e/prod.cjs`).
+
+**One check depended on the clock and failed once.** "m4" read the echo of "the last 6 h" with
+a pattern for a range inside one day; run at 00:14 UTC the echo was "26 Nov 18:14 to 27 Nov
+00:14 (now), 6 h, UTC", which is right, and the check failed. The pattern now takes both
+forms and any month. No other check reads today's date.
+
+Unit tests added: `src/lib/timeInput.test.ts` (times and durations as typed and read, in six
+zones, with two properties: what a field shows is read back as the same instant; a relative
+time is read back as itself), `src/charts/spec.test.ts` (a result as the chart takes it; the
+table's figures by the design system's own rules, loaded from the file the app bundles; the
+words the app rewrites), `src/shell/session.test.ts` (who gets in; what a typed key comes to;
+`whoami` through the client against the mock), `src/shell/serve.test.ts` (the gateway's list
+against the router; the policy), `src/explore/ResultTable.test.ts` (the order the caption
+states). Removed with the code they tested: `assign.test.ts`, `digest.test.ts`,
+`downsample.test.ts`, `units.test.ts`, and the colour and formatting cases of `lib.test.ts`
+(the design system tests colour assignment and number formats as properties of its own).
+
+### Touch emulation and layout shift: what the phone figures are
+
+Two properties of the browser's emulation, found by the design system's v9 confirmation
+review (`../design-system/reviews/system-v9/confirmation.md`), decide what a phone figure
+means. Both were checked against every script here after the review said so.
+
+1. **A touch context loses its coarse pointer on the outgoing document during a reload.**
+   Nothing here reads a size, a scroll position or a pointer-dependent style across a
+   navigation or reload under touch emulation:
+   - `e2e/app.cjs`, section `touch`: one touch context; each of the ten states is a document
+     reached by `goto` and measured after it loaded; no reload. Every measurement now reads
+     `(pointer: coarse)` in the same call as its figures, and a state measured with a fine
+     pointer fails the check (hit areas, the query well, the two narrow widths; the phone run
+     of axe has a check of its own).
+   - `e2e/app.cjs`, section `shift`: the phone first visit is a fresh touch context and one
+     `goto`. **The reload half of that section (the chart's height reserved from the last
+     result, to the pixel) runs at the desktop layout with a fine pointer only: it is not
+     checked at the phone layout**, because a reload is exactly what the emulation gets wrong.
+     The audit's pointer (`../design-system/tools/audit.mjs`: its own browser with the
+     blink-settings switch, `isMobile`, no `hasTouch`) would be the way to check it; that was
+     not done.
+   - `e2e/measure.cjs --phone`: a fresh context and one `goto` a run; no reload. From the
+     retake on, a run whose page does not match `(pointer: coarse)` throws; the main run's
+     phone runs had no such guard (same context options, same single `goto`).
+   - `e2e/v9-shots.cjs`: the states pictured with a coarse pointer (`touch`, `touch-table`,
+     `touch-hit-areas`, `touch-320`) have no reload in their steps; the states that reload
+     (the waiting states, the "before" build's key) are pictured with a fine pointer.
+2. **Layout-shift entries are marked `hadRecentInput` for about the first 460 ms after a
+   load under `isMobile`, with no input given.** A sum of unmarked entries can therefore
+   read 0 while the page moved. Where the harness gave no input, every entry is counted:
+   - `e2e/app.cjs`, section `shift`, sums every entry (it summed unmarked entries until this
+     was reported), at the desktop layout and now on a phone first visit.
+   - `e2e/measure.cjs`: "Layout shift, first load" is every entry (no input precedes it).
+     "Layout shift, query run" follows a press, so marked entries there may be the press's
+     own; both sums are printed, and the one to judge the phone layout on is "every entry".
+
+### Mutants of this change
+
+`VIZ_MUTANT_DIR=<scratch> node e2e/mutants.cjs`: one property broken at a time **in a copy of
+the app in the session's scratch area** (the script refuses a directory inside the
+repository), the checks named for it run there, the copy restored. Results:
+`e2e/measurements/mutants-v9-unit.txt` and `mutants-v9-e2e.txt`.
+
+60 mutants: 26 that only unit tests are asked to catch, 34 that need the built app in a
+browser (sections of `e2e/app.cjs`, or `e2e/prod.cjs`). **First run (58 mutants): 53 killed, 5
+survived** (24 of 26, and 29 of 32). Each survivor was answered, two mutants were added for
+the two late changes (the scroll position kept; the table prepared in idle time), and both
+parts were run again whole on the final source (2026-11-27, 00:18 to 00:26 UTC): **60 of 60
+killed.**
+
+- "time: 24:30 is read as a time" survived: the tests fed `25:00`, not `24:00`. Now `24:00`,
+  `24:30`, `09:60` and `09:16:60` are refused.
+- "chart: bytes per second in decimal steps" survived: the tested values were far from a
+  step. Now 1000 B/s stays B/s, 1024 B/s is KiB/s, and a million is 977 KiB/s.
+- "the waiting line is not held for 300 ms" survived: with an answer after 800 ms the line
+  stays 400 ms whatever the minimum is. A check with an answer after 480 ms was added, where
+  only the minimum keeps the line (this was a check of the old suite that had not been
+  carried over).
+- "the palette's field has no visible label" survived: the check took a hairline-sized,
+  clipped box for visible. The label's box must now be more than 8 px each way.
+- "a second blue button (Sign out)" survived because it broke nothing: one blue button on a
+  page is what the system allows. It was replaced by a real violation, a second blue button
+  in Explore, which is killed.
+
+Not covered by a mutant: the layout itself (it is pictured, and measured for overflow, hit
+areas and layout shift); the gateway's part (it is not built); the chart's own rules (the
+design system tests them as properties and runs its own mutants).
+
+
+| Mutant | Checks run | Result | Caught by |
+|---|---|---|---|
+| session: a 401 for a tab with no key is reported as a refused key | unit | killed | unit: “a 401 is the sign-in form: "no key" without one, "refused" with one” |
+| session: when the API does not answer, a tab without a key is let in | unit | killed | unit: “when the API does not answer, a tab with a key carries on and a tab without one is asked for one” |
+| session: an API without a control plane (404) shows the sign-in form | unit | killed | unit: “an API with no control plane (404) has nothing to sign in to” |
+| sign-in: a key without the read scope is accepted | unit | killed | unit: “a valid key without the read scope is refused at the field, with its scopes, and never stored” |
+| sign-in: the admin scope counts as read | unit | killed | unit: “a valid key without the read scope is refused at the field, with its scopes, and never stored” |
+| sign-in: a refused key is reported as "could not be checked" | unit | killed | unit: “a key the API refuses is a problem with the key; an API that does not answer is not” |
+| sign-in: the key's whole text is shown as its label | unit | killed | unit: “shows a key by its public part only” |
+| whoami: the key is sent in the address | unit | killed | unit: “asks /api/v1/control/whoami with the key in the Authorization header and nowhere else” |
+| whoami: any 200 is trusted as an identity | unit | killed | unit: “an answer that is not an identity is refused, not trusted” |
+| mock whoami: a key without the read scope is not told who it is | unit | killed | unit: “a key without the read scope is still told who it is” |
+| time: "now - 6 h" loses its unit (hours read as minutes) | unit | killed | unit: “reads every form people type”; “reads the system's forms” and 1 more |
+| time: a day without a year is always this year | unit | killed | unit: “takes a day without a year as this year, or last year when this year's is more than a day ahead” |
+| time: a field shows a day without its year even when it is not this year's | unit | killed | unit: “shows a spec in a form it reads back”; “property: what a field shows is read back as the same instant, in any zone” |
+| time: a clock time is read in UTC whatever the zone | unit | killed | unit: “reads a clock time in the zone it is given, not the machine's”; “property: what a field shows is read back as the same instant, in any zone” |
+| time: 24:30 is read as a time | unit | killed | unit: “refuses what is not a time” |
+| time: 31 Feb is read as a day | unit | killed | unit: “refuses what is not a time” |
+| time: the zone is not stated | unit | killed | unit: “says the day once, the length, and the zone once” |
+| time: a preset is chosen only when spelt the same ("24 h" is not "1 d") | unit | killed | unit: “a preset stays chosen however its length is spelt” |
+| chart: times are not moved to the zone | unit | killed | unit: “times are milliseconds, moved by the zone's offset so that the chart's UTC clock reads local time” |
+| chart: a ratio is drawn as a fraction under a % sign | unit | killed | unit: “hands the chart a unit it knows, and scales what it does not”; “values are multiplied into the chart's unit” and 1 more |
+| chart: bytes per second in decimal steps | unit | killed | unit: “hands the chart a unit it knows, and scales what it does not” |
+| table: figures in the raw unit, not the chart's | unit | killed | unit: “bytes: one binary unit from the largest value”; “seconds are moved to the unit the largest value reads in” |
+| the table's caption says "highest value first" whatever the order | unit | killed | unit: “highest value first is the order it opens in; a series with no value comes last either way” |
+| the table puts series with no value first | unit | killed | unit: “highest value first is the order it opens in; a series with no value comes last either way” |
+| serve.json: /settings is not a document (a reload there would be a 404) | unit | killed | unit: “lists every route of the router as a document” |
+| serve.json: the policy allows inline scripts | unit | killed | unit: “the policy allows scripts, styles, fonts and requests from the page's own origin only, and no inline script” |
+| sign-in: the key is kept in localStorage | signin | killed | e2e: “the key is kept in sessionStorage only: not in localStorage, a cookie, the address or the page” |
+| sign-in: the key field has a name and the form is a GET | signin | killed | e2e: “the key field is masked and has no name, and the form posts: a key cannot reach an address even without script” |
+| sign-in: the token an earlier version left in localStorage stays | signin | killed | e2e: “a token an earlier version of the app left in localStorage is removed on start, and never sent” |
+| sign-in: Explore is shown without a key | signin | killed | e2e: “the run stopped (page.waitForSelector: Timeout 30000ms exceeded.)” |
+| sign-in: a refused key stays in the tab | signin | killed | e2e: “a key the API no longer accepts is removed from the tab, and the form says so” |
+| sign-in: Sign out leaves the key in the tab | signin | killed | e2e: “the run stopped (page.waitForFunction: Timeout 30000ms exceeded.)” |
+| time: the chart reads UTC in every zone (no shift) | zone | killed | e2e: “in New York the axis, the head, the fields and the text form all read local time, and the zone is stated once” |
+| chart: a gap is 0, not a break in the line | unit, chart | killed | unit: “a gap, NaN and an infinity are null: the chart breaks the line there”; “missing samples are drawn as a gap: the line is broken, not joined” |
+| chart: a series with no labels has no name | unit, chart | killed | unit: “a series with no labels is named by the query it is the value of”; “a series with no labels is named by the query it is the value of, and its row has an accessible name” |
+| text form: the step stays "every 0.25 min, instant" | unit, flow | killed | unit: “a step is said as it is, not as a fraction of a minute, and a range query has no aggregate”; “a result with no unit leaves no empty place for one” and 2 more |
+| chart: a result with no unit keeps "Last, " | chart | killed | e2e: “a result with no unit leaves no empty place for one: "Last", the chart's name and the text form read whole” |
+| legend: a row is named by its label set only, not the words it shows | unit, axe | killed | unit: “a legend row is named by the words it shows, then its full label set”; “axe (chart, 36 series, light): no serious/critical violations” and 1 more |
+| B1: the panel names the query that is waiting, not the one drawn | b1 | killed | e2e: “B1 waiting: the unit, the legend head, the chart's name, the query line, the unit select and the text form still describ”; “B1 cancelled: the labels and the note stay; the line says the previous result is shown” |
+| B1: the head does not say "Showing the previous query" | unit, b1 | killed | unit: “says plainly when the result is not the answer to the current request”; “B1 waiting: the head says "Showing the previous query", then the range and age of what is drawn” and 2 more |
+| B1: after an error nothing of the result that was drawn is kept | b1 | killed | e2e: “the run stopped (page.waitForSelector: Timeout 30000ms exceeded.)” |
+| B1: the chart is not told of the error (the plot stays as if current) | b1 | killed | e2e: “the run stopped (page.waitForSelector: Timeout 30000ms exceeded.)” |
+| nothing reserved for the query line: the chart moves when a result lands | shift | killed | e2e: “a first visit to a result shifts nothing (layout shift under 0.005, every entry counted; the budget is 0.05)” |
+| the chart's height is not remembered for the next load | shift | killed | e2e: “a reload reserves the chart's height from its last result before the data arrives, to the pixel, and shows the waiting l” |
+| "Query the chart's range" is always offered | zoom | killed | e2e: “"Query the chart's range" is offered only while the chart is zoomed, in a place kept for it, so nothing moves” |
+| a zoom on the chart is not noticed | zoom | killed | e2e: “"Query the chart's range" is offered only while the chart is zoomed, in a place kept for it, so nothing moves” |
+| the waiting line is shown after 100 ms | waiting | killed | e2e: “a 150 ms wait shows no waiting line; Run query is busy meanwhile”; “an 800 ms wait shows the line only after 400 ms” and 1 more |
+| the waiting line is not held for 300 ms | waiting | killed | e2e: “a line that was shown is kept at least 300 ms, also when the answer comes 80 ms after it appeared” |
+| a second press while the query runs sends it again | waiting | killed | e2e: “a second press while the query runs is ignored: one request was sent” |
+| Cancel does not abort the request | waiting | killed | e2e: “Cancel is offered from 2 s and aborts the request” |
+| B2: the editor keeps its own type size in the touch-height well | touch | killed | e2e: “B2: with a coarse pointer the query well is 44 px tall with body-size text, as the system sets a text input” |
+| a literal colour in the app's CSS | colour | killed | e2e: “light: no computed colour outside the tokens, in every state (text, fills, borders, outlines, SVG paint, shadows)” |
+| a second blue button in Explore (Show earlier) | colour | killed | e2e: “light: at most one blue button in every view (14 states)”; “dark: at most one blue button in every view (14 states)” |
+| no focus ring on the query editor | keyboard | killed | e2e: “keyboard: the ring is drawn at every stop, and focus never falls to the document” |
+| the palette's field has no visible label | keyboard | killed | e2e: “m10: the command palette's field has a visible label, and takes the focus” |
+| a page in which something throws is left empty | flow | killed | e2e: “the run stopped (page.waitForSelector: Timeout 30000ms exceeded.)” |
+| an empty page box stands while the API is asked who the key is (the banner then moves it) | shift | killed | e2e: “a first visit to a result shifts nothing (layout shift under 0.005, every entry counted; the budget is 0.05)”; “phone layout (400 px, coarse pointer): a first visit shifts nothing, every entry counted” |
+| the address is written with the router's default: the page goes to the top after a change of form | shift | killed | e2e: “phone layout: a change of form or of unit leaves the page where it was scrolled to, also once the address has followed” |
+| the table prepared for an earlier result is shown for a later one | flow | killed | e2e: “table: after another query it shows that query's series, whether the table was asked for before or after the result came” |
+| the theme is applied by an inline script | prod | killed | prod: “index.html has no inline script and no inline style”; “under the policy: no content security policy violation, no console error, no uncaught error” |
+
+### Speed
+
+**There is no complete before-and-after run of the final build.** Two source changes came out
+of the speed work itself (the page no longer jumps to the top after a change of form; the
+table's rows are prepared in idle time), and the run that was to measure the build with both
+was not started: the work was stopped first. What follows says for each table which build it
+measured. Every figure is **measured here** (Chromium on this machine, emulated CPU and
+network); nothing was measured on Cloudflare or on a device.
+
+**How it was taken** (`e2e/measure.cjs`, tables by `e2e/summarise.cjs`): Chromium headless,
+CPU slowed 4x, Fast 4G (165 ms latency), a fresh context per run, the development mock on
+localhost; desktop 1440 x 900 with a fine pointer, phone 400 x 800 with touch, a coarse
+pointer and device scale 2. "Before" is the app at commit `5db517f` built against the v9
+stylesheet; "after" is this change; the same mock, data and window. Before and after
+alternate in batches of five runs. A cell is the 75th percentile, then (median, maximum).
+The machine's load is read at the start of every run and printed under each table; a row is
+judged only when most of its runs had a load at or below the core count (4). The machine was
+shared throughout: other builders' browsers and test runs were on it in every window below.
+
+| Runs | When (UTC) | Build measured as "after" | Files | Use |
+|---|---|---|---|---|
+| A | 26 Nov, 21:52 to 22:10 | before four later changes (first-load shift, error boundary, the table at the change of form) | `v9a-*` | the record only |
+| B, desktop | 26 Nov, 22:37 to 23:35 | **the final build but for the two changes above**; neither can act in a desktop run except on "Chart to table" and "Response to paint" (below) | `v9b-*` | the desktop tables below |
+| B, phone | the same | the same, **with the jump to the top** | `v9jump-*` | **not judged** (below) |
+| Table tuning | 26 Nov, 23:52 to 27 Nov, 00:13 | three variants; "in idle time" **is the final build** | `tune-table-*` | the only timings of the final build: desktop, 36 and 200 series |
+
+**Overlapped windows.** Run A and run B both overlapped other builders' browser runs. In run
+B, 23:11 to 23:20 UTC shared the machine with another browser job (a reload audit): that is
+the third phone batch (before at 4, 36 and 200 series; after at 4 and 36, and the batch that
+died at 200), and possibly the last desktop "after" runs of the third batch at 200 series.
+The tuning runs had a load of about 2 to 3 at the median (a gateway builder's test and
+mutant runs; the figure is under each table), higher than runs A and B (1.2 to 1.9). No row was taken again on a quiet machine.
+
+#### What the phone runs found: the page jumped to the top
+
+Two phone "after" batches of run B died, and a third in a repeat of 54 runs: a tap on Table
+(once on Text) never showed the table. The harness was made to say why (what the touch
+became, where the page was scrolled to, what stood at the point): 49 ms after the tap was
+aimed the page had scrolled from 435 px to 0, and the tap landed on the From field. The
+cause was the app: the address follows a change of form 300 ms later, and the router's
+default for a navigation is the top of the page. On a phone the forms of the result are
+below the first screen, so **every change of form threw the reader to the top**; the harness
+usually aimed its next tap before or after that moment and so passed. Fixed
+(`resetScroll: false` on the address writes of Explore), checked at 400 px (section `shift`)
+and by a mutant. The "before" build makes the same call, but its form control was on the
+first screen, so it did not show there; it was not checked further.
+
+Because the phone "after" runs of run B were scrolled back to the top between their steps,
+they are **not judged**, and the phone layout of the final build is **not measured**. For
+the record, with that defect and partly in the overlapped window (20, 15 and 10 "after" runs
+at 4, 36 and 200 series; `v9jump-*`):
+
+##### 4 series (sum by (service) (rate(http_requests_total[5m]))), phone
+
+| What | Budget | Before | After | Within budget (After)? |
+|---|---|---|---|---|
+| Press on Run query: pointerdown to the pressed frame | 50 ms | 22 (16, 24) | 21 (18, 33) | yes |
+| Click on Run query to the busy state painted | 100 ms | 66 (54, 86) | 46 (45, 69) | yes |
+| Typing: keydown to the next frame, 75th percentile of the 60 keys of a run | 50 ms | 30 (28, 31) | 26 (25, 28) | yes |
+| Typing: the slowest key of a run (not a budget figure) |  | 48 (44, 60) | 39 (36, 53) |  |
+| Typing: keys over 50 ms, of 60 |  | 0 (0, 1) | 0 (0, 1) |  |
+| Crosshair: pointer move to the next frame | 50 ms | 44 (42, 52) | 44 (44, 49) | yes |
+| Chart to table | 100 ms | 60 (56, 93) | 68 (63, 103) | yes |
+| Table to text | 100 ms | 64 (50, 84) | 51 (47, 60) | yes |
+| Text to chart | 100 ms | 53 (50, 71) | 51 (48, 70) | yes |
+| Legend row chosen: release to the chosen row painted | 100 ms | 109 (100, 141) | 54 (51, 60) | yes |
+| Open the time picker (a menu; the app on v9 has none in this view) | 100 ms | 77 (73, 105) | not measured |  |
+| Response to paint, after the harness's copy of the body resolved (or the worker's message) | 100 ms | 39 (33, 52) | 39 (35, 61) | yes |
+| Response to paint, from the last byte (includes reading and parsing the body) | 100 ms | 49 (42, 77) | 49 (40, 69) | yes |
+| Release of Run query to the result painted, network included (not a budget figure) |  | 530 (521, 552) | 531 (522, 547) |  |
+| Worst interaction, Event Timing, before typing and crosshair | 200 ms | 96 (88, 128) | 72 (64, 104) | yes |
+| Worst interaction, Event Timing, the whole run | 200 ms | 96 (88, 128) | 72 (64, 104) | yes |
+| Layout shift, first load (every entry: no input is given) | 0.05 | 0.0031 (0.0031, 0.0031) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run (entries not marked as following input) | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run (every entry, those marked as following the press included) | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+
+- Before: 20 runs, load at run start median 1.4 (1.1 to 2.2) on 4 cores, 20 of 20 runs judged, calibration 333 ms (median of 4 batches)
+- After: 20 runs, load at run start median 1.4 (1.1 to 2.2) on 4 cores, 20 of 20 runs judged, calibration 339 ms (median of 4 batches)
+
+##### 36 series (sum by (service, route, status) (rate(http_requests_total[5m]))), phone
+
+| What | Budget | Before | After | Within budget (After)? |
+|---|---|---|---|---|
+| Press on Run query: pointerdown to the pressed frame | 50 ms | 19 (17, 24) | 19 (19, 22) | yes |
+| Click on Run query to the busy state painted | 100 ms | 57 (53, 85) | 52 (48, 66) | yes |
+| Typing: keydown to the next frame, 75th percentile of the 60 keys of a run | 50 ms | 32 (29, 34) | 28 (26, 32) | yes |
+| Typing: the slowest key of a run (not a budget figure) |  | 56 (45, 123) | 45 (43, 50) |  |
+| Typing: keys over 50 ms, of 60 |  | 1 (0, 2) | 0 (0, 0) |  |
+| Crosshair: pointer move to the next frame | 50 ms | 61 (59, 67) | 49 (48, 52) | yes |
+| Chart to table | 100 ms | 91 (83, 121) | 104 (92, 121) | **no**, 104 ms |
+| Table to text | 100 ms | 68 (60, 93) | 52 (49, 60) | yes |
+| Text to chart | 100 ms | 54 (50, 71) | 52 (50, 61) | yes |
+| Legend row chosen: release to the chosen row painted | 100 ms | 120 (109, 172) | 65 (59, 95) | yes |
+| Open the time picker (a menu; the app on v9 has none in this view) | 100 ms | 85 (76, 110) | not measured |  |
+| Response to paint, after the harness's copy of the body resolved (or the worker's message) | 100 ms | 57 (51, 86) | 86 (65, 98) | yes |
+| Response to paint, from the last byte (includes reading and parsing the body) | 100 ms | 73 (65, 148) | 101 (83, 116) | **no**, 101 ms |
+| Release of Run query to the result painted, network included (not a budget figure) |  | 600 (589, 662) | 625 (612, 645) |  |
+| Worst interaction, Event Timing, before typing and crosshair | 200 ms | 112 (104, 160) | 104 (96, 120) | yes |
+| Worst interaction, Event Timing, the whole run | 200 ms | 112 (104, 160) | 104 (96, 120) | yes |
+| Layout shift, first load (every entry: no input is given) | 0.05 | 0.0031 (0.0031, 0.0031) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run (entries not marked as following input) | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run (every entry, those marked as following the press included) | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+
+- Before: 20 runs, load at run start median 1.4 (1.0 to 2.2) on 4 cores, 20 of 20 runs judged, calibration 333 ms (median of 4 batches)
+- After: 15 runs, load at run start median 1.6 (1.1 to 2.3) on 4 cores, 15 of 15 runs judged, calibration 342 ms (median of 3 batches)
+
+##### 200 series (viz_synthetic_series), phone
+
+| What | Budget | Before | After | Within budget (After)? |
+|---|---|---|---|---|
+| Press on Run query: pointerdown to the pressed frame | 50 ms | 20 (17, 24) | 20 (18, 20) | yes |
+| Click on Run query to the busy state painted | 100 ms | 71 (58, 83) | 53 (47, 70) | yes |
+| Typing: keydown to the next frame, 75th percentile of the 60 keys of a run | 50 ms | 29 (29, 32) | 26 (25, 27) | yes |
+| Typing: the slowest key of a run (not a budget figure) |  | 52 (43, 73) | 53 (42, 54) |  |
+| Typing: keys over 50 ms, of 60 |  | 1 (0, 2) | 1 (0, 1) |  |
+| Crosshair: pointer move to the next frame | 50 ms | 59 (49, 63) | 50 (46, 52) | yes |
+| Chart to table | 100 ms | 100 (88, 134) | 114 (109, 142) | **no**, 114 ms |
+| Table to text | 100 ms | 70 (65, 85) | 51 (48, 60) | yes |
+| Text to chart | 100 ms | 60 (53, 74) | 49 (43, 51) | yes |
+| Legend row chosen: release to the chosen row painted | 100 ms | 105 (100, 130) | 67 (60, 94) | yes |
+| Open the time picker (a menu; the app on v9 has none in this view) | 100 ms | 78 (76, 100) | not measured |  |
+| Response to paint, after the harness's copy of the body resolved (or the worker's message) | 100 ms | 79 (72, 108) | 94 (86, 109) | yes |
+| Response to paint, from the last byte (includes reading and parsing the body) | 100 ms | 137 (124, 186) | 153 (132, 170) | **no**, 153 ms |
+| Release of Run query to the result painted, network included (not a budget figure) |  | 1092 (1070, 1169) | 1112 (1095, 1141) |  |
+| Worst interaction, Event Timing, before typing and crosshair | 200 ms | 112 (104, 128) | 112 (112, 144) | yes |
+| Worst interaction, Event Timing, the whole run | 200 ms | 112 (104, 128) | 112 (112, 144) | yes |
+| Layout shift, first load (every entry: no input is given) | 0.05 | 0.0016 (0.0016, 0.0016) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run (entries not marked as following input) | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run (every entry, those marked as following the press included) | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+
+- Before: 20 runs, load at run start median 1.5 (1.1 to 2.4) on 4 cores, 20 of 20 runs judged, calibration 333 ms (median of 4 batches)
+- After: 10 runs, load at run start median 1.1 (0.8 to 1.7) on 4 cores, 10 of 10 runs judged, calibration 332 ms (median of 2 batches)
+
+#### Desktop (run B)
+
+At 1440 x 900 every target of a run is on the first screen (Run query at 200 px, the form
+control at 408 px, the first legend row at 741 px; measured), so a desktop run never scrolls
+and the jump could not act in it. The table's rows were prepared at the change to the table
+in this build; the final build prepares them in idle time (next section), which moves
+"Chart to table" and "Response to paint" and nothing else.
+
+##### 4 series (sum by (service) (rate(http_requests_total[5m]))), desktop
+
+| What | Budget | Before | After | Within budget (After)? |
+|---|---|---|---|---|
+| Press on Run query: pointerdown to the pressed frame | 50 ms | 15 (11, 31) | 15 (13, 18) | yes |
+| Click on Run query to the busy state painted | 100 ms | 39 (30, 60) | 36 (30, 48) | yes |
+| Typing: keydown to the next frame, 75th percentile of the 60 keys of a run | 50 ms | 24 (22, 27) | 22 (21, 26) | yes |
+| Typing: the slowest key of a run (not a budget figure) |  | 41 (39, 70) | 49 (37, 68) |  |
+| Typing: keys over 50 ms, of 60 |  | 0 (0, 1) | 0 (0, 1) |  |
+| Crosshair: pointer move to the next frame | 50 ms | 25 (24, 27) | 27 (27, 29) | yes |
+| Chart to table | 100 ms | 37 (31, 45) | 48 (41, 63) | yes |
+| Table to text | 100 ms | 30 (27, 38) | 28 (25, 33) | yes |
+| Text to chart | 100 ms | 30 (26, 37) | 29 (25, 36) | yes |
+| Legend row chosen: release to the chosen row painted | 100 ms | 67 (63, 92) | 38 (35, 55) | yes |
+| Open the time picker (a menu; the app on v9 has none in this view) | 100 ms | 53 (43, 82) | not measured |  |
+| Response to paint, after the harness's copy of the body resolved (or the worker's message) | 100 ms | 49 (42, 62) | 48 (42, 79) | yes |
+| Response to paint, from the last byte (includes reading and parsing the body) | 100 ms | 63 (50, 79) | 55 (49, 95) | yes |
+| Release of Run query to the result painted, network included (not a budget figure) |  | 528 (518, 555) | 524 (518, 551) |  |
+| Worst interaction, Event Timing, before typing and crosshair | 200 ms | 64 (56, 80) | 56 (48, 64) | yes |
+| Worst interaction, Event Timing, the whole run | 200 ms | 72 (64, 80) | 72 (64, 72) | yes |
+| Layout shift, first load (every entry: no input is given) | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run (entries not marked as following input) | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run (every entry, those marked as following the press included) | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+
+- Before: 20 runs, load at run start median 1.2 (1.0 to 2.7) on 4 cores, 20 of 20 runs judged, calibration 340 ms (median of 4 batches)
+- After: 20 runs, load at run start median 1.5 (1.2 to 2.8) on 4 cores, 20 of 20 runs judged, calibration 337 ms (median of 4 batches)
+
+##### 36 series (sum by (service, route, status) (rate(http_requests_total[5m]))), desktop
+
+| What | Budget | Before | After | Within budget (After)? |
+|---|---|---|---|---|
+| Press on Run query: pointerdown to the pressed frame | 50 ms | 13 (11, 17) | 14 (12, 20) | yes |
+| Click on Run query to the busy state painted | 100 ms | 32 (29, 53) | 32 (31, 43) | yes |
+| Typing: keydown to the next frame, 75th percentile of the 60 keys of a run | 50 ms | 25 (24, 27) | 23 (21, 31) | yes |
+| Typing: the slowest key of a run (not a budget figure) |  | 45 (38, 115) | 40 (37, 135) |  |
+| Typing: keys over 50 ms, of 60 |  | 0 (0, 1) | 0 (0, 2) |  |
+| Crosshair: pointer move to the next frame | 50 ms | 29 (28, 30) | 30 (29, 34) | yes |
+| Chart to table | 100 ms | 63 (52, 93) | 97 (69, 143) | yes |
+| Table to text | 100 ms | 37 (32, 45) | 32 (27, 38) | yes |
+| Text to chart | 100 ms | 32 (30, 47) | 30 (26, 45) | yes |
+| Legend row chosen: release to the chosen row painted | 100 ms | 78 (74, 105) | 42 (31, 56) | yes |
+| Open the time picker (a menu; the app on v9 has none in this view) | 100 ms | 53 (49, 79) | not measured |  |
+| Response to paint, after the harness's copy of the body resolved (or the worker's message) | 100 ms | 68 (59, 89) | 85 (79, 97) | yes |
+| Response to paint, from the last byte (includes reading and parsing the body) | 100 ms | 96 (85, 114) | 111 (102, 127) | **no**, 111 ms |
+| Release of Run query to the result painted, network included (not a budget figure) |  | 659 (652, 680) | 683 (677, 724) |  |
+| Worst interaction, Event Timing, before typing and crosshair | 200 ms | 88 (80, 112) | 96 (72, 144) | yes |
+| Worst interaction, Event Timing, the whole run | 200 ms | 96 (80, 112) | 104 (80, 144) | yes |
+| Layout shift, first load (every entry: no input is given) | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run (entries not marked as following input) | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run (every entry, those marked as following the press included) | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+
+- Before: 20 runs, load at run start median 1.4 (0.8 to 3.1) on 4 cores, 20 of 20 runs judged, calibration 340 ms (median of 4 batches)
+- After: 20 runs, load at run start median 1.5 (1.2 to 2.2) on 4 cores, 20 of 20 runs judged, calibration 337 ms (median of 4 batches)
+
+##### 200 series (viz_synthetic_series), desktop
+
+| What | Budget | Before | After | Within budget (After)? |
+|---|---|---|---|---|
+| Press on Run query: pointerdown to the pressed frame | 50 ms | 13 (11, 16) | 13 (12, 35) | yes |
+| Click on Run query to the busy state painted | 100 ms | 34 (28, 46) | 31 (26, 56) | yes |
+| Typing: keydown to the next frame, 75th percentile of the 60 keys of a run | 50 ms | 24 (23, 29) | 23 (21, 27) | yes |
+| Typing: the slowest key of a run (not a budget figure) |  | 48 (38, 53) | 43 (39, 99) |  |
+| Typing: keys over 50 ms, of 60 |  | 0 (0, 1) | 0 (0, 1) |  |
+| Crosshair: pointer move to the next frame | 50 ms | 29 (28, 30) | 30 (29, 31) | yes |
+| Chart to table | 100 ms | 86 (65, 120) | 101 (90, 144) | **no**, 101 ms |
+| Table to text | 100 ms | 43 (35, 57) | 28 (25, 39) | yes |
+| Text to chart | 100 ms | 31 (29, 46) | 30 (27, 45) | yes |
+| Legend row chosen: release to the chosen row painted | 100 ms | 75 (70, 91) | 46 (36, 52) | yes |
+| Open the time picker (a menu; the app on v9 has none in this view) | 100 ms | 63 (52, 79) | not measured |  |
+| Response to paint, after the harness's copy of the body resolved (or the worker's message) | 100 ms | 86 (82, 120) | 154 (145, 204) | **no**, 154 ms |
+| Response to paint, from the last byte (includes reading and parsing the body) | 100 ms | 177 (170, 243) | 262 (237, 315) | **no**, 262 ms |
+| Release of Run query to the result painted, network included (not a budget figure) |  | 1721 (1698, 1767) | 1813 (1769, 1968) |  |
+| Worst interaction, Event Timing, before typing and crosshair | 200 ms | 88 (80, 120) | 104 (88, 144) | yes |
+| Worst interaction, Event Timing, the whole run | 200 ms | 88 (80, 120) | 104 (96, 144) | yes |
+| Layout shift, first load (every entry: no input is given) | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run (entries not marked as following input) | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run (every entry, those marked as following the press included) | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+
+- Before: 20 runs, load at run start median 1.6 (1.0 to 2.3) on 4 cores, 20 of 20 runs judged, calibration 340 ms (median of 4 batches)
+- After: 20 runs, load at run start median 1.3 (1.1 to 1.7) on 4 cores, 20 of 20 runs judged, calibration 337 ms (median of 4 batches)
+
+#### When the table's rows are prepared (the final build is the third column)
+
+Run A prepared the rows with every result; a profile showed 10 ms of the result's first
+paint going to them at 200 series (4x CPU), so they were moved to the change to the table,
+and run B then showed "Chart to table" slower by 10 to 30 ms and over 100 ms at 200 series.
+Three variants of the same build were then measured alternating, four rounds of five runs,
+desktop, typing and crosshair left out: with every result; at the change to the table; in
+idle time after the result is painted (`requestIdleCallback`, at once if the table is asked
+for first). Not tried: scheduling the idle work after the frame that paints the result (an
+idle callback can run before that frame).
+
+##### 36 series (sum by (service, route, status) (rate(http_requests_total[5m]))), desktop
+
+| What | Budget | With every result | At the change to the table | In idle time (chosen) | Within budget (In idle time (chosen))? |
+|---|---|---|---|---|---|
+| Press on Run query: pointerdown to the pressed frame | 50 ms | 18 (12, 27) | 15 (11, 21) | 15 (11, 23) | yes |
+| Click on Run query to the busy state painted | 100 ms | 34 (30, 49) | 38 (29, 56) | 32 (29, 60) | yes |
+| Chart to table | 100 ms | 63 (59, 97) | 79 (70, 103) | 62 (58, 99) | yes |
+| Table to text | 100 ms | 34 (27, 38) | 28 (25, 36) | 28 (24, 38) | yes |
+| Text to chart | 100 ms | 32 (26, 52) | 32 (28, 42) | 35 (29, 47) | yes |
+| Legend row chosen: release to the chosen row painted | 100 ms | 39 (33, 65) | 33 (30, 67) | 41 (33, 51) | yes |
+| Response to paint, after the harness's copy of the body resolved (or the worker's message) | 100 ms | 107 (89, 124) | 85 (77, 133) | 83 (80, 120) | yes |
+| Response to paint, from the last byte (includes reading and parsing the body) | 100 ms | 137 (117, 157) | 115 (100, 167) | 119 (102, 168) | **no**, 119 ms |
+| Release of Run query to the result painted, network included (not a budget figure) |  | 705 (690, 729) | 692 (669, 718) | 685 (681, 743) |  |
+| Worst interaction, Event Timing, before typing and crosshair | 200 ms | 72 (64, 96) | 80 (72, 112) | 72 (64, 104) | yes |
+| Layout shift, first load (every entry: no input is given) | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run (entries not marked as following input) | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run (every entry, those marked as following the press included) | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+
+- With every result: 20 runs, load at run start median 2.5 (1.5 to 3.7) on 4 cores, 20 of 20 runs judged, calibration 338 ms (median of 4 batches)
+- At the change to the table: 20 runs, load at run start median 2.3 (1.3 to 3.1) on 4 cores, 20 of 20 runs judged, calibration 334 ms (median of 4 batches)
+- In idle time (chosen): 20 runs, load at run start median 2.1 (1.3 to 2.7) on 4 cores, 20 of 20 runs judged, calibration 342 ms (median of 4 batches)
+
+##### 200 series (viz_synthetic_series), desktop
+
+| What | Budget | With every result | At the change to the table | In idle time (chosen) | Within budget (In idle time (chosen))? |
+|---|---|---|---|---|---|
+| Press on Run query: pointerdown to the pressed frame | 50 ms | 12 (11, 17) | 13 (11, 32) | 14 (12, 23) | yes |
+| Click on Run query to the busy state painted | 100 ms | 36 (27, 51) | 29 (24, 45) | 32 (28, 43) | yes |
+| Chart to table | 100 ms | 85 (69, 111) | 88 (83, 112) | 69 (65, 89) | yes |
+| Table to text | 100 ms | 34 (28, 49) | 28 (26, 55) | 29 (24, 41) | yes |
+| Text to chart | 100 ms | 33 (30, 46) | 33 (30, 41) | 30 (26, 35) | yes |
+| Legend row chosen: release to the chosen row painted | 100 ms | 39 (33, 59) | 37 (30, 48) | 38 (31, 61) | yes |
+| Response to paint, after the harness's copy of the body resolved (or the worker's message) | 100 ms | 157 (150, 182) | 136 (127, 199) | 150 (135, 221) | **no**, 150 ms |
+| Response to paint, from the last byte (includes reading and parsing the body) | 100 ms | 245 (237, 285) | 231 (210, 285) | 244 (222, 316) | **no**, 244 ms |
+| Release of Run query to the result painted, network included (not a budget figure) |  | 1813 (1781, 1902) | 1792 (1749, 1954) | 1788 (1753, 1955) |  |
+| Worst interaction, Event Timing, before typing and crosshair | 200 ms | 88 (72, 112) | 88 (88, 112) | 72 (72, 88) | yes |
+| Layout shift, first load (every entry: no input is given) | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run (entries not marked as following input) | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run (every entry, those marked as following the press included) | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+
+- With every result: 20 runs, load at run start median 2.6 (1.4 to 4.0) on 4 cores, 20 of 20 runs judged, calibration 338 ms (median of 4 batches)
+- At the change to the table: 20 runs, load at run start median 2.4 (1.3 to 4.3) on 4 cores, 19 of 20 runs judged, calibration 334 ms (median of 4 batches)
+- In idle time (chosen): 20 runs, load at run start median 2.3 (1.5 to 3.5) on 4 cores, 20 of 20 runs judged, calibration 342 ms (median of 4 batches)
+
+Idle time has the first variant's "Chart to table" (62 and 69 ms against 79 and 88) and the
+second's "Response to paint" at 36 series (83 against 107); at 200 series the three do not
+separate on "Response to paint" (150, 136 and 157 ms; the medians 134, 127 and 150). It was
+chosen. These columns have no "before" beside them: run B's "before" (63 and 86 ms for
+"Chart to table", 68 and 86 ms and 96 and 177 ms for the two "Response to paint" rows) was
+taken two hours earlier at a lower load.
+
+#### What is met and what is not
+
+- **Met at the desktop layout** (run B, all 20 runs of every cell judged): press 13 to 15 ms,
+  the busy state 31 to 36 ms, typing 22 to 23 ms a key, the crosshair 27 to 30 ms, table to
+  text and text to chart 28 to 32 ms, a legend row 38 to 46 ms (67 to 78 before), the worst
+  interaction 72 to 104 ms, layout shift 0 on a first load and on a query run with every
+  entry counted.
+- **Not met: a result's first paint with many series.** From the last byte, 36 series: 111
+  ms in run B (before: 96) and 119 ms on the final build (tuning run); 200 series: 262 ms
+  (before: 177) and 244 ms. After the harness's own copy of the body resolved: 85 and 83 ms
+  at 36 series (within), 154 and 150 ms at 200 (before: 86). The regression at 200 series is
+  the cost of the design system's SVG chart on a result of this size ("Needed changes in
+  the design system", 15): a profile at 4x CPU put about 34 ms in the chart's model, 23 ms
+  in drawing, 17 ms in aligning the series and 15 ms in garbage collection after the body
+  had arrived, and about 130 ms of reading the body while it downloads.
+- **Thin margins, not taken again:** "Chart to table" at the desktop layout was 97 ms (36
+  series) and 101 ms (200 series) in run B and 62 and 69 ms on the final build, in one
+  series of 20 runs each at a load above 2; "Response to paint" from the last byte at
+  36 series is within 20 ms of the limit on both sides of it.
+- **Not measured on the final build:** the phone layout, all of it (in run B, with the
+  jump: the crosshair 44 to 50 ms against a limit of 50; "Chart to table" 104 and 114 ms at
+  36 and 200 series against 91 and 100 before; a legend row 54 to 67 ms against 105 to 120
+  before); the desktop layout at 4 series; typing and the crosshair (the two changes do not
+  touch them).
+- **Layout shift on a phone.** A first load gives no input, and every entry is counted: 0 in
+  every "after" run of run B (20, 15 and 10 runs), 0.0031 and 0.0016 before; `e2e/app.cjs`
+  now checks a phone first visit the same way (0). A query run follows a press: both sums
+  were 0 in run B.
+
+#### A typed step (run B's build, five runs each: an indication, not a judgment)
+
+One second over three hours is 10,801 samples a series, more than the chart has pixel
+columns (four series):
+
+##### 4 series (sum by (service) (rate(http_requests_total[5m]))), desktop
+
+| What | Budget | Before | After | Within budget (After)? |
+|---|---|---|---|---|
+| Press on Run query: pointerdown to the pressed frame | 50 ms | 17 (13, 21) | 12 (11, 12) | yes |
+| Click on Run query to the busy state painted | 100 ms | 46 (33, 50) | 45 (38, 49) | yes |
+| Chart to table | 100 ms | 37 (37, 44) | 51 (49, 52) | yes |
+| Table to text | 100 ms | 25 (24, 28) | 24 (23, 31) | yes |
+| Text to chart | 100 ms | 36 (28, 40) | 32 (31, 40) | yes |
+| Legend row chosen: release to the chosen row painted | 100 ms | 97 (86, 114) | 127 (125, 169) | **no**, 127 ms |
+| Open the time picker (a menu; the app on v9 has none in this view) | 100 ms | 67 (55, 78) | not measured |  |
+| Response to paint, after the harness's copy of the body resolved (or the worker's message) | 100 ms | 80 (80, 80) | 147 (143, 147) | **no**, 147 ms |
+| Response to paint, from the last byte (includes reading and parsing the body) | 100 ms | 147 (141, 162) | 242 (234, 253) | **no**, 242 ms |
+| Release of Run query to the result painted, network included (not a budget figure) |  | 1169 (1140, 1211) | 1246 (1220, 1366) |  |
+| Worst interaction, Event Timing, before typing and crosshair | 200 ms | 104 (104, 104) | 192 (152, 200) | yes |
+| Layout shift, first load (every entry: no input is given) | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run (entries not marked as following input) | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run (every entry, those marked as following the press included) | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+
+- Before: 5 runs, load at run start median 2.5 (2.4 to 2.7) on 4 cores, 5 of 5 runs judged, calibration 341 ms (median of 1 batch)
+- After: 5 runs, load at run start median 2.7 (2.6 to 2.8) on 4 cores, 5 of 5 runs judged, calibration 337 ms (median of 1 batch)
+
+One minute is 181 samples a series (36 series), a quarter of what the automatic step asks
+for at this width:
+
+##### 36 series (sum by (service, route, status) (rate(http_requests_total[5m]))), desktop
+
+| What | Budget | Before | After | Within budget (After)? |
+|---|---|---|---|---|
+| Press on Run query: pointerdown to the pressed frame | 50 ms | 13 (13, 14) | 14 (13, 14) | yes |
+| Click on Run query to the busy state painted | 100 ms | 40 (39, 71) | 33 (27, 37) | yes |
+| Chart to table | 100 ms | 87 (66, 117) | 82 (69, 99) | yes |
+| Table to text | 100 ms | 50 (43, 61) | 33 (27, 36) | yes |
+| Text to chart | 100 ms | 34 (32, 35) | 32 (32, 35) | yes |
+| Legend row chosen: release to the chosen row painted | 100 ms | 76 (72, 121) | 35 (32, 51) | yes |
+| Open the time picker (a menu; the app on v9 has none in this view) | 100 ms | 56 (55, 76) | not measured |  |
+| Response to paint, after the harness's copy of the body resolved (or the worker's message) | 100 ms | 40 (32, 41) | 61 (56, 79) | yes |
+| Response to paint, from the last byte (includes reading and parsing the body) | 100 ms | 70 (62, 81) | 69 (66, 94) | yes |
+| Release of Run query to the result painted, network included (not a budget figure) |  | 566 (551, 587) | 547 (545, 563) |  |
+| Worst interaction, Event Timing, before typing and crosshair | 200 ms | 112 (104, 120) | 88 (72, 104) | yes |
+| Layout shift, first load (every entry: no input is given) | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run (entries not marked as following input) | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+| Layout shift, query run (every entry, those marked as following the press included) | 0.05 | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | yes |
+
+- Before: 5 runs, load at run start median 2.5 (2.4 to 3.0) on 4 cores, 5 of 5 runs judged, calibration 397 ms (median of 1 batch)
+- After: 5 runs, load at run start median 2.4 (2.0 to 2.8) on 4 cores, 5 of 5 runs judged, calibration 338 ms (median of 1 batch)
+
+
+### Bundle (built assets)
+
+Before is the app at commit `5db517f`, after is this change, both built against the same
+design-system files (gzip level 9, as `e2e/measure.cjs` computes it).
+
+| File | Before raw | Before gzip | After raw | After gzip |
+|---|---|---|---|---|
+| `index-*.js` and `theme-*.js` (app, React, router, query, the chart): the shell | 476.0 kB | 156.6 kB | 456.5 kB | 146.0 kB |
+| `PromqlEditor-*.js` (CodeMirror + PromQL, lazy) | 449.7 kB | 142.2 kB | 449.7 kB | 142.2 kB |
+| `index-*.css` | 64.2 kB | 11.5 kB | 57.9 kB | 10.4 kB |
+| `index.html` | 1.4 kB | 0.8 kB | 0.9 kB | 0.5 kB |
+| Fonts (WOFF2, already compressed) | 128.8 kB | | 128.8 kB | |
+
+The shell's script is 146.0 kB compressed (the limit is 200 kB): 10.6 kB less than before, uPlot and the app's own chart, legend, colour and number code having gone and the system's chart having come.
+
+## Known issues and risks
+
+- **Not reviewed and not deployed.** The design change waits for an independent review
+  (`../design-system/reviews/app-v9/response.md`). The app was not run behind the gateway
+  that `deploy/` is building: that the gateway serves it rightly rests on `serve.json` and on
+  `e2e/prod.cjs`'s own static server, not on a run against it.
+- **The images are older than the last source changes.** The pairs under
+  `../design-system/reviews/app-v9/compare/` were made at 20:37 to 20:45 UTC on 26 Nov. The
+  source changed after that (layout shift on a first load, the error boundary, the scroll
+  position kept, the table's rows prepared in idle time); none is meant to change a settled
+  state, and one pair looked at again (`explore-400-light`) shows the final build's page,
+  but the pairs were **not made again** and not compared image by image.
+- **Speed.** **A result's first paint is over the 100 ms limit with many series** (from the last byte: 119 ms at 36 series and 244 ms at 200 on the final build, desktop; 96 and 177 ms before), which is the cost of the design system's SVG chart on a result of this size (need 15). **The phone layout of the final build was not measured at all**, and there is no complete before-and-after run of the final build: the last two source changes (the scroll position kept, the table prepared in idle time) were measured only by the desktop tuning run at 36 and 200 series, on a busy machine. Thin margins were not taken again ("Speed").
+- **The chart is the design system's script, and the app depends on what it writes.** The
+  fix-ups in `src/charts/` find things by the chart's own class names and words (`thead
+  [data-col="last"] .vz-sort`, ", every … min, instant.", `.vz-empty`, `.vz-series-rest`). A
+  change to the chart's markup or wording can undo one silently; each has an end-to-end check
+  (no unit, the text form's step, the row names through axe, the error over the plot), and a
+  mutant that removes it. The chart cannot be removed from an element once made (need 14): each time Explore is left and
+  opened again in one tab, the chart that was left stays in memory with its last result (a
+  few megabytes for 200 series) until the tab is closed or reloaded.
+- **Time zone.** The chart's clock is moved by one offset per result (the zone's at the
+  window's end). A window that spans a clock change shows the times before the change an
+  hour off on the chart, its head and its text form; the time range fields, which do their
+  own arithmetic, stay right. Checked in one zone other than UTC (New York), not across a
+  clock change.
+- **The key.** `sessionStorage` can be read by any script on the origin; the policy allows
+  scripts from the origin only and the build has no inline script, which is what stands
+  between a key and an injected script. A tab that holds a key starts signed in: after a key
+  is disabled, a reload shows Explore and sends one query with the dead key before the form
+  appears (the query is refused by the API; nothing of the tenant's is shown). If control
+  does not answer, a tab without a key cannot sign in even while the query path is up.
+- **The policy allows inline styles** (the editor and the chart need them); scripts are
+  strict. A stricter policy needs a change in both dependencies (README, decisions, 3).
+- **A deploy while a tab is open**: the editor chunk is fetched by its old name when Explore
+  first shows the editor; if the old asset is gone, that tab shows the query as plain text in
+  the well until it is reloaded ("Needed changes in deploy/", Releases).
+- **More samples than pixel columns** (a typed step) are drawn as they are: with a step of 1 s over three hours (10,801 samples a series, four series) a result took 242 ms from the last byte to paint (147 ms before) and choosing a legend row 127 ms (97 ms before), in five runs each on the build before the last two changes (need 6).
+- **`text-body-size` is 15 px**: on iOS Safari a focused field under 16 px is understood to
+  zoom the page (training knowledge, not checked on a device). The app follows the system.
+- A shared link does not carry the colour map; the same link in a fresh tab colours by size
+  afresh, so two tabs with different histories can colour the same address differently.
+- The range-query parser (`src/api/matrix.ts`, about 600 lines) is specialised: a body it
+  misreads would draw wrong numbers without an error. It is property-tested against
+  `JSON.parse` on 1,000 random bodies cut anywhere and gives up its fast path on anything it
+  does not expect.
+- "The real API" in `e2e/real.cjs` and `e2e/contract.cjs` is the working tree of `query/`,
+  `edge/`, `control/` and the gateway under `wrangler dev --local` at the moment of the run,
+  other builders' edits in progress included. It is not a deployed viz.
+- Unit inference is a naming heuristic and can be wrong (ratios fall back to plain numbers);
+  the Unit field overrides it.
+- With a typed step the query can exceed 11,000 points; the API's refusal is shown, with
+  "Use the automatic step".
+- Relative ranges re-resolve "now" when the page's width crosses a 100 px bucket, which
+  refetches on resize.
+- The favicon is an SVG file and cannot read the tokens; it repeats the two `ink` values.
+- The page jumped to the top after every change of form on a phone until late in this change
+  (fixed, checked, a mutant). It was found by a speed run dying, not by a check or a review:
+  other positions that matter (a long table, a reload) have no check of their own beyond the
+  layout-shift ones.
+- The URL's `view` follows 300 ms after the last change of form. A Back press inside those
+  300 ms keeps the form on screen and writes it into the entry Back went to.
+- `e2e/measurements/` still holds the earlier changes' files (`fixes-*`, `rapi-*`, `cand-*`,
+  `tune-*`, `fingerprint-*`, `mutants*.txt`): their tables are under "Earlier changes".
+- Not tested: Safari and Firefox, real touch hardware, a screen reader by ear, enlarged text
+  as distinct from zoom, a deployed viz, a clock change inside the window.
+
+## Earlier changes: their verification and speed (2026-11-19, before v9)
+
+Kept as it was written, for the decisions it carries (the streaming parser, the retry rules,
+the mock's contract). **It describes the app before the move to design system v9**: the
+suites `e2e/run.cjs`, `e2e/design.cjs` and `e2e/fixes.cjs`, the uPlot chart, the legend, the
+time picker and the Settings dialog it names no longer exist (what replaced each check is in
+"Verification" above), and its mutants broke code that is gone; `e2e/errors.cjs`,
+`e2e/contract.cjs`, `src/api/` and the mock are as it says, with the differences this change
+made stated above. No figure here was judged: every run started above the core count.
+
 
 Run on 2026-11-19, Node 22.23, on a machine shared with other builders (load average 9 to
 26 on 4 cores), the real stack under `wrangler dev --local` on port 8851. The four mock suites
@@ -596,7 +1448,7 @@ axe ran on: main view light, main view dark, text view light, help dark, start s
 restyling and were fixed: the query well and the editor inside it were both scroll regions
 with nothing focusable by axe's rules.
 
-### Mutants
+### Mutants of the earlier changes
 
 **This change** (`MUTANTS=real node e2e/mutants.cjs`, results in
 `e2e/measurements/mutants-real.txt`): one property broken at a time in a copy of the app in
@@ -1067,7 +1919,7 @@ one object. From earlier in this change: the draft lives in the editor, at most 
 are drawn by default, the legend and table are capped, and the crosshair is drawn outside
 React.
 
-### Bundle (built assets)
+### Bundle of the earlier changes
 
 Before is the app at commit `060d3bd`, after is this change, both built against the same
 design-system snapshot (the sizes `e2e/measure.cjs` records in `rapi-{before,after}-4.json`).
@@ -1083,79 +1935,3 @@ design-system snapshot (the sizes `e2e/measure.cjs` records in `rapi-{before,aft
 gzip level 9, as `e2e/measure.cjs` computes it. The shell's script grows by 5.7 kB
 compressed (the parser, the error kinds and advice, the retries) to 156.6 kB, under the
 200 kB limit. The worker reader is not in the build (nothing imports it but its type).
-
-## Known issues and risks
-
-- Speed (this change's section in "Verification"; nothing judged): response to paint from
-  the last byte is still over 100 ms on desktop (36 series 199 ms, 200 series 233 ms) and on
-  the phone at 200 series (185 ms); on the phone at 200 series chart to table (119 ms) and the
-  time picker (112 ms) are over, and the crosshair by touch is over 50 ms at both sizes; the
-  worst interaction over a whole run is 224 and 232 ms on desktop at the 75th percentile
-  (medians unchanged). Single slow keys while typing remain, in CodeMirror's own work.
-- No timing in this README was judged: every run started with the load average above the
-  core count (9 to 26 on 4 cores). They need measuring again on a quiet machine.
-- `node ../design-system/tools/check.mjs src` fails on four values in `src/app.css` (an
-  ignore without a reason, `100vh`, `100vw`, `90%`), which the tightened check now counts;
-  this change may not edit `app.css`. For the system migration.
-- The range-query parser (`src/api/matrix.ts`, about 600 lines) is specialised: it reads
-  `data.result` itself and leaves everything else to `JSON.parse`. A body it misreads would
-  draw wrong numbers without an error. It is property-tested against `JSON.parse` and
-  `Number` on 1,000 random bodies cut anywhere and gives up its fast path on anything it does
-  not expect, but it is new code on the path every result takes.
-- The JSON form joins the body's text the first time it is shown for a result (3.4 MB for 200
-  series, about 12 ms unthrottled in Node), not when the result arrives.
-- "The real API" here is the working tree of `query/`, `edge/`, `control/` and the rest under
-  `wrangler dev`, which reloads on every edit: the contract test can fail because another
-  component is mid-edit, and its answers file records what the tree answered at that moment.
-- At the end of this session the local real API answered 500 to every query: the engine's
-  binding (`engine/wasm-query/js/index.ts`) expected module ABI 3 while `viz_query.wasm` was
-  still ABI 2, another component's change in progress. `e2e/contract.cjs` and `e2e/real.cjs`
-  last passed at 01:43 and 01:44 UTC and need running again once the module is rebuilt.
-- The worker reader (`src/api/matrixWorker.ts`) is kept, tested and not used: whether it helps
-  on a phone cannot be measured with DevTools throttling (it does not throttle workers).
-- Colour memory is per browser tab (`sessionStorage`) and holds the assignment of the last
-  result shown. A reload reproduces it, but the same link opened in a fresh tab assigns slots
-  afresh by order of appearance, so two tabs with different histories can colour the same
-  URL differently. A member of Other that is selected is drawn as a hairline in `ink-muted`;
-  it does not get a colour.
-- The Other group is listed, not drawn: the review asks for a min-to-max band in a neutral
-  token, which needs a `series-other` token from the system.
-- Left for the design-system migration (the system is being revised separately; these are
-  styling or chart-drawing findings of the review, not logic): direct labels still use the
-  old placement and can sit on the wrong line (M1); the query well is 32 px tall with 13 px
-  text on a coarse pointer (B2); at 400 px the touch readout covers the plot (M4, third
-  point); legend rows, sortable heads and quiet buttons have no distinct pressed state (M6);
-  toolbar controls are full height and the waiting line's space is reserved (M8); the legend
-  does not wrap a long full name onto a second line (M5, layout part); native date inputs,
-  the centred range button at 400 px, arrow-key movement within the segmented control and the
-  legend, the clipped ring on the last legend row, the settings dialog's gap and scrim and the
-  palette field's visible label (m4, m5, m7 to m10). The zoom buttons' placement is
-  provisional.
-- The first visit to a backend that is not the mock reserves the mock banner's space and
-  then gives it back, which moves the page once. After that the browser remembers
-  (`viz.backend.mock` in localStorage).
-- Plain numbers (unit "number") carry no unit, by definition; an SI prefix is kept ("1.5k").
-- The favicon is an inline SVG and cannot read the tokens; it repeats the two `ink` values.
-- "Commands" and "Settings" in the navigation are nouns, not verbs. The review calls them an
-  acceptable minor and gives no wording, so they are left for the navigation component.
-- The URL's `view` follows 300 ms after the last change of form (it replaces the entry, as
-  before). A Back press inside those 300 ms keeps the form on screen and writes it into the
-  entry Back went to; a reload inside them is covered by `pagehide`.
-- A dialog has no scrim: the system has no scrim token yet.
-- The nav hides nothing at 400 px today, but it scrolls sideways (by the system's design)
-  once more sections are added.
-- `aria-current="true"` marks the current preset in the time menu with the `ui-strong` type
-  style; the system defines no checked state for a menu row.
-- Downsampling shares one x axis across series, so a column's min and max are drawn at the
-  column's first and last timestamps, up to one pixel column from where they occurred.
-- Unit inference is a naming heuristic and can be wrong (ratios fall back to plain numbers).
-- NaN and ±Inf samples are drawn as gaps; the JSON view shows them as returned.
-- The absolute time inputs are `datetime-local`, so their display format follows the browser
-  locale; all other times are local, 24-hour, ISO order. The text digest uses UTC.
-- The token is in localStorage, readable by any script on the origin.
-- With an explicit step the query can exceed 11,000 points; the API's refusal is shown, with
-  the advice and the button "Use the automatic step", rather than the step being clamped.
-- Relative ranges re-resolve "now" when the chart width crosses a 100 px bucket, which
-  triggers a refetch on resize.
-- Not tested: 200% zoom as such (400 px is the narrowest layout tested), real touch
-  hardware, screen readers by ear, Safari and Firefox.

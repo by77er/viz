@@ -1,5 +1,5 @@
 Mutants of the move to design system v9 (e2e/mutants.cjs), applied to a copy in the session's scratch area.
-2026-11-26T22:31:36.150Z
+2026-11-27T00:26:08.345Z
 
 KILLED    sign-in: the key is kept in localStorage
             checks run: signin; caught by 1: e2e: the key is kept in sessionStorage only: not in localStorage, a cookie, the address or the page
@@ -34,7 +34,7 @@ KILLED    B1: after an error nothing of the result that was drawn is kept
 KILLED    B1: the chart is not told of the error (the plot stays as if current)
             checks run: b1; caught by 1: e2e: the run stopped (page.waitForSelector: Timeout 30000ms exceeded.)
 KILLED    nothing reserved for the query line: the chart moves when a result lands
-            checks run: shift; caught by 1: e2e: a first visit to a result shifts nothing (layout shift under 0.005; the budget is 0.05)
+            checks run: shift; caught by 1: e2e: a first visit to a result shifts nothing (layout shift under 0.005, every entry counted; the budget is 0.05)
 KILLED    the chart's height is not remembered for the next load
             checks run: shift; caught by 1: e2e: a reload reserves the chart's height from its last result before the data arrives, to the pixel, and shows the waiting l
 KILLED    "Query the chart's range" is always offered
@@ -62,8 +62,12 @@ KILLED    the palette's field has no visible label
 KILLED    a page in which something throws is left empty
             checks run: flow; caught by 1: e2e: the run stopped (page.waitForSelector: Timeout 30000ms exceeded.)
 KILLED    an empty page box stands while the API is asked who the key is (the banner then moves it)
-            checks run: shift; caught by 1: e2e: a first visit to a result shifts nothing (layout shift under 0.005; the budget is 0.05)
+            checks run: shift; caught by 2: e2e: a first visit to a result shifts nothing (layout shift under 0.005, every entry counted; the budget is 0.05) | e2e: phone layout (400 px, coarse pointer): a first visit shifts nothing, every entry counted
+KILLED    the address is written with the router's default: the page goes to the top after a change of form
+            checks run: shift; caught by 1: e2e: phone layout: a change of form or of unit leaves the page where it was scrolled to, also once the address has followed
+KILLED    the table prepared for an earlier result is shown for a later one
+            checks run: flow; caught by 1: e2e: table: after another query it shows that query's series, whether the table was asked for before or after the result came
 KILLED    the theme is applied by an inline script
             checks run: prod; caught by 2: prod: index.html has no inline script and no inline style | prod: under the policy: no content security policy violation, no console error, no uncaught error
 
-32 of 32 killed, 0 survived, 0 not applied
+34 of 34 killed, 0 survived, 0 not applied
