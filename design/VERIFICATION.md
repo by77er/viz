@@ -73,7 +73,7 @@ catalog, which has a fallback, comes last. The order follows the platform review
 | S1 (**done** 2026-11-18, `spikes/s1-fanout-r2/`: service-bound leaves share the caller's six-connection budget, Durable Object leaves do not; a range read is about 45 ms) | Connection semantics and R2 latency: range-read parallelism from one invocation, through service bindings and through object stubs; p50/p99 TTFB in and out of region, with hedging | Leaf topology; where `query` runs | Six-slot budget shared across the tree → leaves become separate top-level requests |
 | S2 (**measured** 2026-11-18, `spikes/s2-engine-in-worker/`: Rust 10–18× cheaper than JS in billed CPU; 128 MB not enforced at allocation) | Engine in an isolate: WASM size, startup under 1 s, peak memory while merging and encoding a sealed segment and while decoding a row group; acknowledgement latency while a flush runs | Whether the Rust core is viable; segment and row-group sizes | Does not fit → smaller segments, pure-JS Parquet, more Container use |
 | S3 (**measured** 2026-11-18, `spikes/s3-ingest-throughput/`: 60 ms median acknowledgement; one shard saturates at 230–290 requests/s, below the 300 target; 133k samples/s with large batches; **re-run** 2026-11-19 after early refusal and group commit: 864–1,056 acknowledged requests/s per shard (n = 3), p99 under 150 ms at 64 clients, overload refused in 0–7 ms) | Ingest path: real Remote Write and OTLP bodies through `edge` to shards; object requests per ingest request, rows written per month at 50 / 250 / 1,000 ms commit windows, acknowledgement latency, decode CPU per MB | Routing key, commit window, ingest cost | More than ~2 object requests per ingest request → change routing key |
-| S4 (**measured** 2026-11-18, `spikes/s4-ledger-scale/`: **defect found** — the ledger admits about one unit per second because each change waits on its own R2 write of about 0.4 s; plan is 276 ms at 7,000 files; **re-run** 2026-11-19 with the batched segment log: 234–422 units/s with eight writers against 1.7–3.3 for the old ledger the same day, n = 3 each; rebuild from 104 segments, 5,008 changes, in 5.4 s, against 28.7 s for 608 per-change objects; 300k files not reached: a ledger's state is now capped at 16 MiB, about 15,800 files, `contracts/LEDGER-LOG.md` "Size") | Ledger at scale: 1,000 flush units/min into one ledger; plan-call latency with 300k live files; rebuild from the R2 log | Ledger sizing; when to split a ledger | Plan call over ~50 ms or adds over ~10 ms p99 → ledger per shard group |
+| S4 (**measured** 2026-11-18, `spikes/s4-ledger-scale/`: **defect found** — the ledger admits about one unit per second because each change waits on its own R2 write of about 0.4 s; plan is 276 ms at 7,000 files; **re-run** 2026-11-19 with the batched segment log: 234–422 units/s with eight writers against 1.7–3.3 for the old ledger the same day, n = 3 each; rebuild from 104 segments, 5,008 changes, in 5.4 s, against 28.7 s for 608 per-change objects; 300k files not reached on Cloudflare. Since then checkpoints are written in parts and a rebuild streams into SQLite (D47), so the ledger's own limit is 300 MiB, about 300,000 files (`contracts/LEDGER-LOG.md` "Size"): a rebuild of that size took 20 s in local workerd. The publisher re-bases such a state in bounded memory (D55; 8–17 s, a first publication 27–38 s, local workerd). Production keeps a ledger's state at 16 MiB, about 15,800 files (`stack/wrangler.jsonc`). **Measured on Cloudflare since** (S11, `spikes/s11-large-ledger/`, 2026-11-19, CPU from the analytics API): a rebuild after a storage loss and a publisher's first publication at 16, 64 and 150 MiB all completed within the 30 s default CPU limit (rebuild 1.2, 14.2 and 16.4–18.6 s; publication 2.1, 5.6 and 14.0 s); 300 MiB was not run and extrapolates to 32–37 s and 28–32 s, over the limit. S11 recommends lifting production to 64 MiB and no further; **not done**, the cap is still 16 MiB (`design/reviews/d47-d48-d55.md`, P-3)) | Ledger at scale: 1,000 flush units/min into one ledger; plan-call latency with 300k live files; rebuild from the R2 log | Ledger sizing; when to split a ledger | Plan call over ~50 ms or adds over ~10 ms p99 → ledger per shard group |
 | S9 (was planned as S5; renamed because `spikes/s5-r2-writes/` took that name) | One vertical read slice on synthetic team-scale data before any PromQL breadth: `sum by (pod) (rate(http_requests_total{namespace="x"}[5m]))` over 1 h, 24 h (today and yesterday) and 30 d; count reads, bytes, CPU, wall time; flat rows vs chunk-blob rows; hashed vs locality-prefixed series ids | Row shape, sort key, compaction cadence, rollup placement, latency targets | First-load 24 h p95 over 3 s after tuning → chunk-blob rows or a different sort |
 | S6 | Trace by ID and one structural TraceQL query at 500M spans/day; a log needle search at 100 GB/day over 1 h, 24 h and 7 d | Span partitioning; whether the flush-time token filter suffices | Trace-by-ID p95 over 1 s → bucket by trace id |
 | S7 | Tail reads under ingest and rule load on one shard | Whether tail-class rules and 10 s freshness hold | Ingest p99 degrades more than 2× → rules read flush files only |
@@ -82,6 +82,35 @@ catalog, which has a fallback, comes last. The order follows the platform review
 Additional measurement: **S5** (`spikes/s5-r2-writes/`, 2026-11-18): an R2 write takes
 0.17–0.26 s at the median up to 1 MB, writes share the six-in-flight limit, and 32 Durable
 Objects wrote 192 objects in 0.85 s.
+
+Spikes run since under numbers this table does not use, each with its README:
+
+- **S9** (`spikes/s9-oauth-key-rollback/`, measured on Cloudflare 2026-11-19; not the read
+  slice the table calls S9, which is still to run): a rollback across the release that created
+  viz-control's OAuth key is allowed and leaves OAuth without a key; across a rotation
+  Cloudflare refuses it (D53, D69).
+- **S10** (`spikes/s10-signals-trial/`, measured on Cloudflare 2026-11-19, on the build before
+  D62's second rewrite): traces and logs end to end with both flags on. Held: per-signal pools,
+  the decode limits (D71), the query memory budget, publication read by three outside readers.
+  Open: one compaction run killed at the 30 s CPU limit; every trace query refused above about
+  240,000 spans in an hour; a 4 KB body costing 1.4–3.4 s of edge CPU to decode; a stage's
+  timers running on after its expiry. A rerun of its realistic and fat shapes on the current
+  build (ABI 8) is one of the three things `QUERY_SIGNALS` waits for, with a Grafana run and the
+  owner's acceptance of D62's stated ceilings; the narrow re-check of D62 is done and approves it
+  (`reviews/signals-end-to-end-r3.md`).
+- **S11** (`spikes/s11-large-ledger/`): the S4 row above.
+- **S12** (`spikes/s12-reload-on-a-phone/`, deployed 2026-11-26): the design system's pages on
+  a public address, to see whether a phone loses its scroll position on reload as the emulator
+  did in the v9 review. For the interface, which is on the development branch, not on `main`.
+- **S13** (`spikes/s13-upgrade-trial/`): the first release over production, on a stage.
+  **Prepared, not run**: the session's permission check refused the stage deploy twice, and it
+  waits for the owner. Until it runs, nobody has seen Cloudflare accept viz-control's six Rate
+  Limiting bindings at upload, or read them back from its version API (review of D69, round 2,
+  M2-2).
+- **S14** (`spikes/s14-app-preview/`, deployed 2026-11-27): the web app's build with the app's
+  mock API on a workers.dev address, for the owner to look at before the gateway serves the real
+  one (D74). Synthetic data only, bound to no viz resource; it answers 410 after 2026-12-04. For
+  the interface, which is on the development branch, not on `main`.
 
 ## 5. Evidence required per milestone
 

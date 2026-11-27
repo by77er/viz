@@ -33,8 +33,8 @@ and `design/DECISIONS.md` (each decision, its alternatives and what would change
 | `janitor/` | Retention, expiry and physical deletion |
 | `stack/` | The write path deployed as one script, with its queues, cron and soak test |
 | **Read path and engines** | |
-| `query/` | Prometheus HTTP API Worker, with query leaves as Durable Objects |
-| `engine/` | Rust engine crates compiled to WebAssembly: storage, PromQL, query, TraceQL |
+| `query/` | Prometheus HTTP API Worker, with query leaves as Durable Objects; Tempo and Loki HTTP APIs behind `QUERY_SIGNALS`, which is off |
+| `engine/` | Rust engine crates compiled to WebAssembly: storage, PromQL, query, TraceQL, LogQL (the last two clean-room; they read the span and log files storage writes, and the query Worker serves them behind `QUERY_SIGNALS`, which is off) |
 | `publisher/` | Publishes the ledgers as Iceberg tables that external engines can read |
 | **Control, monitors and agents** | |
 | `control/` | Tenant control plane: keys, dashboards, settings |
@@ -53,6 +53,9 @@ and `design/DECISIONS.md` (each decision, its alternatives and what would change
 
 Each component has a README with what is implemented, what is not, how it was verified
 and its known risks.
+
+Not on `main` yet, all on the development branch: the web app and its design system (`app/`,
+`design-system/`), which merge after their design reviews approve.
 
 ## Licence
 

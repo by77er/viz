@@ -1563,13 +1563,30 @@ rebuild took 20 s, memory flat. Not measured on Cloudflare.
 **Cost of it.** About two row writes per file changed during a checkpoint window; a few hundred
 PUTs per checkpoint instead of one (about $0.01 a day for a busy tenant, modelled); slower
 rebuilds; one more table pair and a `tracked` write per mutation while a checkpoint runs. The
-publisher still reads a new incarnation's base whole, so deployments keep the old limit until it
-streams it.
+publisher re-bases in bounded memory since D55, but production keeps the 16 MiB limit
+(`LEDGER_STATE_MAX_BYTES` in `stack/wrangler.jsonc`), for two reasons from the review of D47, D48
+and D55 (P-2, P-3; `design/reviews/d47-d48-d55.md`):
+- a release before D47 cannot hold or checkpoint a larger state: it answers `full` to every unit
+  and its drain builds the whole state in memory, so a rollback or gradual deployment to one must
+  never meet one (production's first release, fb77292, has D47 and D55);
+- a rebuild above 16 MiB (20 s here at 300 MiB) and a first publication (27–38 s here) had not
+  been measured within a Durable Object's CPU limit on Cloudflare. They have been since (S11,
+  `spikes/s11-large-ledger/`, measured on Cloudflare 2026-11-19, CPU from the analytics API): at
+  64 MiB a rebuild after a storage loss used 14.2 s of CPU and a first publication 5.6 s; at
+  150 MiB 16.4–18.6 s and 14.0 s, within the 30 s default but without margin (the cost per file
+  varied twofold between runs); 300 MiB was not run and extrapolates to 32–37 s (65 s at the
+  slower rate measured) and 28–32 s, over it. The publisher's re-base keeps progress across
+  invocations since D55's amendment; the ledger's rebuild keeps none.
 
 **Would change if.** A rebuild of the largest tenants takes too long on Cloudflare (then keep
 rebuild progress, or start a new incarnation from the old checkpoint); R2 offered conditional
 multipart completion (then (d) is simpler); or row writes during checkpoints show on the bill
-(then (c), forward-only).
+(then (c), forward-only). **Production's 16 MiB** can be lifted to 64 MiB by S11's measurements
+(its recommendation; not done: `stack/wrangler.jsonc` still says 16 MiB), and no further until a
+rebuild above that is measured with margin or keeps progress, or `limits.cpu_ms` is set and then
+measured. The release that lifts it must have a rollback floor with D47 and D55, and its record
+must say what a rollback below it does to a tenant above 16 MiB: forward-only for such tenants,
+or the record carries the state limit and the rollback check compares it.
 
 ## D48. A shard filters and pages its tail reads itself, by reading the batches it stores; the unpaged form stays
 
@@ -1580,7 +1597,17 @@ series and rows the filter keeps, and returns them as new `VZB1` batches (series
 values copied as bytes), at most `maxBytes` a page, with `page.next` bound to the tenant,
 incarnation, watermark and filter, through the end fixed by the first page. A batch whose kept
 rows do not fit a page is refused (`page_limit`), never cut. Without options the answer is as
-before; an older shard ignores options, so `page` in the answer is how a caller knows.
+before; an older shard ignores options, so `page` in the answer is how a caller knows. An
+answer without `page` in the middle of a paged read is the whole tail: the caller either drops
+the pages it has and uses that answer alone, or refuses the read retryably and plans again;
+never mixes the two (the query coordinator refuses with 503, D54; review of D47, D48 and D55,
+P-9). The same review asked that a new filter field come with `v` 2, because a `v` 1 shard
+ignores fields it does not know and still pages. The two fields added since stayed in `v` 1 and
+are made safe at the caller instead: `signals` (D63) and the time range that skips span and log
+batches (D72) are sent only to the signal's own shards, chosen by name, every batch that comes
+back is checked by its header, and the engine selects the same rows whether or not the shard
+skipped any (D62, 4.), so an older shard's superset changes no answer. A field whose superset a
+caller could not tell from a filtered answer still needs `v` 2.
 
 **Alternatives.** (a) Filter at the coordinator (as `engine.splitTails` does now). (b) Per-batch
 metadata (time bounds, metric names) written at append and used to skip whole batches. (c) A
@@ -1988,8 +2015,15 @@ and bytes. Any disagreement stops the tenant (`corrupt`), and so does a part tha
 checkpoint of a format this code does not read is passed over for the base. The tombstones a
 checkpoint or base carries are recorded as removed by the commit's snapshot, so files a
 checkpoint skipped are released, and only once no snapshot that could reference them is
-retained. With this, production lifts the 16 MiB state pin (`stack/wrangler.jsonc`) to the
-ledger's 300 MiB.
+retained. A tenant's log is read once per publish, from the lowest of its tables' cursors,
+or from the newest checkpoint or base when a table has no cursor in the newest incarnation. A
+table whose cursor is below the version a log read from a checkpoint or base starts at
+(`log.start`) is re-based too, never planned from its cursor. Planning from the cursor would
+skip the changes between, and they are not in what was read. That skip was the blocker P-1 of
+the review of D47, D48 and D55 (`design/reviews/d47-d48-d55.md`), fixed with its test.
+`planFromCursor` also refuses a log that starts above its cursor, as defence in depth: it is not
+reachable with the first rule. This lets the ledger's 300 MiB apply, but production keeps the
+16 MiB limit (`stack/wrangler.jsonc`; D47, "Cost of it" and "Would change if"; review P-2, P-3).
 
 **Alternatives.** (a) Keep reading the base whole, with the 16 MiB pin (D47's interim). (b) Stream
 the base only and never read checkpoints (the change `ledger/README.md` asked for). (c) A new
@@ -2148,7 +2182,7 @@ both sides test against one strict format. The batches go to shards of their own
 tenant with pool map `{pool, slots, spread, epoch}`, spans to pool `{pool}/traces` and log
 records to `{pool}/logs`, same slots, spread and epoch, routed by the sender key as metrics are,
 so one sender's three signals take the same slot number. As built, `edge` appends only when
-`INGEST_SIGNALS` names the signal; no flush drains those shards yet (stage 2).
+`INGEST_SIGNALS` names the signal (off in production); flush drains those shards since D63.
 
 **Alternatives.** (a) One stream for every signal: a shard stream holds metrics, spans and logs,
 and flush splits a segment by signal. (b) A signal in the shard's stream key (a shard schema
@@ -2416,8 +2450,12 @@ approve with changes: R2-M1 to R2-M4 and R2-m1 to R2-m5, and after the review of
 text the first review rejected (`design/reviews/signals-end-to-end.md`, M-1 and M-2); "Replaces" at
 the end lists what changed each time. The contract changed first, in its own change:
 `contracts/engine.ts` `SignalBudget` and `SignalEngine`, ABI 8 of `engine/wasm-query`.
-`QUERY_SIGNALS` stays off until the re-review's narrow re-check of R2-M1 to R2-M4(a), the Cloudflare
-trial and the Grafana run of `query/README.md` "What remains before the flag".)
+The re-review's narrow re-check of R2-M1 to R2-M4(a) was done on 2026-11-26
+(`design/reviews/signals-end-to-end-r3.md`, round 3: 0 blockers, 0 majors, 4 minors) and approves
+D62: all four majors are closed and reproduced on the ABI 8 module, measured here, not on
+Cloudflare. Its four minors correct statements of this entry that were too generous; they are
+under "Corrections from the narrow re-check" in "What volume this serves", below. `QUERY_SIGNALS`
+stays off for three other reasons, given there.)
 
 **Decision.** The query Worker answers Tempo's and Loki's APIs (behind `QUERY_SIGNALS`,
 `query/README.md` "Traces and logs") in one place: files through the leaf pool, the signal's
@@ -3999,7 +4037,11 @@ object answers, never what a request asks.
 
 (Written 2026-11-19 for the review of spans and logs end to end, M-3: "count attributes, array
 items and value bytes while decoding, and refuse at the limit before materialising. Lower
-`maxDecompressedBytes`. Measure in workerd.")
+`maxDecompressedBytes`. Measure in workerd." The review reproduced 117 MiB of heap growth from a
+2 MiB traces body that gzips to 2,076 bytes, and found the same flaw on `/v1/metrics`, which was
+live on `main`: 179 MiB for a 4 MiB metrics body, by its own repro. The metrics part of this
+entry therefore reached `main` first, in pull request #8, under a title that named metrics only;
+the span, log and Loki paths, and this full entry, came with pull request #9.)
 
 **What was wrong, measured here** (`edge/bench/memory.mjs`: local workerd 2026-11-17, V8 heap
 from `--trace-gc`, peak = the largest heap any GC saw, one run per case; Node 22 alongside). Every
@@ -4027,7 +4069,8 @@ attribute names were matched with `indexOf` (quadratic: 0.5 s for 229 KiB).
   the item is refused on its own (OTLP `partial_success`, Loki 400; a metric point as "label set
   too large to fit one batch"), its remainder is read only to check the wire (lengths, wire
   types, nesting, UTF-8 for metrics), and the rest of the request is decoded as before. Events and
-  links past the 128th are read and not built. Contract: `contracts/BATCH.md`, "Decode limits".
+  links past the 128th are read and not built. Remote Write needs no count: its labels are read
+  into a fixed scratch as byte ranges. Contract: `contracts/BATCH.md`, "Decode limits".
 - **Per request: 413, nothing appended**, when the decoded series table (metrics) or entries and
   rows (spans, logs) pass `maxDecodedBytes` (16 MiB), or a JSON body has more than
   `maxJsonTokens` (1,048,576) structural characters, counted before `JSON.parse`.
@@ -4084,6 +4127,9 @@ about 11.5 MiB. It is what stops a resource's copies: the 157 KiB body above.
   body and decoded limits already govern a request's size.
 - *A streaming JSON parser* counted like protobuf: no pre-scan, more code; `JSON.parse` is native,
   the pre-scan costs about 3 ms per MiB (Node).
+- *Resource attributes in `target_info`, not copied into every series*: removes the metrics
+  fan-out at its source, but changes every OTLP series's labels, which queries and dashboards
+  already use.
 - *`maxDecompressedBytes` 16 MiB*: holds JSON batches of 16,000 spans, at twice the memory (modelled);
   *4 MiB* would refuse a default Collector batch of spans as JSON (7.1 MiB measured).
 
@@ -4092,8 +4138,12 @@ ones (`design/VERIFICATION.md` §4: run the hostile and realistic bodies against
 read the isolate's memory from Workers analytics); senders' bodies seen on Cloudflare are larger
 than 8 MiB, or metrics with wide resources reach 16 MiB decoded (then resource attributes go to
 `target_info` instead of every series, or the series table becomes chunks); OTLP clients learn to
-split on 413; a real sender's item passes 65,536 values.
-
+split on 413; a real sender's item passes 65,536 values. The first of these was run for memory
+(S10, `spikes/s10-signals-trial/`, measured on Cloudflare 2026-11-19): 35 of 35 bodies were
+answered as locally and the isolate stayed at 16–78.5 MiB per request. What the limits do not
+bound is CPU: a 4 KB gzip body of 4 MiB of empty spans cost 1.4–3.4 s of CPU there, about twice
+that at the 8 MiB limit (modelled), under the 30 s limit but a large amplification for any key
+with `write`. Open; a CPU bound on decoding would change this entry.
 
 ## D72. A shard records each span and log batch's time bounds when it appends it, in the batch's row and in a partial index of them; a filtered tail read with a time range skips, deciding from that index, a span or log batch whose bounds lie outside it, and keeps every batch without bounds
 
@@ -4257,7 +4307,6 @@ every append); the extra row write shows in the bill (then (c4) at a release tha
 only for shards that are read with ranges); the walk shows on a shard's CPU (then (i)); Cloudflare's
 SQLite reads or bills differently from workerd's here (the experiments above).
 
-
 ## D73. "Colour the eight largest" is offered only when pressing it would change a colour
 
 **Decision** (2026-11-19, the lead; built in design system v9). A chart offers "Colour the eight
@@ -4274,7 +4323,6 @@ a control appears: a control that can do nothing is not offered.
 
 **Would change if** people look for the control to confirm that the largest are coloured (then (b),
 as a state of the legend, not a button).
-
 
 ## D74. viz-gateway serves the web app: hashed assets and the icon as its own Workers Static Assets, by exact path, without invoking the Worker; the documents from the Worker, out of a variable; every other path, an unknown API path and a missing asset included, the JSON 404; a release carries the build it was made with, verified before upload, and the earlier builds' files a page already open may still ask for
 
