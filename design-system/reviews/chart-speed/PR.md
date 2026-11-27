@@ -18,7 +18,8 @@ with every figure. The scratch copy it was built in is gone; the patches and too
    -9 ms at 36 series on the desktop (quicker in 16 of 20 pairs), -12 ms at 200 (9 of 16), -4 ms at
    36 and at 200 on the phone (13 and 11 of 20). The profile had promised three times that.
 3. **Identity is not proven.** One run of the comparison found the chart's markup, accessible names,
-   legend row names, text form and table the same before and after in every one of 102 states, and
+   legend row names, text form and table the same before and after in 94 of 102 states (the other 8
+   are the fixture page, whose markup carries a time stamp and differs between two runs of one build too), and
    screenshots that differ in 12 states (by 1 to 11 pixels, or by a 4 px shift of words in the head that
    follows the clock), as two runs of the *same* build also do (11 states). The tool was changed to
    settle that and was not run again.

@@ -61,11 +61,21 @@ Commits titled "Work in progress" are snapshots and are not green.
 
 ## In progress when paused
 
-- **App fixes for the design review** (blockers B2, B3; majors M1, M2, M3; the one-line minors): state,
-  finding by finding, is in `design-system/reviews/app-v9/response.md` under "Paused 2026-11-27".
-- **B1, results with many series paint late** (the design system's chart): findings and unproven
-  patches are in `design-system/reviews/chart-speed/` (`PR.md`, "Paused 2026-11-27"). The acceptance
-  test is pixel-identical rendering before and after, plus alternating before/after timing runs.
+- **App fixes for the design review** (commit `aa120dc`, not green): B2, B3, M1, M2 and six minors are
+  written and pass their new checks (tsc, 230 unit tests, token check and build pass). Not done: the 23
+  mutants are written and not run, the before/after images are not remade (M3), `e2e/app.cjs` was not
+  rerun whole, `errors` and `prod` not run, no speed measurement. State and the steps to resume:
+  `design-system/reviews/app-v9/response.md`, "Paused 2026-11-27".
+- **B1, results with many series paint late: not fixed.** Nothing was applied to the chart or the app.
+  `design-system/reviews/chart-speed/` holds the profile, the measurements and unproven patches
+  (`PR.md`, "Paused 2026-11-27"). The patch in hand moves desktop 200 series from 135 to 118 ms after the
+  body is read (budget 100; measured here under load), and pixel identity is not proven (5 stray pixels
+  unexplained). The builder's view of the real fix: fewer passes over the values (align each series to
+  the grid as the body streams; typed arrays through the chart interface, which is a contract change),
+  and even then the 200-series row is near the limit. About 70 ms of "from the last byte" at 200 series
+  is DevTools' own copy of the body under the harness; whether that definition should count it is a
+  decision for the owner. If the budget cannot be met at 200 series, the route the rubric allows is a
+  waiver by a second reviewer, stated in the pull request.
 
 ## Next, in order
 
