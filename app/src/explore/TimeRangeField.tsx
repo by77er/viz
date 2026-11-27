@@ -192,7 +192,6 @@ export const StepField = memo(function StepField({ value, auto, onChange }: { va
         className="vz-input"
         data-mono=""
         value={text}
-        placeholder="30 s"
         aria-invalid={invalid ? true : undefined}
         aria-describedby={`${id}-help`}
         onChange={(e) => setText(e.target.value)}

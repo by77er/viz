@@ -11,6 +11,7 @@
 //
 //   VIZ_MUTANT_DIR=<scratch dir> node e2e/mutants.cjs            every mutant of the move to design system v9
 //   VIZ_MUTANT_DIR=<scratch dir> ONLY=<part of a name> node e2e/mutants.cjs   some, and no result file
+//   SET=review2 ...   the fixes for the second design review instead (results in mutants-review2.txt)
 //   PART=unit | PART=e2e   the mutants that only unit tests are asked to catch, or the others; results in mutants-v9-<part>.txt
 //
 // A mutant names the checks that must catch it: `unit` (vitest, the whole suite) or sections
@@ -115,11 +116,41 @@ const LIST = [
   m('the theme is applied by an inline script', ['prod'], 'vite.config.ts', "return [{ tag: 'script', attrs: { src }, injectTo: 'head-prepend' }]", "return [{ tag: 'script', children: readFileSync(file, 'utf8'), injectTo: 'head-prepend' }]"),
 ]
 
+// ---- SET=review2: the fixes for the second design review (design-system/reviews/app-v9/review.md). Each mutant undoes one fix;
+// the checks are sections of e2e/app.cjs, `unit`, or `dash:<section>` for a section of e2e/dashboards.cjs.
+const R2 = ['review2']
+const REVIEW2 = [
+  m('B2: "Show 50 more" stands straight under the table again (no stack)', ['touch'], 'src/explore/ResultTable.tsx', '<div className="vz-stack">', '<div>'),
+  m('B3: nothing puts a reload back where the page was', ['reload', 'dash:reload'], 'src/main.tsx', 'installScrollKeeper()\n', ''),
+  m('B3: the position is put back once and not held (the router\'s reset, the browser\'s late attempt)', ['reload', 'dash:reload'], 'src/lib/scrollKeeper.ts', "  window.addEventListener('scroll', place, { passive: true })\n", ''),
+  m('B3: a link opened afresh is scrolled to the position kept for that page', ['unit', 'reload'], 'src/lib/scrollKeeper.ts', "if (navigation === 'reload') return true", 'if (navigation.length > 0) return true'),
+  m('B3: the position is held against the person\'s own scrolling', ['reload'], 'src/lib/scrollKeeper.ts', "for (const type of inputs) window.addEventListener(type, stop, { capture: true, passive: true })", ''),
+  m('B3: the position waits for the answer instead of the reserved layout', ['reload'], 'src/lib/scrollKeeper.ts', '  sizes.observe(root)\n  sizes.observe(document.body)\n', "  window.addEventListener('load', () => setTimeout(place, 2500))\n"),
+  m('M1: Explore has no "Copy link" button', R2, 'src/explore/ExplorePage.tsx', '<CopyButton text={linkText} label="Copy link" buttonRef={copyLinkRef} testId="copy-link" />', ''),
+  m('M1: the copied link is the address bar\'s, which has not caught up with the form shown', R2, 'src/explore/ExplorePage.tsx', "if ((new URL(href).searchParams.get('view') ?? 'chart') === v) return href", 'if (href) return href'),
+  m('m4: the palette\'s "Copy a link" copies without a word, and swallows a refusal', R2, 'src/explore/ExplorePage.tsx', 'copyLinkRef.current?.focus()\n          copyLinkRef.current?.click()', 'void navigator.clipboard?.writeText(window.location.href).catch(() => {})'),
+  m('m4: the palette\'s field has the placeholder "last 24 h" again', R2, 'src/shell/CommandPalette.tsx', '          className="vz-input"', '          placeholder="last 24 h"\n          className="vz-input"'),
+  m('M1: Help does not say where the palette\'s commands are', R2, 'src/shell/HelpPage.tsx', 'The command palette lists the commands of the page it is opened on.', 'The command palette lists commands.'),
+  m('M2: the chart\'s name and the text form leave out the day', ['unit', 'review2'], 'src/charts/fixups.ts', "if (day === '' || text.includes(`${day}, `)) return text", 'if (day.length >= 0) return text'),
+  m('M2: the day is put before the range again on every draw', ['unit', 'review2'], 'src/charts/fixups.ts', "if (day === '' || text.includes(`${day}, `)) return text", "if (day === '') return text"),
+  m('M2: the text form says nothing of a warning', R2, 'src/charts/Chart.tsx', "if (live.current.partial !== null && !text?.querySelector('[data-partial]')) {", 'if (live.current.partial === undefined) {'),
+  m('M2: the chart\'s name says nothing of a warning', ['unit', 'review2'], 'src/charts/fixups.ts', '(!partial || name.endsWith(PARTIAL_NAME) ? name : name + PARTIAL_NAME)', '(name)'),
+  m('M2: a warning stays in the name and the text form of the next, whole answer', R2, 'src/explore/ExplorePage.tsx', 'const partial = useMemo(() => (result ? warningWords(result.warnings) : null), [result])', 'const partialSeen = useRef<string | null>(null)\n  partialSeen.current = (result ? warningWords(result.warnings) : null) ?? partialSeen.current\n  const partial = partialSeen.current'),
+  m('m1: the head of an empty result leaves its range to a chart that is not there', R2, 'src/explore/ExplorePage.tsx', '{hasData ? (\n                    <>\n                      {day ?', '{hasData || isEmpty ? (\n                    <>\n                      {day ?'),
+  m('m2: the empty Step field shows "30 s"', R2, 'src/explore/TimeRangeField.tsx', '        data-mono=""\n        value={text}\n', '        data-mono=""\n        value={text}\n        placeholder="30 s"\n'),
+  m('m3: the palette\'s list is a tab stop', R2, 'src/shell/CommandPalette.tsx', 'className="palette-list" tabIndex={-1}>', 'className="palette-list">'),
+  m('m10: the sign-in checkbox is labelled with a statement', R2, 'src/shell/SignIn.tsx', '            Show the key\n', '            The key is shown as typed\n'),
+  m('m12: a query that finds the API unreachable raises no banner', R2, 'src/explore/ExplorePage.tsx', 'if (unreachable) void askBackend()', ''),
+  m('m12: nothing asks the query again when the API answers', R2, 'src/explore/ExplorePage.tsx', 'if (unreachableRef.current && !loadingRef.current) {', 'if (unreachableRef.current && loadingRef.current) {'),
+  m('m12: a query that fails alone is asked again for ever', R2, 'src/explore/ExplorePage.tsx', "if (backendDown) wasDown.current = true\n    else if (backendUp && wasDown.current) {", "if (backendDown) wasDown.current = true\n    else if (backendUp) {"),
+]
+const SET = process.env.SET === 'review2' ? { list: REVIEW2, file: 'mutants-review2', title: 'Mutants of the fixes for the second design review (SET=review2 e2e/mutants.cjs)' } : { list: LIST, file: 'mutants-v9', title: 'Mutants of the move to design system v9 (e2e/mutants.cjs)' }
+
 const only = process.env.ONLY
 // PART=unit: the mutants only the unit tests are asked to catch (no browser); PART=e2e: the rest. Each part writes its own file.
 const part = process.env.PART
 const unitOnly = ([, checks]) => checks.length === 1 && checks[0] === 'unit'
-const list = (only ? LIST.filter(([name]) => name.includes(only)) : LIST).filter((x) => (part === 'unit' ? unitOnly(x) : part === 'e2e' ? !unitOnly(x) : true))
+const list = (only ? SET.list.filter(([name]) => name.includes(only)) : SET.list).filter((x) => (part === 'unit' ? unitOnly(x) : part === 'e2e' ? !unitOnly(x) : true))
 const run = (cmd, args, env = {}) => spawnSync(cmd, args, { cwd: ROOT, encoding: 'utf8', env: { ...process.env, ...env }, maxBuffer: 64 * 1024 * 1024 })
 const BASE = Number(process.env.VIZ_MUTANT_PORT || 18860)
 const E2E_ENV = { VIZ_E2E_APP_PORT: String(BASE), VIZ_E2E_MOCK_PORT: String(BASE + 1), VIZ_PROD_PORT: String(BASE + 40) }
@@ -131,8 +162,9 @@ function checksOf(checks) {
     for (const l of (r.stdout + r.stderr).split('\n')) { const x = /^\s*(?:×|✗|FAIL)\s+(.+?)(?:\s+\d+ms)?$/.exec(l); if (x && !/^src\/|^mock\//.test(x[1])) failed.push(`unit: ${x[1].trim().slice(0, 110)}`) }
     if (r.status !== 0 && failed.length === 0) failed.push('unit: the run failed (a type or import error)')
   }
-  const sections = checks.filter((c) => c !== 'unit' && c !== 'prod')
-  if (sections.length || checks.includes('prod')) {
+  const dash = checks.filter((c) => c.startsWith('dash:')).map((c) => c.slice(5))
+  const sections = checks.filter((c) => c !== 'unit' && c !== 'prod' && !c.startsWith('dash:'))
+  if (sections.length || dash.length || checks.includes('prod')) {
     const b = run(process.execPath, ['node_modules/vite/bin/vite.js', 'build'])
     if (b.status !== 0) return [...failed, `build failed: ${(b.stderr || b.stdout).split('\n').find((l) => /error/i.test(l)) || ''}`.slice(0, 160)]
   }
@@ -140,6 +172,11 @@ function checksOf(checks) {
     const r = run(process.execPath, ['e2e/app.cjs'], { ...E2E_ENV, VIZ_ONLY: sections.join(',') })
     for (const l of r.stdout.split('\n')) if (l.startsWith('FAIL')) failed.push(`e2e: ${l.slice(6).split('  — ')[0].slice(0, 120)}`)
     if (r.status !== 0 && !r.stdout.includes('FAIL')) failed.push(`e2e: the run stopped (${(r.stderr.split('\n').find((l) => /Error|Timeout/.test(l)) || 'no output').slice(0, 100)})`)
+  }
+  if (dash.length) {
+    const r = run(process.execPath, ['e2e/dashboards.cjs'], { ...E2E_ENV, VIZ_ONLY: dash.join(',') })
+    for (const l of r.stdout.split('\n')) if (l.startsWith('FAIL')) failed.push(`dashboards: ${l.slice(6).split('  — ')[0].slice(0, 120)}`)
+    if (r.status !== 0 && !r.stdout.includes('FAIL')) failed.push(`dashboards: the run stopped (${(r.stderr.split('\n').find((l) => /Error|Timeout/.test(l)) || 'no output').slice(0, 100)})`)
   }
   if (checks.includes('prod')) {
     const r = run(process.execPath, ['e2e/prod.cjs'], E2E_ENV)
@@ -176,5 +213,5 @@ for (const [name, checks, edits] of list) {
 }
 const summary = `${lines.filter((l) => l.startsWith('KILLED')).length} of ${list.length} killed, ${survived} survived, ${lines.filter((l) => l.startsWith('NOT APPLIED')).length} not applied`
 console.log('\n' + summary)
-if (!only) fs.writeFileSync(path.join(SOURCE, 'e2e', 'measurements', `mutants-v9${part ? `-${part}` : ''}.txt`), `Mutants of the move to design system v9 (e2e/mutants.cjs), applied to a copy in the session's scratch area.\n${new Date().toISOString()}\n\n${lines.join('\n')}\n\n${summary}\n`)
+if (!only) fs.writeFileSync(path.join(SOURCE, 'e2e', 'measurements', `${SET.file}${part ? `-${part}` : ''}.txt`), `${SET.title}, applied to a copy in the session's scratch area.\n${new Date().toISOString()}\n\n${lines.join('\n')}\n\n${summary}\n`)
 process.exit(survived ? 1 : 0)

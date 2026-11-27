@@ -1,6 +1,6 @@
 import { memo, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { createPortal, flushSync } from 'react-dom'
-import { fixHead, fixName, fixRowName, fixText } from './fixups'
+import { fixHead, fixName, fixRowName, fixText, withDay, withPartial } from './fixups'
 import { drawChart, type ChartHandle, type ChartSpec } from './systemChart'
 
 /** The range a zoomed chart shows, as instants (epoch ms). */
@@ -30,6 +30,10 @@ export interface ChartProps {
   onShownRange?: (range: ShownRange | null) => void
   /** Parked: laid out and drawn (the text form and the next switch need it) but not shown. */
   parked: boolean
+  /** The day the panel's head states before the range ("18 Nov"), for the chart's name and its text form; empty when the head states none. */
+  day?: string
+  /** The head's sentence about a result that may be incomplete (the API's warnings), for the text form; null when there is none. */
+  partial?: string | null
 }
 
 const RESERVE = 'viz.chart.reserve:'
@@ -62,12 +66,14 @@ export const reservedStyle = reserved
  * The design system's chart for one result. This component owns no drawing: it hands the
  * system's chart the result, tells it of an error, and listens for the range it shows.
  */
-export const Chart = memo(function Chart({ spec, shiftMs, stepWords, view, textFormId, error, onShownRange, parked }: ChartProps) {
+export const Chart = memo(function Chart({ spec, shiftMs, stepWords, view, textFormId, error, onShownRange, parked, day = '', partial = null }: ChartProps) {
   const rootRef = useRef<HTMLDivElement>(null)
   const handle = useRef<ChartHandle | null>(null)
   const [reserve] = useState(() => reserved(view))
   const [errorHost, setErrorHost] = useState<HTMLElement | null>(null)
-  const live = useRef({ spec, shiftMs, stepWords, onShownRange, shown: false })
+  const live = useRef({ spec, shiftMs, stepWords, onShownRange, shown: false, day, partial })
+  live.current.day = day
+  live.current.partial = partial
   live.current.shiftMs = shiftMs
   live.current.stepWords = stepWords
   live.current.onShownRange = onShownRange
@@ -84,9 +90,11 @@ export const Chart = memo(function Chart({ spec, shiftMs, stepWords, view, textF
       if (unitless()) {
         const head = root.querySelector('thead [data-col="last"] .vz-sort')
         if (head && head.textContent !== fixHead(head.textContent)) head.textContent = fixHead(head.textContent)
-        const name = svg?.getAttribute('aria-label')
-        if (svg && name && name !== fixName(name)) svg.setAttribute('aria-label', fixName(name))
       }
+      // The name says what the head says: no comma for a missing unit, the day before the range, and that the result may be incomplete.
+      const name = svg?.getAttribute('aria-label')
+      const named = name ? withPartial(withDay(unitless() ? fixName(name) : name, live.current.day), live.current.partial !== null) : name
+      if (svg && named && named !== name) svg.setAttribute('aria-label', named)
       // Only when the legend's rows were written again, not on every move of the crosshair.
       if (tbody && (records === null || records.some((r) => r.target === tbody))) {
         for (const row of tbody.querySelectorAll<HTMLElement>('.vz-series')) {
@@ -111,8 +119,18 @@ export const Chart = memo(function Chart({ spec, shiftMs, stepWords, view, textF
     }
     const text = document.getElementById(textFormId)
     const fixForm = () => {
-      const first = text?.querySelector('li')
-      if (first && first.textContent !== fixText(first.textContent, live.current.stepWords)) first.textContent = fixText(first.textContent, live.current.stepWords)
+      // The line that names the result is the first, or the second under "The latest query failed".
+      const title = [...(text?.querySelectorAll('li') ?? [])].slice(0, 2).find((l) => !l.textContent.startsWith('The latest query failed'))
+      if (!title) return
+      const fixed = withDay(fixText(title.textContent, live.current.stepWords), live.current.day)
+      if (title.textContent !== fixed) title.textContent = fixed
+      // What the head says of a result that may be incomplete, in the head's words, straight after that line.
+      if (live.current.partial !== null && !text?.querySelector('[data-partial]')) {
+        const li = document.createElement('li')
+        li.dataset.partial = ''
+        li.textContent = live.current.partial
+        title.after(li)
+      }
     }
     const chartObserver = new MutationObserver((records) => fix(records))
     chartObserver.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-label'] })

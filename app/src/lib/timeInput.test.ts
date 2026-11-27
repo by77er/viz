@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import fc from 'fast-check'
-import { dayPrefix, fixedZone, parseSpan, parseTime, readRange, spanSpec, spanWords, timeText, zoneName, zoneShiftMs, type Zone } from './timeInput'
+import { dayPrefix, fixedZone, parseSpan, parseTime, rangeWords, readRange, spanSpec, spanWords, timeText, zoneName, zoneShiftMs, type Zone } from './timeInput'
 
 const UTC = fixedZone(0)
 const BERLIN = fixedZone(60)
@@ -122,5 +122,17 @@ describe('what a range was read as', () => {
     expect(dayPrefix(s, s + 3 * 3600, NOW, UTC)).toBe('18 Nov')
     expect(dayPrefix(NOW / 1000 - 3600, NOW / 1000, NOW, UTC)).toBe('')
     expect(dayPrefix(s, s + 3 * 86400, NOW, UTC)).toBe('')
+  })
+})
+
+describe('a range as a head states it where no chart writes it (design review m1)', () => {
+  const s = Date.UTC(2026, 10, 18, 9, 30) / 1000
+  it('is the chart\'s own form: the day, then clock times; no day for today; both days when they differ', () => {
+    expect(rangeWords(s, s + 3 * 3600, NOW, UTC)).toBe('18 Nov, 09:30 to 12:30')
+    expect(rangeWords(NOW / 1000 - 3600, NOW / 1000, NOW, UTC)).toBe('18:14 to 19:14')
+    expect(rangeWords(s, s + 3 * 86400, NOW, UTC)).toBe('18 Nov 09:30 to 21 Nov 09:30')
+    // Across midnight, both days are said (m11, where the page writes the range).
+    expect(rangeWords(NOW / 1000 - 20 * 3600, NOW / 1000, NOW, UTC)).toBe('25 Nov 23:14 to 26 Nov 19:14')
+    expect(rangeWords(s, s + 3 * 3600, NOW, NEW_YORK)).toBe('18 Nov, 04:30 to 07:30')
   })
 })

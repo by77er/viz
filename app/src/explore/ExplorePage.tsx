@@ -15,13 +15,14 @@ import { countRender } from '../lib/renders'
 import { alignSeries, seriesStats } from '../lib/series'
 import { alignWindow, autoStep, bucketWidth, type QueryWindow } from '../lib/step'
 import { parseDuration, resolveTimeSpec, stepWords } from '../lib/time'
-import { dayPrefix, LOCAL, momentText, zoneShiftMs } from '../lib/timeInput'
+import { dayPrefix, LOCAL, momentText, rangeWords, zoneShiftMs } from '../lib/timeInput'
 import { inferUnit, UNITS } from '../lib/units'
 import { parseExploreSearch, type ExploreSearch, type ResultView } from '../lib/urlState'
 import { useBackendInfo } from '../shell/AppShell'
 import { MOD, useCommands } from '../shell/commands'
 import { useSession } from '../shell/session'
 import { Age, shorterRange, useWaiting, WAIT } from './waiting'
+import { CopyButton } from './CopyButton'
 import { JsonView } from './JsonView'
 import { ResultTable, type TableRow } from './ResultTable'
 import { TextView } from './TextView'
@@ -311,6 +312,9 @@ export function ExplorePage() {
     [hasData, aligned, result, description, shiftMs],
   )
   const [shownRange, setShownRange] = useState<ShownRange | null>(null)
+  // What the head says beside the range the chart writes: the day, and that the API sent a warning. The chart's name and its text form say both too (design review M2).
+  const day = result ? dayPrefix(result.window.start, result.window.end, Date.now()) : ''
+  const partial = useMemo(() => (result ? warningWords(result.warnings) : null), [result])
 
   // ---- keyboard & commands
   // The form of the result is local: it changes in this render and the URL follows.
@@ -407,6 +411,17 @@ export function ExplorePage() {
     return () => window.removeEventListener('keydown', onKey)
   }, [run, toggleView])
 
+  const copyLinkRef = useRef<HTMLButtonElement>(null)
+  /** The address of this view with the form now shown (the address bar follows a change of form 300 ms later). */
+  const viewRef = useRef(view)
+  viewRef.current = view
+  const linkText = useCallback(() => {
+    const href = window.location.href
+    const v = viewRef.current
+    if ((new URL(href).searchParams.get('view') ?? 'chart') === v) return href
+    const bare = href.replace(/([?&])view=[a-z]+(&|$)/, (_m, lead: string, tail: string) => (tail ? lead : ''))
+    return v === 'chart' ? bare : `${bare}${bare.includes('?') ? '&' : '?'}view=${v}`
+  }, [])
   useCommands(
     'explore',
     [
@@ -417,7 +432,11 @@ export function ExplorePage() {
         group: 'Query',
         title: 'Copy a link to this view',
         keywords: 'share url permalink',
-        run: () => void navigator.clipboard?.writeText(window.location.href).catch(() => {}),
+        // The page's own button does it, and says there whether the address was copied (design review M1, m4).
+        run: () => {
+          copyLinkRef.current?.focus()
+          copyLinkRef.current?.click()
+        },
       },
       { id: 'v-text', group: 'View', title: 'Switch between the chart and the text form', shortcut: 'T', keywords: 'toggle digest accessible agent show', run: toggleView },
       { id: 'v-table', group: 'View', title: 'Show the result as a table', run: () => setView('table') },
@@ -435,6 +454,31 @@ export function ExplorePage() {
 
   // ---- render
   const error = q !== '' && query.isError ? query.error : null
+  // ---- the API unreachable (README, "Offline or stalled"; design review m12). A query that got no
+  // answer asks the connection check again at once: if that fails too, the page's banner says so
+  // and asks every 10 s (AppShell). When the API answers again after that, the query that failed
+  // for want of it is asked again by itself. Only then: a query that fails alone, while the API
+  // answers the check, is not repeated (it would be asked for ever).
+  const unreachable = error instanceof PromApiError && error.errorType === 'network'
+  const unreachableRef = useRef(unreachable)
+  unreachableRef.current = unreachable
+  const askBackend = backend.refetch
+  useEffect(() => {
+    if (unreachable) void askBackend()
+  }, [unreachable, askBackend])
+  const backendDown = backend.error instanceof PromApiError && backend.error.errorType === 'network'
+  const backendUp = backend.isSuccess
+  const wasDown = useRef(false)
+  useEffect(() => {
+    if (backendDown) wasDown.current = true
+    else if (backendUp && wasDown.current) {
+      wasDown.current = false
+      if (unreachableRef.current && !loadingRef.current) {
+        setHalted(null)
+        setRunId((n) => n + 1)
+      }
+    }
+  }, [backendDown, backendUp])
   const widest = search.to === 'now' && search.from === 'now-24h'
   const alternative = window_ ? shorterRange(window_.end - window_.start) : null
   /** Something of a result is on screen: its chart (under an error, its legend), its table, its text or its JSON. */
@@ -505,6 +549,10 @@ export function ExplorePage() {
         <div>
           <h1 className="vz-page-title">Explore</h1>
         </div>
+        {/* The page's actions. The address bar is the link; this copies it without one (a phone's address bar hides it), and is the control of the palette's command. */}
+        <div className="vz-controls">
+          <CopyButton text={linkText} label="Copy link" buttonRef={copyLinkRef} testId="copy-link" />
+        </div>
       </header>
 
       <div className="vz-stack" ref={toolsRef}>
@@ -552,9 +600,15 @@ export function ExplorePage() {
                 )}
                 <span data-testid="result-range">
                   {shown.staleText ? '· ' : ''}
-                  {dayPrefix(result.window.start, result.window.end, now) ? `${dayPrefix(result.window.start, result.window.end, now)}, ` : ''}
-                  {/* The chart writes the range it shows here, and again when it is zoomed (Chart, draw). */}
-                  <span data-range="" />
+                  {/* The chart writes the range it shows here, and again when it is zoomed (Chart, draw). With no chart (no series matched) the page writes the range that was asked. */}
+                  {hasData ? (
+                    <>
+                      {day ? `${day}, ` : ''}
+                      <span data-range="" />
+                    </>
+                  ) : (
+                    rangeWords(result.window.start, result.window.end, now)
+                  )}
                 </span>
                 <span data-testid="result-step">
                   · every <span className="vz-qty">{stepWords(result.window.step)}</span>
@@ -588,7 +642,7 @@ export function ExplorePage() {
               <span className="vz-qty">{'\u00a0'}</span>
             </p>
           )}
-          {shown && result && <Warnings warnings={result.warnings} />}
+          {shown && partial && <Warnings words={partial} />}
 
           <div className="vz-panel-body region" data-view={view}>
             {progress}
@@ -602,6 +656,8 @@ export function ExplorePage() {
                 error={view === 'chart' ? chartError : null}
                 onShownRange={setShownRange}
                 parked={view !== 'chart' || !drawn}
+                day={day}
+                partial={partial}
               />
             )}
             {error && !(hasData && view === 'chart') ? (
@@ -644,17 +700,19 @@ export function ExplorePage() {
  * response from a store that did not answer, an approximation). The banner says so before the
  * API's own words. The viz API sends none today (README, "Needed changes in query/").
  */
-function Warnings({ warnings }: { warnings: string[] }) {
-  if (warnings.length === 0) return null
+function Warnings({ words }: { words: string }) {
   return (
     <div role="status" className="vz-banner" data-testid="warnings">
       <span className="vz-mark" data-state="warn" />
-      <p>
-        {warnings.length === 1 ? 'The API sent a warning with this result' : `The API sent ${warnings.length} warnings with this result`}, so it may be
-        incomplete: {warnings.join(' ')}
-      </p>
+      <p>{words}</p>
     </div>
   )
+}
+
+/** The sentence about a result the API sent warnings with, the same in the head's banner and in the text form; null when it sent none. */
+export function warningWords(warnings: readonly string[]): string | null {
+  if (warnings.length === 0) return null
+  return `${warnings.length === 1 ? 'The API sent a warning with this result' : `The API sent ${warnings.length} warnings with this result`}, so it may be incomplete: ${warnings.join(' ')}`
 }
 
 function ErrorState({

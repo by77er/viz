@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { AlignedData } from '../lib/series'
-import { fixRowName, fixText } from './fixups'
+import { fixRowName, fixText, PARTIAL_NAME, withDay, withPartial } from './fixups'
 import { chartLabels, chartUnit, figureFormat, largest, NO_AGGREGATE, toSpec } from './spec'
 import type { ChartRules } from './systemChart'
 
@@ -128,5 +128,24 @@ describe('the words the chart writes that a query result needs otherwise', () =>
   it('other lines are left as the chart wrote them', () => {
     const line = '/product · catalog · 200: last 295, lowest 217, highest 312.'
     expect(fixText(line, '15 s')).toBe(line)
+  })
+})
+
+describe('what the head says and the chart does not write: the day, and a result that may be incomplete (design review M2)', () => {
+  it('puts the day before the range, once, in the name and in the text form; nothing when the head states no day', () => {
+    const line = 'Query result: up, cores, 09:30 to 12:30, one value every 15 s. 3 series.'
+    expect(withDay(line, '18 Nov')).toBe('Query result: up, cores, 18 Nov, 09:30 to 12:30, one value every 15 s. 3 series.')
+    expect(withDay(withDay(line, '18 Nov'), '18 Nov')).toBe(withDay(line, '18 Nov'))
+    expect(withDay(line, '')).toBe(line)
+    expect(withDay('Query result: up, cores, 18 Nov, 11:00 to 12:30. 3 series. Left and right arrows read values; plus and minus zoom.', '18 Nov')).toContain('cores, 18 Nov, 11:00 to 12:30.')
+    // A range of more than a day is written with its dates by the chart; the head states no day then.
+    const long = 'Query result: up, cores, 11 Nov 15:16 to 18 Nov 15:16, one value every 2 h. 36 series.'
+    expect(withDay(long, '')).toBe(long)
+  })
+  it('ends the name with the warning, once', () => {
+    const name = 'Query result: up, cores, 18 Nov, 09:30 to 12:30. 3 series. Left and right arrows read values; plus and minus zoom.'
+    expect(withPartial(name, true)).toBe(name + PARTIAL_NAME)
+    expect(withPartial(withPartial(name, true), true)).toBe(name + PARTIAL_NAME)
+    expect(withPartial(name, false)).toBe(name)
   })
 })

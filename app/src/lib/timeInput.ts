@@ -201,3 +201,20 @@ export function dayPrefix(startSec: number, endSec: number, nowMs: number, zone:
   if (b.y === n.y && b.mo === n.mo && b.d === n.d) return ''
   return dayText(wallOf(startSec * 1000, zone), n.y)
 }
+
+/**
+ * A window as a panel's head states it where no chart writes it (a result with no series): the
+ * chart's own form, "18 Nov, 09:30 to 12:30" ("09:30 to 12:30" when it ends today), and both
+ * days when it starts on one and ends on another.
+ */
+export function rangeWords(startSec: number, endSec: number, nowMs: number, zone: Zone = LOCAL): string {
+  const a = wallOf(startSec * 1000, zone)
+  const b = wallOf(endSec * 1000, zone)
+  const hm = (w: Wall) => `${pad(w.h)}:${pad(w.mi)}`
+  if (a.y === b.y && a.mo === b.mo && a.d === b.d) {
+    const day = dayPrefix(startSec, endSec, nowMs, zone)
+    return `${day ? `${day}, ` : ''}${hm(a)} to ${hm(b)}`
+  }
+  const y = wallOf(nowMs, zone).y
+  return `${dayText(a, y)} ${hm(a)} to ${dayText(b, y)} ${hm(b)}`
+}

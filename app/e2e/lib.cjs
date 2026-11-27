@@ -231,6 +231,49 @@ const hitAreas = (page) => page.evaluate(() => {
   return out
 })
 
+/**
+ * Makes the pointer coarse in Blink itself, with no touch emulation: the only way to read a
+ * position or a pointer-dependent size across a reload at the phone layout
+ * (design-system/reviews/system-v9/second-review.md; tools/audit.mjs does the same). Used with
+ * a context that has `isMobile` and NOT `hasTouch`. A Chromium internal: whoever uses it checks
+ * that `(pointer: coarse)` matches, and fails if it does not.
+ */
+const COARSE_IN_BLINK = '--blink-settings=primaryPointerType=2,availablePointerTypes=2,primaryHoverType=1,availableHoverTypes=1'
+
+/**
+ * Where a reload lands (design review B3). For each case [name, address, anchor selector, wait]:
+ * a page of its own is loaded, scrolled until the anchor is 120 px under the top of the window,
+ * reloaded, and read 1.5 s after it has drawn again. Returns, per case, the scroll position
+ * before and after, how far the anchor is from where it was, every layout-shift entry of the
+ * reload summed, and whether the pointer was coarse before and after. No input is given.
+ */
+async function reloadLandings(ctx, cases) {
+  await ctx.addInitScript(() => { window.__shift = 0; try { new PerformanceObserver((l) => { for (const e of l.getEntries()) window.__shift += e.value }).observe({ type: 'layout-shift', buffered: true }) } catch {} })
+  // An anchor is a selector, or [selector, n] for the n-th match (from the end when negative).
+  const read = (page, sel) => page.evaluate((sel) => { const el = Array.isArray(sel) ? [...document.querySelectorAll(sel[0])].at(sel[1]) : document.querySelector(sel); return { y: Math.round(scrollY), top: el ? Math.round(el.getBoundingClientRect().top * 10) / 10 : null, shift: window.__shift, coarse: matchMedia('(pointer: coarse)').matches, height: document.documentElement.scrollHeight } }, sel)
+  const rows = []
+  for (const [name, address, anchor, wait] of cases) {
+    const page = await ctx.newPage()
+    try {
+      await page.goto(address)
+      await wait(page)
+      await page.evaluate(() => document.fonts.ready)
+      await page.waitForTimeout(400)
+      await page.evaluate((sel) => { const el = Array.isArray(sel) ? [...document.querySelectorAll(sel[0])].at(sel[1]) : document.querySelector(sel); scrollTo(0, Math.round(el.getBoundingClientRect().top + scrollY - 120)) }, anchor)
+      await page.waitForTimeout(400)
+      const before = await read(page, anchor)
+      await page.reload()
+      await wait(page)
+      await page.waitForTimeout(1500)
+      const after = await read(page, anchor)
+      rows.push({ name, y0: before.y, y: after.y, moved: after.top === null || before.top === null ? null : Math.round((after.top - before.top) * 10) / 10, shift: Math.round(after.shift * 10000) / 10000, coarse: before.coarse && after.coarse, fine: !before.coarse && !after.coarse })
+    } finally {
+      await page.close()
+    }
+  }
+  return rows
+}
+
 const overflow = (page) => page.evaluate(() => ({ sw: document.documentElement.scrollWidth, iw: window.innerWidth }))
 
 async function axe(page, label, check) {
@@ -248,5 +291,5 @@ async function axe(page, label, check) {
 module.exports = {
   chromium, ROOT, APP, MOCK, T0, T1, Q_RATE, Q_CPU, Q_P95, Q_MANY, Q_BAD, url, TOKENS, tokenValue, tokenRgb, seriesHex, allowedColours,
   makeChecker, startServers, setMockDelay, setMockFailure, overflow, axe, ping, waitFor,
-  REAL, realUp, ensureRealStack, realKeys, realKv, startPreview, startMock, contextWithKey, hitAreas, APP_PORT, MOCK_PORT,
+  REAL, realUp, ensureRealStack, realKeys, realKv, startPreview, startMock, contextWithKey, hitAreas, APP_PORT, MOCK_PORT, COARSE_IN_BLINK, reloadLandings,
 }

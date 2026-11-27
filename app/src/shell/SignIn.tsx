@@ -103,7 +103,7 @@ export function SignIn({ reason, detail }: { reason: SignedOutReason; detail?: s
           </div>
           <label className="vz-check">
             <input type="checkbox" checked={show} onChange={(e) => setShow(e.target.checked)} />
-            The key is shown as typed
+            Show the key
           </label>
           <div className="vz-notice-group">
             <div className="vz-controls">

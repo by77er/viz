@@ -532,6 +532,13 @@ async function main() {
         const small = h.small
         const covered = h.covered
         const measured = h.count
+        // The same at a wide window with a finger (a tablet, a touch laptop): the app review's B2 was found at 1500 px too.
+        await page.setViewportSize({ width: 1500, height: 900 })
+        await sleep(300)
+        await page.setViewportSize({ width: 1500, height: await page.evaluate(() => document.documentElement.scrollHeight) })
+        await sleep(300)
+        const wide = await hitAreas(page)
+        check(`at 1500 px with a finger every control of ${id} has a 44 px area that nothing covers`, wide.coarse && wide.small.length === 0 && wide.covered.length === 0 && wide.count > 10, `${wide.count} measured; small: ${[...new Set(wide.small)].slice(0, 6).join(' | ')}; covered: ${[...new Set(wide.covered)].slice(0, 6).join(' | ')}`)
         await page.setViewportSize({ width: 400, height: 800 })
         check(`at 400 px ${id} is one column and never scrolls sideways`, o.sw <= o.iw && ps.every((p) => p.width === ps[0].width) && new Set(ps.map((p) => p.top)).size === ps.length, JSON.stringify(o))
         check(`at 400 px with a finger every control of ${id} has a 44 px area that nothing covers`, small.length === 0 && covered.length === 0 && measured > 10, `${measured} measured; small: ${[...new Set(small)].slice(0, 6).join(' | ')}; covered: ${[...new Set(covered)].slice(0, 6).join(' | ')}`)
@@ -559,6 +566,28 @@ async function main() {
       await dark.page.waitForSelector('[data-testid=dashboard-row]')
       await axe(dark.page, 'dashboards list, dark', check)
       await dark.ctx.close()
+    }
+    // ------------------------------------------------ a reload lands where the page was (the app review's B3)
+    if (want('reload')) {
+      const cases = [
+        ['services_overview, its last panel', dash('services_overview'), ['[data-testid=panel]', -1], (p) => settled(p, 12)],
+        ['services_overview, a panel in the middle', dash('services_overview'), ['[data-testid=panel]', 6], (p) => settled(p, 12)],
+        ['pod_capacity, its last panel', dash('pod_capacity'), ['[data-testid=panel]', -1], (p) => settled(p, 6)],
+        ['the list, its last row', `${APP}/dashboards`, ['[data-testid=dashboard-row]', -1], (p) => p.waitForSelector('[data-testid=dashboard-row]')],
+      ]
+      for (const L of [{ w: 1500, name: '1500 px, fine pointer' }, { w: 400, name: '400 px, fine pointer' }, { w: 400, coarse: true, name: '400 px, coarse pointer (coarse in Blink, no touch emulation)' }]) {
+        // The phone's pointer is made coarse in the browser itself, never by touch emulation, which does not survive a reload (lib.cjs, COARSE_IN_BLINK).
+        const b = L.coarse ? await chromium.launch({ args: [lib.COARSE_IN_BLINK] }) : browser
+        const ctx = await b.newContext({ viewport: { width: L.w, height: 700 }, ...(L.coarse ? { isMobile: true } : {}) })
+        try {
+          const rows = (await lib.reloadLandings(ctx, cases)).filter((r) => r.y0 >= 100) // a page that fits the window has nowhere to be scrolled to (the list at 1500 px)
+          const bad = rows.filter((r) => !(r.y === r.y0 && r.moved !== null && Math.abs(r.moved) <= 1 && r.shift < 0.05 && (L.coarse ? r.coarse : r.fine)))
+          check(`[reload] a reload of a dashboard lands where the page was scrolled to, with nothing shifting (${L.name}; ${rows.length} pages, scrolled ${Math.min(...rows.map((r) => r.y0))} to ${Math.max(...rows.map((r) => r.y0))} px)`, rows.length >= 3 && bad.length === 0, JSON.stringify(bad.length ? bad : rows.map((r) => [r.name, r.y0, r.y, r.moved, r.shift])))
+        } finally {
+          await ctx.close()
+          if (L.coarse) await b.close()
+        }
+      }
     }
   } finally {
     await browser.close()

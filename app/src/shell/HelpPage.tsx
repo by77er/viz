@@ -90,6 +90,11 @@ export function HelpPage() {
               </tbody>
             </table>
           </div>
+          <p className="vz-text">
+            The command palette lists the commands of the page it is opened on. Opened here it has the sections, the theme and Sign out; on Explore it also has
+            running the query, the forms of the result, the time ranges and Copy link, and on a dashboard its refresh and its text form. It is a shortcut for a
+            keyboard: every command is also a control on its page.
+          </p>
           <div className="vz-controls">
             <button className="vz-button" onClick={() => setPaletteOpen(true)} aria-keyshortcuts="Control+K Meta+K" data-testid="open-commands">
               Open the command palette

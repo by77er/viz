@@ -4,7 +4,7 @@
 // the same mock, the same data and the same steps for both builds, then composed side by side.
 //
 //   node e2e/v9-shots.cjs <before app dir> <after app dir> <work dir> <compare dir> [only,names]
-//   VIZ_SHOTS_KEEP_BEFORE=1 ...   picture only the after build again; the before images already in <work dir> stand
+//   VIZ_SHOTS_KEEP_BEFORE=1 ...   picture the after build again; the before images already in <work dir> stand, and only states with none are pictured before
 //
 // Both app dirs must have a dist/ (each is served by `vite preview` from its own dir). One
 // mock serves both builds, and a second, which requires a key as viz does, serves the
@@ -39,7 +39,10 @@ const A = { plot: 'svg.vz-plot', row: '[data-testid=chart] tbody tr[data-key] .v
 const delay = (ms) => ({ eval: `fetch('${MOCK}/__mock/delay?ms=${ms}')` })
 const typeAndRun = (query) => [{ click: '.query-well .cm-content' }, { key: 'Control+a' }, { type: ['.query-well .cm-content', query] }, { key: 'Escape' }, { key: 'Control+Enter' }]
 const settle = { wait: 900 }
-const prompt = [delay(0), { wait: 150 }, { eval: 'location.reload()' }, { wait: 1500 }]
+const mock = (path) => ({ eval: `fetch('${MOCK}/__mock/${path}')` })
+// The mock as it starts: prompt, failing nothing, warning of nothing. Then the page loaded again on it.
+const prompt = [delay(0), mock('fail?count=0'), mock('warn?count=0'), { wait: 150 }, { eval: 'location.reload()' }, { wait: 1500 }]
+const WARNING = 'store-2 did not answer within 5 s; its series are missing.'
 // The key as each build keeps it: the app before kept a token in localStorage (Settings), the app after keeps it in the tab.
 const keyBefore = (k) => [{ eval: `localStorage.setItem('viz.settings', JSON.stringify({ baseUrl: '', token: '${k}' })); location.reload()` }, { wait: 1800 }]
 const noKeyBefore = [{ eval: "localStorage.removeItem('viz.settings'); location.reload()" }, { wait: 1800 }]
@@ -98,13 +101,23 @@ const STATES = [
   { name: 'waiting-previous-query', url: explore(lib.Q_RATE), steps: [...prompt, delay(4000), { wait: 150 }, ...typeAndRun(lib.Q_CPU), { wait: 1200 }] },
   { name: 'cancelled', url: explore(lib.Q_RATE), steps: [...prompt, delay(6000), { wait: 150 }, ...typeAndRun(lib.Q_CPU), { wait: 2600 }, { click: '[data-testid=cancel]' }, { wait: 300 }] },
   { name: 'first-result-waiting', url: explore(lib.Q_MANY), steps: [...prompt, delay(2500), { wait: 150 }, { eval: 'location.reload()' }, { wait: 1300 }] },
-  { name: 'prompt-again', url: '/help', steps: [delay(0), { wait: 300 }], only: 400, themes: ['light'] },
+  // ---- the five states the second review found designed and not pictured (review.md, M3), and the control its B2 is about
+  { name: 'partial-answer', url: explore(lib.Q_MANY), steps: [...prompt, mock(`warn?count=1&text=${q(WARNING)}`), { wait: 150 }, { click: '[data-testid=run]' }, { wait: 1300 }], heights: { 1440: 1200, 400: 1800 } },
+  { name: 'waiting-10s-alternative', url: explore(lib.Q_RATE), steps: [...prompt, delay(14000), { wait: 150 }, { click: '[data-testid=run]' }, { wait: 10600 }] },
+  { name: 'stopped-at-60s', url: explore(lib.Q_RATE), steps: [...prompt, mock('delay?ms=70000&stall=1'), { wait: 150 }, { click: '[data-testid=run]' }, { wait: 60800 }] },
+  { name: 'busy-asking-again', url: explore(lib.Q_RATE), steps: [...prompt, mock('fail?kind=busy&count=1'), { wait: 150 }, { click: '[data-testid=run]' }, { wait: 700 }] },
+  // The network gone after the page loaded: every request of the page fails as a request to an API that is not there does.
+  { name: 'api-unreachable', url: explore(lib.Q_RATE), steps: [...prompt, { eval: "window.fetch = () => Promise.reject(new TypeError('Failed to fetch'))" }, { click: '[data-testid=run]' }, { wait: 1500 }] },
+  { name: 'touch-table-200-show-more', url: explore('viz_synthetic_series', '&view=table'), steps: [{ wait: 1500 }], only: 400, opts: { coarse: true, measure: true, outline: true }, heights: { 400: 3300 } },
+  { name: 'prompt-again', url: '/help', steps: [delay(0), mock('fail?count=0'), mock('warn?count=0'), { wait: 300 }], only: 400, themes: ['light'] },
   // ---- sign-in, on an API that requires a key
   { name: 'no-key', keyed: true, url: explore(lib.Q_RATE), steps: { before: noKeyBefore, after: [{ wait: 900 }] } },
   { name: 'key-refused', keyed: true, url: explore(lib.Q_RATE), steps: { before: keyBefore('viz_e2eReadKey0000000_wrongSecret'), after: signIn('viz_e2eReadKey0000000_wrongSecret') } },
   { name: 'key-without-read-scope', keyed: true, url: explore(lib.Q_RATE), steps: { before: keyBefore(WRITE), after: signIn(WRITE) } },
   { name: 'signed-in', keyed: true, url: explore(lib.Q_RATE), steps: { before: keyBefore(KEY), after: signIn(KEY) } },
   { name: 'settings-signed-in', keyed: true, urls: { before: explore(lib.Q_RATE), after: explore(lib.Q_RATE) }, steps: { before: [...keyBefore(KEY), { click: '[data-testid=open-settings]' }, { wait: 300 }], after: [...signIn(KEY), { click: '.vz-nav a[href="/settings"]' }, { wait: 600 }] } },
+  // The API not answering when the page loads: a preview whose API is not there (the app after only: the app before had no sign-in).
+  { name: 'sign-in-api-unreachable', dead: true, url: explore(lib.Q_RATE), steps: { before: null, after: [{ wait: 1500 }] } },
   { name: 'signed-out', keyed: true, url: explore(lib.Q_RATE), steps: { before: null, after: [...signIn(KEY), { click: '.vz-nav a[href="/settings"]' }, { wait: 500 }, { click: '[data-testid=sign-out]' }, { wait: 300 }, { click: '.vz-nav a[href="/explore"]' }, { wait: 500 }] } },
 ]
 
@@ -151,17 +164,21 @@ async function main() {
   try {
     for (const [label, dir, port, sel] of [['before', beforeDir, PORT, B], ['after', afterDir, PORT + 1, A]]) {
       // VIZ_SHOTS_KEEP_BEFORE=1: the before images in <work dir>/before are kept as they are (the build before does not change), and only the after build is pictured again.
-      if (label === 'before' && process.env.VIZ_SHOTS_KEEP_BEFORE && fs.existsSync(path.join(work, 'before')) && fs.readdirSync(path.join(work, 'before')).length > 0) continue
-      // Two previews of the build: one on the mock that needs no key, one on the mock that does.
+      // VIZ_SHOTS_KEEP_BEFORE=1: the before images already in <work dir>/before stand (the build before does not change); only the
+      // states that have none yet are pictured for it, and only the after build is pictured whole again.
+      const keep = label === 'before' && process.env.VIZ_SHOTS_KEEP_BEFORE && fs.existsSync(path.join(work, 'before')) ? new Set(fs.readdirSync(path.join(work, 'before'))) : null
+      // Three previews of the build: on the mock that needs no key, on the mock that does, and on an API that is not there.
       const stopOpen = await lib.startPreview(port, MOCK, dir)
       const stopKeyed = await lib.startPreview(port + 4, KEYED, dir)
+      const stopDead = await lib.startPreview(port + 6, `http://127.0.0.1:${PORT + 9}`, dir)
       try {
         const states = []
         for (const s of STATES) {
           if (only.length && !only.some((o) => s.name.startsWith(o)) && s.name !== 'prompt-again') continue
           const steps = typeof s.steps === 'function' ? s.steps(sel) : Array.isArray(s.steps) ? s.steps : s.steps[label]
           if (steps === null) continue
-          const origin = `http://127.0.0.1:${s.keyed ? port + 4 : port}`
+          if (keep && s.name !== 'prompt-again' && [...keep].some((f) => f.startsWith(`app-v9-${s.name}-`) && /^(1440|400|light|dark)/.test(f.slice(`app-v9-${s.name}-`.length)))) continue
+          const origin = `http://127.0.0.1:${s.dead ? port + 6 : s.keyed ? port + 4 : port}`
           const url = origin + (s.urls ? s.urls[label] : s.url)
           for (const width of [1440, 400]) {
             if (s.only && s.only !== width) continue
@@ -184,9 +201,12 @@ async function main() {
       } finally {
         stopOpen()
         stopKeyed()
+        stopDead()
       }
     }
     for (const dir of ['before', 'after']) for (const f of fs.readdirSync(path.join(work, dir))) if (f.includes('prompt-again')) fs.rmSync(path.join(work, dir, f))
+    // A whole run replaces the directory: a pair of a state that is no longer pictured does not stay behind.
+    if (only.length === 0 && fs.existsSync(compare)) for (const f of fs.readdirSync(compare)) if (/^app-v9-.*\.png$/.test(f)) fs.rmSync(path.join(compare, f))
     const r = spawnSync(process.execPath, [SHOTS, 'compare', path.join(work, 'before'), path.join(work, 'after'), compare, 'Before (the app as it was, on v9\'s stylesheet)', 'After (this change)'], { stdio: 'inherit', cwd: lib.ROOT })
     if (r.status !== 0) throw new Error('shots.mjs compare failed')
     encode(compare, started)

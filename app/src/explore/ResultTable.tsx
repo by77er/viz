@@ -91,6 +91,8 @@ export const ResultTable = memo(function ResultTable({ rows, unit, columns, comm
         )}
         .
       </p>
+      {/* A stack: what follows the table (the shared labels, "Show 50 more") stands clear of its last row, so the button's 44 px hit area is its own with a coarse pointer (design review B2). */}
+      <div className="vz-stack">
       <div className="vz-table-wrap">
         <table className="vz-table">
           <thead>
@@ -137,6 +139,7 @@ export const ResultTable = memo(function ResultTable({ rows, unit, columns, comm
           </button>
         </div>
       )}
+      </div>
     </div>
   )
 })

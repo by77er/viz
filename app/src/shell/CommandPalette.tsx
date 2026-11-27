@@ -92,14 +92,14 @@ export function CommandPalette() {
           aria-expanded="true"
           aria-controls="cmdk-list"
           aria-activedescendant={ordered[activeIndex] ? `cmd-${ordered[activeIndex].id}` : undefined}
-          placeholder="last 24 h"
           className="vz-input"
           autoComplete="off"
           spellCheck={false}
           data-testid="palette-input"
         />
         </label>
-        <div ref={listRef} id="cmdk-list" role="menu" aria-label="Commands" className="palette-list">
+        {/* A list that scrolls is a tab stop of the browser's own making; the field moves through it with the arrow keys, so it is not one (design review m3). */}
+        <div ref={listRef} id="cmdk-list" role="menu" aria-label="Commands" className="palette-list" tabIndex={-1}>
           {ordered.length === 0 && (
             <div className="palette-none" role="presentation">
               No command matches “{query}”.

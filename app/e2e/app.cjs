@@ -162,7 +162,7 @@ async function main() {
       await page.click('[data-testid=view-text]')
       await page.waitForSelector('[data-testid=text-view]:not([hidden]) li')
       const lines = await page.evaluate(() => [...document.querySelectorAll('#explore-text li')].map((li) => li.textContent))
-      check('text form: the chart\'s own sentences, titled with the result\'s query, the step said as it is', lines[0] === `Query result: ${Q_RATE}, /s, 09:30 to 12:30, one value every 15 s. 4 series.` && lines.length === 5 && lines[1].startsWith('catalog: last 572, lowest 427, highest 593'), lines.slice(0, 2).join(' | '))
+      check('text form: the chart\'s own sentences, titled with the result\'s query, the step said as it is', lines[0] === `Query result: ${Q_RATE}, /s, 18 Nov, 09:30 to 12:30, one value every 15 s. 4 series.` && lines.length === 5 && lines[1].startsWith('catalog: last 572, lowest 427, highest 593'), lines.slice(0, 2).join(' | '))
       await page.click('[data-testid=view-json]')
       await page.waitForSelector('[data-testid=result-json] pre')
       const json = await page.evaluate(() => ({ caption: document.querySelector('[data-testid=result-json] .vz-table-caption').textContent, body: document.querySelector('[data-testid=result-json] pre').textContent.slice(0, 60) }))
@@ -501,7 +501,7 @@ async function main() {
         await page.keyboard.press('Tab')
       }
       const names = stops.map((s) => s.name)
-      const order = ['Skip to content', 'Explore', 'Dashboards', 'Help', 'Settings', 'query editor', 'run', 'preset-15m', 'preset-1h', 'preset-6h', 'preset-24h', 'preset-7d', 'earlier', 'later', 'time-from', 'time-to', 'step', 'unit', 'view-chart', 'view-table', 'view-text', 'view-json']
+      const order = ['Skip to content', 'Explore', 'Dashboards', 'Help', 'Settings', 'copy-link', 'query editor', 'run', 'preset-15m', 'preset-1h', 'preset-6h', 'preset-24h', 'preset-7d', 'earlier', 'later', 'time-from', 'time-to', 'step', 'unit', 'view-chart', 'view-table', 'view-text', 'view-json']
       check('keyboard: the stops come in reading order, from the skip link through the query, the range and the forms to the chart', order.every((n, i) => names[i] === n), names.join(' > '))
       check('keyboard: the plot is one stop, the zoom buttons follow, each sortable head is one, and the legend is one', names.slice(order.length).join(' > ') === [names[order.length], 'Zoom in', 'Series', 'Last, /s', 'Min', 'Max', names[names.length - 1]].join(' > ') && names[order.length].startsWith('Query result: ') && names.length === order.length + 7, names.slice(order.length).join(' > '))
       check('keyboard: the ring is drawn at every stop, and focus never falls to the document', stops.every((s) => s.ring && s.name !== 'body'), stops.filter((s) => !s.ring).map((s) => s.name).join(', '))
@@ -585,7 +585,29 @@ async function main() {
       await page.goto(`${APP}/help`); await page.waitForSelector('h1'); await visit('help')
       await page.goto(`${APP}/settings`); await page.waitForSelector('[data-testid=sign-out]'); await visit('settings')
       await page.goto(KEYED + '/explore'); await page.waitForSelector('[data-testid=sign-in]'); await visit('sign-in')
-      check(`touch: every control has a 44 px hit area that is its own, in ten states (${measured} measured)`, small.length === 0 && covered.length === 0 && measured > 100 && fine.length === 0, [...fine.map((n) => `${n}: the pointer was not coarse`), ...small, ...covered].slice(0, 8).join(' | '))
+      // The second review's B2: "Show 50 more of 200" under the table of a result with more than 50 series, at 400, 320 and 1500 px.
+      const more = []
+      for (const w of [400, 320, 1500]) {
+        await page.setViewportSize({ width: w, height: 1600 })
+        await page.goto(url('viz_synthetic_series', '&view=table')); await page.waitForSelector('[data-testid=table-more]')
+        await page.locator('[data-testid=table-more]').evaluate((b) => b.scrollIntoView({ block: 'center' }))
+        await sleep(200)
+        await visit(`table of 200, ${w} px`)
+        // A tap 16 px above the button's centre, inside its declared 44 px and above its drawn 24 px: the review's taps there did nothing.
+        const box = await page.locator('[data-testid=table-more]').boundingBox()
+        await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2 - 16)
+        await sleep(300)
+        const rows = await page.locator('[data-testid=result-table] tbody tr').count()
+        await page.locator('[data-testid=table-more]').evaluate((b) => b.scrollIntoView({ block: 'center' }))
+        await sleep(200)
+        const next = await page.locator('[data-testid=table-more]').boundingBox()
+        await page.touchscreen.tap(next.x + next.width / 2, next.y + next.height / 2 + 16)
+        await sleep(300)
+        more.push({ w, drawn: box.height, above: rows, below: await page.locator('[data-testid=result-table] tbody tr').count() })
+      }
+      await page.setViewportSize({ width: 400, height: 1600 })
+      check('review 2, B2: "Show 50 more of 200" takes a tap 16 px above and 16 px below its centre (its whole 44 px), at 400, 320 and 1500 px with a coarse pointer', more.every((m) => m.above === 100 && m.below === 150), JSON.stringify(more))
+      check(`touch: every control has a 44 px hit area that is its own, in thirteen states (${measured} measured)`, small.length === 0 && covered.length === 0 && measured > 100 && fine.length === 0, [...fine.map((n) => `${n}: the pointer was not coarse`), ...small, ...covered].slice(0, 8).join(' | '))
       // A tap toggles a legend row; a held finger shows the press; zoom is two buttons; the readout is under the plot.
       await page.goto(url(Q_RATE)); await ready(page)
       await page.tap('[data-testid=chart] tbody tr[data-key] .vz-series')
@@ -703,6 +725,156 @@ async function main() {
       check('phone layout: a change of form or of unit leaves the page where it was scrolled to, also once the address has followed', Object.values(kept).every((k) => k.y0 > 100 && k.y === k.y0) && /view=table/.test(kept.table.address) && /view=text/.test(kept.text.address) && /unit=none/.test(kept.unit.address), JSON.stringify(kept))
       await phoneShift.ctx.close()
       check('a reload reserves the chart\'s height from its last result before the data arrives, to the pixel, and shows the waiting line over it', /--legend-rows:\s*10/.test(reserved.style) && Math.abs(reserved.h - drawn.h) < 1 && drawn.shift < 0.05, JSON.stringify([reserved, drawn]))
+      await ctx.close()
+    }
+
+    // ------------------------------------------------ the second review (design-system/reviews/app-v9/review.md): M1, M2, m1 to m4, m10
+    if (want('review2')) {
+      const { ctx, page } = await newPage()
+      await ctx.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: APP })
+      // M2: the text form and the chart's name say the day the head says, and that the result may be incomplete when the head does.
+      await page.goto(url(Q_MANY)); await ready(page)
+      const whole = await head(page)
+      check('review 2, M2: the head, the chart\'s accessible name and the text form\'s first line all say the day and the range ("18 Nov, 09:30 to 12:30")', /^18 Nov, 09:30 to 12:30\s*· every 15 s/.test(whole.meta) && whole.name.includes(', /s, 18 Nov, 09:30 to 12:30. 36 series') && whole.form.includes(', /s, 18 Nov, 09:30 to 12:30, one value every 15 s.'), JSON.stringify([whole.meta, whole.name, whole.form]))
+      check('review 2, M2: a whole result says nothing of a warning, in the head, the name or the text form', (await page.locator('[data-testid=warnings]').count()) === 0 && !/warning|incomplete/.test(whole.name) && !/warning|incomplete/.test(await text(page, '#explore-text')))
+      await page.click('[data-testid=chart] [data-zoom=in]')
+      const zoomedIn = await head(page)
+      check('review 2, M2: zoomed in, the name and the text form keep the day before the range the chart now shows', zoomedIn.name.includes('18 Nov, 11:00 to 12:30') && zoomedIn.form.includes('18 Nov, 11:00 to 12:30') && !zoomedIn.form.includes('18 Nov, 18 Nov'), JSON.stringify([zoomedIn.name, zoomedIn.form]))
+      const WARN = 'store-2 did not answer within 5 s; its series are missing.'
+      await fetch(`${MOCK}/__mock/warn?count=1&text=${encodeURIComponent(WARN)}`)
+      await page.click('[data-testid=run]')
+      await page.waitForSelector('[data-testid=warnings]')
+      await sleep(300)
+      const partial = await page.evaluate(() => ({ banner: document.querySelector('[data-testid=warnings]').textContent.replace(/\s+/g, ' ').trim(), name: document.querySelector('[data-testid=chart] svg.vz-plot').getAttribute('aria-label'), lines: [...document.querySelectorAll('#explore-text li')].map((li) => li.textContent) }))
+      const sentence = `The API sent a warning with this result, so it may be incomplete: ${WARN}`
+      check('review 2, M2: when the API sends a warning the head\'s banner says the result may be incomplete, and the text form says it in the same words, straight after its first line, once', partial.banner === sentence && partial.lines[1] === sentence && partial.lines.filter((l) => l === sentence).length === 1 && partial.lines[0].includes('18 Nov, 09:30 to 12:30'), JSON.stringify([partial.banner, partial.lines.slice(0, 2)]))
+      check('review 2, M2: and the chart\'s accessible name says the result may be incomplete', partial.name.includes('18 Nov, 09:30 to 12:30') && partial.name.endsWith(' The API sent a warning: the result may be incomplete.') && partial.name.split('may be incomplete').length === 2, partial.name)
+      await page.click('[data-testid=view-text]')
+      await page.click('[data-testid=text-view] .vz-button')
+      await page.waitForFunction(() => document.querySelector('[data-testid=text-view] .vz-button').textContent === 'Copied')
+      const copiedText = await page.evaluate(() => navigator.clipboard.readText())
+      check('review 2, M2: the copied text form carries the day and the warning', copiedText.split('\n')[0].includes('18 Nov, 09:30 to 12:30') && copiedText.split('\n')[1] === sentence, copiedText.slice(0, 300))
+      await page.click('[data-testid=view-chart]')
+      await page.click('[data-testid=run]')
+      await page.waitForSelector('[data-testid=warnings]', { state: 'detached' })
+      await sleep(300)
+      const wholeAgain = await head(page)
+      check('review 2, M2: the next answer without a warning takes the sentence out of the name and the text form again', !/incomplete/.test(wholeAgain.name) && !/incomplete/.test(await text(page, '#explore-text')), wholeAgain.name)
+      // m1: the head of an empty result states the range itself (no chart writes it).
+      await page.goto(url('no_such_metric_total')); await page.waitForSelector('[data-testid=empty-state]')
+      check('review 2, m1: the head of a result with no series states its range ("18 Nov, 09:30 to 12:30 · every 15 s")', /^18 Nov, 09:30 to 12:30\s*· every 15 s\s*· updated/.test((await head(page)).meta), (await head(page)).meta)
+      // m2: the empty Step field shows no example that reads as the step.
+      const stepField = await page.evaluate(() => ({ placeholder: document.querySelector('[data-testid=step]').getAttribute('placeholder'), value: document.querySelector('[data-testid=step]').value, help: document.querySelector('[data-testid=step-read]').textContent }))
+      check('review 2, m2: the empty Step field shows nothing beside "Empty: automatic, now 15 s."', stepField.placeholder === null && stepField.value === '' && stepField.help === 'Empty: automatic, now 15 s.', JSON.stringify(stepField))
+      // M1: every command of the palette is also a control on the page, for a pointer and a finger; the one that was not is "Copy link".
+      await page.goto(url(Q_RATE)); await ready(page)
+      const CONTROL = [
+        [/^Go to Explore$/, '.vz-nav a[href="/explore"]'], [/^Go to Dashboards$/, '.vz-nav a[href="/dashboards"]'], [/^Go to Help$/, '.vz-nav a[href="/help"]'], [/^Go to Settings$/, '.vz-nav a[href="/settings"]'],
+        [/^Use the (light|dark) theme$|^Follow the system theme$|^Sign out$/, '.vz-nav a[href="/settings"]'], // on the Settings page, one press away
+        [/^Run query$/, '[data-testid=run]'], [/^Focus the query editor$/, '[data-testid=query-well]'], [/^Copy a link to this view$/, '[data-testid=copy-link]'],
+        [/^Switch between the chart and the text form$/, '[data-testid=view-text]'], [/^Show the result as a table$/, '[data-testid=view-table]'], [/^Show the raw JSON$/, '[data-testid=view-json]'],
+        [/^Show the last 15 min$/, '[data-testid=preset-15m]'], [/^Show the last 1 h$/, '[data-testid=preset-1h]'], [/^Show the last 6 h$/, '[data-testid=preset-6h]'], [/^Show the last 24 h$/, '[data-testid=preset-24h]'], [/^Show the last 7 d$/, '[data-testid=preset-7d]'],
+      ]
+      await page.keyboard.press('Control+k'); await page.waitForSelector('dialog.palette[open]')
+      const titles = await page.evaluate(() => [...document.querySelectorAll('dialog.palette [role=menuitem] > span:first-child')].map((s) => s.textContent))
+      // m3: Tab does not move the ring to the list; the arrow keys and Enter still act.
+      await page.keyboard.press('Tab')
+      const afterTab = await page.evaluate(() => ({ list: document.activeElement.id === 'cmdk-list', tab: document.querySelector('#cmdk-list').tabIndex, inside: !!document.activeElement.closest('dialog.palette') || document.activeElement === document.body }))
+      check('review 2, m3: in the palette Tab does not stop on the list of commands', !afterTab.list && afterTab.tab === -1, JSON.stringify(afterTab))
+      await page.keyboard.press('Escape'); await page.waitForSelector('dialog.palette[open]', { state: 'detached' })
+      const without = []
+      for (const t of titles) {
+        const m = CONTROL.find(([re]) => re.test(t))
+        const ok = m && (await page.evaluate((sel) => { const el = document.querySelector(sel); if (!el) return false; const r = el.getBoundingClientRect(); return r.width > 8 && r.height > 8 && getComputedStyle(el).visibility === 'visible' && !el.disabled }, m[1]))
+        if (!ok) without.push(t)
+      }
+      check(`review 2, M1: every command the palette lists on Explore (${titles.length}) is also a control on the page, so none needs a keyboard`, titles.length >= 16 && without.length === 0, without.join(' | ') || titles.join(' | '))
+      await page.click('[data-testid=view-table]')
+      await page.click('[data-testid=copy-link]')
+      await page.waitForFunction(() => document.querySelector('[data-testid=copy-link]').textContent === 'Copied')
+      const link = await page.evaluate(() => navigator.clipboard.readText())
+      // The address as the app reads it: the router writes a space as "+" where a typed address has "%20".
+      const reads = (href, view) => { const u = new URL(href), p = u.searchParams; return u.origin + u.pathname === `${APP}/explore` && p.get('q') === Q_RATE && p.get('from') === String(T0) && p.get('to') === String(T1) && p.get('view') === view && [...p.keys()].length === (view ? 4 : 3) }
+      check('review 2, M1: "Copy link" in Explore\'s head copies this view\'s address, with the form shown, and says "Copied"', reads(link, 'table'), link)
+      await sleep(1700)
+      await page.click('[data-testid=view-chart]')
+      await page.evaluate(() => navigator.clipboard.writeText(''))
+      await page.keyboard.press('Control+k'); await page.waitForSelector('dialog.palette[open]')
+      await page.keyboard.type('copy a link')
+      await page.keyboard.press('Enter')
+      await page.waitForFunction(() => document.querySelector('[data-testid=copy-link]').textContent === 'Copied')
+      const byCommand = await page.evaluate(async () => ({ clip: await navigator.clipboard.readText(), focus: document.activeElement.getAttribute('data-testid') }))
+      check('review 2, m4: the palette\'s "Copy a link to this view" presses that button: the focus is on it and it says "Copied"', reads(byCommand.clip, null) && byCommand.focus === 'copy-link', JSON.stringify(byCommand))
+      check('review 2, m4: the palette\'s field has no placeholder that names a command some pages lack', (await page.getAttribute('[data-testid=palette-input]', 'placeholder')) === null)
+      await page.goto(`${APP}/help`); await page.waitForSelector('[data-testid=open-commands]')
+      const help = await text(page, 'main')
+      check('review 2, M1: Help says the palette lists the commands of the page it is opened on, and that each is also a control', help.includes('The command palette lists the commands of the page it is opened on.') && help.includes('every command is also a control on its page'))
+      // m12: a query that finds the API unreachable raises the page's banner, and is asked again by itself when the API answers.
+      await page.goto(url(Q_RATE)); await ready(page)
+      let sentWhileDown = 0
+      const cut = (route) => { sentWhileDown++; return route.abort('connectionrefused') }
+      await page.route('**/api/v1/**', cut)
+      await page.click('[data-testid=run]')
+      await page.waitForSelector('[data-testid=error-state][data-kind=network]')
+      await page.waitForSelector('[data-testid=offline-banner]', { timeout: 5000 })
+      const down = await page.evaluate(() => ({ banner: document.querySelector('[data-testid=offline-banner]').textContent.replace(/\s+/g, ' ').trim(), legend: document.querySelectorAll('[data-testid=chart] tbody tr[data-key]').length, note: document.querySelector('[data-testid=stale]')?.textContent ?? null }))
+      check('review 2, m12: a query that finds the API unreachable raises the banner at the top of the page; what was on screen stays', down.banner.includes('does not answer') && down.legend === 4, JSON.stringify(down))
+      await page.unroute('**/api/v1/**', cut)
+      const t0 = Date.now()
+      await page.waitForSelector('[data-testid=offline-banner]', { state: 'detached', timeout: 15000 })
+      await page.waitForSelector('[data-testid=error-state]', { state: 'detached', timeout: 5000 })
+      await ready(page)
+      check('review 2, m12: when the API answers again (asked every 10 s) the banner goes and the query is asked again by itself', Date.now() - t0 < 14000 && sentWhileDown >= 2 && sentWhileDown <= 4 && (await page.locator('[data-testid=error-state]').count()) === 0, `${Date.now() - t0} ms; ${sentWhileDown} requests while the API was away`)
+      await ctx.close()
+      // m10: the sign-in form's checkbox is labelled with what it does.
+      const anon = await newPage()
+      await anon.page.goto(KEYED + '/explore'); await anon.page.waitForSelector('[data-testid=sign-in]')
+      const box = await anon.page.evaluate(() => ({ label: document.querySelector('[data-testid=sign-in] label.vz-check').textContent.trim(), checked: document.querySelector('[data-testid=sign-in] label.vz-check input').checked, type: document.querySelector('[data-testid=sign-in-key]').type }))
+      await anon.page.click('[data-testid=sign-in] label.vz-check')
+      check('review 2, m10: the sign-in checkbox says what it does ("Show the key"), unchecked while the key is dots', box.label === 'Show the key' && !box.checked && box.type === 'password' && (await anon.page.getAttribute('[data-testid=sign-in-key]', 'type')) === 'text', JSON.stringify(box))
+      await anon.ctx.close()
+    }
+
+    // ------------------------------------------------ a reload lands where the page was (the second review's B3)
+    if (want('reload')) {
+      const cases = [
+        ['Explore, the chart of 36 series', url(Q_MANY), '[data-testid=chart] svg.vz-plot', ready],
+        ['Explore, the table of 200 series', url('viz_synthetic_series', '&view=table'), '[data-testid=result-table] tbody tr:nth-child(12)', (p) => p.waitForSelector('[data-testid=result-table] tbody tr:nth-child(12)')],
+        ['Explore signed in with a key, the chart', `${KEYED}/explore?q=${encodeURIComponent(Q_MANY)}&from=${T0}&to=${T1}`, '[data-testid=chart] svg.vz-plot', ready],
+        ['Help', `${APP}/help`, '#help-keys', (p) => p.waitForSelector('#help-keys')],
+      ]
+      for (const L of [{ w: 1500, name: '1500 px, fine pointer' }, { w: 400, name: '400 px, fine pointer' }, { w: 400, coarse: true, name: '400 px, coarse pointer (coarse in Blink, no touch emulation)' }]) {
+        // The phone's pointer is made coarse in the browser itself, never by touch emulation, which does not survive a reload (lib.cjs, COARSE_IN_BLINK).
+        const b = L.coarse ? await chromium.launch({ args: [lib.COARSE_IN_BLINK] }) : browser
+        const ctx = await lib.contextWithKey(b, 'viz_e2eReadKey0000000_goodSecret', { viewport: { width: L.w, height: 700 }, ...(L.coarse ? { isMobile: true } : {}) })
+        try {
+          const rows = await lib.reloadLandings(ctx, cases)
+          const bad = rows.filter((r) => !(r.y0 >= 100 && r.y === r.y0 && r.moved !== null && Math.abs(r.moved) <= 1 && r.shift < 0.05 && (L.coarse ? r.coarse : r.fine)))
+          check(`review 2, B3: a reload lands where the page was scrolled to, with nothing shifting (${L.name}; ${rows.length} pages, scrolled ${Math.min(...rows.map((r) => r.y0))} to ${Math.max(...rows.map((r) => r.y0))} px)`, rows.length === cases.length && bad.length === 0, JSON.stringify(bad.length ? bad : rows.map((r) => [r.y0, r.y, r.moved, r.shift])))
+        } finally {
+          await ctx.close()
+          if (L.coarse) await b.close()
+        }
+      }
+      // A link opened afresh starts at the top, also in a tab that remembers a position for the same page.
+      const { ctx, page } = await newPage({ viewport: { width: 400, height: 700 } })
+      await page.goto(url(Q_MANY)); await ready(page)
+      await page.evaluate(() => scrollTo(0, 600)); await sleep(200)
+      await page.goto(`${APP}/help`); await page.waitForSelector('#help-keys')
+      await page.goto(url(Q_MANY)); await ready(page); await sleep(1200)
+      check('review 2, B3: an address opened afresh starts at the top, also in a tab that was scrolled on that page before', (await page.evaluate(() => Math.round(scrollY))) === 0)
+      // A person who scrolls while the reloaded page is still waiting for its answer is left where they went.
+      await page.evaluate(() => scrollTo(0, 600)); await sleep(200)
+      const was = await page.evaluate(() => Math.round(scrollY))
+      await setMockDelay(1500)
+      await page.reload(); await page.waitForSelector('[data-testid=chart-reserved]')
+      const held = await page.evaluate(() => Math.round(scrollY))
+      await page.mouse.wheel(0, -350); await sleep(300)
+      const wheeled = await page.evaluate(() => Math.round(scrollY))
+      await ready(page); await sleep(1300)
+      const left = await page.evaluate(() => Math.round(scrollY))
+      await setMockDelay(0)
+      check('review 2, B3: the reloaded page is in place before its answer arrives (the chart\'s reserved height), and a wheel turned meanwhile is not undone', was === 600 && held === 600 && wheeled === 250 && left === 250, JSON.stringify({ was, held, wheeled, left }))
       await ctx.close()
     }
 
