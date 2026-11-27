@@ -46,6 +46,10 @@ an unknown API path; a browser ran the "Request rate by service" example at 1440
 400 px with no console or policy error. Created: the Worker `viz-preview-app` and its 8 asset files;
 nothing else.
 
+**Redeployed 2026-11-27 02:10 UTC** (version `b1a7b850`) with the build that adds the read-only dashboards
+view: `/dashboards` 200 with the policy, `/dashboards/x` 404, the mock's control-plane dashboards routes
+answer; a browser opened the list and the 12-panel "Services overview" with no console or policy error.
+
 Not checked: nothing beyond the above. The app's own suites are the app builder's to report.
 
 ## To update it
