@@ -518,7 +518,7 @@ the token is therefore not `buildEnv`, but where it runs:
 
 | Where | What runs third-party code there | What it can reach |
 |---|---|---|
-| The workflow, job `app-build` | the app's and the design system's `npm ci` (with install scripts: the build needs them, esbuild's among them) and `npm run build` | **no secret**: the job names none, has no `environment` (the Cloudflare secrets are the `production` environment's, "One-time setup"), and its checkout leaves no token on disk (`persist-credentials: false`). The workflow's own token for that job is read-only on contents. It can produce any build: see "what is trusted" below |
+| The workflow, job `app-build` | the app's and the design system's `npm ci` (with install scripts, as `npm ci` runs them by default; whether the app would build without them was not tried, and here it does not matter) and `npm run build` | **no secret**: the job names none, has no `environment` (the Cloudflare secrets are the `production` environment's, "One-time setup"), and its checkout leaves no token on disk (`persist-credentials: false`). The workflow's own token for that job is read-only on contents. It can produce any build: see "what is trusted" below |
 | The workflow, job `deploy`, the step `deploy.sh --install-only` | `npm ci --ignore-scripts` in `deploy/` and the deployed components: no package's script runs; files are unpacked | no secret in the step's environment, and none in the job's (`env` is set per step). But the unpacked files stay: **a locked dependency could carry a file that a later, token-holding step loads** (`wrangler` and what it imports run with the token, by design; so do esbuild and workerd, which wrangler starts) |
 | The workflow, job `deploy`, the steps `Migration acknowledgements` and `deploy/deploy.sh` | viz's own scripts and `wrangler` | the token and the account id; `SMOKE_KEY` in the second. These steps run no `npm` and no code of `app/` or `design-system/`: the build arrives as an artifact, outside the checkout, and is read, hashed and copied |
 | The workflow, job `rollback` | `npm ci --ignore-scripts` in `deploy/` (no secret); then `release.mjs rollback` (the token) and `smoke.mjs` (`SMOKE_KEY` only) | as for `deploy` |
@@ -1341,9 +1341,10 @@ All measured here unless it says Cloudflare.
   or experiment reads another process's environment or prints a variable that names a token, key
   or secret. Machine shared with a builder working in `app/` (browser suites running; load 2 to
   2.6 on 4 cores).
-  - **`cd deploy && npx tsc --noEmit`**: passes. **`npx vitest run --maxWorkers=2`**: @@VITEST@@.
+  - **`cd deploy && npx tsc --noEmit`**: passes. **`npx vitest run --maxWorkers=2`**: **255 tests in 4 files pass** (251 before: one new on the API's roots, and the list of paths that are never a document now follows serve.json).
     **`node --test --test-concurrency=2 'test/*.test.mjs'`** (`npm run test:scripts`):
-    @@NODE@@. The form `node --test test/` does not run anything on this Node
+    **189 tests pass** (172 before: 12 new in `test/app.test.mjs`, 4 in the new
+    `test/app-http.test.mjs`, 1 in `workflow`), 60 s. The form `node --test test/` does not run anything on this Node
     (22.23.5: "Cannot find module …/deploy/test"; a directory is not expanded); the glob is the
     suite's own command.
   - **From a fresh export** (`git worktree add --detach` of HEAD, 0aa0f7a, in the scratch
@@ -1379,6 +1380,13 @@ All measured here unless it says Cloudflare.
       for a stage's `release.json` and `smoke.json`: wrote an entry with the five by-hand checks
       empty and said that it does not count yet. No stage exists; the shared tree has no
       `records/app-stage-evidence.json`.
+    - *Again after the last edit*, from a second export at the then HEAD (4b6e024, with the
+      app as its builder had left it "green" at 02:08): CI's `deploy` job (`npm ci`, tsc passes,
+      255 and 189 pass, 68 s); `handover` for that commit (191 source files, build
+      `b11515a9543e`, 7 files, 5.4 s); `build --from` (verified, staged, `via: handover`);
+      `configure.mjs --ids-optional`; `wrangler deploy --dry-run` of the gateway (9 asset files
+      read, 13.45 KiB of script). The `--install-only` installs and the other six dry runs were
+      not repeated: nothing they depend on changed in between.
     - **Not run**: the workflows on GitHub; `resources.mjs ensure`, `release.mjs` and `smoke.mjs`
       against anything but the fakes; the other components' CI jobs, the Rust and WASM jobs, the
       design system's job (none touched by this change).
@@ -1391,7 +1399,17 @@ All measured here unless it says Cloudflare.
       the run was killed for memory (the kernel killed a process under this session's shared
       limit; which one is not known). The test now compares by count and name; rerun: killed.
     - The 94 from before this change, 14 of them rewritten because their lines changed:
-      @@OLD@@
+      **94 of 94 killed**, in two passes (the script's `VIZ_MUTANT_TESTS`): 85 by the suites
+      without workerd; of the other 9, the 8 that only the workerd run can catch by
+      `test/app-serve.test.mjs`. **The ninth survived both passes**: "smoke: asset headers and
+      content types are not compared". This change had opened it: the smoke test now compares
+      the headers of the files the document names in one place and of the others in another,
+      and the existing cases broke every asset at once, so either place alone still failed them.
+      Three cases that break one file each (a named script, a named stylesheet, the icon) were
+      added to `test/app-http.test.mjs`; rerun: killed.
+    - So **200 of 200** in `mutants-app.mjs`, but not in one run: the passes ran over about 45
+      minutes while tests were still being added, and the mutants on lines edited after their
+      pass (the m-2, m-7, m-8 groups and one of m-10) were run again at the end: all killed.
     - `node gateway/scripts/mutants.mjs`: **52 of 52 killed** (49 before; 3 new for the API's
       roots). One of the 49 no longer applied (its line gained `!underApiRoot(p)`); its pattern is
       updated and it is killed. **Two further mutants survive and are equivalent**, tried by hand
@@ -1419,10 +1437,12 @@ All measured here unless it says Cloudflare.
     installed), the CI matrix says the app needs `dashboard/`, and a test fails when `app/src`
     imports from a directory that is not listed. (2) `gateway/test/app.test.ts` named
     `/dashboards` among paths that are never a document; serve.json made it one; the list now
-    follows serve.json. (3) A snapshot commit of the shared tree (0aa0f7a, "Work in progress")
-    took `deploy/` and `.github/` at 01:32, one minute after their suites had passed; what came
-    after it is this README, the design text, `workers.json`'s `dashboard/src`, the matrix and two
-    test edits. A pull request takes `deploy/` from the state reported green here. (4) A test of
+    follows serve.json. (3) Two snapshot commits of the shared tree ("Work in progress": 0aa0f7a
+    at 01:32, 4b6e024 at 02:10) took `deploy/` and `.github/` while this was under way: the first
+    one minute after their suites had passed, the second between two test edits. Neither holds
+    a mutant (mutants only ever existed in the scratch copy), and neither is the state reported
+    here: a pull request takes `deploy/`, `.github/` and `design/` from the working tree as it
+    stood when the suites above last passed (02:20), which is later than both. (4) A test of
     mine exhausted memory under mutation (above); fixed. (5) Mutants that leave the export behind
     on purpose left 20 small directories (2.2 MB) under `/tmp`; removed. (6) `node --test test/`
     (above).

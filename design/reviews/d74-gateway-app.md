@@ -454,7 +454,7 @@ deployed.
 | m-6 | **Fixed.** Workflow input `app_drop_kept_files` sets `VIZ_APP_NO_CARRY=1`; README says this is how a bad build's files are dropped. A bound in time: each kept file carries the day it stopped being current and leaves `keep_days` (30, `workers.json`) later, judged at every release, also one of the same build; a day in the future or no day counts as today | "which files a new build keeps…", the keep_days part of "app.mjs build keeps the serving version's files…"; `workflow.test.mjs` (the input reaches `deploy.sh`; `--no-carry` is passed and said in the summary) |
 | m-7 | **Fixed.** The manifest carries every file's SHA-256 (`fileHashes`) and the kept files'; `checkApp` fetches every file of the version, lazy chunks and kept files included, and compares bytes and headers | `app-http.test.mjs` "smoke checkApp: every file of the version is asked for and compared byte for byte…" |
 | m-8 | **Fixed.** `smoke()` runs the data check whatever the app check found and reports both; the hint says the previous gateway comes back whole, names `/api/echo` and "no web app at all" for the first release, and points to "Rolling viz-gateway back alone" | `app-http.test.mjs` "smoke: a failed app check does not hide the data check…" |
-| m-9 | **Tests added for each named survivor; one reported equivalent** (table below). `scripts/mutants-app.mjs` now says to copy the whole tracked tree (`git archive`), names why (`dashboard/`), has a `--check` mode, and holds @@TOTAL@@ mutants (94 before) | below |
+| m-9 | **Tests added for each named survivor; one reported equivalent** (table below). `scripts/mutants-app.mjs` now says to copy the whole tracked tree (`git archive`), names why (`dashboard/`), has a `--check` mode, and holds 200 mutants (94 before) | below |
 | m-10 | **Fixed.** The export is built in a new directory under the system's temporary directory, refused if that lies inside the checkout, and removed afterwards (also after a failed build); only the staged result is under `generated/` | "m-10: the export is built outside the checkout…" |
 
 **m-9, survivor by survivor.**
@@ -472,7 +472,10 @@ deployed.
 | the smoke test follows redirects; does not ask `/explore/`; does not POST to a document | killed: `app-http.test.mjs` "smoke checkApp: redirects are not followed…" |
 | the document is tried before the API router (`handle`) | **equivalent, not killed**: `parseApp` refuses any `VIZ_APP` that names a document in the API's roots, so no path can be both; the mutant on that refusal is killed (vitest) |
 
-**New survivors, reported:** @@SURVIVORS@@
+**Mutants after the fixes** (`deploy/README.md`, "How it was verified", has the table). `scripts/mutants-app.mjs`: 200 of 200 killed, not in one run (106 new; the 94 from before in two passes). Three things on the way are reported rather than hidden:
+- One new mutant first gave no result: with it, a test's failed comparison printed a 25 MiB buffer and the run was killed for memory. The test was fixed; rerun: killed.
+- One mutant from before this change survived both passes: "smoke: asset headers and content types are not compared". The smoke test's new second loop had made the existing cases insufficient; three per-file cases were added; rerun: killed.
+- `gateway/scripts/mutants.mjs`: 52 of 52 killed (3 new). Two further mutants, tried by hand, **survive and are equivalent**: `routeOf` without its `underApiRoot` guard, and `parseApp` without `routeOf(p) === null`. Every route of today's table lies inside the roots, so each condition implies the other; the guard holds a route added later.
 
 ### Nits
 
@@ -492,10 +495,12 @@ deployed.
 - `gateway/test/app.test.ts` listed `/dashboards` among paths that are never a document; the
   app's serve.json made it one during the review. The list now leaves out whatever serve.json
   lists.
-- A snapshot commit of the shared tree (`0aa0f7a`, "Work in progress") took `deploy/` and
-  `.github/` while this work was under way, at a state whose suites had just passed; the design
-  text and the README's last edits came after it. A pull request takes these directories from
-  the state reported green here, not from that commit.
+- `deploy/workers.json` `app.needs` gained `dashboard/src`, and `deploy/ci/matrix.mjs` says the
+  app needs `dashboard/` ("Open", below).
+- Two snapshot commits of the shared tree (`0aa0f7a`, `4b6e024`, "Work in progress") took
+  `deploy/` and `.github/` while this work was under way. Neither holds a mutant, and neither is
+  the state reported here; a pull request takes these directories from the working tree as it
+  stood when the suites last passed, which is later than both.
 
 ### Open, and unverifiable until a stage deploy
 
@@ -508,6 +513,12 @@ deployed.
   refuse, loudly, not leak).
 - The stage rule cannot be exercised for real until a stage exists: the evidence script was run
   on fixture files only.
-- A full run of the 94 mutants from before this change was not repeated; @@OLDRUN@@.
+- The mutants were not run as one uninterrupted set; see above.
+- **The app's sources moved while this was done**: its dashboards views now import
+  `dashboard/src` by relative path. The release's build exports only what `deploy/workers.json`
+  lists, so the first real build failed (closed: nothing would have been deployed).
+  `app.needs` now lists `dashboard/src`, the CI matrix says the app needs `dashboard/`, and a
+  test fails when `app/src` imports from an unlisted directory. The app's builder should know
+  that an import from outside `app/` is a change in `deploy/workers.json` too.
 - Chromium's handling of headers on a 304 (m-3) remains training knowledge; the fix does not
   depend on it (the tag changes, so the answer is a 200).
