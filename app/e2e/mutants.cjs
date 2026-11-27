@@ -35,8 +35,11 @@ function makeCopy() {
   fs.mkdirSync(ROOT, { recursive: true })
   for (const f of ['src', 'mock', 'e2e', 'public', 'scripts', 'index.html', 'package.json', 'tsconfig.json', 'vite.config.ts', 'serve.json']) fs.cpSync(path.join(SOURCE, f), path.join(ROOT, f), { recursive: true })
   fs.symlinkSync(path.join(SOURCE, 'node_modules'), path.join(ROOT, 'node_modules'))
-  const ds = path.join(ROOT, '..', 'design-system')
-  if (!fs.existsSync(ds)) fs.symlinkSync(path.resolve(SOURCE, '../design-system'), ds)
+  // What the app imports from beside itself: the design system's build and the dashboard model's source.
+  for (const sibling of ['design-system', 'dashboard']) {
+    const link = path.join(ROOT, '..', sibling)
+    if (!fs.existsSync(link)) fs.symlinkSync(path.resolve(SOURCE, '..', sibling), link)
+  }
 }
 
 // Each mutant: [name, checks, [[file, from, to], ...]]
@@ -107,7 +110,7 @@ const LIST = [
   m('the address is written with the router\'s default: the page goes to the top after a change of form', ['shift'], 'src/explore/ExplorePage.tsx', 'replace, resetScroll: false }),', 'replace }),'),
   m('the table prepared for an earlier result is shown for a later one', ['flow'], 'src/explore/ExplorePage.tsx', 'if (have && have.aligned === a && have.chart === c) return have.table', 'if (have) return have.table'),
   // ---- what the gateway serves
-  m('serve.json: /settings is not a document (a reload there would be a 404)', U, 'serve.json', '"documents": ["/", "/explore", "/help", "/settings"]', '"documents": ["/", "/explore", "/help"]'),
+  m('serve.json: /settings is not a document (a reload there would be a 404)', U, 'serve.json', '"documents": ["/", "/explore", "/dashboards", "/help", "/settings"]', '"documents": ["/", "/explore", "/dashboards", "/help"]'),
   m('serve.json: the policy allows inline scripts', U, 'serve.json', "script-src 'self';", "script-src 'self' 'unsafe-inline';"),
   m('the theme is applied by an inline script', ['prod'], 'vite.config.ts', "return [{ tag: 'script', attrs: { src }, injectTo: 'head-prepend' }]", "return [{ tag: 'script', children: readFileSync(file, 'utf8'), injectTo: 'head-prepend' }]"),
 ]

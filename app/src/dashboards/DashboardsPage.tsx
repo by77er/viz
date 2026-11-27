@@ -85,7 +85,10 @@ function DashboardPage({ id, search }: { id: string; search: DashboardsSearch })
 
   const setSearch = useCallback((patch: DashboardsSearch) => void navigate({ to: '/dashboards', search: (prev) => ({ ...prev, ...patch }), resetScroll: false }), [navigate])
   const onRange = useCallback((f: TimeSpec, t: TimeSpec) => setSearch({ from: f, to: t }), [setSearch])
-  const refresh = useCallback(() => setRunId((n) => n + 1), [])
+  // A second press while the panels are being asked is ignored: the button is busy (States).
+  const refresh = useCallback(() => {
+    if (store.summary().waiting === 0) setRunId((n) => n + 1)
+  }, [store])
   const [form, setForm] = useState<'panels' | 'text'>('panels')
   const onSignIn = useCallback(() => signOut('refused'), [signOut])
 
@@ -268,8 +271,12 @@ function DashboardPage({ id, search }: { id: string; search: DashboardsSearch })
             <div className="vz-dashboard" data-testid="dashboard-panels">
               <div className="vz-sections">
                 {sections.map((s, i) => (
-                  <section className="vz-section" key={i} aria-label={s.title ?? `Row ${i + 1}`}>
-                    {s.title && <h2 className="vz-section-title">{s.title}</h2>}
+                  <section className="vz-section" key={i} aria-labelledby={s.title ? `row-${i}` : undefined} aria-label={s.title ? undefined : `Row ${i + 1}`}>
+                    {s.title && (
+                      <h2 className="vz-section-title" id={`row-${i}`}>
+                        {s.title}
+                      </h2>
+                    )}
                     <div className="vz-grid">
                       {s.items.map((p) => (
                         <PanelView key={p.panel} id={p.panel} span={p.span} resolved={resolved} store={store} from={from} to={to} level={s.title ? 3 : 2} onSignIn={onSignIn} />

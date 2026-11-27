@@ -45,6 +45,17 @@ export function HelpPage() {
             Times are typed as "18 Nov 09:16", "09:16" for today, "now" or "now - 6 h", and read in this device's time zone, which the time range states.
           </p>
         </section>
+        <section className="vz-section" aria-labelledby="help-dashboards">
+          <h2 className="vz-section-title" id="help-dashboards">
+            Dashboards
+          </h2>
+          <p className="vz-text">
+            Dashboards lists this tenant's dashboards and shows one at a time, read-only: its panels over a time range, with its variables as controls. The range
+            and the variables' values are in the address. Each panel has a text form and a link that opens its query in Explore. A panel of a kind this app does
+            not draw yet (a heatmap, a text note) is shown as its text form, and says so. Dashboards cannot be edited here yet, and the key needs the
+            dashboards:read scope.
+          </p>
+        </section>
         <section className="vz-section" aria-labelledby="help-keys">
           <h2 className="vz-section-title" id="help-keys">
             Keyboard

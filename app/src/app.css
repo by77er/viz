@@ -7,6 +7,9 @@
 
 body { margin: 0; }
 
+/* The tenant in the navigation is one word of the strip, like a link: with five items the strip scrolls at 400 px, and the name must not fold instead (README, "Needed from the design system"). */
+.vz-nav > span.vz-nav-end { flex: none; white-space: nowrap; }
+
 /* Banners above every page (the development mock; the API not answering): the page's gutter, nothing under them. */
 .app-notices { padding-bottom: 0; }
 /* What keeps its place while it has nothing to show: a control offered only while it would change something, the panel's meta and query line before a result. */
