@@ -63,7 +63,9 @@ export const TS = [
   // suites (npm run e2e, e2e:real, contract), the measurements, the screenshots.
   {
     dir: 'app',
-    needs: ['design-system'],
+    // dashboard: the dashboards views import the viz.dashboard/v1 model from dashboard/src by
+    // relative path (no package of its own is needed for that: nothing is installed there).
+    needs: ['design-system', 'dashboard'],
     install: ['design-system'],
     prepare: ['node scripts/ensure-design-system.mjs'],
     commands: ['npm run check:tokens', 'npm run build', 'node ../deploy/ci/app-build.mjs dist'],

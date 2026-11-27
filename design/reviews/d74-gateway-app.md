@@ -352,3 +352,162 @@ links to `/explore`).
 ## Suggested row for design/REVIEW.md
 
 | `reviews/d74-gateway-app.md` | Adversarial review of D74 (2026-11-27, at `7a4cdfe`): viz-gateway serves the web app's build by `app/serve.json`; raw requests against local workerd, the kept-files chain, the build gate, D69 interplay, mutants on a scratch copy | 0 blockers, 2 majors (M-1: the app's build runs third-party code that can read the Cloudflare token from a parent process and rewrite files later steps run, although the variable is removed from its environment; reproduced with a dummy, and no test holds even the stated property; M-2: the first contact with Cloudflare would be production, in a forward-only release, and "a stage first" is enforced by nothing), 10 minors (the commit gate fails open without git; a linked install accepted for production unrecorded; the entity tag ignores the document's headers; serve.json can put files in front of the API; a build over about 50 files silently keeps nothing; no way to drop a bad build's files from the workflow; asset bytes not compared after upload; a failed app check hides the data check; twelve mutants survive; the export is built inside the checkout), 7 nits; locally no path gets a page in place of the JSON 404 and no 404 is cacheable; approve with changes | (the builder's dispositions) |
+
+## Dispositions
+
+By the builder, 2026-11-27, after the review; not by the reviewer. Changes are in `deploy/`,
+`.github/` and `design/`; nothing in `app/` or `design-system/` was edited. Nothing was deployed
+and no Cloudflare API call was made; every command ran with `CLOUDFLARE_API_TOKEN` and
+`CLOUDFLARE_ACCOUNT_ID` removed from its environment, and every credential in a test is the dummy
+`DUMMY-not-a-credential-123` or the fakes' `fake-token-not-a-credential`. No test, script or
+experiment reads another process's environment. Commands, results and the mutant table:
+`deploy/README.md`, "How it was verified", first entry. Mutants ran on a copy of the tracked tree
+in the scratch directory, never in the shared tree.
+
+Tests named below are in `deploy/test/` unless a path says otherwise.
+
+### Majors
+
+**M-1. Fixed: the build runs in a job that holds no secret; the job that holds the token takes its
+output as data.**
+- *The boundary.* `.github/workflows/deploy.yml` has a job `app-build` (no `secrets.`, no
+  `environment`, no `env`, `contents: read`, `persist-credentials: false`) that runs
+  `node deploy/app.mjs handover` and uploads `dist/` and `build.json` as an artifact. The `deploy`
+  job downloads it outside the checkout and `deploy.sh` runs `app.mjs build --from`, which reads,
+  hashes and copies it and runs no `npm` and no code of `app/` or `design-system/`.
+- *What the deploy job verifies* (`lib/app.mjs` `readHandover`, then `stampProblems` in
+  `configure.mjs` and `release.mjs` as before): the description is of this release; its source
+  hash is the hash of the deploy job's own checkout (git lists the files, SHA-256 of their bytes;
+  nothing of the app is executed); its serve.json hash is the checkout's; for production with a
+  commit it says that commit, clean, listed by git, installed from the lockfiles; `dist/` reads by
+  serve.json's rules and every file has the path, size and SHA-256 the description names, the
+  document and the build hash too.
+- *"Handed in for production"* now means: taken only with a stamp whose source hash is this
+  commit's (`via` `export` or `handover`); a bare `dist/` (`prebuilt`) stays refused. D74 point 3
+  is rewritten to say so.
+- *The other installs.* No job has a secret in its `env`; the Cloudflare credentials are on the
+  steps that call Cloudflare (`Migration acknowledgements`, `deploy/deploy.sh`; in `rollback`,
+  `Roll back`), and `SMOKE_KEY` on the two smoke steps. The deploy job's installs are
+  `deploy.sh --install-only` in a step without secrets, with `--ignore-scripts`; checked from a
+  fresh export that wrangler, workerd and esbuild start and that every deployed Worker bundles
+  (`wrangler deploy --dry-run`) after such an install.
+- *`deploy.sh` by hand.* It runs `handover` and the installs with every credential removed from
+  their environment by name, then stages from the handover exactly as the workflow does. The
+  README says this is weaker than the job boundary and why. Under `GITHUB_ACTIONS` it refuses to
+  build at all.
+- *The README sentence* is gone; "Who can read the Cloudflare token" replaces it and states the
+  remaining trust: the app's locked dependencies decide what the page is (the handover shows an
+  intact output of the job that says it built these sources, not a faithful one); the deploy
+  tooling's locked dependencies run beside the token (no install scripts, but wrangler loads their
+  files); GitHub's separation of jobs is taken from its documentation.
+- *Tests.* `app.test.mjs` "M-1: the build's own environment holds no credential…" (a toy build
+  notes which names in its own environment look like credentials and whether any value is the
+  dummy: none; `handover` refuses beside one and prints no value); "M-1: a build handed over … is
+  taken as data and only when it verifies…" (17 ways it may not be what it says, each refused,
+  nothing staged, no build run); `workflow.test.mjs` "M-1: the web app is built in a job that is
+  given no secret…" (the workflow's text, job by job and step by step) and "D74, M-1: deploy.sh,
+  run…" (the real script with stub `node` and `npm` that record whether a dummy credential was in
+  their environment).
+- *Not shown, and why.* The workflow has not run on GitHub in this shape. That a runner per job
+  and environment-scoped secrets separate the two jobs is GitHub's to guarantee.
+
+**M-2. Fixed with a mechanism, and its limit said: the first production release with the app is
+refused unless a stage is recorded to have gone before it, or the owner overrides.** No stage was
+deployed.
+- `release.mjs` `appStageProblems`, asked by `deploy` and `plan` for production when the
+  viz-gateway serving now has no app: refused (exit 3, nothing uploaded) unless
+  `deploy/records/app-stage-evidence.json` has a complete entry (stage, release, passed smoke test
+  with the app checked, by-hand checks 6 to 10 each `pass` with a note, who vouches) whose
+  `serving` equals this release's serving fingerprint (the gateway's source, the asset
+  configuration, `_headers`, the document's headers, wrangler's version).
+- Override: `VIZ_APP_WITHOUT_STAGE_EVIDENCE="<reason>"`, the workflow's
+  `app_without_stage_evidence` input; logged as a WARNING, written to the release record
+  (`appStage.override`) and the job summary.
+- `scripts/app-stage-evidence.mjs` writes a stage's entry from what its deploy left in
+  `generated/` (`release.json`, and `smoke.json`, which `smoke.mjs` now writes), with the by-hand
+  checks empty, so it does not count until a person has made them.
+- *Is it theatre?* The entry is a statement a person commits; the tool checks its shape and its
+  fingerprint and cannot prove the stage existed. I judged it worth having because the default
+  changed: with no file (today) the first release is refused, so "a stage first" is what happens
+  unless someone writes a reason into a release record. **Consequence the owner should expect:
+  the push that merges this will not deploy; its job ends red at the plan, production
+  untouched**, until evidence is committed or the workflow is dispatched with the override.
+- Also put where the owner sees it: the pull-request template has the four boxes; README "A
+  stage before production"; D74 point 6 and "would change if" (when to widen the rule, and what
+  would show it to be theatre).
+- *Tests.* `app.test.mjs` "M-2: what counts as a stage that went before…", "M-2: the first
+  production release with the web app is refused…" (through `planOnly` and `deploy` against the
+  fake account: refused with nothing uploaded; with evidence; with the override; the next release
+  and a stage not asked), "M-2: the entry of a stage is written…"; `upgrade-production.test.mjs`
+  now shows the first release over fb77292 refused by this one problem and passing with the
+  override, which its record carries.
+
+### Minors
+
+| | Disposition | Held by |
+|---|---|---|
+| m-1 | **Fixed.** `sourceGateProblems`: production with a commit refuses sources git did not list, before a build (`app.mjs`, both commands) and on the stamp (`stampProblems`: the checkout now, and how the stamped build's sources were listed). The message carries git's own reason | `app.test.mjs` "m-1: production with a release that is a commit fails closed…" (no work tree; no usable git; a stage and a non-commit release still allowed) |
+| m-2 | **Fixed, both ways.** The stamp, the handover, the manifest and the record say `install: "ci"` or `"linked"`; production with a commit refuses a linked install before building, in a handed-over build, and on the stamp | "m-2: a linked install … is recorded as what it is, and refused…"; the stamp case in "a stamp is refused when…" |
+| m-3 | **Fixed.** The entity tag is a hash of the document's bytes and its headers; the build hash covers serve.json's rules (documents, prefix, files, the three header blocks, content types; not the comment). A headers-only release is another build: it also ages kept files by one, which is said | "staging: … the document goes into VIZ_APP…" (a tighter policy: same bytes, another tag, another build; a comment: the same) |
+| m-4 | **Fixed, from one list.** `deploy/gateway/src/api-roots.json` is the API's part of the path space. The gateway's `routeOf` routes nothing outside it and `parseApp` refuses a document inside it; `readServe` reads the same file and refuses an asset prefix, file or document inside it. `/mcp.svg`, which the review listed, is accepted: it is not under `/mcp` and sits in front of no route | "serve.json: nothing of the app lies in the API's part of the path space…"; vitest `gateway/test/app.test.ts` "the API has a part of the path space of its own…" (the same table of paths in both) |
+| m-5 | **Fixed.** `appFilesVar` says `named: false`; `app.mjs` logs a WARNING with what is lost and when; the stamp (`filesVar`), manifest, record (`filesNamed`), `plan`, `deploy.sh`'s summary and the job summary carry it; the kept files that had to go are in `dropped` with that reason. D74 "would change if" names the limit | "a build whose own file list does not fit VIZ_APP_FILES says so loudly…" |
+| m-6 | **Fixed.** Workflow input `app_drop_kept_files` sets `VIZ_APP_NO_CARRY=1`; README says this is how a bad build's files are dropped. A bound in time: each kept file carries the day it stopped being current and leaves `keep_days` (30, `workers.json`) later, judged at every release, also one of the same build; a day in the future or no day counts as today | "which files a new build keeps…", the keep_days part of "app.mjs build keeps the serving version's files…"; `workflow.test.mjs` (the input reaches `deploy.sh`; `--no-carry` is passed and said in the summary) |
+| m-7 | **Fixed.** The manifest carries every file's SHA-256 (`fileHashes`) and the kept files'; `checkApp` fetches every file of the version, lazy chunks and kept files included, and compares bytes and headers | `app-http.test.mjs` "smoke checkApp: every file of the version is asked for and compared byte for byte…" |
+| m-8 | **Fixed.** `smoke()` runs the data check whatever the app check found and reports both; the hint says the previous gateway comes back whole, names `/api/echo` and "no web app at all" for the first release, and points to "Rolling viz-gateway back alone" | `app-http.test.mjs` "smoke: a failed app check does not hide the data check…" |
+| m-9 | **Tests added for each named survivor; one reported equivalent** (table below). `scripts/mutants-app.mjs` now says to copy the whole tracked tree (`git archive`), names why (`dashboard/`), has a `--check` mode, and holds @@TOTAL@@ mutants (94 before) | below |
+| m-10 | **Fixed.** The export is built in a new directory under the system's temporary directory, refused if that lies inside the checkout, and removed afterwards (also after a failed build); only the staged result is under `generated/` | "m-10: the export is built outside the checkout…" |
+
+**m-9, survivor by survivor.**
+
+| Mutant the review found alive | Now |
+|---|---|
+| the build command keeps the Cloudflare credentials | killed: "M-1: the build's own environment holds no credential…" |
+| a stamp that names another staged directory is accepted | killed: "a stamp is refused when…" (a faithful copy elsewhere, named by the stamp). Also changed: the directory hashed is the one that is uploaded, whatever the stamp names (its own mutant, killed by the same test) |
+| files are carried although two versions serve at once | killed: "what serves now is read for its files only when one version serves…" |
+| production fetches kept files from the workers.dev pattern | killed: "app.mjs build keeps the serving version's files…" (production asks `https://<domain>` and never asks for the subdomain) |
+| a kept file is fetched following redirects; from any HTTP status | killed: `app-http.test.mjs` "a kept file is asked for as a browser would get it…" (`defaultFetchFile` itself, against a local server: 307, 206, 500, 404) |
+| a kept file over 25 MiB | killed: "a kept file is fetched from the deployment serving now…" (25 MiB + 1 with the recorded hash) |
+| a link among the sources is exported and hashed | killed, with git and without: "sources: a link is never a source…" |
+| git is asked with the inherited `GIT_` environment | killed: the same test (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`) |
+| the smoke test follows redirects; does not ask `/explore/`; does not POST to a document | killed: `app-http.test.mjs` "smoke checkApp: redirects are not followed…" |
+| the document is tried before the API router (`handle`) | **equivalent, not killed**: `parseApp` refuses any `VIZ_APP` that names a document in the API's roots, so no path can be both; the mutant on that refusal is killed (vitest) |
+
+**New survivors, reported:** @@SURVIVORS@@
+
+### Nits
+
+| | Disposition |
+|---|---|
+| n-1 | **Fixed (text).** README's table says the asset layer's 307 and 405 carry the path's `_headers`, that this is the mechanism behind D74 (b)'s cacheable 404, and why it is harmless here |
+| n-2 | **Fixed (text).** `index.ts` no longer says "as it was sent": the path is compared after the URL parser removed dot segments; the README table has a row for it |
+| n-3 | **Fixed.** `readBuild` refuses a `src` or `href` that is not double-quoted (it could not be checked), and reads one with spaces around `=`. Test: "a build is read by serve.json's rules…" |
+| n-4 | **Fixed.** A kept path that needs a directory where the build has a file (or the reverse) is dropped and named; the build does not fail. Test: "a kept file that does not fit VIZ_APP_FILES…" |
+| n-5 | **Left open**, as the review says it is serve.json's and the backends' to decide: no policy on assets, no `nosniff` on the gateway's JSON and forwarded answers. Listed in README "Not implemented"; not checked in a browser |
+| n-6 | **Fixed.** `persist-credentials: false` on all three checkouts of `deploy.yml`; `workflow.test.mjs` holds it |
+| n-7 | **Fixed (text).** D74 "would change if": an app release that fixes a security defect adds a floor for the build; README "Not implemented" says there is none today |
+
+### What changed besides the findings
+
+- `STAMP_VERSION` is 2 (a stamp left in `generated/` by an older run is refused as such).
+- `gateway/test/app.test.ts` listed `/dashboards` among paths that are never a document; the
+  app's serve.json made it one during the review. The list now leaves out whatever serve.json
+  lists.
+- A snapshot commit of the shared tree (`0aa0f7a`, "Work in progress") took `deploy/` and
+  `.github/` while this work was under way, at a state whose suites had just passed; the design
+  text and the README's last edits came after it. A pull request takes these directories from
+  the state reported green here, not from that commit.
+
+### Open, and unverifiable until a stage deploy
+
+- Everything under "Not checked" above still stands; no stage was deployed.
+- The deploy workflow in its new shape has not run on GitHub: that `upload-artifact` takes a path
+  under `runner.temp` and `download-artifact` restores `dist/` and `build.json` at the same
+  relative paths (training knowledge of both actions); that `inputs.app_drop_kept_files && '1' ||
+  '0'` evaluates as intended on a push (where `inputs` is empty) and on a dispatch; that a run
+  step of the build job has no deploy credential in its environment (it would make `handover`
+  refuse, loudly, not leak).
+- The stage rule cannot be exercised for real until a stage exists: the evidence script was run
+  on fixture files only.
+- A full run of the 94 mutants from before this change was not repeated; @@OLDRUN@@.
+- Chromium's handling of headers on a 304 (m-3) remains training knowledge; the fix does not
+  depend on it (the tag changes, so the answer is a 200).

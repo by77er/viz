@@ -796,12 +796,18 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
 - **Serving, as built (D74, 2026-11-26; not yet deployed).** `app/serve.json` says how the
   build is served and the gateway serves by it: files under `/assets/` (content-hashed, kept
   for good) and the icon are viz-gateway's static assets, answered by Cloudflare by exact path
-  without invoking the Worker; the four documents come from the Worker with the content
-  security policy and `no-cache`; the API's paths come first, and every other path, an unknown
-  API path and a missing asset included, is the JSON 404, never the document. A release
-  carries the build it was made with, verified against its sources before upload, and the
-  files of the three builds before it for pages still open; a rollback of the gateway brings
-  back the build its version held (`deploy/README.md`, "The web app").
+  without invoking the Worker; the documents serve.json lists come from the Worker with the
+  content security policy and `no-cache`; the API's paths come first, for static files too (the
+  API's part of the path space is one file both the gateway and the deploy read), and every
+  other path, an unknown API path and a missing asset included, is the JSON 404, never the
+  document. A release carries the build it was made with: built by a job that holds no secret,
+  handed to the job that holds the Cloudflare token as data, and verified there against the
+  release's sources and file by file before upload; and the files of the three builds before
+  it, for at most thirty days, for pages still open. A rollback of the gateway brings back the
+  build its version held. The first production release with the app is refused until a stage is
+  recorded to have gone before it, or the owner overrides with a reason
+  (`deploy/README.md`, "The web app", "Who can read the Cloudflare token", "A stage before
+  production"; review: `design/reviews/d74-gateway-app.md`).
 
 ## 9. Auth, tenancy, limits
 

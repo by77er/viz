@@ -97,6 +97,7 @@ jobs:
             app/package-lock.json
             design-system/package-lock.json
       - name: Build from an export of this commit's sources (deploy/app.mjs handover)
+        # The sources are app/ and what deploy/workers.json says it needs (design-system/, dashboard/src).
         # Refuses to run beside a Cloudflare credential; needs none, and no package of deploy/.
         run: node deploy/app.mjs handover --release "$GITHUB_SHA" --out "$RUNNER_TEMP/app-build"
       - name: Hand the build over

@@ -4333,7 +4333,13 @@ asset with a 404 that carries the asset's caching, see (b). Code: `deploy/lib/ap
 `deploy/app.mjs`, `deploy/gateway/src/index.ts`, `deploy/configure.mjs`, `deploy/release.mjs`,
 `deploy/smoke.mjs`, `deploy/deploy.sh`, `deploy/workers.json`. Not deployed: every platform fact
 below is labelled read (Cloudflare's documentation, 2026-11-26), observed (local workerd, wrangler
-4.164.0) or not verified; `deploy/README.md`, "The web app", has the table.)
+4.164.0) or not verified; `deploy/README.md`, "The web app", has the table.
+
+Revised 2026-11-27 after its adversarial review (`design/reviews/d74-gateway-app.md`, approve with
+changes). This text replaces the first one in four places: point 3 no longer says "the build was
+made here, not handed in" (the build is made by a job that holds no secret and handed over,
+verified); point 2's entity tag and the build hash cover the headers; point 4 has a bound in
+time; point 6 is new. Alternatives (g) and (h) record what was weighed for the two.)
 
 **Decision.** `app/serve.json` is the specification of how the app's build is served; the gateway
 serves by it and by nothing else.
@@ -4345,10 +4351,15 @@ serves by it and by nothing else.
    headers of a generated `_headers` file (`Cache-Control: public, max-age=31536000, immutable`
    and `nosniff` for assets, the content type set per extension from serve.json rather than left to
    the uploader). Every other path invokes the Worker, which routes exactly as before: the API first
-   (`routeOf`), then the app's documents (`/`, `/explore`, `/help`, `/settings`; GET and HEAD
-   only), then the JSON 404 it always gave. So an unknown API path, a hashed asset this version
-   does not hold, `/index.html`, `/explore/` and a POST to a page are all that 404, `no-store`,
-   never the document.
+   (`routeOf`), then the app's documents (the `documents` of serve.json: `/`, `/explore`, `/help`,
+   `/settings`, …; GET and HEAD only), then the JSON 404 it always gave. So an unknown API path, a
+   hashed asset this version does not hold, `/index.html`, `/explore/` and a POST to a page are all
+   that 404, `no-store`, never the document. **The API has a part of the path space of its own**
+   (`deploy/gateway/src/api-roots.json`: `/api/`, `/v1/`, `/loki/`, `/oauth/`, `/.well-known/`,
+   `/mcp`, `/healthz`): the gateway routes nothing outside it and serves no document inside it,
+   and the deploy reads the same file to refuse a serve.json whose asset prefix, files or
+   documents lie inside it. "The API first" would otherwise hold for documents only: the asset
+   layer answers a path that is a file before the Worker runs.
 2. **The document is not an asset.** `index.html` is never uploaded. The Worker serves it from a
    variable, `VIZ_APP` (`{ v, build, etag, documents, headers, document }`, about 1.6 kB of the
    5 kB a variable holds), which `configure.mjs` writes from serve.json and the build. The asset
@@ -4356,28 +4367,53 @@ serves by it and by nothing else.
    else through the asset layer; the document always carries serve.json's document headers (the
    Content-Security-Policy, `no-cache`, `nosniff`, `X-Frame-Options`, the rest) because only the
    Worker can send it, and the Worker refuses to serve a `VIZ_APP` without a policy, with a
-   cacheable document, or naming an API path. It adds an `ETag` (the document's hash) and answers
-   a matching `If-None-Match` with 304. A gateway without the variable (another harness, a version
-   from before this) has no app and answers as it always did.
-3. **A release carries its build.** `deploy/app.mjs build` exports the app's sources (what git
-   tracks or does not ignore under `app/` and `design-system/`, less what no build reads), builds
-   there with the app's own `npm run build`, never in the checkout, reads the result by
-   serve.json's rules (anything they do not cover is refused), stages the upload directory and
-   writes a stamp: release, source hash, commit, build hash, every file's SHA-256. `configure.mjs`
-   takes the build only if the stamp is of this release and target, the sources and serve.json are
-   unchanged since, and the staged directory is what was stamped; `release.mjs` checks the same
-   again, and that the generated config uploads exactly that directory with exactly those
-   variables, before anything is uploaded (exit 3). Production, when the release is a commit: the
-   checkout is that commit with unchanged app sources, and the build was made here, not handed in.
-   A stage may go without the app only when configured `--without-app`, and its record says so.
-   The release record names the build (hash, document hash, files, kept files, sources).
+   cacheable document, or naming a path in the API's part of the path space. It adds an `ETag` (a
+   hash of the document's bytes and of the headers it is sent with, so a release that only changes
+   the policy is revalidated to a 200 with the new headers) and answers a matching `If-None-Match`
+   with 304. A gateway without the variable (another harness, a version from before this) has no
+   app and answers as it always did.
+3. **A release carries its build, and the build is made where no secret is.** The build runs
+   third-party code (npm install scripts, Vite and its plugins), so it is a step of its own:
+   `deploy/app.mjs handover` exports the app's sources (what git tracks or does not ignore under
+   `app/` and the directories `deploy/workers.json` says it needs, `design-system/` and
+   `dashboard/src`, less what no build reads) to a directory outside the checkout,
+   builds there with the app's own `npm run build`, reads the result by serve.json's rules
+   (anything they do not cover is refused), and writes the build with a description: release,
+   source hash, commit, how dependencies were installed, every file's SHA-256. In the deploy
+   workflow that runs in a job that is given no secret and no environment; the job that holds the
+   Cloudflare token receives the result as an artifact and runs none of it. `deploy/app.mjs build
+   --from` there takes it as data: it hashes its own checkout's sources (git and SHA-256 of file
+   bytes; no code of the app runs), refuses a build whose description is not of this release, of
+   that source hash and of this serve.json, or whose files are not, one by one, what the
+   description names, then stages the upload directory and writes the stamp. `configure.mjs`
+   takes the build only if the stamp is of this release and target, the sources and serve.json
+   are unchanged since, and the directory uploaded is the one stamped and what was stamped;
+   `release.mjs` checks the same again, and that the generated config uploads exactly that
+   directory with exactly those variables, before anything is uploaded (exit 3).
+   **What "handed in" means for production**: a build is taken only with a stamp whose source
+   hash is the hash of this checkout's sources at the release's commit, whether it was made by
+   this tool in place (`export`) or handed over and verified (`handover`); a bare `dist/`
+   (`prebuilt`), which nothing ties to the sources, is refused. Production, when the release is a
+   commit, also demands that git can read the checkout (it fails closed where git cannot: no
+   work tree, another owner), that the checkout is that commit with unchanged app sources, and
+   that dependencies were installed from the lockfiles, not linked. A stage may go without the
+   app only when configured `--without-app`, and its record says so. The release record names the
+   build (hash, document hash, files, kept files, sources, how it came and was installed).
+   The build hash covers the document, the files and serve.json's rules, so two releases that send
+   different headers are two builds. Removing the credentials from the build's environment, which
+   `deploy.sh` also does for a local deploy, is not this boundary and is not called one
+   (`deploy/README.md`, "Who can read the Cloudflare token").
 4. **A page opened before a deploy.** A version serves only its own assets (read). So each release
    also carries the hashed files of the previous `keep_builds` (3) builds that the new build no
    longer has: read from the serving version's `VIZ_APP_FILES` variable, fetched from the
    deployment itself, kept only if their SHA-256 is the recorded one, aged and dropped after three
-   later builds. A file that cannot be had is dropped and named, never a failure. What the gateway
-   cannot do, and what the app must then do, is in `deploy/README.md`, "Update in place" and
-   "Needed changes in app/".
+   later builds, or `keep_days` (30) after they stopped being a current build's, whichever comes
+   first (judged at each release). A file that cannot be had is dropped and named, never a
+   failure; the operator can keep none in a release (`VIZ_APP_NO_CARRY`, the workflow's
+   `app_drop_kept_files`), which is how a known-bad build's files stop being served. A build whose
+   own file list does not fit the variable (about 50 files) names none, and says so loudly: the
+   next release can keep nothing of it. What the gateway cannot do, and what the app must then do,
+   is in `deploy/README.md`, "Update in place" and "Needed changes in app/".
 5. **Rollback (D69 unchanged).** A version's assets and variables come back with it, so a rollback
    of viz-gateway restores the app that version served, or none. No check is added or removed: the
    gateway writes no recorded format and has no schema or floor. `release.mjs rollback` says which
@@ -4385,6 +4421,18 @@ serves by it and by nothing else.
    version (no assets, no variable) is allowed and leaves every page and asset path the JSON 404
    until a release with the app serves again, the API untouched. The app is a caller of the API in
    the last Worker promoted and the first rolled back, as D69's order wants.
+6. **A stage goes before the first production release with the app, or the owner says why not.**
+   How Cloudflare serves all this was seen in local workerd and read in documentation, and the
+   first production release with the app is forward-only (D69's `oauth-public` floor), so a failed
+   app check there rolls nothing back. `release.mjs`, for production, when the viz-gateway serving
+   now has no app, refuses the release before anything is uploaded unless
+   `deploy/records/app-stage-evidence.json` holds a complete entry (a stage's release, its passed
+   smoke test with the app checked, five by-hand checks each passed with a note, who vouches) for
+   this release's serving fingerprint: a hash over the gateway's source, the asset configuration,
+   the generated `_headers`, the document's headers and wrangler's version. The owner may override
+   with a reason, which is logged and recorded in the release. The entry is a person's committed
+   statement bound to the code by a hash; the tool cannot prove the stage existed. What makes it
+   more than a sentence is that the default is now a refusal.
 
 **Alternatives.**
 
@@ -4432,6 +4480,26 @@ propagation). Rejected for now: a store to fill before each promotion and to emp
 read on a path that is free today, and the six-connection and R2 latency rules to respect; kept
 as what would replace point 4.
 
+(g) *Where the build runs* (review, M-1). *In the deploy job, with the credentials removed from
+the build's environment*: what was first built. Rejected: a process of the same user reads an
+ancestor's environment (reproduced by the review with a dummy value) and can rewrite files a later
+step runs; the variable's absence is not isolation. *The `app` job of the checks hands over its
+build*: the job is a matrix entry that builds in place, for tests; a release build wants the
+export and its description, and a job that is nothing else. *The deploy job rebuilds inside a
+sandbox* (a container without network or mounts): more machinery than a second job, and still on
+the runner that holds the token. Chosen: a job with no secret, its output verified as data. What
+that does not buy: the app's locked dependencies still decide what the page is, and the deploy
+tooling's own locked dependencies still run beside the token (installed without install scripts,
+in a step without secrets).
+
+(h) *What makes a stage precede production* (review, M-2). *A sentence in the README*: what there
+was; enforced by nothing. *The workflow deploys a stage itself before production*: every release
+would create, check and delete seven Workers, a bucket and queues, for a rule that matters once;
+and the five by-hand checks are not automatable. *Evidence required at every change of the serving
+fingerprint*: honest, but every new API route in the gateway would need a stage, and the override
+would become routine, which is theatre. Chosen: the first release only, a committed entry bound to
+the fingerprint, an override that leaves a record.
+
 **Why.** The two requirements, minimum cost and "an unknown API path stays a JSON 404", are both
 met by letting Cloudflare answer only what cannot be anything else: an exact path of a file of
 the build. Everything that needs a decision reaches the code that has the tests. Keeping the
@@ -4462,3 +4530,18 @@ first, document second) as Cloudflare's guide describes. The app gains a login f
 per-tenant pages: the document stops being one static file and the Worker serves it from code.
 A second front end appears: then (d) per front end. `app/serve.json` gains a rule: `deploy/lib/app.mjs`
 refuses it until the gateway serves by it.
+The build grows past what `VIZ_APP_FILES` names (4,500 bytes: about 50 files; 7 today; one chunk
+per route would pass it): the deploy then says loudly that the next release keeps nothing of the
+build, and the list must move out of a variable (a manifest file among the assets that the deploy
+reads back, or (f)).
+An app release fixes a security defect: a gateway rollback restores the older app with no "not
+below build X" check, which is right until then; that release would add a floor for the build,
+as D69 has for formats, and the kept files of the defective build would be dropped with
+`app_drop_kept_files`.
+The stage rule (6): a change to the asset configuration or to how the document is served proves
+risky after the first release (a smoke test fails in production on such a change): then evidence
+is required whenever the serving fingerprint differs from the serving version's, which needs the
+fingerprint recorded in `VIZ_APP_FILES`. The override is used without a reason that holds: then
+the rule is theatre and should be replaced by the workflow deploying a stage itself. GitHub
+offers the build job's output with provenance the deploy job can verify (artifact attestations):
+then the handover's description becomes a signed statement instead of a self-description.

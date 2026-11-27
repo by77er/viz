@@ -71,7 +71,25 @@ const serveWith = (change) => {
 test('app/serve.json is read as the specification; workers.json names it, and the app as built from app/ and design-system/', () => {
   const found = A.appWorker(PLAN)
   assert.equal(found.worker.name, 'viz-gateway')
-  assert.deepEqual([found.app.dir, found.app.serve, found.app.needs], ['app', 'app/serve.json', ['design-system']])
+  // dashboard/src: the app's dashboards views import the viz.dashboard/v1 model from it by relative path.
+  assert.deepEqual([found.app.dir, found.app.serve, found.app.needs], ['app', 'app/serve.json', ['design-system', 'dashboard/src']])
+  // Everything the app imports from outside app/ lies in a directory the build exports: an import
+  // of another one builds in the checkout and fails in the export (it did, for dashboard/, on 2026-11-27).
+  const outside = new Set()
+  const scan = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.name === 'node_modules' || e.name === 'dist') continue
+      const p = join(dir, e.name)
+      if (e.isDirectory()) scan(p)
+      else if (/\.(ts|tsx|css)$/.test(e.name)) for (const m of readFileSync(p, 'utf8').matchAll(/(?:from|import|url\()\s*\(?['"]((?:\.\.\/)+[^'"]+)['"]/g)) {
+        const target = relative(REPO_ROOT, join(dir, m[1])).split(sep).join('/')
+        if (!target.startsWith('app/') && !target.startsWith('..')) outside.add(target)
+      }
+    }
+  }
+  scan(join(REPO_ROOT, 'app', 'src'))
+  for (const target of outside) assert.ok(found.app.needs.some((d) => target.startsWith(`${d}/`)), `app/src imports ${target}, which is in none of ${found.app.needs.join(', ')} (deploy/workers.json app.needs): the release's build would not have it`)
+  assert.ok([...outside].some((t) => t.startsWith('dashboard/src/')) && [...outside].some((t) => t.startsWith('design-system/')), [...outside].join(' '))
   assert.deepEqual(SERVE.documents, RAW.documents)
   assert.equal(SERVE.assetsPrefix, RAW.assetsPrefix)
   assert.deepEqual(SERVE.headers, RAW.headers)
@@ -326,7 +344,9 @@ test('a kept file is fetched from the deployment serving now and kept only with 
   // A file over Cloudflare's 25 MiB is not kept, even with the recorded bytes: its upload would fail the release.
   const huge = Buffer.alloc(A.ASSET_MAX_BYTES + 1, 0x61)
   const big = await A.fetchKept([{ path: '/assets/huge-EEEEEEEE.js', sha256: sha(huge), age: 1 }], 'https://vis.bitcru.sh', { fetchFile: async () => huge })
-  assert.deepEqual([big.kept, big.dropped], [[], [{ path: '/assets/huge-EEEEEEEE.js', why: `${A.ASSET_MAX_BYTES + 1} bytes` }]])
+  // (Compared by count and by name: a failed comparison of a 25 MiB body would print it, and did exhaust memory under mutation.)
+  assert.equal(big.kept.length, 0, 'a file over 25 MiB was kept')
+  assert.deepEqual(big.dropped, [{ path: '/assets/huge-EEEEEEEE.js', why: `${A.ASSET_MAX_BYTES + 1} bytes` }])
 })
 
 test('what serves now is read for its files only when one version serves: two versions at once keep nothing (m-9)', async () => {
@@ -678,7 +698,11 @@ test('m-1: production with a release that is a commit fails closed when git cann
 
 test('m-2: a linked install (VIZ_SKIP_NPM_CI) is recorded as what it is, and refused for production when the release is a commit', async () => {
   const t = toyRepo()
-  for (const d of ['app', 'design-system']) mkdirSync(join(t.root, d, 'node_modules'))
+  // Only a directory that is a package has packages to link: the toy's design-system/ is plain
+  // sources (as dashboard/src is for the real app) and needs none; app/ without them is refused.
+  const missing = await seenBy(() => build({ stage: 'apptest', release: 'link-0', carry: false, plan: t.plan, repoRoot: t.root, skipInstall: true }))
+  assert.match(missing.error?.message ?? '', /^app\/node_modules is missing, and the install was to be skipped$/)
+  mkdirSync(join(t.root, 'app', 'node_modules'))
   assert.equal(A.listSources(t.root, t.app).dirty, false, 'node_modules is ignored in the toy repository')
   const refused = await seenBy(() => build({ release: t.head, carry: false, plan: t.plan, repoRoot: t.root, skipInstall: true }))
   assert.match(refused.error?.message ?? '', /VIZ_SKIP_NPM_CI=1 would link the checkout's node_modules into the app's build instead of installing from its lockfiles: refused for production/)

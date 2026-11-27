@@ -59,7 +59,7 @@ const MUTANTS = [
   ['app: document paths matched as prefixes (/explorer, /explore/x, /index.html under /)', '  if (app === null || !app.documents.has(path)) return null', '  if (app === null || ![...app.documents].some((d) => path.startsWith(d))) return null'],
   ['app: a VIZ_APP without a Content-Security-Policy is served', "    if (!lower.get('content-security-policy') || !/^text", '    if (!/^text'],
   ['app: a VIZ_APP whose document a cache may keep is served', " || !/\\bno-cache\\b|\\bno-store\\b/.test(lower.get('cache-control') ?? '')) return null", ') return null'],
-  ['app: a VIZ_APP that names an API path as a document is accepted', " && p.startsWith('/') && routeOf(p) === null)) return null", " && p.startsWith('/'))) return null"],
+  ['app: a VIZ_APP that names an API path as a document is accepted', " && p.startsWith('/') && !underApiRoot(p) && routeOf(p) === null)) return null", " && p.startsWith('/'))) return null"],
   ['app: HEAD of a document answers with the body', "  return new Response(req.method === 'HEAD' ? null : app.document, { status: 200, headers })", '  return new Response(app.document, { status: 200, headers })'],
   ['app: any If-None-Match gets 304 (a page holding another build is told it is current)', "    return tag === '*' || tag === etag || tag === `W/${etag}`", '    return true'],
   ['app: a revalidation never gets 304', "  if (matchesEtag(req.headers.get('If-None-Match'), app.etag)) return new Response(null, { status: 304, headers })\n", ''],

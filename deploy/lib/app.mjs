@@ -687,6 +687,8 @@ export function exportAndBuild({ repoRoot, app, files, skipInstall = false, log 
     for (const d of [...app.needs, app.dir]) {
       const dir = join(out, d)
       if (skipInstall) {
+        // A directory that is no package (plain sources, like dashboard/src) has nothing to link.
+        if (!existsSync(join(dir, 'package.json'))) continue
         const have = join(repoRoot, d, 'node_modules')
         if (!existsSync(have)) throw new Error(`${d}/node_modules is missing, and the install was to be skipped`)
         symlinkSync(have, join(dir, 'node_modules'), 'dir')

@@ -261,7 +261,11 @@ try {
   // not a work tree: go on
 }
 
-const TESTS = ['test/app.test.mjs', 'test/app-http.test.mjs', 'test/app-serve.test.mjs', 'test/configure.test.mjs', 'test/matrix.test.mjs', 'test/workflow.test.mjs']
+// VIZ_MUTANT_TESTS="test/a.test.mjs test/b.test.mjs": the test files for mutants that name none of
+// their own. For a run in two passes: first without test/app-serve.test.mjs (which starts workerd
+// and takes most of the time), then the survivors of that pass with it alone. A mutant any test of
+// the suite kills is killed; one that survives both passes survives.
+const TESTS = process.env.VIZ_MUTANT_TESTS?.split(/\s+/).filter(Boolean) ?? ['test/app.test.mjs', 'test/app-http.test.mjs', 'test/app-serve.test.mjs', 'test/configure.test.mjs', 'test/matrix.test.mjs', 'test/workflow.test.mjs']
 const run = (tests = TESTS) => {
   try {
     execFileSync('node', ['--test', '--test-concurrency=2', ...tests], { cwd: DEPLOY_DIR, stdio: 'pipe', timeout: 900_000, env: { ...process.env, CLOUDFLARE_API_TOKEN: '', CLOUDFLARE_ACCOUNT_ID: '' } })
