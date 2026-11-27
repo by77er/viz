@@ -1,5 +1,5 @@
 Mutants of the move to design system v9 (e2e/mutants.cjs), applied to a copy in the session's scratch area.
-2026-11-26T20:35:37.964Z
+2026-11-27T00:19:29.737Z
 
 KILLED    session: a 401 for a tab with no key is reported as a refused key
             checks run: unit; caught by 1: unit: a 401 is the sign-in form: "no key" without one, "refused" with one

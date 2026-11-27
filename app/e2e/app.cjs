@@ -539,7 +539,8 @@ async function main() {
       await page.fill('[data-testid=time-to]', 'now')
       await page.keyboard.press('Enter')
       await page.waitForFunction(() => new URLSearchParams(location.search).get('from') === 'now-6h' && new URLSearchParams(location.search).get('to') === null)
-      check('m4: the time range is typed in the system\'s forms and echoed with its length and zone; there is no browser date picker', /^Read as \d+ Nov, \d\d:\d\d to \d\d:\d\d \(now\), 6 h, UTC\.$/.test(await text(page, '[data-testid=time-read]')) && (await page.locator('input[type=datetime-local]').count()) === 0 && (await page.getAttribute('[data-testid=preset-6h]', 'aria-pressed')) === 'true', await text(page, '[data-testid=time-read]'))
+      // The last six hours are of the clock at the time of the run: within one day ("26 Nov, 09:14 to 15:14 (now)") or across midnight ("26 Nov 18:14 to 27 Nov 00:14 (now)").
+      check('m4: the time range is typed in the system\'s forms and echoed with its length and zone; there is no browser date picker', /^Read as (\d+ [A-Z][a-z]{2}, \d\d:\d\d to \d\d:\d\d|\d+ [A-Z][a-z]{2} \d\d:\d\d to \d+ [A-Z][a-z]{2} \d\d:\d\d) \(now\), 6 h, UTC\.$/.test(await text(page, '[data-testid=time-read]')) && (await page.locator('input[type=datetime-local]').count()) === 0 && (await page.getAttribute('[data-testid=preset-6h]', 'aria-pressed')) === 'true', await text(page, '[data-testid=time-read]'))
       await page.fill('[data-testid=time-from]', 'last tuesday')
       await page.keyboard.press('Enter')
       const bad = await page.evaluate(() => ({ invalid: document.querySelector('[data-testid=time-from]').getAttribute('aria-invalid'), help: document.querySelector('[data-testid=time-error]')?.textContent, from: new URLSearchParams(location.search).get('from') }))
