@@ -230,12 +230,11 @@ line 69 (`live.current.day`, `.partial`, and `live`'s initial value); lines 87 t
 accessible name: the two unit-less lines became four that also add the day and the warning);
 lines 114 to 117 (`fixForm`: the line that names the result, then the warning's line).
 `spec.test.ts`: the import and one `describe` at the end. Nothing else in `src/charts/` was
-touched; `systemChart.ts`, `spec.ts` and `index.ts` are as they were. The same diff is kept as
-a patch in the session's scratch area (`app-fix/charts-M2.patch`).
+touched; `systemChart.ts`, `spec.ts` and `index.ts` are as they were.
 
 ### How each fix is held
 
-New checks: section `review2` of `e2e/app.cjs` (@@R2@@ checks: M1, M2, m1 to m4, m10, m12),
+New checks: section `review2` of `e2e/app.cjs` (18 checks: M1, M2, m1 to m4, m10, m12),
 section `reload` (5 checks: B3), one check and three more states in section `touch` (B2), and
 in `e2e/dashboards.cjs` section `reload` (3 checks) and the hit-area measure at 1500 px with a
 finger on each dashboard (3 checks). Unit: `src/lib/scrollKeeper.test.ts`, and cases in
@@ -278,25 +277,26 @@ finger on each dashboard (3 checks). Unit: `src/lib/scrollKeeper.test.ts`, and c
 copy in the session's scratch area (never in the tree), builds it and runs the checks named.
 Results: `e2e/measurements/mutants-review2.txt`.
 
-@@MUTANTS@@
+**Not run.** The work was paused (2026-11-27) before this set ran once: 23 mutants are written
+(`e2e/mutants.cjs`, `REVIEW2`), none has been applied, and there is no result file. Until it
+is run, no check above is known to fail without its fix, except by the review's own
+observations of the app before the fixes.
 
 ### Images
 
-`../design-system/reviews/app-v9/compare/` was made again whole from the final build
-(@@IMAGES@@). The "before" images are the ones of 26 Nov (the build before does not change:
-`VIZ_SHOTS_KEEP_BEFORE=1`), and the build before was pictured for the new states it can reach.
-The pairs that were there before and are no longer produced were removed (none: every earlier
-state is still pictured).
+`../design-system/reviews/app-v9/compare/` was **not made again**: the run was
+stopped by the pause while it pictured the build before, and the directory still holds the
+170 pairs of 26 Nov, which predate these fixes. A trial of the new states alone worked for
+both builds (22 pairs, not kept). To make them: `VIZ_SHOTS_KEEP_BEFORE=1 node e2e/v9-shots.cjs
+<before app dir> . <work dir> ../design-system/reviews/app-v9/compare`; the build before (commit
+`5db517f` against v9's stylesheet) and its images were in a scratch area that is gone, so it
+has to be built again, or the run made without `VIZ_SHOTS_KEEP_BEFORE`.
 
 ### Speed of the two paths touched
 
-Not a series, and not a before/after: one run of 20 at each layout, of the two interaction
-paths these fixes touch, by `e2e/measure-review2.cjs` (the reference setup of `measure.cjs`:
-CPU slowed 4x, Fast 4G, the built app on the mock, a fresh context per run), on the table of
-200 series. **Measured here**, on the shared machine of 4 cores, while other builders' jobs
-ran on it; `pgrep -f measure` found no other timing job when it started.
-
-@@SPEED@@
+**Not measured.** `e2e/measure-review2.cjs` is written for it (one run of 20 at each layout of
+"Show 50 more" to 100 rows painted and of "Copy link" to "Copied" painted, on the reference
+setup of `measure.cjs`) and **has never been run**: the work was paused first.
 
 ### Follow-ups left (the review's ids)
 

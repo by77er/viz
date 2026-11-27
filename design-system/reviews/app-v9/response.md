@@ -1,8 +1,100 @@
 # The app on design system v9
 
-**Status: not reviewed.** This is the author's account of a design change, for an independent
-design reviewer who has not seen its reasoning (AGENTS.md, "Design changes", 5). It is not
-ready to merge until that review is held.
+**Status: rejected by the independent review (`review.md`, 2026-11-27); fixes in progress,
+paused. Not ready for re-review.** See "Paused 2026-11-27" directly below; the rest of this
+file is the author's account as the reviewer read it, and is not yet updated for the fixes.
+
+## Paused 2026-11-27
+
+All work was paused at about 02:33 UTC, part way through the fixes for the second review.
+Written by the session that was making them. Nothing was committed by it, nothing deployed, no
+Cloudflare call. (Another session's snapshot commit, `e6cbe5e` "Work in progress: parallel
+component build", took the app's files in while they were being edited; that commit is not a
+green state of `app/`.) The source of every fix below is in `app/`; `npx tsc --noEmit` passes
+on it (run once, at the pause). The detail of each fix, its cause and its checks is in
+`app/README.md`, "The second design review: fixes".
+
+### State, finding by finding
+
+| Finding | State | Verified by | Left to do |
+|---|---|---|---|
+| **B1** speed with many series | **In progress elsewhere** (the design system's chart, `../chart-speed/`). Not worked on here, not claimed | | |
+| **B2** "Show 50 more of 200" | **Done, verified by a check; the check's teeth unverified** | `e2e/app.cjs`, section `touch`: a tap 16 px above and 16 px below the button's centre each show 50 more rows, at 400, 320 and 1500 px, coarse; the hit-area measure passes with the table of 200 in it (passed, 02:19 and in the whole run of 02:23) | The mutant (no stack) was not run. The hit-area measure over the dashboards views at 1500 px, coarse, finds the chart legend's "Min" sort head 43 px wide on every dashboard with a chart: the design system's (the review's "Same row" note), not the app's. `e2e/dashboards.cjs` was amended to count and report it and fail on anything else; **that amended check has not been run** |
+| **B3** a reload lands at the top | **Done, verified by checks; teeth unverified** | `e2e/app.cjs`, section `reload` (5 checks, passed twice): Explore's chart of 36 series, the table of 200, Explore signed in with a key, Help; at 1500 and 400 px fine and at 400 px coarse (coarse in Blink, `isMobile`, no `hasTouch`, guarded): same scroll position, anchor within 1 px (0 in every case), layout shift 0.0000. `e2e/dashboards.cjs`, section `reload` (3 checks, passed once): two dashboards and the list, landed 0 px off, shift at most 0.0091 | The six B3 mutants were not run, so it is not shown that these checks fail without the fix (the review saw 7 of 7 at the top before it) |
+| **M1** palette, Copy link | **Done, verified by checks; teeth unverified** | section `review2`: all 19 commands the palette lists on Explore are matched to a visible control; "Copy link" copies the address with the form shown and says "Copied"; the palette's command leaves the focus on it; Help's sentence | Mutants not run. No before/after image of the head with the new button |
+| **M2** day and warning in the text form and the name | **Done, verified by checks; teeth unverified** | section `review2` (7 checks) and unit cases in `charts/spec.test.ts` | Mutants not run |
+| **M3** five states imaged | **In progress** | The states are in `e2e/v9-shots.cjs` (`partial-answer`, `waiting-10s-alternative`, `stopped-at-60s`, `busy-asking-again`, `api-unreachable`, `sign-in-api-unreachable`, and `touch-table-200-show-more`). A trial of all but the 60 s stop made 22 pairs from both builds, which were looked at and are right; they were in scratch and are gone | **`compare/` was not remade: it still holds the 170 pairs of 26 Nov, which predate every fix here.** The whole run was stopped by the pause while picturing the build before. `stopped-at-60s` has never been pictured |
+| m1 empty head's range | Done, verified (`review2`, and unit `rangeWords`) | | mutant not run |
+| m2 Step placeholder | Done, verified (`review2`) | | mutant not run |
+| m3 Tab stop in the palette | Done, verified (`review2`) | | mutant not run |
+| m4 Copy a link says nothing; palette placeholder | Done, verified (`review2`) | | mutants not run |
+| m10 sign-in checkbox label | Done, verified (`review2`) | | mutant not run |
+| m12 unreachable API: banner and asking again | Done, verified (`review2`, 2 checks: banner within 5 s, the query asked again by itself 10.4 s after the API came back, 2 requests while it was away) | | mutants not run. The banner is inserted above the page, so the page moves down when it appears (as the banner always did) |
+| m5, m6, m9, m11, m13; m7, m8 (the system's chart) | **Not started**; listed as follow-ups with reasons in `app/README.md` | | |
+
+### What was learned about B3's cause
+
+Two things, both needed for the page to land at the top, and neither is `content-visibility`
+or a reserved height (the reserved layout is exact, which is why the fix lands to the pixel):
+
+1. The browser restores a scroll position only while the document loads. At `load` this page is
+   one window tall, because the app draws after its script has run and the API has said whose
+   key the tab holds (`RequireKey` draws nothing while the session is `checking`).
+2. The router scrolls the window to (0, 0) when its first page has rendered.
+   `@tanstack/router-core` `scroll-restoration.js`: `router._scroll.n` ("reset next") starts
+   `true`, and the `onRendered` handler that acts on it is installed by the router's constructor
+   whether or not the `scrollRestoration` option is set. The app's `resetScroll: false` is on
+   its own later navigations and does not reach the first render. This is also why Help, which
+   has no data, landed at the top.
+
+The fix (`app/src/lib/scrollKeeper.ts`, installed in `main.tsx` before the app renders): the
+position is written to `sessionStorage` at `pagehide` and on `visibilitychange` to hidden; on a
+`reload` navigation of the same path (or `back_forward` to the same address) a `ResizeObserver`
+on the document puts it back in the first frame the page is tall enough (after layout, before
+paint), a `scroll` listener holds it for 1 s against the router's reset, and the first wheel,
+touch, pointer or key event ends it. Turning the router's own `scrollRestoration` on was
+considered and not taken: it restores at the first render, when the page is still short, and
+switches `history.scrollRestoration` to manual for every navigation. Known limits are in the
+README (a position past the end of the reloaded page; a scrollbar drag in the held second).
+
+### Suites on the tree as it stands (source last changed 02:21 UTC; `dist/` built then)
+
+| Suite | Result |
+|---|---|
+| `npx tsc --noEmit` | passes (at the pause) |
+| `npm test` | 230 tests in 21 files pass (02:30, the new cases included) |
+| `npm run check:tokens` | passes: 759/759, 0 literal values in 71 files (02:30) |
+| `npm run build` | passes (02:21) |
+| `node e2e/app.cjs`, whole | **153 of 154** at 02:23. The one failure was an expectation of the old text ("…, /s, 09:30 to 12:30, …" in "text form: the chart's own sentences"), which M2 changes on purpose; the expectation was updated and **the whole suite was not run again** |
+| `e2e/app.cjs`, sections `review2`, `reload`, `touch` | all pass (31 checks, 02:19 to 02:22) |
+| `e2e/dashboards.cjs` | **only sections `narrow` and `reload`**: 16 of 19; the three failures are the "Min" head at 1500 px above, since reported by the check instead; not run again. The other sections were not run on this tree |
+| `e2e/errors.cjs`, `e2e/prod.cjs` | **not run** on this tree |
+| Mutants (`SET=review2 … e2e/mutants.cjs`, 23 written) | **not run** |
+| Speed of the two touched paths (`e2e/measure-review2.cjs`) | **not run**; the script itself has never been executed |
+| Images | **not remade** (above) |
+
+This tree is therefore **not a green state**: do not snapshot `app/` from it for a pull request
+to `main` until the eight commands of the task have each passed once on it.
+
+### To resume
+
+1. `cd app && npm run build`, then `node e2e/app.cjs`, `e2e/errors.cjs`, `e2e/prod.cjs`,
+   `e2e/dashboards.cjs` (ports: `VIZ_E2E_APP_PORT`, `VIZ_E2E_MOCK_PORT`; another builder used
+   8931, 8940 and 8941, which the defaults' derived ports can meet).
+2. `SET=review2 VIZ_MUTANT_DIR=<scratch> node e2e/mutants.cjs`; answer any survivor. The one
+   most likely to survive is "the position is put back once and not held": whether the router's
+   reset comes after the keeper's first placement depends on timing.
+3. Remake `compare/` (`e2e/v9-shots.cjs`, about 20 minutes: the 60 s stop is pictured four times
+   a build). The build before (commit `5db517f`, built against v9's stylesheet) and its 162
+   images were in the scratch area and are gone; build it again, or accept "New view" for it.
+4. `node e2e/measure-review2.cjs` once (check `pgrep -f measure` first), and put its two rows
+   in the README where it says "Not measured".
+5. Fill the README's "Mutants of these fixes", "Images" and "Speed" from those runs, update its
+   Verification table, rewrite this file as the disposition for the re-review, status
+   "awaiting re-review". If the chart-speed work hands over `../chart-speed/app.patch`: the
+   lines this work touched in `app/src/charts/` are listed in the README (`fixups.ts`: three
+   functions added; `Chart.tsx`: the import, two props, `live`, the accessible-name lines of
+   `fix`, and `fixForm`).
 
 - Change: the web app (`app/`) moved from design system v4 to v9, made servable in production
   behind the gateway, with sign-in by API key. Scope: the Explore view that existed, Help and
