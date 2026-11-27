@@ -1142,6 +1142,100 @@ module proxy and cross-checked against GitHub's tag pages). Rust comes from the 
 
 All measured here unless it says Cloudflare.
 
+- **The web app behind the gateway (D74), 2026-11-26.** Nothing deployed; no Cloudflare API call
+  at all (every run with `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` removed from the
+  environment); local runs only. Machine shared with another builder who was taking timing
+  measurements throughout (load average 1 to 3.6 on 4 cores; I waited 24 minutes for those
+  runs to end, they did not, and ran with them).
+  - **`cd deploy && npx tsc --noEmit`**: passes. **`npm test`** (vitest in workerd,
+    `maxWorkers: 2`, then `node --test --test-concurrency=2`): **251 tests in 4 files pass**
+    under vitest, 67 of them new (`gateway/test/app.test.ts`); **172 node tests pass** (137
+    before this change), 22 new in `test/app.test.mjs`, 10 in `test/app-serve.test.mjs`, 3 in
+    `matrix` and `workflow`. 61 s for both.
+  - **Each suite reads `app/serve.json` itself**: `gateway/test/app.test.ts` imports it and
+    derives every expected document path and header from it, and fails on a key it does not
+    know; `vitest.config.ts` builds the test Worker's `VIZ_APP` from it with the same
+    `lib/app.mjs` code configure uses; `test/app.test.mjs` and `test/app-serve.test.mjs` read it
+    through `readServe`. A changed header value changes what is demanded; a new rule fails.
+  - **`test/app-serve.test.mjs`**: the real gateway source under `wrangler dev --local` (workerd
+    and miniflare's asset router from the pinned wrangler 4.164.0; no account) with what
+    `lib/app.mjs` generates (the staged fixture build, `_headers`, the `assets` block, `VIZ_APP`),
+    requests sent raw with `node:http`: every asset and the icon with serve.json's headers and
+    types and no Worker; every document from the Worker; a missing asset, 36 traversal, encoding
+    and source paths, `/index.html` and `/_headers` as the JSON 404, `no-store`; nine paths that
+    name a file another way as that file or a redirect to it, never a page; other methods 405
+    with no body on files and the 404 on documents; API paths to the router (its own 502 here,
+    no backend bound) and unknown ones the 404 under a browser's navigation headers; then
+    `smoke.mjs`'s `checkApp` and `smoke()` against it, and against thirteen proxies that each
+    break one rule.
+  - **The real app, from a fresh export** (below): `deploy/app.mjs build --stage exptest
+    --no-carry` exported 164 source files, ran `npm ci` twice and `npm run build` in the export
+    in 4.8 s (warm npm cache), and staged build `b2a24d8442ad`: `index.html` (921 bytes) and 7
+    files, 1,092,684 bytes. `configure.mjs --stage exptest --ids-optional
+    --oauth-without-rate-limits` generated the gateway's config with it (`VIZ_APP` 1,609 bytes,
+    `VIZ_APP_FILES` 658). `wrangler deploy --dry-run` and `wrangler versions upload --dry-run`
+    on that config both bundle it and read the asset directory (12.47 KiB of script; **dry
+    runs: nothing uploaded**). `wrangler dev --local` on that config served the real build, and
+    `checkApp` passed against it (14 requests): the two scripts and the stylesheet with their
+    types, both fonts `font/woff2`, the documents gzip-encoded with their headers. Local
+    answers took 5 to 20 ms, which says nothing of Cloudflare.
+  - **CI's commands from a fresh export** (the last pull request failed five ways on files
+    that exist only where the suites had already run): `git worktree add --detach` of HEAD
+    (a8f3230) in the scratch directory, this change's uncommitted files copied over, `git status
+    --ignored` showing **no ignored file**, then each job as `ci.yml` runs it.
+    `node deploy/ci/matrix.mjs`: 18 TypeScript jobs, `app` and `design-system` among them, one
+    notice (query's benchmark). **deploy**: `npm ci`, `npx tsc --noEmit` (passes), `npm test`
+    (251 and 172 pass, 62 s; run again after the last edit from an export cleaned of every
+    ignored file). **design-system**: `npm ci`, `npm test` (199 tests: 139 pass, 60 skipped as
+    needing a browser, 75 s), `node tools/check.mjs --no-render` (759 of 759 contrast and
+    structure checks, 0 literal values). **app**: `npm ci` in `app/` and `design-system/`,
+    `node scripts/ensure-design-system.mjs` (generated the missing `design-system/dist/`),
+    `npx tsc --noEmit` (passes), `npm test` (168 tests in 15 files pass), `npm run check:tokens`,
+    `npm run build` (7 files, the names above), `node ../deploy/ci/app-build.mjs dist` (servable
+    by serve.json). No tracked file was changed by any of it. **Not run**: the other sixteen
+    components' jobs (unchanged by this), the Rust and WASM jobs, and the workflows themselves
+    on GitHub. What the old matrix entries would have done there, had `app/` and
+    `design-system/` been on `main`: `npx tsc` in `design-system/` (no TypeScript: npx fetches an
+    unrelated package) and `node tools/check.mjs` with a browser CI does not have.
+  - **Found on the way**: (1) `run_worker_first: ["/*", "!/assets/*"]` answers a missing asset
+    with an empty 404 carrying `immutable` (D74 (b); the experiment is two wrangler configs over
+    one directory, probed raw); (2) with `index.html` among the assets and asset-first routing,
+    `/index.html`, `/assets/../index.html` and `/assets/%2e%2e/index.html` are all served the
+    document without its policy, which is why it is not an asset; (3) a snapshot commit of the
+    shared tree (a8f3230, "Work in progress") took this change half-made; a pull request takes
+    `deploy/` from the state reported green here, not from that commit; (4) four mutants of
+    `scripts/mutants-release.mjs` no longer apply to the source and have not since before this
+    change (their lines were rewritten in the second round of the review of D69): "floors
+    rollback: the live state of Workers the record does not name is not read", "M-1: the Workers
+    a record leaves out are not judged", "ids: the scan reads the serving versions only", "ids: a
+    Rate Limiting binding whose id cannot be read is skipped". Not fixed here; that script and
+    `mutants-secrets.mjs` were not run whole again, only checked to apply (the other 94 and all
+    46 do) and their two mutants on a line this change touched were run and are killed.
+  - **Mutants** (on a plain copy of the tree in the scratch directory, never in the shared
+    tree; the scripts refuse to run inside a git work tree). `node scripts/mutants-app.mjs`: **94
+    of 94 killed**; the first run killed 88, and the six survivors were each a missing test,
+    added, then killed (below). `node gateway/scripts/mutants.mjs`: **49 of 49 killed** (the 30
+    from before and 19 for the app); the first run of the 19 killed 18. No mutant survives; none
+    is counted that crashed a suite instead of failing a test.
+
+    | Property broken | Mutants (file) | Killed by |
+    |---|---|---|
+    | **An API path, or any unknown path, answered with HTML** | "an unknown path is answered with the document (a single-page fallback)", "only an unknown path under /api/ keeps the JSON 404" (`gateway/src/index.ts`); "a VIZ_APP that names an API path as a document is accepted"; "assets: a single-page fallback" (`lib/app.mjs`) | vitest: 48 and 40 tests, first "GET /explore/", the unknown-API-path table, "a hashed asset this version does not hold"; "a VIZ_APP that names an API path … is no app at all"; node: the `assetsConfig` and configure tests; the workerd run ("a missing asset is answered with the document": "a hashed asset this version does not hold reaches the Worker") |
+    | **The Content-Security-Policy missing** | "the document is served without its Content-Security-Policy", "a VIZ_APP without a Content-Security-Policy is served" (gateway); "VIZ_APP: the document headers are not serve.json's (no policy)", "serve.json: a document without a policy is accepted", "staging: index.html is staged among the assets (served at /index.html without the policy)" (`lib/app.mjs`) | vitest "GET / is the document, with every header serve.json gives a document, exactly" (6 tests), "a document is served only with its policy…"; workerd "every document: 200 from the Worker with the document's headers" and `checkApp`; "serve.json: a rule this code does not serve by is refused"; "the staged directory holds … never index.html" and "no path reaches anything but the build's files" |
+    | **Immutable (or any) caching on a document; a 404 kept** | "the document is served to be kept for good", "a VIZ_APP whose document a cache may keep is served" (gateway); "VIZ_APP: the asset headers are given to the document", "serve.json: a document a cache may keep is accepted", "_headers: one rule for every path", "assets: the Worker first except under /assets/ (a missing asset is then Cloudflare's 404 with the asset headers)" | vitest "a document is never given what an asset or a file gets" (7 tests); workerd "every document…", "every listed file (the icon)", "a hashed asset this version does not hold reaches the Worker: the JSON 404, never stored, never the asset headers" (10 tests for the last mutant); `checkApp`'s "a missing asset's 404 kept for good" |
+    | **Traversal and paths that decode to something else** | "a path is decoded before it is compared (/%65xplore)", "document paths matched as prefixes", "a trailing slash is the document too", "document paths compared without case" (gateway); "kept: any path the serving version names is fetched and staged", "build: a link is followed and its target staged", "build: a file serve.json does not cover is staged anyway", "serve.json: a document path with dot segments or a trailing slash is accepted", "staging: index.html is staged among the assets" | vitest "a path that only decodes or normalises to something else is judged as it arrives", "GET /explore/", "GET /Explore" (48 tests for the prefix mutant); "which files a new build keeps … nothing but hashed assets of a known type"; "a build is read by serve.json's rules"; workerd "no path reaches anything but the build's files: traversal, encoded separators, index.html, _headers, sources" |
+    | **A method other than GET or HEAD served** | "any method is served the document (POST, DELETE)" (gateway, both runs); `smoke.mjs` "POST is not tried" | vitest "POST to a document path is the JSON 404" (5 tests); workerd "only GET and HEAD are served"; `checkApp` "POST served for the files only" (added after the mutant survived) |
+    | **A stale, missing or altered build released** | `release.mjs`: "the app gate is not asked at deploy", "… by plan", "a manifest that says nothing of the app is released", "a manifest whose build was left out is released", "production may go without the app", "a stage goes without the app although it was not configured so", "a stage 'without the app' may still upload assets", "the config's `assets` is not compared", "the config's VIZ_APP is not compared", "the manifest's build is not compared". `lib/app.mjs`: "a missing stamp is no problem", "another release's build is accepted (stale)", "another target's", "the sources are not compared (stale)", "serve.json is not compared", "the staged directory is not compared (altered)", "a missing staged directory is accepted", "a build handed in is accepted for production", "production at another commit", "production with sources changed", "the hash of the staged directory leaves out _headers", "the hash covers file names only", "untracked files are not sources", "ignored, generated files are sources", "what no build reads is hashed and exported". `app.mjs`: four on production's commit and `--dist`; "the app is built in the checkout", "a failed build command is not a failure". `configure.mjs`: "production may be configured --without-app", "a build that cannot be released is left out silently", "the staged build is not verified", three on who sets the vars and `assets`, two on what the gateway is given. `deploy.sh`: "the app is not built", "a failed app build does not stop the deploy", "production may be deployed without the app" | "release: a missing, stale or altered build is refused (exit 3) before anything is uploaded" (20 cases, each through `plan` and `deploy` against the fake account, asserting no wrangler call); "a stamp is refused when the build is missing, of another release, altered, stale…" (11 mutants); "sources: tracked and unignored files…"; "app.mjs build: exports the sources, builds there (never in the checkout)…; a failed build stages nothing"; "app.mjs build, production: …"; "configure refuses a build that is missing, of another release or altered…"; "D74: deploy.sh, run: a failed app build stops it before resources, configure and the release" (deploy.sh itself with a stub `node`: added after `|| true` in the build's command survived a test that only read the script's text) |
+    | The assets' own headers and types; the document's bytes | seven on `_headers`, staging and `VIZ_APP`'s size; `smoke.mjs`: nine on what `checkApp` compares and whether a failure fails the smoke test | workerd "every hashed asset…", "every listed file…"; "_headers: one rule for the asset prefix…"; "smoke.mjs checkApp passes against this server, and fails against one that breaks a rule"; "smoke.mjs: a release that serves the web app is checked for it after /healthz…" |
+    | Files of earlier builds | eleven: not verified against the hash, a failed fetch fatal, kept for good, not aged, aged by a release of the same build, the serving build's own files not kept, a kept file over the build's own, the variable over 5 kB, the stamp naming a file that did not fit | "a kept file is fetched … and kept only with the recorded bytes"; "which files a new build keeps"; "app.mjs build keeps the serving version's files … then ages and drops them"; "VIZ_APP_FILES names every file…"; "a kept file that does not fit VIZ_APP_FILES is not staged either" and "staging…" (both added after two survivors) |
+    | Revalidation, HEAD, the record and the rollback, CI | gateway: "any If-None-Match gets 304", "a revalidation never gets 304", "a weakened entity tag is not recognised", "the document carries no entity tag", "HEAD of a document answers with the body", "documents answer without x-viz-route", "the document loses one of its other headers"; `release.mjs`: record, live state, two rollback notes; `ci/matrix.mjs`: four | vitest "revalidation: …", "HEAD of a document" (the Worker's own response checked after the mutant survived: workerd drops a HEAD body, so the answer looked the same); "release: production goes out with the staged build…", "rollback: viz-gateway alone back to a version from before the app…"; "app/ and design-system/ are checked by commands that exist…" |
+
+    The six first-run survivors of the tooling, named: `deploy.sh` "a failed app build does not
+    stop the deploy"; "a kept file overwrites the new build's own file of that name"; "the stamp
+    records a kept file that did not fit the variable"; `smoke.mjs` "a 404 that is a page
+    passes", "any status passes for what must be a 404", "POST is not tried". The one of the
+    gateway: "HEAD of a document answers with the body".
+
 - **The review of D69, round 2, its findings fixed (2026-11-26)** (`design/reviews/d69-deploy-safety-r2.md`,
   approve with changes: 2 majors, 4 minors). Nothing deployed; the Cloudflare API only read (an
   inventory). **M2-1**: `deploy/records/fb77292….formats.json` from fb77292's own sources
@@ -1916,6 +2010,11 @@ right after the trial for 23:10–23:50 UTC, returned no rows for the `viz-trial
 (already deleted, or not yet ingested), so there is no measured bill for it here.
 
 ## Needed changes in components
+
+**`app/`** (D74): the eight items under "The web app", "Needed changes in app/" (a failed chunk
+load as "viz was updated", noticing a new build by the document's `ETag`, tolerating the API of
+the release before, versioning what it stores in the browser, serve.json read strictly, the
+document's size, a browser for CI). None is made; nothing here edits `app/`.
 
 From stage 3 of traces and logs (2026-11-19): what is still needed before `INGEST_SIGNALS` and
 `QUERY_SIGNALS` are set in a production deployment (the gateway routes their paths already; both
