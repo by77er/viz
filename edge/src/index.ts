@@ -1,4 +1,5 @@
 import { authenticate, clearAuthCache } from './auth'
+import { bodyKey, clearEarly, noteOutcome, refuseKnown } from './early'
 import { Collector } from './batch'
 import { HttpError, badRequest, tooLarge } from './errors'
 import { type Limits, limitsFrom } from './limits'
@@ -38,6 +39,7 @@ export const signalEnabled = (env: Env, signal: 'traces' | 'logs'): boolean => e
 export function clearCaches(): void {
   clearAuthCache()
   clearMapCache()
+  clearEarly()
 }
 
 /** What a request's body variable holds once decoded, so the body itself can be collected. */
@@ -117,13 +119,19 @@ async function remoteWrite(req: Request, env: Env, limits: Limits): Promise<Resp
   const early = await refuseEarly(env, tenant)
   if (early) return refusal(early, (status, message, headers) => text(status, message, headers))
 
-  let body = snappyDecompress(await readBody(req, limits.maxBodyBytes), limits.maxDecompressedBytes)
+  const wire = await readBody(req, limits.maxBodyBytes)
+  // The same body refused moments ago, and still refused by its shards: answer before decoding (D77).
+  const key = await bodyKey(tenant, 'metrics', ['/api/v1/write', contentType, encoding], wire)
+  const known = await refuseKnown(env, tenant, 'metrics', key)
+  if (known) return refusal(known, (status, message, headers) => text(status, message, headers))
+  let body = snappyDecompress(wire, limits.maxDecompressedBytes)
   const c = new Collector(limits, Date.now(), body.byteLength)
   decodeRemoteWrite(body, c)
   // The collector keeps copies: let the body go while the shards are written.
   body = EMPTY
 
   const outcome = await appendAll(env, tenant, c)
+  noteOutcome(tenant, 'metrics', key, outcome)
   if (outcome.status !== 'ok') return refusal(outcome, (status, message, headers) => text(status, message, headers))
   const written = { 'X-Prometheus-Remote-Write-Samples-Written': String(outcome.rows) }
   // New series over the tenant's limit: 400, naming the limit and what was refused. The
@@ -164,6 +172,9 @@ async function otlpMetrics(req: Request, env: Env, limits: Limits): Promise<Resp
     if (early) return refusal(early, fail)
 
     let body = await readBody(req, limits.maxBodyBytes)
+    const key = await bodyKey(tenant, 'metrics', ['/v1/metrics', type, encoding], body)
+    const known = await refuseKnown(env, tenant, 'metrics', key)
+    if (known) return refusal(known, fail)
     if (encoding === 'gzip') body = await gunzip(body, limits.maxDecompressedBytes)
     else if (body.byteLength > limits.maxDecompressedBytes) throw tooLarge(`body exceeds the limit of ${limits.maxDecompressedBytes} bytes`)
 
@@ -173,6 +184,7 @@ async function otlpMetrics(req: Request, env: Env, limits: Limits): Promise<Resp
     body = EMPTY
 
     const outcome = await appendAll(env, tenant, c)
+    noteOutcome(tenant, 'metrics', key, outcome)
     if (outcome.status !== 'ok') return refusal(outcome, fail)
     // 200 means: every point not listed as rejected is durably appended.
     // Series refused for the active-series limit are a partial success too: a retry would not fix them.
@@ -205,6 +217,9 @@ async function otlpSignal(req: Request, env: Env, limits: Limits, signal: 'trace
     if (early) return refusal(early, fail)
 
     let body = await readBody(req, limits.maxBodyBytes)
+    const key = await bodyKey(tenant, signal, [signal, type, encoding], body)
+    const known = await refuseKnown(env, tenant, signal, key)
+    if (known) return refusal(known, fail)
     if (encoding === 'gzip') body = await gunzip(body, limits.maxDecompressedBytes)
     else if (body.byteLength > limits.maxDecompressedBytes) throw tooLarge(`body exceeds the limit of ${limits.maxDecompressedBytes} bytes`)
 
@@ -215,6 +230,7 @@ async function otlpSignal(req: Request, env: Env, limits: Limits, signal: 'trace
     body = EMPTY
 
     const outcome = await appendAll(env, tenant, c, signal, (slots, max) => c.build(slots, max))
+    noteOutcome(tenant, signal, key, outcome)
     if (outcome.status !== 'ok') return refusal(outcome, fail)
     // 200: every span or record not counted as rejected is durably appended. Rejected ones
     // are counted in partial_success, which senders must not retry (OTLP, "Partial Success").
@@ -244,6 +260,9 @@ async function lokiPush(req: Request, env: Env, limits: Limits): Promise<Respons
   if (early) return refusal(early, (status, message, headers) => text(status, message, headers))
 
   let body = await readBody(req, limits.maxBodyBytes)
+  const key = await bodyKey(tenant, 'logs', ['/loki/api/v1/push', contentType, encoding], body)
+  const known = await refuseKnown(env, tenant, 'logs', key)
+  if (known) return refusal(known, (status, message, headers) => text(status, message, headers))
   if (!json) body = snappyDecompress(body, limits.maxDecompressedBytes)
   else if (encoding === 'gzip') body = await gunzip(body, limits.maxDecompressedBytes)
   else if (body.byteLength > limits.maxDecompressedBytes) throw tooLarge(`body exceeds the limit of ${limits.maxDecompressedBytes} bytes`)
@@ -253,6 +272,7 @@ async function lokiPush(req: Request, env: Env, limits: Limits): Promise<Respons
   else decodeLokiProto(body, c)
   body = EMPTY
   const outcome = await appendAll(env, tenant, c, 'logs', (slots, max) => c.build(slots, max))
+  noteOutcome(tenant, 'logs', key, outcome)
   if (outcome.status !== 'ok') return refusal(outcome, (status, message, headers) => text(status, message, headers))
   // Loki push has no partial success: entries a retry would not fix are refused with 400
   // (not retried by senders), naming the reasons and how many entries were written.
@@ -271,7 +291,7 @@ function refusal(
   if (outcome.status === 'overloaded') {
     return render(503, 'ingest shard is overloaded; retry the whole request', { 'Retry-After': retryAfter(outcome.retryAfterMs) })
   }
-  return render(503, `${outcome.reason}; retry the whole request`, { 'Retry-After': '1' })
+  return render(503, `${outcome.reason}; retry the whole request`, { 'Retry-After': retryAfter(outcome.retryAfterMs ?? 1000) })
 }
 
 export default {

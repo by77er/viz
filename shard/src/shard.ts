@@ -109,6 +109,8 @@ export interface ShardConfig {
   maxRegistrations: number
   /** A stream that has waited this long for its registration to be logged is reported (error log, `stats`; review m-1). */
   registerAlertMs: number
+  /** A grant of `reserve` that has not been used up is dropped after this long (D77). */
+  reservationTtlMs: number
 }
 
 export const DEFAULT_CONFIG: ShardConfig = {
@@ -137,6 +139,7 @@ export const DEFAULT_CONFIG: ShardConfig = {
   registerTimeoutMs: 5_000,
   maxRegistrations: 4,
   registerAlertMs: 60_000,
+  reservationTtlMs: 5_000,
 }
 
 /**
@@ -180,6 +183,7 @@ const CONFIG_RULES: { [K in keyof ShardConfig]: 'positive' | 'nonNegative' | 're
   registerTimeoutMs: 'positive',
   maxRegistrations: 'positive',
   registerAlertMs: 'nonNegative',
+  reservationTtlMs: 'nonNegative',
 }
 
 /** Why `value` may not be the configuration field `key`, or null when it may (`CONFIG_RULES`). */
@@ -341,7 +345,48 @@ export interface AppendRequest {
   seriesIds?: BigInt64Array
   /** This shard's share of the tenant's active-series limit. Needs `seriesIds`. */
   seriesLimit?: number
+  /**
+   * A token `reserve` granted for this batch (added 2026-11-28, D77; contracts/BATCH.md "What a
+   * refusal stored"). While the grant lives and names this batch's fingerprint, the append is not
+   * refused for room (`tenant`, `shard`) or for load (`overload`); every other check is made as
+   * without it. An unknown, expired or used token is ignored: the append is admitted as one
+   * without a token. A release before D77 ignores the field.
+   */
+  reservation?: string
 }
+
+/** One batch a caller is about to append: its fingerprint and payload size. */
+export interface ReservedBatch {
+  fingerprint: string
+  bytes: number
+}
+
+/** `Shard.reserve` (added 2026-11-28, D77). */
+export interface ReserveRequest {
+  tenant: string
+  /** Shard-map epoch the caller routed with. */
+  epoch: number
+  /** The batches the caller will append to this shard for one request. */
+  batches: ReservedBatch[]
+  /** False: answer as for a grant but hold nothing (a probe). Default true. */
+  hold?: boolean
+}
+
+export type ReserveResult =
+  /**
+   * The batches would be admitted now. With `hold`, their bytes (less those of batches the stream
+   * already holds or has waiting, which an append answers as duplicates) are held for the tenant
+   * until each batch is appended with `token`, the token is released, an append under it is
+   * refused or fails (what is left is dropped), or `expiresInMs` passes since its last use.
+   * Against the in-flight limits a grant counts as one append of its largest batch (the caller
+   * appends its batches one at a time; review of D77, M-1).
+   * `token` is null when nothing needed holding (every batch a duplicate, or `hold: false`).
+   */
+  | { status: 'ok'; token: string | null; expiresInMs: number }
+  /** As `AppendResult`: nothing is held; `release` is not needed. */
+  | { status: 'backpressure'; scope: 'tenant' | 'shard' | 'overload' | 'registering'; retryAfterMs: number }
+  | { status: 'stale_epoch'; epoch: number }
+  | { status: 'too_large'; maxBytes: number }
 
 export type AppendResult =
   | { status: 'ok'; incarnation: number; seq: number; duplicate: boolean }
@@ -473,6 +518,26 @@ interface Pending {
   reject(e: unknown): void
 }
 
+/**
+ * Room `reserve` granted for one request's batches to this shard (D77). Memory only, and nothing
+ * in it is acknowledged: it changes only what an append is refused for. Lost with the instance,
+ * the appends it was for are admitted as appends without a token.
+ */
+interface Grant {
+  tenant: string
+  /** The batches not yet appended under it, by fingerprint: their bytes. */
+  batches: Map<string, number>
+  bytes: number
+  /**
+   * What the grant counts against the in-flight limits (D37): its largest batch. The caller
+   * appends a grant's batches one at a time, so a grant is one append slot and one batch of
+   * pending bytes, however many batches it holds (review of D77, M-1). Room counts `bytes`.
+   */
+  load: number
+  /** Extended on each use: a grant lives `reservationTtlMs` from its last append, not from `reserve` (review m-3). */
+  expires: number
+}
+
 /** Load-shedding counters since this instance started (`stats()`). */
 export interface ShardStats {
   appends: number
@@ -490,6 +555,13 @@ export interface ShardStats {
   /** Streams waiting for their registration to be logged, and how long the longest has waited (ms; 0 if none). A wait over `registerAlertMs` is also an error log line (review m-1). */
   registering: number
   registeringForMs: number
+  /** `reserve` calls that held bytes, that were refused, and grants that expired unused or partly used (D77; added 2026-11-28). */
+  reserved?: number
+  refusedReserve?: number
+  reservationsExpired?: number
+  /** Grants alive now, and the bytes they hold. */
+  reservations?: number
+  reservedBytes?: number
 }
 
 /**
@@ -550,7 +622,12 @@ export class Shard extends DurableObject<ShardEnv> {
   private groupTimer: ReturnType<typeof setTimeout> | null = null
   private inFlight = 0
   private pendingBytes = 0
-  private counters = { appends: 0, committed: 0, groups: 0, maxGroup: 0, refusedOverload: 0, refusedRegistering: 0, registerCalls: 0 }
+  private counters = { appends: 0, committed: 0, groups: 0, maxGroup: 0, refusedOverload: 0, refusedRegistering: 0, registerCalls: 0, reserved: 0, refusedReserve: 0, reservationsExpired: 0 }
+  /** Grants of `reserve` by token (D77; memory only, a hint about room, never a source of truth). */
+  private grants = new Map<string, Grant>()
+  private grantedBytes = 0
+  /** Sum of the live grants' `load`; each live grant also counts as one append in flight (`grants.size`). */
+  private grantedLoad = 0
   /** The tenants' ledgers (`env.LEDGER`). A field so that a test can put an older release's ledger behind it. */
   protected ledgerNs: DurableObjectNamespace<Ledger> | undefined
   /** Registrations not yet answered as logged, by tenant (a schedule, rebuilt in `load`). */
@@ -721,13 +798,6 @@ export class Shard extends DurableObject<ShardEnv> {
     return { status: 'backpressure', scope: 'registering', retryAfterMs: ms + Math.floor(Math.random() * ms) }
   }
 
-  /** Streams currently holding bytes; the denominator of the fair share. */
-  private activeStreams(): number {
-    let n = 0
-    for (const s of this.streams.values()) if (s.bufferedBytes > 0) n++
-    return n
-  }
-
   /**
    * Changes the given fields of the configuration and stores it. Refused whole, with nothing changed
    * or stored, when a field is unknown or its value breaks its rule (`CONFIG_RULES`; `undefined`
@@ -751,16 +821,217 @@ export class Shard extends DurableObject<ShardEnv> {
     const now = Date.now()
     let longest = 0
     for (const r of this.regs.values()) longest = Math.max(longest, now - r.since)
-    return { ...this.counters, inFlight: this.inFlight, pendingBytes: this.pendingBytes, registering: this.regs.size, registeringForMs: longest }
+    this.sweepGrants(now)
+    return {
+      ...this.counters, inFlight: this.inFlight, pendingBytes: this.pendingBytes, registering: this.regs.size, registeringForMs: longest,
+      reservations: this.grants.size, reservedBytes: this.grantedBytes,
+    }
+  }
+
+  /** Drop grants whose time has passed. */
+  private sweepGrants(now: number): void {
+    for (const [token, g] of this.grants) {
+      if (g.expires > now) continue
+      this.dropGrant(token, g)
+      this.counters.reservationsExpired++
+    }
+  }
+
+  private dropGrant(token: string, g: Grant): void {
+    this.grants.delete(token)
+    this.grantedBytes -= g.bytes
+    this.grantedLoad -= g.load
+  }
+
+  /** Bytes granted to one tenant and not yet appended. */
+  private grantedTo(tenant: string): number {
+    let n = 0
+    for (const g of this.grants.values()) if (g.tenant === tenant) n += g.bytes
+    return n
+  }
+
+  /**
+   * Take one batch out of the grant `token` names, if the grant is alive, is this tenant's and
+   * names the fingerprint with at least the payload's size. True: the batch was admitted at `reserve`. Taken whatever then
+   * happens to the append (stored, duplicate, refused for another reason): its bytes either
+   * join the group, which counts them from here, or are not needed.
+   */
+  private takeGrant(req: AppendRequest, now: number): boolean {
+    if (typeof req.reservation !== 'string') return false
+    const g = this.grants.get(req.reservation)
+    if (!g || g.tenant !== req.tenant || g.expires <= now) return false
+    const bytes = g.batches.get(req.fingerprint)
+    // Not this batch, or more than was granted for it: admitted as without a token.
+    if (bytes === undefined || req.payload.byteLength > bytes) return false
+    g.batches.delete(req.fingerprint)
+    g.bytes -= bytes
+    this.grantedBytes -= bytes
+    if (g.batches.size === 0) this.dropGrant(req.reservation, g)
+    else g.expires = now + this.cfg.reservationTtlMs
+    return true
+  }
+
+  /**
+   * The shard has as much in flight as it may take for one more append of `bytes` (D37), counting
+   * each live grant as one append of its largest batch (D77). A grant's batch waiting in the group
+   * counts there as well while the grant has more to come, so a request counts for at most two
+   * appends at a time: conservative, never more than it can have in flight (review of D77, M-1).
+   */
+  private overloaded(bytes: number): boolean {
+    return this.inFlight + this.grants.size + 1 > this.cfg.maxInFlight || this.pendingBytes + this.grantedLoad + bytes > this.cfg.maxPendingBytes
+  }
+
+  private overloadRefusal(): AppendResult & { status: 'backpressure' } {
+    return { status: 'backpressure', scope: 'overload', retryAfterMs: this.cfg.overloadRetryMs + Math.floor(Math.random() * this.cfg.overloadRetryMs) }
+  }
+
+  /**
+   * Whether this tenant may add `bytes` now: its own cap first, so its backlog can never consume
+   * the shard; then, when the shard as a whole is full, only tenants above their fair share are
+   * refused, so one tenant cannot starve another. Fair-share admission can overshoot the budget
+   * while over-share tenants drain, so there is also a hard ceiling at twice the budget that
+   * nobody passes. What the tenant holds counts what waits in the open group and what is granted
+   * and not yet appended (D77). Null: room.
+   */
+  private roomRefusal(tenant: string, known: Stream | undefined, bytes: number, first = bytes, whole = false): (AppendResult & { status: 'backpressure' }) | null {
+    let waiting = 0
+    for (const p of this.group) if (p.req.tenant === tenant) waiting += p.bytes
+    const held = (known?.bufferedBytes ?? 0) + waiting + this.grantedTo(tenant)
+    if (held + bytes > this.cfg.tenantMaxBytes) return { status: 'backpressure', scope: 'tenant', retryAfterMs: 1000 }
+    const total = this.totalBytes + this.groupBytes + this.grantedBytes
+    if (total + bytes > 2 * this.cfg.shardMaxBytes) return { status: 'backpressure', scope: 'shard', retryAfterMs: 1000 }
+    if (total + bytes > this.cfg.shardMaxBytes) {
+      const fairShare = Math.floor(this.cfg.shardMaxBytes / this.sharers(tenant))
+      // At `reserve` (`whole`) a request is admitted when its first batch fits the tenant's share,
+      // or the tenant holds nothing: what appending its batches one by one did for its first
+      // batch before D77, without which a request larger than its share would never be admitted
+      // while others keep the shard over budget. The tenant's cap and the hard ceiling still bound
+      // the whole request (review of D77, m-1). For an append, `first` is its one batch.
+      if (held + first > fairShare && !(whole && held === 0)) return { status: 'backpressure', scope: 'shard', retryAfterMs: 1000 }
+    }
+    return null
+  }
+
+  /**
+   * The denominator of the fair share: tenants holding anything here (bytes buffered, waiting in
+   * the open group, or granted and not yet appended), and `tenant` itself (review of D77, m-2).
+   */
+  private sharers(tenant: string): number {
+    const holding = new Set<string>([tenant])
+    for (const [t, s] of this.streams) if (s.bufferedBytes > 0) holding.add(t)
+    for (const p of this.group) holding.add(p.req.tenant)
+    for (const g of this.grants.values()) holding.add(g.tenant)
+    return holding.size
+  }
+
+  /**
+   * Room for one request's batches to this shard (D77; contracts/BATCH.md "What a refusal
+   * stored"). The same checks an append makes for epoch, size, registration, load and room, for
+   * the batches together and before any of them is sent, with nothing stored but what a first
+   * append of a new stream stores in `logged` mode (its stream row, so its registration can run).
+   * Batches the stream holds or has waiting need no room (their appends are duplicates). With
+   * `hold`, the room is held for the tenant until the batches are appended with the token, it is
+   * released, or `reservationTtlMs` passes; memory only, so an eviction drops it and the appends
+   * are then admitted as appends without a token. No await: two calls cannot both take the last room.
+   */
+  async reserve(req: ReserveRequest): Promise<ReserveResult> {
+    if (this.refusal) return { status: 'backpressure', scope: 'overload', retryAfterMs: this.refusal.retryAfterMs }
+    if (typeof req !== 'object' || req === null || typeof req.tenant !== 'string' || !Array.isArray(req.batches)) throw new Error('shard: reserve: tenant and batches are required')
+    for (const b of req.batches) {
+      if (typeof b?.fingerprint !== 'string' || !Number.isSafeInteger(b.bytes) || b.bytes < 0) throw new Error('shard: reserve: each batch needs a fingerprint and a byte count')
+    }
+    const now = Date.now()
+    this.sweepGrants(now)
+    const known = this.streams.get(req.tenant)
+    if (known && req.epoch < known.epoch) return { status: 'stale_epoch', epoch: known.epoch }
+    for (const b of req.batches) if (b.bytes > this.cfg.maxBatchBytes) return { status: 'too_large', maxBytes: this.cfg.maxBatchBytes }
+    // A probe (`hold: false`) of a tenant this shard does not know creates no stream and starts no
+    // registration: it asks about room only, and the append that follows starts it (review n-1).
+    if (this.mode() === 'logged' && (known !== undefined || req.hold !== false)) {
+      const s = known ?? this.createStream(req.tenant, req.epoch)
+      if (!s.registered) {
+        this.kick(req.tenant)
+        if (!this.accepts(s)) {
+          this.counters.refusedReserve++
+          return this.registeringRefusal() as ReserveResult
+        }
+      }
+    }
+    const need = new Map<string, number>()
+    let bytes = 0
+    let first = -1
+    let load = 0
+    const sql = this.ctx.storage.sql
+    for (const b of req.batches) {
+      if (need.has(b.fingerprint)) continue
+      if (known && sql.exec(`SELECT 1 FROM batch WHERE tenant = ? AND fingerprint = ?`, req.tenant, b.fingerprint).toArray().length > 0) continue
+      if (this.group.some((p) => p.req.tenant === req.tenant && p.req.fingerprint === b.fingerprint)) continue
+      need.set(b.fingerprint, b.bytes)
+      bytes += b.bytes
+      if (first < 0) first = b.bytes
+      load = Math.max(load, b.bytes)
+    }
+    if (need.size === 0) return { status: 'ok', token: null, expiresInMs: 0 }
+    // Load as one append of the largest batch (the grant's batches go one at a time); room for all of them.
+    if (this.overloaded(load)) {
+      this.counters.refusedOverload++
+      this.counters.refusedReserve++
+      return this.overloadRefusal()
+    }
+    const room = this.roomRefusal(req.tenant, known, bytes, first, true)
+    if (room) {
+      this.counters.refusedReserve++
+      return room
+    }
+    if (req.hold === false) return { status: 'ok', token: null, expiresInMs: 0 }
+    const token = crypto.randomUUID()
+    this.grants.set(token, { tenant: req.tenant, batches: need, bytes, load, expires: now + this.cfg.reservationTtlMs })
+    this.grantedBytes += bytes
+    this.grantedLoad += load
+    this.counters.reserved++
+    return { status: 'ok', token, expiresInMs: this.cfg.reservationTtlMs }
+  }
+
+  /** Give back what `reserve` granted and was not appended (a request refused by another shard). Unknown tokens are ignored. */
+  async release(tenant: string, token: string): Promise<void> {
+    this.releaseGrant(tenant, token)
   }
 
   async append(req: AppendRequest): Promise<AppendResult> {
+    const now = Date.now()
+    this.sweepGrants(now)
+    // Admitted at `reserve` (D77): not refused for load or room. Memory only, no await.
+    const granted = this.takeGrant(req, now)
+    if (!granted) return this.admit(req, now, false)
+    // A refusal or a failure under a grant ends its request's sequence here (the caller stops at
+    // the first): what is left of the grant is dropped now, not held until it expires (review of
+    // D77, M-2). A duplicate is an `ok` and keeps it. `admit` makes its checks before its first
+    // await, so wrapping it changes nothing about who takes the last room.
+    const token = req.reservation!
+    try {
+      const r = await this.admit(req, now, true)
+      if (r.status !== 'ok') this.releaseGrant(req.tenant, token)
+      return r
+    } catch (e) {
+      this.releaseGrant(req.tenant, token)
+      throw e
+    }
+  }
+
+  private releaseGrant(tenant: string, token: string): void {
+    const g = this.grants.get(token)
+    if (g && g.tenant === tenant) this.dropGrant(token, g)
+  }
+
+  /** `append` once the grant, if any, is taken: `granted` skips the load and room checks. */
+  private async admit(req: AppendRequest, now: number, granted: boolean): Promise<AppendResult> {
     const bytes = req.payload.byteLength
     // Early refusal, before anything is read or written: the shard already has as much in
-    // flight as it may take. Retryable; nothing about this request is stored or counted.
-    if (this.inFlight >= this.cfg.maxInFlight || this.pendingBytes + bytes > this.cfg.maxPendingBytes) {
+    // flight as it may take (counting what it has granted). Retryable; nothing about this
+    // request is stored or counted.
+    if (!granted && this.overloaded(bytes)) {
       this.counters.refusedOverload++
-      return { status: 'backpressure', scope: 'overload', retryAfterMs: this.cfg.overloadRetryMs + Math.floor(Math.random() * this.cfg.overloadRetryMs) }
+      return this.overloadRefusal()
     }
     // Storage of a newer release: retryable, never `ok` (design/UPGRADES.md §7).
     if (this.refusal) return { status: 'backpressure', scope: 'overload', retryAfterMs: this.refusal.retryAfterMs }
@@ -796,28 +1067,15 @@ export class Shard extends DurableObject<ShardEnv> {
         if (!this.accepts(s)) return this.registeringRefusal()
       }
     }
-    // What this tenant holds, including what is waiting in the open group.
-    let waiting = 0
-    for (const p of this.group) if (p.req.tenant === req.tenant) waiting += p.bytes
-    const held = (known?.bufferedBytes ?? 0) + waiting
-    // A tenant is limited by its own cap first, so its backlog can never consume the shard.
-    if (held + bytes > this.cfg.tenantMaxBytes) return { status: 'backpressure', scope: 'tenant', retryAfterMs: 1000 }
-    // When the shard as a whole is full, only tenants above their fair share are refused.
-    // A tenant at or below its share is always admitted, so one tenant cannot starve another.
-    // Fair-share admission can overshoot the budget while over-share tenants drain, so
-    // there is also a hard ceiling at twice the budget that nobody passes.
-    const total = this.totalBytes + this.groupBytes
-    if (total + bytes > 2 * this.cfg.shardMaxBytes) return { status: 'backpressure', scope: 'shard', retryAfterMs: 1000 }
-    if (total + bytes > this.cfg.shardMaxBytes) {
-      const sharers = this.activeStreams() + (held === 0 ? 1 : 0)
-      const fairShare = Math.floor(this.cfg.shardMaxBytes / Math.max(1, sharers))
-      if (held + bytes > fairShare) return { status: 'backpressure', scope: 'shard', retryAfterMs: 1000 }
+    // Room for this tenant (`roomRefusal`), unless `reserve` already held it for this batch.
+    if (!granted) {
+      const room = this.roomRefusal(req.tenant, known, bytes)
+      if (room) return room
     }
 
     // Active series. Only ids NEW to the window can be refused, so a tenant at its limit
     // keeps writing the series it already has. Checked and recorded here, with no await in
     // between, so two appends in one group cannot both take the last room.
-    const now = Date.now()
     if (req.seriesIds) {
       // The one cheap check the shard can make without parsing the batch: `n_series` at offset 12.
       const header = bytes >= 16 ? new DataView(req.payload.buffer, req.payload.byteOffset, 16).getUint32(12, true) : -1
@@ -1372,7 +1630,7 @@ export class Shard extends DurableObject<ShardEnv> {
         await this.lowerThanLedger(tenant, r, ledger)
       }
     } finally {
-      this.release()
+      this.releaseRegSlot()
     }
     if (logged) this.confirm(tenant, r.incarnation)
     else this.backoff(tenant, r)
@@ -1441,7 +1699,7 @@ export class Shard extends DurableObject<ShardEnv> {
     return new Promise<void>((resolve) => this.regWaiters.push(resolve))
   }
 
-  private release(): void {
+  private releaseRegSlot(): void {
     const next = this.regWaiters.shift()
     if (next) next() // the slot passes to the next call
     else this.regSlots--

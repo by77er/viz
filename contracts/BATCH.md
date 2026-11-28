@@ -135,6 +135,36 @@ whole request gets a retryable status (429 with `Retry-After` for backpressure, 
 otherwise) and the sender retries all of it. `partial_success` is used only for rows
 rejected by validation, which a retry would not fix.
 
+**What a refusal stored** (added 2026-11-28, D77). A **429 stores nothing** of the request:
+no batch of it was newly appended to any shard (a batch some earlier request had already
+stored may be there, under its fingerprint). A **503** may have stored part of it; the
+sender's full retry stores each batch once (fingerprints) and readers de-duplicate the rest
+(above), so a sender that retries loses nothing and duplicates nothing it can see. A sender
+that gives up after a 503 may leave part of its request stored; after a 429 it leaves none.
+
+How `edge` keeps that promise: a request of more than one batch first asks every shard it
+routes to for room (`Shard.reserve`, one call per shard, all at once) and appends only once
+every shard has granted it. A grant holds the batches' bytes against the tenant's and the
+shard's room (its cap, the shard's budget and fair share) until it is used, released or
+expires (`reservationTtlMs`, 5 s from its last use: each append under it extends it); against
+the in-flight limits (D37) it counts as **one append of its largest batch**, since its batches
+are appended one at a time (changed 2026-11-28 by the review of D77, M-1: it had counted every
+batch and their sum, which refused a request of more than `maxInFlight` batches or
+`maxPendingBytes` bytes to one shard for ever). An append that carries its token
+(`AppendRequest.reservation`) is not refused for room or for load. A refusal at `reserve`
+(backpressure, overload, `registering`, `stale_epoch`, `too_large`) appends nothing, and the
+other grants are released. **No grant outlives its request** (review M-2): an append under a
+grant that is refused (anything but `ok`, a duplicate being an `ok`) or fails drops what is
+left of the grant at the shard, and `edge` releases the grant of every slot that stopped before
+its last batch. Anything refused after an append of the request stored a batch is answered 503,
+never 429. A request of one batch is appended directly: one append is all or nothing. The grant
+is memory only: a shard that restarts between the two calls forgets it, and the append is then
+admitted as one without a token (and, if refused there, answered 503).
+
+`Shard.reserve` with `hold: false` answers the same question without holding anything (a
+probe): `edge` uses it before decoding a body it has seen refused (D77). A probe of a tenant
+the shard has no stream for creates none and starts no registration (review n-1).
+
 ## Decode limits (every signal; added 2026-11-19, review M-3)
 
 What `edge` builds while it decodes a request is bounded whatever the body's shape: a protobuf

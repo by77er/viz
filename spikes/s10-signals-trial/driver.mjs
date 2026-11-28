@@ -26,10 +26,13 @@ if (!TREE || !STATE) throw new Error('VIZ_TREE and STATE must be set')
 const HERE = new URL('.', import.meta.url).pathname
 const cfm = await import(pathToFileURL(join(TREE, 'deploy', 'lib', 'cf.mjs')).href)
 const { wrangler } = await import(pathToFileURL(join(TREE, 'deploy', 'lib', 'wrangler.mjs')).href)
-const STAGE = 's10'
+// Another spike can drive its own stage with this driver (S15: SPIKE_STAGE=s15 SPIKE_TENANTS=s15-load):
+// every name below follows the stage, so it never reaches another stage's resources.
+const STAGE = process.env.SPIKE_STAGE ?? 's10'
+if (!/^s[0-9]+$/.test(STAGE)) throw new Error('SPIKE_STAGE: a spike stage name such as s15')
 const LOAD = `viz-${STAGE}-load-client`
 const GATEWAY = `viz-${STAGE}-gateway`
-export const TENANTS = ['s10-load', 's10-q', 's10-fat', 's10-fatattr', 's10-hostile', 's10-load2']
+export const TENANTS = process.env.SPIKE_TENANTS?.split(',') ?? ['s10-load', 's10-q', 's10-fat', 's10-fatattr', 's10-hostile', 's10-load2']
 mkdirSync(join(STATE, 'results'), { recursive: true })
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
