@@ -4319,11 +4319,14 @@ on Cloudflare.)
    would for epoch, size, registration (D61), load (D37) and room (the tenant's cap and the shard's
    fair share), for the batches together; batches it already holds or has waiting count as
    duplicates and need no room. If it admits them it holds their bytes in memory under a token,
-   counted against the tenant's cap, the shard's budget and the in-flight limit, until each batch
-   is appended with the token (`AppendRequest.reservation`), the token is released, or
-   `reservationTtlMs` (5 s) passes. Only when every shard granted does `edge` append, with the
-   tokens; an append whose grant names it is not refused for room or load. Any refusal at reserve
-   appends nothing, and the other grants are released. A request of one batch is appended
+   counted against the tenant's cap and the shard's budget and fair share (the sum of the
+   batches) and against the in-flight limits as **one append of its largest batch** (its batches
+   are appended one at a time; revised after the review, below), until each batch is appended
+   with the token (`AppendRequest.reservation`), the token is released, an append under it is
+   refused or fails, or `reservationTtlMs` (5 s) passes since its last use. Only when every shard
+   granted does `edge` append, with the tokens; an append whose grant names it is not refused for
+   room or load. Any refusal at reserve appends nothing, and the other grants are released; a
+   slot that stops before its last batch releases its grant. A request of one batch is appended
    directly, as before: one append is all or nothing.
 2. **429 means nothing stored.** `edge` tracks whether any batch of the request was newly stored
    (an `ok` that is not a duplicate, or an append whose fate is unknown). A full buffer after that,
@@ -4339,6 +4342,38 @@ on Cloudflare.)
    append as any request. A different pool map, an error or an unknown answer: decode. An early
    refusal keeps the tenant suspect. A sender that retries inside its `Retry-After` is refused at
    once; that is the shard's own answer, never longer.
+
+**Revised after the review** (2026-11-28, `design/reviews/d77-ingest-reservations.md`; this
+replaces the first text of point 1, which counted every granted batch and their bytes against the
+in-flight limits).
+- **M-1, load.** Counting a grant as all its batches and their sum held a request's whole one-shard
+  total against D37's limits (64 appends, 16 MiB pending) for its whole sequence: a request of more
+  than 64 batches or 16 MiB to one shard was refused 503 for ever (reproduced at default limits), and
+  two ~8.5 MiB requests could no longer share a shard. D37's limits bound what an acknowledgement
+  waits behind, and a grant's batches arrive one at a time and hold no payload until they do. So a
+  live grant counts as one append in flight and its largest batch's bytes; room (cap, budget, fair
+  share, ceiling) keeps the sum, because room is what the batches will hold once stored. While one
+  of a grant's batches waits in the group it counts there too, so a request counts for at most two
+  appends at a time: conservative, and simpler than tracking which grants have a batch in flight.
+  Alternatives: (i) not count grants in load at all: granted appends skip the load check, so any
+  number of grants could put any number of appends in flight at once; (ii) count exactly (a grant's
+  slot only while none of its batches is in the group): one more counter kept in step with the group's
+  settle path, to save at most one slot per large request; (iii) cap the batches a request may send to
+  one shard: refuses valid requests; (iv) count `min(batches, maxInFlight)`: still lets one large
+  request shut out another. Would change if edge appended a grant's batches concurrently (then a grant
+  counts its concurrency), or if the double count is seen to refuse requests under load (then (ii)).
+- **M-2, no grant outlives its request.** Both ends: the shard drops what is left of a grant when an
+  append under it is refused (anything but `ok`) or throws, which needs no caller to cooperate; and
+  `edge` releases a slot's grant when the slot stops before its last batch, which also covers a thrown
+  call the shard never saw and a status this release does not know. A grant left behind costs its
+  room and an in-flight slot for 5 s, and a tenant at its series limit would otherwise leave one per
+  refused request.
+- **m-1, m-2, m-3, n-1.** At `reserve`, a tenant holding nothing, or whose first batch fits its share,
+  is admitted whole (bounded by its cap and the hard ceiling): what appending batch by batch gave its
+  first batch before D77, without which a request larger than its share is never admitted while
+  others keep the shard over budget. Every tenant holding anything here (buffered, in the group or
+  granted) is a sharer. A grant's expiry is extended on each use, so a long sequence on a slow shard
+  keeps it. A probe of a tenant the shard does not know creates no stream.
 
 **Alternatives.** (a) As built before: append to every shard at once and answer 429 when any
 refuses. (b) Two-phase append: `prepare` stores the batch rows invisible to tail reads, seals and
@@ -4391,7 +4426,8 @@ isolate: a retry that reaches another isolate is decoded there once.
 
 **Cost.** Rows written: none added (grants are memory; measured here, below). Round trips: one more
 per shard, in parallel, on the acknowledgement path of requests of more than one batch, plus one on
-the refusal path to release; none for one-batch requests. Memory: per grant a map of fingerprints;
+the refusal path to release (at reserve, or by a slot that stopped early); none for one-batch
+requests. Memory: per grant a map of fingerprints;
 per isolate at most 1,000 remembered plans (about 1 KB each) and 10,000 suspect tenants.
 **Measured here** (local workerd, `spikes/s15-ingest-atomic/README.md`): rows written per accepted
 8,200-span request 24 before and after, per refused one 10 before (its stored half) and 0 after;

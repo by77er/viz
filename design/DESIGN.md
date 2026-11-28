@@ -193,8 +193,10 @@ until then. No key is ever accepted by two shards.
    gets a retryable status for the whole request (429 or 503) and retries all of it. A 429
    stores nothing of the request (D77): a request of more than one batch first reserves room
    on every shard it routes to, all at once, and appends only when every shard granted it (a
-   grant holds the bytes until they are appended under its token, released, or 5 s pass;
-   memory only); a refusal after any batch of the request was stored is a 503.
+   grant holds the bytes against the tenant's and the shard's room until they are appended under
+   its token, released, refused, or 5 s pass since its last use, and counts against the in-flight
+   limits as one append of its largest batch; memory only); a refusal after any batch of the
+   request was stored is a 503.
    `partial_success` is used only for rows rejected by validation, which a retry would not
    fix. Retries are safe in two layers: a batch fingerprint stops a shard storing an
    identical batch twice, and every reader and writer de-duplicates on the row key, so a
