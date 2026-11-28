@@ -879,6 +879,33 @@ async function main() {
       await setMockDelay(0)
       check('review 2, B3: the reloaded page is in place before its answer arrives (the chart\'s reserved height), and a wheel turned meanwhile is not undone', was === 600 && held === 600 && wheeled === 250 && left === 250, JSON.stringify({ was, held, wheeled, left }))
       await ctx.close()
+      // The position is held, not only placed once: a scroll to the top that no input of the person's made, 150 ms after the reloaded
+      // page is in place (what the router's reset does when its first page renders after the page is tall, or the browser's own
+      // late restoration), is undone. Whether the router's reset comes before or after the first placement depends on timing, so
+      // the reset is made here, on Help (no data arrives, so nothing else resizes the page and places it again) and on the chart.
+      {
+        const { ctx, page } = await newPage({ viewport: { width: 1500, height: 700 } })
+        await ctx.addInitScript(() => {
+          if (performance.getEntriesByType('navigation')[0]?.type !== 'reload') return
+          let kept = null
+          try { kept = JSON.parse(sessionStorage.getItem('viz.scroll') || 'null') } catch {}
+          window.__late = null
+          const watch = () => {
+            if (kept && kept.y > 0 && Math.round(scrollY) === kept.y) setTimeout(() => { scrollTo(0, 0); setTimeout(() => { window.__late = { kept: kept.y, after: Math.round(scrollY) } }, 300) }, 150)
+            else requestAnimationFrame(watch)
+          }
+          requestAnimationFrame(watch)
+        })
+        const rows = []
+        for (const [address, sel] of [[`${APP}/help`, '#help-keys'], [url(Q_MANY), '[data-testid=chart] svg.vz-plot']]) {
+          await page.goto(address); await page.waitForSelector(sel); await sleep(600)
+          await page.evaluate(() => scrollTo(0, 400)); await sleep(300)
+          await page.reload(); await page.waitForSelector(sel)
+          rows.push(await page.waitForFunction(() => window.__late, null, { timeout: 5000 }).then((h) => h.jsonValue()).catch(() => null))
+        }
+        check('review 2, B3: the reloaded position is held for its second: a scroll to the top that the person did not make, just after it is reached, is undone (Help, the chart)', rows.every((r) => r && r.kept === 400 && r.after === 400), JSON.stringify(rows))
+        await ctx.close()
+      }
     }
 
     // ------------------------------------------------ sign-in
