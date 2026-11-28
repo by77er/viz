@@ -66,3 +66,6 @@ npx wrangler delete --name viz-preview-app
 ```
 
 Delete it when the gateway serves the app, or when the owner has looked; record that here.
+
+**Deleted 2026-11-28** (`wrangler delete --name viz-preview-app`, succeeded) after the web app went live at
+https://viz.bitcru.sh/ (pull request #12, release 39468db). Nothing else was created by this spike.
