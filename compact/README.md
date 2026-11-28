@@ -131,6 +131,37 @@ the metric behaviour only: the span and log tables are left as they are.
   deeper `/`). A janitor of the release before reads such an output as `unknown_inputs` and keeps
   it (never deletes it): safe, and why no version changed.
 
+## Merges priced in CPU before they start (D82, 2026-11-28)
+
+S10 measured on Cloudflare maintenance runs of 8 merges at 21.0 and 28.4 s of CPU, and a closed-day
+run killed at the 30 s limit (`spikes/s10-signals-trial/README.md`). A Worker cannot read its own CPU
+(its clock stands still while code runs), so a merge is priced before it starts, as the ruler prices
+a warm-up (D51):
+
+- `modelledCpuMs(kind, bytes)` = `STEP_CPU_MS` (100) + MiB of input × `CPU_MS_PER_MIB[kind]`: metric
+  200, spans 700, trace_index 350, logs 700 (MODELLED for Cloudflare: the larger of 2.5 × this
+  machine's WASM merge in workerd, measured by `flush/test/profile.prof.ts`: spans 204–264,
+  trace_index 100–112, logs 62–83 ms per MiB, and S10's worst merge, at least 640 ms per MiB).
+- `CompactPolicy.maxStepCpuMs` (8,000): `grow` adds an input only while the group's price fits, as
+  well as `maxInputBytes`; a file that alone is over it is left as it is. For spans and logs the cap
+  binds first (about 11 MiB a step instead of 16).
+- `StepOptions.cpuBudgetMs`: a step whose chosen merge costs more answers `budget` (nothing read or
+  written). `compactTenant` passes what is left of its `cpuBudgetMs` to each step and stops with
+  `more` at the first `budget`; `CompactRun.modelledCpuMs` is what its merges were priced at, a
+  conflict's or an error's included. `JobSummary.modelledCpuMs` is every merge's price.
+- Without a budget (the Workflow, direct callers) nothing changes. The stack shares
+  `MAINT_CPU_BUDGET_MS` (15,000) among the tenants of one maintenance batch (`stack/README.md`).
+
+**On Cloudflare** (S18, `spikes/s18-signals-write/README.md`): 136 maintenance invocations sampled, none
+killed; CPU p50 6.1 s, max 15.7 s; actual over modelled 0.45–0.59 for most merging invocations,
+0.98–0.99 for three: the figures are about twice the typical cost and about right for the worst.
+
+**Verified** (local workerd): `test/budget.test.ts`, 5 tests: the price by table; inputs chosen to fit
+the cap by the table's price (and the byte budget binding first for metrics); a file over the cap left
+alone; a step over its budget reads and writes nothing; a run merges while the next merge fits, stops
+with `more`, and the next run finishes with the same result; no budget, as before. Mutants: "Mutants of
+D82", below.
+
 ## The index fragment of an output (2026-11-19)
 
 Outputs carry the fragment `engine.mergeFiles` writes (`engine/storage`), which since
@@ -202,7 +233,9 @@ settles it is a merge run in a deployed Worker (`design/VERIFICATION.md` §4).
   that is the engine's encoding; not done here.
 - **Rewriting the inputs record of an adopted object.** An object written before D30 has
   none; a step that adopts it does not add one (it would need an unconditional overwrite).
-- Not run on Cloudflare.
+- Measuring a merge's CPU (impossible in a Worker): it is modelled (D82).
+- Run on Cloudflare since: S10 (both levels), S18 (open-hour merges under the D82 budget; no closed
+  day: the stage lived 30 minutes).
 
 ## How it was verified
 
@@ -284,6 +317,10 @@ the old one).
 
 The engine's mutants (rows lost, the earlier input winning, a token filter missing tokens, …) are
 in `engine/storage/README.md`.
+
+## Mutants of D82
+
+Not run yet (paused 2026-11-28); see `spikes/s18-signals-write/README.md`, "Paused".
 
 ## Contract issues
 

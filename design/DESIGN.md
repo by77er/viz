@@ -263,7 +263,19 @@ until then. No key is ever accepted by two shards.
    tables' files in milliseconds (the floor of their nanosecond bounds), so plans and
    precedence work for them unchanged.
 4. The shard discards a segment once the ledger has acknowledged the unit, and records how
-   far it has discarded.
+   far it has discarded. As built, `flush` tells the shard only what the ledger has **logged**
+   to R2, and the shard keeps a recorded segment's payloads 30 s more for queries already in
+   flight; those payloads never cost an append its room: an append that would be refused for
+   room first gives them up, and a query that still needed them re-plans (D82).
+
+**Throughput (as built, D82).** Flush overlaps a stream's segments (the next one is read,
+encoded and written while the one before it is admitted, admission staying in sequence order),
+waits up to 3 s for the ledger's log so the shard frees a run's segments in the same run, and
+runs up to three streams of a queue batch at once, every R2 request of the invocation under one
+limit of six. Measured on Cloudflare (S18): one tenant on two span shards took 28,800 spans/s
+for 68 s with 5 of 245 requests' attempts refused and retried; flush queue lag 2.8–6.3 s. Before
+(S10) the same tenant's buffer filled at about 20,000 spans/s and refused everything for about
+33 s.
 
 Nothing in this chain is called by hand. A seal writes a `{tenant, shard}` message to an
 outbox in the same transaction as the segment boundary and hands it to a queue; the queue's
@@ -407,6 +419,11 @@ rows are chosen over chunk blobs for openness and simplicity, pending the read-s
   Every logs output carries its token filter (D65). Those merges stream their inputs and cut row
   groups at 2 MiB of data, so the largest step peaks at 62 MB (spans) and 81 MB (logs) of WASM
   memory (measured locally).
+- **CPU (D82).** A Worker cannot read its own CPU, so every merge is priced before it starts
+  from its table and input bytes (a model set above what Cloudflare measured), its inputs are
+  chosen to fit 8 s, and one maintenance invocation's merges, over all its tenants, never start
+  past 15 s of that price; what is left goes to a follow-up message. Measured on Cloudflare
+  (S18): no run killed, at most 15.7 s of CPU (S10: 28.4 s, and one killed at the 30 s limit).
 - **When it runs (as built).** Compaction, retention, deletion and the orphan sweep are one
   per-tenant maintenance run, consumed from a queue. A flush that changed something
   (admitted a unit, wrote an object, or saw a segment recorded) asks for one; so does the

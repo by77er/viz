@@ -157,6 +157,23 @@ more under a concurrent retention, 25 crashed steps, 1,368 files expired, 4,964 
 76 orphans deleted, 105 evictions, 74 ledger-log outages, 72 old-plan readers verified, 0 dead
 letters.
 
+## The write side at realistic ingest (D82, 2026-11-28)
+
+The stack takes D82 as its components ship it (`shard/README.md`, `flush/README.md`,
+`compact/README.md`, same heading): the flush consumer's defaults (three streams at once, one R2
+limit of six, a pipeline of two, a 3 s wait for the ledger's log) and one CPU budget for each
+maintenance batch: `consumeMaintBatch` gives each tenant's run what the runs before it left of
+`MAINT_CPU_BUDGET_MS` (15 s modelled, `MaintOptions.cpuBudgetMs`); a run that finds it spent still
+expires, deletes and sweeps, and its merges go to the follow-up message (`more`). A `budget` step does
+not make the orphan sweep due (it wrote nothing). The run's log line now says what its merges were
+priced at and how many bytes they read (`merged n (modelled CPU m ms, input b bytes)`), which is how
+S18 compared the model with Cloudflare's CPU (`spikes/s18-signals-write/README.md`).
+
+**Verified** (local workerd): `test/budget.test.ts` (1 test, the budget shared over a batch of three
+tenants); the whole suite, 11 files, 50 passed and 1 skipped (2026-11-28, `--fsModuleCachePath` of this
+tree's own), with the flush consumer's new defaults in every queue test. Mutant M1 ("budget not
+shared") is killed by it (`compact/README.md`, "Mutants of D82").
+
 ## Not implemented
 
 - **A query Worker.** The read path here is test code; viz-query (`query/`) serves queries. Only

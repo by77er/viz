@@ -284,6 +284,41 @@ and one batch of bytes for as long as it lives, and a second while one of its ba
 group, so up to `maxInFlight` concurrent multi-batch requests share a shard's 64 slots: a small
 request can be refused `overload` while many large ones are in their sequences.
 
+## Recorded payloads give way to appends (D82, 2026-11-28)
+
+S10 measured on Cloudflare a tenant's span shards refusing every append for about 33 s after a burst
+(`spikes/s10-signals-trial/README.md`, "Ingest"). The cause was here: a recorded segment's payloads
+are kept `retainRecordedMs` (30 s) so in-flight queries can still read them, and they counted against
+the tenant's 64 MiB like unflushed rows, so a tenant could sustain at most about 64 MiB / 30 s per
+shard however fast flush was (`design/DECISIONS.md` D82).
+
+**Implemented.** `Stream.retainedBytes`: payload bytes of recorded batches not yet discarded, kept by
+`recorded()`, the alarm's discard and the reclaim, and rebuilt from SQLite in `load()`. An append or a
+`reserve` that `roomCheck` would refuse first discards recorded payloads (`discardRecorded`: for the
+tenant's cap, the tenant's own; for the shard's budget, every tenant's), with the same statements as
+the alarm (`discardThrough`: the fence first, in the same synchronous block), then is judged again. No
+await between the check, the discard and the second check. A reader that planned before the discard
+gets `stale_watermark` and re-plans. Unrecorded rows count in full; what was given up is counted in
+`stats().reclaimedBytes`. `describe()` shows `retainedBytes`.
+
+**Verified** (local workerd): `test/reclaim.test.ts`, 7 tests: a tenant whose cap is held by recorded
+payloads is admitted and a stale reader re-plans; sealed-but-unrecorded rows still refuse, and a
+refusal after a reclaim leaves what was given up given up; another tenant's payloads are never given
+up for a tenant's own cap; for the shard's budget any tenant's are; `reserve` is judged the same way;
+the count survives `evictDurableObject`; the alarm's discard keeps it right. Mutants: below
+("Mutants of D82"). On Cloudflare (S18, `spikes/s18-signals-write/README.md`): one tenant 28,800
+spans/s for 68 s with 5 of 245 attempts 429; the paced shape that S10 refused 99 of 149 attempts of,
+none.
+
+**Risks.** Under pressure, queries of a tenant at its cap re-plan more often. The reclaim gives up all
+of a tenant's recorded payloads at once, not the oldest first (simpler; they are all already in the
+log). Fair share between tenants when one reclaims another's for the shard's budget was not measured
+on Cloudflare (S18 ran one tenant).
+
+### Mutants of D82
+
+Not run yet (paused 2026-11-28); see `spikes/s18-signals-write/README.md`, "Paused".
+
 ## Rollout (D61)
 
 Shard, ledger, flush, janitor and edge are one Worker, viz-ingest (`deploy/workers.json`), so

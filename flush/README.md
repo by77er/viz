@@ -19,6 +19,9 @@ that the tenant's ledger lists (`design/DESIGN.md` §4.3). It keeps no state.
 | `test/measure.test.ts` | Local timings (1 test) |
 | `test/signals.test.ts` | 8 tests of span and log segments (stage 2): units, keys, bytes, crashes, refusals, the full sweep |
 | `test/measure-signals.test.ts` | Local timings and bytes of span and log flushes (2 tests) |
+| `test/throughput.test.ts` | 9 tests of D82: the `Limiter`, the pipeline (overlap, order, depth), the wait for the log, the consumer's concurrent runs and its one R2 limit |
+| `test/profile.prof.ts`, `vitest.profile.config.ts` | D82's profile, not in `npm test`: `npm run profile` (see "Throughput (D82)") |
+| `test/instrument.ts`, `test/workload.ts` | An `env` that times (and can delay) every R2 and Durable Object call; the span and log workloads |
 | `scripts/mutants.mjs` | Mutation check (run on a copy of the tree, never in the checkout) |
 
 Bindings: `SHARD`, `LEDGER` (Durable Object namespaces), `BUCKET` (R2), `CELL` (default `cell-0`).
@@ -163,6 +166,48 @@ Nobody calls `flushTenant` by hand any more (tests still may).
    shard that only an older version of a map named (a renamed pool, a reduced slot
    count) is found by neither, and `full` wakes idle shards, so the cron does not use it.
 
+## Throughput (D82, 2026-11-28)
+
+S10 measured on Cloudflare that flush bounded trace ingest (queue lag up to 58 s, the groups of a
+batch one after another, every run's last segment left for a retry). Three changes, none of a
+format or protocol (`design/DECISIONS.md` D82):
+
+1. **A run pipelines its segments.** Up to `PIPELINE_DEPTH` (2) segments are read, encoded and
+   written at once (`FlushOptions.pipeline`; 1 is the order before D82). Each is still admitted only
+   after every one before it, and `afterPut`, `afterAddUnit` and `afterRecorded` still run per
+   segment in sequence order. Whatever is in flight when an attempt ends (a `Stop`, a `Restart`, a
+   hook that throws) is awaited before the run goes on. After a crash, up to two segments' objects
+   may exist unadmitted (the orphan sweep keeps them as pending units; the retry adopts them).
+2. **A run waits for the ledger's log.** After its last unit it polls `loggedWatermarks` every
+   `logPollMs` (250 ms) for up to `logWaitMs` and tells the shard `recorded` in the same run. The
+   consumer passes `LOG_WAIT_MS` (3 s); a direct caller (`flushTenant`, the RPC, `POST /flush`)
+   passes nothing and is answered at once, as before.
+3. **The consumer runs a batch's streams at once**, at most `MAX_CONCURRENT_RUNS` (3;
+   `ConsumerOptions.maxConcurrentRuns`), every R2 request of the invocation under ONE `Limiter` of
+   six (`FlushOptions.r2`). Outcomes and acknowledgements are per group, as before.
+
+**Profile** (`npm run profile`; "here": local workerd; "modelled": the same code with S10's
+Cloudflare latencies in front of each call, R2 PUT 335 ms, a ledger RPC 32 ms, `addUnit` 47 ms, the
+ledger draining 535 ms after a commit). One consumer batch, 3 streams × 4 segments of about 4 MiB;
+"before" is this code with the three changes turned off (`maxConcurrentRuns: 1, pipeline: 1,
+logWaitMs: 0`), run alternately with "after", twice each (2026-11-28):
+
+| | spans, ms a segment (MiB/s) | logs, ms a segment (MiB/s) | streams recorded through their last segment in the run |
+|---|---|---|---|
+| modelled, before | 604–610 (6.6) | 588–604 (6.6–6.8) | 0 of 3 (all `awaiting_log`) |
+| modelled, after | **191–233 (17.2–20.9)** | **171–206 (19.5–23.4)** | **3 of 3** |
+| here, before | 82–89 (45–49) | 68–70 (57–59) | 1 of 3, 0 of 3 |
+| here, after | 96–100 (40–42) | 84–88 (45–47) | 3 of 3 |
+
+Per segment before (modelled): read 40 ms, encode 40–63 (CPU), PUTs 363 (two files in parallel),
+`addUnit` 52, `loggedWatermarks` 35, `recorded` 35. Without latencies the work is CPU and the
+change is slightly slower (the wait for the log is inside the invocation).
+
+**On Cloudflare** (S18, `spikes/s18-signals-write/README.md`): flush invocations' wall p50 2.8 s, max
+4.9 s (S10: max 16.6 s); the flush queue's lag 2.8–6.3 s per minute (S10: 7–58 s); one tenant took
+28,800 spans/s for 68 s with 5 of 245 attempts 429 (S10: its buffer full at about 20,000 spans/s).
+The buffer bound that mattered most was the shard's (D82, item 1: `shard/README.md`).
+
 ## R2 operations and time per flush
 
 Per sealed segment: one PUT per file (two per UTC day the segment covers), no GET unless a
@@ -187,7 +232,11 @@ segments of one run go in sequence, because each unit must extend the watermark.
   file of a segment (up to 26 files for a segment spanning the 24 h accept window), well under
   the ledger's 4,096 files a unit.
 
-- Flushing several streams of one queue batch concurrently.
+- Fanning R2 writes out to Durable Objects beyond the invocation's six connections (D82 (f)): not
+  needed at the measured rates.
+- Memory of a run with the pipeline (up to two segments and their files, three runs at once: about
+  30 MiB of JavaScript memory more than before, modelled) was not measured; S18 read the queue
+  invocations' isolate memory at up to 149.6 MB as reported, flush and maintenance together.
 - The queue wiring in THIS package's `wrangler.jsonc`: the queue and its consumer are bound in `stack/`. The `queue` method here is the same code, not exercised by a real queue from this directory.
 - Bindings to separately deployed shard and ledger scripts (`script_name`).
 - Authentication of the `POST /flush` route. It must not be given a public route; the tenant
@@ -199,14 +248,15 @@ segments of one run go in sequence, because each unit must extend the watermark.
 - Rollups. (Compaction is `compact/`, retention `janitor/`.)
 - Splitting a segment that is too large to encode in one isolate (segments are ~4 MB by
   the shard's `sealBytes`; nothing here enforces an upper bound).
-- Metrics about flush itself. Nothing has been run on Cloudflare or under load.
+- Metrics about flush itself. (Run on Cloudflare under load since: S10, S18.)
 
 ## How it was verified
 
 ```
 (cd ../engine/wasm && ./build.sh)       # the tests import ../engine/wasm/js/viz_engine.wasm
 npm install
-npx vitest run --maxWorkers=2   # 49 tests in workerd, 5 files: flush 21, consumer 18, golden 5, measure 1, registration 4
+npx vitest run --maxWorkers=2 --fsModuleCachePath <a dir of this tree's own>   # 68 tests, 8 files (2026-11-28: all pass)
+npm run profile                 # D82's profile, prints PROFILE lines (not a pass/fail suite)
 npx tsc --noEmit                # clean
 # mutants, from a COPY of the tree (the scripts refuse a git checkout):
 node scripts/mutants.mjs            # 20 mutants against test/flush.test.ts
@@ -295,6 +345,10 @@ What the tests establish (each on a fresh tenant and shard):
   marker was lost.
 
 ### Mutation checks
+
+**D82** (2026-11-28, on a copy of the tree in the scratch area, never in the checkout; each mutant
+against `test/throughput.test.ts`, F8 also `test/flush.test.ts`): see the table in "Mutants of D82"
+below.
 
 `scripts/mutants.mjs` applies one change to the source of a copy of the tree, runs
 `test/flush.test.ts`, and restores the file. **20 of 20 killed** (2026-11-19, on a copy in the
@@ -415,6 +469,10 @@ SHA-256 of 272 KB and the RPC serialisation of 4 MB are in the "rest" line.
 | WASM linear memory | 33.0 MB |
 | `select` of one metric (100 series, 24,000 samples), same inputs | 7–23 ms |
 
+### Mutants of D82
+
+Not run: the mutant run (18 mutants, listed in the PR body draft) was waiting for the machine lock when the work was paused (2026-11-28).
+
 ## Contract issues
 
 - **`v` belongs in `FlushMessage`** (`shard/src/shard.ts`, owned by the shard). Flush types it
@@ -431,7 +489,11 @@ SHA-256 of 272 KB and the RPC serialisation of 4 MB are in the "rest" line.
   defaults to 64), can exceed a Worker's CPU limit; the run then dies between steps, which
   is safe, but it would die at the same place again.
 - **`recorded` lags a slow ledger log.** With R2 failing, units are admitted and visible but
-  shards keep the rows (and their byte budget) until the log catches up and flush runs again.
+  shards keep the rows (and their byte budget) until the log catches up and flush runs again. A run
+  waits up to 3 s for it (D82), then leaves it to the retry as before.
+- **Three runs and a pipeline share one isolate** (D82): the CPU of their encodes adds up in one
+  invocation (S18: flush CPU max 2.1 s, against the 30 s limit), and so does their memory (not
+  measured on its own).
 - **A `gap` or `object_conflict` needs a person.** Flush stops and says so; nothing repairs it.
 - **The read path in `test/read.ts` is test code.** It makes two `plan` calls and compares
   versions; the real query path needs one call that returns both tables.

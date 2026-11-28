@@ -220,6 +220,14 @@ COMPATIBILITY §6 states them; here is how they apply today.
 - A rollback across a forward-only release is refused by the tool; a person who forces one
   (or lowers a gradual deployment) gets objects that answer 503 until it is undone. Safe,
   not available.
+- **D82 (2026-11-28) changes behaviour, no format.** The shard's schema, the flush and maintenance
+  messages, the ledger's RPCs and every file are as before; `Shard.describe` gains `retainedBytes`
+  and `Shard.stats` `reclaimedBytes` (additive fields of answers, derived from rows every release
+  writes), `JobSummary` and `CompactRun` gain `modelledCpuMs` (in memory and the log line only). Both
+  directions are safe at any skew: a shard of either release reads the other's rows, a flush of
+  either release talks to a ledger and shard of the other, and a rollback to a release before D82
+  only brings back its limits (a tenant's recorded payloads counted against its room for 30 s, one
+  run at a time, merges unpriced). No floor, no migration, no acknowledgement needed.
 - **A limit can make a release forward-only for some tenants, as a schema can.** A ledger
   release before checkpoints in parts (D47) cannot hold, checkpoint or rebuild a state above
   16 MiB. So production keeps `LEDGER_STATE_MAX_BYTES` at 16 MiB (`stack/wrangler.jsonc`), and

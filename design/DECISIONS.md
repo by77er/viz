@@ -4956,3 +4956,112 @@ re-examined in their re-review.
 | The controls follow `whoami`'s scopes; the API's 403 also disables them | Always enabled, the API refuses | The task: say why before the press; never send a write the key cannot make | Scopes can change under a session often |
 | The undo is offered by the API's `undoUntil` on an estimated API clock | A local 60 s timer | The window is the API's; a constant would drift from it | The API answers with the time left |
 | No optimistic change: the write's answer is shown, then the monitor is re-read; older reads are dropped | Optimistic update; TanStack Query's cache | A write someone else will see is said only when the API has said it; one mechanism for superseded reads that the tests can break | Writes become slow enough to need an optimistic state |
+
+## D82. The write side keeps up with realistic trace ingest: recorded payloads never hold a tenant's room, flush pipelines a stream's segments, waits for the ledger's log and runs a batch's streams at once under one R2 limit, and compaction is priced in CPU before it starts
+
+(Written 2026-11-28, from S10's findings on D63 and D68: `spikes/s10-signals-trial/README.md`, "Ingest",
+"Flush, ledger, compaction, publication", "What it means". Verified on Cloudflare in S18,
+`spikes/s18-signals-write/README.md`. No format, contract or protocol changes: the shard's wire
+answers, the flush message, the ledger's RPCs and every file are as before.)
+
+**The profile first** (`flush/test/profile.prof.ts`, `npm run profile` in `flush/`; "here" is local
+workerd, "modelled" is the same code with S10's measured Cloudflare latencies put in front of each
+call: R2 PUT 335 ms, a ledger RPC 32 ms, `addUnit` 47 ms). One consumer batch of 3 streams × 4
+segments of about 4 MiB of spans, as main had it: **604–623 ms a segment, 6.4–6.6 MiB/s per
+invocation** (logs 588–604 ms, 6.6–6.8 MiB/s; three runs, alternating with the change). Per segment, serially: read 40 ms, encode 40–63 ms (CPU), the PUTs 363 ms
+(two files, in parallel), `addUnit` 52, `loggedWatermarks` 35, `recorded` 35. R2 is 60% of it and the
+runs of a batch went one after another, so a batch's wall time was the sum. Every run ended
+`awaiting_log` (the ledger logs about 0.2–1 s after a commit), so its last segment reached the
+shard's `recorded` only on a retry 5 s or more later. But that is not what refused S10's tenant:
+**the shard counted recorded payloads, kept 30 s for in-flight queries (`retainRecordedMs`),
+against the tenant's 64 MiB**. At 4.5 MB/s per shard (S10's paced shape) 30 s of retention alone
+is 135 MB; however fast flush was, a shard could sustain at most 64 MiB / 30 s ≈ 2.2 MiB/s per
+tenant, about 10,000 spans/s for a tenant on two span shards. S10's "refused everything for about
+33 s" is that window. Compaction (measured here, WASM in workerd, the same profile): spans 204–264,
+trace_index 105–112, logs 62–83 ms of CPU per MiB of input; S10's worst logs merge on Cloudflare was
+10.2 s, at most 16 MiB in, so at least 640 ms/MiB there; runs of 8 merges took 21–28 s and one was
+killed at 32 s.
+
+**Decision.**
+1. **Shard.** A recorded payload is kept for queries only while nobody needs the room: an append or
+   a `reserve` that would be refused for room first discards recorded payloads (the tenant's own for
+   its cap; every tenant's for the shard's budget), synchronously, and is judged again. Unrecorded
+   rows count in full, as before. A reader that needed them gets `stale_watermark` and re-plans, as
+   after the alarm's discard (the fence moves in the same transaction). The shard keeps the count
+   (`retainedBytes`) and rebuilds it from SQLite on start; `stats().reclaimedBytes` counts what was
+   given up early.
+2. **Flush, a run.** Up to `PIPELINE_DEPTH` (2) segments are read, encoded and written at once;
+   each is admitted only after every one before it, as before. After its last unit a run polls
+   `loggedWatermarks` every 250 ms for up to `logWaitMs` (the consumer: 3 s; direct callers: 0) and
+   tells the shard `recorded` in the same run.
+3. **Flush, a batch.** The consumer runs up to `MAX_CONCURRENT_RUNS` (3) streams at once, and every
+   R2 request of the invocation goes through one `Limiter` of six (AGENTS.md: six connections an
+   invocation).
+4. **Compaction.** A merge is priced before it starts (`modelledCpuMs`: `CPU_MS_PER_MIB` metric 200,
+   spans 700, trace_index 350, logs 700, plus 100 ms a step); its inputs are chosen to fit
+   `maxStepCpuMs` (8 s) as well as the byte budget; `compactTenant` never starts a merge whose price
+   is more than what is left of `cpuBudgetMs` (status `budget`, `more`: the follow-up message does
+   it); a maintenance batch shares one budget, `MAINT_CPU_BUDGET_MS` (15 s), among its tenants. The
+   step itself is unchanged: stateless, idempotent, resumable by re-planning (D30).
+
+**Alternatives.** (a) Lower `retainRecordedMs` (to 5 s, say): a ceiling of 64 MiB / 5 s per shard,
+but in-flight queries refused more often at every load, not only under pressure. (b) Raise
+`tenantMaxBytes` (to 256 MiB): moves the ceiling (8.5 MiB/s per shard with 30 s retention), and makes
+the unflushed tail that every query reads up to four times larger (D54, D62). (c) Count only
+unrecorded bytes and never discard early: storage per shard unbounded by the cap (rate × 30 s). (d)
+Larger seals for spans (16 MiB): a quarter of the PUTs and units, but each `spans` file four times
+larger for the read side that reads flush units whole (D62; a builder is changing that now), and
+four times the encode memory. (e) Batch the ledger admission (`addUnits`): `addUnit` is 52 of 623 ms
+per segment (8%), overlapped by the pipeline anyway; a contract change for nothing measurable. (f)
+Fan the PUTs out to Durable Objects beyond six: a batch of three runs keeps six busy (peak 6 in the
+profile), and 3 × 2 segments of 4 MiB is the memory a run can afford; not needed at these rates.
+(g) Call the ledger's `drain()` from flush instead of polling: `drain` is the operator surface
+("not called on the data path", `contracts/ledger.ts`); polling needs no contract change, and the
+drain runs 200 ms after a commit by itself. (h) Raise `limits.cpu_ms` for viz-ingest: the same script
+serves edge's public `fetch`, whose hostile bodies D71 bounds by memory, not CPU (S10: up to 3.4 s);
+a higher limit for maintenance would lift it there too. (i) Measure each merge's CPU: a Worker cannot
+(its clock stands still while code runs), so a model it is, as D51 for the ruler. (j) Move merges to
+a Container: the right answer above the Worker budget (D68), not needed for these sizes.
+
+**Why.** (1) removes the bound that refused S10's tenant without making queries pay when there is
+room, and keeps storage bounded by the caps; (a), (b), (c) each give up one of those. (2) and (3)
+take the I/O off the critical path: modelled, the same batch flushes in 191–233 ms a segment
+(17.2–20.9 MiB/s, 2.6–3.2×) for spans and 163–206 ms (19.5–24.6 MiB/s, 2.9–3.7×) for logs, and every
+stream is recorded through its last segment in the same invocation (main: none). Measured here
+without the latencies (local R2 and objects are fast and the work is CPU), the change is no faster:
+82–89 ms a segment before, 96–100 after (logs 68–70, 84–88), the difference being the wait for the
+log inside the invocation; what it buys there is the same: every stream recorded in the run. (4) prices each step before it runs, which is all a
+Worker can do, and over-prices on purpose: the figures are the larger of 2.5 × this machine (S10's
+warm factor for edge's decode) and S10's worst merge.
+
+**Measured on Cloudflare** (S18, 2026-11-28, tenant `s18-load`, S10's driver and load Worker, one
+client Durable Object each, every span new): S10's run-1 shape **47 of 48 trace requests accepted, 2 of
+50 attempts 429** (S10: 33 of 48, 132 of 165; S15 on main with D77, today: 33 of 48, 138 of 171), the
+one not accepted a 502 "ingest did not answer" that the driver does not retry; logs and Loki 48 of 48
+with no 429. The paced shape: **60 of 60, no 429** (S10: 50 of 60, 99 of 149 attempts 429). Sustained,
+4 clients × 40 closed loop: **160 of 160, no 429, 1,312,000 spans in 55.5 s: 23,600 spans/s**, limited by
+the clients (ack p50 1.09 s). 8 clients × 30: **240 of 240 accepted, 5 of 245 attempts 429, 1,968,000
+spans in 68.2 s: 28,800 spans/s** for one tenant on two span shards, about where its buffer starts to
+refuse. Flush invocations (tail): wall p50 2.8 s, max 4.9 s (S10: up to 16.6 s), CPU max 2.1 s.
+Maintenance: no invocation killed, CPU max 15.7 s (S10: 28.4 s and a kill at 32 s); actual CPU was
+0.45–0.59 of the modelled for most merging invocations, up to 0.99 for a few, so the model is not
+generous. The flush queue's lag, per minute: 2.8–6.3 s (analytics; S10: 7–58 s), no retries. The
+queue invocations' isolate memory reached 149.6 MB (analytics, as reported; S10 saw 158.1 MiB in a
+maintenance run), unexplained, as in S10. Cost: US$0.068 at list prices (worst case stated: US$1.10).
+
+**Cost.** A query that planned before a reclaim re-plans (`stale_watermark`), only when a tenant is at
+its cap. Up to `PIPELINE_DEPTH` segments' objects may exist unadmitted after a crash (the orphan sweep
+keeps them as pending units, the retry adopts them). A flush run holds up to two segments (about
+4 MiB each) and their files, three runs at once: about 30 MiB of JavaScript memory more than before,
+modelled, not measured on Cloudflare. The consumer's invocation lasts up to 3 s longer when the log is
+slow. Compaction's step is smaller for spans and logs (11 MiB in, by the CPU cap, against 16 MiB):
+more level-2 files per day. Concurrent maintenance runs of one tenant (a flush's message and a
+follow-up's) still do the same merge twice, the second answered `conflict` (D30's rule; seen in S18 as
+duplicate invocations): CPU spent, nothing wrong.
+
+**Would change if.** The read side stops needing the recorded tail for in-flight queries (then discard
+at `recorded`); a tenant needs more than about 29,000 spans/s (then more span slots per tenant, or
+16 MiB seals once the read side reads by row group, (d)); merges are measured above their price on
+Cloudflare (then raise `CPU_MS_PER_MIB`, or (h) for a script of its own); a Container takes merges (j);
+or one tenant's concurrent maintenance runs waste enough CPU to matter (then a per-tenant lease in
+the ledger).
