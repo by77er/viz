@@ -55,7 +55,7 @@ export interface ShardConfig {
   tenantMaxBytes: number
   /** Above this total, tenants over their fair share are refused. */
   shardMaxBytes: number
-  /** Keep recorded payloads this long so in-flight queries can still read them. */
+  /** Keep recorded payloads this long so in-flight queries can still read them, unless an append needs the room (D82). */
   retainRecordedMs: number
   /** Remember fingerprints this long, independent of discard, for client retries. */
   fingerprintTtlMs: number
@@ -501,6 +501,12 @@ interface Stream {
   discardedThrough: number
   /** Bytes of payload still held (unsealed + sealed + recorded-but-retained). */
   bufferedBytes: number
+  /**
+   * Of `bufferedBytes`, those of recorded batches kept only for in-flight queries
+   * (`retainRecordedMs`): the ledger's log holds their rows, so they are given up first when an
+   * append needs the room (D82).
+   */
+  retainedBytes: number
   unsealedBytes: number
   oldestUnsealedAt: number | null
 }
@@ -559,6 +565,8 @@ export interface ShardStats {
   reserved?: number
   refusedReserve?: number
   reservationsExpired?: number
+  /** Bytes of recorded payloads given up before their retention ended because an append needed the room (D82; added 2026-11-28). */
+  reclaimedBytes?: number
   /** Grants alive now, and the bytes they hold. */
   reservations?: number
   reservedBytes?: number
@@ -622,7 +630,7 @@ export class Shard extends DurableObject<ShardEnv> {
   private groupTimer: ReturnType<typeof setTimeout> | null = null
   private inFlight = 0
   private pendingBytes = 0
-  private counters = { appends: 0, committed: 0, groups: 0, maxGroup: 0, refusedOverload: 0, refusedRegistering: 0, registerCalls: 0, reserved: 0, refusedReserve: 0, reservationsExpired: 0 }
+  private counters = { appends: 0, committed: 0, groups: 0, maxGroup: 0, refusedOverload: 0, refusedRegistering: 0, registerCalls: 0, reserved: 0, refusedReserve: 0, reservationsExpired: 0, reclaimedBytes: 0 }
   /** Grants of `reserve` by token (D77; memory only, a hint about room, never a source of truth). */
   private grants = new Map<string, Grant>()
   private grantedBytes = 0
@@ -669,11 +677,12 @@ export class Shard extends DurableObject<ShardEnv> {
         .exec(
           `SELECT COALESCE(MAX(seq), 0) AS max_seq,
                   COALESCE(SUM(CASE WHEN payload IS NOT NULL THEN bytes END), 0) AS buffered,
+                  COALESCE(SUM(CASE WHEN payload IS NOT NULL AND seq <= ? THEN bytes END), 0) AS retained,
                   COALESCE(SUM(CASE WHEN seq > ? THEN bytes END), 0) AS unsealed,
                   MIN(CASE WHEN seq > ? THEN at END) AS oldest,
                   MIN(CASE WHEN payload IS NULL THEN at END) AS fp_from
            FROM batch WHERE tenant = ?`,
-          r.sealed_through, r.sealed_through, tenant,
+          r.recorded_through, r.sealed_through, r.sealed_through, tenant,
         )
         .one()
       const s: Stream = {
@@ -685,6 +694,7 @@ export class Shard extends DurableObject<ShardEnv> {
         recordedThrough: r.recorded_through as number,
         discardedThrough: r.discarded_through as number,
         bufferedBytes: agg.buffered as number,
+        retainedBytes: agg.retained as number,
         unsealedBytes: agg.unsealed as number,
         oldestUnsealedAt: (agg.oldest as number | null) ?? null,
       }
@@ -766,7 +776,7 @@ export class Shard extends DurableObject<ShardEnv> {
       `INSERT INTO stream (tenant, incarnation, epoch, sealed_through, recorded_through, discarded_through, registered) VALUES (?, ?, ?, 0, 0, 0, 0)`,
       tenant, incarnation, epoch,
     )
-    const s: Stream = { incarnation, registered: false, epoch, nextSeq: 1, sealedThrough: 0, recordedThrough: 0, discardedThrough: 0, bufferedBytes: 0, unsealedBytes: 0, oldestUnsealedAt: null }
+    const s: Stream = { incarnation, registered: false, epoch, nextSeq: 1, sealedThrough: 0, recordedThrough: 0, discardedThrough: 0, bufferedBytes: 0, retainedBytes: 0, unsealedBytes: 0, oldestUnsealedAt: null }
     this.streams.set(tenant, s)
     return s
   }
@@ -894,6 +904,21 @@ export class Shard extends DurableObject<ShardEnv> {
    * and not yet appended (D77). Null: room.
    */
   private roomRefusal(tenant: string, known: Stream | undefined, bytes: number, first = bytes, whole = false): (AppendResult & { status: 'backpressure' }) | null {
+    const refusal = this.roomCheck(tenant, known, bytes, first, whole)
+    if (refusal === null) return null
+    // D82: recorded payloads kept only for in-flight queries never cost an append its room. Before
+    // refusing, give them up (the tenant's own for its cap, every tenant's for the shard's) and
+    // judge again. A query that still needed them is answered `stale_watermark` and re-plans; the
+    // ledger's log holds their rows. Synchronous, like the check: no await in between.
+    let freed = 0
+    if (refusal.scope === 'tenant') freed = known ? this.discardRecorded(tenant, known) : 0
+    else for (const [t, s] of this.streams) freed += this.discardRecorded(t, s)
+    if (freed === 0) return refusal
+    this.counters.reclaimedBytes += freed
+    return this.roomCheck(tenant, known, bytes, first, whole)
+  }
+
+  private roomCheck(tenant: string, known: Stream | undefined, bytes: number, first: number, whole: boolean): (AppendResult & { status: 'backpressure' }) | null {
     let waiting = 0
     for (const p of this.group) if (p.req.tenant === tenant) waiting += p.bytes
     const held = (known?.bufferedBytes ?? 0) + waiting + this.grantedTo(tenant)
@@ -1377,9 +1402,11 @@ export class Shard extends DurableObject<ShardEnv> {
     const next = sql.exec(`SELECT seq_hi FROM segment WHERE tenant = ? AND seq_lo = ?`, tenant, s.recordedThrough + 1).toArray()[0]
     const boundary = sql.exec(`SELECT 1 AS ok FROM segment WHERE tenant = ? AND seq_hi = ?`, tenant, throughSeq).toArray()[0]
     if (!next || !boundary || throughSeq > s.sealedThrough) return { status: 'not_contiguous', recordedThrough: s.recordedThrough }
+    const newly = sql.exec(`SELECT COALESCE(SUM(bytes), 0) AS b FROM batch WHERE tenant = ? AND seq > ? AND seq <= ? AND payload IS NOT NULL`, tenant, s.recordedThrough, throughSeq).one().b as number
     sql.exec(`UPDATE segment SET recorded_at = ? WHERE tenant = ? AND seq_hi <= ? AND recorded_at IS NULL`, Date.now(), tenant, throughSeq)
     sql.exec(`UPDATE stream SET recorded_through = ? WHERE tenant = ?`, throughSeq, tenant)
     s.recordedThrough = throughSeq
+    s.retainedBytes += newly
     await this.arm()
     return { status: 'ok', recordedThrough: throughSeq }
   }
@@ -1743,6 +1770,33 @@ export class Shard extends DurableObject<ShardEnv> {
     }
   }
 
+  /**
+   * Discard the payloads of `tenant`'s recorded segments through `hi` (a recorded segment's
+   * `seq_hi`): the alarm's step 2 once they are `retainRecordedMs` old, or at once when an append
+   * needs the room (D82). Synchronous: the fence moves in the same transaction as the payloads
+   * go, so a tail read that would need them answers `stale_watermark`. Returns the bytes freed.
+   */
+  private discardThrough(tenant: string, s: Stream, hi: number): number {
+    if (hi <= s.discardedThrough || hi > s.recordedThrough) return 0
+    const sql = this.ctx.storage.sql
+    const freed = sql.exec(`SELECT COALESCE(SUM(bytes), 0) AS b, MIN(at) AS at FROM batch WHERE tenant = ? AND seq <= ? AND payload IS NOT NULL`, tenant, hi).one()
+    sql.exec(`UPDATE stream SET discarded_through = ? WHERE tenant = ?`, hi, tenant)
+    sql.exec(`UPDATE batch SET payload = NULL WHERE tenant = ? AND seq <= ? AND payload IS NOT NULL`, tenant, hi)
+    sql.exec(`DELETE FROM segment WHERE tenant = ? AND seq_hi <= ?`, tenant, hi)
+    s.discardedThrough = hi
+    s.bufferedBytes -= freed.b as number
+    s.retainedBytes = Math.max(0, s.retainedBytes - (freed.b as number))
+    this.totalBytes -= freed.b as number
+    if (freed.at !== null) this.fingerprintsFrom.set(tenant, Math.min(this.fingerprintsFrom.get(tenant) ?? Infinity, freed.at as number))
+    return freed.b as number
+  }
+
+  /** Every recorded payload of `tenant` still held, whatever its age (D82). Returns the bytes freed. */
+  private discardRecorded(tenant: string, s: Stream): number {
+    if (s.retainedBytes <= 0 || s.recordedThrough <= s.discardedThrough) return 0
+    return this.discardThrough(tenant, s, s.recordedThrough)
+  }
+
   /** Housekeeping. Idempotent: alarms are at-least-once. */
   async alarm(): Promise<void> {
     if (this.refusal) {
@@ -1768,17 +1822,7 @@ export class Shard extends DurableObject<ShardEnv> {
         .exec(`SELECT MAX(seq_hi) AS hi FROM segment WHERE tenant = ? AND recorded_at IS NOT NULL AND recorded_at + ? <= ? AND seq_hi > ?`,
           tenant, this.cfg.retainRecordedMs, now, s.discardedThrough)
         .one().hi as number | null
-      if (hi !== null) {
-        // The fence moves first, in the same transaction as the payloads go.
-        const freed = sql.exec(`SELECT COALESCE(SUM(bytes), 0) AS b, MIN(at) AS at FROM batch WHERE tenant = ? AND seq <= ? AND payload IS NOT NULL`, tenant, hi).one()
-        sql.exec(`UPDATE stream SET discarded_through = ? WHERE tenant = ?`, hi, tenant)
-        sql.exec(`UPDATE batch SET payload = NULL WHERE tenant = ? AND seq <= ? AND payload IS NOT NULL`, tenant, hi)
-        sql.exec(`DELETE FROM segment WHERE tenant = ? AND seq_hi <= ?`, tenant, hi)
-        s.discardedThrough = hi
-        s.bufferedBytes -= freed.b as number
-        this.totalBytes -= freed.b as number
-        if (freed.at !== null) this.fingerprintsFrom.set(tenant, Math.min(this.fingerprintsFrom.get(tenant) ?? Infinity, freed.at as number))
-      }
+      if (hi !== null) this.discardThrough(tenant, s, hi)
       // 3. Forget fingerprints of discarded batches once clients can no longer be retrying
       //    (per tenant, as every statement on tenant data is: AGENTS.md, review R-12).
       if ((this.fingerprintsFrom.get(tenant) ?? Infinity) + this.cfg.fingerprintTtlMs <= now) {
