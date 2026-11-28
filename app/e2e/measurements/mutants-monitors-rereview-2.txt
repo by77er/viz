@@ -1,0 +1,3 @@
+mutants of the monitors views, 2026-11-28T15:36:37.390Z, on a copy at /tmp/claude-0/-home-user-viz/3c79101e-93fd-5a8e-90a7-fca4d8b40aab/scratchpad/dm-fix/mut-mon2/app
+open-after-route [M-B1: the monitor is shown in the press's task]: KILLED by e2e:monitor; e2e:monitor failed (FAIL  [speed] a press on a monitor in the list shows its name and state line in the press's own task, and the router's change of address comes after that frame )
+1 of 1 killed

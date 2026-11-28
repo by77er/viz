@@ -1,22 +1,90 @@
-import { memo, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react'
 import { Link } from '@tanstack/react-router'
 import { PromApiError } from '../api/client'
 import { answerLine, errorKind } from '../api/errors'
-import { Chart, figureFormat, toSpec } from '../charts'
+import { Chart, toSpec } from '../charts'
 import { reservedStyle } from '../charts/Chart'
-import { chartRules } from '../charts/systemChart'
 import { Age, useWaiting, WAIT } from '../explore/waiting'
 import { alignSeries, seriesKey, type AlignedData, type SampleColumns } from '../lib/series'
 import { stepWords, type TimeSpec } from '../lib/time'
 import { LOCAL, zoneShiftMs } from '../lib/timeInput'
-import { chartUnitOf, digestOf, exploreSearch, isDrawn, panelText, queryWords, rangeWords, type PanelDigest, type ResolvedDashboard, type ResolvedPanel, type Span } from './model'
+import type { DashboardColours } from './colours'
+import { chartUnitOf, digestOf, exploreSearch, isDrawn, queryWords, rangeWords, type PanelDigest, type ResolvedDashboard, type ResolvedPanel, type Span } from './model'
+import { Note } from './Note'
 import { NotSent, type DashboardStore, type PanelResult, type PanelState } from './store'
+import { bucketsOf, formatFor, panelSentences, tableOf, thresholdWords, withUnit, type AgentName } from './textForm'
 
 /** The series a stat panel shows as figures; the rest are in its text form, and the panel says how many. */
 const STAT_FIGURES = 4
 /** Rows a table panel reserves before its first answer when the spec gives no limit. */
 const TABLE_ROWS = 5
 const KIND_WORDS: Record<string, string> = { heatmap: 'heatmap', text: 'text note' }
+
+/**
+ * A chart is drawn in the task its answer arrives only when its panel is on screen; the others
+ * are drawn when the page is idle, one per idle period, those within a screen of the window first
+ * (D-B2 of the third design review). Until then a panel holds its reserved place, which is the
+ * height its chart draws, so nothing a person sees changes; a panel that comes on screen (a
+ * scroll) is drawn at once. The answers of a dashboard arrive six at a time and each chart is
+ * built in the task that draws it, so the last chart on screen of a burst no longer waits for the
+ * ones nobody can see.
+ */
+type Place = 'on' | 'near' | 'far'
+const observers: { on: IntersectionObserver | null; near: IntersectionObserver | null } = { on: null, near: null }
+const placeCallbacks = new WeakMap<Element, { on: boolean; near: boolean; fn: (p: Place) => void }>()
+function observePlace(el: Element, fn: (p: Place) => void): () => void {
+  if (typeof IntersectionObserver === 'undefined') {
+    fn('on')
+    return () => {}
+  }
+  const report = (which: 'on' | 'near') => (entries: IntersectionObserverEntry[]) => {
+    for (const e of entries) {
+      const c = placeCallbacks.get(e.target)
+      if (!c) continue
+      c[which] = e.isIntersecting
+      c.fn(c.on ? 'on' : c.near ? 'near' : 'far')
+    }
+  }
+  observers.on ??= new IntersectionObserver(report('on'))
+  observers.near ??= new IntersectionObserver(report('near'), { rootMargin: '100%' })
+  placeCallbacks.set(el, { on: false, near: false, fn })
+  observers.on.observe(el)
+  observers.near.observe(el)
+  return () => {
+    observers.on?.unobserve(el)
+    observers.near?.unobserve(el)
+    placeCallbacks.delete(el)
+  }
+}
+/** Where the element is, as the observers last said: on screen, within a screen of it, or further; "far" until they have said. */
+function usePlace(ref: RefObject<Element | null>, watch: boolean): Place {
+  const [place, setPlace] = useState<Place>('far')
+  useEffect(() => (watch && ref.current ? observePlace(ref.current, setPlace) : undefined), [ref, watch])
+  return place
+}
+/** Work for when the page is idle, one piece per idle period: `first` jumps the queue. */
+const idleQueue: (() => void)[] = []
+let idleScheduled = false
+function whenIdle(fn: () => void, first: boolean): () => void {
+  if (first) idleQueue.unshift(fn)
+  else idleQueue.push(fn)
+  if (!idleScheduled) {
+    idleScheduled = true
+    const ric = (window as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }).requestIdleCallback
+    const next = () => {
+      const job = idleQueue.shift()
+      job?.()
+      if (idleQueue.length) schedule()
+      else idleScheduled = false
+    }
+    const schedule = () => (ric ? ric(next, { timeout: 1000 }) : setTimeout(next, 50))
+    schedule()
+  }
+  return () => {
+    const i = idleQueue.indexOf(fn)
+    if (i >= 0) idleQueue.splice(i, 1)
+  }
+}
 
 interface Props {
   id: string
@@ -30,6 +98,12 @@ interface Props {
   /** `h2` under the page's title, `h3` under a row's heading. */
   level: 2 | 3
   onSignIn: () => void
+  /** The agent that wrote the dashboard while no person has saved over it (D-B1): its words are marked as the agent's. */
+  agent: AgentName
+  /** The dashboard's one colour per series identity (D-M2). */
+  colours: DashboardColours
+  /** The range the page asks for now, as words: what the head would say of it while a later one waits. */
+  rangeNow: string
 }
 
 /**
@@ -37,7 +111,7 @@ interface Props {
  * form) comes from the answer that is drawn (`state.result`), never from what the page asks now;
  * while the two differ the head says "Showing the previous range".
  */
-export const PanelView = memo(function PanelView({ id, span, resolved, store, from, to, level, onSignIn }: Props) {
+export const PanelView = memo(function PanelView({ id, span, resolved, store, from, to, level, onSignIn, agent, colours, rangeNow }: Props) {
   const state = useSyncExternalStore(
     (fn) => store.subscribe(id, fn),
     () => store.get(id),
@@ -53,8 +127,12 @@ export const PanelView = memo(function PanelView({ id, span, resolved, store, fr
   const titleId = `panel-${id.replace(/\./g, '-')}`
   const Heading = level === 2 ? 'h2' : 'h3'
 
-  const digest = useMemo(() => (result && (textOpen || !drawn || panel.kind !== 'timeseries') ? digestOf(result.resolved, id, result.data, result.window, panel.kind === 'timeseries' ? 5 : 1000) : null), [result, textOpen, drawn, panel.kind, id])
-  const text = useMemo(() => (result && digest && (textOpen || !drawn) ? panelText(result.resolved, digest) : null), [result, digest, textOpen, drawn])
+  // The model's structured digest: every series (the text form leaves none out), computed for a figure, a table, a kind not drawn, or an open text form.
+  const digest = useMemo(() => (result && (textOpen || !drawn || panel.kind !== 'timeseries') ? digestOf(result.resolved, id, result.data, result.window, 100_000) : null), [result, textOpen, drawn, panel.kind, id])
+  const sentences = useMemo(() => (result && digest && textOpen ? panelSentences(result.resolved, id, digest, result.window, Date.now(), agent) : null), [result, digest, textOpen, id, agent])
+  const sectionRef = useRef<HTMLElement>(null)
+  // Observed from the panel's first render, so that the answer of a panel on screen finds it known to be on screen and is drawn in its own task.
+  const place = usePlace(sectionRef, panel.kind === 'timeseries')
   const seriesCount = useMemo(() => (result ? Object.values(result.data).reduce((n, s) => n + s.length, 0) : 0), [result])
   const hasQueries = current.kind !== 'text' && current.queries.length > 0
   const empty = !!result && hasQueries && seriesCount === 0
@@ -82,20 +160,21 @@ export const PanelView = memo(function PanelView({ id, span, resolved, store, fr
 
   let body: ReactNode
   if (failed && !state.waiting) body = <PanelError error={error} halted={halted} kind={panel.kind} retryId={`${titleId}-retry`} onRetry={() => store.reload(id)} onSignIn={onSignIn} />
-  else if (!result) body = <Reserved panel={current} view={viewName(resolved, id)} />
-  else if (!drawn) body = <NotDrawn kind={panel.kind} text={text ?? ''} />
+  else if (!result) body = <Reserved panel={current} view={viewName(resolved, id)} agent={agent} />
+  else if (!drawn) body = <NotDrawn panel={panel} digest={digest} result={result} now={now} level={level} agent={agent} />
   else if (empty) body = <Empty result={result} now={now} chart={panel.kind === 'timeseries'} />
-  else if (panel.kind === 'timeseries') body = <ChartBody id={id} result={result} panel={panel} />
-  else if (panel.kind === 'stat' && digest) body = <StatBody digest={digest} panel={panel} result={result} now={now} />
+  else if (panel.kind === 'timeseries') body = <DeferredChart id={id} result={result} panel={panel} colours={colours} place={place} />
+  else if (panel.kind === 'stat' && digest) body = <StatBody digest={digest} panel={panel} result={result} now={now} agent={agent} />
   else if (panel.kind === 'table' && digest) body = <TableBody digest={digest} panel={panel} />
   else body = null
 
   const queries = current.kind === 'text' ? [] : current.queries
 
   return (
-    <section className="vz-panel" data-span={span === 6 ? undefined : span} aria-labelledby={titleId} aria-busy={state.waiting} data-testid="panel" data-panel={id} data-kind={panel.kind} data-state={state.waiting ? 'waiting' : failed ? 'failed' : result ? 'answered' : 'idle'}>
+    <section ref={sectionRef} className="vz-panel" data-span={span === 6 ? undefined : span} aria-labelledby={titleId} aria-busy={state.waiting} data-testid="panel" data-panel={id} data-kind={panel.kind} data-state={state.waiting ? 'waiting' : failed ? 'failed' : result ? 'answered' : 'idle'}>
       <div className="vz-panel-head">
-        <Heading className="vz-panel-title" id={titleId}>
+        <Heading className={agent ? 'vz-panel-title vz-agent' : 'vz-panel-title'} id={titleId} data-testid="panel-title">
+          {agent && <span className="vz-sr">The agent's title: </span>}
           {panel.title}
         </Heading>
         {/*
@@ -105,13 +184,14 @@ export const PanelView = memo(function PanelView({ id, span, resolved, store, fr
         <span className="meta-hold">
           {state.stale && result && !failed ? (
             <span className="vz-panel-meta" data-testid="panel-meta">
-              <span className="vz-panel-note" data-testid="panel-stale" title={rangeWords(result.window.start, result.window.end, now)}>
-                Showing the previous range<span className="vz-sr">: {rangeWords(result.window.start, result.window.end, now)}</span>
+              <span className="vz-panel-note" data-testid="panel-stale">
+                Showing {rangeWords(result.window.start, result.window.end, now)}, the previous range
               </span>
             </span>
           ) : (
+            // The words it would say, at their length: the answer's own range once there is one, else the range asked for now.
             <span className="vz-panel-meta is-reserved" aria-hidden="true">
-              <span className="vz-panel-note">Showing the previous range</span>
+              <span className="vz-panel-note">Showing {result ? rangeWords(result.window.start, result.window.end, now) : rangeNow}, the previous range</span>
             </span>
           )}
           {result && !failed && !state.stale && hasQueries ? (
@@ -129,7 +209,17 @@ export const PanelView = memo(function PanelView({ id, span, resolved, store, fr
           )}
         </span>
       </div>
-      {'description' in panel && panel.description ? <p className="vz-panel-desc">{panel.description}</p> : null}
+      {'description' in panel && panel.description ? (
+        agent ? (
+          <p className="vz-panel-desc vz-agent" data-testid="panel-desc">
+            Agent: {panel.description} Not verified.
+          </p>
+        ) : (
+          <p className="vz-panel-desc" data-testid="panel-desc">
+            {panel.description}
+          </p>
+        )
+      ) : null}
       <div className="vz-panel-body" data-view={panel.kind === 'timeseries' ? 'chart' : panel.kind}>
         {progress}
         {body}
@@ -143,11 +233,7 @@ export const PanelView = memo(function PanelView({ id, span, resolved, store, fr
       {drawn && result && !failed && (
         <details className="vz-details" onToggle={(e) => setTextOpen((e.target as HTMLDetailsElement).open)} data-testid="panel-text">
           <summary>Text form</summary>
-          {text !== null && (
-            <pre className="vz-query code-scroll" tabIndex={0} aria-label={`Text form of ${panel.title}`} data-testid="panel-digest">
-              {text}
-            </pre>
-          )}
+          {sentences !== null && <Sentences lines={sentences} label={`Text form of ${panel.title}`} />}
         </details>
       )}
       {queries.length > 0 && (
@@ -173,13 +259,17 @@ export const PanelView = memo(function PanelView({ id, span, resolved, store, fr
 const viewName = (resolved: ResolvedDashboard, id: string) => `dashboard:${resolved.metadata.id}:${id}`
 
 /** A panel's place before its first answer: the height its body will have, with nothing drawn in it. */
-function Reserved({ panel, view }: { panel: ResolvedPanel; view: string }) {
+function Reserved({ panel, view, agent }: { panel: ResolvedPanel; view: string; agent: AgentName }) {
   if (panel.kind === 'timeseries') return <div className="vz-chart" style={reservedStyle(view)} data-testid="panel-reserved" />
   if (panel.kind === 'stat')
+    // The figure's place, and the thresholds' line (the spec's, so known before the answer): the panel is as tall waiting as answered.
     return (
-      <div className="vz-stat is-reserved" aria-hidden="true" data-testid="panel-reserved">
-        <span className="vz-stat-value">0</span>
-        <span className="vz-stat-context">Last value</span>
+      <div className="vz-stack" data-testid="panel-reserved">
+        <div className="vz-stat is-reserved" aria-hidden="true">
+          <span className="vz-stat-value">0</span>
+          <span className="vz-stat-context">Last value</span>
+        </div>
+        <Thresholds panel={panel} agent={agent} />
       </div>
     )
   if (panel.kind === 'table') {
@@ -207,7 +297,24 @@ function alignedOf(result: PanelResult, panel: ResolvedPanel): AlignedData {
   return out ?? { xs: [], series: [] }
 }
 
-const ChartBody = memo(function ChartBody({ id, result, panel }: { id: string; result: PanelResult; panel: ResolvedPanel }) {
+/** A chart drawn when its panel is near the screen, or when the page is idle; until then its reserved place, at the height it draws. */
+function DeferredChart({ id, result, panel, colours, place }: { id: string; result: PanelResult; panel: ResolvedPanel; colours: DashboardColours; place: Place }) {
+  const [idle, setIdle] = useState(false)
+  const [drawnOnce, setDrawnOnce] = useState(false)
+  const show = place === 'on' || idle || drawnOnce
+  const soon = place === 'near'
+  useEffect(() => {
+    if (show) {
+      setDrawnOnce(true)
+      return
+    }
+    return whenIdle(() => setIdle(true), soon)
+  }, [show, soon])
+  if (!show) return <div className="vz-chart" style={reservedStyle(viewName(result.resolved, id))} data-testid="panel-deferred" />
+  return <ChartBody id={id} result={result} panel={panel} colours={colours} />
+}
+
+const ChartBody = memo(function ChartBody({ id, result, panel, colours }: { id: string; result: PanelResult; panel: ResolvedPanel; colours: DashboardColours }) {
   const drawn = useMemo(() => {
     const aligned = alignedOf(result, panel)
     const shiftMs = zoneShiftMs(LOCAL, result.window.end * 1000)
@@ -218,8 +325,10 @@ const ChartBody = memo(function ChartBody({ id, result, panel }: { id: string; r
     let max = 0
     if (panel.kind === 'timeseries' && panel.unit === 'bytes/s') for (const s of aligned.series) for (let i = 0; i < s.values.length; i++) if (Math.abs(s.values[i]!) > max) max = Math.abs(s.values[i]!)
     const unit = chartUnitOf(panel.kind === 'timeseries' ? panel.unit : undefined, max)
+    // One colour per series across the dashboard: the panel's chart is handed the dashboard's map before it first draws (D-M2).
+    colours.seed(viewName(result.resolved, id), aligned, query)
     return { ...toSpec({ data: aligned, start: result.window.start, step: result.window.step, unit: 'none', as: unit, query, shiftMs }), shiftMs }
-  }, [result, panel])
+  }, [result, panel, colours, id])
   return <Chart spec={drawn.spec} shiftMs={drawn.shiftMs} stepWords={stepWords(result.window.step)} view={viewName(result.resolved, id)} textFormId={`chart-text-${id}`} error={null} parked={false} />
 })
 
@@ -234,53 +343,50 @@ const STATE: Record<string, { state: string; words: string }> = {
 /** A figure in a panel's unit, as the chart would write it: the unit the chart picks for its size, and the chart's number format. */
 function figure(unit: Parameters<typeof chartUnitOf>[0], v: number | null): { text: string; unit: string } {
   if (v === null || !Number.isFinite(v)) return { text: 'no value', unit: '' }
-  // A count that is whole is written whole: "12", not "12.0".
-  if ((unit === 'count' || unit === 'none' || unit === undefined) && Number.isInteger(v)) return { text: v.toLocaleString('en-US'), unit: '' }
-  const u = chartUnitOf(unit, Math.abs(v))
-  const f = figureFormat(chartRules(), u, Math.min(0, v), Math.max(0, v))
-  return { text: f.value(v), unit: f.unit }
+  const f = formatFor(unit, [v])
+  const text = f.value(v)
+  return f.unit === '' ? { text, unit: '' } : { text: text.slice(0, text.length - (f.unit === '%' ? 1 : f.unit.length + 1)), unit: f.unit }
 }
 
-function StatBody({ digest, panel, result, now }: { digest: PanelDigest; panel: ResolvedPanel; result: PanelResult; now: number }) {
+function StatBody({ digest, panel, result, now, agent }: { digest: PanelDigest; panel: ResolvedPanel; result: PanelResult; now: number; agent: AgentName }) {
   if (panel.kind !== 'stat') return null
   const shown = digest.series.slice(0, STAT_FIGURES)
   const reducer = REDUCER_WORDS[panel.options?.reduce ?? 'last'] ?? 'Last value'
   const w = result.window
   return (
-    <div className="vz-controls" data-testid="panel-stat">
-      {shown.map((s) => {
-        const f = figure(panel.unit, s.value)
-        const st = s.state ? STATE[s.state] : null
-        const limit = s.breached ? figure(panel.unit, Number(s.breached.slice(1))) : null
-        return (
-          <div className="vz-stat" key={seriesKey(s.labels) + (s.query ?? '')}>
-            {digest.seriesCount > 1 && <span className="vz-label">{s.name}</span>}
-            <span className="vz-stat-value" data-testid="stat-value">
-              {f.text}
-              {f.unit && <span className="vz-stat-unit">{f.unit}</span>}
-            </span>
-            <span className="vz-stat-context" data-testid="stat-context">
-              {reducer} of {rangeWords(w.start, w.end, now)}.{' '}
-              {st && (
-                <span className="vz-status" data-state={st.state} data-testid="stat-state">
-                  <span>
-                    {st.words}
-                    {limit && s.breached ? (
-                      <>
-                        : {s.breached.startsWith('>') ? 'above' : 'below'}{' '}
-                        <span className="vz-qty">
-                          {limit.text}
-                          {limit.unit === '%' ? '%' : limit.unit ? ` ${limit.unit}` : ''}
-                        </span>
-                      </>
-                    ) : null}
+    <div className="vz-stack" data-testid="panel-stat">
+      <div className="vz-controls">
+        {shown.map((s) => {
+          const f = figure(panel.unit, s.value)
+          const st = s.state ? STATE[s.state] : null
+          const limit = s.breached ? figure(panel.unit, Number(s.breached.slice(1))) : null
+          return (
+            <div className="vz-stat" key={seriesKey(s.labels) + (s.query ?? '')}>
+              {digest.seriesCount > 1 && <span className="vz-label">{s.name}</span>}
+              <span className="vz-stat-value" data-testid="stat-value">
+                {f.text}
+                {f.unit && <span className="vz-stat-unit">{f.unit}</span>}
+              </span>
+              <span className="vz-stat-context" data-testid="stat-context">
+                {reducer} of {rangeWords(w.start, w.end, now)}.{' '}
+                {st && (
+                  <span className="vz-status" data-state={st.state} data-testid="stat-state">
+                    <span>
+                      {st.words}
+                      {limit && s.breached ? (
+                        <>
+                          : {s.breached.startsWith('>') ? 'above' : 'below'} <span className="vz-qty">{withUnit(limit.text, limit.unit)}</span>
+                        </>
+                      ) : null}
+                    </span>
                   </span>
-                </span>
-              )}
-            </span>
-          </div>
-        )
-      })}
+                )}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+      <Thresholds panel={panel} agent={agent} />
       {digest.seriesCount > shown.length && (
         <p className="vz-secondary" data-size="sm">
           <span className="vz-qty">{digest.seriesCount - shown.length}</span> more series are in the text form.
@@ -290,53 +396,31 @@ function StatBody({ digest, panel, result, now }: { digest: PanelDigest; panel: 
   )
 }
 
+/** What a stat's state is measured against, from the spec: a status names its thresholds (d1), and an agent's are said to be the agent's (D-B1). */
+function Thresholds({ panel, agent }: { panel: ResolvedPanel; agent: AgentName }) {
+  const limits = useMemo(() => thresholdWords(panel), [panel])
+  if (!limits) return null
+  return (
+    <p className={agent ? 'vz-stat-context vz-agent' : 'vz-stat-context'} data-testid="stat-thresholds">
+      {agent ? `Agent's thresholds: ${limits}. Not verified.` : `Thresholds: ${limits}.`}
+    </p>
+  )
+}
+
 function TableBody({ digest, panel }: { digest: PanelDigest; panel: ResolvedPanel }) {
-  const table = useMemo(() => {
-    if (panel.kind !== 'table') return null
-    const columns = panel.options?.columns?.length ? panel.options.columns : panel.queries.map((q) => ({ query: q, title: undefined, unit: undefined }))
-    // One row per label set; each query fills its column with the value the model reduced.
-    const rows = new Map<string, { labels: Record<string, string>; values: Record<string, number | null> }>()
-    for (const s of digest.series) {
-      const labels = Object.fromEntries(Object.entries(s.labels).filter(([k]) => k !== '__name__'))
-      const key = seriesKey(labels)
-      let row = rows.get(key)
-      if (!row) rows.set(key, (row = { labels, values: {} }))
-      row.values[s.query ?? columns[0]!.query] = s.value
-    }
-    const all = [...rows.values()]
-    const names = [...new Set(all.flatMap((r) => Object.keys(r.labels)))].sort()
-    const labelColumns = names.filter((n) => new Set(all.map((r) => r.labels[n])).size > 1)
-    const keys = labelColumns.length ? labelColumns : names.slice(0, 1)
-    const sortBy = panel.options?.sortBy
-    const dir = panel.options?.sortDir === 'asc' ? 1 : -1
-    if (sortBy) all.sort((a, b) => dir * ((a.values[sortBy] ?? -Infinity) - (b.values[sortBy] ?? -Infinity)))
-    else all.sort((a, b) => (seriesKey(a.labels) < seriesKey(b.labels) ? -1 : 1))
-    const shown = all.slice(0, panel.options?.limit ?? all.length)
-    const heads = columns.map((c) => {
-      const unit = c.unit ?? panel.unit
-      let lo = 0
-      let hi = 0
-      for (const r of all) {
-        const v = r.values[c.query]
-        if (v != null && Number.isFinite(v)) {
-          lo = Math.min(lo, v)
-          hi = Math.max(hi, v)
-        }
-      }
-      const format = figureFormat(chartRules(), chartUnitOf(unit, Math.max(Math.abs(lo), Math.abs(hi))), lo, hi)
-      const title = c.title ?? c.query
-      return { query: c.query, title, head: format.unit ? `${title}, ${format.unit}` : title, value: format.value }
-    })
-    const sortTitle = heads.find((h) => h.query === sortBy)?.title
-    const order = sortBy ? `${dir === 1 ? 'lowest' : 'highest'} ${sortTitle ?? sortBy} first` : `by ${keys.join(', ') || 'name'}`
-    return { shown, total: all.length, keys, heads, order }
-  }, [digest, panel])
+  const table = useMemo(() => tableOf(digest, panel), [digest, panel])
+  // The rows the spec cuts are a press away (d8), as in Explore's table.
+  const [all, setAll] = useState(false)
   if (!table) return null
+  const rows = all ? table.rows : table.shown
+  const more = table.total - table.shown.length
   return (
     <div data-testid="panel-table">
       <p className="vz-table-caption" data-testid="panel-table-caption">
-        <span className="vz-qty">{table.shown.length}</span> of <span className="vz-qty">{table.total}</span> rows, {table.order}.
+        <span className="vz-qty">{rows.length}</span> of <span className="vz-qty">{table.total}</span> rows, {table.order}.
       </p>
+      {/* What follows the table is a stack with it, clear of its last row with either pointer (as Explore's "Show 50 more", the v9 review's B2). */}
+      <div className={more > 0 ? 'vz-stack' : undefined}>
       <div className="vz-table-wrap">
         <table className="vz-table">
           <thead>
@@ -354,7 +438,7 @@ function TableBody({ digest, panel }: { digest: PanelDigest; panel: ResolvedPane
             </tr>
           </thead>
           <tbody>
-            {table.shown.map((r) => (
+            {rows.map((r) => (
               <tr key={seriesKey(r.labels)}>
                 {table.keys.map((k, i) => (
                   <td key={k} className="vz-num" data-key={i === 0 ? '' : undefined}>
@@ -371,33 +455,131 @@ function TableBody({ digest, panel }: { digest: PanelDigest; panel: ResolvedPane
           </tbody>
         </table>
       </div>
+      {more > 0 && (
+        <div className="vz-controls panel-more">
+          <button className="vz-button" data-size="sm" onClick={() => setAll((a) => !a)} data-testid="panel-table-more">
+            {all ? `Show the first ${table.shown.length}` : `Show ${more} more`}
+          </button>
+        </div>
+      )}
+      </div>
     </div>
   )
 }
 
-/** A kind of panel the app does not draw: said so, with the model's own text for it. Never drawn as another kind. */
-function NotDrawn({ kind, text }: { kind: string; text: string }) {
+/** A panel's text form: sentences, wrapped at the measure (the system's text form), never a well that scrolls sideways. */
+function Sentences({ lines, label }: { lines: string[]; label: string }) {
+  return (
+    <div className="vz-text-form" aria-label={label} role="region" data-testid="panel-sentences">
+      <ul>
+        {lines.map((l, i) => (
+          <li key={i} className={l.startsWith('Agent') ? 'vz-agent' : undefined}>
+            {l}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+/**
+ * A kind of panel the app does not draw: said so, and its data as the system shows data that is
+ * not a picture (D-M1). A heatmap's buckets are a table (bound, last, lowest, highest), without
+ * the model's statistical notes; a note is its Markdown as text. Never drawn as another kind.
+ */
+function NotDrawn({ panel, digest, result, now, level, agent }: { panel: ResolvedPanel; digest: PanelDigest | null; result: PanelResult; now: number; level: 2 | 3; agent: AgentName }) {
+  if (panel.kind === 'text')
+    return (
+      <div className={agent ? 'vz-agent' : undefined} data-testid="panel-not-drawn">
+        <Note markdown={panel.content} level={level} lead={agent ? <p className="vz-claim-by"><span>Agent's note</span> <span className="vz-status">Not verified</span></p> : undefined} />
+      </div>
+    )
+  const kind = KIND_WORDS[panel.kind] ?? panel.kind
+  const buckets = digest ? bucketsOf(digest, panel, result.resolved) : null
+  const range = rangeWords(result.window.start, result.window.end, now)
+  const fmt = digest && !buckets ? formatFor('unit' in panel ? panel.unit : undefined, digest.series.flatMap((s) => [s.last, s.min, s.max])) : null
   return (
     <div className="vz-stack" data-testid="panel-not-drawn">
       <p className="vz-secondary">
-        This panel is a {KIND_WORDS[kind] ?? kind}, a kind this app does not draw yet. This is its text form.
+        This panel is a {kind}, a kind this app does not draw yet. {buckets ? `Its ${buckets.rows.length} buckets over ${range}, as a table:` : `Its series over ${range}, as a table:`}
       </p>
-      <pre className={kind === 'text' ? 'vz-query code-scroll is-prose' : 'vz-query code-scroll'} tabIndex={0} aria-label="Text form of the panel" data-testid="panel-digest">
-        {text}
-      </pre>
+      {buckets ? (
+        <div data-testid="panel-buckets">
+          <p className="vz-table-caption">
+            <span className="vz-qty">{buckets.rows.length}</span> buckets, shortest first. Each counts what took at most its duration, so each includes the rows above it.
+          </p>
+          <div className="vz-table-wrap">
+            <table className="vz-table">
+              <thead>
+                <tr>
+                  <th scope="col" className="vz-label">
+                    At most
+                  </th>
+                  {['Last', 'Lowest', 'Highest'].map((h) => (
+                    <th key={h} scope="col" className="vz-label vz-right">
+                      {buckets.valueUnit ? `${h}, ${buckets.valueUnit}` : h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {buckets.rows.map((r) => (
+                  <tr key={r.le}>
+                    <td className="vz-num" data-key="">
+                      {r.bound}
+                    </td>
+                    <td className="vz-num vz-right">{buckets.value(r.last)}</td>
+                    <td className="vz-num vz-right">{buckets.value(r.min)}</td>
+                    <td className="vz-num vz-right">{buckets.value(r.max)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : digest && fmt ? (
+        <div className="vz-table-wrap">
+          <table className="vz-table">
+            <thead>
+              <tr>
+                <th scope="col" className="vz-label">
+                  Series
+                </th>
+                {['Last', 'Lowest', 'Highest'].map((h) => (
+                  <th key={h} scope="col" className="vz-label">
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {digest.series.map((s) => (
+                <tr key={seriesKey(s.labels) + (s.query ?? '')}>
+                  <td className="vz-num" data-key="">
+                    {s.name}
+                  </td>
+                  <td className="vz-num">{fmt.value(s.last)}</td>
+                  <td className="vz-num">{fmt.value(s.min)}</td>
+                  <td className="vz-num">{fmt.value(s.max)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
     </div>
   )
 }
 
 function Empty({ result, now, chart }: { result: PanelResult; now: number; chart: boolean }) {
   // In a chart's place, at the chart's height (Empty): the panel is as tall with nothing in it as with something.
+  // One sentence (d7): what was asked and over which range. What nothing means is the panel's own explanation, above; Explore is linked below.
   return (
     <div className={chart ? 'vz-chart' : undefined}>
       <div className="vz-empty" role="status" data-testid="panel-empty">
         <p className="vz-empty-title">No series matched</p>
         <p>
-          Nothing matched this panel's {Object.keys(result.data).length > 1 ? 'queries' : 'query'} in {rangeWords(result.window.start, result.window.end, now)}. Open it in Explore to check the metric name and the label
-          matchers, or choose another time range.
+          Nothing matched this panel's {Object.keys(result.data).length > 1 ? 'queries' : 'query'} from {rangeWords(result.window.start, result.window.end, now)}.
         </p>
       </div>
     </div>

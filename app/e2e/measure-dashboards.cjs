@@ -4,7 +4,12 @@
 // e2e/measure.cjs sets them, at the desktop layout (1440 x 900, mouse) or the phone layout
 // (--phone: 400 x 800, touch, coarse pointer).
 //
-//   node e2e/measure-dashboards.cjs [--phone] [--runs 20] [--label dashboards]
+//   node e2e/measure-dashboards.cjs [--phone] [--runs 20] [--label dashboards] [--compare <app dir of the build before>]
+//
+// With --compare, the build in <dir>/dist is served beside this one (port + 2, the same mock) and
+// the runs alternate run by run, before then after, so the two share the machine's load; every
+// run records `uptime` and the build it ran on, and the summary gives each build's figures and
+// the paired differences (after minus before, run pair by run pair).
 //
 // One run is one fresh tab: the list is loaded, a dashboard is opened from it (the 12-panel
 // one), and when it has drawn, its range is changed. Nothing is read across a reload or any
@@ -20,6 +25,11 @@
 //   firstPaint    the first panel that is answered: its last response's body arrived -> the
 //                 frame that shows it. Budget row "Receives a result": 100 ms after it arrives.
 //   paintWorst    the same for the slowest of the twelve panels; paintMedian the median panel.
+//                 A panel counts as painted in the frame that shows what it draws: a chart once its
+//                 plot is in the page (a chart off screen may be drawn later, in its reserved
+//                 place, D-B2), anything else once it is answered.
+//   paintWorstOn  the same for the panels on screen when their answer arrived (in the viewport):
+//                 what a person can see. paintWorstOff: those off screen (context).
 //   firstVisible  the press -> the first answered panel on screen (network included; context).
 //   rangeSend     the press on "1 h" -> the first request of the new range is sent. Budget row
 //                 "Runs a query: send the request and show the region's waiting state": 100 ms.
@@ -56,7 +66,7 @@ const median = (xs) => { const s = sorted(xs); return s.length ? s[Math.floor((s
 
 // Runs in the page before any of its scripts.
 function instrument() {
-  const m = (window.__d = { shifts: [], events: [], sent: [], arrived: [], marks: {}, panels: {}, press: null })
+  const m = (window.__d = { shifts: [], events: [], sent: [], arrived: [], marks: {}, panels: {}, seen: {}, press: null })
   try {
     new PerformanceObserver((l) => { for (const e of l.getEntries()) m.shifts.push({ value: e.value, marked: e.hadRecentInput, t: e.startTime }) }).observe({ type: 'layout-shift', buffered: true })
     new PerformanceObserver((l) => { for (const e of l.getEntries()) if (e.interactionId) m.events.push({ name: e.name, duration: e.duration, t: e.startTime }) }).observe({ type: 'event', durationThreshold: 16, buffered: true })
@@ -74,7 +84,14 @@ function instrument() {
     return res
   }
   // The press that starts a phase, and what is watched for after it.
-  const onPress = (e) => { if (m.press && !m.press.t && e.target.closest(m.press.selector)) m.press.t = e.timeStamp }
+  // Frames begun since the press: a waiting state seen before the first one is in the frame the press paints next.
+  const onPress = (e) => {
+    if (!(m.press && !m.press.t && e.target.closest(m.press.selector))) return
+    m.press.t = e.timeStamp
+    m.frames = 0
+    const tick = () => { m.frames++; if (m.frames < 120) requestAnimationFrame(tick) }
+    requestAnimationFrame(tick)
+  }
   addEventListener('pointerup', onPress, true)
   addEventListener('click', (e) => { if (m.press && !m.press.t && e.target.closest(m.press.selector)) m.press.t = e.timeStamp }, true)
   const once = (name, test) => {
@@ -90,12 +107,17 @@ function instrument() {
     for (const p of panels) {
       const key = `${m.phase}:${p.dataset.panel}`
       if (p.dataset.state === 'waiting') waiting++
-      if (p.dataset.state === 'answered' && !p.querySelector('[data-testid=panel-stale]') && m.panels[key] === undefined && m.armed) {
-        m.panels[key] = { t: null, queries: [...p.querySelectorAll('[data-testid=open-in-explore]')].map((a) => new URL(a.href).searchParams.get('q')), top: p.getBoundingClientRect().top }
+      if (p.dataset.state === 'answered' && m.seen[key] === undefined && m.armed && !p.querySelector('[data-testid=panel-stale]')) {
+        const r = p.getBoundingClientRect()
+        m.seen[key] = { on: r.top < innerHeight && r.bottom > 0 }
+      }
+      const drawn = p.dataset.kind !== 'timeseries' || p.querySelector('svg.vz-plot, [data-testid=panel-empty], [data-testid=panel-error]')
+      if (p.dataset.state === 'answered' && drawn && !p.querySelector('[data-testid=panel-stale]') && m.panels[key] === undefined && m.armed) {
+        m.panels[key] = { t: null, queries: [...p.querySelectorAll('[data-testid=open-in-explore]')].map((a) => new URL(a.href).searchParams.get('q')), top: p.getBoundingClientRect().top, on: m.seen[key]?.on ?? true }
         afterFrame((t) => (m.panels[key].t = t))
       }
     }
-    if (m.phase === 'range' && panels.length && waiting === panels.length && document.querySelectorAll('[data-testid=panel-stale]').length === panels.length) once('range:busy', () => true)
+    if (m.phase === 'range' && panels.length && waiting === panels.length && document.querySelectorAll('[data-testid=panel-stale]').length === panels.length) { if (m.busyFrames === undefined) m.busyFrames = m.frames; once('range:busy', () => true) }
   }
   m.phase = 'view'
   m.armed = false
@@ -107,7 +129,7 @@ const cls = (shifts, from, to) => {
   return { unmarked: within.filter((s) => !s.marked).reduce((a, s) => a + s.value, 0), all: within.reduce((a, s) => a + s.value, 0) }
 }
 
-async function run(browser) {
+async function run(browser, APP) {
   const ctx = await browser.newContext({ ...LAYOUT, colorScheme: 'light' })
   const page = await ctx.newPage()
   await page.addInitScript(instrument)
@@ -115,7 +137,7 @@ async function run(browser) {
   await cdp.send('Network.enable')
   await cdp.send('Network.emulateNetworkConditions', FAST_4G)
   await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 })
-  const r = { at: new Date().toISOString(), load1: os.loadavg()[0] }
+  const r = { at: new Date().toISOString(), load1: os.loadavg()[0], uptime: require('node:child_process').execSync('uptime').toString().trim() }
   try {
     await page.goto(`${APP}/dashboards`)
     await page.waitForSelector(`[data-testid=open-${DASHBOARD}]`)
@@ -142,7 +164,7 @@ async function run(browser) {
       const mine = arrived.filter((a) => p.queries.includes(a.query) && a.t <= p.t)
       // The last body this panel waited for (each of its queries' latest arrival, the latest of those).
       const last = Math.max(...p.queries.map((q) => Math.max(...mine.filter((a) => a.query === q).map((a) => a.t), -Infinity)))
-      return { panel: k.split(':')[1], t: p.t, top: p.top, delay: p.t - last }
+      return { panel: k.split(':')[1], t: p.t, top: p.top, on: p.on, delay: p.t - last }
     }).filter((d) => Number.isFinite(d.delay)).sort((a, b) => a.t - b.t)
     const vd = delays(view.panels, view.arrived, 'view')
     r.firstPaint = vd[0]?.delay ?? null
@@ -151,6 +173,9 @@ async function run(browser) {
     r.paintWorst = Math.max(...vd.map((d) => d.delay))
     r.paintWorstPanel = vd.find((d) => d.delay === r.paintWorst)?.panel ?? null
     r.paintMedian = median(vd.map((d) => d.delay))
+    r.paintWorstOn = Math.max(...vd.filter((d) => d.on).map((d) => d.delay))
+    r.paintWorstOff = vd.some((d) => !d.on) ? Math.max(...vd.filter((d) => !d.on).map((d) => d.delay)) : null
+    r.onScreen = vd.filter((d) => d.on).map((d) => d.panel).join(',')
     r.allPainted = vd.length ? vd[vd.length - 1].t - view.press : null
     r.panelsTimed = vd.length
     r.clsView = cls(view.shifts, listLoaded, view.now)
@@ -161,14 +186,21 @@ async function run(browser) {
     await press('[data-testid=preset-1h]')
     await page.waitForFunction((n) => Object.keys(window.__d.panels).filter((k) => k.startsWith('range:') && window.__d.panels[k].t !== null).length >= n, PANELS, { timeout: 60000 })
     await page.waitForTimeout(1200)
-    const range = await page.evaluate(() => { const d = window.__d; return { press: d.press.t, marks: d.marks, panels: d.panels, sent: d.sent, arrived: d.arrived, shifts: d.shifts, events: d.events, now: performance.now(), y: scrollY, coarse: matchMedia('(pointer: coarse)').matches } })
+    const range = await page.evaluate(() => { const d = window.__d; return { press: d.press.t, busyFrames: d.busyFrames ?? null, marks: d.marks, panels: d.panels, sent: d.sent, arrived: d.arrived, shifts: d.shifts, events: d.events, now: performance.now(), y: scrollY, coarse: matchMedia('(pointer: coarse)').matches } })
     r.rangeSend = range.sent.length ? range.sent[0].t - range.press : null
-    r.rangeBusy = range.marks['range:busy'] != null ? range.marks['range:busy'] - range.press : null
+    // The frame that shows every panel waiting. When they were marked in the press's own task (before any frame began after it), it is
+    // the press's next paint, as Event Timing reports it; otherwise the frame after the task that marked them (a task queued from
+    // that frame's animation callback), as before. Only the first is affected by a task queued after the frame (the page's own).
+    r.rangeBusyTask = range.marks['range:busy'] != null ? range.marks['range:busy'] - range.press : null
+    const pressPaint = Math.max(...range.events.filter((e) => ['pointerdown', 'pointerup', 'click'].includes(e.name) && e.t >= range.press - 200 && e.t <= range.press + 50).map((e) => e.t + e.duration))
+    r.rangeBusyInPress = range.busyFrames === 0
+    r.rangeBusy = r.rangeBusyInPress && Number.isFinite(pressPaint) ? pressPaint - range.press : r.rangeBusyTask
     r.rangeInp = Math.max(0, ...range.events.filter((e) => e.t >= range.press - 200 && e.t <= range.press + 50).map((e) => e.duration))
     const rd = delays(range.panels, range.arrived, 'range')
     r.rangePaintWorst = Math.max(...rd.map((d) => d.delay))
     r.rangePaintWorstPanel = rd.find((d) => d.delay === r.rangePaintWorst)?.panel ?? null
     r.rangePaintMedian = median(rd.map((d) => d.delay))
+    r.rangePaintWorstOn = Math.max(...rd.filter((d) => d.on).map((d) => d.delay))
     r.rangeFirstPaint = rd[0]?.delay ?? null
     r.rangeAllPainted = rd.length ? rd[rd.length - 1].t - range.press : null
     r.rangeScrollKept = range.y === view.y
@@ -185,15 +217,21 @@ async function main() {
   const calibrationMs = [calibrate()[0], calibrate()[0], calibrate()[0]].sort((a, b) => a - b)[1]
   console.log(`${PHONE ? 'phone (400 x 800, touch)' : 'desktop (1440 x 900)'}; calibration ${calibrationMs.toFixed(0)} ms, ${CORES} cores, load ${os.loadavg().map((x) => x.toFixed(2)).join(' ')}`)
   const stop = await lib.startServers()
+  const BEFORE = arg('compare', null)
+  const stopBefore = BEFORE ? await lib.startPreview(lib.APP_PORT + 2, lib.MOCK, path.resolve(BEFORE)) : () => {}
+  const builds = BEFORE ? [['before', `http://127.0.0.1:${lib.APP_PORT + 2}`], ['after', APP]] : [['this', APP]]
   const browser = await chromium.launch()
   const runs = []
   const voided = []
   try {
-    for (let i = 0; i < RUNS; i++) {
+    for (let i = 0; i < RUNS * builds.length; i++) {
+      const [build, base] = builds[i % builds.length]
       try {
-        const r = await run(browser)
+        const r = await run(browser, base)
+        r.build = build
+        r.pair = Math.floor(i / builds.length)
         runs.push(r)
-        console.log(`run ${String(i + 1).padStart(2)}: load ${r.load1.toFixed(2)}  viewChange ${r.viewChange.toFixed(0)}  viewInp ${r.viewInp.toFixed(0)}  firstPaint ${r.firstPaint?.toFixed(0)} (${r.firstPanel})  paintWorst ${r.paintWorst.toFixed(0)} (${r.paintWorstPanel})  rangeSend ${r.rangeSend?.toFixed(0)}  rangeBusy ${r.rangeBusy?.toFixed(0)}  rangeInp ${r.rangeInp.toFixed(0)}  rangePaintWorst ${r.rangePaintWorst.toFixed(0)} (${r.rangePaintWorstPanel})  cls ${r.clsView.all.toFixed(4)}/${r.clsRange.all.toFixed(4)}`)
+        console.log(`run ${String(i + 1).padStart(2)} ${build}: load ${r.load1.toFixed(2)}  viewChange ${r.viewChange.toFixed(0)}  viewInp ${r.viewInp.toFixed(0)}  firstPaint ${r.firstPaint?.toFixed(0)} (${r.firstPanel})  paintWorst ${r.paintWorst.toFixed(0)} (${r.paintWorstPanel}) on screen ${r.paintWorstOn.toFixed(0)}  rangeSend ${r.rangeSend?.toFixed(0)}  rangeBusy ${r.rangeBusy?.toFixed(0)}  rangeInp ${r.rangeInp.toFixed(0)}  rangePaintWorst ${r.rangePaintWorst.toFixed(0)} (${r.rangePaintWorstPanel})  cls ${r.clsView.all.toFixed(4)}/${r.clsRange.all.toFixed(4)}`)
       } catch (e) {
         voided.push(String(e.message).slice(0, 200))
         console.log(`run ${i + 1}: void (${String(e.message).slice(0, 120)})`)
@@ -201,9 +239,30 @@ async function main() {
     }
   } finally {
     await browser.close()
+    stopBefore()
     stop()
   }
-  const keys = ['viewChange', 'viewInp', 'panelsShown', 'firstPaint', 'paintMedian', 'paintWorst', 'firstVisible', 'allPainted', 'rangeSend', 'rangeBusy', 'rangeInp', 'rangeFirstPaint', 'rangePaintMedian', 'rangePaintWorst', 'rangeAllPainted']
+  const keys = ['viewChange', 'viewInp', 'panelsShown', 'firstPaint', 'paintMedian', 'paintWorstOn', 'paintWorst', 'paintWorstOff', 'firstVisible', 'allPainted', 'rangeSend', 'rangeBusy', 'rangeBusyTask', 'rangeInp', 'rangeFirstPaint', 'rangePaintMedian', 'rangePaintWorstOn', 'rangePaintWorst', 'rangeAllPainted']
+  if (BEFORE) {
+    // Each build's figures, and the paired differences (after minus before, pair by pair).
+    const f0 = (v) => (v == null || !Number.isFinite(v) ? 'n/a' : v.toFixed(0))
+    const by = (b) => runs.filter((r) => r.build === b)
+    const lines = [`| What | before p75 (median, worst) | after p75 (median, worst) | paired difference, after - before: median (p25 to p75), n |`, '|---|---|---|---|']
+    for (const k of [...keys, 'clsView.all', 'clsRange.all']) {
+      const get = (r) => k.includes('.') ? r[k.split('.')[0]][k.split('.')[1]] : r[k]
+      const cell = (xs) => { const s = sorted(xs); return s.length ? `${k.startsWith('cls') ? p75(xs).toFixed(4) : f0(p75(xs))} (${k.startsWith('cls') ? median(xs).toFixed(4) : f0(median(xs))}, ${k.startsWith('cls') ? s.at(-1).toFixed(4) : f0(s.at(-1))})` : 'n/a' }
+      const diffs = []
+      for (const a of by('after')) { const b = by('before').find((x) => x.pair === a.pair); if (b && Number.isFinite(get(a)) && Number.isFinite(get(b))) diffs.push(get(a) - get(b)) }
+      const ds = sorted(diffs)
+      const q = (f) => ds[Math.min(ds.length - 1, Math.max(0, Math.ceil(f * ds.length) - 1))]
+      lines.push(`| ${k} | ${cell(by('before').map(get))} | ${cell(by('after').map(get))} | ${ds.length ? `${k.startsWith('cls') ? median(ds).toFixed(4) : f0(median(ds))} (${k.startsWith('cls') ? q(0.25).toFixed(4) : f0(q(0.25))} to ${k.startsWith('cls') ? q(0.75).toFixed(4) : f0(q(0.75))}), ${ds.length}` : 'n/a'} |`)
+    }
+    const loads = runs.flatMap((r) => [r.load1, r.loadEnd])
+    lines.push('', `load ${Math.min(...loads).toFixed(2)} to ${Math.max(...loads).toFixed(2)} (median ${median(loads).toFixed(2)}), ${loads.filter((l) => l > CORES).length} of ${loads.length} samples above ${CORES}; ${runs[0].at} to ${runs.at(-1).at}; calibration ${calibrationMs.toFixed(0)} ms`)
+    const file = path.join(lib.ROOT, 'e2e', 'measurements', `${LABEL}-${PHONE ? 'phone' : 'desktop'}.compare.md`)
+    fs.writeFileSync(file, lines.join('\n') + '\n')
+    console.log('\n' + lines.join('\n'))
+  }
   const summary = {}
   for (const k of keys) { const xs = runs.map((r) => r[k]); summary[k] = { p75: p75(xs), median: median(xs), max: Math.max(...sorted(xs)), min: Math.min(...sorted(xs)), n: sorted(xs).length } }
   for (const k of ['clsList']) { const xs = runs.map((r) => r[k]); summary[k] = { p75: p75(xs), median: median(xs), max: Math.max(...xs) } }

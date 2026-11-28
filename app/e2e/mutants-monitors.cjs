@@ -30,6 +30,18 @@ const MUTANTS = [
   { name: 'superseded-painted', property: 'Superseded reads not painted', file: 'src/monitors/model.ts', from: 'return stamp === this.generation', to: 'return stamp === stamp', checks: ['unit:src/monitors/model.test.ts', 'e2e:superseded'] },
   { name: 'touch-clipped', property: '44 px targets take the tap', file: 'src/monitors/MonitorPage.tsx', from: '<div className="vz-notice-group" data-testid="monitor-actions">', to: "<div className=\"vz-notice-group\" data-testid=\"monitor-actions\" style={{ overflow: 'hidden' }}>", checks: ['e2e:touch'] },
   { name: 'dry-run-sent', property: 'dryRun is used nowhere', file: 'src/api/monitors.ts', from: "fingerprint ? { fingerprint } : {}, opts)", to: '{ dryRun: true }, opts)', checks: ['unit:src/api/monitors.test.ts', 'e2e:ack'] },
+  // ---- the third design review: M-M1, M-M2 and the minors (node e2e/mutants-monitors.cjs <names>, OUT=mutants-monitors-rereview.txt)
+  { name: 'chart-without-unit', property: 'M-M2: the chart in the query\'s unit', file: 'src/monitors/MonitorPage.tsx', from: 'const unit = monitorUnit(monitor)', to: "const unit = 'none' as const", checks: ['e2e:monitor'] },
+  { name: 'values-without-unit', property: 'M-M2: values in the query\'s unit', file: 'src/monitors/model.ts', from: 'return unitValue(v, monitorUnit(m))', to: "return unitValue(v, 'none')", checks: ['unit:src/monitors/model.test.ts', 'e2e:list'] },
+  { name: 'share-not-read', property: 'M-M2: a share is read from the query', file: 'src/monitors/model.ts', from: "if (isShare(q)) return 'percentunit'", to: '', checks: ['unit:src/monitors/model.test.ts'] },
+  { name: 'late-undo-iso', property: 'M-M1: a late Undo in the app\'s words and times', file: 'src/monitors/MonitorPage.tsx', from: "const lateUndo = failure?.action === 'undo'", to: "const lateUndo = false && failure?.action === 'undo'", checks: ['e2e:silence'] },
+  { name: 'threshold-as-written', property: 'o1: the threshold as the app writes durations', file: 'src/monitors/model.ts', from: "if (!m.condition) return m.thresholdText", to: 'return m.thresholdText', checks: ['unit:src/monitors/model.test.ts', 'e2e:list'] },
+  { name: 'template-as-message', property: 'o2: a template is not shown as the message', file: 'src/monitors/MonitorPage.tsx', from: "const sent = monitor && monitor.message.includes('{{')", to: "const sent = false && monitor && monitor.message.includes('{{')", checks: ['e2e:monitor'] },
+  { name: 'error-critical', property: 'o3: cannot be evaluated is the unknown dash', file: 'src/monitors/model.ts', from: "return words('', 'Cannot be evaluated')", to: "return words('critical', 'Cannot be evaluated')", checks: ['e2e:list'] },
+  { name: 'error-lower-case', property: 'o5: the API\'s words as a sentence', file: 'src/monitors/MonitorsListPage.tsx', from: '{sentence(error.message)}', to: '{error.message}', checks: ['e2e:states'] },
+  { name: 'query-cut', property: 'o6: the query is shown whole', file: 'src/monitors/MonitorPage.tsx', from: '<pre className="vz-query is-prose" aria-label="The monitor\'s query"', to: '<pre className="vz-query" style={{ maxWidth: \'20ch\' }} aria-label="The monitor\'s query"', checks: ['e2e:monitor'] },
+  { name: 'mock-fixed-value', property: 'o8: the mock\'s values from its own series', file: 'mock/monitors.ts', from: 'value: a.noData ? null : f.query && !a.noData ? (valueAt(f.query, evaluatedAt(t)) ?? a.value) : a.value,', to: 'value: a.value,', checks: ['e2e:monitor'] },
+  { name: 'open-after-route', property: 'M-B1: the monitor is shown in the press\'s task', file: 'src/monitors/MonitorsListPage.tsx', from: '            e.preventDefault()\n            onOpen(m.id)', to: '            void e', checks: ['e2e:monitor'] },
   { name: 'not-served', property: '/monitors is a document', file: 'serve.json', from: '"/dashboards", "/monitors",', to: '"/dashboards",', checks: ['unit:src/shell/serve.test.ts'] },
 ]
 
@@ -98,7 +110,7 @@ function main() {
   lines.push(`${killed} of ${list.length} killed`)
   console.log(lines.at(-1))
   fs.mkdirSync(path.join(SRC, 'e2e/measurements'), { recursive: true })
-  fs.writeFileSync(path.join(SRC, 'e2e/measurements/mutants-monitors.txt'), lines.join('\n') + '\n')
+  fs.writeFileSync(path.join(SRC, 'e2e/measurements', process.env.OUT || 'mutants-monitors.txt'), lines.join('\n') + '\n')
 }
 
 main()

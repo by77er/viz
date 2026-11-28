@@ -6,6 +6,7 @@
  */
 import { ACK_SCOPE, type Monitor, type MonitorDocument, type MonitorFilter, type MonitorState, type TimelineEntry } from '../api/monitors'
 import { LOCAL, spanWords, type Zone } from '../lib/timeInput'
+import { inferUnit, type UnitId } from '../lib/units'
 
 export interface MonitorsSearch {
   id?: string
@@ -96,7 +97,8 @@ export function stateWords(m: Monitor, nowMs: number, page = false): StatusWords
       return words('warn', 'Pending since ', [when(since!, nowMs)], ...(fires.length ? ['. Fires at ', [when(Math.min(...fires), nowMs)] as [string], ' if it holds'] : []))
     }
     case 'error':
-      return words('critical', 'Cannot be evaluated')
+      // A monitor that cannot watch is not known to be firing: the unknown dash, with its words (o3; Status).
+      return words('', 'Cannot be evaluated')
     case 'ok':
       return words('ok', 'Not firing')
     case 'warming':
@@ -117,12 +119,129 @@ export function receiverWords(m: Monitor): string {
     .join(', ')
 }
 
-/** A value as the history and the alerts say it, in the monitor's unit where it has one. */
-export function valueWords(v: number | null | undefined, m: Monitor): string {
-  if (v === null || v === undefined) return 'no value'
-  const unit = m.condition?.unit
-  const n = Math.abs(v) >= 1000 || (Math.abs(v) < 0.001 && v !== 0) ? v.toPrecision(3) : String(Number(v.toPrecision(3)))
-  return unit === 'bytes' ? `${n} bytes` : unit ? `${n} ${unit}` : n
+/** The API's words as a sentence on the page: a capital first, a full stop last (o5). */
+export function sentence(text: string): string {
+  const t = text.trim()
+  if (t === '') return t
+  return t[0]!.toUpperCase() + t.slice(1) + (/[.!?]$/.test(t) ? '' : '.')
+}
+
+/**
+ * A message template as it was sent (o2): Prometheus's `{{ $value }}` (with `humanizePercentage`,
+ * `humanizeDuration`, `humanize1024` or `humanize`) and `{{ $labels.<name> }}` filled in; null
+ * when it holds anything else, which is then shown as the template it is.
+ */
+export function renderMessage(template: string, value: number | null, labels: Record<string, string>): string | null {
+  let unread = false
+  const out = template.replace(/\{\{\s*([^}]*?)\s*\}\}/g, (_, inner: string) => {
+    const v = /^\$value(?:\s*\|\s*(humanizePercentage|humanizeDuration|humanize1024|humanize))?$/.exec(inner)
+    if (v && value !== null) {
+      const f = v[1]
+      return f === 'humanizePercentage' ? unitValue(value, 'percentunit') : f === 'humanizeDuration' ? unitValue(value, 'seconds') : f === 'humanize1024' ? unitValue(value, 'bytes') : unitValue(value, 'none')
+    }
+    const l = /^\$labels\.([a-zA-Z_][a-zA-Z0-9_]*)$/.exec(inner)
+    if (l && labels[l[1]!] !== undefined) return labels[l[1]!]!
+    unread = true
+    return ''
+  })
+  return unread ? null : out
+}
+
+// ---- the unit (M-M2 of the third design review)
+
+/** The units a condition may name (ruler's `condition.unit`, free text), as the app's units. */
+const CONDITION_UNIT: Record<string, UnitId> = { s: 'seconds', seconds: 'seconds', bytes: 'bytes', B: 'bytes', '/s': 'rps', '%': 'percent', percent: 'percent', ratio: 'percentunit', cores: 'cores', 'bytes/s': 'bytes/s', 'B/s': 'bytes/s' }
+
+/** The index of the division at the top of an expression (outside every bracket and string), or -1. */
+function topDivision(q: string): number {
+  let depth = 0
+  let quote: string | null = null
+  for (let i = 0; i < q.length; i++) {
+    const c = q[i]!
+    if (quote) {
+      if (c === '\\') i++
+      else if (c === quote) quote = null
+    } else if (c === '"' || c === "'" || c === '`') quote = c
+    else if (c === '(' || c === '{' || c === '[') depth++
+    else if (c === ')' || c === '}' || c === ']') depth--
+    else if (c === '/' && depth === 0) return i
+  }
+  return -1
+}
+/** The metric names an expression reads (a name followed by its matchers or its range). */
+const metricsOf = (q: string) => new Set([...q.replace(/"(?:[^"\\]|\\.)*"/g, '""').matchAll(/([a-zA-Z_:][a-zA-Z0-9_:]*)\s*[{[]/g)].map((m) => m[1]!))
+
+/** A query that divides part of one metric by all of the same metric: a share, from 0 to 1 ("the 500s of all requests"). */
+export function isShare(query: string): boolean {
+  const at = topDivision(query)
+  if (at < 0) return false
+  const a = metricsOf(query.slice(0, at))
+  const b = metricsOf(query.slice(at + 1))
+  return a.size === 1 && b.size === 1 && [...a][0] === [...b][0]
+}
+
+/**
+ * The unit of a monitor's values: the one its condition names; else the one its message
+ * template formats its value in (`humanizePercentage` is a share, `humanizeDuration` seconds,
+ * `humanize1024` bytes); else a share when its query divides part of a metric by all of it;
+ * else what Explore's "Automatic" unit guesses from the query (lib/units `inferUnit`).
+ */
+export function monitorUnit(m: Pick<Monitor, 'condition' | 'message' | 'query' | 'expr'>): UnitId {
+  const named = m.condition?.unit
+  if (named && CONDITION_UNIT[named]) return CONDITION_UNIT[named]
+  const msg = m.message ?? ''
+  if (/\|\s*humanizePercentage\b/.test(msg)) return 'percentunit'
+  if (/\|\s*humanizeDuration\b/.test(msg)) return 'seconds'
+  if (/\|\s*humanize1024\b/.test(msg)) return 'bytes'
+  const q = m.query ?? m.expr
+  if (isShare(q)) return 'percentunit'
+  return inferUnit(q)
+}
+
+const sig = (n: number, p = 3) => String(Number(n.toPrecision(p)))
+const BINARY = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+function binary(v: number): string {
+  let i = 0
+  while (i < BINARY.length - 1 && Math.abs(v) >= 1024 ** (i + 1)) i++
+  return `${sig(v / 1024 ** i)} ${BINARY[i]}`
+}
+/** A percentage as it is read: one decimal place, none when it is whole ("8.4%", "2%"), two digits when it is below 0.1. */
+const percent = (n: number) => `${n !== 0 && Math.abs(n) < 0.1 ? sig(n, 2) : String(Number(n.toFixed(1)))}%`
+
+/** A value in a unit, as the monitor's views write it everywhere: "8.4%", "312 ms", "1.5 GiB", "0.8/s". */
+export function unitValue(v: number, unit: UnitId): string {
+  switch (unit) {
+    case 'percentunit':
+      return percent(v * 100)
+    case 'percent':
+      return percent(v)
+    case 'seconds': {
+      const a = Math.abs(v)
+      return a >= 1 || a === 0 ? `${sig(v)} s` : a >= 1e-3 ? `${sig(v * 1e3)} ms` : `${sig(v * 1e6)} µs`
+    }
+    case 'bytes':
+      return binary(v)
+    case 'bytes/s':
+      return `${binary(v)}/s`
+    case 'rps':
+      return `${sig(v)}/s`
+    case 'cores':
+      return `${sig(v)} cores`
+    default:
+      return Math.abs(v) >= 1000 || (Math.abs(v) < 0.001 && v !== 0) ? v.toPrecision(3) : sig(v)
+  }
+}
+
+/** A value as the history, the alerts and the list say it, in the monitor's unit. */
+export function valueWords(v: number | null | undefined, m: Pick<Monitor, 'condition' | 'message' | 'query' | 'expr'>): string {
+  if (v === null || v === undefined || !Number.isFinite(v)) return 'no value'
+  return unitValue(v, monitorUnit(m))
+}
+
+/** The threshold as the app writes it ("> 2% for 5 min", o1), from the condition; the ruler's text when there is no condition. */
+export function thresholdWords(m: Pick<Monitor, 'condition' | 'message' | 'query' | 'expr' | 'forMs' | 'thresholdText'>, withFor = true): string | null {
+  if (!m.condition) return m.thresholdText
+  return `${m.condition.op} ${valueWords(m.condition.threshold, m)}${withFor && m.forMs > 0 ? ` for ${lasted(m.forMs)}` : ''}`
 }
 
 export interface HistoryLine {
@@ -147,7 +266,7 @@ export function historyLines(doc: MonitorDocument, me: string | null): HistoryLi
         line('info', `Changed by ${by}.`)
         break
       case 'pending':
-        line('warn', e.noData ? 'No data. Pending.' : `Went ${m.condition ? `${m.condition.op} ${valueWords(m.condition.threshold, m)}` : 'past the condition'} at ${valueWords(e.value, m)}. Pending${m.forMs ? ` for ${lasted(m.forMs)}` : ''}.`)
+        line('warn', e.noData ? 'No data. Pending.' : `Went ${m.condition ? thresholdWords(m, false) : 'past the condition'} at ${valueWords(e.value, m)}. Pending${m.forMs ? ` for ${lasted(m.forMs)}` : ''}.`)
         break
       case 'firing':
         line('critical', e.noData ? 'Fired: no data.' : `Fired at ${valueWords(e.value, m)}.`)
@@ -242,7 +361,7 @@ export class ReadGuard {
 /** The list as text: the same facts as its rows. */
 export function listText(list: readonly Monitor[], filter: MonitorFilter, total: number, nowMs: number): string {
   const head = filter === 'all' ? `${total} monitors, attention first.` : filter === 'attention' ? `${list.length} of ${total} monitors need attention, firing first.` : `${list.length} of ${total} monitors are silenced.`
-  const rows = list.map((m) => `${m.name}: ${plain(stateWords(m, nowMs))}. Threshold ${m.thresholdText ?? 'none'}. Owner ${m.owner || 'nobody'}. Notifies ${receiverWords(m)}.`)
+  const rows = list.map((m) => `${m.name}: ${plain(stateWords(m, nowMs))}. Threshold ${thresholdWords(m) ?? 'none'}. Owner ${m.owner || 'nobody'}. Notifies ${receiverWords(m)}.`)
   return [head, ...rows].join('\n')
 }
 
@@ -250,10 +369,10 @@ export function listText(list: readonly Monitor[], filter: MonitorFilter, total:
 export function monitorText(doc: MonitorDocument, me: string | null, nowMs: number, done: string | null): string {
   const m = doc.monitor
   const lines = [`${m.name}. ${plain(stateWords(m, nowMs, true))}.${done ? ` ${done}.` : ''}`]
-  if (m.message) lines.push(`Message: ${m.message}`)
+  if (m.message) lines.push(`${m.message.includes('{{') ? 'Message template' : 'Message'}: ${m.message}`)
   if (m.description) lines.push(`Description: ${m.description}`)
   lines.push(`Query: ${m.query ?? m.expr}`)
-  lines.push(`Threshold: ${m.thresholdText ?? 'none (the query is the condition)'}. Evaluated every ${lasted(m.intervalMs || 60_000)}${m.lastEvaluationMs ? `, last at ${when(m.lastEvaluationMs, nowMs)}` : ''}.`)
+  lines.push(`Threshold: ${thresholdWords(m) ?? 'none (the query is the condition)'}. Evaluated every ${lasted(m.intervalMs || 60_000)}${m.lastEvaluationMs ? `, last at ${when(m.lastEvaluationMs, nowMs)}` : ''}.`)
   lines.push(`Notifies ${receiverWords(m)}. Owner ${m.owner || 'nobody'}.${m.runbookUrl ? ` Runbook ${m.runbookUrl}.` : ''}`)
   if (m.lastError) lines.push(`Last error: ${m.lastError}`)
   lines.push(m.alerts.length ? `${m.alerts.length} alert${m.alerts.length === 1 ? '' : 's'}:` : 'No alerts.')

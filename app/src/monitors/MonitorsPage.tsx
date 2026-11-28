@@ -1,5 +1,5 @@
-import { useEffect, useMemo } from 'react'
-import { getRouteApi } from '@tanstack/react-router'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { getRouteApi, useNavigate } from '@tanstack/react-router'
 import { RequireKey } from '../shell/AppShell'
 import { MonitorsListPage } from './MonitorsListPage'
 import { MonitorPage } from './MonitorPage'
@@ -16,8 +16,23 @@ const route = getRouteApi('/monitors')
 export function MonitorsPage() {
   const raw = route.useSearch()
   const search = useMemo(() => parseMonitorsSearch(raw as Record<string, unknown>), [raw])
+  // The monitor pressed in the list is shown in the press's own task (M-B1), from the list's row, while the router changes the
+  // address; the page is the same element once the address names it (one key), so nothing is asked or drawn twice.
+  // The router's change of address runs in a task after the frame that shows the page: in the press's task it held that frame back
+  // as long as before (measured here: 111 and 123 ms with it there).
+  const navigate = useNavigate()
+  const [opening, setOpening] = useState<string | null>(null)
+  useEffect(() => setOpening(null), [raw])
+  const open = useCallback(
+    (id: string) => {
+      setOpening(id)
+      requestAnimationFrame(() => setTimeout(() => void navigate({ to: '/monitors', search: { id } }), 0))
+    },
+    [navigate],
+  )
+  const id = search.id ?? opening
   useEffect(() => {
-    if (!search.id) document.title = 'Monitors · viz'
-  }, [search.id])
-  return <RequireKey>{search.id ? <MonitorPage key={search.id} id={search.id} search={search} /> : <MonitorsListPage search={search} />}</RequireKey>
+    if (!id) document.title = 'Monitors · viz'
+  }, [id])
+  return <RequireKey>{id ? <MonitorPage key={id} id={id} search={search.id ? search : { id }} /> : <MonitorsListPage search={search} onOpen={open} />}</RequireKey>
 }

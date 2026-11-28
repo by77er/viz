@@ -1,0 +1,4 @@
+KILLED    [text] the dashboard's text form is a well that scrolls sideways
+            checks run: e2e/dashboards.cjs (dashboard, narrow); caught by 1 (e2e), e.g. e2e: [text] at 400 px the dashboard's text form wraps: nothing of it is behind a sideways scroll
+
+1 of 1 killed, 0 survived, 0 not applied

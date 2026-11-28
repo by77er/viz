@@ -51,3 +51,10 @@ dialog.palette::backdrop { background: var(--scrim); }
 /* A panel head's meta: what it says with an answer and what it says while a new range waits lie in one place, sized by the longer. */
 .meta-hold { display: inline-grid; justify-items: end; min-width: 0; }
 .meta-hold > * { grid-area: 1 / 1; }
+
+/* A text note's headings sit under the panel's title: ui-strong, the size of the panel's own title, never a section heading (D-M1). */
+.note :is(h3, h4) { font: var(--text-ui-strong); margin: 0; }
+/* "Show N more" under a table panel: with a finger, its 44 px hit area stays off the "Text form" under the panel's body (d8). Above it, the stack keeps it off the table. */
+@media (pointer: coarse) {
+  .panel-more { margin-bottom: var(--space-1); }
+}

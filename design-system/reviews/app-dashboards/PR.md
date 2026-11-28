@@ -1,6 +1,6 @@
 # app: dashboards, read-only (images for design review)
 
-**Status: not reviewed.** These are the composed images of the app's new dashboards views, for
+**Status: rejected by the re-review (`../app-v9/rereview.md`, part 2); fixed, awaiting a re-review.** The dispositions are at the end ("Third design review"). These are the composed images of the app's new dashboards views, for
 an independent design reviewer. This file says what is shown and how it was made; it does not
 judge it. What the views do, what they leave out, how they were tested and measured is in
 `app/README.md`, "Dashboards, read-only".
@@ -79,3 +79,35 @@ every file with its size and the page height.
 - Before and after: these are new views, so there is no "before".
 - At 400 px the navigation scrolls sideways (the system's rule for a strip); the images show
   its start.
+
+## Third design review: dispositions (2026-11-28)
+
+The re-review (`../app-v9/rereview.md`, part 2) rejected this view. Each finding, what was done,
+and where the check that fails without it is. The author's account in full is `app/README.md`,
+"The third design review"; this list does not judge the result. Images remade: see "Images of
+the third review" below.
+
+| Finding | Disposition |
+|---|---|
+| **D-B1** agent content unmarked | Fixed. While the dashboard's last change is an agent's, every word of its spec is marked where it is read, by Claim's pattern: the head's title and intent inside the agent's rule (`vz-agent`) under Claim's provenance line (`vz-claim-by`: "Agent's dashboard, written by incident-agent" and `vz-status` "Not verified", the unknown dash); each panel title ruled; each explanation ruled and reading "Agent: … Not verified."; a stat's thresholds on a ruled line "Agent's thresholds: … Not verified."; the list's Intent cell ruled with "Agent: … Not verified."; the text forms say the same. Nothing can be confirmed in a read-only app: a person's next revision lifts it. Images `01-list`, `09-dashboard-variables`. Checks `[agent]` in `app/e2e/dashboards.cjs` |
+| **D-B2** panels painted late; waiting state late | Fixed in the code, measured: `app/README.md`, "Speed (third review)" (before and after alternating, paired differences, sessions). A chart off screen waits in its reserved place (the height it draws) until its panel nears the viewport or the page is idle; the press on a range marks every panel waiting in its own task. Nothing a person sees changes. Checks `[speed]` |
+| **D-M1** raw Markdown digest | Fixed. The heatmap's buckets are the system's table (bound with its unit; Last, Lowest, Highest with the unit in the head; no outlier notes, no capitals); the note's Markdown is text (strong words in weight); each panel's text form and the dashboard's Text are sentences in the page's units and dates, every series, wrapped at the measure; the model's digest is only "Copy the digest for an agent". Images `10-dashboard-panel-states`, `13-dashboard-text`, `09-dashboard-variables` (a text form open). Checks `[text]` |
+| **D-M2** one service, three colours | Fixed as a proposal for the system's owner (`app/README.md`, decisions): one map per dashboard by series identity (labels without `__name__`, grouped by label names), handed to each panel's chart before its first draw. Image `08-dashboard`. Check `[colour]`, unit `colours.test.ts`. Needs C1 from the chart (an input for a starting map) |
+| d1 thresholds unnamed | Fixed: "Thresholds: above 2% (warning) and above 5% (critical)." |
+| d2 baselines in a row | Follow-up: the system's Panel (C3) |
+| d3 which previous range | Fixed: "Showing 18 Nov, 09:30 to 12:30, the previous range". Image `11-dashboard-waiting` |
+| d4 summary without marker | Follow-up: the system's `vz-details` (C4) |
+| d5 "Nothing was changed" twice | Fixed. Image `05-list-error` |
+| d6 first run as a list of one | Fixed. Image `04-list-first-run` |
+| d7 two readings of an empty panel | Fixed: one sentence; the explanation above says what nothing means |
+| d8 no way to see the cut rows | Fixed: "Show 4 more" |
+| d9 placeholder | Fixed: none |
+
+### Images of the third review
+
+Remade 2026-11-28 15:12 UTC by `node app/e2e/dashboards-shots.cjs` from a build of this change in a worktree of
+`6c76fc4` (the committed chart, not the chart another builder is changing), encoded with
+`app/e2e/encode-review-images.py --flat`, and compared pixel for pixel with the images they
+replace. Changed and replaced: `01-list`, `04-list-first-run`, `05-list-error`, `06-list-waiting` (its seconds only), `08-dashboard`, `09-dashboard-variables`, `10-dashboard-panel-states`, `11-dashboard-waiting`, `12-dashboard-first-load`, `13-dashboard-text`, `15-dashboard-fragments`. Identical: `02-list-filtered`, `03-list-empty`, `07-list-no-permission`, `14-dashboard-missing`. The table of states above still says
+what each image shows; where a state's words changed, the dispositions say how. Not imaged: the
+panels' text forms open (one is, in `09`), the colour map across panels other than in `08`.

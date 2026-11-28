@@ -30,7 +30,8 @@ const dash = (id, extra = '', base = APP) => `${base}/dashboards?id=${id}${RANGE
 const text = (page, sel) => page.evaluate((s) => document.querySelector(s)?.textContent?.replace(/\s+/g, ' ').trim() ?? null, sel)
 /** Every panel has its answer, its error or its stop: nothing waits. */
 const settled = async (page, n) => {
-  await page.waitForFunction((n) => document.querySelectorAll('[data-testid=panel]').length >= n && !document.querySelector('[data-testid=panel][data-state=waiting], [data-testid=panel][data-state=idle]'), n, { timeout: 30000 })
+  // Charts off screen are drawn when the page is idle (D-B2): settled is when none is still waiting to be drawn.
+  await page.waitForFunction((n) => document.querySelectorAll('[data-testid=panel]').length >= n && !document.querySelector('[data-testid=panel][data-state=waiting], [data-testid=panel][data-state=idle], [data-testid=panel-deferred]'), n, { timeout: 30000 })
   await page.evaluate(() => document.fonts.ready)
 }
 const panels = (page) =>
@@ -104,6 +105,8 @@ async function main() {
       const rows = await page.evaluate(() => [...document.querySelectorAll('[data-testid=dashboard-row]')].map((tr) => [...tr.querySelectorAll('td')].map((td) => td.textContent.replace(/\s+/g, ' ').trim())))
       check('the list shows every dashboard by name, with its intent, tags, owner and who changed it last and when', rows.length === 4 && rows.map((r) => r[0]).join('|') === 'Checkout path|Pod capacity|Service: rate, errors, duration|Services overview' && rows[1][1].startsWith('Capacity review.') && rows[1][2] === 'capacity, platform' && rows[1][3] === 'platform' && rows[1][4] === '2 Nov 08:01 by Lee', JSON.stringify(rows.map((r) => [r[0], r[2], r[3], r[4]])))
       check('a dashboard nobody owns says so, and a change by an agent says it was an agent', rows[0][3] === 'nobody' && rows[2][4] === '18 Nov 13:20 by incident-agent (agent)', `${rows[0][3]} / ${rows[2][4]}`)
+      const intents = await page.evaluate((muted) => [...document.querySelectorAll('[data-testid=row-intent]')].map((td) => { const a = td.querySelector('.vz-agent'); return { text: td.textContent.replace(/\s+/g, ' ').trim(), rule: a ? getComputedStyle(a).borderLeftColor === muted && parseFloat(getComputedStyle(a).borderLeftWidth) >= 2 : false } }), tokenRgb('ink-muted', 'light'))
+      check('[agent] the intent an agent wrote is marked in its cell where it is read: the agent\'s rule, "Agent:", "Not verified"; a person\'s is not', intents[2].rule && intents[2].text.startsWith('Agent: One service at a time.') && intents[2].text.endsWith('Not verified.') && [0, 1, 3].every((i) => !intents[i].rule && !intents[i].text.startsWith('Agent')), JSON.stringify(intents))
       check('the caption says how many dashboards and in what order, and the rows are in that order', (await text(page, '[data-testid=list-caption]')) === '4 dashboards, by name.', await text(page, '[data-testid=list-caption]'))
       check('the nav marks Dashboards as the current section; the page is titled', (await page.evaluate(() => document.querySelector('nav.vz-nav a[aria-current=page]')?.textContent)) === 'Dashboards' && (await page.title()) === 'Dashboards · viz')
       const listReq = w.sent.filter((r) => r.url.includes('/api/v1/control/dashboards'))
@@ -117,6 +120,7 @@ async function main() {
       await page.fill('[data-testid=dashboards-search]', 'capacity')
       await page.waitForFunction(() => document.querySelectorAll('[data-testid=dashboard-row]').length === 1)
       check('typing in Search asks the API (q=…) and shows what matched, with the count of all', (await text(page, '[data-testid=list-caption]')) === '1 of 4 dashboards match, by name.' && w.sent.some((r) => /dashboards\?q=capacity&limit=200$/.test(r.url)) && new URL(page.url()).searchParams.get('q') === 'capacity', `${await text(page, '[data-testid=list-caption]')} ${page.url()}`)
+      check('[d9] the search field has no placeholder that reads like a typed value', (await page.getAttribute('[data-testid=dashboards-search]', 'placeholder')) === null)
       check('the search field keeps the focus while the list changes', (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'dashboards-search')
       await page.fill('[data-testid=dashboards-search]', 'zzz-nothing')
       await page.waitForSelector('[data-testid=list-empty]')
@@ -165,6 +169,7 @@ async function main() {
       await page.goto(`${APP}/dashboards`)
       await page.waitForSelector('[data-testid=list-error]')
       const err = await text(page, '[data-testid=list-error]')
+      check('[d5] the error says "Nothing was changed" once: the API says it, the app does not say it again', err.split('Nothing was changed').length === 2, err)
       check('when the API fails, the list\'s place says so with the API\'s own words, its status, and what to do', err.includes('The dashboards could not be listed') && err.includes('Something went wrong on our side. Nothing was changed.') && err.includes('The API answered internal with HTTP 500.') && !!(await page.$('[data-testid=list-error] .vz-mark[data-state=critical]')) && !(await page.$('[data-testid=dashboard-row]')), err)
       check('the shell stays: navigation and title are there under an error', (await text(page, 'h1')) === 'Dashboards' && !!(await page.$('nav.vz-nav')))
       fail = false
@@ -178,6 +183,7 @@ async function main() {
       await page.goto(`${APP}/dashboards`)
       await page.waitForSelector('[data-testid=list-first-run]')
       const first = await text(page, '[data-testid=list-first-run]')
+      check('[d6] the first run is sentences, not a numbered list of one step', !(await page.$('[data-testid=list-first-run] ol')))
       check('a tenant with no dashboards sees what a dashboard is and how one is made, truthfully (this app cannot make one), and no search', first.startsWith('No dashboards yet') && first.includes('cannot make one yet') && first.includes('POST /api/v1/control/dashboards') && !(await page.$('[data-testid=dashboards-search]')) && !(await page.$('[data-testid=list-empty]')), first)
       await axe(page, 'dashboards, first run', check)
       await page.unroute('**/api/v1/control/dashboards*')
@@ -227,13 +233,30 @@ async function main() {
       await page.waitForSelector('[data-testid=dashboard-page]')
       check('a dashboard\'s address is /dashboards?id=<id>: the document path stays /dashboards', new URL(page.url()).pathname === '/dashboards' && new URL(page.url()).searchParams.get('id') === 'services_overview', page.url())
       await page.goto(dash('services_overview'))
+      // Drawn once in this tab, so that each chart's reserved height is the one it draws (Chart, "Reserved height": from its last result).
+      await settled(page, 12)
       w.sent.length = 0
       w.peak = 0
+      // [speed] what is drawn in the task an answer arrives: a chart on screen is, a chart off screen waits in its reserved place (D-B2).
+      await page.addInitScript(() => {
+        window.__answered = []
+        new MutationObserver((records) => {
+          for (const r of records) {
+            const p = r.target
+            if (r.attributeName !== 'data-state' || p.dataset?.testid !== 'panel' || p.dataset.kind !== 'timeseries' || p.dataset.state !== 'answered') continue
+            const box = p.getBoundingClientRect()
+            window.__answered.push({ id: p.dataset.panel, on: box.top < innerHeight && box.bottom > 0, drawn: !!p.querySelector('svg.vz-plot, [data-testid=panel-empty]'), h: Math.round(box.height) })
+          }
+        }).observe(document, { subtree: true, attributes: true, attributeFilter: ['data-state'] })
+      })
       await page.reload()
       await settled(page, 12)
+      const answered = await page.evaluate(() => window.__answered.map((a) => ({ ...a, after: Math.round(document.querySelector(`[data-testid=panel][data-panel=${a.id}]`).getBoundingClientRect().height) })))
+      check('[speed] a chart on screen is drawn in the task its answer arrives; a chart off screen is not, and is drawn later in its reserved place at the height it draws', answered.length === 6 && answered.filter((a) => a.on).length >= 1 && answered.filter((a) => a.on).every((a) => a.drawn) && answered.filter((a) => !a.on).length >= 1 && answered.filter((a) => !a.on).every((a) => !a.drawn && Math.abs(a.after - a.h) <= 1), JSON.stringify(answered))
       const ps = await panels(page)
       const head = await page.evaluate(() => ({ title: document.querySelector('[data-testid=dashboard-title]').textContent, intent: document.querySelector('[data-testid=dashboard-intent]').textContent, facts: document.querySelector('[data-testid=dashboard-facts]').textContent.replace(/\s+/g, ' ').trim(), doc: document.title, sections: [...document.querySelectorAll('.vz-section-title')].map((h) => h.textContent), read: document.querySelector('[data-testid=time-read]').textContent }))
       check('the dashboard shows its title and its intent, and who changed it last', head.title === 'Services overview' && head.intent.startsWith('On-call view of the four API services.') && head.facts.startsWith('Revision 1, changed 24 Nov 16:12 by Dana.') && head.doc === 'Services overview · Dashboards · viz', JSON.stringify(head))
+      check('[agent] a dashboard a person changed last carries no agent marking', !(await page.$('[data-testid=agent-by]')) && !(await page.$('.vz-agent')), String(await page.$$eval('.vz-agent', (els) => els.length)))
       check('it says how many panels it has and how many have answered: a measured count', head.facts.endsWith('12 panels, all answered.'), head.facts)
       check('its time range is in the same fields Explore has, read back the same way', head.read === 'Read as 18 Nov, 09:30 to 12:30, 3 h, UTC.' && !!(await page.$('[data-testid=range-controls] [data-testid=preset-6h]')), head.read)
       check('the panels are laid out as the spec says: its rows as headed sections, in its reading order', head.sections.join('|') === 'Health|Traffic|Latency and routes|Pods|Detail' && ps.map((p) => p.id).join(',') === 'requests,error_ratio,latency,pods,rate_by_service,errors_by_service,latency_by_service,rate_by_route,cpu,memory,routes,capacity', ps.map((p) => p.id).join(','))
@@ -245,9 +268,16 @@ async function main() {
       const windows = new Set(sentQueries.map((r) => { const b = new URLSearchParams(r.body); return `${b.get('start')}-${b.get('end')}-${b.get('step')}` }))
       check('every panel is asked over the same window and step', windows.size === 1 && [...windows][0] === `${T0 / 1000}-${T1 / 1000}-30`, [...windows].join(' '))
 
+      // one colour per service across the dashboard (D-M2)
+      const slots = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('[data-testid=panel][data-kind=timeseries]')].map((p) => [p.dataset.panel, Object.fromEntries([...p.querySelectorAll('tbody tr[data-key]')].filter((tr) => tr.dataset.key !== 'other').map((tr) => [tr.dataset.key.split(',').filter((kv) => !kv.startsWith('__name__=')).join(','), tr.querySelector('.vz-swatch').dataset.series]))])))
+      const same = (a, b) => Object.keys(slots[a]).filter((k) => k in slots[b]).every((k) => slots[a][k] === slots[b][k]) && Object.keys(slots[a]).some((k) => k in slots[b])
+      check('[colour] a service has one colour in every panel of the dashboard, and a pod one in CPU and memory', same('rate_by_service', 'errors_by_service') && same('rate_by_service', 'latency_by_service') && same('cpu', 'memory') && new Set(Object.values(slots.rate_by_service)).size === Object.keys(slots.rate_by_service).length, JSON.stringify({ r: slots.rate_by_service, e: slots.errors_by_service, l: slots.latency_by_service }))
+
       // stats
       const stats = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('[data-testid=panel][data-kind=stat]')].map((p) => [p.dataset.panel, { value: p.querySelector('[data-testid=stat-value]').textContent, context: p.querySelector('[data-testid=stat-context]').textContent.replace(/\s+/g, ' ').trim(), state: p.querySelector('[data-testid=stat-state]')?.dataset.state ?? null }])))
       check('a stat is one figure with its unit, and a context line that starts with what the figure covers', /^\d+(\.\d+)?req\/s$/.test(stats.requests.value) && /^\d\.\d+%$/.test(stats.error_ratio.value) && stats.pods.value === '12' && stats.requests.context.startsWith('Last value of 18 Nov, 09:30 to 12:30.'), JSON.stringify(stats))
+      const limits = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('[data-testid=panel][data-kind=stat]')].map((p) => [p.dataset.panel, p.querySelector('[data-testid=stat-thresholds]')?.textContent ?? null])))
+      check('[d1] a stat\'s state names what it is measured against: its thresholds, from the spec, in its unit', limits.error_ratio === 'Thresholds: above 2% (warning) and above 5% (critical).' && limits.latency === 'Thresholds: above 1 s (warning).' && limits.pods === 'Thresholds: below 12 (warning).', JSON.stringify(limits))
       check('a stat with thresholds says its state as a status mark and words; the figure itself is not coloured', stats.error_ratio.state === 'ok' && stats.error_ratio.context.endsWith('Within its thresholds') && (await page.evaluate((ink) => [...document.querySelectorAll('[data-testid=stat-value]')].every((el) => getComputedStyle(el).color === ink), tokenRgb('ink', 'light'))), JSON.stringify(stats.error_ratio))
 
       // tables
@@ -258,16 +288,24 @@ async function main() {
       const reqs = table.rows.map((r) => Number(r[2].replace(/,/g, '')))
       check('a table panel has one row per series and one column per query, the unit once in the column head, figures right-aligned', table.heads.join('|') === 'route|service|Requests, req/s|Errors, req/s' && table.rows.length === 8 && table.right && table.rows.every((r) => /^[\d.,]+$/.test(r[2]) && /^[\d.,]+$/.test(r[3])), JSON.stringify([table.heads, table.rows[0]]))
       check('its caption says how many rows of how many and in what order, and the rows are in that order', table.caption === '8 of 12 rows, highest Requests first.' && reqs.every((v, i) => i === 0 || reqs[i - 1] >= v), `${table.caption} ${reqs.join(',')}`)
+      await page.click('[data-testid=panel][data-panel=routes] [data-testid=panel-table-more]')
+      const more = await page.evaluate(() => ({ rows: document.querySelectorAll('[data-panel=routes] tbody tr').length, caption: document.querySelector('[data-panel=routes] [data-testid=panel-table-caption]').textContent.replace(/\s+/g, ' ').trim(), button: document.querySelector('[data-panel=routes] [data-testid=panel-table-more]').textContent }))
+      check('[d8] the rows the spec cuts are a press away: "Show 4 more" shows all twelve, and the caption says so', more.rows === 12 && more.caption === '12 of 12 rows, highest Requests first.' && more.button === 'Show the first 8', JSON.stringify(more))
+      await page.click('[data-testid=panel][data-panel=routes] [data-testid=panel-table-more]')
 
-      // text form
+      // text form (D-M1): sentences in the page's units and times, every series, nothing of the model's Markdown
       await page.click('[data-testid=panel][data-panel=rate_by_service] [data-testid=panel-text] summary')
-      await page.waitForSelector('[data-testid=panel][data-panel=rate_by_service] [data-testid=panel-digest]')
-      const digest = await page.evaluate(() => document.querySelector('[data-testid=panel][data-panel=rate_by_service] [data-testid=panel-digest]').textContent)
-      check('every panel has its text form: the model\'s digest of that panel, with its kind, unit, description and series', /^## (\[[A-Z ]+\] )?Requests by service — rate_by_service \(timeseries, req\/s\)/.test(digest) && digest.includes('Throughput per service.') && /\n4 series[,.]/.test(digest) && digest.includes('| catalog |') && (await page.$$('[data-testid=panel-text]')).length === 12, digest.slice(0, 200))
+      await page.waitForSelector('[data-testid=panel][data-panel=rate_by_service] [data-testid=panel-sentences]')
+      const sentences = await page.evaluate(() => [...document.querySelectorAll('[data-testid=panel][data-panel=rate_by_service] [data-testid=panel-sentences] li')].map((li) => li.textContent))
+      check('[text] every panel has its text form: sentences in the panel\'s unit and the page\'s time format, one per series, no Markdown', sentences[0] === 'Requests by service. A chart, 4 series in req/s, 18 Nov, 09:30 to 12:30, every 30 s.' && sentences.includes('Throughput per service. Compare the shape with the same hour yesterday.') && sentences.filter((l) => /^(catalog|checkout|orders|search|auth): last [\d.,]+ req\/s, lowest [\d.,]+ req\/s, highest [\d.,]+ req\/s/.test(l)).length === 4 && !sentences.some((l) => /[|#*]|\[[A-Z]/.test(l)) && (await page.$$('[data-testid=panel-text]')).length === 12, JSON.stringify(sentences))
+      await page.click('[data-testid=panel][data-panel=rate_by_route] [data-testid=panel-text] summary')
+      await page.waitForSelector('[data-testid=panel][data-panel=rate_by_route] [data-testid=panel-sentences]')
+      const routeLines = await page.evaluate(() => [...document.querySelectorAll('[data-testid=panel][data-panel=rate_by_route] [data-testid=panel-sentences] li')].length)
+      check('[text] a panel of 36 series has all 36 in its text form: none is left out without a way to see it', routeLines === 36 + 2, String(routeLines))
       await page.click('[data-testid=form-text]')
-      await page.waitForSelector('[data-testid=dashboard-digest]')
-      const whole = await page.evaluate(() => document.querySelector('[data-testid=dashboard-digest]').textContent)
-      check('the whole dashboard has a text form too: the model\'s digest, with the range and every panel', /^# Services overview \(services_overview, rev [0-9a-f]{12}\)/.test(whole) && whole.includes('range 2026-11-18T09:30:00.000Z → 2026-11-18T12:30:00.000Z') && whole.includes('12 panels: ') && (whole.match(/^## /gm) || []).length === 12, whole.slice(0, 300))
+      await page.waitForSelector('[data-testid=dashboard-text-panel]')
+      const whole = await page.evaluate(() => ({ text: document.querySelector('[data-testid=dashboard-text]').textContent, panels: [...document.querySelectorAll('[data-testid=dashboard-text-panel] h2')].map((h) => h.textContent), pre: document.querySelectorAll('[data-testid=dashboard-text] pre').length }))
+      check('[text] the whole dashboard\'s text form is every panel\'s text form in page order, with the page\'s dates and revision words; the model\'s digest is only copied, and says so', whole.panels.length === 12 && whole.panels[0] === 'Requests' && whole.text.includes('18 Nov, 09:30 to 12:30') && whole.text.includes('Revision 1, changed by Dana.') && !/\d{4}-\d\d-\d\dT|rev [0-9a-f]{12}|more series not shown|##|\[[A-Z]+\]/.test(whole.text) && whole.pre === 0 && whole.text.includes('Copy the digest for an agent'), whole.text.slice(0, 300))
       await page.click('[data-testid=form-panels]')
       await page.waitForSelector('[data-testid=panel]')
 
@@ -320,9 +358,12 @@ async function main() {
       check('[isolated] one panel\'s query is refused: that panel shows the API\'s message, its error type and status, and what it means', ps.sample.state === 'failed' && ps.sample.error.includes('This panel\'s query could not run') && ps.sample.error.includes('limitk') && ps.sample.error.includes('The API answered unsupported with HTTP 422.') && ps.sample.error.includes('viz does not run this part of PromQL yet'), ps.sample.error)
       check('[isolated] the other five panels are answered and drawn, and the page says five answered and one not', ['cpu', 'durations', 'memory', 'notes', 'restarts'].every((id) => ps[id].state === 'answered' && ps[id].error === '') && ps.cpu.lines >= 8 && ps.memory.stats === 1 && facts === '6 panels, 5 answered and 1 not.' && (await text(page, '[data-testid=dashboard-title]')) === 'Pod capacity', facts)
       check('[isolated] a refusal that asking again would not change offers no "Run this panel again"; the panel keeps its link to Explore', !(await page.$('[data-panel=sample] [data-testid=panel-retry]')) && ps.sample.links.length === 1)
-      check('[kind] a heatmap is not drawn as anything else: no plot, no figure, no table; it says it is a heatmap this app does not draw, and shows the model\'s text for it', ps.durations.kind === 'heatmap' && ps.durations.plots === 0 && ps.durations.stats === 0 && ps.durations.tables === 0 && ps.durations.notDrawn.includes('This panel is a heatmap, a kind this app does not draw yet.') && ps.durations.notDrawn.includes('Request duration distribution — durations (heatmap, s)') && ps.durations.notDrawn.includes('12 series'), ps.durations.notDrawn.slice(0, 220))
-      check('[kind] a text note is shown as the model\'s text for it, and says so', ps.notes.kind === 'text' && ps.notes.plots === 0 && ps.notes.notDrawn.includes('This panel is a text note, a kind this app does not draw yet.') && ps.notes.notDrawn.includes('CPU is in cores, memory in bytes.') && ps.notes.links.length === 0, ps.notes.notDrawn)
-      check('a query that matches nothing is an empty state, not an error: what was asked, over which range, and what to check', ps.restarts.state === 'answered' && ps.restarts.empty.startsWith('No series matched') && ps.restarts.empty.includes('18 Nov, 09:30 to 12:30') && ps.restarts.plots === 0 && !(await page.$('[data-panel=restarts] .vz-mark')), ps.restarts.empty)
+      check('[kind] a heatmap is not drawn as anything else: no plot, no figure, no table; it says it is a heatmap this app does not draw, and shows the model\'s text for it', ps.durations.kind === 'heatmap' && ps.durations.plots === 0 && ps.durations.stats === 0 && ps.durations.tables === 0 && ps.durations.notDrawn.includes('This panel is a heatmap, a kind this app does not draw yet.'), ps.durations.notDrawn.slice(0, 220))
+      const heat = await page.evaluate(() => { const p = document.querySelector('[data-panel=durations]'); return { heads: [...p.querySelectorAll('[data-testid=panel-buckets] th')].map((t) => t.textContent), rows: [...p.querySelectorAll('[data-testid=panel-buckets] tbody tr')].map((tr) => [...tr.querySelectorAll('td')].map((td) => td.textContent)), text: p.textContent, mono: [...p.querySelectorAll('pre')].length } })
+      check('[text] a heatmap\'s data is the system\'s table: each bucket\'s bound with its unit, its last, lowest and highest with the unit in the head; no Markdown, no capitals, no outlier notes', heat.heads.join('|') === 'At most|Last, /s|Lowest, /s|Highest, /s' && heat.rows.length >= 8 && /^\d+ ms$/.test(heat.rows[0][0]) && heat.rows.at(-1)[0] === 'any' && !/\||##|\[[A-Z]+\]|outlier|z=/.test(heat.text) && heat.mono === 0, JSON.stringify(heat.rows.slice(0, 3)) + heat.heads.join('|'))
+      const note = await page.evaluate(() => { const p = document.querySelector('[data-panel=notes] [data-testid=panel-note]'); return { text: p?.textContent ?? '', strong: [...(p?.querySelectorAll('b') ?? [])].map((b) => b.textContent), pre: document.querySelectorAll('[data-panel=notes] pre').length } })
+      check('[text] a text note is its Markdown as text: the strong words in weight, no asterisks or hashes, not in a code well', ps.notes.kind === 'text' && ps.notes.plots === 0 && note.text.includes('CPU is in cores, memory in bytes.') && note.strong.join('|') === '1.2 cores' && !/[*#]/.test(note.text) && note.pre === 0 && ps.notes.links.length === 0, JSON.stringify(note))
+      check('a query that matches nothing is an empty state, not an error: what was asked, over which range, and what to check', ps.restarts.state === 'answered' && ps.restarts.empty.startsWith('No series matched') && ps.restarts.empty === 'No series matchedNothing matched this panel\'s query from 18 Nov, 09:30 to 12:30.' && ps.restarts.plots === 0 && !(await page.$('[data-panel=restarts] .vz-mark')), ps.restarts.empty)
       check('an explicit grid is laid out in its reading order, each panel as wide as its share', Object.keys(ps).join(',') === 'cpu,durations,memory,sample,notes,restarts' && ps.cpu.top === ps.durations.top && ps.memory.top === ps.sample.top && ps.sample.top === ps.notes.top && ps.sample.width > ps.memory.width * 1.9, JSON.stringify(Object.values(ps).map((p) => [p.id, p.top, p.width])))
       await axe(page, 'dashboard with a failed, an empty and two undrawn panels', check)
 
@@ -359,6 +400,21 @@ async function main() {
       await page.waitForFunction(() => document.querySelectorAll('#var-service option').length >= 5)
       const vars = await page.evaluate(() => ({ service: [...document.querySelectorAll('#var-service option')].map((o) => o.textContent), chosen: document.querySelector('#var-service').value, label: document.querySelector('label[for=var-service]').textContent, status: [...document.querySelectorAll('[data-testid=variable-status] button')].map((b) => `${b.textContent}${b.getAttribute('aria-pressed') === 'true' ? '*' : ''}`) }))
       check('a query variable is a select whose values the API listed (label values in the window), with the spec\'s default chosen', vars.label === 'Service' && vars.service.join(',') === 'All,auth,catalog,checkout,orders' && vars.chosen === 'checkout' && w.sent.some((r) => /\/api\/v1\/label\/service\/values\?match%5B%5D=http_requests_total&start=\d+&end=\d+$/.test(r.url)), JSON.stringify(vars))
+      const agent = await page.evaluate((muted) => {
+        const ruled = (el) => !!el && getComputedStyle(el).borderLeftColor === muted && parseFloat(getComputedStyle(el).borderLeftWidth) >= 2
+        const words = document.querySelector('[data-testid=dashboard-words]')
+        return {
+          by: document.querySelector('[data-testid=agent-by]')?.textContent.replace(/\s+/g, ' ').trim() ?? '',
+          dash: document.querySelector('[data-testid=agent-by] .vz-status:not([data-state])') !== null,
+          head: ruled(words) && words.contains(document.querySelector('[data-testid=dashboard-title]')) && words.contains(document.querySelector('[data-testid=dashboard-intent]')),
+          titles: [...document.querySelectorAll('[data-testid=panel-title]')].map((h) => ruled(h)),
+          descs: [...document.querySelectorAll('[data-testid=panel-desc]')].map((p) => ({ ruled: ruled(p), text: p.textContent.trim() })),
+          limits: [...document.querySelectorAll('[data-testid=stat-thresholds]')].map((p) => ({ ruled: ruled(p), text: p.textContent.trim() })),
+        }
+      }, tokenRgb('ink-muted', 'light'))
+      check('[agent] a dashboard an agent wrote says so where it is read: the provenance line as Claim writes it, with "Not verified" and the unknown dash, and the agent\'s rule down its title and intent', agent.by === 'Agent\'s dashboard, written by incident-agent Not verified' && agent.dash && agent.head, JSON.stringify(agent))
+      check('[agent] every panel title and explanation an agent wrote carries the agent\'s rule, and each explanation starts "Agent:" and ends "Not verified."', agent.titles.length === 5 && agent.titles.every(Boolean) && agent.descs.length === 5 && agent.descs.every((d) => d.ruled && d.text.startsWith('Agent: ') && d.text.endsWith('Not verified.')), JSON.stringify(agent.descs.slice(0, 2)))
+      check('[agent] the thresholds behind a stat\'s status are said to be the agent\'s, unverified', agent.limits.length === 1 && agent.limits[0].ruled && agent.limits[0].text === 'Agent\'s thresholds: above 2% (warning) and above 5% (critical). Not verified.', JSON.stringify(agent.limits))
       check('an enum variable with a few values is a segmented control, "All" chosen as the spec says', vars.status.join(',') === 'All*,200,400,500', vars.status.join(','))
       const before = queries(w.sent).map((r) => new URLSearchParams(r.body).get('query'))
       check('the queries carry the variables\' values as the model wrote them', before.includes('pod_cpu_usage_cores{service="checkout"}') && before.includes('sum by (status) (rate(http_requests_total{service="checkout",status=~".*"}[5m]))'), before.join(' ; '))
@@ -415,11 +471,18 @@ async function main() {
         w.sent.length = 0
         w.aborted.length = 0
         w.finished.length = 0
+        // [speed] the press's own task marks every panel waiting, before the address changes (D-B2): read in a listener that runs after the page's own.
+        await page.evaluate(() => {
+          window.__pressSeen = null
+          addEventListener('click', (e) => { if (e.target.closest('[data-testid=preset-6h]')) window.__pressSeen = { waiting: document.querySelectorAll('[data-testid=panel][data-state=waiting]').length, stale: document.querySelectorAll('[data-testid=panel-stale]').length, total: document.querySelectorAll('[data-testid=panel]').length } }, { once: true })
+        })
         await page.click('[data-testid=preset-6h]')
+        const pressSeen = await page.evaluate(() => window.__pressSeen)
+        check('[speed] the press on a range marks every panel waiting, with "Showing … the previous range", in the press\'s own task', pressSeen && pressSeen.total === 12 && pressSeen.waiting === 12 && pressSeen.stale === 12, JSON.stringify(pressSeen))
         await sleep(450)
         const mid = await panels(page)
         const midProgress = await text(page, '[data-testid=panel-progress]')
-        check('while a new range waits, every panel keeps its previous answer, says "Showing the previous range" with that range, and after 400 ms a line says what is waited for', mid.every((p) => p.state === 'waiting' && p.stale && p.meta === 'Showing the previous range: 18 Nov, 09:30 to 12:30') && mid.filter((p) => p.kind === 'timeseries').every((p) => p.lines >= 4) && /^Waiting for (the query|2 queries)\.\s?\d\.\d s$/.test(midProgress), `${mid[0].meta} / ${midProgress}`)
+        check('[d3] while a new range waits, every panel keeps its previous answer, says which range it shows ("Showing 18 Nov, 09:30 to 12:30, the previous range"), and after 400 ms a line says what is waited for', mid.every((p) => p.state === 'waiting' && p.stale && p.meta === 'Showing 18 Nov, 09:30 to 12:30, the previous range') && mid.filter((p) => p.kind === 'timeseries').every((p) => p.lines >= 4) && /^Waiting for (the query|2 queries)\.\s?\d\.\d s$/.test(midProgress), `${mid[0].meta} / ${midProgress}`)
         const firstRange = queries(w.sent).length
         await page.click('[data-testid=preset-15m]')
         await sleep(100)
@@ -547,6 +610,13 @@ async function main() {
         check(`at 400 px ${id} is one column and never scrolls sideways`, o.sw <= o.iw && ps.every((p) => p.width === ps[0].width) && new Set(ps.map((p) => p.top)).size === ps.length, JSON.stringify(o))
         check(`at 400 px with a finger every control of ${id} has a 44 px area that nothing covers`, small.length === 0 && covered.length === 0 && measured > 10, `${measured} measured; small: ${[...new Set(small)].slice(0, 6).join(' | ')}; covered: ${[...new Set(covered)].slice(0, 6).join(' | ')}`)
       }
+      await page.goto(dash('services_overview'))
+      await settled(page, 12)
+      await page.tap('[data-testid=form-text]')
+      await page.waitForSelector('[data-testid=dashboard-text-panel]')
+      const to = await overflow(page)
+      const wells = await page.evaluate(() => [...document.querySelectorAll('[data-testid=dashboard-text] *')].filter((el) => el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).overflowX !== 'visible').map((el) => el.tagName + '.' + el.className))
+      check('[text] at 400 px the dashboard\'s text form wraps: nothing of it is behind a sideways scroll', to.sw <= to.iw && wells.length === 0, JSON.stringify({ ...to, wells }))
       await ctx.close()
 
       const dark = await newPage({ colorScheme: 'dark' })

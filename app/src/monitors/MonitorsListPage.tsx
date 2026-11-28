@@ -6,7 +6,7 @@ import { listMonitors, READ_SCOPE, type Monitor, type MonitorFilter, type Monito
 import { useWaiting } from '../explore/waiting'
 import { useCommands } from '../shell/commands'
 import { useSession } from '../shell/session'
-import { filterOf, listText, receiverWords, sortMonitors, stateWords, valueWords, type MonitorsSearch } from './model'
+import { filterOf, listText, receiverWords, sentence, sortMonitors, stateWords, thresholdWords, valueWords, type MonitorsSearch } from './model'
 import { Ago, Status } from './Status'
 
 /** The key of a list as the query cache holds it; a monitor's page reads its name and state from it before its own answer. */
@@ -23,7 +23,7 @@ const COUNT_WORDS: [string, string][] = [
   ['ok', 'not firing'],
 ]
 
-export function MonitorsListPage({ search }: { search: MonitorsSearch }) {
+export function MonitorsListPage({ search, onOpen }: { search: MonitorsSearch; onOpen?: (id: string) => void }) {
   const navigate = useNavigate()
   const { client, connectionId, signOut } = useSession()
   const filter = filterOf(search)
@@ -111,9 +111,9 @@ export function MonitorsListPage({ search }: { search: MonitorsSearch }) {
                 <span className="vz-mark" data-state="critical" />
                 The monitors could not be listed
               </p>
-              <p data-testid="monitors-error-message">{error.message}</p>
+              <p data-testid="monitors-error-message">{sentence(error.message)}</p>
               <p>
-                {answerLine(error)} {errorKind(error) === 'auth' ? 'The API no longer accepts the key this tab signed in with. Sign in again.' : 'Nothing was changed. Ask again; if it keeps failing, note the time and report it.'}
+                {answerLine(error)} {errorKind(error) === 'auth' ? 'The API no longer accepts the key this tab signed in with. Sign in again.' : 'Ask again; if it keeps failing, note the time and report it.'}
               </p>
               <div className="vz-controls">
                 {errorKind(error) === 'auth' ? (
@@ -134,13 +134,9 @@ export function MonitorsListPage({ search }: { search: MonitorsSearch }) {
               No monitors yet
             </h2>
             <p>A monitor watches one query against a threshold and tells its receiver when the query stays past it. Once one exists it is listed here with its state, owner and receiver.</p>
-            <ol className="vz-steps">
-              <li>
-                <p>
-                  This app cannot make a monitor yet. Create one through the monitors API (<span className="vz-qty">POST /api/v1/monitors</span>, with a key that has the <span className="vz-qty">monitors:write</span> scope), or import a Prometheus rule file.
-                </p>
-              </li>
-            </ol>
+            <p>
+              This app cannot make a monitor yet. Create one through the monitors API (<span className="vz-qty">POST /api/v1/monitors</span>, with a key that has the <span className="vz-qty">monitors:write</span> scope), or import a Prometheus rule file.
+            </p>
           </section>
         ) : data && rows.length === 0 ? (
           <div className="vz-empty" role="status" data-testid="monitors-empty">
@@ -195,7 +191,7 @@ export function MonitorsListPage({ search }: { search: MonitorsSearch }) {
                 </thead>
                 <tbody>
                   {rows.map((m) => (
-                    <Row key={m.id} m={m} now={now} />
+                    <Row key={m.id} m={m} now={now} onOpen={onOpen} />
                   ))}
                 </tbody>
               </table>
@@ -215,11 +211,22 @@ export function MonitorsListPage({ search }: { search: MonitorsSearch }) {
   )
 }
 
-function Row({ m, now }: { m: Monitor; now: number }) {
+function Row({ m, now, onOpen }: { m: Monitor; now: number; onOpen?: (id: string) => void }) {
   return (
     <tr role="row" data-testid="monitor-row" data-monitor={m.id} data-state={m.state}>
       <td role="cell" data-key="">
-        <Link to="/monitors" search={{ id: m.id }} className="vz-link" data-testid={`open-${m.id}`}>
+        <Link
+          to="/monitors"
+          search={{ id: m.id }}
+          className="vz-link"
+          data-testid={`open-${m.id}`}
+          onClick={(e) => {
+            // A plain press opens it here, at once, and the address follows (M-B1); a press that opens another tab or window leaves this page as it is.
+            if (!onOpen || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+            e.preventDefault()
+            onOpen(m.id)
+          }}
+        >
           {m.name}
         </Link>
       </td>
@@ -230,7 +237,7 @@ function Row({ m, now }: { m: Monitor; now: number }) {
         {m.state === 'no_data' ? 'no data' : m.state === 'error' ? 'none' : valueWords(m.value, m)}
       </td>
       <td role="cell" data-label="Threshold" className="vz-num">
-        {m.thresholdText ?? 'the query is the condition'}
+        {thresholdWords(m) ?? 'the query is the condition'}
       </td>
       <td role="cell" data-label="Owner">
         {m.owner || 'nobody'}

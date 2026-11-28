@@ -1,0 +1,45 @@
+Mutants of the dashboards views (e2e/mutants-dashboards.cjs), applied to a copy in the session's scratch area.
+2026-11-28T15:11:53.438Z
+
+KILLED    [agent] the dashboard's provenance line is not shown
+            checks run: e2e/dashboards.cjs (variables); caught by 1 (e2e), e.g. e2e: [agent] a dashboard an agent wrote says so where it is read: the provenance line as Claim writes it, with "Not verified" and the u
+KILLED    [agent] the head of an agent's dashboard has no rule
+            checks run: e2e/dashboards.cjs (variables); caught by 1 (e2e), e.g. e2e: [agent] a dashboard an agent wrote says so where it is read: the provenance line as Claim writes it, with "Not verified" and the u
+KILLED    [agent] a panel's explanation an agent wrote reads as a person's
+            checks run: e2e/dashboards.cjs (variables); caught by 1 (e2e), e.g. e2e: [agent] every panel title and explanation an agent wrote carries the agent's rule, and each explanation starts "Agent:" and ends "
+KILLED    [agent] a panel title an agent wrote has no rule
+            checks run: e2e/dashboards.cjs (variables); caught by 1 (e2e), e.g. e2e: [agent] every panel title and explanation an agent wrote carries the agent's rule, and each explanation starts "Agent:" and ends "
+KILLED    [agent] the thresholds behind a status are not said to be the agent's
+            checks run: e2e/dashboards.cjs (variables); caught by 1 (e2e), e.g. e2e: [agent] the thresholds behind a stat's status are said to be the agent's, unverified
+KILLED    [agent] the list's Intent cell shows an agent's intent unmarked
+            checks run: e2e/dashboards.cjs (list); caught by 1 (e2e), e.g. e2e: [agent] the intent an agent wrote is marked in its cell where it is read: the agent's rule, "Agent:", "Not verified"; a person's i
+KILLED    [agent] a person's dashboard is marked as an agent's
+            checks run: e2e/dashboards.cjs (dashboard); caught by 4 (e2e), e.g. e2e: [speed] a chart on screen is drawn in the task its answer arrives; a chart off screen is not, and is drawn later in its reserved p | e2e: [agent] a dashboard a person changed last carries no agent marking | e2e: [d1] a stat's state names what it is measured against: its thresholds, from the spec, in its unit | e2e: [text] every panel has its text form: sentences in the panel's unit and the page's time format, one per series, no Markdown
+KILLED    [text] a panel's text form leaves series out (the model's top five)
+            checks run: e2e/dashboards.cjs (dashboard); caught by 1 (e2e), e.g. e2e: [text] a panel of 36 series has all 36 in its text form: none is left out without a way to see it
+KILLED    [text] the text form's figures lose their unit
+            checks run: e2e/dashboards.cjs (dashboard); caught by 1 (e2e), e.g. e2e: [text] every panel has its text form: sentences in the panel's unit and the page's time format, one per series, no Markdown
+KILLED    [text] the dashboard's text form is a well that scrolls sideways
+            checks run: ; caught by 1 (build failed), e.g. build failed: error during build:
+KILLED    [text] a heatmap is shown as a list of series, not its buckets
+            checks run: e2e/dashboards.cjs (panels); caught by 1 (e2e), e.g. e2e: [text] a heatmap's data is the system's table: each bucket's bound with its unit, its last, lowest and highest with the unit in th
+KILLED    [text] a note's strong words are printed with their asterisks
+            checks run: e2e/dashboards.cjs (panels); caught by 1 (e2e), e.g. e2e: [text] a text note is its Markdown as text: the strong words in weight, no asterisks or hashes, not in a code well
+KILLED    [colour] the dashboard's map is not handed to the chart
+            checks run: unit; e2e/dashboards.cjs (dashboard); caught by 3 (unit and e2e), e.g. unit: a service keeps its slot in every panel, whichever panel is drawn first and however the panels rank it | unit: past eight in a group, the eight largest of the first panel keep slots and the rest are Other; a later panel follows the | e2e: [colour] a service has one colour in every panel of the dashboard, and a pod one in CPU and memory
+            unit: caught it; e2e/dashboards.cjs (dashboard): caught it
+KILLED    [colour] a series' identity keeps its metric name (CPU and memory of one pod are two)
+            checks run: unit; e2e/dashboards.cjs (dashboard); caught by 2 (unit and e2e), e.g. unit: a pod is one identity in its CPU and its memory panel (the metric name is not part of it); a service and a pod do not co | e2e: [colour] a service has one colour in every panel of the dashboard, and a pod one in CPU and memory
+            unit: caught it; e2e/dashboards.cjs (dashboard): caught it
+KILLED    [speed] a chart off screen is drawn in the task its answer arrives
+            checks run: e2e/dashboards.cjs (dashboard); caught by 1 (e2e), e.g. e2e: [speed] a chart on screen is drawn in the task its answer arrives; a chart off screen is not, and is drawn later in its reserved p
+KILLED    [speed] the press on a range leaves the panels as they were until the address changes
+            checks run: e2e/dashboards.cjs (requests); caught by 1 (e2e), e.g. e2e: [speed] the press on a range marks every panel waiting, with "Showing … the previous range", in the press's own task
+KILLED    [d1] a stat's thresholds are not named
+            checks run: e2e/dashboards.cjs (dashboard); caught by 1 (e2e), e.g. e2e: [d1] a stat's state names what it is measured against: its thresholds, from the spec, in its unit
+KILLED    [d3] the stale head says "the previous range" without which
+            checks run: e2e/dashboards.cjs (requests); caught by 1 (e2e), e.g. e2e: [d3] while a new range waits, every panel keeps its previous answer, says which range it shows ("Showing 18 Nov, 09:30 to 12:30, t
+KILLED    [d8] a table's cut rows have no "Show more"
+            checks run: e2e/dashboards.cjs (dashboard); caught by 1 (e2e), e.g. e2e: the run stopped (page.click: Timeout 30000ms exceeded.)
+
+19 of 19 killed, 0 survived, 0 not applied

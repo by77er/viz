@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { MOD, useCommandsContext } from './commands'
+import { MOD, useCommandsControl } from './commands'
 
 const SHORTCUTS: [string[], string][] = [
   [[MOD, 'Enter'], 'Run the query, from the editor or anywhere on Explore'],
@@ -15,7 +15,7 @@ const SHORTCUTS: [string[], string][] = [
 ]
 
 export function HelpPage() {
-  const { setPaletteOpen } = useCommandsContext()
+  const { setPaletteOpen } = useCommandsControl()
   useEffect(() => {
     document.title = 'Help · viz'
   }, [])

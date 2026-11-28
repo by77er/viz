@@ -448,7 +448,9 @@ export function createMonitors(opts: MonitorsOptions) {
           activeAt: a.activeAt,
           firingSince: a.state === 'firing' ? a.firedAt : null,
           firesAt: a.state === 'pending' ? a.activeAt + (a.noData ? f.noDataForMs : f.forMs) : null,
-          value: a.value,
+          // The value at the last evaluation, from the mock's own series, as the chart of the same query reads it (o8 of the third design review);
+          // what it was when the alert fired stays in the history. The state is still fixed when the mock starts (README, "The mock and the real ruler").
+          value: a.noData ? null : f.query && !a.noData ? (valueAt(f.query, evaluatedAt(t)) ?? a.value) : a.value,
           noData: a.noData,
           acknowledged: a.ack,
           silencedUntil: until,

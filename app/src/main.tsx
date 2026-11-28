@@ -18,6 +18,13 @@ const queryClient = new QueryClient({
 // Before the app draws: a reload is put back where the page was scrolled to, in the frame its layout is drawn.
 installScrollKeeper()
 
+// The first number format a document makes costs about 50 ms at 4x CPU (the browser loads its number data), and the first is
+// otherwise made by the first chart drawn: profiled as most of a monitor's chart paint and of a dashboard's first chart (the third
+// design review, M-B1 and D-B2). Made here when the page is first idle instead, before any answer can arrive. It draws nothing.
+const warmNumbers = () => void new Intl.NumberFormat('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(1.5)
+if ('requestIdleCallback' in window) requestIdleCallback(warmNumbers, { timeout: 1000 })
+else setTimeout(warmNumbers, 0)
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>

@@ -4,7 +4,11 @@
 // e2e/measure-dashboards.cjs sets them, at the desktop layout (1440 x 900, mouse) or the phone
 // layout (--phone: 400 x 800, touch emulation, coarse pointer).
 //
-//   VIZ_E2E_APP_PORT=… VIZ_E2E_MOCK_PORT=… node e2e/measure-monitors.cjs [--phone] [--runs 20] [--label monitors]
+//   VIZ_E2E_APP_PORT=… VIZ_E2E_MOCK_PORT=… node e2e/measure-monitors.cjs [--phone] [--runs 20] [--label monitors] [--compare <app dir of the build before>]
+//
+// With --compare, the build in <dir>/dist is served beside this one (port + 2, the same mock) and
+// the runs alternate run by run, before then after; every run records `uptime` and its build, and
+// the summary adds the paired differences (after minus before, pair by pair).
 //
 // One run is one fresh tab on a reset mock: the list is loaded, the firing monitor is opened
 // from it, and when its chart and history are drawn, Acknowledge is pressed. Nothing is read
@@ -62,7 +66,14 @@ function instrument() {
     if (/query_range$/.test(url)) res.clone().text().then(() => m.arrived.push(performance.now()), () => {})
     return res
   }
-  const onPress = (e) => { if (m.press && !m.press.t && e.target.closest(m.press.selector)) m.press.t = e.timeStamp }
+  // Frames begun since the press: what is on screen before the first one is in the frame the press paints next.
+  const onPress = (e) => {
+    if (!(m.press && !m.press.t && e.target.closest(m.press.selector))) return
+    m.press.t = e.timeStamp
+    m.frames = 0
+    const tick = () => { m.frames++; if (m.frames < 120) requestAnimationFrame(tick) }
+    requestAnimationFrame(tick)
+  }
   addEventListener('pointerup', onPress, true)
   addEventListener('click', onPress, true)
   const once = (name) => { if (m.marks[name] === undefined) { m.marks[name] = null; afterFrame((t) => (m.marks[name] = t)) } }
@@ -70,7 +81,7 @@ function instrument() {
     if (!m.press) return
     if (m.phase === 'view') {
       const title = document.querySelector('[data-testid=monitor-title]')
-      if (title && title.textContent.trim().length > 1 && document.querySelector('[data-testid=monitor-mark]')) once('view:shell')
+      if (title && title.textContent.trim().length > 1 && document.querySelector('[data-testid=monitor-mark]')) { if (m.shellFrames === undefined) m.shellFrames = m.frames; once('view:shell') }
       if (document.querySelector('[data-testid=monitor-chart] svg.vz-plot .vz-line')) once('view:chart')
       if (document.querySelector('[data-testid=history-line]') && document.querySelector('[data-testid=monitor-chart] svg.vz-plot')) once('view:settled')
     }
@@ -83,7 +94,7 @@ function instrument() {
   document.addEventListener('DOMContentLoaded', () => new MutationObserver(watch).observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ['aria-busy', 'data-state'], characterData: true }))
 }
 
-async function run(browser, id) {
+async function run(browser, id, APP) {
   await hook('reset=1')
   const ctx = await browser.newContext({ ...LAYOUT, colorScheme: 'light' })
   const page = await ctx.newPage()
@@ -92,7 +103,7 @@ async function run(browser, id) {
   await cdp.send('Network.enable')
   await cdp.send('Network.emulateNetworkConditions', FAST_4G)
   await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 })
-  const r = { at: new Date().toISOString(), load1: os.loadavg()[0] }
+  const r = { at: new Date().toISOString(), load1: os.loadavg()[0], uptime: require('node:child_process').execSync('uptime').toString().trim() }
   try {
     await page.goto(`${APP}/monitors`)
     await page.waitForSelector('[data-testid=monitor-row]', { timeout: 30000 })
@@ -107,7 +118,13 @@ async function run(browser, id) {
     await page.waitForFunction(() => window.__m.marks['view:settled'] > 0 && window.__m.marks['view:chart'] > 0, null, { timeout: 30000 })
     await page.waitForTimeout(600)
     const v = await page.evaluate(() => window.__m)
-    r.viewChange = v.marks['view:shell'] - v.press.t
+    // The frame that shows the monitor's page. Shown in the press's own task (before any frame began after it), it is the press's
+    // next paint as Event Timing reports it; otherwise, as before, a task queued from the animation callback of the frame after
+    // the task that showed it (`viewChangeTask`, printed too: a task the page queues after that frame delays it).
+    r.viewChangeTask = v.marks['view:shell'] - v.press.t
+    const pressPaint = Math.max(...v.events.filter((e) => ['pointerdown', 'pointerup', 'click'].includes(e.name) && e.t >= v.press.t - 200 && e.t <= v.press.t + 50).map((e) => e.t + e.duration))
+    r.viewInPress = v.shellFrames === 0
+    r.viewChange = r.viewInPress && Number.isFinite(pressPaint) ? pressPaint - v.press.t : r.viewChangeTask
     r.firstPaint = v.marks['view:chart'] - Math.max(...v.arrived)
     r.viewInp = Math.max(0, ...v.events.filter((e) => e.t >= v.press.t - 50 && e.t <= v.press.t + 500).map((e) => e.duration))
     const within = v.shifts.filter((s) => s.t >= shiftsFrom)
@@ -137,20 +154,49 @@ async function run(browser, id) {
 
 async function main() {
   const stop = await lib.startServers()
+  const BEFORE = arg('compare', null)
+  const stopBefore = BEFORE ? await lib.startPreview(lib.APP_PORT + 2, MOCK, path.resolve(BEFORE)) : () => {}
+  const builds = BEFORE ? [['before', `http://127.0.0.1:${lib.APP_PORT + 2}`], ['after', APP]] : [['this', APP]]
   const browser = await chromium.launch()
   const [calMs] = calibrate()
   const list = await fetch(`${MOCK}/api/v1/monitors?filter=all`).then((r) => r.json())
   const id = list.monitors.find((m) => m.name === 'Checkout 5xx ratio').id
   const runs = []
   try {
-    for (let i = 0; i < RUNS; i++) {
-      const r = await run(browser, id)
+    for (let i = 0; i < RUNS * builds.length; i++) {
+      const [build, base] = builds[i % builds.length]
+      const r = await run(browser, id, base)
+      r.build = build
+      r.pair = Math.floor(i / builds.length)
       runs.push(r)
-      console.log(`run ${i + 1}: view ${r.viewChange?.toFixed(0)} chart ${r.firstPaint?.toFixed(0)} ackBusy ${r.ackPressed?.toFixed(0)} ackShown ${r.ackShown?.toFixed(0)} cls ${r.cls?.all?.toFixed(4)} load ${r.load1.toFixed(2)}${r.void ? ` VOID ${r.error ?? 'pointer not coarse'}` : ''}`)
+      console.log(`run ${i + 1} ${build}: view ${r.viewChange?.toFixed(0)} chart ${r.firstPaint?.toFixed(0)} ackBusy ${r.ackPressed?.toFixed(0)} ackShown ${r.ackShown?.toFixed(0)} cls ${r.cls?.all?.toFixed(4)} load ${r.load1.toFixed(2)}${r.void ? ` VOID ${r.error ?? 'pointer not coarse'}` : ''}`)
     }
   } finally {
     await browser.close()
+    stopBefore()
     stop()
+  }
+  if (BEFORE) {
+    const f0 = (v, k) => (v == null || !Number.isFinite(v) ? 'n/a' : k === 'cls' ? v.toFixed(4) : v.toFixed(0))
+    const by = (b) => runs.filter((r) => r.build === b && !r.void)
+    const lines = ['| What | before p75 (median, worst) | after p75 (median, worst) | paired difference, after - before: median (p25 to p75), n |', '|---|---|---|---|']
+    for (const k of ['viewChange', 'viewChangeTask', 'viewInp', 'firstPaint', 'ackPressed', 'ackInp', 'ackShown', 'ackReread', 'cls']) {
+      const get = (r) => (k === 'cls' ? r.cls?.all : r[k])
+      const cell = (xs) => { const s = sorted(xs); return s.length ? `${f0(p75(xs), k)} (${f0(median(xs), k)}, ${f0(s.at(-1), k)})` : 'n/a' }
+      const diffs = []
+      for (const a of by('after')) { const b = by('before').find((x) => x.pair === a.pair); if (b && Number.isFinite(get(a)) && Number.isFinite(get(b))) diffs.push(get(a) - get(b)) }
+      const ds = sorted(diffs)
+      const q = (f) => ds[Math.min(ds.length - 1, Math.max(0, Math.ceil(f * ds.length) - 1))]
+      lines.push(`| ${k} | ${cell(by('before').map(get))} | ${cell(by('after').map(get))} | ${ds.length ? `${f0(median(ds), k)} (${f0(q(0.25), k)} to ${f0(q(0.75), k)}), ${ds.length}` : 'n/a'} |`)
+    }
+    const loads = runs.flatMap((r) => [r.load1, r.load1End])
+    lines.push('', `monitors, ${PHONE ? 'phone' : 'desktop'}; load ${Math.min(...loads).toFixed(2)} to ${Math.max(...loads).toFixed(2)} (median ${median(loads).toFixed(2)}), ${loads.filter((l) => l > CORES).length} of ${loads.length} samples above ${CORES}; ${runs[0].at} to ${runs.at(-1).at}; calibration ${calMs.toFixed(0)} ms; void ${runs.filter((r) => r.void).length}`)
+    const dir = path.join(__dirname, 'measurements')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, `${LABEL}-${PHONE ? 'phone' : 'desktop'}.compare.md`), lines.join('\n') + '\n')
+    fs.writeFileSync(path.join(dir, `${LABEL}-${PHONE ? 'phone' : 'desktop'}.json`), JSON.stringify({ cores: CORES, calibrationMs: calMs, runs }, null, 1))
+    console.log('\n' + lines.join('\n'))
+    return
   }
   const ok = runs.filter((r) => !r.void)
   const loads = runs.flatMap((r) => [r.load1, r.load1End])

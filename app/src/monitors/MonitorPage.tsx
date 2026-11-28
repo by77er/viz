@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { answerLine, errorKind } from '../api/errors'
@@ -11,11 +11,10 @@ import { useWaiting } from '../explore/waiting'
 import { alignSeries } from '../lib/series'
 import { stepWords, type TimeSpec } from '../lib/time'
 import { LOCAL, zoneShiftMs } from '../lib/timeInput'
-import type { UnitId } from '../lib/units'
 import { useCommands } from '../shell/commands'
 import { useSession } from '../shell/session'
 import { NoMonitorPermission } from './MonitorsListPage'
-import { DEFAULT_RANGE, historyLines, lastChange, lastSilencer, lasted, mayAct, monitorText, ReadGuard, receiverWords, stateWords, undoLeftMs, undoOpen, valueWords, when, who, type MonitorsSearch, type Undo } from './model'
+import { DEFAULT_RANGE, historyLines, lastChange, lastSilencer, lasted, mayAct, monitorText, monitorUnit, ReadGuard, receiverWords, renderMessage, sentence, stateWords, thresholdWords, undoLeftMs, undoOpen, valueWords, when, who, type MonitorsSearch, type Undo } from './model'
 import { Ago, Status, Words } from './Status'
 
 type Action = 'acknowledge' | 'unacknowledge' | 'silence' | 'undo'
@@ -237,12 +236,12 @@ export function MonitorPage({ id, search }: { id: string; search: MonitorsSearch
                   No monitor of this tenant has the id <span className="vz-qty">{id}</span>. It may have been deleted, or the link may be another tenant's.
                 </>
               ) : (
-                error.message
+                sentence(error.message)
               )}
             </p>
             {!missing && (
               <p>
-                {answerLine(error)} {errorKind(error) === 'auth' ? 'Sign in again with a key that is valid now.' : 'Nothing was changed. Ask again; if it keeps failing, note the time and report it.'}
+                {answerLine(error)} {errorKind(error) === 'auth' ? 'Sign in again with a key that is valid now.' : 'Ask again; if it keeps failing, note the time and report it.'}
               </p>
             )}
             <div className="vz-controls">
@@ -268,6 +267,10 @@ export function MonitorPage({ id, search }: { id: string; search: MonitorsSearch
   const repeats = firing.map((a) => a.nextRepeatAt).filter((t): t is number => t !== null)
   const doneText = monitor?.acknowledged ? `Acknowledged by ${who(monitor.acknowledged.by, me)} at ${when(monitor.acknowledged.at, now)}` : null
   const undoShown = !!monitor && undoOpen(undo, monitor.id, tick)
+  // Undo pressed after the API's own window: one notice says it, and the line about the window is not said again under it.
+  const lateUndo = failure?.action === 'undo' && failure.error instanceof RulerApiError && failure.error.status === 410 && closedUndo ? closedUndo : null
+  const fired = doc ? [...doc.history.entries].reverse().find((e) => e.kind === 'firing') : undefined
+  const sent = monitor && monitor.message.includes('{{') && fired && !fired.noData ? renderMessage(monitor.message, fired.value ?? null, { ...(firing[0]?.labels ?? {}) }) : null
 
   return (
     <div className="vz-page" data-testid="monitor-page" data-monitor={id}>
@@ -356,16 +359,20 @@ export function MonitorPage({ id, search }: { id: string; search: MonitorsSearch
             {failure && (
               <div className="vz-notice" role="alert" data-testid="action-failure">
                 <span className="vz-mark" data-state="critical" />
-                <p>
-                  Could not {ACTION_WORDS[failure.action]}. The API said: <span data-testid="action-failure-words">{failure.error.message}</span> ({answerLine(failure.error).replace(/^The API answered /, '').replace(/\.$/, '')}).{' '}
-                  {failure.action === 'undo' && failure.error instanceof RulerApiError && failure.error.status === 410
-                    ? `The undo window had closed, so the silence stays${monitor.silencedUntil ? ` until ${when(monitor.silencedUntil, now)}` : ''}.`
-                    : failure.action === 'acknowledge'
-                      ? 'Nothing changed: it is still not acknowledged.'
-                      : failure.action === 'silence'
-                        ? 'Nothing changed: it is not silenced and still notifies.'
-                        : 'Nothing changed.'}
-                </p>
+                {lateUndo ? (
+                  // Undo pressed after the API's window (M-M1): said once, in the app's words and times; the API's code is the notice's last words, its advice is not repeated (this app cannot end a silence).
+                  <p>
+                    <span data-testid="action-failure-words">
+                      Undo had closed at <time className="vz-qty">{when(lateUndo.at, now)}</time>, so the silence stays{monitor.silencedUntil ? <> until <time className="vz-qty">{when(monitor.silencedUntil, now)}</time></> : null}.
+                    </span>{' '}
+                    Ending a silence early is not in this app yet. <span className="vz-secondary">(The API answered undo_expired, HTTP 410.)</span>
+                  </p>
+                ) : (
+                  <p>
+                    Could not {ACTION_WORDS[failure.action]}. The API said: <span data-testid="action-failure-words">{failure.error.message}</span> ({answerLine(failure.error).replace(/^The API answered /, '').replace(/\.$/, '')}).{' '}
+                    {failure.action === 'acknowledge' ? 'Nothing changed: it is still not acknowledged.' : failure.action === 'silence' ? 'Nothing changed: it is not silenced and still notifies.' : 'Nothing changed.'}
+                  </p>
+                )}
                 {!(failure.error instanceof RulerApiError && (failure.error.status === 403 || failure.error.status === 410)) && (
                   <button className="vz-button" data-size="sm" onClick={() => void act(failure.action)} data-testid="action-retry">
                     Try again
@@ -394,7 +401,7 @@ export function MonitorPage({ id, search }: { id: string; search: MonitorsSearch
                 Undo is open until <time className="vz-qty">{when(undo.undoUntil - undo.skewMs, tick)}</time> (<span className="vz-qty">{Math.floor(undoLeftMs(undo, tick) / 1000)} s</span> left).
               </p>
             )}
-            {!undoShown && closedUndo && monitor.silencedUntil !== null && (
+            {!undoShown && !lateUndo && closedUndo && monitor.silencedUntil !== null && (
               <p className="vz-help" data-testid="undo-closed">
                 The undo window closed at <time className="vz-qty">{when(closedUndo.at, tick)}</time>. The silence ends at <time className="vz-qty">{when(monitor.silencedUntil, now)}</time>; ending it early is not in this app yet.
               </p>
@@ -475,7 +482,7 @@ export function MonitorPage({ id, search }: { id: string; search: MonitorsSearch
                               {a.noData ? 'no data' : valueWords(a.value, monitor)}
                             </td>
                             <td role="cell" data-label="Acknowledged" data-testid="alert-ack">
-                              {a.acknowledged ? `by ${who(a.acknowledged.by, me)} at ${when(a.acknowledged.at, now)}` : a.state === 'firing' ? 'not acknowledged' : 'not yet firing'}
+                              {a.acknowledged ? `By ${who(a.acknowledged.by, me)} at ${when(a.acknowledged.at, now)}` : a.state === 'firing' ? 'Nobody yet' : 'Not firing yet'}
                             </td>
                           </tr>
                         ))}
@@ -492,8 +499,20 @@ export function MonitorPage({ id, search }: { id: string; search: MonitorsSearch
                 What it watches
               </h2>
               <dl className="vz-kv">
-                <dt>Message</dt>
-                <dd>{monitor.message || 'none'}</dd>
+                {monitor.message.includes('{{') ? (
+                  // Both rows from the first frame (the history that fills the first arrives with the monitor's own answer), so nothing under them moves.
+                  <>
+                    <dt>{sent && fired ? `Message, as sent at ${when(fired.at, now)}` : 'Message, as sent'}</dt>
+                    <dd data-testid="message-sent">{sent ?? (!doc ? 'Asking the API for the history.' : fired ? 'Not known: the template has parts this app cannot fill.' : 'Not sent: it has not fired.')}</dd>
+                    <dt>Message template</dt>
+                    <dd data-testid="message-template">{monitor.message}</dd>
+                  </>
+                ) : (
+                  <>
+                    <dt>Message</dt>
+                    <dd>{monitor.message || 'none'}</dd>
+                  </>
+                )}
                 <dt>Description</dt>
                 <dd>{monitor.description || 'none'}</dd>
                 <dt>Runbook</dt>
@@ -508,7 +527,7 @@ export function MonitorPage({ id, search }: { id: string; search: MonitorsSearch
                 </dd>
                 <dt>Threshold</dt>
                 <dd data-testid="threshold-text">
-                  <span className="vz-qty">{monitor.thresholdText ?? 'none: the query is the condition'}</span>
+                  <span className="vz-qty">{thresholdWords(monitor, false) ?? 'none: the query is the condition'}</span>
                 </dd>
                 <dt>For</dt>
                 <dd>{monitor.forMs ? lasted(monitor.forMs) : 'at once'}</dd>
@@ -534,7 +553,7 @@ export function MonitorPage({ id, search }: { id: string; search: MonitorsSearch
                   </>
                 )}
                 <dt>Changed</dt>
-                <dd>{changed ? `${changed.kind === 'created' ? 'created' : 'changed'} by ${who(changed.by ?? 'someone', me)} at ${when(changed.at, now)}` : doc ? 'not in its history' : 'asking'}</dd>
+                <dd>{changed ? `${changed.kind === 'created' ? 'Created' : 'Last changed'} by ${who(changed.by ?? 'someone', me)} at ${when(changed.at, now)}` : doc ? 'Not in its history' : 'Asking the API'}</dd>
               </dl>
             </section>
           </div>
@@ -651,10 +670,9 @@ function SilenceMenu({ disabled, busy, now, onSilence }: { disabled: boolean; bu
   )
 }
 
-const UNIT_OF: Record<string, UnitId> = { s: 'seconds', seconds: 'seconds', bytes: 'bytes', B: 'bytes', '/s': 'rps', '%': 'percent' }
-
 /** The monitor's query over a range around now, with its threshold, when it went above and when it fired. */
-function MonitorChart({ monitor, from, to, onRange }: { monitor: Monitor; from: TimeSpec; to: TimeSpec; onRange: (f: TimeSpec, t: TimeSpec) => void }) {
+// Memoised: the page renders again every second (its clock) and with every read; the chart's section only when the monitor or the range changes.
+const MonitorChart = memo(function MonitorChart({ monitor, from, to, onRange }: { monitor: Monitor; from: TimeSpec; to: TimeSpec; onRange: (f: TimeSpec, t: TimeSpec) => void }) {
   const { client, connectionId } = useSession()
   const query = monitor.query ?? monitor.expr
   const [asked, setAsked] = useState(() => Date.now())
@@ -672,10 +690,13 @@ function MonitorChart({ monitor, from, to, onRange }: { monitor: Monitor; from: 
     },
   })
   const wait = useWaiting(result.isFetching)
-  const unit = UNIT_OF[monitor.condition?.unit ?? ''] ?? 'none'
+  // The unit of the query, as the list and the history write its values (M-M2): its condition's, its message's, or the query's own.
+  const unit = monitorUnit(monitor)
+  const thresholdLabel = monitor.condition ? `${thresholdWords(monitor, false)} threshold` : ''
   const activeAt = monitor.activeAt
   const firingSince = monitor.firingSince
-  const condition = monitor.condition
+  // Primitives, not the condition object: each read of the monitor parses a new one, and a new object would redraw the chart (M-B1).
+  const threshold = monitor.condition?.threshold ?? null
   const drawn = useMemo(() => {
     const d = result.data
     if (!d || d.series.length === 0) return null
@@ -690,13 +711,13 @@ function MonitorChart({ monitor, from, to, onRange }: { monitor: Monitor; from: 
     return {
       spec: {
         ...spec,
-        ...(condition ? { threshold: { value: condition.threshold * u.scale, label: `${condition.op} ${condition.threshold}${condition.unit ? ` ${condition.unit}` : ''} threshold` } } : {}),
+        ...(threshold !== null ? { threshold: { value: threshold * u.scale, label: thresholdLabel } } : {}),
         ...(firingSince !== null ? { spans: [{ from: firingSince + shiftMs, to: d.window.end * 1000 + shiftMs, label: `Firing since ${when(firingSince, nowMs)}` }] } : {}),
         markers,
       },
       shiftMs,
     }
-  }, [result.data, unit, monitor.name, activeAt, firingSince, condition])
+  }, [result.data, unit, monitor.name, activeAt, firingSince, threshold, thresholdLabel])
   const stale = result.isPlaceholderData
   const failed = result.isError ? result.error : null
   return (
@@ -725,7 +746,8 @@ function MonitorChart({ monitor, from, to, onRange }: { monitor: Monitor; from: 
           </div>
         </div>
       </div>
-      <pre className="vz-query code-scroll" tabIndex={0} aria-label="The monitor's query" data-testid="monitor-query">
+      {/* The query wraps (o6): nothing of it is behind a sideways scroll that nothing on screen points to. */}
+      <pre className="vz-query is-prose" aria-label="The monitor's query" data-testid="monitor-query">
         {query}
       </pre>
       <div className="vz-panel-body" data-view="chart">
@@ -774,4 +796,4 @@ function MonitorChart({ monitor, from, to, onRange }: { monitor: Monitor; from: 
       </ul>
     </section>
   )
-}
+})

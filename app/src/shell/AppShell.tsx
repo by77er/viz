@@ -6,7 +6,7 @@ import { useWaiting } from '../explore/waiting'
 import { installFocusKeeper } from '../lib/focusKeeper'
 import { CommandPalette } from './CommandPalette'
 import { ErrorBoundary } from './ErrorBoundary'
-import { useCommands, useCommandsContext } from './commands'
+import { useCommands, useCommandsControl } from './commands'
 import { useSession } from './session'
 import { SignIn } from './SignIn'
 import { useTheme } from './theme'
@@ -65,7 +65,7 @@ export function AppShell() {
   const page = useRouterState({ select: (s) => s.matches[s.matches.length - 1]?.id ?? '' })
   const { setPref } = useTheme()
   const { session, signOut } = useSession()
-  const { setPaletteOpen } = useCommandsContext()
+  const { setPaletteOpen } = useCommandsControl()
   const info = useBackendInfo()
 
   useEffect(() => {

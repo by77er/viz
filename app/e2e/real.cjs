@@ -121,7 +121,7 @@ async function main() {
     // What a person reads off a dashboard: each panel's state, figures, table, legend and text. Ages and the mock's banner are not part of it.
     const board = async (p, origin, id, n) => {
       await p.goto(`${origin}/dashboards?id=${id}&from=${T0}&to=${T1}`)
-      await p.waitForFunction((n) => document.querySelectorAll('[data-testid=panel]').length >= n && !document.querySelector('[data-testid=panel][data-state=waiting], [data-testid=panel][data-state=idle]'), n, { timeout: 60000 })
+      await p.waitForFunction((n) => document.querySelectorAll('[data-testid=panel]').length >= n && !document.querySelector('[data-testid=panel][data-state=waiting], [data-testid=panel][data-state=idle], [data-testid=panel-deferred]'), n, { timeout: 60000 })
       return p.evaluate(() => [...document.querySelectorAll('[data-testid=panel]')].map((el) => ({
         id: el.dataset.panel,
         kind: el.dataset.kind,
@@ -129,7 +129,7 @@ async function main() {
         stats: [...el.querySelectorAll('[data-testid=stat-value], [data-testid=stat-context]')].map((x) => x.textContent.replace(/\s+/g, ' ').trim()),
         table: [...el.querySelectorAll('[data-testid=panel-table] tr')].map((tr) => [...tr.cells].map((c) => c.textContent.trim()).join(' | ')),
         legend: [...el.querySelectorAll('tbody tr[data-key]')].map((tr) => [...tr.cells].map((c) => c.textContent.trim()).join(' | ')),
-        digest: el.querySelector('[data-testid=panel-not-drawn] [data-testid=panel-digest]')?.textContent ?? '',
+        digest: el.querySelector('[data-testid=panel-not-drawn]')?.textContent ?? '',
         empty: !!el.querySelector('[data-testid=panel-empty]'),
         error: el.querySelector('[data-testid=panel-error]')?.textContent.replace(/\s+/g, ' ') ?? '',
       })))

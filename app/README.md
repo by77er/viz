@@ -8,13 +8,18 @@ gateway at `vis.bitcru.sh/` and to call the API on the same origin (`/api/v1/que
 control's `/api/v1/control/whoami`, `/api/v1/control/dashboards` and
 `/api/v1/control/dashboards/<id>`).
 
-> **Monitors (2026-11-28) is the newest slice and its design is not reviewed.** What it is, how
+> **Dashboards and monitors were reviewed on 2026-11-28 and rejected**
+> (`../design-system/reviews/app-v9/rereview.md`, parts 2 and 3); the fixes, their checks and
+> mutants, and the speed before and after are under "The third design review", and the
+> dispositions in the two review directories' `PR.md`. They await a re-review.
+>
+> **Monitors (2026-11-28) is the newest slice.** What it is, how
 > it was checked, its mutants, its speed and what it leaves out are under "Monitors, the on-call
 > slice"; the images for the design reviewer are in `../design-system/reviews/app-monitors/`.
 > It calls the ruler's `/api/v1/monitors…` routes on the same origin. The real ruler was not run
 > here: the mock is held to `ruler/openapi.json`.
 >
-> **Dashboards (2026-11-27) is the slice before it and its design is not reviewed.** What it is,
+> **Dashboards (2026-11-27) is the slice before it.** What it is,
 > how it was checked, its mutants, its speed and what it leaves out are under "Dashboards,
 > read-only"; the images for the design reviewer are in
 > `../design-system/reviews/app-dashboards/`. The sections after it describe the app as it
@@ -95,6 +100,8 @@ VIZ_MUTANT_DIR=<scratch dir> node e2e/mutants-monitors.cjs            # the moni
 node e2e/monitors-shots.cjs                 # the design-review images of the monitors views
 node e2e/dashboards.cjs                     # the dashboards views alone (VIZ_ONLY=list,states,dashboard,panels,variables,requests,key,narrow)
 node e2e/measure-dashboards.cjs [--phone]   # the speed budgets on the dashboards views (20 runs)
+node e2e/measure-dashboards.cjs [--phone] --compare <app dir of the build before>   # before and after, alternating run by run, with paired differences (also measure-monitors.cjs)
+SET=rereview VIZ_MUTANT_DIR=<scratch dir> node e2e/mutants-dashboards.cjs            # the mutants of the third review's fixes
 VIZ_MUTANT_DIR=<scratch dir> node e2e/mutants-dashboards.cjs          # the dashboards views' mutants, on a copy outside the tree
 node e2e/dashboards-shots.cjs               # the design-review images of the dashboards views
 VIZ_SLOW=1 node e2e/app.cjs                 # also the 10 s and 60 s rows of the waiting table
@@ -170,7 +177,7 @@ vitest 5 · fast-check 4 · axe-core 4.14.
 | `src/charts/Chart.tsx`, `fixups.ts` | The React element around the chart: a new result, an error, the range it shows; the words of the chart's that a query result needs otherwise |
 | `src/editor/` | CodeMirror PromQL editor (a lazy-loaded chunk) |
 | `src/explore/` | Explore: the page, the time range and step fields, the table, the text and JSON forms, the waiting logic |
-| `src/dashboards/` | Dashboards, read-only: the list, one dashboard, its panels; `model.ts` (between the `viz.dashboard/v1` model in `../dashboard/src` and the views), `scheduler.ts` (what is sent, cancelled and delivered), `store.ts` (each panel's state) |
+| `src/dashboards/` | Dashboards, read-only: the list, one dashboard, its panels; `model.ts` (between the `viz.dashboard/v1` model in `../dashboard/src` and the views), `scheduler.ts` (what is sent, cancelled and delivered), `store.ts` (each panel's state), `textForm.ts` (the structured digest as sentences and tables), `Note.tsx` (a text note's Markdown as text), `colours.ts` (one colour per series identity across a dashboard) |
 | `src/api/limiter.ts` | At most six requests in flight: the one limiter every request of the page goes through |
 | `src/shell/session.tsx`, `SignIn.tsx` | Sign-in: the key, where it is kept, who gets in |
 | `src/shell/` | Navigation, command palette, Settings and Help pages, theme |
@@ -217,6 +224,424 @@ vitest 5 · fast-check 4 · axe-core 4.14.
 There is no logs or traces view, no editing of dashboards or monitors and no key management
 ("Not implemented"). The gateway serves six document paths (`serve.json`): `/`, `/explore`,
 `/dashboards`, `/monitors`, `/help`, `/settings`.
+
+## The third design review: dashboards and monitors (2026-11-28)
+
+The re-review (`../design-system/reviews/app-v9/rereview.md`, parts 2 and 3) rejected the
+dashboards and monitors views: two speed blockers (D-B2, M-B1), one agent-content blocker
+(D-B1), four majors (D-M1, D-M2, M-M1, M-M2) and seventeen minors (d1 to d9, o1 to o8). This
+section is what was changed, the check that fails without each change and the mutant that showed
+it, the speed before and after, and what is left. The dispositions for the reviewer are in
+`../design-system/reviews/app-dashboards/PR.md` and `../design-system/reviews/app-monitors/PR.md`
+("Third design review"). **Not edited, because another builder is changing them for B1:**
+`src/charts/`, `src/explore/`, `design-system/project/components/Chart/`; what the fixes need of
+the chart is under "Needed from the chart (third review)".
+
+### What was changed
+
+| Finding | Fix | Where | Check that fails without it |
+|---|---|---|---|
+| **D-B1** a dashboard an agent wrote read as a person's | While the dashboard's current revision is an agent's (control's `lastChangedBy.kind` is `agent`: no person has saved over it), every word of the spec is marked where it is read, by the system's rule for agent text (README, Words; Claim). **The pattern:** the page head's title and intent are inside the agent's rule (`vz-agent`, the `stroke` rule in `ink-muted` that nothing else uses), headed by Claim's provenance line (`vz-claim-by`): "Agent's dashboard, written by incident-agent" and `vz-status` "Not verified" with the unknown dash. Each panel title takes the rule (`vz-panel-title vz-agent`); each explanation takes it and reads "Agent: … Not verified." (the shorter-text form, as Banner and Timeline use it); a stat's thresholds are a line of their own, "Agent's thresholds: above 2% (warning) and above 5% (critical). Not verified.", ruled; a text note an agent wrote is ruled with Claim's provenance line "Agent's note" and "Not verified"; the list's Intent cell reads "Agent: … Not verified." inside the rule; the text forms say "Agent:" and "Not verified" on the same sentences. The status words ("Within its thresholds") stay the app's: they are measured; what they are measured against is said to be the agent's. Nothing can be confirmed here (the app writes nothing): a person's next revision lifts the marking | `DashboardsPage.tsx`, `DashboardsListPage.tsx` (`agentOf`, `AgentBy`), `PanelView.tsx`, `textForm.ts` | `dashboards.cjs` `[agent]` (5 checks: the list cell, the head, titles and explanations, the thresholds, and none of it on a person's dashboard) |
+| **D-M1** the heatmap, the text note and the dashboard's Text were the model's raw Markdown digest | The model's **structured** digest (`digestPanel`, `../dashboard/src/digest.ts`: per series its value, last, lowest, highest, trend, gaps, state) is written by the app as people-facing text; the Markdown (`renderDigest`) is used for one thing, "Copy the digest for an agent", which says that is what it copies. A heatmap shows its buckets as the system's table ("At most" with each bound in its own unit, then Last, Lowest, Highest with the unit once in the head; shortest first; no outlier notes, no capitals). A text note's Markdown is rendered (`Note.tsx`: headings, paragraphs, lists, strong words as weight, code, links; never HTML). Each panel's "Text form" is sentences (`vz-text-form`) in the page's units and time format, **every** series (36 for the route panel), with the description, the thresholds and the table's rows. The dashboard's Text is every panel's text form in page order, under its title, wrapped at the measure, with "Revision 1, changed by Dana." and the page's range words; no `pre`, no sideways scroll at 400 px | `textForm.ts` (new), `Note.tsx` (new), `PanelView.tsx` (`NotDrawn`, `Sentences`), `DashboardsPage.tsx` (`DashboardText`) | `dashboards.cjs` `[text]` (6 checks); `Note.test.ts` |
+| **D-M2** one service had a different colour in each panel | A dashboard-wide colour map by series identity (`colours.ts`): the label set without `__name__`, in groups of the same label names; the first time a panel is drawn in the tab, each series takes the slot its identity has on the dashboard, a new identity the group's next free slot (largest first), the rest Other. The panel's chart is handed that map before it first draws, and keeps its own rules from then on. **A proposal for the system's owner** (decision below) | `colours.ts` (new), `PanelView.tsx` (`ChartBody` seeds it) | `dashboards.cjs` `[colour]`; `colours.test.ts` (4 tests, against the chart's own `assignSeries`) |
+| **D-B2** the slowest of twelve panels painted 144 to 197 ms after its answer; all panels waiting 127 to 165 ms after the press | Profiled first ("Speed (third review)"). Three changes, nothing a person sees changes (the third, the document's first number format made when the page is idle, is shared with M-B1): (1) a chart is drawn in the task its answer arrives only when its panel is on screen; the others when the page is idle, one per idle period, those within a screen of the window first, and any panel at once when it comes on screen; until then it is its reserved place (`vz-chart` with the reserved height it draws), so the last chart on screen of a burst of six answers no longer waits for the charts nobody can see; (2) the press on a range or a variable marks every panel waiting with "Showing …, the previous range" in its own task (`DashboardStore.expect`), and in a task after that frame is drawn the requests are sent (from the range pressed) and then the address changes; the page's own load for the new address is the same load and sends nothing again (`loadKey`) | `PanelView.tsx` (`DeferredChart`, `usePlace`, `whenIdle`), `store.ts` (`expect`, `load`'s key), `DashboardsPage.tsx` (`askFor`, `afterFrame`), `src/main.tsx` (the first number format) | `dashboards.cjs` `[speed]` (2 checks: an off-screen chart is not drawn in the task its answer arrives, and lands at its reserved height; the press's own task marks all twelve panels) |
+| **M-B1** opening a monitor 117 / 146 ms; its chart painted 143 / 122 ms after its answer | Profiled first. The press on a monitor in the list shows its page from the list's row in the press's own task (`MonitorsPage`'s `opening`), the same element the address then names, so nothing is asked or drawn twice; the chart's section is memoised and its spec depends on the condition's values, not the condition object that every read made anew (each read drew the chart again); the document's first number format, 63 ms of the chart's paint in the profile, is made when the page is first idle (`src/main.tsx`) | `MonitorsPage.tsx`, `MonitorsListPage.tsx`, `MonitorPage.tsx` (`MonitorChart`), `src/main.tsx` | `monitors.cjs` `[speed]` (the press's own task shows the monitor's name and state line, the list gone); the timings ("Speed (third review)"). The chart's memoisation is held by no check (it changes no picture) |
+| **M-M1** a late Undo showed an ISO time and advised an action the app lacks | Said once, in the app's words and times: "Undo had closed at 10:26, so the silence stays until 11:25. Ending a silence early is not in this app yet. (The API answered undo_expired, HTTP 410.)"; the help line about the window is not said again under it | `MonitorPage.tsx` | `monitors.cjs` `[undo] Undo after the API's window…` |
+| **M-M2** a monitor's value, threshold and axis had no unit | `monitorUnit` (`src/monitors/model.ts`): the condition's unit; else the unit its message template formats `$value` in (`humanizePercentage` a share, `humanizeDuration` seconds, `humanize1024` bytes); else a share when the query divides part of one metric by all of it; else Explore's "Automatic" guess (`inferUnit`). The list's Value and Threshold, the page's alerts, threshold, history, text form, the chart's axis, legend and threshold label all use it: "8.4%", "> 2% for 5 min", "> 2% threshold" | `model.ts` (`monitorUnit`, `isShare`, `unitValue`, `valueWords`, `thresholdWords`), `MonitorPage.tsx`, `MonitorsListPage.tsx` | `monitors.cjs` `[unit]` and the list and page checks; `model.test.ts` |
+
+Minors:
+
+| # | Disposition | Check |
+|---|---|---|
+| d1 | Fixed: a stat's thresholds are a line under its figures, from the spec, in its unit: "Thresholds: above 2% (warning) and above 5% (critical)." (a threshold's own `label` when the spec gives one) | `[d1]` |
+| d2 | **Follow-up.** The figures of a row of stats sit at different heights when explanations differ in length. The fix is a row-wide alignment (a subgrid, or the explanation under the figure); it changes the Panel's anatomy, so it is the system's (Panel) | none |
+| d3 | Fixed: "Showing 18 Nov, 09:30 to 12:30, the previous range"; the reserved meta holds the same words at their length, so the head does not move | `[d3]` |
+| d4 | **Follow-up, the system's:** `vz-details > summary` sets `display: inline-flex`, which hides the disclosure marker. App CSS must not restyle a component | none |
+| d5 | Fixed: the app's sentence no longer repeats "Nothing was changed" after the API's (dashboards list, monitors list and monitor error) | `[d5]`, `the list cannot be read…` |
+| d6 | Fixed: the first run is a sentence | `[d6]` |
+| d7 | Fixed: one sentence, "Nothing matched this panel's query from 18 Nov, 09:30 to 12:30."; what nothing means is the panel's own explanation above it | `a query that matches nothing…` |
+| d8 | Fixed: "Show 4 more" / "Show the first 8" under a table the spec cuts; the caption counts what is shown; 44 px with a finger | `[d8]`, the 400 and 1500 px touch checks |
+| d9 | Fixed: no placeholder | `[d9]` |
+| o1 | Fixed: "> 2% for 5 min" (list, text form); on the page "> 2%" beside "For 5 min" | the list and page checks |
+| o2 | Fixed: "Message, as sent at 09:47" (the template filled with the value it fired at, `renderMessage`) and "Message template" (the template); a template the app cannot fill is labelled a template | the page check, `model.test.ts` |
+| o3 | Fixed: "Cannot be evaluated" has the unknown dash (Status), not the critical square | `[o3]` |
+| o4 | **Follow-up, the system's (Notice):** the mark centred on a long notice, and "Dismiss" beside or under the text by its length | none |
+| o5 | Fixed: "Last changed by key:lee at 25 Nov 10:25", "Created by …", alerts "Nobody yet"; the API's words as a sentence (a capital, a full stop) where they stand alone | the page and list-error checks |
+| o6 | Fixed: the query wraps (`is-prose`); nothing is behind a sideways scroll | `[o6]` |
+| o7 | Fixed: the first run is a sentence | `[o7]` |
+| o8 | Fixed in the mock: an alert's value is its query's at the last evaluation, from the mock's own series; the state is still fixed at start (below) | `[o8]` |
+
+### Decisions (third review), for `design/DECISIONS.md` and the system's owner
+
+| Decision | Alternatives | Why | Would change if |
+|---|---|---|---|
+| **Proposal to the design system's owner (D73's colour assignment): a dashboard owns one colour map by series identity**, and each panel's view map starts from it. Identity is the label set without `__name__`; series compete for the eight slots only within a group of the same label names (a service, a pod, a route); the eight colours plus Other and "what a person sees wins" are unchanged inside each panel | Per panel, as the Chart README has it ("A view owns a map"); one map for the whole page whatever the labels (pods and services would share eight slots); a fixed colour per value by hash (two series of one panel could collide) | A person reads a dashboard "panel by panel" and carries "blue is catalog" from one panel to the next; colour must follow the entity. Within the rules: a panel still colours its eight largest at load unless the dashboard already gave a slot to the identity, and "Colour the eight largest" stays a per-panel choice | The owner decides a stored map per panel (the README's "A dashboard panel stores its map with the panel") is how this is meant to be solved; or panels of one dashboard should not share colours |
+| The dashboard map gives slots in the order panels are **drawn** in the tab (largest first in each), kept for the tab's session | Order by the dashboard's reading order; by name | Deterministic orders need every panel's data first, which would hold the first panel's paint | A stored map exists (the system's rule) |
+| An agent's dashboard is marked while its last change is an agent's | Mark by revision history (who wrote each field) | The API gives the last changer only; a person's save is the confirmation the system's rule asks for | Control records who wrote each part, or adds a "verified by" |
+| Charts off screen wait for their place to near the viewport, or for idle time | Draw every answer at once (before); draw off-screen ones in a worker | Invisible: their height is reserved; a worker cannot draw the system's chart | The chart draws in under a few ms a panel |
+
+### Needed from the chart and the design system (third review)
+
+| # | What | Why | Meanwhile |
+|---|---|---|---|
+| C1 | **An input for a view's starting map** (a stored map, as the Chart README describes for a dashboard panel): `vzChart(root, spec, { map })` or a `data-map`. Today the app writes the chart's own storage key (`vz-series8:<view>`, the shape of `vzChartRules.newMap()`) before the first draw | The app must not depend on the chart's storage format | `colours.ts` writes it; `colours.test.ts` checks the result against the chart's own `assignSeries` |
+| C2 | The rule for D-M2 in Chart, "Series colour", if the owner takes the proposal | | the app's decision above |
+| C3 | d2: a row of panels whose figures and plots share a baseline (Panel) | | not done |
+| C4 | d4: `vz-details > summary` shows its disclosure marker | | not done |
+| C5 | o4: Notice's mark on the first line's x-height; its actions' place | | not done |
+| C6 | A pattern for "an agent wrote this page" on a page that is not a claim (the head's provenance line); this change uses Claim's `vz-claim-by` inside `vz-agent` | the reviewer's "note for a second reader" | as described |
+| C7 | **The chart's `numberFormat` makes a new `Intl.NumberFormat` for each call** (cached per decimals within the call only); the document's first one cost about 50 to 60 ms at 4x CPU in the profile, inside the first chart's draw. A module-wide cache in the chart, or a warm-up of its own, would take it out of every application's first paint | M-B1 and D-B2 profiles | `src/main.tsx` makes the document's first number format when the page is first idle |
+| C8 | **Drawing off screen later** (D-B2) is the app's: the chart has no "draw when near" of its own, and `content-visibility` defers its paint, not its build | | `PanelView.tsx`, `DeferredChart` |
+
+### Speed (third review): D-B2 and M-B1
+
+**Profiled first, measured here.** One opening of "Services overview" (and its range change) and
+one opening of "Checkout 5xx ratio", each at 4x CPU slowdown and Fast 4G on an unminified build of
+the commit before (`6c76fc4`), with the browser's sampling profiler (200 µs), in a worktree of that
+commit in the scratch area (the chart in it is the committed one, not the chart being changed by
+another builder). What it showed:
+
+- **Dashboards.** The system's chart drew each of the six charts of a load in the task that
+  received its answer, about 48 ms each at 4x (290 ms of `draw` over twelve draws, load and range
+  change). Answers arrive six at a time, so the last chart on screen of a burst waited for every
+  chart before it, those far below the window included: that is the slowest panel's 144 to
+  197 ms. The **first** `Intl.NumberFormat` the document made, by the chart's `numberFormat`,
+  cost about 50 ms by itself (the browser loads its number data once). On a change of range,
+  nothing was marked waiting until the router had changed the address and the page had resolved
+  the spec again (`resolve`, which hashes it): the panels' waiting state came a frame or more
+  after the press.
+- **Monitors.** Of the chart's paint (126 ms inclusive), 63 ms was that same first
+  `Intl.NumberFormat` (the chart's `numberFormat` → `abs`, self time); every read of the monitor
+  (its own answer, then every 30 s) drew the chart again, because the chart's spec depended on
+  the monitor's condition object, new with each read; opening a monitor from the list was one
+  long task of about 80 ms after the router's navigation.
+- Not the cost: reading the bodies (`readRangeMatrix`, about 9 ms an answer), the model's digests
+  for stats and tables, the layout of tables.
+
+**What was changed, and nothing a person sees changes by it:**
+
+1. A chart is drawn in the task its answer arrives only when its panel is on screen; the others
+   when the page is idle (`requestIdleCallback`, one chart per idle period), those within a screen
+   of the window first, and any panel at once when it comes on screen. Until then the panel holds
+   its reserved place (`vz-chart` with the reserved height it draws). A panel is observed from its
+   first render, so the answer of a panel on screen is drawn in its own task. (A first version drew
+   everything within a screen at once; its first runs still had the last chart on screen of a burst
+   wait for two charts below the window, so it was changed before the session that is reported.)
+2. The press on a range or a variable marks every panel waiting, with "Showing …, the previous
+   range", in its own task (`DashboardStore.expect`); in a task after that frame the requests are
+   sent, from the range pressed, and then the address changes; the page's own load for the new
+   address is the same load and sends nothing again (`loadKey`), and panels already marked are not
+   set again. Marking them in the press's task with the router's change in the same task did not
+   move the frame (first runs: 95 to 157 ms, stopped); deferring the router's change alone moved
+   the requests late (first runs: `rangeSend` 64 to 127 ms, stopped). Both were changed before the
+   reported session.
+3. The first number format is made when the page is first idle (`src/main.tsx`), not by the first
+   chart; and the app's own number formats are made once (`textForm.ts`).
+4. A press on a monitor in the list shows its page from the list's row in the press's own task
+   (`MonitorsPage`'s `opening`), the same element the address then names, and the router's change
+   of address runs in a task after that frame; the chart's section is memoised and its spec
+   depends on the condition's values, not its object.
+5. Registering a page's commands no longer re-renders the pages and the shell (`useCommandsControl`):
+   it did, inside the press's task, on every view change of the app.
+
+Tried and kept: all five, after the variants named in 1 and 2 and session A below. Tried and not
+kept: drawing every chart within a screen at once (1); the router's change in the press's task
+(2, 4). Not tried: drawing a chart in a worker (the
+chart is the system's and draws into the page), and a smaller margin than one screen.
+
+**How it was measured.** `e2e/measure-dashboards.cjs` and `e2e/measure-monitors.cjs` with
+`--compare <the build before>`: the commit before and this change, built in two worktrees of the
+same commit (the same design system, chart and mock), served side by side on one mock, the runs
+**alternating** before, after, before, … (20 of each, a fresh tab each), at 4x CPU and Fast 4G,
+desktop (1440 x 900, mouse) and phone (400 x 800, touch emulation, coarse pointer checked every
+run). Every run records `uptime` and the 1-minute load. A panel counts as painted in the frame
+that shows what it draws (a chart once its plot is in the page), so a chart that waits off screen
+is timed to when it is drawn, not to its answer; "on screen" is the panel in the viewport when its
+answer arrived. `rangeBusy` is the frame that shows every panel waiting: when they were marked in
+the press's own task (before any frame began after it), it is the press's next paint as Event
+Timing reports it; otherwise, as before, a task queued from the animation callback of the frame
+after the task that marked them (`rangeBusyTask`, printed too: for this build it reads late,
+because that task waits behind the requests' task the page queues after the same frame). Paired difference: after minus before, run pair by run pair. Load rule as the
+system's README has it; the session rule of `design-system/reviews/chart-speed/third-review.md`
+for rows within 10% of their limit (a second session). Figures in ms, the 75th percentile, then
+the median and the worst run. All "measured here".
+
+**Session X (15:17 to 15:32 UTC), the final build** (bar one change, below). Dashboards, desktop:
+
+| What | before p75 (median, worst) | after p75 (median, worst) | paired difference, after - before: median (p25 to p75), n |
+|---|---|---|---|
+| viewChange | 78 (62, 105) | 63 (58, 77) | -6 (-16 to 3), 20 |
+| viewInp | 72 (56, 96) | 64 (56, 72) | 0 (-8 to 0), 20 |
+| firstPaint | 32 (18, 51) | 37 (31, 73) | 3 (-14 to 23), 20 |
+| paintWorstOn | 44 (39, 194) | 73 (45, 178) | 7 (-21 to 26), 20 |
+| paintWorst | 71 (60, 194) | 394 (354, 438) | 291 (238 to 333), 20 |
+| paintWorstOff | 66 (57, 120) | 394 (354, 438) | 309 (268 to 343), 20 |
+| rangeSend | 51 (46, 66) | 61 (52, 82) | 10 (3 to 17), 20 |
+| rangeBusy | 120 (112, 160) | 48 (48, 64) | -64 (-72 to -56), 20 |
+| rangeBusyTask | 116 (109, 158) | 107 (89, 122) | -14 (-28 to 2), 20 |
+| rangeInp | 120 (112, 160) | 48 (48, 64) | -64 (-72 to -56), 20 |
+| rangePaintWorstOn | 50 (40, 69) | 51 (39, 94) | -1 (-29 to 19), 20 |
+| rangePaintWorst | 69 (50, 134) | 59 (47, 122) | -3 (-28 to 12), 20 |
+| clsView.all | 0.0032 (0.0032, 0.0032) | 0.0016 (0.0014, 0.0016) | -0.0018 (-0.0018 to -0.0015), 20 |
+| clsRange.all | 0.0001 (0.0001, 0.0008) | 0.0001 (0.0001, 0.0074) | 0.0000 (0.0000 to 0.0000), 20 |
+
+load 0.90 to 2.77 (median 1.61), 0 of 80 samples above 4; 2026-11-28T15:17:01.007Z to 2026-11-28T15:21:52.123Z; calibration 314 ms
+
+Dashboards, phone:
+
+| What | before p75 (median, worst) | after p75 (median, worst) | paired difference, after - before: median (p25 to p75), n |
+|---|---|---|---|
+| viewChange | 103 (80, 133) | 96 (79, 121) | -2 (-20 to 2), 20 |
+| viewInp | 104 (72, 128) | 96 (80, 112) | 0 (-16 to 8), 20 |
+| firstPaint | 37 (23, 64) | 48 (33, 91) | 6 (-16 to 25), 20 |
+| paintWorstOn | 37 (23, 64) | 48 (33, 91) | 6 (-16 to 25), 20 |
+| paintWorst | 122 (70, 191) | 427 (370, 646) | 282 (217 to 342), 20 |
+| paintWorstOff | 122 (70, 191) | 427 (370, 646) | 282 (217 to 342), 20 |
+| rangeSend | 70 (61, 90) | 83 (71, 123) | 8 (5 to 17), 20 |
+| rangeBusy | 144 (120, 184) | 72 (56, 96) | -64 (-80 to -56), 20 |
+| rangeBusyTask | 144 (123, 188) | 120 (109, 183) | -16 (-35 to -4), 20 |
+| rangeInp | 144 (120, 184) | 72 (56, 96) | -64 (-80 to -56), 20 |
+| rangePaintWorstOn | 34 (26, 42) | 31 (24, 49) | -7 (-17 to 14), 20 |
+| rangePaintWorst | 57 (51, 85) | 78 (56, 122) | 4 (-8 to 16), 20 |
+| clsView.all | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000 to 0.0000), 20 |
+| clsRange.all | 0.0001 (0.0001, 0.0001) | 0.0001 (0.0001, 0.0001) | 0.0000 (0.0000 to 0.0000), 20 |
+
+load 0.91 to 1.65 (median 1.18), 0 of 80 samples above 4; 2026-11-28T15:24:46.078Z to 2026-11-28T15:29:36.241Z; calibration 330 ms
+
+Monitors, desktop:
+
+| What | before p75 (median, worst) | after p75 (median, worst) | paired difference, after - before: median (p25 to p75), n |
+|---|---|---|---|
+| viewChange | 80 (72, 96) | 72 (64, 88) | -8 (-24 to 0), 20 |
+| viewChangeTask | 103 (99, 133) | 152 (141, 167) | 46 (31 to 51), 20 |
+| viewInp | 80 (72, 96) | 72 (64, 88) | -8 (-24 to 0), 20 |
+| firstPaint | 125 (118, 156) | 80 (71, 129) | -44 (-52 to -38), 20 |
+| ackPressed | 35 (31, 50) | 32 (25, 43) | -5 (-10 to -1), 20 |
+| ackInp | 32 (24, 40) | 32 (24, 40) | 0 (-8 to 0), 20 |
+| cls | 0.0000 (0.0000, 0.0000) | 0.0028 (0.0028, 0.0028) | 0.0028 (0.0028 to 0.0028), 20 |
+
+monitors, desktop; load 0.84 to 1.48 (median 1.18), 0 of 80 samples above 4; 2026-11-28T15:22:00.674Z to 2026-11-28T15:24:39.987Z; calibration 324 ms; void 0
+
+Monitors, phone:
+
+| What | before p75 (median, worst) | after p75 (median, worst) | paired difference, after - before: median (p25 to p75), n |
+|---|---|---|---|
+| viewChange | 112 (88, 242) | 80 (72, 189) | -16 (-64 to -8), 20 |
+| viewChangeTask | 150 (144, 242) | 153 (146, 189) | 9 (-16 to 35), 20 |
+| viewInp | 96 (88, 144) | 80 (72, 96) | -16 (-32 to -8), 20 |
+| firstPaint | 128 (116, 149) | 76 (69, 135) | -48 (-54 to -32), 20 |
+| ackPressed | 52 (42, 74) | 46 (40, 75) | -4 (-10 to 6), 20 |
+| ackInp | 48 (40, 56) | 40 (40, 72) | 0 (0 to 8), 20 |
+| cls | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000 to 0.0000), 20 |
+
+monitors, phone; load 0.88 to 1.50 (median 1.16), 0 of 80 samples above 4; 2026-11-28T15:29:44.880Z to 2026-11-28T15:32:25.342Z; calibration 309 ms; void 0
+
+<!-- SESSION-Y -->
+
+**Session 1 (14:47 to 15:03 UTC), an earlier build**: the dashboards without the commands change
+below; the monitors with the press shown in its own task but the router's change in the same task.
+Dashboards, desktop:
+
+| What | before p75 (median, worst) | after p75 (median, worst) | paired difference, after - before: median (p25 to p75), n |
+|---|---|---|---|
+| viewChange | 76 (62, 97) | 83 (72, 99) | 7 (-8 to 17), 20 |
+| viewInp | 72 (64, 88) | 80 (64, 96) | 8 (-8 to 8), 20 |
+| firstPaint | 43 (26, 65) | 37 (28, 83) | -8 (-20 to 11), 20 |
+| paintWorstOn | 83 (62, 234) | 55 (35, 158) | -28 (-60 to -5), 20 |
+| paintWorst | 155 (95, 234) | 412 (358, 538) | 279 (199 to 313), 20 |
+| paintWorstOff | 126 (69, 165) | 412 (358, 538) | 280 (247 to 325), 20 |
+| rangeSend | 51 (45, 87) | 67 (54, 103) | 11 (-1 to 22), 20 |
+| rangeBusy | 120 (112, 224) | 64 (48, 80) | -64 (-80 to -56), 20 |
+| rangeBusyTask | 118 (113, 218) | 105 (94, 156) | -17 (-37 to 3), 20 |
+| rangeInp | 120 (112, 224) | 64 (48, 80) | -64 (-80 to -56), 20 |
+| rangePaintWorstOn | 55 (46, 94) | 56 (43, 93) | -2 (-29 to 12), 20 |
+| rangePaintWorst | 94 (55, 197) | 81 (57, 152) | -1 (-33 to 24), 20 |
+| clsView.all | 0.0032 (0.0032, 0.0032) | 0.0016 (0.0014, 0.0017) | -0.0018 (-0.0018 to -0.0015), 20 |
+| clsRange.all | 0.0004 (0.0001, 0.0007) | 0.0001 (0.0001, 0.0080) | 0.0000 (0.0000 to 0.0000), 20 |
+
+load 1.00 to 1.72 (median 1.24), 0 of 80 samples above 4; 2026-11-28T14:47:26.579Z to 2026-11-28T14:52:22.819Z; calibration 345 ms
+
+Dashboards, phone:
+
+| What | before p75 (median, worst) | after p75 (median, worst) | paired difference, after - before: median (p25 to p75), n |
+|---|---|---|---|
+| viewChange | 91 (83, 158) | 99 (83, 124) | 4 (-12 to 6), 20 |
+| viewInp | 88 (80, 144) | 96 (80, 112) | 8 (-8 to 8), 20 |
+| firstPaint | 48 (33, 84) | 36 (18, 58) | -15 (-34 to 17), 20 |
+| paintWorstOn | 48 (33, 84) | 36 (18, 58) | -15 (-34 to 17), 20 |
+| paintWorst | 97 (86, 134) | 502 (410, 608) | 331 (247 to 438), 20 |
+| paintWorstOff | 97 (86, 134) | 502 (410, 608) | 331 (247 to 438), 20 |
+| rangeSend | 68 (62, 85) | 84 (78, 114) | 14 (7 to 25), 20 |
+| rangeBusy | 136 (128, 160) | 72 (56, 88) | -64 (-88 to -48), 20 |
+| rangeBusyTask | 140 (131, 164) | 127 (115, 182) | -10 (-26 to 0), 20 |
+| rangeInp | 136 (128, 160) | 72 (56, 88) | -64 (-88 to -48), 20 |
+| rangePaintWorstOn | 33 (15, 65) | 33 (26, 58) | 4 (-13 to 17), 20 |
+| rangePaintWorst | 74 (53, 118) | 84 (58, 119) | 10 (0 to 18), 20 |
+| clsView.all | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000 to 0.0000), 20 |
+| clsRange.all | 0.0000 (0.0000, 0.0001) | 0.0000 (0.0000, 0.0001) | 0.0000 (0.0000 to 0.0000), 20 |
+
+load 0.92 to 1.27 (median 1.03), 0 of 80 samples above 4; 2026-11-28T14:55:16.782Z to 2026-11-28T15:00:08.603Z; calibration 326 ms
+
+Monitors, desktop (`viewChange` by the old definition only, a task after the frame):
+
+| What | before p75 (median, worst) | after p75 (median, worst) | paired difference, after - before: median (p25 to p75), n |
+|---|---|---|---|
+| viewChange | 111 (103, 168) | 123 (107, 156) | 3 (-15 to 25), 20 |
+| viewInp | 80 (72, 128) | 104 (88, 160) | 0 (0 to 32), 20 |
+| firstPaint | 136 (120, 175) | 91 (68, 133) | -49 (-72 to -38), 20 |
+| ackPressed | 30 (29, 41) | 37 (28, 50) | -1 (-4 to 9), 20 |
+| ackInp | 24 (24, 32) | 32 (24, 40) | 0 (-8 to 8), 20 |
+| cls | 0.0000 (0.0000, 0.0000) | 0.0028 (0.0028, 0.0028) | 0.0028 (0.0028 to 0.0028), 20 |
+
+monitors, desktop; load 0.91 to 1.28 (median 1.10), 0 of 80 samples above 4; 2026-11-28T14:52:31.621Z to 2026-11-28T14:55:11.025Z; calibration 330 ms; void 0
+
+Monitors, phone:
+
+| What | before p75 (median, worst) | after p75 (median, worst) | paired difference, after - before: median (p25 to p75), n |
+|---|---|---|---|
+| viewChange | 151 (138, 215) | 152 (140, 200) | -3 (-22 to 32), 20 |
+| viewInp | 104 (96, 136) | 112 (104, 160) | 0 (-8 to 24), 20 |
+| firstPaint | 164 (149, 207) | 88 (79, 125) | -71 (-104 to -43), 20 |
+| ackPressed | 52 (50, 62) | 54 (47, 70) | -3 (-9 to 7), 20 |
+| ackInp | 48 (40, 56) | 48 (40, 56) | 0 (-8 to 0), 20 |
+| cls | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0002) | 0.0000 (0.0000 to 0.0000), 20 |
+
+monitors, phone; load 0.90 to 1.18 (median 0.98), 0 of 80 samples above 4; 2026-11-28T15:00:17.266Z to 2026-11-28T15:03:01.298Z; calibration 387 ms; void 0
+
+**Session A (15:03 to 15:09 UTC), monitors only, the router's change after the frame, before the
+commands change:** `viewChange` by the old definition read 189 (desktop) and 181 (phone), worse
+than before, while the press's own next paint (`viewInp`) read 96 and 88. That is how the
+definition was found to read late: the task it queues from the frame's animation callback waited
+behind the router's task the page now queued from the same callback. Records in
+`e2e/measurements/rereview3/` (`mon-*-sA`). After it, **the commands change**: registering a
+page's commands changed the commands context, which re-rendered every page that registers
+commands and the shell, inside the press's task; pages and the shell now take a context that never
+changes (`useCommandsControl`, `src/shell/commands.tsx`), and only the palette follows the list.
+
+### Mutants (third review)
+
+On copies in the session's scratch area (`<scratch>/dm-fix/mut-dash`, `<scratch>/dm-fix/mut-mon`),
+never in the shared tree: `SET=rereview VIZ_MUTANT_DIR=<scratch>/dm-fix/mut-dash node
+e2e/mutants-dashboards.cjs` and `OUT=mutants-monitors-rereview.txt VIZ_MUTANT_DIR=<scratch>/dm-fix/mut-mon
+node e2e/mutants-monitors.cjs <the ten names>`, run from a worktree of `6c76fc4` holding this
+change. Records: `e2e/measurements/mutants-dashboards-rereview.txt`,
+`e2e/measurements/mutants-monitors-rereview.txt`.
+
+**Dashboards: 19 of 19 killed** (`SET=rereview`, 15:09 to 15:12 UTC), each by the check named, with
+one exception reported: the first version of "the dashboard's text form is a well that scrolls
+sideways" did not build (its replacement left a `</div>` closing a `<pre>`), so the build failure
+killed it, not a check; it was rewritten (the same element made a sideways-scrolling well) and run
+again alone (record `mutants-dashboards-rereview-2.txt`, below). "A table's cut rows have no Show
+more" is caught by the suite stopping at the press on the missing button (a 30 s timeout), not by
+a named check.
+
+| Finding | Mutant (on the copy) | Caught by |
+|---|---|---|
+| D-B1 | the dashboard's provenance line is not shown | `[agent] a dashboard an agent wrote says so where it is read…` |
+| D-B1 | the head of an agent's dashboard has no rule | the same |
+| D-B1 | a panel's explanation an agent wrote reads as a person's | `[agent] every panel title and explanation an agent wrote…` |
+| D-B1 | a panel title an agent wrote has no rule | the same |
+| D-B1 | the thresholds behind a status are not said to be the agent's | `[agent] the thresholds behind a stat's status…` |
+| D-B1 | the list's Intent cell shows an agent's intent unmarked | `[agent] the intent an agent wrote is marked in its cell…` |
+| D-B1 | a person's dashboard is marked as an agent's | `[agent] a dashboard a person changed last carries no agent marking` (and others) |
+| D-M1 | a panel's text form leaves series out (the model's top five) | `[text] a panel of 36 series has all 36 in its text form…` |
+| D-M1 | the text form's figures lose their unit | `[text] every panel has its text form…` |
+| D-M1 | the dashboard's text form is a well that scrolls sideways | first version: the build (not a check); second version: see below |
+| D-M1 | a heatmap is shown as a list of series, not its buckets | `[text] a heatmap's data is the system's table…` |
+| D-M1 | a note's strong words are printed with their asterisks | `[text] a text note is its Markdown as text…` |
+| D-M2 | the dashboard's map is not handed to the chart | unit (`colours.test.ts`, 3 tests) and `[colour]` |
+| D-M2 | a series' identity keeps its metric name | unit and `[colour]` |
+| D-B2 | a chart off screen is drawn in the task its answer arrives | `[speed] a chart on screen is drawn in the task its answer arrives; a chart off screen is not…` |
+| D-B2 | the press on a range leaves the panels as they were until the address changes | `[speed] the press on a range marks every panel waiting…` |
+| d1 | a stat's thresholds are not named | `[d1]` |
+| d3 | the stale head says "the previous range" without which | `[d3]` |
+| d8 | a table's cut rows have no "Show more" | the suite stops at the press (30 s), not a named check |
+
+**Monitors: 10 of 11 killed in the first run (15:12 to 15:14 UTC); the survivor is reported.**
+
+| Finding | Mutant | Caught by |
+|---|---|---|
+| M-M2 | the chart is drawn without the query's unit | `[unit]` and `[o8]` |
+| M-M2 | values without the unit | unit (`model.test.ts`) and the list's row check |
+| M-M2 | a share is not read from the query | unit |
+| M-M1 | a late Undo in the API's words (the old notice) | `[undo] Undo after the API's window…` |
+| o1 | the threshold as the ruler wrote it | unit and the list's row check |
+| o2 | a template shown as the message | the page's "what it watches" check |
+| o3 | "Cannot be evaluated" with the critical mark | `[o3]` |
+| o5 | the API's words not made a sentence | the list-error check |
+| o6 | the query in a narrow well that scrolls | `[o6]` (and axe: a scrollable region not focusable) |
+| o8 | the mock's value fixed at start | `[o8]` |
+| M-B1 | the press does not show the monitor before the router (the Link navigates as before) | **survived the first run**: the check read only that the page was there in the press's task, which the router's own navigation, all in microtasks of the same task, also gave. The check was made to read that the address has not yet changed in that task, and the mutant run again (below) |
+
+Run again (15:36 to 15:39 UTC, in the final-suites job, from the shared tree):
+`mutants-monitors-rereview-2.txt`, **open-after-route: killed** by `[speed] a press on a monitor in
+the list shows its name and state line in the press's own task, and the router's change of address
+comes after that frame`; `mutants-dashboards-rereview-2.txt`, **the dashboard's text form is a well
+that scrolls sideways: killed** by `[text] at 400 px the dashboard's text form wraps…`.
+
+Not held by any check, and said so: the chart's section memoised in a monitor (M-B1; no picture
+changes), the document's first number format made when idle (M-B1, D-B2), the commands context
+(timing only). They are held by the timings above.
+
+### Verification (third review)
+
+**The tree reported green: the shared tree as it was from 15:25:05 UTC** (the last source change,
+`src/monitors/MonitorPage.tsx`; nothing under `app/src`, `app/mock`, `app/e2e` but measurement
+records and this README changed after it), checked once each between 15:32 and 15:39 UTC, every
+browser job under the machine's lock, Cloudflare credentials removed, ports moved off the defaults
+(`VIZ_E2E_APP_PORT=19720 VIZ_E2E_MOCK_PORT=19721 VIZ_PROD_PORT=19760`). The design system's
+`dist/` in the shared tree was current by `scripts/ensure-design-system.mjs` (it may hold the chart
+builder's uncommitted work; the speed sessions and the images used the committed chart, in
+worktrees).
+
+| Check | Result |
+|---|---|
+| `npm test` | 260 tests in 28 files pass (new: `colours.test.ts` 4, run against the chart's own `assignSeries`; `Note.test.ts` 2; `model.test.ts` in monitors 2 more) |
+| `npx tsc --noEmit` | passes |
+| `npm run check:tokens` | passes: 0 literal values in 86 files |
+| `npm run build` | passes; the shell is 185.3 kB gzip as Vite counts it (was 180.1 at `6c76fc4`, same count) |
+| `node e2e/app.cjs` | 156 of 156 |
+| `node e2e/errors.cjs` | 14 of 14 |
+| `node e2e/prod.cjs` | 23 of 23 |
+| `node e2e/dashboards.cjs` | 122 of 122 (16 checks new or rewritten for this change: `[agent]` 5, `[text]` 6, `[colour]`, `[speed]` 2, `[d1]`, `[d3]`, `[d5]`, `[d6]`, `[d8]`, `[d9]`) |
+| `node e2e/monitors.cjs` | 75 of 75 (new: `[speed]`, `[unit]`, `[o3]`, `[o6]`, `[o7]`, `[o8]`; rewritten: the list and page rows, the late Undo, the list error) |
+| mutants | dashboards 19 of 19 (+ the rewritten one, 1 of 1); monitors 10 of 11, then the survivor 1 of 1 after its check was made to read the address (above) |
+| `e2e/contract.cjs`, `e2e/real.cjs` | not run: no Cloudflare and no real stack in this task; `real.cjs` was edited (the deferred chart and the not-drawn panel's text) and not run |
+
+Not run: Safari, Firefox, a real phone, 200% zoom, a screen reader by ear.
+
+
+### Known risks and what is left (third review)
+
+- **A chart far off screen is drawn when the page is idle or when its place comes within a screen
+  of the window.** A jump further than that before the page has been idle (the End key, a link to
+  a panel) can show the reserved place for a frame before its chart: not measured. On the
+  measured runs every chart was drawn within about a second of its answer.
+- **The dashboard's colour map is handed over through the chart's own storage** (`vz-series8:`,
+  C1): a change of that format in the chart would silently drop the dashboard's colours back to
+  per panel (the e2e `[colour]` check and `colours.test.ts`, which runs the chart's own rules,
+  would fail).
+- **The slots go to identities in the order panels are drawn in the tab**, so two tabs can give one
+  service different colours (each tab is consistent across its panels); a stored map is the
+  system's answer.
+- **A share is read from the query's shape** (part of one metric over all of it): a query divided
+  by another metric with the same name in both halves of another sense would be shown in %. The
+  condition's own unit, when the API gives one, always wins.
+- **The monitor pressed in the list is shown before the address names it**; if the router refused
+  the navigation, the page would show the monitor while the address is the list's until the next
+  navigation (not seen; the router does not refuse this route).
+- A reload of "Pod capacity" scrolled to its last panel at 400 px shifted by 0.0074 to 0.037 in the
+  e2e runs here (limit 0.05; the check passes); not compared with the build before.
+- Seen in the remade images and not changed (found after the suites were run on the final tree):
+  in a text form, a sentence an agent wrote has both the list's bullet and the agent's rule
+  (`09-dashboard-variables`); and in a panel a quarter of the page wide, the head's meta now
+  takes a second line, because the place it keeps for "Showing 18 Nov, 09:30 to 12:30, the
+  previous range" (d3) is longer than the old words. Both are the same in every panel of a row,
+  so nothing moves; both are for the next round.
+- Left for others: d2, d4, o4 (the system's Panel, `vz-details`, Notice); C1, C7 (the chart); a
+  mock that evaluates its rules (o8's second half); agent claims that a person can confirm (the app
+  writes nothing).
+
 
 ## The second design review: fixes (2026-11-27)
 
@@ -451,7 +876,8 @@ while (silence), with a way back*.
   "Pending since 09:26. Fires at 09:36 if it holds", "Not firing". Somebody's acknowledgement or
   silence takes the neutral mark and the row says both facts ("Silenced until 10:42, firing
   since 08:37"; "Acknowledged, firing since 09:07"), so the red marks are exactly the ones nobody
-  has. Then the value, the threshold as written (`> 0.02 for 5m`), the owner and who it notifies
+  has. Then the value and the threshold in the query's unit (`8.4%`, `> 2% for 5 min`; "The third
+  design review", M-M2 and o1), the owner and who it notifies
   ("checkout-oncall (Slack #checkout-oncall)"). The table folds below 1200 px (`data-fold=wide`):
   name and state stay columns.
 - **Filters** "Needs attention" (the default, left out of the address), "Silenced", "All": the
@@ -490,7 +916,7 @@ shown from the list's answer, if this tab has one, before the monitor's own arri
   when.
 - **What it watches**: message, description, runbook (a standalone link), threshold as
   written, for, what no data does, receiver, owner, interval and last evaluation, the ruler's
-  last error, and the definition's last change from the history ("changed by key:lee at 25 Nov
+  last error, and the definition's last change from the history ("Last changed by key:lee at 25 Nov
   09:30").
 - **History, newest first**: the API's merged transitions and notifications as a
   `vz-timeline`, one sentence each ("Fired at 0.0412.", "Notified checkout-oncall in
@@ -563,7 +989,9 @@ seven monitors on the mock's series: **Checkout 5xx ratio** firing (on the check
 raises in every third hour's incident window; its alert starts at the latest window), **Checkout
 p95 latency** pending, **Ingest batches stalled** no data (alerting), **Payments errors** in error
 (a query the engine refuses), **Catalog p99 latency** firing, acknowledged and silenced by
-another key, and two not firing. **Alert states are fixed when the mock starts: nothing is
+another key, and two not firing. An alert's value is its query's at the last evaluation, read
+from the mock's own series (o8 of the third review); what it was when it fired stays in the
+history. **Alert states are fixed when the mock starts: nothing is
 evaluated**, so a "firing since" can be hours old while the chart shows the incident over.
 Acknowledge, unacknowledge, silence and undo change the mock's state and its history. Keys:
 without `--require-token` the mock's key has `monitors:read` and `monitors:ack`;
@@ -796,7 +1224,8 @@ dashboard and read, panel by panel, whether it is healthy over a time range*.
 - Head: the title, the intent, "Revision 1, changed 24 Nov 16:12 by Dana.", and a measured
   count: "12 panels, 7 answered so far." / "all answered." / "5 answered and 1 not.". The name
   and intent are shown from the list's answer, if this tab has one, before the dashboard's own
-  arrives. Actions: Panels | Text (the whole dashboard as the model's digest), and Refresh
+  arrives. Actions: Panels | Text (every panel's text form as sentences, in page order, and "Copy
+  the digest for an agent" for the model's digest: "The third design review", D-M1), and Refresh
   (busy while panels are being asked; a second press is ignored). No blue button: nothing here
   is the view's one action.
 - **Time range**: the spec's own (`time.from`, `time.to`) unless the address has `from` and
@@ -824,13 +1253,16 @@ dashboard and read, panel by panel, whether it is healthy over a time range*.
     ("8 of 12 rows, highest Requests first").
   - **Every other kind of the model's catalog (`heatmap`, `text`)**: the title, a sentence
     ("This panel is a heatmap, a kind this app does not draw yet. This is its text form.") and
-    the model's digest of the panel. It is never drawn as another kind.
+    its data as the system shows data: a heatmap's buckets as a table (bound, last, lowest,
+    highest), a text note's Markdown as text (D-M1 of the third review). It is never drawn as
+    another kind.
   - Every drawn panel has "Text form" (a disclosure: the block the model's `renderDigest`
     writes for that panel, computed when opened) and, per query, "Open in Explore" with the
     resolved query and the dashboard's range.
   - What a panel says about its data (queries, step, age, range, figures, text) comes from
     the answer that is drawn, which carries its own resolution and window. While a new range
-    or value waits, the previous answer stays, the head says "Showing the previous range"
+    or value waits, the previous answer stays, the head says "Showing 18 Nov, 09:30 to 12:30, the
+    previous range" (d3; before, "Showing the previous range"
     (in a place that both wordings share, so nothing moves), and after 400 ms a line says
     "Waiting for the query." with the seconds, and from 2 s offers Cancel for that panel.
   - **A panel's failure is that panel's**: the API's message, its error type and status, what
@@ -861,8 +1293,9 @@ dashboard and read, panel by panel, whether it is healthy over a time range*.
   are not drawn on charts** (a stat states its threshold state; a table does not). A query's
   `legend` template does not name chart series: the chart names them by the labels that
   differ, as in Explore.
-- **`heatmap` and `text` panels are not drawn** (shown as their digest; a text note's
-  markdown is not rendered, and the model's digest cuts it at 400 characters).
+- **`heatmap` and `text` panels are not drawn** (a heatmap's buckets are a table; a text note's
+  Markdown is rendered as text since the third review; its headings, paragraphs, lists, strong
+  words, code and links only).
 - **TraceQL and LogQL queries are not run** (the panel says so); the spec's `time.refresh` is
   ignored: nothing refreshes by itself.
 - **The waiting table's 10 s row** (a cheaper alternative) is not offered on a dashboard, and

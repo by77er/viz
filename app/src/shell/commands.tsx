@@ -20,6 +20,14 @@ interface CommandsContextValue {
 }
 
 const CommandsContext = createContext<CommandsContextValue | null>(null)
+/**
+ * What a page needs to register its commands or open the palette: stable for the provider's life,
+ * so that registering commands renders nothing again but the palette (a page that registers on
+ * mount, and the shell, re-rendered on every registration before: measured in the third design
+ * review, M-B1).
+ */
+type CommandsControl = Pick<CommandsContextValue, 'register' | 'unregister' | 'setPaletteOpen'>
+const CommandsControlContext = createContext<CommandsControl | null>(null)
 
 export function CommandsProvider({ children }: { children: ReactNode }) {
   const [byOwner, setByOwner] = useState<Record<string, Command[]>>({})
@@ -37,7 +45,19 @@ export function CommandsProvider({ children }: { children: ReactNode }) {
     () => ({ commands: Object.values(byOwner).flat(), register, unregister, paletteOpen, setPaletteOpen }),
     [byOwner, register, unregister, paletteOpen],
   )
-  return <CommandsContext.Provider value={value}>{children}</CommandsContext.Provider>
+  const control = useMemo(() => ({ register, unregister, setPaletteOpen }), [register, unregister])
+  return (
+    <CommandsControlContext.Provider value={control}>
+      <CommandsContext.Provider value={value}>{children}</CommandsContext.Provider>
+    </CommandsControlContext.Provider>
+  )
+}
+
+/** Register, unregister, open the palette: does not change when the commands do. */
+export function useCommandsControl(): CommandsControl {
+  const v = useContext(CommandsControlContext)
+  if (!v) throw new Error('useCommandsControl outside CommandsProvider')
+  return v
 }
 
 export function useCommandsContext(): CommandsContextValue {
@@ -51,7 +71,7 @@ export function useCommandsContext(): CommandsContextValue {
  * registered once per `key` change; `run` always calls the latest closure.
  */
 export function useCommands(owner: string, commands: Command[], key: string): void {
-  const { register, unregister } = useCommandsContext()
+  const { register, unregister } = useCommandsControl()
   const latest = useRef(commands)
   latest.current = commands
   useEffect(() => {

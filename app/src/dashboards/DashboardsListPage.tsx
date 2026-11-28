@@ -22,6 +22,27 @@ export function actorWords(by: Actor): string {
   return by.kind === 'agent' ? `${name} (agent)` : name
 }
 
+/** The agent that made the dashboard's current revision, when it was an agent: until a person saves over it, its words are the agent's (D-B1). */
+export function agentOf(by: Actor): string | null {
+  return by.kind === 'agent' ? (by.name ?? by.subject) : null
+}
+
+/**
+ * The provenance line of something an agent wrote, as Claim writes it (`vz-claim-by`): who wrote
+ * it, then "Not verified" with the unknown dash. It stands first inside the agent's rule
+ * (`vz-agent`) that marks the words it covers.
+ */
+export function AgentBy({ name, what }: { name: string; what: string }) {
+  return (
+    <p className="vz-claim-by" data-testid="agent-by">
+      <span>
+        Agent's {what}, written by {name}
+      </span>{' '}
+      <span className="vz-status">Not verified</span>
+    </p>
+  )
+}
+
 /** "24 Nov, 16:12" or "14 min ago", for a time the API gave as ISO text. */
 export function changedWords(iso: string, nowMs: number): { n: string; rest: string } | null {
   const at = Date.parse(iso)
@@ -109,7 +130,6 @@ export function DashboardsListPage({ search }: { search: DashboardsSearch }) {
               size={28}
               value={typed}
               onChange={(e) => setTyped(e.target.value)}
-              placeholder="checkout"
               spellCheck={false}
               autoComplete="off"
               autoCapitalize="off"
@@ -158,7 +178,7 @@ export function DashboardsListPage({ search }: { search: DashboardsSearch }) {
               </p>
               <p data-testid="list-error-message">{error.message}</p>
               <p>
-                {answerLine(error)} {errorKind(error) === 'auth' ? 'The API no longer accepts the key this tab signed in with. Sign in again.' : 'Nothing was changed. Ask again; if it keeps failing, note the time and report it.'}
+                {answerLine(error)} {errorKind(error) === 'auth' ? 'The API no longer accepts the key this tab signed in with. Sign in again.' : 'Ask again; if it keeps failing, note the time and report it.'}
               </p>
               <div className="vz-controls">
                 {errorKind(error) === 'auth' ? (
@@ -179,14 +199,10 @@ export function DashboardsListPage({ search }: { search: DashboardsSearch }) {
               No dashboards yet
             </h2>
             <p>A dashboard is a set of panels over this tenant's metrics, with the question it answers written on it. Once one exists it is listed here with its owner and its last change.</p>
-            <ol className="vz-steps">
-              <li>
-                <p>
-                  This app reads dashboards and cannot make one yet. Create one through the control API (<span className="vz-qty">POST /api/v1/control/dashboards</span>, with a key that has the{' '}
-                  <span className="vz-qty">dashboards:apply</span> scope), or have an agent propose one.
-                </p>
-              </li>
-            </ol>
+            <p>
+              This app reads dashboards and cannot make one yet. Create one through the control API (<span className="vz-qty">POST /api/v1/control/dashboards</span>, with a key that has the{' '}
+              <span className="vz-qty">dashboards:apply</span> scope), or have an agent propose one.
+            </p>
           </section>
         ) : data && data.total === 0 ? (
           <div className="vz-empty" role="status" data-testid="list-empty">
@@ -259,6 +275,7 @@ export function DashboardsListPage({ search }: { search: DashboardsSearch }) {
 
 function Row({ d, now }: { d: DashboardSummary; now: number }) {
   const changed = changedWords(d.lastChangedAt, now)
+  const agent = agentOf(d.lastChangedBy)
   return (
     <tr role="row" data-testid="dashboard-row">
       <td role="cell" data-key="">
@@ -266,8 +283,14 @@ function Row({ d, now }: { d: DashboardSummary; now: number }) {
           {d.name}
         </Link>
       </td>
-      <td role="cell" data-label="Intent" className="cell-wrap">
-        {d.intent}
+      <td role="cell" data-label="Intent" className="cell-wrap" data-testid="row-intent">
+        {agent ? (
+          <div className="vz-agent">
+            Agent: {d.intent} Not verified.
+          </div>
+        ) : (
+          d.intent
+        )}
       </td>
       <td role="cell" data-label="Tags">
         {d.tags.length ? d.tags.join(', ') : 'none'}

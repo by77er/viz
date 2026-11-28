@@ -1,6 +1,6 @@
 # app: monitors, the on-call slice (images for design review)
 
-**Status: not reviewed.** These are the composed images of the app's new monitors views, for an
+**Status: rejected by the re-review (`../app-v9/rereview.md`, part 3); fixed, awaiting a re-review.** The dispositions are at the end ("Third design review"). These are the composed images of the app's new monitors views, for an
 independent design reviewer. This file says what is shown and how it was made; it does not
 judge it. What the views do, what they leave out, and how they were tested and measured is in
 `app/README.md`, "Monitors, the on-call slice".
@@ -68,3 +68,32 @@ token colour exactly).
 Not imaged: the waiting states (the list's and a monitor's line after 400 ms, the chart's
 "Waiting for the query." and "Showing the previous range"), focus rings, hover and pressed
 states, 200% zoom, and the history of a monitor with more than 200 entries.
+
+## Third design review: dispositions (2026-11-28)
+
+The re-review (`../app-v9/rereview.md`, part 3) rejected this view. Each finding and what was
+done; the author's account in full is `app/README.md`, "The third design review". This list does
+not judge the result.
+
+| Finding | Disposition |
+|---|---|
+| **M-B1** opening a monitor and its chart paint over budget | Fixed in the code, measured: `app/README.md`, "Speed (third review)". A press on a monitor in the list shows its page from the list's row in the press's own task, while the router changes the address (one element: nothing is asked twice); the chart's section is memoised and its spec no longer changes with every read of the monitor (the condition was a new object each read, so each read drew the chart again). Nothing a person sees changes |
+| **M-M1** one event, two times; advice the app lacks | Fixed: "Undo had closed at 10:26, so the silence stays until 11:25. Ending a silence early is not in this app yet. (The API answered undo_expired, HTTP 410.)", once; the help line about the window is not repeated under it. Image `07-undo-expired` |
+| **M-M2** no unit | Fixed: the unit comes from the condition, else the message template (`humanizePercentage`), else a share read from the query (part of one metric over all of it), else Explore's "Automatic" guess. The list's Value and Threshold, the alerts, the threshold line, the chart's axis and legend, the history and the text form all say "8.4%", "> 2% for 5 min". Images `01-list`, `03-monitor-firing` |
+| o1 "for 5m" | Fixed: "> 2% for 5 min" in the list; "> 2%" beside "For 5 min" on the page |
+| o2 unrendered template | Fixed: "Message, as sent at 09:47" (filled with the value it fired at) and "Message template" |
+| o3 critical mark on "Cannot be evaluated" | Fixed: the unknown dash |
+| o4 the notice's mark and Dismiss | Follow-up: the system's Notice |
+| o5 "changed by", "not acknowledged", lower-case API words, repeated "Nothing was changed" | Fixed. Image `11-list-error` |
+| o6 the query cut at its right edge | Fixed: the query wraps |
+| o7 first run as a list of one | Fixed. Image `12-empty` |
+| o8 the mock's value disagrees with the chart | Fixed in the mock: an alert's value is its query's at the last evaluation, from the mock's own series. **Still the mock's:** its alert states are fixed when it starts, so a monitor can be "firing" while its query is under the threshold (the images say what the series says: the value is under 2%). A mock that evaluates its rules is a follow-up |
+
+### Images of the third review
+
+Remade 2026-11-28 15:12 UTC by `node app/e2e/monitors-shots.cjs` from a build of this change in a worktree of
+`6c76fc4` (the committed chart, not the chart another builder is changing), encoded with
+`app/e2e/encode-review-images.py --flat`, and compared pixel for pixel with the images they
+replace. Changed and replaced: `01-list`, `02-list-all`, `03-monitor-firing`, `04-acknowledged`, `05-silence-menu`, `06-silenced-undo`, `07-undo-expired`, `08-write-failed`, `09-no-ack-scope`, `11-list-error`, `12-empty`, `13-monitor-error` (several also by the clock: the mock's monitors are relative to now). Identical: `10-no-permission`. The table of states above still says
+what each image shows; where a state's words changed, the dispositions say how. Not imaged: the
+panels' text forms open (one is, in `09`), the colour map across panels other than in `08`.

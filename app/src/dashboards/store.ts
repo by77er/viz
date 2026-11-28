@@ -73,6 +73,7 @@ export class DashboardStore {
   private current: { resolved: ResolvedDashboard; window: QueryWindow; question: string } | null = null
   private summaryNow: LoadSummary = { total: 0, answered: 0, failed: 0, waiting: 0 }
   private stopTimer: ReturnType<typeof setTimeout> | null = null
+  private loadKey: string | null = null
 
   constructor(client: PromClient) {
     this.client = client
@@ -89,7 +90,10 @@ export class DashboardStore {
    * moment (the dashboard's revision, the range as written, the variable values): while it
    * differs from the question a panel's drawn answer belongs to, that answer is `stale`.
    */
-  load(resolved: ResolvedDashboard, window: QueryWindow, question: string): void {
+  load(resolved: ResolvedDashboard, window: QueryWindow, question: string, key?: string): void {
+    // The same load asked again (the press sent it, then the address named it): nothing is sent or changed.
+    if (key !== undefined && key === this.loadKey) return
+    this.loadKey = key ?? null
     const previous = this.current
     this.current = { resolved, window, question }
     const now = performance.now()
@@ -97,13 +101,30 @@ export class DashboardStore {
     for (const id of this.panelIds()) {
       const old = this.states.get(id) ?? IDLE
       const stale = old.result !== null && (old.stale || previous?.question !== question)
-      this.set(id, { waiting: true, since: now, result: old.result, stale, error: null, halted: null })
+      // Already marked so by `expect`: the same state is not set again, so the panel does not render again.
+      if (!(old.waiting && old.stale === stale && old.error === null && old.halted === null)) this.set(id, { waiting: true, since: now, result: old.result, stale, error: null, halted: null })
       requests.push(this.request(id))
     }
     for (const id of [...this.states.keys()]) if (!resolved.panels[id]) this.states.delete(id)
     this.loader.load(requests)
     if (this.stopTimer !== null) clearTimeout(this.stopTimer)
     this.stopTimer = setTimeout(() => this.stop(), STOP_AFTER_MS)
+    this.summarise()
+  }
+
+  /**
+   * The page is about to ask for another range or other values: every panel says it waits, with
+   * what it drew marked as the earlier answer it is, in the frame of the press that asked, before
+   * anything is resolved or sent (D-B2). `load` follows with the requests.
+   */
+  expect(): void {
+    if (!this.current) return
+    const now = performance.now()
+    for (const id of this.panelIds()) {
+      const old = this.states.get(id) ?? IDLE
+      if (old.waiting && old.stale === (old.result !== null)) continue
+      this.set(id, { ...old, waiting: true, since: now, stale: old.result !== null, error: null, halted: null })
+    }
     this.summarise()
   }
 

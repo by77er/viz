@@ -70,9 +70,29 @@ const LIST = [
   ['[isolated] a failure is recorded on every panel', ['unit', 'panels'], 'src/dashboards/store.ts', "      this.set(id, { waiting: false, since: 0, result: old.result, stale: old.result !== null, error: halted ? null : outcome.error, halted })", "      for (const other of this.states.keys()) this.set(other, { waiting: false, since: 0, result: null, stale: false, error: halted ? null : outcome.error, halted })"],
   // ---- [kind]
   ['[kind] every kind counts as drawn: a heatmap gets an empty body and no word about it', ['unit', 'panels'], 'src/dashboards/model.ts', 'export const isDrawn = (kind: string): kind is DrawnKind => (DRAWN_KINDS as readonly string[]).includes(kind)', 'export const isDrawn = (kind: string): kind is DrawnKind => kind !== undefined'],
-  ['[kind] a heatmap is drawn as a line chart', ['panels'], 'src/dashboards/PanelView.tsx', "else if (!drawn) body = <NotDrawn kind={panel.kind} text={text ?? ''} />", "else if (panel.kind === 'heatmap') body = <ChartBody id={id} result={result} panel={panel} />\n  else if (!drawn) body = <NotDrawn kind={panel.kind} text={text ?? ''} />"],
+  ['[kind] a heatmap is drawn as a line chart', ['panels'], 'src/dashboards/PanelView.tsx', "else if (!drawn) body = <NotDrawn panel={panel} digest={digest} result={result} now={now} level={level} agent={agent} />", "else if (panel.kind === 'heatmap') body = <ChartBody id={id} result={result} panel={panel} colours={colours} />\n  else if (!drawn) body = <NotDrawn panel={panel} digest={digest} result={result} now={now} level={level} agent={agent} />"],
   ['[kind] a spec is drawn without the model\'s validation', ['unit', 'dashboard'], 'src/dashboards/model.ts', 'return v.ok ? { ok: true, spec: raw as Dashboard } : { ok: false, errors: v.errors }', 'return v.ok || raw ? { ok: true, spec: raw as Dashboard } : { ok: false, errors: v.errors }'],
-  ['[kind] a panel that is not drawn does not say so', ['panels'], 'src/dashboards/PanelView.tsx', "This panel is a {KIND_WORDS[kind] ?? kind}, a kind this app does not draw yet. This is its text form.", 'Text form.'],
+  ['[kind] a panel that is not drawn does not say so', ['panels'], 'src/dashboards/PanelView.tsx', "This panel is a {kind}, a kind this app does not draw yet. ", ''],
+  // ---- the third design review (SET=rereview): D-B1, D-M1, D-M2, D-B2 and the minors
+  ['[agent] the dashboard\'s provenance line is not shown', ['variables'], 'src/dashboards/DashboardsPage.tsx', '{agent && <AgentBy name={agent} what="dashboard" />}', '{false && <AgentBy name={agent} what="dashboard" />}', 'rereview'],
+  ['[agent] the head of an agent\'s dashboard has no rule', ['variables'], 'src/dashboards/DashboardsPage.tsx', "<div className={agent ? 'vz-agent' : undefined} data-testid=\"dashboard-words\">", '<div data-testid="dashboard-words">', 'rereview'],
+  ['[agent] a panel\'s explanation an agent wrote reads as a person\'s', ['variables'], 'src/dashboards/PanelView.tsx', '<p className="vz-panel-desc vz-agent" data-testid="panel-desc">\n            Agent: {panel.description} Not verified.', '<p className="vz-panel-desc" data-testid="panel-desc">\n            {panel.description}', 'rereview'],
+  ['[agent] a panel title an agent wrote has no rule', ['variables'], 'src/dashboards/PanelView.tsx', "className={agent ? 'vz-panel-title vz-agent' : 'vz-panel-title'}", 'className="vz-panel-title"', 'rereview'],
+  ['[agent] the thresholds behind a status are not said to be the agent\'s', ['variables'], 'src/dashboards/PanelView.tsx', "{agent ? `Agent's thresholds: ${limits}. Not verified.` : `Thresholds: ${limits}.`}", '{`Thresholds: ${limits}.`}', 'rereview'],
+  ['[agent] the list\'s Intent cell shows an agent\'s intent unmarked', ['list'], 'src/dashboards/DashboardsListPage.tsx', '{agent ? (\n          <div className="vz-agent">', '{false ? (\n          <div className="vz-agent">', 'rereview'],
+  ['[agent] a person\'s dashboard is marked as an agent\'s', ['dashboard'], 'src/dashboards/DashboardsListPage.tsx', "return by.kind === 'agent' ? (by.name ?? by.subject) : null", 'return by.name ?? by.subject', 'rereview'],
+  ['[text] a panel\'s text form leaves series out (the model\'s top five)', ['dashboard'], 'src/dashboards/textForm.ts', 'const all = [...digest.series].sort(', 'const all = [...digest.series].slice(0, 5).sort(', 'rereview'],
+  ['[text] the text form\'s figures lose their unit', ['dashboard'], 'src/dashboards/textForm.ts', 'last ${f.value(s.last)}, lowest ${f.value(s.min)}, highest ${f.value(s.max)}${trendWords(s)}', 'last ${s.last}, lowest ${s.min}, highest ${s.max}${trendWords(s)}', 'rereview'],
+  ['[text] the dashboard\'s text form is a well that scrolls sideways', ['dashboard', 'narrow'], 'src/dashboards/DashboardsPage.tsx', '<div className="vz-text-form" data-testid="dashboard-sentences">', '<div className="vz-query code-scroll" style={{ whiteSpace: \'pre\' }} data-testid="dashboard-sentences">', 'rereview'],
+  ['[text] a heatmap is shown as a list of series, not its buckets', ['panels'], 'src/dashboards/PanelView.tsx', 'const buckets = digest ? bucketsOf(digest, panel, result.resolved) : null', 'const buckets = null as ReturnType<typeof bucketsOf>', 'rereview'],
+  ['[text] a note\'s strong words are printed with their asterisks', ['panels'], 'src/dashboards/Note.tsx', '<b key={i}>{p.text}</b>', '<span key={i}>**{p.text}**</span>', 'rereview'],
+  ['[colour] the dashboard\'s map is not handed to the chart', ['unit', 'dashboard'], 'src/dashboards/colours.ts', '      sessionStorage.setItem(CHART_STORE + view, JSON.stringify(map))\n', '', 'rereview'],
+  ['[colour] a series\' identity keeps its metric name (CPU and memory of one pod are two)', ['unit', 'dashboard'], 'src/dashboards/colours.ts', "const own = Object.fromEntries(Object.entries(labels).filter(([k]) => k !== '__name__'))", 'const own = { ...labels }', 'rereview'],
+  ['[speed] a chart off screen is drawn in the task its answer arrives', ['dashboard'], 'src/dashboards/PanelView.tsx', "const show = place === 'on' || idle || drawnOnce", "const show = true || place === 'on' || idle || drawnOnce", 'rereview'],
+  ['[speed] the press on a range leaves the panels as they were until the address changes', ['requests'], 'src/dashboards/DashboardsPage.tsx', '      store.expect()\n      afterFrame(() => {\n        askFor(f, t, variables)', '      afterFrame(() => {\n        askFor(f, t, variables)', 'rereview'],
+  ['[d1] a stat\'s thresholds are not named', ['dashboard'], 'src/dashboards/PanelView.tsx', 'const limits = useMemo(() => thresholdWords(panel), [panel])', 'const limits = null as string | null', 'rereview'],
+  ['[d3] the stale head says "the previous range" without which', ['requests'], 'src/dashboards/PanelView.tsx', 'Showing {rangeWords(result.window.start, result.window.end, now)}, the previous range\n', 'Showing the previous range\n', 'rereview'],
+  ['[d8] a table\'s cut rows have no "Show more"', ['dashboard'], 'src/dashboards/PanelView.tsx', '{more > 0 && (', '{false && more > 0 && (', 'rereview'],
   // ---- what the gateway serves
   ['serve.json: /dashboards is not a document (a reload there would be a 404)', ['unit', 'prod'], 'serve.json', '"documents": ["/", "/explore", "/dashboards", "/help", "/settings"]', '"documents": ["/", "/explore", "/help", "/settings"]'],
 ]
@@ -80,7 +100,9 @@ const LIST = [
 const only = process.env.ONLY
 const part = process.env.PART
 // PART=unit: only the mutants a unit test is asked to catch.
-const list = (only ? LIST.filter(([name]) => name.includes(only)) : LIST).filter(([, checks]) => part !== 'unit' || checks.includes('unit'))
+// SET=rereview: only the mutants of the third design review's fixes, recorded in their own file.
+const set = process.env.SET
+const list = (only ? LIST.filter(([name]) => name.includes(only)) : LIST).filter(([, checks]) => part !== 'unit' || checks.includes('unit')).filter((m) => !set || m[5] === set)
 const run = (cmd, args, env = {}) => spawnSync(cmd, args, { cwd: ROOT, encoding: 'utf8', env: { ...process.env, ...env }, maxBuffer: 64 * 1024 * 1024 })
 const BASE = Number(process.env.VIZ_MUTANT_PORT || 18860)
 const E2E_ENV = { VIZ_E2E_APP_PORT: String(BASE), VIZ_E2E_MOCK_PORT: String(BASE + 1), VIZ_PROD_PORT: String(BASE + 40) }
@@ -138,5 +160,5 @@ for (const [name, checks, file, from, to] of list) {
 }
 const summary = `${lines.filter((l) => l.startsWith('KILLED')).length} of ${list.length} killed, ${survived} survived, ${lines.filter((l) => l.startsWith('NOT APPLIED')).length} not applied`
 console.log('\n' + summary)
-if (!only) fs.writeFileSync(path.join(SOURCE, 'e2e', 'measurements', `mutants-dashboards${part ? `-${part}` : ''}.txt`), `Mutants of the dashboards views (e2e/mutants-dashboards.cjs), applied to a copy in the session's scratch area.\n${new Date().toISOString()}\n\n${lines.join('\n')}\n\n${summary}\n`)
+if (!only) fs.writeFileSync(path.join(SOURCE, 'e2e', 'measurements', `mutants-dashboards${set ? `-${set}` : ''}${part ? `-${part}` : ''}.txt`), `Mutants of the dashboards views (e2e/mutants-dashboards.cjs), applied to a copy in the session's scratch area.\n${new Date().toISOString()}\n\n${lines.join('\n')}\n\n${summary}\n`)
 process.exit(survived ? 1 : 0)
