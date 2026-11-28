@@ -225,6 +225,65 @@ dedicated tenants run the same code.
   Goldens: `test/golden/schema/v1.json`, `v2.json`, `v3.json`, `test/golden/formats/series-window.v1.json`,
   `queue.flush.v1.json`.
 
+## Reservations: room for a request before it appends (D77, 2026-11-28)
+
+S10 measured on Cloudflare that a request whose batches go to two shards could be answered 429
+after one shard had appended its half (`spikes/s10-signals-trial/README.md`). The shard's part of
+the fix (edge's is in `edge/README.md`, same heading; the contract in `contracts/BATCH.md`, "What a
+refusal stored"):
+
+**Implemented.**
+- `reserve({ tenant, epoch, batches: [{ fingerprint, bytes }], hold? })`: the checks an append makes
+  for epoch (`stale_epoch`), size (`too_large`), registration in mode `logged` (`registering`, D61),
+  load (`overload`, D37) and room (`tenant`, `shard`), for the batches together and with no await.
+  Batches the stream holds (a row with that fingerprint) or has waiting in the open group need no
+  room. Admitted: their bytes are held under a random token, counted against the tenant's cap, the
+  shard's budget and fair share (their sum), and against the in-flight limits as **one append of the
+  largest batch** (each live grant is one of `maxInFlight`, and its largest batch counts in
+  `maxPendingBytes`: its batches arrive one at a time; review of D77, M-1), until each batch is
+  appended with the token, the token is released, an append under it is refused or throws (the rest
+  is dropped: M-2), or `reservationTtlMs` (new config field, default 5,000 ms) passes since its last
+  use (m-3). At `reserve` a tenant holding nothing, or whose first batch fits its fair share, is
+  admitted whole within its cap and the 2x ceiling (m-1); every tenant holding anything, a grant
+  included, counts as a sharer (m-2). `hold: false` answers without holding anything (edge's probe
+  before decoding), and for a tenant with no stream creates none (n-1).
+- `append` with `reservation`: a live grant of this tenant that names the batch's fingerprint, with
+  at least its bytes, admits it without the load and room checks; the batch is taken out of the
+  grant whatever then happens (stored, duplicate, refused for epoch or series). Any other token is
+  ignored and the append is admitted as one without a token.
+- `release(tenant, token)`; `stats()` gains `reserved`, `refusedReserve`, `reservationsExpired`,
+  `reservations`, `reservedBytes`.
+- **Memory only, nothing stored.** Grants are a hint about room, as the open group and the
+  in-flight count are (D37): nothing in them is acknowledged, they are not rebuilt after an
+  eviction, and expired ones are dropped lazily on the next call (no alarm). A grant adds no SQLite
+  row (measured below). The private registration-slot `release()` was renamed `releaseRegSlot()`.
+
+**Not implemented.**
+- Grants do not survive an eviction or restart. An append whose grant was lost is admitted as one
+  without a token; if refused there, edge answers 503 (BATCH.md).
+- `reserve` does not look at active series (it gets no `seriesIds`): a metered append can still be
+  refused `series_limit` (stores nothing for that batch, by design) or `overload` for an unreadable
+  window after its grant.
+- No per-tenant limit on grants beyond the room they hold; a caller that reserves and never appends
+  holds that room for at most `reservationTtlMs`.
+
+**Verified** (local workerd, the Workers test runtime): `test/reserve.test.ts`, 10 tests: a grant
+holds room against the tenant cap (another request and an append without a token are refused it,
+another tenant is not, stats count it until it is used, a used-up token admits nothing); a refused
+reserve holds nothing; grants count in the shard-wide budget; duplicates and twins need no room; a
+probe holds nothing; release, and tokens of another tenant, another fingerprint or fewer bytes;
+expiry; granted appends are not refused for load and grants count in the in-flight limit; stale
+epoch, too large, registering, a malformed call; and the eviction case with `evictDurableObject`
+(the grant is gone, nothing stored changed, the appends are admitted as without a token).
+`test/bounds.recheck.test.ts` counts the new configuration field. Results and mutants:
+"How it was verified", "Reservations (D77)".
+
+**Risks.** A shard restarted between `reserve` and `append` turns a would-be 429 into a 503 with
+part of the request stored (S15 measures how often on Cloudflare). A grant counts one append slot
+and one batch of bytes for as long as it lives, and a second while one of its batches waits in the
+group, so up to `maxInFlight` concurrent multi-batch requests share a shard's 64 slots: a small
+request can be refused `overload` while many large ones are in their sequences.
+
 ## Rollout (D61)
 
 Shard, ledger, flush, janitor and edge are one Worker, viz-ingest (`deploy/workers.json`), so
@@ -875,7 +934,78 @@ Not mutated: the look for `last` in a read that admits only metric batches (`las
 `!f.byBounds`). Looking in the index there too would change no answer in a stream of one signal,
 and in a mixed stream both answers are allowed ("Contract issues" 2), so no test pins it.
 
+### Reservations (D77, 2026-11-28)
+
+Measured here (local workerd, the Workers test runtime). `npx tsc --noEmit` clean.
+
+- `npx vitest run --maxWorkers=2 test/reserve.test.ts`: 10 passed.
+- **The whole suite**: 130 passed on a copy of this tree outside the git worktree (the engine's
+  WASM built from the same `engine/` tree, sha256 `df0ed811…`), and 120 of 120 on the same copy of
+  the release before (375e9ba). **In the git worktree itself 15 tests that load the engine's WASM
+  (`bounds`, `bounds.edge`, `signals`, `tail`) failed with `engine: module ABI 2, binding expects 4`**
+  although the `viz_engine.wasm` there is the same file and answers ABI 4 when instantiated directly:
+  the test runtime loaded a module from somewhere other than the tree (it did so even before the file
+  was copied in). Not caused by this change (none of those tests touch reservations, and they pass
+  outside the worktree); not explained either.
+- **Rows written** (`spikes/s15-ingest-atomic/rows.test.ts`, both span shards of a tenant, every
+  `sql.exec`'s `rowsWritten` summed): one realistic 8,200-span request accepted, **24 rows before and
+  24 after**; its retry, 0 and 0; the same shape refused with one shard full, **10 rows before (the
+  half that was stored) and 0 after**. A grant writes no row.
+- **Mutants** (`scripts/mutants.mjs`, "reserve (D77)", applied to a copy in the scratch area; each
+  must fail `test/reserve.test.ts`). First run: 10 of 12 killed; **S2 (grants not counted in the
+  shard budget) and S10 (a granted append refused for load) survived**: the fair-share test passed
+  without the grant (the tenant was over its share anyway), and a granted append's own bytes leave
+  the grant before the load check, so the bound held by construction. Two cases were added (a tenant
+  under the budget without the grant and over it with it; limits lowered after the grant), and the
+  second run killed all 12:
+
+| Mutant | Killed by |
+|---|---|
+| S1 grants not counted in the tenant's room | a grant holds room against the tenant cap |
+| S2 grants not counted in the shard budget | counts grants in the shard-wide budget (after the added case) |
+| S3 a token admits another tenant | release gives the room back; a token of another tenant… |
+| S4 a token admits another batch | the same test |
+| S5 a token admits more bytes than granted | the same test |
+| S6 grants never expire | a grant expires after `reservationTtlMs` |
+| S7 a probe (`hold: false`) holds | `hold: false` answers without holding anything |
+| S8 duplicates need room at reserve | batches the stream holds or has waiting need no room |
+| S9 grants not counted in the in-flight limit | a granted append is not refused for load; the grant counts in the in-flight limit |
+| S10 a granted append refused for load | the same test (after the added case) |
+| S11 release ignored | release gives the room back |
+| S12 room never checked for an append without a grant | a grant holds room against the tenant cap |
+
+### The review of D77 (2026-11-28)
+
+Measured here (local workerd); vitest with `--no-cache` and `--fsModuleCachePath` of the tree's own
+(`--no-cache` alone loaded an ABI-2 `viz_engine.wasm` from vitest's shared module cache and failed the
+15 engine tests: review m-6). `npx tsc --noEmit` clean; the whole suite **138 passed of 138** (14 files; 130 before);
+`test/reserve.test.ts` 18 (8 added, and the in-flight test now uses `maxInFlight: 1`, since a grant
+of two batches is one append). Every added test failed on a copy of 01e2770 (9 failed there in all).
+
+**Mutants** (`scripts/mutants.mjs 'reserve (D77'`, on a copy, against `test/reserve.test.ts`): S9 and
+S10 re-anchored to the new load check; S13–S21 added for the fixes; three older early-refusal patterns
+that no longer applied re-anchored (all three killed by `groupcommit`). First run: **20 of 21 killed;
+S19 (the fair share checked against the whole request instead of its first batch) survived**: the m-1
+test's tenants held nothing, so the held-nothing rule admitted them either way. A case was added (a
+tenant holding 300 whose first batch fits its share and whole request does not), and the rerun
+killed it. `node scripts/mutants.mjs --check`: all 108 patterns apply.
+
+| Mutant | Killed by |
+|---|---|
+| S13 a grant loads its sum of bytes, not its largest batch (M-1) | M-1: a grant counts against the in-flight limits as one append of its largest batch… |
+| S14 a grant counts every batch against `maxInFlight` (M-1) | the same; a granted append is not refused for load… |
+| S15 a refusal under a grant keeps the rest of it (M-2) | M-2: a refusal under a grant drops what is left of it at once… |
+| S16 a throw under a grant keeps the rest of it (M-2) | M-2: an append under a grant that throws… |
+| S17 a grant expires from `reserve`, not from its last use (m-3) | m-3: a grant lives reservationTtlMs from its last use… |
+| S18 a tenant holding nothing is held to its share at `reserve` (m-1) | m-1: a request larger than its fair share is admitted… |
+| S19 the fair share checked against the whole request (m-1) | the same (after the added case) |
+| S20 a tenant holding only a grant is not a sharer (m-2) | m-2: a tenant that holds only a grant is counted among the sharers… |
+| S21 a probe of an unknown tenant creates its stream (n-1) | n-1: a probe (hold: false) of a tenant the shard does not know… |
+
 ## Not implemented yet
+
+- **Reservations (D77) are memory only**: lost with the instance; `reserve` does not meter active
+  series ("Reservations: room for a request before it appends").
 
 - **Rows read are not measured on Cloudflare** (re-check of D72, r2-m-2): the counts above are
   local workerd's `rowsRead`. Whether Cloudflare counts an index lookup that finds no entry, and

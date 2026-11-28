@@ -15,7 +15,8 @@ Durable Object.
 | `src/batch.ts` | Canonical labels, series ids, `Collector` (validation shared by all decoders), `VZB1` encoder and batch splitting |
 | `src/prw.ts` | Remote Write 1.0 decoder |
 | `src/otlp.ts` | OTLP metrics decoders (protobuf, JSON), OpenTelemetry → Prometheus mapping, response bodies |
-| `src/route.ts` | Pool maps, routing, concurrent appends, epoch refetch |
+| `src/route.ts` | Pool maps, routing, room reserved on every shard before a multi-batch request appends (D77), concurrent appends, epoch refetch |
+| `src/early.ts` | Refusing a body this isolate saw refused with 429 before it is decoded, while its shards would still refuse it (D77) |
 | `src/pb.ts`, `src/snappy.ts` | Protobuf wire reader and snappy block decompressor; no dependencies |
 | `src/limits.ts` | Limits and the accept window, with defaults |
 | `src/recorded.ts` | `RecordedSamples`: the entrypoint the ruler writes recording-rule samples to over a service binding (contracts/ingest.ts) |
@@ -376,7 +377,81 @@ without them). Every other outcome is the same, and so are the batches of every 
 Not measured: anything on Cloudflare (the isolate's memory as Workers reports it, under concurrent
 requests); ArrayBuffers in workerd (no API; the harness prints Node's).
 
+## A 429 stores nothing; a known refusal is not decoded again (D77, 2026-11-28)
+
+Two defects S10 measured on Cloudflare (`spikes/s10-signals-trial/README.md`, "Ingest"): a request
+refused at the end could be partly stored (one of a tenant's two span shards appended, the other
+was full, the request was answered 429), and a 429 cost a full decode (about 200 ms of CPU for
+8,200 spans per refused attempt). Both had the same shape for metrics and logs: every signal fans a
+request out to the tenant's slots through `appendAll`, and a single slot with several batches
+could store the first and refuse the second.
+
+**Implemented** (`src/route.ts`, `src/early.ts`, `src/index.ts`).
+- **Admission before append.** `attempt` builds every batch and its fingerprint first; a request of
+  more than one batch calls `Shard.reserve` on each of its shards at once and appends only when every
+  shard granted, passing each shard's token with its appends. A refusal there (backpressure,
+  overload, registering, stale epoch, too large) appends nothing; the grants already given are
+  released. A request of one batch is appended directly, as before (no extra call). A slot that
+  stops before its last batch (a refusal, a status this code does not know, a thrown call) releases
+  its grant before it answers, so no grant outlives its request (review of D77, M-2; the shard also
+  drops a grant on a refusal under it).
+- **429 only if nothing was stored.** `appendAll` tracks whether any attempt newly stored a batch (an
+  `ok` that is not a duplicate, or an append that threw). A full buffer after that, in any attempt
+  (re-route on a stale epoch, re-split on `too_large`, the active-series rounds, including the
+  third-round give-up that was a 429), is answered **503 `ingest buffer filled while the request was
+  being appended; retry the whole request`** with the shard's `Retry-After`. The `unavailable`
+  outcome now carries an optional `retryAfterMs`.
+- **Skew.** A shard without `reserve` (a release before D77 still running during a deploy), an error
+  or an answer this code does not know: that slot is appended without a token, and the 503 rule
+  still holds.
+- **Refusing before decoding** (`src/early.ts`). In this isolate, a tenant refused 429 for a signal
+  is suspect for 60 s; while it is, each of its request bodies is hashed (SHA-256 of the wire bytes,
+  with the path, content type and encoding) before it is decompressed. A suspect body refused 429 is
+  remembered with its plan (pool, epoch, and per shard each batch's fingerprint and size) for 5 min
+  (at most 1,000 bodies and about 4 MiB, counted by `planCost`, oldest forgotten first; a plan of
+  more than about 1,600 batches is not remembered: review of D77, m-5). Sent again: before the `Retry-After` it was given, 429 at once with the
+  rest of it; after, `reserve(..., hold: false)` on its shards for exactly its batches: refused for
+  room, 429 with the shards' `Retry-After`; overload or registering, 503; otherwise decoded and
+  appended as usual. A map with another pool or epoch drops the entry. Remote Write, OTLP metrics,
+  OTLP traces and logs and Loki push all do this. Another tenant, or another body of the same
+  tenant, is decoded as before.
+
+**Not implemented.**
+- Refusing before decoding is per isolate: a retry that reaches another isolate is decoded there
+  once. A new body of a tenant that is being refused is always decoded once.
+- The probe's answer is not carried into the append: a body that passes the probe is reserved
+  again after decoding (one more round trip on that path).
+- No skipping of the reserve round trip when the shards have plenty of room (D77, "Would change
+  if").
+
+**Verified** (local workerd): `test/atomic.test.ts`, 13 tests. Before the fix (the release at
+375e9ba, same tests, run in a scratch copy) the four defect-1 tests failed with the half stored:
+OTLP traces over two shards `[1, 0]` batches stored after a 429; one shard, several batches `[1]`;
+Loki push `[0, 1]`; Remote Write `[1, 0]`; and the defect-2 test decoded a body refused five times
+**5** times. After: nothing stored after any 429, and that body decoded at most twice (its first
+refusal marks the tenant, its second is remembered). The rest: grants released after a refusal; a
+grant lost between the calls (`reserve` answering a token the shard does not know) and a shard
+without `reserve` give 503, never 429, with the stored part counted; a one-batch request makes no
+`reserve` call; inside the `Retry-After` no shard is asked; after it, with room, the body is decoded
+once and stored, and no grant is left; still full, the probe refuses without a decode and holds
+nothing; another body of the refused tenant and the same bytes from another tenant are accepted;
+Remote Write's retries are refused before decoding too. Measurements and mutants: "Verification",
+"A 429 stores nothing (D77)".
+
+**Review of D77** (`design/reviews/d77-ingest-reservations.md`, dispositions there): M-1 (a grant
+counted a request's whole one-shard total against the in-flight limits, so requests of more than 64
+batches or 16 MiB to one shard were refused 503 for ever) is fixed in the shard; M-2 at both ends;
+m-5 here. Tests: `test/admission.test.ts`, 16, each run first against 01e2770 (the reproductions R1a,
+R1b, R1c, R2 and the "after every outcome" test failed there).
+
+**Risks.** The extra round trip on multi-batch requests (measured here and on Cloudflare: S15); a
+503 where a 429 used to be when a grant is lost (Remote Write senders retry 5xx, which is the safer
+direction, M-2); remembered bodies cost up to about 4 MiB of isolate memory.
+
 ## Not implemented
+
+- **D77's refusal before decoding is per isolate**, and the probe's answer is not carried into the
+  append ("A 429 stores nothing; a known refusal is not decoded again").
 
 - Remote Write 2.0 (415), native histograms, exemplars, metadata.
 - OTLP histograms, exponential histograms, summaries and delta sums (reported in
@@ -577,6 +652,97 @@ apply (the earlier 43 were not re-run here).
 | a full buffer resolves (acknowledged, not written) | a full shard buffer is a retryable refusal, never a success |
 | new series over the limit resolve | new series over the tenant's active-series limit are refused (series_limit) |
 | values parsed with `Number()` (hex, empty accepted) | writes nothing at all (hex, empty); parses exactly Prometheus' text form |
+
+### A 429 stores nothing (D77, 2026-11-28)
+
+Measured here (local workerd). `npx tsc --noEmit` clean; `npx vitest run --maxWorkers=2`: **146 passed**
+(14 files; 133 before this change, plus `test/atomic.test.ts`'s 13). One existing test asserted the
+defect and was changed: `flow.test.ts` "429 … when one slot refuses" said "the healthy slot did
+commit its batch"; it now says nothing is stored, and waits out the `Retry-After` before its retry
+(`clearCaches()`, as the overload tests do), since a retry sent inside it is now refused before
+decoding.
+
+- **Reproduction first**: `test/atomic.test.ts` run against the release before (375e9ba, a scratch
+  copy): the four defect-1 tests failed with `[1, 0]` (traces, two shards), `[1]` (one shard, several
+  batches), `[0, 1]` (Loki push), `[1, 0]` (Remote Write) batches stored after a 429, and the defect-2
+  test counted **5 decodes for 5 attempts**. After: all 13 pass.
+- **Before/after on local workerd** (`spikes/s15-ingest-atomic/local-bench.mjs`; the two builds as
+  two `wrangler dev` instances, requests alternating between them; a tenant's two span shards filled
+  with S10's realistic 8,200-span bodies until they refused, 37 bodies each; CPU is utime + stime of
+  every workerd process of the build over the batch, divided by the requests):
+
+| Refused request, buffer full | Before: client ms p50 / p90, CPU ms per request | After |
+|---|---|---|
+| the same body retried at once (n = 200 each) | 135.5 / 196.8, **189.6** | 8.3 / 13.3, **9.0** |
+| the same body after its `Retry-After` (n = 20) | 133.3 / 191.6, 164.0 | 16.6 / 20.7, 17.0 (the probe) |
+| a new body each time (n = 30) | 126.0 / 215.3, 173.0 | 145.7 / 199.6, 208.7 |
+
+  A new body is decoded in both (it has never been refused); its higher numbers after are within
+  this machine's run-to-run spread at n = 30, and include the hash of the body (the tenant is
+  suspect), the reserve and release round trips. Not separated further.
+
+| Accepted request, acknowledgement (client ms, n = 199–200 each, alternating) | p50 | p90 |
+|---|---|---|
+| 2,000 spans, two shards, several batches (the reserve path), before | 51.6 | 69.8 |
+| the same, after | 55.4 | 73.7 |
+| 40 spans, one batch (no reserve), before | 10.2 | 13.6 |
+| the same, after | 10.1 | 13.0 |
+
+  So the reserve round trip costs about **3.8 ms at the median (7%)** of a multi-batch request
+  locally, and nothing on a one-batch request. On Cloudflare a Durable Object round trip is longer
+  (not measured: `spikes/s15-ingest-atomic/README.md`, the stage plan).
+- **Rows written**: none added (24 per accepted 8,200-span request before and after; a refused one 10
+  before, 0 after: `shard/README.md`, "Reservations (D77)").
+- **Mutants** (`scripts/mutants.mjs`, "atomic (D77)", on a copy in the scratch area, against
+  `test/atomic.test.ts`): all 10 killed.
+
+| Mutant | Killed by |
+|---|---|
+| E1 no reserve phase | OTLP traces: one shard full…; one shard, several batches… |
+| E2 a refusal at reserve still appends | the same tests |
+| E3 other grants not released | the shard that granted room gets it back… |
+| E4 429 after a stored part | a grant lost between the two calls…: 503, never 429; a shard without `reserve`… |
+| E5 grants not passed to the appends | inside the Retry-After…; after it, with room… (no grant left) |
+| E6 early refusal outlives the Retry-After | the same test |
+| E7 the probe holds room | the same test |
+| E8 every body of a suspect tenant refused early | another body of a refused tenant, and any body of another tenant… |
+| E9 no refusal before decoding | the same traces body sent while the buffer is full…; inside the Retry-After… |
+| E10 the probe ignored (refused until forgotten) | inside the Retry-After…; after it, with room… |
+
+### The review of D77 (2026-11-28)
+
+Measured here (local workerd), each vitest run with `--no-cache` **and** `--fsModuleCachePath` set to a
+directory of the tree's own (in vitest 5.1.1 `--no-cache` leaves the module cache on: review m-6).
+`npx tsc --noEmit` clean; the whole suite **162 passed of 162** (15 files; 146 before). `test/admission.test.ts` (16 tests) was first
+run against a copy of 01e2770: R1a (503 ×3), R1b (503), R1c (200 and 503), R2 (grants held) and "after
+every outcome" (grants held) failed there, as the review reproduced them; all pass now.
+
+**Mutants** (`scripts/mutants.mjs 'review (D77)'`, on a copy in the scratch area, each against the
+**whole** suite, with a module cache of the copy's own). The review ran its nine against a 35-test
+subset (8 survived). Against the whole suite, before the m-4 tests were written: **7 of 9 survived**
+(R1–R5, R8, R9; R6 was killed by the new m-5 test, R7 as in the review). After the tests: **9 of 9
+killed**, and the fixes' own three killed:
+
+| Mutant | Killed by |
+|---|---|
+| R1 an append that throws does not mark the request stored | R1: an append that throws counts as stored… (a throw, then a re-route, then a full buffer: 503) |
+| R2 the probe ignores a changed pool or epoch | R2: a remembered body is decoded again when the tenant's map moved… |
+| R3 the body key without path, content type and encoding | R3: the same bytes under another content encoding are not the remembered body |
+| R4 a duplicate counts as stored | R4: a duplicate is not counted as stored… (429) |
+| R5 series rounds exhausted: 429 even after a stored part | R5: the series rounds give up after a part was stored: 503, never 429 |
+| R6 an accepted body is not forgotten | R6: an accepted body is forgotten…; m-5 "…an accepted body is forgotten" |
+| R7 every body hashed, no suspect gate | Remote Write: a refused body sent again…; `flow` OTLP gets 429… |
+| R8 the probe's `overload` answer ignored | R8: a probe answered `overload` is a 503 at once, not a decode |
+| R9 an early refusal's `Retry-After` fixed at 1 s | R9: inside its Retry-After, an early refusal answers what is left… (a unit test of `refuseKnown` with 5 s; at the HTTP level it was equivalent while the shard's room `Retry-After` is 1 s) |
+| F1 a slot that stopped early does not release its grant (M-2) | after every outcome: … the shards hold no grant |
+| F2 the refused-body cache not bounded by bytes (m-5) | plans of many small batches: what is remembered stays under MAX_BODY_BYTES… |
+| F3 a plan over a sixteenth of the bound is remembered (m-5) | a plan larger than a sixteenth of the bound is not remembered… |
+
+The builder's E1–E10 ("atomic (D77)") against the whole suite: **10 of 10 killed**. Six older patterns
+that no longer applied to `route.ts` (written before D77 changed it) were re-anchored and run: five
+killed; **"a shard status edge does not know counts as stored" survived**, equivalent as before (the
+fail-closed check at the end of `appendAll` refuses an unknown status whatever `appendSlot` does with
+it). `node scripts/mutants.mjs --check`: all 127 patterns apply.
 
 ### Stage 3 of traces and logs (2026-11-19)
 

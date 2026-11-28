@@ -4412,3 +4412,143 @@ picks N; 14 is suggested), measured from Cloudflare's analytics for the host (th
 requests filtered on `vis.bitcru.sh`), not estimated: then the separate change that removes it. A
 sender is found that cannot keep working on vis (then that path too is served there); a client is
 found that cannot reconnect (then (g), bounded in time).
+
+## D77. A 429 stores nothing: a request of more than one batch reserves room on every shard it routes to before it appends; a body refused with 429 is refused before it is decoded while its shards would still refuse it
+
+**Decision.** (Added 2026-11-28, from S10's two findings: `spikes/s10-signals-trial/README.md`,
+"A request refused at the end can be partly stored" and "A 429 costs edge a full decode", measured
+on Cloudflare.)
+
+1. **Admission before append.** `edge` builds a request's batches and their fingerprints, and when
+   there is more than one batch it calls `Shard.reserve({ tenant, epoch, batches: [{ fingerprint,
+   bytes }] })` on every shard the request routes to, all at once. A shard answers as its append
+   would for epoch, size, registration (D61), load (D37) and room (the tenant's cap and the shard's
+   fair share), for the batches together; batches it already holds or has waiting count as
+   duplicates and need no room. If it admits them it holds their bytes in memory under a token,
+   counted against the tenant's cap and the shard's budget and fair share (the sum of the
+   batches) and against the in-flight limits as **one append of its largest batch** (its batches
+   are appended one at a time; revised after the review, below), until each batch is appended
+   with the token (`AppendRequest.reservation`), the token is released, an append under it is
+   refused or fails, or `reservationTtlMs` (5 s) passes since its last use. Only when every shard
+   granted does `edge` append, with the tokens; an append whose grant names it is not refused for
+   room or load. Any refusal at reserve appends nothing, and the other grants are released; a
+   slot that stops before its last batch releases its grant. A request of one batch is appended
+   directly, as before: one append is all or nothing.
+2. **429 means nothing stored.** `edge` tracks whether any batch of the request was newly stored
+   (an `ok` that is not a duplicate, or an append whose fate is unknown). A full buffer after that,
+   from any attempt (re-route, re-split, the active-series rounds), is answered **503** with the
+   shard's `Retry-After`, never 429 (`contracts/BATCH.md`, "What a refusal stored").
+3. **Refuse a known refusal before decoding.** In each isolate, a tenant refused 429 for a signal
+   is "suspect" for 60 s; while it is, each of its bodies is hashed (SHA-256 of the wire bytes, with
+   path, content type and encoding). A suspect body refused 429 is remembered with its plan (shard
+   pool and epoch, and per shard the batches' fingerprints and sizes) for 5 minutes. When it comes
+   back: before its `Retry-After` has passed, 429 at once with what is left of it; after, the shards
+   are asked with `reserve(..., hold: false)` (nothing held) whether they would admit exactly
+   those batches now: if any would refuse for room, 429 with its `Retry-After`, else decode and
+   append as any request. A different pool map, an error or an unknown answer: decode. An early
+   refusal keeps the tenant suspect. A sender that retries inside its `Retry-After` is refused at
+   once; that is the shard's own answer, never longer.
+
+**Revised after the review** (2026-11-28, `design/reviews/d77-ingest-reservations.md`; this
+replaces the first text of point 1, which counted every granted batch and their bytes against the
+in-flight limits).
+- **M-1, load.** Counting a grant as all its batches and their sum held a request's whole one-shard
+  total against D37's limits (64 appends, 16 MiB pending) for its whole sequence: a request of more
+  than 64 batches or 16 MiB to one shard was refused 503 for ever (reproduced at default limits), and
+  two ~8.5 MiB requests could no longer share a shard. D37's limits bound what an acknowledgement
+  waits behind, and a grant's batches arrive one at a time and hold no payload until they do. So a
+  live grant counts as one append in flight and its largest batch's bytes; room (cap, budget, fair
+  share, ceiling) keeps the sum, because room is what the batches will hold once stored. While one
+  of a grant's batches waits in the group it counts there too, so a request counts for at most two
+  appends at a time: conservative, and simpler than tracking which grants have a batch in flight.
+  Alternatives: (i) not count grants in load at all: granted appends skip the load check, so any
+  number of grants could put any number of appends in flight at once; (ii) count exactly (a grant's
+  slot only while none of its batches is in the group): one more counter kept in step with the group's
+  settle path, to save at most one slot per large request; (iii) cap the batches a request may send to
+  one shard: refuses valid requests; (iv) count `min(batches, maxInFlight)`: still lets one large
+  request shut out another. Would change if edge appended a grant's batches concurrently (then a grant
+  counts its concurrency), or if the double count is seen to refuse requests under load (then (ii)).
+- **M-2, no grant outlives its request.** Both ends: the shard drops what is left of a grant when an
+  append under it is refused (anything but `ok`) or throws, which needs no caller to cooperate; and
+  `edge` releases a slot's grant when the slot stops before its last batch, which also covers a thrown
+  call the shard never saw and a status this release does not know. A grant left behind costs its
+  room and an in-flight slot for 5 s, and a tenant at its series limit would otherwise leave one per
+  refused request.
+- **m-1, m-2, m-3, n-1.** At `reserve`, a tenant holding nothing, or whose first batch fits its share,
+  is admitted whole (bounded by its cap and the hard ceiling): what appending batch by batch gave its
+  first batch before D77, without which a request larger than its share is never admitted while
+  others keep the shard over budget. Every tenant holding anything here (buffered, in the group or
+  granted) is a sharer. A grant's expiry is extended on each use, so a long sequence on a slow shard
+  keeps it. A probe of a tenant the shard does not know creates no stream.
+
+**Alternatives.** (a) As built before: append to every shard at once and answer 429 when any
+refuses. (b) Two-phase append: `prepare` stores the batch rows invisible to tail reads, seals and
+flush, `commit` makes them visible, an abandoned prepare is deleted by the shard's alarm. (c) Route
+all of a request's items for one signal to one shard. (d) Keep partial storage but hide it until
+the request is acknowledged (a variant of (b)). (e) A stateless check before the appends ("would you
+take N bytes?") without holding anything. (f) Compensate: after a refusal, delete what the other
+shards appended. (g) For defect 2, a per-(tenant, shard) "full until T" cache refusing every
+request of the tenant before decoding, sized by nothing. (h) For defect 2, hash every body, not
+only those of suspect tenants.
+
+**Why.** Judged on AGENTS.md's Durable Object rules, the acknowledgement path, rows written and the
+failure cases, against what fingerprints already guarantee (a full retry stores each batch once,
+and readers de-duplicate the rest: BATCH.md "Fingerprint and idempotency").
+- (a) is the defect: under S10's load the half that fitted stayed stored behind a 429.
+- (b) writes every batch row twice (insert, then the commit's update: rows written are the shard's
+  main billed unit), adds a round trip with the payload on it, and changes tail reads, seal,
+  flush's segment reads, `load()`'s byte accounting and the alarm. And it is still not atomic
+  across shards without a durable coordinator: if `edge` dies between the commits, one shard has
+  committed and the other has a prepare that expires; the sender sees a failure, which is exactly
+  the 5xx case (2) already covers. What (b) adds over (1) is closing the eviction window between
+  reserve and append, at twice the rows and far more code.
+- (c) breaks routing by sender (D57: one sender's metrics, spans and logs take the same slot; the
+  active-series share is per shard, D21), puts a whole request's bytes on one shard's cap, and
+  does not cover one shard refusing the second of its own batches (measured here: the single-shard
+  test, below).
+- (d) is (b) with a different visibility rule and the same costs.
+- (e) leaves the race that matters under load: S10's four clients, concurrent, all see room, all
+  append, and the last ones are refused after their other half was stored. (1) holds the room.
+- (f) can delete acknowledged data: two requests carrying the same batch (a retry racing its
+  original) share one row by fingerprint; if one is acknowledged and the other compensated, the
+  acknowledged row goes. Never acceptable ("nothing is acknowledged and then dropped").
+- (g) refuses requests that would be accepted (a sender whose own slot has room is refused because
+  a neighbour's slot is full, for as long as the neighbour keeps it full), and a single sender that
+  honours `Retry-After` comes back exactly when the entry expires, so it buys nothing for it.
+  (3) refuses only the bytes a shard refused, and after the `Retry-After` only on a fresh answer.
+- (h) costs a hash on every accepted request for nothing; (3) hashes only while the tenant is being
+  refused.
+
+What remains, said plainly. A grant is memory only (as the open group and the in-flight count are,
+D37): a shard evicted or restarted between `reserve` and `append` forgets it, the append is then
+admitted as one without a token, and if that refuses after another shard stored its part the answer
+is 503 (partial storage, retry-safe). The same holds while a shard of a release before D77 is still
+running during a deploy (no `reserve`: `edge` appends as before, and the 503 rule still applies), and
+for a metered append refused because the tenant's series window is unreadable (`reserve` does not
+look at series). A sender that gives up after a 503 may leave part of its request stored; after a
+429 it leaves none. A grant whose request never appends (an `edge` that died) holds its room for at
+most 5 s, which can refuse other requests of the tenant meanwhile. Refusing before decoding is per
+isolate: a retry that reaches another isolate is decoded there once.
+
+**Cost.** Rows written: none added (grants are memory; measured here, below). Round trips: one more
+per shard, in parallel, on the acknowledgement path of requests of more than one batch, plus one on
+the refusal path to release (at reserve, or by a slot that stopped early); none for one-batch
+requests. Memory: per grant a map of fingerprints;
+per isolate at most 1,000 remembered plans (about 1 KB each) and 10,000 suspect tenants.
+**Measured here** (local workerd, `spikes/s15-ingest-atomic/README.md`): rows written per accepted
+8,200-span request 24 before and after, per refused one 10 before (its stored half) and 0 after;
+CPU per refused retry of the same body under a full buffer 189.6 ms before, 9.0 ms after (17.0 ms
+after its `Retry-After`, the probe), a new body about the same either way (it is decoded);
+acknowledgement of a multi-batch request p50 51.6 → 55.4 ms, p90 69.8 → 73.7 ms (the reserve round
+trip), of a one-batch request unchanged (10.2 → 10.1 ms). **Not measured on Cloudflare** (the stage
+run is planned there, not done): the round trip's cost in a colo (modelled: a few to tens of ms
+against S10's 723 ms median for 8,200 spans), and the share of retries that reach the isolate that
+refused them, which is all that (3) can save.
+
+**Would change if.** Evictions between `reserve` and `append` are seen to cause 503s often enough
+to matter (then persist grants, one row each, or (b)); the extra round trip shows in acknowledgement
+latency on Cloudflare (then skip reserving when the last answers left ample room, accepting the
+race, or carry the first batch on the reserve call); senders are seen to retry refused requests
+with different bytes (then (3) buys nothing and a per-shard room hint would be needed); or a
+coordinator with durable decisions appears on the write path for another reason (then real atomic
+commit across shards).

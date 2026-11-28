@@ -471,7 +471,7 @@ describe('configuration values (re-check of D72, r2-m-3)', () => {
     // Listed here independently of the source: which fields 0 is meaningless for.
     const positive = new Set(['maxBatchBytes', 'sealBytes', 'tenantMaxBytes', 'shardMaxBytes', 'seriesWindowMs', 'seriesExactMax', 'maxGroupBytes', 'tailScanMaxBatches', 'registerTimeoutMs', 'maxRegistrations'])
     const fields = Object.keys(DEFAULT_CONFIG) as (keyof ShardConfig)[]
-    expect(fields).toHaveLength(25)
+    expect(fields).toHaveLength(26)
     let refused = 0
     for (const k of fields) {
       if (k === 'registration') {
@@ -491,13 +491,13 @@ describe('configuration values (re-check of D72, r2-m-3)', () => {
         refused++
       }
     }
-    expect(refused).toBe(24 * BAD_NUMBERS.length + 10 + 7)
+    expect(refused).toBe(25 * BAD_NUMBERS.length + 10 + 7)
     // Nothing of all that was applied or stored.
     expect(await s.configure({})).toEqual(DEFAULT_CONFIG)
     expect(await show(s, tenant, inc, HOUR0)).toEqual(WHOLE)
     // 0 where it has a meaning: accepted, and what it means.
     const zeros = Object.fromEntries(fields.filter((k) => k !== 'registration' && !positive.has(k)).map((k) => [k, 0]))
-    expect(Object.keys(zeros)).toHaveLength(14)
+    expect(Object.keys(zeros)).toHaveLength(15)
     expect(await s.configure(zeros)).toEqual({ ...DEFAULT_CONFIG, ...zeros })
     // tailScanMaxBytes 0 examines nothing per call: an `ok` with no batch that says there is more
     // (query's tests use it for a shard whose pages do not advance), never one that ends the read.

@@ -25,7 +25,7 @@ async function twoSlots() {
 const sent = (s: PrwSeries) => canon(s.samples.map((x) => ({ labels: Object.fromEntries(s.labels), ts: x.ts, bits: bitsOf(x.value as number) })))
 
 describe('backpressure', () => {
-  it('429 with Retry-After for the whole request when one slot refuses; a full retry stores nothing twice', async () => {
+  it('429 with Retry-After for the whole request when one slot refuses, nothing of it stored (D77); a full retry stores nothing twice', async () => {
     const { tenant, key, map, series } = await twoSlots()
     // Slot 1 cannot take even one batch; slot 0 is healthy.
     await shardStub(map, 1).configure({ tenantMaxBytes: 16 })
@@ -34,16 +34,19 @@ describe('backpressure', () => {
     const first = await postWrite(key, body)
     expect(first.status).toBe(429)
     expect(first.headers.get('Retry-After')).toBe('1') // the shard said 1000 ms
-    // The healthy slot did commit its batch; the refused slot holds nothing.
-    expect((await tailOfSlot(map, 0, tenant)).batches.length).toBe(1)
+    // A 429 stores nothing (D77): the healthy slot granted room but appended nothing, and the
+    // refused slot holds nothing. (Before D77 the healthy slot kept its batch.)
+    expect((await tailOfSlot(map, 0, tenant)).batches.length).toBe(0)
     expect((await tailOfSlot(map, 1, tenant)).batches.length).toBe(0)
 
-    // Still refused while the shard is full: same answer, still nothing doubled.
+    // Still refused while the shard is full: same answer, still nothing stored.
     expect((await postWrite(key, body)).status).toBe(429)
-    expect((await tailOfSlot(map, 0, tenant)).batches.length).toBe(1)
+    expect((await tailOfSlot(map, 0, tenant)).batches.length).toBe(0)
 
     // The shard drains (here: the cap is lifted) and the sender retries the whole request.
     await shardStub(map, 1).configure({ tenantMaxBytes: 64 << 20 })
+    // A retry sent inside the Retry-After is refused before decoding (D77); this one waits it out.
+    clearCaches() // as if the Retry-After had passed
     const retry = await postWrite(key, body)
     expect(retry.status).toBe(204)
     for (const slot of [0, 1]) {
