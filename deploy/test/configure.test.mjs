@@ -24,7 +24,9 @@ const stageUrl = (stage) => `https://viz-${stage}-gateway.${SUB}.workers.dev`
 const gen = (name, stage, cfg, opts = {}) => {
   const w = worker(name)
   const componentDir = join(REPO_ROOT, w.component)
-  return generateWorker({ worker: w, cfg: cfg ?? readJsonc(join(componentDir, 'wrangler.jsonc')), componentDir, plan, stage, release: 'abc123', ids, outDir: join(GENERATED_DIR, stage ? `stage-${stage}` : 'production'), gate: gates.get(name) ?? null, ratelimitIds, publicUrl: stage ? stageUrl(stage) : undefined, ...opts })
+  return generateWorker({ worker: w, cfg: cfg ?? readJsonc(join(componentDir, 'wrangler.jsonc')), componentDir, plan, stage, release: 'abc123', ids, outDir: join(GENERATED_DIR, stage ? `stage-${stage}` : 'production'), gate: gates.get(name) ?? null, ratelimitIds, publicUrl: stage ? stageUrl(stage) : undefined,
+    // The Worker that serves the web app is generated here without it (test/app.test.mjs covers the app, D74).
+    ...(w.app !== undefined ? { app: { withoutApp: true } } : {}), ...opts })
 }
 // configure() reads the subdomain from VIZ_WORKERS_SUBDOMAIN when not given (the command line reads it from the account).
 process.env.VIZ_WORKERS_SUBDOMAIN = SUB
@@ -111,7 +113,7 @@ test('D75: the hostnames of the plan are checked; no wildcard, no duplicate, a d
   assert.throws(() => hostsOf(p({ domain_aliases: [{ host: 'vis.bitcru.sh', deprecated: '2026-11-28' }] })), /deprecated must be/)
   assert.throws(() => hostsOf(p({ domain_aliases: [{ host: 'vis.bitcru.sh', deprecated: '2026-11-28T00:00:00Z', zone: 'x' }] })), /host, deprecated/)
   // Without aliases the gateway holds only the domain (the change that ends the transition).
-  const g = generateWorker({ worker: worker('viz-gateway'), cfg: readJsonc(join(REPO_ROOT, 'deploy/gateway/wrangler.jsonc')), componentDir: join(REPO_ROOT, 'deploy/gateway'), plan: p({ domain_aliases: [] }), release: 'x', ids, outDir: join(GENERATED_DIR, 'production') })
+  const g = generateWorker({ worker: worker('viz-gateway'), cfg: readJsonc(join(REPO_ROOT, 'deploy/gateway/wrangler.jsonc')), componentDir: join(REPO_ROOT, 'deploy/gateway'), plan: p({ domain_aliases: [] }), release: 'x', ids, outDir: join(GENERATED_DIR, 'production'), app: { withoutApp: true } })
   assert.deepEqual([g.config.routes, g.config.vars.VIZ_HOST_ALIASES], [[{ pattern: 'viz.bitcru.sh', custom_domain: true }], '[]'])
 })
 

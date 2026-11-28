@@ -10,7 +10,7 @@ import { after, beforeEach, test } from 'node:test'
 import { GENERATED_DIR, REPO_ROOT } from '../lib/common.mjs'
 import { GENERATED_SECRETS, generateSecretValue, secretNamesOf } from '../lib/secrets.mjs'
 import { deploy, newRunId, planOnly, rollback } from '../release.mjs'
-import { callsLike, captured, cmd, installFakeAccount, oauthGated, promotions, serving } from './fake-account.mjs'
+import { callsLike, captured, cmd, installFakeAccount, oauthGated, promotions, serving, WITHOUT_APP } from './fake-account.mjs'
 
 const STAGE = 'oauthkeytest'
 const CONTROL = `viz-${STAGE}-control`
@@ -41,8 +41,10 @@ const manifest = {
   releaseFrom: CONTROL,
   workers: [
     { name: CONTROL, canonical: 'viz-control', component: 'control', config: relative(REPO_ROOT, controlCfg), deploy: true, migrationTags: ['v1'], migrationTag: 'v1', schemas: [], ...GATED.manifest },
-    { name: GATEWAY, canonical: 'viz-gateway', component: 'deploy/gateway', config: relative(REPO_ROOT, gatewayCfg), deploy: true, public: true, migrationTags: [], migrationTag: null, schemas: [] },
+    // The web app is not this file's subject: a stage configured --without-app (D74).
+    { name: GATEWAY, canonical: 'viz-gateway', component: 'deploy/gateway', config: relative(REPO_ROOT, gatewayCfg), deploy: true, public: true, migrationTags: [], migrationTag: null, schemas: [], ...WITHOUT_APP.worker },
   ],
+  ...WITHOUT_APP.manifest,
 }
 
 /** An account where both Workers serve release rel-1; control with the key or without. */

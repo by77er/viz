@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The post-deploy smoke test, through the public URL.
 //
-//   node deploy/smoke.mjs [--stage S] [--url https://…] [--health-timeout 180] [--expect-release SHA] [--no-hosts]
+//   node deploy/smoke.mjs [--stage S] [--url https://…] [--health-timeout 180] [--expect-release SHA] [--no-hosts] [--no-app]
 //
 // 1. GET /healthz until it says healthy (the gateway asks every backend) and, with
 //    --expect-release, until the gateway answering is the release just promoted: right after a
@@ -12,13 +12,28 @@
 // 3. Production (D75): the public URL is the manifest's domain (viz.bitcru.sh), whose OAuth metadata
 //    names it as issuer; each alias of the manifest (vis.bitcru.sh) answers a data-path request
 //    itself (no redirect, x-viz-route ingest, Deprecation and Link headers) and answers
-//    /.well-known/oauth-authorization-server with a 308 to the same path on the domain. Retried
+//    /.well-known/oauth-authorization-server with a 308 to the same path on the domain; where the
+//    release serves the web app, each alias also answers its documents and a missing hashed asset
+//    with a 308 to the domain (the app is served on the domain only; D75 with D74). Retried
 //    until the health timeout, as locations pick up the new gateway. Not with --url or --no-hosts
 //    (after a rollback, which may restore a release from before D75, whose issuer is vis.bitcru.sh).
+// 4. Where the release serves the web app (the manifest's viz-gateway has an app build; D74): the
+//    app as app/serve.json says it is served, through the public URL: every document with its
+//    headers and the released document's bytes; EVERY file of the version (the build's, also those
+//    no document names, and the ones kept from earlier builds) with its headers, its content type
+//    and the bytes the release staged (SHA-256; review of D74, m-7); a missing hashed asset and an
+//    unknown API path as the JSON 404 (never the document, never stored); nothing but GET and HEAD
+//    served. This is where what was only read in Cloudflare's documentation or seen in local
+//    workerd is checked on Cloudflare, at every deploy.
+// Steps 2, 3 and 4 all run whatever the others found, and every result is reported (m-8).
 // Exit 0 when everything ran and passed; non-zero otherwise. The key is never printed.
+// The result is also written to deploy/generated/<target>/smoke.json (no key, no body).
+import { createHash } from 'node:crypto'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { extname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { workersSubdomain } from './lib/cf.mjs'
-import { checkStage, log, parseArgs } from './lib/common.mjs'
+import { GENERATED_DIR, checkStage, log, parseArgs, targetName } from './lib/common.mjs'
 import { instantQuery, remoteWrite } from './lib/prw.mjs'
 import { loadManifest } from './release.mjs'
 
@@ -55,7 +70,7 @@ export async function waitHealthy(base, timeoutMs, expectRelease) {
  * D75's hosts, once: `{ ok, problems }`. `base` is the canonical origin; `aliases` the hostnames
  * kept for the transition. Unauthenticated requests only (a 401 from ingest is the data path served).
  */
-export async function checkHostsOnce(base, aliases, f = fetch) {
+export async function checkHostsOnce(base, aliases, f = fetch, { app = null } = {}) {
   const problems = []
   const ua = { 'User-Agent': 'viz-deploy-smoke/1' }
   const canonical = new URL(base).host
@@ -89,15 +104,33 @@ export async function checkHostsOnce(base, aliases, f = fetch) {
     } catch (e) {
       problems.push(`${host}: OAuth metadata: ${e.cause?.code ?? e.message}`)
     }
+    // The web app is served on the domain only (D75 with D74): on an alias each document, and a
+    // hashed asset the version does not hold (which reaches the Worker), is a 308 to the domain,
+    // never the page and never a 404 kept for a year. An asset the version holds is answered by
+    // Cloudflare's asset layer before the Worker runs, on every hostname, and is not asked here
+    // (deploy/README.md, "The app on vis.bitcru.sh").
+    if (app) {
+      const paths = [...app.serve.documents, `${app.serve.assetsPrefix}viz-smoke-missing-00000000.js`]
+      for (const path of paths) {
+        try {
+          const r = await f(`https://${host}${path}`, { headers: { ...ua, Accept: 'text/html,*/*;q=0.8' }, redirect: 'manual' })
+          await r.body?.cancel()
+          if (r.status !== 308 || r.headers.get('Location') !== `${base}${path}`) problems.push(`${host}: GET ${path} answered ${r.status}${r.headers.get('Location') ? ` to ${r.headers.get('Location')}` : ''}, not 308 to ${base}${path}: the web app is served on ${new URL(base).host} only`)
+          else if (/immutable|max-age=[1-9]/.test(r.headers.get('cache-control') ?? '')) problems.push(`${host}: GET ${path}: the 308 may be kept (Cache-Control ${r.headers.get('cache-control')}); it must outlive no rollback`)
+        } catch (e) {
+          problems.push(`${host}: GET ${path}: ${e.cause?.code ?? e.message}`)
+        }
+      }
+    }
   }
   return { ok: problems.length === 0, problems }
 }
 
 /** checkHostsOnce until it passes or `timeoutMs` is spent. */
-export async function checkHosts(base, aliases, timeoutMs, f = fetch, pauseMs = 3000) {
+export async function checkHosts(base, aliases, timeoutMs, f = fetch, pauseMs = 3000, opts = {}) {
   const deadline = Date.now() + timeoutMs
   for (let i = 1; ; i++) {
-    const r = await checkHostsOnce(base, aliases, f)
+    const r = await checkHostsOnce(base, aliases, f, opts)
     if (r.ok || Date.now() > deadline) return { ...r, attempts: i }
     await sleep(pauseMs)
   }
@@ -136,7 +169,98 @@ export async function writeAndRead(base, key, { visibleWithinMs = 60_000, authRe
   }
 }
 
-export async function smoke({ stage, url, healthTimeoutMs = 180_000, expectRelease, hosts: checkTheHosts = true }) {
+/**
+ * The web app as the release's manifest says it is served (`app`: the manifest's summary of the
+ * build, with app/serve.json's rules), asked through `base`. Returns `{ ok, problems, checked }`.
+ */
+export async function checkApp(base, app, { fetchImpl = fetch } = {}) {
+  const problems = []
+  const serve = app.serve
+  let checked = 0
+  const ask = async (path, init = {}) => {
+    const res = await fetchImpl(`${base}${path}`, { redirect: 'manual', ...init, headers: { 'User-Agent': 'viz-deploy-smoke/1', ...(init.headers ?? {}) } })
+    return { status: res.status, headers: res.headers, body: Buffer.from(await res.arrayBuffer()) }
+  }
+  const expectHeaders = (what, r, want) => {
+    for (const [name, value] of Object.entries(want)) if (r.headers.get(name) !== value) problems.push(`${what}: ${name} is ${JSON.stringify(r.headers.get(name))}, not ${JSON.stringify(value)}`)
+  }
+  const isJson404 = (r) => r.status === 404 && /^application\/json/.test(r.headers.get('content-type') ?? '') && !/<!doctype/i.test(r.body.toString()) && !/immutable|max-age=[1-9]/.test(r.headers.get('cache-control') ?? '')
+  try {
+    let document = null
+    for (const path of serve.documents) {
+      const r = await ask(path)
+      checked++
+      if (r.status !== 200) {
+        problems.push(`GET ${path}: ${r.status}, not the document`)
+        continue
+      }
+      expectHeaders(`GET ${path}`, r, serve.headers.document)
+      if (createHash('sha256').update(r.body).digest('hex') !== app.document.sha256) problems.push(`GET ${path}: the body is not the document of build ${app.build.slice(0, 12)} (another version answered, or something between here and the Worker rewrote the page)`)
+      else document = r.body.toString()
+    }
+    const refs = document === null ? [] : [...new Set([...document.matchAll(/\b(?:src|href)="([^"]*)"/g)].map((m) => m[1]))]
+    if (document !== null && !refs.some((p) => p.startsWith(serve.assetsPrefix))) problems.push(`the document asks for nothing under ${serve.assetsPrefix}`)
+    for (const path of refs) {
+      const isAsset = path.startsWith(serve.assetsPrefix)
+      const r = await ask(path)
+      checked++
+      if (r.status !== 200) {
+        problems.push(`GET ${path}: ${r.status}; the document asks for it`)
+        continue
+      }
+      expectHeaders(`GET ${path}`, r, { ...(isAsset ? serve.headers.asset : serve.headers.file), 'Content-Type': serve.contentTypes[extname(path)] })
+      const post = await ask(path, { method: 'POST', body: 'x' })
+      if (post.status === 200) problems.push(`POST ${path}: 200; only GET and HEAD are served`)
+    }
+    // Every file of the version, byte for byte: what the release hashed before the upload is what
+    // Cloudflare serves after it (nothing changed the directory in between, and nothing between here
+    // and the asset layer rewrites a script). The kept files of earlier builds too.
+    const hashes = [...Object.entries(app.fileHashes ?? {}), ...(app.kept ?? []).filter((k) => k.sha256).map((k) => [k.path, k.sha256])]
+    if (app.fileHashes === undefined) problems.push('the manifest names no file hashes for the web app (configured by an older deploy/configure.mjs): the files\' bytes cannot be compared')
+    for (const [path, want] of hashes) {
+      const r = await ask(path)
+      checked++
+      if (r.status !== 200) {
+        problems.push(`GET ${path}: ${r.status}; it is a file of this version`)
+        continue
+      }
+      if (!refs.includes(path)) expectHeaders(`GET ${path}`, r, { ...(path.startsWith(serve.assetsPrefix) ? serve.headers.asset : serve.headers.file), 'Content-Type': serve.contentTypes[extname(path)] })
+      if (createHash('sha256').update(r.body).digest('hex') !== want) problems.push(`GET ${path}: the body is not the file the release staged (its SHA-256 differs: the directory changed before the upload, another version answered, or something between here and Cloudflare rewrote it)`)
+    }
+    // (Paths with dot segments are not asked here: this client's URL parser removes them before
+    // sending. test/app-serve.test.mjs sends them raw to a local workerd.)
+    const never = [
+      [`${serve.assetsPrefix}viz-smoke-missing-00000000.js`, 'a hashed asset this version does not hold'],
+      ['/index.html', 'index.html itself'],
+      ['/api/v1/viz-smoke-unknown', 'an unknown API path'],
+      [`${serve.documents.find((d) => d !== '/') ?? '/viz-smoke'}/`, 'a document path with a trailing slash'],
+    ]
+    for (const [path, what] of never) {
+      const r = await ask(path, { headers: { Accept: 'text/html,*/*;q=0.8', 'Sec-Fetch-Mode': 'navigate' } })
+      checked++
+      if (!isJson404(r)) {
+        problems.push(`GET ${path} (${what}): ${r.status} ${r.headers.get('content-type')}, cache-control ${JSON.stringify(r.headers.get('cache-control'))}; it must be the gateway's JSON 404, never a page, never kept`)
+      }
+    }
+    const post = await ask(serve.documents[0], { method: 'POST', body: 'x' })
+    checked++
+    if (!isJson404(post)) problems.push(`POST ${serve.documents[0]}: ${post.status}; only GET and HEAD are the app's`)
+  } catch (e) {
+    problems.push(`no answer: ${e.cause?.code ?? e.message}`)
+  }
+  return { ok: problems.length === 0, problems, checked }
+}
+
+/** The manifest's web app (the build its app Worker was configured with), or why there is none to check. */
+export function manifestApp(manifest) {
+  const w = (manifest.workers ?? []).find((x) => x.app)
+  if (!w) return { app: null, why: 'no Worker of this manifest serves the web app' }
+  if (w.app.withoutApp) return { app: null, why: `${w.name} was configured --without-app` }
+  if (typeof w.app.build !== 'string') return { app: null, why: `the manifest holds no app build (${w.app.why ?? 'configured --ids-optional'})` }
+  return { app: w.app }
+}
+
+export async function smoke({ stage, url, healthTimeoutMs = 180_000, expectRelease, hosts: checkTheHosts = true, appTimeoutMs = 60_000, checkWebApp = true, write = writeAndRead }) {
   const base = url ?? (await publicUrl(stage))
   log(`smoke: ${base}${expectRelease ? ` (expecting release ${expectRelease})` : ''}`)
   const h = await waitHealthy(base, healthTimeoutMs, expectRelease)
@@ -145,31 +269,74 @@ export async function smoke({ stage, url, healthTimeoutMs = 180_000, expectRelea
     return { ok: false, health: h }
   }
   log(`smoke: /healthz healthy after ${h.attempts} attempt(s) (release ${h.body.release}; ${Object.entries(h.body.backends).map(([k, v]) => `${k} ${v.status} ${v.ms} ms`).join(', ')})`)
+  // The web app (D74), where this release serves one. `checkWebApp: false` (--no-app): after a
+  // rollback, when what serves is not the manifest's release.
+  const { app, why } = checkWebApp ? manifestApp(loadManifest(stage)) : { app: null, why: 'not asked (--no-app)' }
+  // The hostnames (D75), production only. A failure here does not stop the checks after it: each is reported (m-8).
+  let hosts = 'skipped'
   if (!stage && !url && checkTheHosts) {
     const m = loadManifest(stage)
-    const hosts = await checkHosts(base, m.domainAliases ?? [], healthTimeoutMs)
-    if (!hosts.ok) {
-      log(`smoke: FAILED on the hosts (D75) after ${hosts.attempts} attempt(s):\n  - ${hosts.problems.join('\n  - ')}`)
-      return { ok: false, health: h, hosts }
+    hosts = await checkHosts(base, m.domainAliases ?? [], healthTimeoutMs, fetch, 3000, { app })
+    if (!hosts.ok) log(`smoke: FAILED on the hosts (D75) after ${hosts.attempts} attempt(s):\n  - ${hosts.problems.join('\n  - ')}`)
+    else log(`smoke: hosts: ${new URL(base).host} is the issuer; ${(m.domainAliases ?? []).map((a) => `${a} serves the data path (deprecated) and 308s OAuth${app ? ' and the web app' : ''} to ${new URL(base).host}`).join('; ') || 'no aliases'}`)
+  }
+  const hostsOk = hosts === 'skipped' || hosts.ok
+  // Another location may still run the previous version for some seconds after the one that
+  // answered /healthz: the app is asked again until it passes.
+  let web = 'skipped'
+  if (!app) log(`smoke: the web app was not checked: ${why}`)
+  else {
+    const deadline = Date.now() + appTimeoutMs
+    for (;;) {
+      web = await checkApp(base, app)
+      if (web.ok || Date.now() > deadline) break
+      await sleep(3000)
     }
-    log(`smoke: hosts: ${new URL(base).host} is the issuer; ${(m.domainAliases ?? []).map((a) => `${a} serves the data path (deprecated) and 308s OAuth to ${new URL(base).host}`).join('; ') || 'no aliases'}`)
+    if (!web.ok) {
+      log(`smoke: FAILED at the web app (build ${app.build.slice(0, 12)}), ${web.problems.length} problem(s) after ${appTimeoutMs / 1000} s:`)
+      for (const p of web.problems.slice(0, 20)) log(`  - ${p}`)
+    } else log(`smoke: the web app (build ${app.build.slice(0, 12)}) is served as app/serve.json says: ${web.checked} requests, every file with the bytes the release staged`)
   }
+  // The data check runs whatever the app check found: a broken page must not hide whether writes
+  // and reads work, least of all after a release that cannot be rolled back (review of D74, m-8).
+  const webOk = web === 'skipped' || web.ok
   const key = process.env.SMOKE_KEY
-  if (!key) {
-    log('smoke: SMOKE_KEY not set; the write-and-read check was skipped')
-    return { ok: true, health: h, data: 'skipped' }
+  let data = 'skipped'
+  if (!key) log('smoke: SMOKE_KEY not set; the write-and-read check was skipped')
+  else {
+    data = await write(base, key)
+    if (!data.ok) log(`smoke: FAILED at ${data.step}: write ${data.writeStatus}${data.queryStatus ? `, query ${data.queryStatus}` : ''}: ${data.detail ?? ''}`)
+    else log(`smoke: Remote Write ${data.writeStatus} in ${data.writeMs} ms; all ${data.samples} samples returned by a query ${data.visibleAfterMs} ms after the acknowledgement`)
   }
-  const d = await writeAndRead(base, key)
-  if (!d.ok) log(`smoke: FAILED at ${d.step}: write ${d.writeStatus}${d.queryStatus ? `, query ${d.queryStatus}` : ''}: ${d.detail ?? ''}`)
-  else log(`smoke: Remote Write ${d.writeStatus} in ${d.writeMs} ms; all ${d.samples} samples returned by a query ${d.visibleAfterMs} ms after the acknowledgement`)
-  return { ok: d.ok, health: h, data: d }
+  const dataOk = data === 'skipped' || data.ok
+  if (!webOk) {
+    log(`smoke: the web app FAILED; the data path ${data === 'skipped' ? 'was not checked (no SMOKE_KEY)' : data.ok ? 'PASSED (writes and reads work)' : 'FAILED too'}.`)
+    log('  If the release cannot be rolled back as a whole (forward-only), viz-gateway alone can go back: release.mjs rollback --record <previous.json> --only viz-gateway, or the workflow\'s rollback_only.')
+    log('  What that costs: the gateway of the previous release comes back WHOLE, not only without this page. Every route the gateway gained since that version answers 404 again (after the first release over the 2026-11-19 production: no web app at all, and routes such as /api/echo), while the backends stay on the new release. Read deploy/README.md, "Rolling viz-gateway back alone", before choosing between that and a fix forward.')
+  }
+  return { ok: hostsOk && webOk && dataOk, health: h, hosts, web, data }
+}
+
+/** What a smoke test found, for the record of a stage that went before production (no key, no response body). */
+export function writeSmokeRecord(stage, result, { release = null, base = null, at = new Date().toISOString() } = {}) {
+  const dir = join(GENERATED_DIR, targetName(stage))
+  mkdirSync(dir, { recursive: true })
+  const web = result.web && result.web !== 'skipped' ? { ok: result.web.ok, checked: result.web.checked, problems: result.web.problems.slice(0, 20) } : 'skipped'
+  const data = result.data && result.data !== 'skipped' ? { ok: result.data.ok, samples: result.data.samples ?? null } : (result.data ?? null)
+  const hosts = result.hosts && result.hosts !== 'skipped' ? { ok: result.hosts.ok, problems: result.hosts.problems.slice(0, 20) } : 'skipped'
+  const record = { v: 1, at, target: targetName(stage), release: result.health?.body?.release ?? release, expected: release, base, ok: result.ok === true, healthy: result.health?.ok === true, hosts, web, data }
+  const file = join(dir, 'smoke.json')
+  writeFileSync(file, JSON.stringify(record, null, 2) + '\n')
+  return { file, record }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    const args = parseArgs(process.argv.slice(2), { flags: ['no-hosts'], options: ['stage', 'url', 'health-timeout', 'expect-release'] })
+    const args = parseArgs(process.argv.slice(2), { flags: ['no-hosts', 'no-app'], options: ['stage', 'url', 'health-timeout', 'expect-release'] })
     checkStage(args.stage)
-    const r = await smoke({ stage: args.stage, url: args.url, healthTimeoutMs: Number(args['health-timeout'] ?? 180) * 1000, expectRelease: args['expect-release'], hosts: !args['no-hosts'] })
+    const r = await smoke({ stage: args.stage, url: args.url, healthTimeoutMs: Number(args['health-timeout'] ?? 180) * 1000, expectRelease: args['expect-release'], hosts: !args['no-hosts'], checkWebApp: !args['no-app'] })
+    // Not after a rollback (--no-app): that run describes another release than the manifest's.
+    if (!args['no-app']) writeSmokeRecord(args.stage, r, { release: args['expect-release'] ?? null, base: args.url ?? null })
     process.exit(r.ok ? 0 : 1)
   } catch (e) {
     log(`smoke: ${e.message}`)
