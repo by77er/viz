@@ -341,7 +341,45 @@ export interface AppendRequest {
   seriesIds?: BigInt64Array
   /** This shard's share of the tenant's active-series limit. Needs `seriesIds`. */
   seriesLimit?: number
+  /**
+   * A token `reserve` granted for this batch (added 2026-11-28, D77; contracts/BATCH.md "What a
+   * refusal stored"). While the grant lives and names this batch's fingerprint, the append is not
+   * refused for room (`tenant`, `shard`) or for load (`overload`); every other check is made as
+   * without it. An unknown, expired or used token is ignored: the append is admitted as one
+   * without a token. A release before D77 ignores the field.
+   */
+  reservation?: string
 }
+
+/** One batch a caller is about to append: its fingerprint and payload size. */
+export interface ReservedBatch {
+  fingerprint: string
+  bytes: number
+}
+
+/** `Shard.reserve` (added 2026-11-28, D77). */
+export interface ReserveRequest {
+  tenant: string
+  /** Shard-map epoch the caller routed with. */
+  epoch: number
+  /** The batches the caller will append to this shard for one request. */
+  batches: ReservedBatch[]
+  /** False: answer as for a grant but hold nothing (a probe). Default true. */
+  hold?: boolean
+}
+
+export type ReserveResult =
+  /**
+   * The batches would be admitted now. With `hold`, their bytes (less those of batches the stream
+   * already holds or has waiting, which an append answers as duplicates) are held for the tenant
+   * until each batch is appended with `token`, the token is released, or `expiresInMs` passes.
+   * `token` is null when nothing needed holding (every batch a duplicate, or `hold: false`).
+   */
+  | { status: 'ok'; token: string | null; expiresInMs: number }
+  /** As `AppendResult`: nothing is held; `release` is not needed. */
+  | { status: 'backpressure'; scope: 'tenant' | 'shard' | 'overload' | 'registering'; retryAfterMs: number }
+  | { status: 'stale_epoch'; epoch: number }
+  | { status: 'too_large'; maxBytes: number }
 
 export type AppendResult =
   | { status: 'ok'; incarnation: number; seq: number; duplicate: boolean }
@@ -490,6 +528,13 @@ export interface ShardStats {
   /** Streams waiting for their registration to be logged, and how long the longest has waited (ms; 0 if none). A wait over `registerAlertMs` is also an error log line (review m-1). */
   registering: number
   registeringForMs: number
+  /** `reserve` calls that held bytes, that were refused, and grants that expired unused or partly used (D77; added 2026-11-28). */
+  reserved?: number
+  refusedReserve?: number
+  reservationsExpired?: number
+  /** Grants alive now, and the bytes they hold. */
+  reservations?: number
+  reservedBytes?: number
 }
 
 /**

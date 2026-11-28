@@ -135,6 +135,28 @@ whole request gets a retryable status (429 with `Retry-After` for backpressure, 
 otherwise) and the sender retries all of it. `partial_success` is used only for rows
 rejected by validation, which a retry would not fix.
 
+**What a refusal stored** (added 2026-11-28, D77). A **429 stores nothing** of the request:
+no batch of it was newly appended to any shard (a batch some earlier request had already
+stored may be there, under its fingerprint). A **503** may have stored part of it; the
+sender's full retry stores each batch once (fingerprints) and readers de-duplicate the rest
+(above), so a sender that retries loses nothing and duplicates nothing it can see. A sender
+that gives up after a 503 may leave part of its request stored; after a 429 it leaves none.
+
+How `edge` keeps that promise: a request of more than one batch first asks every shard it
+routes to for room (`Shard.reserve`, one call per shard, all at once) and appends only once
+every shard has granted it. A grant holds the batches' bytes against the tenant's and the
+shard's limits until it is used or expires (`reservationTtlMs`, 5 s); an append that carries
+its token (`AppendRequest.reservation`) is not refused for room or for load. A refusal at
+`reserve` (backpressure, overload, `registering`, `stale_epoch`, `too_large`) appends nothing,
+and the other grants are released. Anything refused after an append of the request stored a
+batch is answered 503, never 429. A request of one batch is appended directly: one append is
+all or nothing. The grant is memory only: a shard that restarts between the two calls forgets
+it, and the append is then admitted as one without a token (and, if refused there, answered
+503).
+
+`Shard.reserve` with `hold: false` answers the same question without holding anything (a
+probe): `edge` uses it before decoding a body it has seen refused (D77).
+
 ## Decode limits (every signal; added 2026-11-19, review M-3)
 
 What `edge` builds while it decodes a request is bounded whatever the body's shape: a protobuf
