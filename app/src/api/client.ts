@@ -266,6 +266,27 @@ export class PromClient {
     return { dashboard, number: typeof v.number === 'number' ? v.number : dashboard.number, revision: v.revision, spec: v.spec }
   }
 
+  /**
+   * A JSON request to another of viz's APIs on this origin (the ruler's monitors API,
+   * api/monitors.ts): its status and body as parsed, whatever the status. Through the page's
+   * limiter, with the key in the Authorization header only; a body is sent as JSON.
+   */
+  async json(method: 'GET' | 'POST', path: string, body: unknown, opts?: RequestOptions): Promise<{ status: number; statusText: string; body: unknown; retryAfterMs: number | null }> {
+    // Never from or through the HTTP cache: two reads of one resource are then two requests in flight (a browser otherwise makes the second wait for the first), and the page decides which answer is current.
+    const init: RequestInit = method === 'GET' ? { method, cache: 'no-store' } : { method, cache: 'no-store', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) }
+    const { res, text } = await this.limited(opts, async () => {
+      const res = await this.send(path, init, opts)
+      return { res, text: await res.text() }
+    })
+    let parsed: unknown
+    try {
+      parsed = text ? JSON.parse(text) : undefined
+    } catch {
+      parsed = undefined
+    }
+    return { status: res.status, statusText: res.statusText, body: parsed, retryAfterMs: parseRetryAfter(res.headers.get('Retry-After')) }
+  }
+
   /** A GET to the control plane: its JSON, or its problem as a `ControlApiError`. */
   private async control<T>(path: string, opts?: RequestOptions): Promise<T | undefined> {
     const { res, text } = await this.limited(opts, async () => {

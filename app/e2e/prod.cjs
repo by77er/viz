@@ -105,6 +105,10 @@ async function drive(browser, origin) {
   await page.click('[data-testid=open-services_overview]')
   await page.waitForFunction(() => document.querySelectorAll('[data-testid=panel]').length === 12 && !document.querySelector('[data-testid=panel][data-state=waiting], [data-testid=panel][data-state=idle]'), null, { timeout: 30000 })
   out.panels = await page.evaluate(() => ({ address: location.pathname + location.search, answered: document.querySelectorAll('[data-testid=panel][data-state=answered]').length, plots: document.querySelectorAll('[data-testid=panel] svg.vz-plot .vz-line').length, tables: document.querySelectorAll('[data-testid=panel-table] tbody tr').length }))
+  // Monitors: its own chunk loads under the policy; this key may not read monitors, and the page says so in the API's words.
+  await page.goto(`${origin}/monitors`)
+  await page.waitForSelector('[data-testid=monitors-no-permission]', { timeout: 15000 })
+  out.monitors = await page.evaluate(() => document.querySelector('[data-testid=monitors-no-permission-message]')?.textContent ?? '')
   await page.goto(`${origin}/help`)
   await page.waitForSelector('h1')
   out.fonts = await page.evaluate(async () => { await document.fonts.ready; return [...document.fonts].filter((f) => f.status === 'loaded').map((f) => f.family.replace(/"/g, '')) })
@@ -154,7 +158,7 @@ async function main() {
       if (!(r.status === 200 && r.headers['cache-control'] === 'public, max-age=31536000, immutable' && r.headers['content-type'] === want && r.headers['x-content-type-options'] === 'nosniff')) check(`GET /assets/${f}: kept for good, typed, not sniffed`, false, JSON.stringify([r.status, r.headers['cache-control'], r.headers['content-type']]))
     }
     check(`every one of the ${files.length} assets is served to be kept for good (immutable), with its type and nosniff`, true)
-    for (const p of ['/assets/index-00000000.js', '/assets/', '/explore/', '/explorer', '/index.html', '/assets/../index.html', '/dashboards/', '/dashboards/services_overview', '/dashboard', '/monitors', '/.env', '/src/main.tsx']) {
+    for (const p of ['/assets/index-00000000.js', '/assets/', '/explore/', '/explorer', '/index.html', '/assets/../index.html', '/dashboards/', '/dashboards/services_overview', '/dashboard', '/monitors/', '/monitors/mon_0000000000000000', '/monitor', '/.env', '/src/main.tsx']) {
       const r = await get(origin + p)
       if (!(r.status === 404 && /^application\/json/.test(r.headers['content-type']))) check(`GET ${p} is the gateway's JSON 404, never the document`, false, `${r.status} ${r.headers['content-type']}`)
     }
@@ -168,6 +172,7 @@ async function main() {
     const run = await drive(browser, origin)
     check('under the policy: sign-in, two queries, autocomplete, the readout, four forms, the palette, Settings and Help all work', run.signedIn && run.rows === 4 && run.autocomplete && run.readout, JSON.stringify({ rows: run.rows, autocomplete: run.autocomplete, readout: run.readout }))
     check('under the policy: the dashboards list and a dashboard of twelve panels work, the dashboard at /dashboards?id=<id> (a document path the server lists)', run.dashboards === 4 && run.panels.address === '/dashboards?id=services_overview' && run.panels.answered === 12 && run.panels.plots >= 24 && run.panels.tables === 12, JSON.stringify(run.panels))
+    check('under the policy: /monitors (a chunk of its own) loads, and a key without monitors:read is told so in the API\'s words', /API key lacks the monitors:read scope/.test(run.monitors), run.monitors)
     check('under the policy: no content security policy violation, no console error, no uncaught error', run.violations.length === 0 && run.errors.length === 0, [...run.violations, ...run.errors].slice(0, 5).join(' | '))
     check('under the policy: the legend\'s figure columns have the widths the chart gave them (its style attributes are allowed)', run.columns.length === 4 && run.columns.slice(1).every((w) => w > 30 && w < 400), JSON.stringify(run.columns))
     check('under the policy: both typefaces load from this origin, and the editor is drawn in the mono', run.fonts.some((f) => /Schibsted/.test(f)) && run.fonts.some((f) => /JetBrains/.test(f)) && /JetBrains/.test(run.editorFont), JSON.stringify([run.fonts, run.editorFont]))

@@ -12,6 +12,7 @@
  */
 import { syntheticStorage } from './data'
 import { dashboardsApi, DASHBOARDS_PATH } from './dashboards'
+import { createMonitors, MONITORS_MOCK_PATH, MONITORS_PATH } from './monitors'
 import { durationSeconds, matchLabels, parseSelector, PromQLError, queryInstant, queryRange, type Matcher } from './promql'
 import type { Labels, SeriesSource, Storage } from './storage'
 
@@ -36,6 +37,10 @@ export interface MockOptions {
   readlessToken?: string
   /** A key with `read` and `dashboards:read`. (`requireToken` has `read` only, as the real stack's `app-read` key.) */
   dashboardsToken?: string
+  /** A key with `read` and `monitors:read`, and not `monitors:ack`: it may read monitors and not act on them. */
+  monitorsToken?: string
+  /** A key with `read`, `monitors:read` and `monitors:ack` (on call). */
+  oncallToken?: string
 }
 
 /**
@@ -227,7 +232,8 @@ export function createMockApi(opts: MockOptions = {}) {
     if (!h) return fail('unauthorized', 'missing API key', challenge)
     const token = /^Bearer\s+(.+)$/i.exec(h)?.[1]?.trim()
     if (opts.readlessToken && token === opts.readlessToken) return fail('forbidden', 'API key lacks the read scope')
-    if (token !== opts.requireToken && !(opts.dashboardsToken && token === opts.dashboardsToken)) return fail('unauthorized', 'invalid API key', challenge)
+    const known = [opts.requireToken, opts.dashboardsToken, opts.monitorsToken, opts.oncallToken].filter(Boolean)
+    if (!known.includes(token)) return fail('unauthorized', 'invalid API key', challenge)
     return null
   }
 
@@ -237,10 +243,12 @@ export function createMockApi(opts: MockOptions = {}) {
    * read metrics and dashboards.
    */
   function keyOf(headers: Record<string, string | undefined>): { name: string; scopes: string[] } | null {
-    if (!opts.requireToken) return { name: 'mock key', scopes: ['read', 'dashboards:read'] }
+    if (!opts.requireToken) return { name: 'mock key', scopes: ['read', 'dashboards:read', 'monitors:read', 'monitors:ack'] }
     const token = /^Bearer\s+(.+)$/i.exec(headers.authorization ?? '')?.[1]?.trim()
     if (opts.readlessToken && token === opts.readlessToken) return { name: 'write-only key', scopes: ['write'] }
     if (opts.dashboardsToken && token === opts.dashboardsToken) return { name: 'dashboards key', scopes: ['read', 'dashboards:read'] }
+    if (opts.monitorsToken && token === opts.monitorsToken) return { name: 'monitors key', scopes: ['read', 'monitors:read'] }
+    if (opts.oncallToken && token === opts.oncallToken) return { name: 'on-call key', scopes: ['read', 'monitors:read', 'monitors:ack'] }
     if (token === opts.requireToken) return { name: 'read key', scopes: ['read'] }
     return null
   }
@@ -282,10 +290,18 @@ export function createMockApi(opts: MockOptions = {}) {
     return { status: 200, body: { tenant: MOCK_TENANT, subject: `key:${key.name}`, kind: 'key', name: key.name, scopes: key.scopes, mayApply: false, mock: true } }
   }
 
-  function handle(method: string, url: string, body = '', headers: Record<string, string | undefined> = {}): MockResponse {
+  // The ruler's monitors API (mock/monitors.ts): its own route table, key check and error body.
+  const monitors = createMonitors({ storage, now: () => now() * 1000 })
+
+  function handle(method: string, url: string, body = '', headers: Record<string, string | undefined> = {}): MockResponse & { delayMs?: number } {
     const u = new URL(url, 'http://mock.invalid')
     const path = u.pathname
     if (path === WHOAMI_PATH) return whoami(method, headers)
+    if (path === MONITORS_PATH || path.startsWith(`${MONITORS_PATH}/`)) {
+      const key = keyOf(headers)
+      return monitors.handle(method, u, body, key ? { id: key.name, scopes: key.scopes } : null, !!headers.authorization)
+    }
+    if (path === MONITORS_MOCK_PATH) return monitors.control(u)
     // control's dashboard read routes (mock/dashboards.ts): the key first, as control identifies before it routes a known path.
     if (path === DASHBOARDS_PATH || path.startsWith(`${DASHBOARDS_PATH}/`)) {
       const key = keyOf(headers)
@@ -370,7 +386,7 @@ export function createMockApi(opts: MockOptions = {}) {
     return new Response(JSON.stringify(res.body), { status: res.status, headers: { 'Content-Type': 'application/json', ...res.headers } })
   }
 
-  return { handle, fetch: mockFetch }
+  return { handle, fetch: mockFetch, monitors }
 }
 
 /** The order the real API lists series in: by their label sets, names sorted. */

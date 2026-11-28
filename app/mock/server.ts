@@ -1,7 +1,7 @@
 /**
  * Development mock of the viz query API. NOT a real backend: synthetic data, PromQL subset.
  *
- *   npx tsx mock/server.ts [--port 8821] [--require-token secret] [--readless-token other] [--dashboards-token third] [--delay 0]
+ *   npx tsx mock/server.ts [--port 8821] [--require-token secret] [--readless-token other] [--dashboards-token third] [--monitors-token fourth] [--oncall-token fifth] [--delay 0]
  *
  * Artificial latency, to exercise the waiting states:
  *   --delay <ms> or VIZ_MOCK_DELAY=<ms>   every response waits this long
@@ -60,7 +60,9 @@ let peak = 0
 const requireToken = arg('require-token', '') || undefined
 const readlessToken = arg('readless-token', '') || undefined
 const dashboardsToken = arg('dashboards-token', '') || undefined
-const api = createMockApi({ requireToken, readlessToken, dashboardsToken })
+const monitorsToken = arg('monitors-token', '') || undefined
+const oncallToken = arg('oncall-token', '') || undefined
+const api = createMockApi({ requireToken, readlessToken, dashboardsToken, monitorsToken, oncallToken })
 
 const FAILURES: Record<string, () => MockResponse & { text?: string }> = {
   // query/src/index.ts answers every `unavailable` ApiError with Retry-After: 1 (since 2026-11-19; it had none before).
@@ -146,11 +148,12 @@ const server = createServer((req, res) => {
   req.on('end', () => {
     const started = performance.now()
     const body = Buffer.concat(chunks).toString('utf8')
-    let out: MockResponse & { text?: string } = api.handle(req.method ?? 'GET', req.url ?? '/', body, {
+    let out: MockResponse & { text?: string; delayMs?: number } = api.handle(req.method ?? 'GET', req.url ?? '/', body, {
       authorization: req.headers.authorization,
       'content-type': req.headers['content-type'],
     })
-    let after = wait
+    // The monitors API's own test hook (`/__mock/monitors?delay=`) delays its answers.
+    let after = Math.max(wait, out.delayMs ?? 0)
     if (isQuery && out.status !== 401 && out.status !== 403) {
       if (failure.left > 0) {
         failure.left--

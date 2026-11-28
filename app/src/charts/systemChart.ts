@@ -35,6 +35,12 @@ export interface ChartSpec {
   t0: number
   step: number
   series: SpecSeries[]
+  /** A dashed line across the plot with its words at its left end ("> 0.02 threshold"), in the values' unit (Chart, "Thresholds, intervals and markers"). */
+  threshold?: { value: number; label: string }
+  /** Shaded intervals on the time axis with their words, in the spec's times (shifted as `t0` is). */
+  spans?: { from: number; to: number; label: string }[]
+  /** Vertical lines with their words above the plot ("Fired 13:07"), in the spec's times. */
+  markers?: { t: number; label: string; agent?: boolean }[]
 }
 
 /** The chart's view state that the app reads: the range shown (after a zoom) and the crosshair. */

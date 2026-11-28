@@ -94,7 +94,7 @@ async function main() {
       await page.goto(`${APP}/explore`)
       await page.waitForSelector('nav.vz-nav')
       const nav = await page.evaluate(() => [...document.querySelectorAll('nav.vz-nav a')].map((a) => a.textContent))
-      check('the navigation has Dashboards, between Explore and Help', nav.join(',') === 'Explore,Dashboards,Help,Settings', nav.join(','))
+      check('the navigation has Dashboards, between Explore and Monitors', nav.join(',') === 'Explore,Dashboards,Monitors,Help,Settings', nav.join(','))
       await page.keyboard.press('Control+k')
       await page.waitForSelector('dialog.palette[open]')
       await page.keyboard.type('dashboards')

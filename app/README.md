@@ -1,13 +1,20 @@
 # viz web app
 
-The viz frontend: an **Explore** view for metrics and **Dashboards, read-only** (the list, and
-one dashboard at a time), with sign-in by API key, built to be served as static files by the
+The viz frontend: an **Explore** view for metrics, **Dashboards, read-only** (the list, and
+one dashboard at a time) and **Monitors, the on-call slice** (the list, one monitor, acknowledge
+and silence with undo), with sign-in by API key, built to be served as static files by the
 gateway at `vis.bitcru.sh/` and to call the API on the same origin (`/api/v1/query_range`,
 `/query`, `/labels`, `/label/<name>/values`, `/series`, `/metadata`, `/status/buildinfo`, and
 control's `/api/v1/control/whoami`, `/api/v1/control/dashboards` and
 `/api/v1/control/dashboards/<id>`).
 
-> **Dashboards (2026-11-27) is the newest slice and its design is not reviewed.** What it is,
+> **Monitors (2026-11-28) is the newest slice and its design is not reviewed.** What it is, how
+> it was checked, its mutants, its speed and what it leaves out are under "Monitors, the on-call
+> slice"; the images for the design reviewer are in `../design-system/reviews/app-monitors/`.
+> It calls the ruler's `/api/v1/monitors…` routes on the same origin. The real ruler was not run
+> here: the mock is held to `ruler/openapi.json`.
+>
+> **Dashboards (2026-11-27) is the slice before it and its design is not reviewed.** What it is,
 > how it was checked, its mutants, its speed and what it leaves out are under "Dashboards,
 > read-only"; the images for the design reviewer are in
 > `../design-system/reviews/app-dashboards/`. The sections after it describe the app as it
@@ -79,7 +86,11 @@ npm run build         # design system if needed, tsc --noEmit, vite build  -> di
 npm test              # vitest unit tests (two workers at most)
 npx tsc --noEmit      # typecheck
 npm run check:tokens  # no literal colours, lengths, durations or opacity in src/ and index.html
-npm run e2e           # e2e/app.cjs, errors.cjs, dashboards.cjs, prod.cjs (Playwright + axe); needs `npm run build`
+npm run e2e           # e2e/app.cjs, errors.cjs, dashboards.cjs, monitors.cjs, prod.cjs (Playwright + axe); needs `npm run build`
+node e2e/monitors.cjs                       # the monitors views alone (VIZ_ONLY=list,states,monitor,ack,silence,failure,noack,superseded,key,touch)
+node e2e/measure-monitors.cjs [--phone]     # the speed budgets on the monitors views (20 runs)
+VIZ_MUTANT_DIR=<scratch dir> node e2e/mutants-monitors.cjs            # the monitors views' mutants, on a copy outside the tree
+node e2e/monitors-shots.cjs                 # the design-review images of the monitors views
 node e2e/dashboards.cjs                     # the dashboards views alone (VIZ_ONLY=list,states,dashboard,panels,variables,requests,key,narrow)
 node e2e/measure-dashboards.cjs [--phone]   # the speed budgets on the dashboards views (20 runs)
 VIZ_MUTANT_DIR=<scratch dir> node e2e/mutants-dashboards.cjs          # the dashboards views' mutants, on a copy outside the tree
@@ -107,7 +118,9 @@ key); `e2e/prod.cjs` uses `VIZ_PROD_PORT` (18940) and the two after it.
 
 Mock options: `--port`, `--require-token <t>` (a key that reads metrics only), `--readless-token <t>`
 (a key that is valid but lacks the read scope), `--dashboards-token <t>` (a key with `read` and
-`dashboards:read`), `VIZ_MOCK_LOG=1` (logs requests), `GET /__mock/inflight[?reset=1]` (how many
+`dashboards:read`), `--monitors-token <t>` (`read` and `monitors:read`), `--oncall-token <t>`
+(`read`, `monitors:read` and `monitors:ack`), `GET /__mock/monitors?…` (the monitors API's test
+hooks, "Monitors"), `VIZ_MOCK_LOG=1` (logs requests), `GET /__mock/inflight[?reset=1]` (how many
 API requests the mock is answering now, and the most at once), and artificial latency to
 exercise the waiting states:
 
@@ -173,6 +186,9 @@ vitest 5 · fast-check 4 · axe-core 4.14.
 | `e2e/measure-dashboards.cjs` | The speed budgets on the dashboards views, desktop or phone |
 | `e2e/mutants-dashboards.cjs` | The dashboards views' safety properties broken one at a time, on a copy outside the tree |
 | `e2e/dashboards-shots.cjs` | The images for design review of the dashboards views |
+| `src/monitors/`, `src/api/monitors.ts` | Monitors, the on-call slice (a chunk of its own): the list, one monitor, the two actions; `model.ts` (order, state words, history sentences, text forms, the undo window, `ReadGuard`); the ruler's monitors API client |
+| `mock/monitors.ts` | The ruler's monitors routes over seven monitors, with acknowledge, silence and undo kept in memory, and test hooks (`/__mock/monitors`) |
+| `e2e/monitors.cjs`, `measure-monitors.cjs`, `mutants-monitors.cjs`, `monitors-shots.cjs` | The monitors views end to end; their speed; their mutants on a copy; their review images |
 | `e2e/prod.cjs` | The build served by `serve.json`'s rules, with the app driven under the content security policy |
 | `e2e/contract.cjs` | The contract test: the same requests to the real API and to the mock, compared: 60 to the query API and 37 to control's dashboard read routes |
 | `e2e/real.cjs` | The app on the real API: sign-in against control, the same reading of the same data as on the mock, refusals |
@@ -190,13 +206,15 @@ vitest 5 · fast-check 4 · axe-core 4.14.
 | `/dashboards` | **Dashboards**, read-only: the tenant's dashboards (name, intent, tags, owner, last change and by whom), searched and filtered by tag; empty, first-run, waiting, error and no-permission states |
 | `/dashboards?id=<id>` | **One dashboard**, read-only: title and intent, the time range, its variables as controls, its panels as the spec lays them out; `from`, `to` and `var.<name>` in the address. The same document path as the list: a dashboard is never named in the path |
 | `/explore` | **Explore**: a PromQL query over a time range, its result as a chart, a table, the chart's text form or the API's JSON; the start state before any query; empty, waiting, cancelled and error states. Without an accepted key the **sign-in form** stands here, at this address |
+| `/monitors` | **Monitors**: every monitor with its state, "firing since", value, threshold, owner, receiver; "Needs attention" (default), "Silenced", "All"; empty, first-run, waiting, error and no-permission states |
+| `/monitors?id=<id>` | **One monitor**: state line, who was told, Acknowledge / Unacknowledge, Silence… with Undo for the API's 60 s window; its query with the threshold over a range around now; its alerts, definition and history; `from` and `to` in the address |
 | `/help` | what Explore does, the keyboard, which commands the palette has on which page, API keys, and the button that opens the command palette |
 | `/settings` | whose key this is, Sign out, the theme, the API's address and version |
 | (anywhere) | the command palette (`Ctrl/Cmd+K`), the app's only dialog |
 
-There is no monitors, alerts, logs or traces view, no editing of dashboards and no key
-management ("Not implemented"). The gateway serves five document paths (`serve.json`): `/`,
-`/explore`, `/dashboards`, `/help`, `/settings`.
+There is no logs or traces view, no editing of dashboards or monitors and no key management
+("Not implemented"). The gateway serves six document paths (`serve.json`): `/`, `/explore`,
+`/dashboards`, `/monitors`, `/help`, `/settings`.
 
 ## The second design review: fixes (2026-11-27)
 
@@ -409,6 +427,328 @@ pulled back once (a drag gives the page no input event in every browser; `moused
 among the events that end it); the position is kept per tab and per path, one at a time.
 Known limit of m12: the banner is inserted above the page as before, so the page moves down
 by its height when the API stops answering.
+
+## Monitors, the on-call slice
+
+Added 2026-11-28. **Not reviewed for design** (the images for the reviewer are in
+`../design-system/reviews/app-monitors/`, with `PR.md` saying what each shows) and **not
+deployed**. The question the views answer: *someone on call, often on a phone at night, has
+been notified: which monitor is firing, since when, is anyone on it, what does its query look
+like against its threshold; then they take it (acknowledge) or stop its notifications for a
+while (silence), with a way back*.
+
+### What exists
+
+**The list, `/monitors`.** From the ruler's `GET /api/v1/monitors?filter=…` (`monitors:read`):
+
+- Every monitor with its state as the system's `vz-status` (mark and words, never colour
+  alone): "Firing since 09:07", "No data, firing since 08:59", "Cannot be evaluated",
+  "Pending since 09:26. Fires at 09:36 if it holds", "Not firing". Somebody's acknowledgement or
+  silence takes the neutral mark and the row says both facts ("Silenced until 10:42, firing
+  since 08:37"; "Acknowledged, firing since 09:07"), so the red marks are exactly the ones nobody
+  has. Then the value, the threshold as written (`> 0.02 for 5m`), the owner and who it notifies
+  ("checkout-oncall (Slack #checkout-oncall)"). The table folds below 1200 px (`data-fold=wide`):
+  name and state stay columns.
+- **Filters** "Needs attention" (the default, left out of the address), "Silenced", "All": the
+  API's `filter`, `?filter=` in the address. **Attention first** within each: firing nobody has,
+  firing somebody has, no data, cannot be evaluated, pending, warming, unknown, ok; then the
+  oldest first. The head counts every state from the API's `counts` and says when the ruler
+  last evaluated; the caption says how many of how many and in what order. A text form under
+  the table carries the same facts.
+- **States.** *Waiting*: nothing for 400 ms but a busy region, then "Asking the API for the
+  monitors." with the seconds (unmeasured work: no bar, no skeleton). *Empty* for a filter
+  ("Nothing needs attention", "No monitor is silenced", with the total and "Show every
+  monitor"); *first run* (no monitors at all: what a monitor is, and that this app cannot make
+  one). *Error*: the API's words, its code and status, "Ask again". *No permission* (403): the
+  ruler's words ("API key lacks the monitors:read scope"), the key's scopes, the scope needed,
+  "Sign in with another key".
+- **Not in the list's answer, so not in the list:** when a monitor's definition last changed
+  (the API carries it only in each monitor's history; the monitor's page says it).
+
+**One monitor, `/monitors?id=<id>`.** From `GET /api/v1/monitors/{id}`; the name and state are
+shown from the list's answer, if this tab has one, before the monitor's own arrives:
+
+- **Head**: the name; the state line (`vz-page-state`) with the state's mark, "Firing since 09:07
+  (2 h 9 min)" (one time per event, the API's `firingSince`); the sub-line "Not acknowledged.
+  Notified checkout-oncall (Slack #checkout-oncall) at 09:07; repeats at 13:07. Read 4 s ago.";
+  the actions (below) and Refresh. The page is read again every 30 s with no waiting state.
+- **The query, with its threshold**: the monitor's `query` (or its `expr`) over a range around
+  now, the last 3 h unless the address has `from` and `to`, with Explore's controls
+  (`RangeControls`, `TimeRangeField`), drawn by the design system's chart through
+  `src/charts/` with the **threshold as a labelled dashed line** ("> 0.02 threshold"), markers
+  "Above 09:00" and "Fired 09:07" and the firing span: the chart supports these
+  (`ChartSpec.threshold`, `spans`, `markers`, now typed in `src/charts/systemChart.ts`); the app
+  had not used them. The query as text, the chart's text form, "Open in Explore" (the query and
+  the range). A query the API refuses is the API's words in the chart's place; no series is an
+  empty state that says so.
+- **Alerts**: labels, state with since (and "silenced until"), value, acknowledged by whom and
+  when.
+- **What it watches**: message, description, runbook (a standalone link), threshold as
+  written, for, what no data does, receiver, owner, interval and last evaluation, the ruler's
+  last error, and the definition's last change from the history ("changed by key:lee at 25 Nov
+  09:30").
+- **History, newest first**: the API's merged transitions and notifications as a
+  `vz-timeline`, one sentence each ("Fired at 0.0412.", "Notified checkout-oncall in
+  #checkout-oncall.", "Acknowledged by you. Repeats stop until it resolves.", "Silence undone
+  by you, as if it was never made."); the API's `dropped` count is said when not 0.
+- **Text form**: the head's facts (with the action's "Acknowledged by you at …"), the
+  definition, every alert and the history, as sentences.
+
+**The two actions** (both `monitors:ack`), on every firing alert of the monitor:
+
+- **Acknowledge** (green) → `POST …/acknowledge` with `{}`; replaced in place by `vz-done`
+  "Acknowledged by you at 09:31" with **Unacknowledge** (`…/unacknowledge`), focus moved to it.
+  The state line keeps its words and takes the acknowledged mark. The first acknowledgement
+  stands (the API's rule): an existing one keeps who took it.
+- **"Silence…"** (a default button) opens the system's cautionary menu: 15 min, 1 h, 4 h; a note
+  ("Notifications stop until 10:31. The monitor keeps evaluating and stays listed…"); the
+  yellow "Silence for 1 h". `POST …/silence {duration}`; replaced by "Silenced by you until
+  10:31" with **Undo**, focused, offered **only while the API's undo window is open** (the
+  answer's `undoUntil`, judged on the API's clock as estimated from the last read's `nowMs`),
+  with a line "Undo is open until 09:32 (52 s left)". Undo sends **that call's token**
+  (`POST /monitors/silences/undo`). When the window closes Undo goes and the page says when it
+  closed and that ending a silence early is not in this app. Undo pressed after the API's own
+  window (its clock ahead of the estimate) is the API's **410** in its words ("the undo window
+  closed at …; expire the silence instead (undo_expired with HTTP 410). The undo window had
+  closed, so the silence stays until 10:31.").
+- **Each write confirms in place** with who and when from the answer, then the monitor is read
+  again (and the lists are marked stale); a read that started before the write is not painted
+  (`ReadGuard`, `src/monitors/model.ts`). **A refused write changes nothing on screen**: the
+  button stays, with a `vz-notice` under it in the API's words, "Try again" (not for 403 or
+  410) and "Dismiss".
+- **Without `monitors:ack`** (the key's scopes from `whoami`), Acknowledge and Silence… are
+  `aria-disabled` and a line says why ("This key cannot acknowledge or silence: it lacks the
+  monitors:ack scope (it has read, monitors:read)."); a press sends nothing and opens nothing,
+  and the command palette does not offer them. When the API has not said what the key may do
+  (no `whoami`), the controls are offered and a 403 is shown in the API's words, after which
+  they are disabled with those words.
+- **A monitor with no firing alert** (pending, ok, error) has nothing to act on: the page says
+  so instead of showing the buttons (the API acts on firing alerts only).
+- `dryRun` is sent nowhere.
+
+**Shell**: "Monitors" in the navigation (after Dashboards), "Go to Monitors" in the command
+palette, the page's commands (acknowledge, silence for 1 h, read again, the list), a Help
+section. `serve.json` lists a sixth document, `/monitors`.
+
+### Not implemented (monitors)
+
+- **No creating or editing monitors** (`POST`/`PUT`/`DELETE /monitors`), **no rule groups**
+  (`/monitors/groups`), **no rule files**, **no notifier configuration**
+  (`/monitors/notifier`), **no backtests** (`/monitors/backtest`, `/monitors/{id}/backtest`),
+  no anomaly detector guide, and no anomaly or SLO details on a monitor's page (their
+  `anomaly`/`slo` blocks are not read; their state and threshold text are).
+- **Acting on one alert** (`fingerprint`): cut for time. Acknowledge, unacknowledge and silence
+  act on every firing alert of the monitor; the alerts table shows each alert's state.
+- **Ending a silence early** (`DELETE /monitors/silences/{id}`, "End silence"), the list of
+  silences, a silence comment, a duration other than 15 min, 1 h or 4 h, "until resolved".
+- The list has no search, no sorting by column, no paging (the API has none either).
+- **The real ruler was not run or compared.** `app/real/` does not include it (below); the mock
+  is held to `ruler/openapi.json` instead.
+- Not run against a deployed viz, Safari or Firefox, real touch hardware, a screen reader by
+  ear, or at 200% zoom.
+
+### The mock and the real ruler
+
+`mock/monitors.ts` answers the ruler's monitors routes as `ruler/src/http.ts`,
+`ruler/src/monitors.ts`, `ruler/src/notifier.ts` and `ruler/openapi.json` describe them (route
+table, then key, then handler; viz's error body; the monitor view's fields; the merged history;
+acknowledge's "first stands"; silence's 1 s to 30 d, one silence per firing alert with exact
+matchers; the 60 s undo window, 404 for an unknown token, 410 `undo_expired`; `dryRun`), over
+seven monitors on the mock's series: **Checkout 5xx ratio** firing (on the checkout 500s the mock
+raises in every third hour's incident window; its alert starts at the latest window), **Checkout
+p95 latency** pending, **Ingest batches stalled** no data (alerting), **Payments errors** in error
+(a query the engine refuses), **Catalog p99 latency** firing, acknowledged and silenced by
+another key, and two not firing. **Alert states are fixed when the mock starts: nothing is
+evaluated**, so a "firing since" can be hours old while the chart shows the incident over.
+Acknowledge, unacknowledge, silence and undo change the mock's state and its history. Keys:
+without `--require-token` the mock's key has `monitors:read` and `monitors:ack`;
+`--monitors-token <t>` is a key with `read` and `monitors:read` only; `--oncall-token <t>` has
+both monitors scopes. Test hooks: `GET /__mock/monitors?advance=<ms>` (the mock's clock),
+`fail=<route>&status=<n>[&count=<n>]`, `delay=<ms>[&route=<route>]` (the server waits that long),
+`empty=1`, `reset=1`.
+
+**The real ruler in `real/` was judged not feasible in the time box and not attempted.** Its
+`wrangler.test.jsonc` binds subclasses from `test/harness.ts` (fake query and ingest services,
+crash points); the production `wrangler.jsonc` needs `RULER`, `NOTIFIER`, `RULER_INDEX` Durable
+Objects, edge's `CONFIG` key store, `QUERY` (viz-query, with a service key from control's
+`Tenant`), `SINK`/`INGEST` service bindings and control's `TENANT` by `script_name`: a fifth
+Worker in the stack with a control-issued service key, and a seeded monitor that evaluates
+against the real query Worker. Instead `mock/monitors.test.ts` validates **every mock answer of
+its tests against `ruler/openapi.json`** (a JSON Schema validator for what the file uses, with
+its own teeth test), and checks the semantics above. `e2e/contract.cjs` was not extended.
+
+### Verification (monitors)
+
+Run on 2026-11-28 between 08:46 and 11:00 UTC in a separate worktree of `c4a154b`, Node
+22.23, Chromium (Playwright's headless shell), on the shared 4-core machine, every browser,
+build, test and measurement under the machine's lock; ports moved off the defaults
+(`VIZ_E2E_APP_PORT=19520 VIZ_E2E_MOCK_PORT=19521`, `VIZ_PROD_PORT=19560`; mutants 19620/19621).
+
+| Check | Result |
+|---|---|
+| `npm test` | 249 tests in 24 files pass. New: `mock/monitors.test.ts` 8 (every mock answer of its tests validated against `ruler/openapi.json`, and the ruler's semantics), `src/api/monitors.test.ts` 3, `src/monitors/model.test.ts` 8; `src/shell/session.test.ts` now expects the no-key mock's key to have `monitors:read` and `monitors:ack` |
+| `npx tsc --noEmit` | passes |
+| `npm run check:tokens` | passes: 0 literal values in 79 files; contrast and structure 759 of 759 |
+| `npm run build` | passes. The shell is 177.9 kB compressed (gzip 9, as `e2e/prod.cjs` counts it; the limit is 200 kB): 2.2 kB more than before (175.7). The monitors views are their own chunk, `MonitorsPage-*.js`, 12.9 kB compressed |
+| `node e2e/monitors.cjs` (new) | **69 of 69** checks pass, in ten sections: the list, its states, a monitor, acknowledge, silence and undo, a write that fails, a key without `monitors:ack`, superseded reads, the key, the phone; axe (WCAG 2.2 AA, best practice) finds no serious or critical violation on the list, no permission, a firing monitor, a monitor at 400 px with a coarse pointer, and both views in the dark theme |
+| `node e2e/app.cjs` | 154 of 154 (two expectations changed: the tab order and the palette-to-control map now pass "Monitors") |
+| `node e2e/errors.cjs` | 14 of 14 |
+| `node e2e/prod.cjs` | 23 of 23 (one more: `/monitors` loads its chunk under the content security policy, and a key without `monitors:read` is told so in the ruler's words; `/monitors/`, `/monitors/mon_…` and `/monitor` are the JSON 404, where `/monitors` was before) |
+| `node e2e/dashboards.cjs` | 106 of 106 (one expectation changed: the navigation now has Monitors after Dashboards) |
+| `node e2e/contract.cjs`, `node e2e/real.cjs` | not run: the real stack has no ruler (above), and nothing they check changed |
+| `cd ../deploy && npx vitest run --maxWorkers=2` | 256 of 256 in 4 files, with the changed `serve.json` (`deploy/` was not edited) |
+| `cd ../deploy && node --test --test-concurrency=2 'test/*.test.mjs'` | 189 of 189 |
+
+`app.cjs`, `errors.cjs` and `dashboards.cjs` ran on the build of 10:27, before the last source
+change (the monitors client's `cache: 'no-store'`, which those suites do not reach); `monitors.cjs`,
+`prod.cjs`, the unit suite and the last mutants ran on the final source (built 10:58).
+
+Found and fixed on the way: the phone layout shifted by 0.23 while a monitor opened (below);
+the text forms were wells in a closed disclosure that a finger could land on (now written when
+opened); the chart drops the "Fired" marker's word where it collides with "Above" (the chart's
+rule; the check now reads the firing span's words); **two reads of the same monitor were
+serialised by the browser's HTTP cache** (a second request for a URL waits for the first), so a
+superseded read could never be seen to arrive late: the monitors client now sends every request
+with `cache: 'no-store'`.
+
+Not run: the suites against a deployed viz or the real ruler; Safari and Firefox; a real phone;
+200% zoom.
+
+### Mutants of the monitors change
+
+`VIZ_MUTANT_DIR=<scratch>/mon-mutants node e2e/mutants-monitors.cjs` copies the app to the
+scratch area (siblings linked), breaks one property at a time there, runs the checks the mutant
+names (unit files; sections of `e2e/monitors.cjs` on a build of the copy) and restores the file.
+Nothing is edited in the shared tree. The record is `e2e/measurements/mutants-monitors.txt`
+(three runs: all eleven, then the three whose checks were changed, then the two after the cache
+change). **11 of 11 killed in the end.** Two were not killed by e2e at first, and are reported: `colour-alone` survived run 1 (the check read `textContent`, which hidden words still have), and `superseded-painted` was killed by the unit test only until the cache change (run 3).
+
+| Property | Mutant | Caught by |
+|---|---|---|
+| The key never in a URL | the client appends `?key=` to every monitors request | unit (`the key goes in the Authorization header… and in no URL or body`) and e2e (`[key]`) |
+| An action without `monitors:ack` is never sent | `act` no longer checks the scope | e2e (`[scope] pressing them sends nothing`) |
+| | `mayAct` says yes to every key | unit and e2e (`[scope] … say why … before any press`) |
+| Undo only inside its window | `undoOpen` ignores the time | unit and e2e (`[undo] Undo is offered inside its 60 s and not after`) |
+| Undo with the token from that call | Undo sends another token | e2e (`[undo] Undo sends the token of that call`: the page then waits for "Silence…" in vain) |
+| A failed write leaves the screen unchanged | a refused acknowledge or silence still shows it done | e2e (`[failed]`, both) |
+| State never by colour alone | the status words are hidden, only the mark is drawn | e2e (`[colour]`) after the check was made to read the rendered text (`innerText`): **it survived the first run**, which read `textContent` |
+| Superseded reads not painted | `ReadGuard` lets every answer be painted | unit (`a read that started before a write…`); e2e (`[superseded]`) since `cache: 'no-store'`; before it the browser made the late read wait for the one after the write, and the e2e check passed with this mutant (runs 1 and 2) |
+| 44 px targets take the tap | the actions' group clips its children's hit areas | e2e (`[touch]`: the 44 px measure, and the tap 20 px under Acknowledge's centre) |
+| `dryRun` nowhere | acknowledge sends `{dryRun: true}` | unit and e2e (`Acknowledge sends one POST … (no fingerprint, no dryRun)`) |
+| `/monitors` is a document | `serve.json` drops it | unit (`lists every route of the router as a document`) |
+
+Not counted, as equivalent: removing the guard's bump when a write *starts* (the bump when the
+write is answered supersedes every read in flight by itself; a read during a failed write may be
+painted, since nothing changed).
+
+### Speed (monitors)
+
+**Measured here**, by `e2e/measure-monitors.cjs`: the built app on the mock, 4x CPU slowdown
+and Fast 4G (165 ms latency) as `e2e/measure-dashboards.cjs` sets them, 20 runs a layout, the
+75th percentile with the median and the worst run in brackets; milliseconds, layout shift as a
+score. One run is a fresh tab on a reset mock: the list is loaded, "Checkout 5xx ratio" is
+opened from it, and when its chart and history are drawn Acknowledge is pressed. The phone is
+400 x 800 with touch emulation; nothing is read across a reload or another change of document
+(`design-system/reviews/system-v9/confirmation.md`), every run checks that the pointer is
+coarse (20 of 20 were), and layout shift counts **every** entry. Each run records the 1-minute
+load (`os.loadavg()`, as `uptime` prints it). The two final runs were taken before the
+`cache: 'no-store'` change (it changes how a read is sent, not what is drawn).
+
+| What | Limit | desktop, first build | phone, first build | desktop, final | phone, final |
+|---|---|---|---|---|---|
+| List → monitor: its page (name, state line, actions, waiting region) painted (`viewChange`) | 100 ms | 164 (135, 206) | 180 (151, 248) | **117** (100, 177) | **146** (134, 208) |
+| That press, Interaction to Next Paint (`viewInp`) | 200 ms | 160 (136, 208) | 160 (144, 224) | 88 (72, 144) | 112 (88, 128) |
+| The chart: query body arrived → painted (`firstPaint`) | 100 ms | 159 (135, 285) | 160 (132, 235) | **143** (120, 194) | **122** (115, 171) |
+| Acknowledge pressed → busy painted (`ackPressed`) | 100 ms | 49 (45, 60) | 53 (47, 72) | 37 (32, 51) | 54 (48, 72) |
+| That press, Interaction to Next Paint (`ackInp`) | 200 ms | 40 (40, 48) | 48 (40, 56) | 32 (24, 40) | 48 (40, 64) |
+| Context: Acknowledge pressed → "Acknowledged by you at …" painted (one round trip) (`ackShown`) | | 229 (226, 251) | 250 (241, 263) | 223 (218, 229) | 248 (239, 259) |
+| Context: Acknowledge pressed → the re-read painted (two round trips) (`ackReread`) | | 436 (417, 468) | 440 (431, 480) | 415 (407, 443) | 437 (424, 461) |
+| Layout shift from the press on the list until the monitor has drawn, every entry (`cls.all`) | 0.05 | 0.0042 (0.0042) | **0.2262** (0.2264) | 0.0000 (0.0000) | 0.0000 (0.0000) |
+| 1-minute load (min to max, median); samples above 4 | | 0.41 to 0.90 (0.74); 0 of 40 | 0.83 to 1.06 (0.96); 0 of 40 | 1.17 to 1.53 (1.37); 0 of 40 | 1.04 to 1.31 (1.14); 0 of 40 |
+| Judged by the load rule; when (UTC); calibration | | yes; 09:50; 324 ms | yes; 09:51; 335 ms | yes; 10:23; 316 ms | yes; 10:22; 334 ms |
+
+**One fix was made between the runs**, for the phone's layout shift of 0.23 (a requirement at
+any load): at 400 px the second column (what it watches) lies under the first, and the history
+arriving with the monitor's answer, the chart drawing its legend row and the sub-line growing by
+"Read … ago" pushed it down. The history now lies under both columns, the chart reserves one
+legend row before its data, the sub-line states the age of the list's answer until the
+monitor's own arrives, and the page paints its head first and the sections in the next frame.
+
+**Met** (every run judged): a press on Acknowledge paints its busy state in 37 to 54 ms and its
+Interaction to Next Paint is 32 to 48 ms; opening a monitor is 88 to 112 ms of Interaction to
+Next Paint (limit 200); layout shift is 0.0000 at both layouts.
+
+**Open, over the limit:**
+
+1. **Opening a monitor from the list paints its page 117 ms (desktop) and 146 ms (phone) after
+   the press** (limit 100; medians 100 and 134). Painting the head alone first took 47 and 34 ms
+   off; what remains is the router's navigation, the list's table leaving and the head's first
+   render, not profiled. Dashboards' same row is 77 to 108.
+2. **The chart is painted 143 ms (desktop) and 122 ms (phone) after its body arrives** (limit
+   100). The system's chart builds its model, SVG and legend in the task that receives the
+   answer, as on a dashboard (whose first panel takes 40 to 48 ms, for smaller charts); here the
+   chart is as wide as the page's main column, with a threshold, a span and markers, and the
+   monitor's own answer may be painted in the same frames. Not profiled; no fix was tried.
+
+The acknowledgement itself is one round trip (223 to 250 ms at 165 ms latency): the page shows
+"Acknowledged by you at …" when the API has said so, never before (no optimistic change: a write
+someone else will see). Not measured: the silence and undo paths (the same shape as
+acknowledge), the list's filter change, a range change on the chart, the first load of
+`/monitors?id=…` as a document (it loads the chunk), and anything behind the gateway or on a
+real phone.
+
+### Known risks (monitors)
+
+- **The undo window is judged on an estimate of the API's clock** (the last read's `nowMs`
+  against this tab's clock). A tab whose clock jumps, or an API whose clock moves between the
+  read and the silence, can offer Undo a little after the API's window (the 410 is then
+  shown, in the API's words) or withdraw it a little early.
+- **Permission is judged from `whoami`'s scopes for the actions** (the dashboards decision was
+  the API's 403 for reads). A key whose scopes changed since sign-in is told by the API's 403,
+  in its words, on the first press.
+- The page re-reads the monitor every 30 s while open (one request; not measured for cost).
+- **The shell grew by 2.2 kB to 177.9 kB of 200 kB** (the client's `json`, the route, the nav
+  and Help); the views are a chunk of 12.9 kB compressed, loaded on the first visit to `/monitors`.
+- The mock's alert states are fixed at start (above); the mock's history and receivers are
+  invented.
+
+### Needed from deploy/ (monitors)
+
+`deploy/` was not edited.
+
+- `serve.json` lists a sixth document, `/monitors`; a monitor is `/monitors?id=<id>` (the query
+  string must reach the document), and `/monitors/<anything>` stays the JSON 404 (as
+  `e2e/prod.cjs` checks).
+- The gateway already routes `/api/v1/monitors` and everything under it to the ruler
+  (`deploy/gateway/src/index.ts`, `MONITORS_ROOT`, read here, not run): the views need nothing
+  more of it. The app was not run behind it.
+- The views add no inline script and load nothing from another origin; the policy is unchanged.
+
+### Needed from the design system (monitors)
+
+Nothing under `design-system/` was edited (except the review images) and no rule was added to
+`src/app.css`.
+
+| # | What the views needed | What the app does meanwhile |
+|---|---|---|
+| N1 | **A done state that expires**: the undo of a silence is open for 60 s; `vz-done` has no way to say how long its Undo lasts or that it has gone | A `vz-help` line under the actions: "Undo is open until 09:32 (52 s left)", then "The undo window closed at 09:32…" |
+| N2 | **A disabled action that explains itself**: `aria-disabled` is styled; nothing says where its reason goes | `aria-describedby` to a `vz-help` line under the actions row |
+| N3 | **"End silence"** is the system's opposite of Silence; the API's undo is a different act (as if never made) within 60 s | "Undo" while the window is open; ending early is not offered |
+| N4 | **A state line for "no data, firing"**: the five shapes have none for no data; the unknown dash means "nobody looked" | The critical square when its alert is firing (the API notifies), the warn diamond while pending, and the words "No data" |
+| N5 | **A threshold on a chart from an application** (dashboards' D8): the chart's spec takes `threshold`, `spans` and `markers` (its preview's), undocumented for an application | Passed as the preview does; typed in `src/charts/systemChart.ts` |
+| N6 | **Where a page's actions' failure notice goes when the actions are in the page head** | `vz-notice-group` around the head's actions |
+
+### Decisions in the monitors change, for `design/DECISIONS.md`
+
+Not yet entered there (this change edits `app/` only).
+
+| Decision | Alternatives | Why | Would change if |
+|---|---|---|---|
+| A monitor is `/monitors?id=<id>`; a chunk of its own | `/monitors/<id>`; in the shell | The gateway serves exact paths; the shell had 24 kB of its 200 left | The gateway learns patterns; the shell has room |
+| The actions act on every firing alert | Per alert (`fingerprint`) | The on-call act is "take this monitor"; per alert cut for time | Monitors with many alerts that different people take |
+| The controls follow `whoami`'s scopes; the API's 403 also disables them | Always enabled, the API refuses | The task: say why before the press; never send a write the key cannot make | Scopes can change under a session often |
+| The undo is offered by the API's `undoUntil` on an estimated API clock | A local 60 s timer | The window is the API's; a constant would drift from it | The API answers with the time left |
+| No optimistic change: the write's answer is shown, then the monitor is re-read; older reads are dropped | Optimistic update; TanStack Query's cache | A write someone else will see is said only when the API has said it; one mechanism for superseded reads that the tests can break | Writes become slow enough to need an optimistic state |
 
 ## Dashboards, read-only
 
@@ -1273,9 +1613,10 @@ overrule. Each is a choice between real alternatives.
 
 ## Not implemented
 
-- **Everything outside metrics Explore and read-only dashboards: monitors, logs, traces,
-  alerts, the agent surface, and every change to a dashboard** (what the dashboards views
-  leave out is under "Not implemented (dashboards)"). The design system's flow screens for
+- **Everything outside metrics Explore, read-only dashboards and the on-call slice of
+  monitors: logs, traces, the agent surface, every change to a dashboard, and creating or
+  editing monitors** (what those views leave out is under "Not implemented (dashboards)" and
+  "Not implemented (monitors)"). The design system's flow screens for
   monitors, investigations, proposed changes and keys (`../design-system/flows/`) are not built.
 - **Deployment.** The build is ready and the gateway's part is specified ("Needed changes in
   deploy/"); nothing was deployed and no Cloudflare call was made. The eight things

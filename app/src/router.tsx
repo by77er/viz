@@ -1,4 +1,4 @@
-import { createRootRoute, createRoute, createRouter, redirect } from '@tanstack/react-router'
+import { createRootRoute, createRoute, createRouter, lazyRouteComponent, redirect } from '@tanstack/react-router'
 import { AppShell, RequireKey } from './shell/AppShell'
 import { HelpPage } from './shell/HelpPage'
 import { SettingsPage } from './shell/SettingsPage'
@@ -46,11 +46,22 @@ export const dashboardsRoute = createRoute({
   ),
 })
 
+/**
+ * Monitors, the on-call slice: the list, and one monitor as `/monitors?id=<id>`, on one document
+ * path as dashboards are. Its own chunk (src/monitors/MonitorsPage.tsx), which keeps the sign-in.
+ */
+export const monitorsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/monitors',
+  validateSearch: (raw: Record<string, unknown>): Record<string, string> => Object.fromEntries(Object.entries(raw).filter((e): e is [string, string] => typeof e[1] === 'string' || typeof e[1] === 'number').map(([k, v]) => [k, String(v)])),
+  component: lazyRouteComponent(() => import('./monitors/MonitorsPage'), 'MonitorsPage'),
+})
+
 const helpRoute = createRoute({ getParentRoute: () => rootRoute, path: '/help', component: HelpPage })
 const settingsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/settings', component: SettingsPage })
 
 export const router = createRouter({
-  routeTree: rootRoute.addChildren([indexRoute, exploreRoute, dashboardsRoute, helpRoute, settingsRoute]),
+  routeTree: rootRoute.addChildren([indexRoute, exploreRoute, dashboardsRoute, monitorsRoute, helpRoute, settingsRoute]),
   // Flat, human-readable search params (no JSON quoting); defaults are omitted.
   parseSearch: parseSearchString,
   stringifySearch,

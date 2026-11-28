@@ -89,6 +89,7 @@ export function AppShell() {
     [
       { id: 'nav-explore', group: 'Navigation', title: 'Go to Explore', keywords: 'metrics query promql', run: () => void navigate({ to: '/explore' }) },
       { id: 'nav-dashboards', group: 'Navigation', title: 'Go to Dashboards', keywords: 'boards panels overview list', run: () => void navigate({ to: '/dashboards' }) },
+      { id: 'nav-monitors', group: 'Navigation', title: 'Go to Monitors', keywords: 'alerts alerting firing on call acknowledge silence', run: () => void navigate({ to: '/monitors' }) },
       { id: 'nav-help', group: 'Navigation', title: 'Go to Help', keywords: 'keyboard shortcuts about docs', run: () => void navigate({ to: '/help' }) },
       { id: 'nav-settings', group: 'Navigation', title: 'Go to Settings', keywords: 'api key tenant theme sign out', run: () => void navigate({ to: '/settings' }) },
       { id: 'theme-light', group: 'Settings', title: 'Use the light theme', run: () => setPref('light') },
@@ -115,6 +116,7 @@ export function AppShell() {
         <span className="vz-nav-name">viz</span>
         <Link to="/explore">Explore</Link>
         <Link to="/dashboards">Dashboards</Link>
+        <Link to="/monitors">Monitors</Link>
         <Link to="/help">Help</Link>
         {/* The tenant is the key's, never a choice: text, not a link. */}
         {tenant && (
