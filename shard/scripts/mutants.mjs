@@ -35,6 +35,7 @@ const T = {
   boundsCompat: `npx vitest run ${W} test/bounds.test.ts test/compat.test.ts`,
   recheck: `npx vitest run ${W} test/bounds.recheck.test.ts`,
   boundsRecheck: `npx vitest run ${W} test/bounds.test.ts test/bounds.recheck.test.ts`,
+  reserve: `npx vitest run ${W} test/reserve.test.ts`,
   all: `npx vitest run ${W}`,
 }
 const TT = 'src/tail.ts'
@@ -146,6 +147,19 @@ const mutants = [
   ['versions: the flush message carries no v', F, '{ v: FLUSH_MESSAGE_VERSION, tenant, shard: name }', '{ tenant, shard: name }', T.trigger],
   ['versions: storage from before sealed_at is not migrated', F, "      if (!columnsOf(sql, 'segment').has('sealed_at')) sql.exec(`ALTER TABLE segment ADD COLUMN sealed_at INTEGER NOT NULL DEFAULT 0`)", '', T.compat],
   ['versions: an unreadable series window starts empty (limit loosened)', F, '        this.unreadableWindows.add(tenant)\n', '', T.compat],
+  // reservations (D77, 2026-11-28): room held for a request's batches until they are appended
+  ['reserve (D77): S1 grants not counted in the tenant\'s room', F, 'waiting + this.grantedTo(tenant)', 'waiting', T.reserve],
+  ['reserve (D77): S2 grants not counted in the shard budget', F, 'this.totalBytes + this.groupBytes + this.grantedBytes', 'this.totalBytes + this.groupBytes', T.reserve],
+  ['reserve (D77): S3 a token admits another tenant', F, 'if (!g || g.tenant !== req.tenant || g.expires <= now) return false', 'if (!g || g.expires <= now) return false', T.reserve],
+  ['reserve (D77): S4 a token admits another batch', F, 'if (bytes === undefined || req.payload.byteLength > bytes) return false', 'if (req.payload.byteLength > (bytes ?? Infinity)) return false', T.reserve],
+  ['reserve (D77): S5 a token admits more bytes than granted', F, 'if (bytes === undefined || req.payload.byteLength > bytes) return false', 'if (bytes === undefined) return false', T.reserve],
+  ['reserve (D77): S6 grants never expire', F, '      if (g.expires > now) continue', '      continue', T.reserve],
+  ['reserve (D77): S7 a probe (hold: false) holds', F, "    if (req.hold === false) return { status: 'ok', token: null, expiresInMs: 0 }\n", '', T.reserve],
+  ['reserve (D77): S8 duplicates need room at reserve', F, "      if (known && sql.exec(`SELECT 1 FROM batch WHERE tenant = ? AND fingerprint = ?`, req.tenant, b.fingerprint).toArray().length > 0) continue\n", '', T.reserve],
+  ['reserve (D77): S9 grants not counted in the in-flight limit', F, 'return this.inFlight + this.grantedBatches + batches > this.cfg.maxInFlight || this.pendingBytes + this.grantedBytes + bytes', 'return this.inFlight + batches > this.cfg.maxInFlight || this.pendingBytes + bytes', T.reserve],
+  ['reserve (D77): S10 a granted append refused for load', F, 'if (!granted && this.overloaded(1, bytes)) {', 'if (this.overloaded(1, bytes)) {', T.reserve],
+  ['reserve (D77): S11 release ignored', F, '    if (g && g.tenant === tenant) this.dropGrant(token, g)', '    void g', T.reserve],
+  ['reserve (D77): S12 a granted append skips room checks without a grant (room never checked)', F, '    if (!granted) {\n      const room = this.roomRefusal(req.tenant, known, bytes)', '    if (false) {\n      const room = this.roomRefusal(req.tenant, known, bytes)', T.reserve],
 ]
 
 const only = check ? undefined : process.argv[2]
