@@ -370,7 +370,7 @@ the median and the worst run. All "measured here".
 
 | Row (limit) | Dashboards desktop | Dashboards phone | Monitors desktop | Monitors phone |
 |---|---|---|---|---|
-| Opens the view: shell painted (100) | 63, 75: met (before 78, 85) | 96, 91: met, both within 10% (before 103, 89) | 72, 64: met (before 80, 80) | 80, 180: **sessions disagree** (before 112, 148): <!-- Z-RESULT --> |
+| Opens the view: shell painted (100) | 63, 75: met (before 78, 85) | 96, 91: met, both within 10% (before 103, 89) | 72, 64: met (before 80, 80) | 80, 180: **sessions disagree**; a third (Z, a corrected harness) reads 80; pooled, 104: **not met by the rule's letter** (before 112, 148, 128) |
 | A panel on screen / the chart painted after its answer (100) | 73, 62: met (before 44, 66) | 48, 40: met (before 37, 38) | 80, 74: met (before 125, 120) | 76, 96: met, Y within 10% (before 128, 150) |
 | Range pressed: every panel waiting (100) | 48, 64: met (before 120, 136) | 72, 72: met (before 144, 152) | | |
 | Range pressed: first request sent (100) | 61, 69: met (before 51, 49) | 83, 83: met (before 70, 74) | | |
@@ -539,7 +539,31 @@ Monitors, phone:
 
 monitors, phone; load 1.03 to 1.53 (median 1.18), 0 of 80 samples above 4; 2026-11-28T16:01:17.518Z to 2026-11-28T16:04:02.466Z; calibration 324 ms; void 0
 
-<!-- SESSION-Z -->
+**Session Z (16:31 to 16:34 UTC), monitors on the phone only, the final build, the third session
+the rule asks for when two disagree.** Before it, the harness was corrected: with a finger the
+click comes a frame after the pointer's release, so in session Y 9 of 20 "after" runs and 7 of 20
+"before" runs were read by the late definition (`viewInPress` false), which is what made Y's 180;
+the frames that count are now those since the click. In Z all 20 "after" runs are read as the
+press's next paint.
+
+| What | before p75 (median, worst) | after p75 (median, worst) | paired difference, after - before: median (p25 to p75), n |
+|---|---|---|---|
+| viewChange | 128 (96, 168) | 80 (72, 120) | -24 (-32 to -16), 20 |
+| viewChangeTask | 202 (150, 255) | 172 (158, 239) | 7 (-12 to 21), 20 |
+| viewInp | 128 (96, 168) | 80 (72, 120) | -24 (-32 to -16), 20 |
+| firstPaint | 170 (134, 221) | 83 (75, 117) | -56 (-103 to -38), 20 |
+| ackPressed | 47 (44, 64) | 51 (45, 63) | 5 (-2 to 7), 20 |
+| ackInp | 40 (40, 48) | 48 (40, 56) | 8 (0 to 8), 20 |
+| cls | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0002) | 0.0000 (0.0000 to 0.0000), 20 |
+
+monitors, phone; load 0.00 to 1.53 (median 1.02), 0 of 80 samples above 4; 2026-11-28T16:31:47.748Z to 2026-11-28T16:34:33.387Z; calibration 392 ms; void 0
+
+**Pooled X, Y and Z (60 runs a build), as the rule decides:** `viewChange` 104 after, 144 before:
+**not met by the rule's letter**, with Y's runs read by the late definition in the pool. The
+definition-independent `viewInp` (the press's next paint as the browser reports it) pools to 96
+after and 112 before. With the corrected harness alone (Z), 80. This row is left for the reviewer
+to rule on, with all three sessions in `e2e/measurements/rereview3/`.
+
 
 
 **Session 1 (14:47 to 15:03 UTC), an earlier build**: the dashboards without the commands change
