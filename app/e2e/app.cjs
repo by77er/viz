@@ -802,9 +802,10 @@ async function main() {
       await page.keyboard.press('Control+k'); await page.waitForSelector('dialog.palette[open]')
       await page.keyboard.type('copy a link')
       await page.keyboard.press('Enter')
-      await page.waitForFunction(() => document.querySelector('[data-testid=copy-link]').textContent === 'Copied')
-      const byCommand = await page.evaluate(async () => ({ clip: await navigator.clipboard.readText(), focus: document.activeElement.getAttribute('data-testid') }))
-      check('review 2, m4: the palette\'s "Copy a link to this view" presses that button: the focus is on it and it says "Copied"', reads(byCommand.clip, null) && byCommand.focus === 'copy-link', JSON.stringify(byCommand))
+      // Waited for, not required to come: a command that copies without a word fails this check by name instead of stopping the run.
+      await page.waitForFunction(() => document.querySelector('[data-testid=copy-link]').textContent === 'Copied', null, { timeout: 5000 }).catch(() => {})
+      const byCommand = await page.evaluate(async () => ({ clip: await navigator.clipboard.readText(), focus: document.activeElement.getAttribute('data-testid'), said: document.querySelector('[data-testid=copy-link]').textContent }))
+      check('review 2, m4: the palette\'s "Copy a link to this view" presses that button: the focus is on it and it says "Copied"', reads(byCommand.clip, null) && byCommand.focus === 'copy-link' && byCommand.said === 'Copied', JSON.stringify(byCommand))
       check('review 2, m4: the palette\'s field has no placeholder that names a command some pages lack', (await page.getAttribute('[data-testid=palette-input]', 'placeholder')) === null)
       await page.goto(`${APP}/help`); await page.waitForSelector('[data-testid=open-commands]')
       const help = await text(page, 'main')
