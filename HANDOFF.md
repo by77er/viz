@@ -64,13 +64,19 @@ own copy of the body, and fixed with identical rendering (or a waiver request wr
 view (list, one monitor, acknowledge, silence with undo) is built in a separate worktree and merged
 afterwards as a patch. The owner's decisions above are still open.
 
-## Before the UI pull request
+## The UI pull request (2026-11-28, in progress)
 
-`main` now holds #9 and #10 as squash commits; this branch has #9's content and a different gateway
-change (D74). Merge `origin/main` into a worktree of this branch first and resolve `deploy/` (gateway,
-`configure.mjs`, `release.mjs`, `smoke.mjs`, tests), `design/` (D75 placed after D74, DESIGN, the page)
-and `AGENTS.md` by hand; then run deploy's suites. The app's serving (D74) needs stage evidence for the
-new gateway fingerprint before production (now allowed).
+- App state on this branch: review fixes verified (`f2f3509`), B1 chart speed applied (`a3ba07d`, waived
+  at 37–200 series with conditions C1–C4 in `design-system/reviews/chart-speed/second-review.md`, lapses
+  2026-12-31 unless the owner decides F1), monitors view merged (`67d9d73`). An integration builder is
+  making the merged tree green and meeting C1–C4.
+- `main` and this branch share no git history, so the UI branch
+  (`claude/cloudflare-observability-platform-ibaqya-ui`, worktree in scratch) is assembled from main:
+  app/ and design-system/ taken from this branch's green commit, deploy/ and design/ merged by hand (D74
+  with D75; the app on vis.bitcru.sh), control/mcp/ruler/query/stack kept as main's.
+- Then: one independent re-review of Explore, dashboards and monitors (and the waiting-line frame, C4);
+  a stage run of the merged gateway (D74's stage-evidence rule); open the PR; merge on green; check
+  `https://viz.bitcru.sh/`.
 
 ## In progress when paused
 
