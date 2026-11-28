@@ -41,7 +41,7 @@ export function useWaiting(active: boolean): { shown: boolean; elapsedMs: number
 
   // The minimum is counted from the moment the line is in the document, not from the timer.
   useEffect(() => {
-    if (shown) shownAt.current = performance.now()
+    shownAt.current = shown ? performance.now() : 0
   }, [shown])
 
   // Hide when the wait is over, but not before the line has been up for minShown.
@@ -64,6 +64,15 @@ export function useWaiting(active: boolean): { shown: boolean; elapsedMs: number
     return () => clearInterval(tick)
   }, [active, shown])
 
+  // The wait is over and the line has been up for minShown: it goes in the render that shows
+  // the result, not in one after it. Left to the effect above, the line stayed for one more
+  // frame over the new result, and the page rendered twice for one answer (15 to 20 ms at 4x
+  // CPU: design-system/reviews/chart-speed). The effect still hides a line that has to stay
+  // a little longer. `shownAt` is 0 until the line is in the document.
+  if (!active && shown && shownAt.current > 0 && performance.now() - shownAt.current >= WAIT.minShown) {
+    setShown(false)
+    return { shown: false, elapsedMs }
+  }
   return { shown, elapsedMs }
 }
 

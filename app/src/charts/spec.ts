@@ -87,13 +87,29 @@ export interface SpecInput {
   shiftMs: number
   /** The chart's unit when the caller knows it by another name than a `UnitId` (a dashboard panel declares its unit: dashboards/model.ts `chartUnitOf`). */
   as?: ChartUnit
+  /**
+   * The values as Float64Arrays with NaN for a gap (the chart's typed form, design/DECISIONS.md
+   * D76), not as arrays with null: the result's own arrays when the unit is not scaled, so
+   * nothing is copied. The chart draws the same either way.
+   */
+  typed?: boolean
 }
 
-export function toSpec({ data, start, step, unit, query, shiftMs, as }: SpecInput): { spec: ChartSpec; unit: ChartUnit } {
+export function toSpec({ data, start, step, unit, query, shiftMs, as, typed = false }: SpecInput): { spec: ChartSpec; unit: ChartUnit } {
   // Only bytes per second are scaled by size here (the chart scales bytes and seconds itself): no pass over the values for the others.
   const u = as ?? chartUnit(unit, unit === 'bytes/s' ? largest(data) : 0)
   const series: SpecSeries[] = data.series.map((s) => {
     const src = s.values
+    if (typed) {
+      // A gap in the result is NaN already (lib/series `alignSeries`); a value that is not finite is one for the chart too.
+      if (u.scale === 1) return { labels: chartLabels(s.labels, query), values: src }
+      const values = new Float64Array(src.length)
+      for (let i = 0; i < src.length; i++) {
+        const v = src[i]!
+        values[i] = Number.isFinite(v) ? v * u.scale : NaN
+      }
+      return { labels: chartLabels(s.labels, query), values }
+    }
     const values = new Array<number | null>(src.length)
     for (let i = 0; i < src.length; i++) {
       const v = src[i]!

@@ -330,7 +330,8 @@ export class PromClient {
       this.read<unknown>(res, await res.text())
       throw new PromApiError('parse', 'The response is not a range-query matrix', res.status)
     }
-    const parser = new MatrixParser()
+    // Each series is put on the grid as it is read (lib/series `placeOnGrid`), while the rest of the body downloads.
+    const parser = new MatrixParser({ start, end, step })
     const reader = res.body.pipeThrough(new TextDecoderStream()).getReader()
     for (;;) {
       const { done, value } = await reader.read()

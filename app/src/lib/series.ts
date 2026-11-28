@@ -54,6 +54,56 @@ export interface SampleColumns {
   metric: Labels
   times: ArrayLike<number>
   values: ArrayLike<number>
+  /**
+   * The series already on a grid, when its reader knew the grid (api/matrix.ts places each
+   * series as it is read, while the rest of the body downloads): `placeOnGrid` of these times
+   * and values. `alignSeries` uses it only for the same start, end and step.
+   */
+  onGrid?: OnGrid
+}
+
+/** A series placed on the grid `start, start + step, ... end`: `values` as `placeOnGrid` gives them (null: a sample is off that grid). */
+export interface OnGrid {
+  start: number
+  end: number
+  step: number
+  values: Float64Array | null
+}
+
+/**
+ * The grid `start, start + step, ... end`: how many steps, and how near a time must be to a
+ * step to be on it. A sample is on the grid when it is within 5 µs of a grid time, and so is
+ * the end. The API's times are whole milliseconds; as doubles near 1.8e9 s they are off by up
+ * to about 0.1 µs, which for a 1 ms step is 1e-4 of a step (a tolerance of 1e-6 steps, as
+ * before, sent the API's answers to steps of a few milliseconds down the slow path, where a
+ * missing step is no gap, and could count one point too few).
+ */
+export function gridOf(start: number, end: number, step: number): { n: number; tolerance: number } {
+  const tolerance = 5e-6 / step
+  return { n: Math.floor((end - start) / step + Math.max(1e-9, tolerance)) + 1, tolerance }
+}
+
+/** Grids this large are not placed in one pass (`alignSeries` takes the union of times instead). */
+const MOST_STEPS = 1_000_000
+
+/**
+ * One series on the grid of `gridOf(start, end, step)`: NaN where it has no sample and where
+ * its sample cannot be drawn (NaN, ±Inf); null when a sample is not on the grid, or the grid
+ * is not one that is placed in one pass.
+ */
+export function placeOnGrid(times: ArrayLike<number>, vs: ArrayLike<number>, start: number, end: number, step: number): Float64Array | null {
+  const { n, tolerance } = gridOf(start, end, step)
+  if (!(n > 0 && n <= MOST_STEPS)) return null
+  const values = new Float64Array(n).fill(NaN)
+  for (let k = 0; k < times.length; k++) {
+    const pos = (times[k]! - start) / step
+    const i = Math.round(pos)
+    if (i < 0 || i >= n || Math.abs(pos - i) > tolerance) return null
+    // ±Inf and NaN cannot be drawn: gaps.
+    const v = vs[k]!
+    values[i] = v - v === 0 ? v : NaN
+  }
+  return values
 }
 
 /**
@@ -66,34 +116,22 @@ export interface SampleColumns {
  */
 export function alignSeries(result: readonly SampleColumns[], start: number, end: number, step: number): AlignedData {
   const byName = (a: AlignedSeries, b: AlignedSeries) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
-  // A sample is on the grid when it is within 5 µs of a grid time, and so is the end. The API's
-  // times are whole milliseconds; as doubles near 1.8e9 s they are off by up to about 0.1 µs,
-  // which for a 1 ms step is 1e-4 of a step (a tolerance of 1e-6 steps, as before, sent the
-  // API's answers to steps of a few milliseconds down the slow path, where a missing step is no
-  // gap, and could count one point too few).
-  const tolerance = 5e-6 / step
-  const n = Math.floor((end - start) / step + Math.max(1e-9, tolerance)) + 1
+  const { n } = gridOf(start, end, step)
 
   // The usual case, in one pass: every sample is on the grid, so its index is computed, not
-  // looked up. The first sample off the grid abandons this pass for the general one below.
-  if (n > 0 && n <= 1_000_000) {
+  // looked up. The first sample off the grid abandons this pass for the general one below. A
+  // series its reader already placed on this grid (`onGrid`) is not placed again: at 200 series
+  // this pass was 14 ms after the last byte at 4x CPU (design-system/reviews/chart-speed).
+  if (n > 0 && n <= MOST_STEPS) {
     const series: AlignedSeries[] = []
     let onGrid = true
-    outer: for (let s = 0; s < result.length; s++) {
+    for (let s = 0; s < result.length; s++) {
       const r = result[s]!
-      const times = r.times
-      const vs = r.values
-      const values = new Float64Array(n).fill(NaN)
-      for (let k = 0; k < times.length; k++) {
-        const pos = (times[k]! - start) / step
-        const i = Math.round(pos)
-        if (i < 0 || i >= n || Math.abs(pos - i) > tolerance) {
-          onGrid = false
-          break outer
-        }
-        // ±Inf and NaN cannot be drawn: gaps.
-        const v = vs[k]!
-        values[i] = v - v === 0 ? v : NaN
+      const pre = r.onGrid
+      const values = pre && pre.start === start && pre.end === end && pre.step === step ? pre.values : placeOnGrid(r.times, r.values, start, end, step)
+      if (values === null) {
+        onGrid = false
+        break
       }
       series.push({ key: seriesKey(r.metric), labels: r.metric, name: seriesName(r.metric), values })
     }

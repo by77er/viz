@@ -16,10 +16,14 @@
 import '../../../design-system/dist/viz-chart.js'
 import '../../../design-system/dist/viz-press.js'
 
-/** One series of a result on the chart's regular grid: `values[i]` is the value at `t0 + i * step`, null where there is none. */
+/**
+ * One series of a result on the chart's regular grid: `values[i]` is the value at `t0 + i * step`.
+ * Either form the chart takes (design/DECISIONS.md D76): an array with null where there is no
+ * value, or a Float64Array with NaN there. The chart never writes to either.
+ */
 export interface SpecSeries {
   labels: Record<string, string>
-  values: (number | null)[]
+  values: (number | null)[] | Float64Array
 }
 
 /** What the chart draws (Chart preview, `demos`): times in milliseconds. */

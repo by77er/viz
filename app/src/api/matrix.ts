@@ -22,6 +22,7 @@
  * `Number` give. A time must be a JSON number, as `JSON.parse` requires.
  * "NaN", "+Inf" and "-Inf" are read as such.
  */
+import { placeOnGrid, type OnGrid } from '../lib/series'
 import type { Metric } from './types'
 
 export interface ParsedSeries {
@@ -34,6 +35,15 @@ export interface ParsedSeries {
   valuesText: () => string
   /** Where that text is in `ParsedMatrix.text` ([from, to)); null on the slow path. */
   valuesRange: [number, number] | null
+  /** The series on the grid the parser was given (lib/series `placeOnGrid`), placed as soon as it was read; absent without a grid and on the slow path. */
+  onGrid?: OnGrid
+}
+
+/** The grid a range query was asked for, in epoch seconds: each series is placed on it as soon as it has been read. */
+export interface MatrixGrid {
+  start: number
+  end: number
+  step: number
 }
 
 export interface ParsedMatrix {
@@ -260,6 +270,13 @@ export class MatrixParser {
   /** Outside: the start of the string being scanned, or -1. */
   private outsideString = -1
 
+  /**
+   * With `grid`, each series is also put on it (`ParsedSeries.onGrid`) in the piece of the body
+   * that ends it, so that this work is done while the rest downloads and not after the last
+   * byte (design-system/reviews/chart-speed).
+   */
+  constructor(private readonly grid?: MatrixGrid) {}
+
   /** Feed the next piece of the body. */
   push(chunk: string): void {
     if (chunk === '') return
@@ -371,7 +388,11 @@ export class MatrixParser {
             if (!this.metric || !this.samples) throw new Error('series without metric or values')
             const k = this.samples.n
             const [from, to] = this.valuesAt
-            this.series.push({ metric: this.metric, times: this.samples.times.subarray(0, k), values: this.samples.values.subarray(0, k), valuesText: () => this.text().slice(from, to), valuesRange: [from, to] })
+            const times = this.samples.times.subarray(0, k)
+            const values = this.samples.values.subarray(0, k)
+            const g = this.grid
+            const onGrid = g ? { start: g.start, end: g.end, step: g.step, values: placeOnGrid(times, values, g.start, g.end, g.step) } : undefined
+            this.series.push({ metric: this.metric, times, values, valuesText: () => this.text().slice(from, to), valuesRange: [from, to], onGrid })
             if (this.series.length === 1) this.capacity = Math.max(16, k)
             this.mode = Mode.Result
             i++

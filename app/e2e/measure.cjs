@@ -49,7 +49,10 @@
 //               figure leaves out reading and parsing the body. Kept for comparison with earlier files.
 //   responseFull  the last byte of the response (Resource Timing responseEnd of the
 //               query_range request) -> the same paint. This one includes decoding and parsing
-//               the body: 3.6 MB of JSON for 200 series.
+//               the body: 3.6 MB of JSON for 200 series. Since 2026-11-28 DevTools keeps no copy of
+//               the body during these runs (networkWithoutCopies; --buffer for the earlier way):
+//               with its copies this figure carried about 70 ms at 200 series that no browser
+//               without DevTools spends.
 //   inp         the longest Event Timing duration of any interaction in the run, before the
 //               typing and crosshair steps (comparable with earlier files); inpAll includes them
 //   crosshair   30 pointer moves across the plot, one at a time: mousemove -> end of the next
@@ -85,6 +88,40 @@ const SKIP = new Set(arg('skip', '').split(',').filter(Boolean))
 /** --extra '&step=1s': more of the address, e.g. a typed step that asks for more samples than the chart has pixel columns. */
 const EXTRA = arg('extra', '')
 const PHONE = process.argv.includes('--phone')
+/**
+ * DevTools keeps no copy of response bodies during timed runs (2026-11-28, design-system/reviews/chart-speed/PR.md).
+ * With the Network domain enabled (Playwright enables it for every page, and this script enables it again in its own session for the
+ * network shaping), each of those two agents buffers every response body and, when the load finishes, decodes it on the page's main
+ * thread for Network.getResponseBody: at 4x CPU about 70 ms for the 200-series body (3.4 MB), between the last byte and the page's next
+ * task. A browser without DevTools open does no such work, so a timed run must not either: both agents are enabled with no buffer.
+ * Playwright's own session is not a public interface, so if it cannot be reached the run stops (it never measures with the buffers
+ * silently), and every run checks afterwards that neither agent holds the query's body (r.bodyCopies: both false).
+ * --buffer keeps the buffers, as this script measured until 2026-11-27 (figures taken so are not comparable with later ones).
+ */
+const BUFFER = process.argv.includes('--buffer')
+const NO_BUFFERS = { maxTotalBufferSize: 0, maxResourceBufferSize: 0 }
+async function networkWithoutCopies(page, cdp) {
+  await cdp.send('Network.enable', BUFFER ? {} : NO_BUFFERS)
+  if (BUFFER) return
+  let client
+  try {
+    const impl = page._connection.toImpl(page)
+    client = (impl.delegate || impl._delegate)._mainFrameSession._client
+  } catch (e) {
+    throw new Error(`cannot reach Playwright's own DevTools session (${e.message}): its body buffer cannot be turned off; run with --buffer and say so`)
+  }
+  await client.send('Network.enable', NO_BUFFERS)
+}
+/** Whether DevTools (this script's session, and Playwright's) kept a copy of the last query_range body: both false unless --buffer. */
+function watchCopies(page, cdp) {
+  const w = { id: null, res: null }
+  cdp.on('Network.responseReceived', (e) => { if (e.response.url.includes('query_range')) w.id = e.requestId })
+  page.on('response', (res) => { if (res.url().includes('query_range')) w.res = res })
+  return async () => ({
+    devtools: w.id ? await cdp.send('Network.getResponseBody', { requestId: w.id }).then(() => true, () => false) : null,
+    playwright: w.res ? await w.res.body().then(() => true, () => false) : null,
+  })
+}
 /**
  * --ui v4: the app before design system v9 (uPlot canvas, its own legend, a time picker
  * menu); the default is the app on v9 (the system's chart). What is pressed and what counts
@@ -283,7 +320,8 @@ async function measureCase(browser, SERIES) {
       const page = await ctx.newPage()
       await page.addInitScript(instrument)
       const cdp = await ctx.newCDPSession(page)
-      await cdp.send('Network.enable')
+      await networkWithoutCopies(page, cdp)
+      const copies = watchCopies(page, cdp)
       await cdp.send('Network.emulateNetworkConditions', FAST_4G)
       await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 })
       const load1 = os.loadavg()[0]
@@ -312,6 +350,8 @@ async function measureCase(browser, SERIES) {
       const shifts = await page.evaluate((from) => window.__m.shifts.filter((s) => s.t >= from), run.shiftFrom)
       r.clsRun = shifts.filter((s) => !s.recent).reduce((a, s) => a + s.value, 0)
       r.clsRunAll = shifts.reduce((a, s) => a + s.value, 0)
+      r.bodyCopies = await copies()
+      if (!BUFFER && (r.bodyCopies.devtools || r.bodyCopies.playwright)) throw new Error(`DevTools kept a copy of the body although its buffers are off: ${JSON.stringify(r.bodyCopies)}`)
 
       // ---- local changes
       if (hasTable) {
@@ -416,7 +456,7 @@ async function measureCase(browser, SERIES) {
     if (xs.length) summary[`${k}Judged`] = { p75: p75(xs), median: median(xs), max: Math.max(...xs), min: Math.min(...xs), n: xs.length }
   }
   const calibrations = [...(prior?.calibrationsMs ?? []), CALIBRATION_MS]
-  const setup = `Chromium, CPU 4x, Fast 4G, ${PHONE ? '400x800, coarse pointer, touch, device scale 2' : '1440x900, fine pointer'}, fresh context per run`
+  const setup = `Chromium, CPU 4x, Fast 4G, ${PHONE ? '400x800, coarse pointer, touch, device scale 2' : '1440x900, fine pointer'}, fresh context per run${BUFFER ? '; DevTools buffers response bodies (--buffer, as before 2026-11-28)' : '; DevTools keeps no copy of response bodies'}`
   const out = { label: LABEL, series: SERIES, query: QUERIES[SERIES], layout: PHONE ? 'phone' : 'desktop', root: ROOT, when: new Date().toISOString(), runs: runs.length, setup, cores: CORES, calibrationsMs: calibrations, summary, bytes: bytes(ROOT), raw: runs }
   const dir = path.join(lib.ROOT, 'e2e', 'measurements')
   fs.mkdirSync(dir, { recursive: true })

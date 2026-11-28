@@ -307,7 +307,7 @@ export function ExplorePage() {
   const chart = useMemo(
     () =>
       hasData && result && description
-        ? toSpec({ data: aligned!, start: result.window.start, step: result.window.step, unit: description.unit, query: result.request.q, shiftMs })
+        ? toSpec({ data: aligned!, start: result.window.start, step: result.window.step, unit: description.unit, query: result.request.q, shiftMs, typed: true })
         : null,
     [hasData, aligned, result, description, shiftMs],
   )
