@@ -25,14 +25,41 @@ const SUSPECT_MS = 60_000
 const REMEMBER_MS = 5 * 60_000
 const MAX_SUSPECTS = 10_000
 const MAX_BODIES = 1_000
+/**
+ * What the remembered plans may take in this isolate, estimated (review of D77, m-5): a plan of
+ * many small batches is tens of KB, so a bound by count alone is not a bound on memory. The
+ * oldest are forgotten first; a plan larger than a sixteenth of this is not remembered at all
+ * (its retries are decoded, as any body's).
+ */
+export const MAX_BODY_BYTES = 4 << 20
+/** Bytes a remembered body is counted for: its key, and per batch a 64-character fingerprint and a size. */
+export function planCost(key: string, plan: Plan): number {
+  let n = 2 * key.length + 64
+  for (const [, batches] of plan.slots) n += 16 + batches.length * (2 * 64 + 32)
+  return n
+}
 
 const suspects = new Map<string, number>()
-const bodies = new Map<string, { plan: Plan; until: number; expires: number }>()
+const bodies = new Map<string, { plan: Plan; until: number; expires: number; cost: number }>()
+let bodyBytes = 0
+
+function forget(key: string): void {
+  const e = bodies.get(key)
+  if (!e) return
+  bodies.delete(key)
+  bodyBytes -= e.cost
+}
 
 /** Tests; also harmless in production. */
 export function clearEarly(): void {
   suspects.clear()
   bodies.clear()
+  bodyBytes = 0
+}
+
+/** Remembered bodies and their estimated bytes (tests). */
+export function earlyStats(): { bodies: number; bytes: number } {
+  return { bodies: bodies.size, bytes: bodyBytes }
 }
 
 const suspectKey = (tenant: string, signal: Signal): string => `${signal}\u0000${tenant}`
@@ -63,7 +90,7 @@ export async function refuseKnown(env: RouteEnv, tenant: string, signal: Signal,
   if (!e) return null
   const now = Date.now()
   if (e.expires <= now) {
-    bodies.delete(key)
+    forget(key)
     return null
   }
   // Still being refused: the tenant stays suspect, so its bodies go on being hashed.
@@ -72,7 +99,7 @@ export async function refuseKnown(env: RouteEnv, tenant: string, signal: Signal,
   const map = signalMap(await poolMap(env, tenant), signal)
   // Routed with another map: the batches would go elsewhere. Decode.
   if (map.pool !== e.plan.pool || map.epoch !== e.plan.epoch) {
-    bodies.delete(key)
+    forget(key)
     return null
   }
   let full = 0
@@ -96,11 +123,14 @@ export function noteOutcome(tenant: string, signal: Signal, key: string | null, 
     if (suspects.size >= MAX_SUSPECTS) suspects.clear()
     suspects.set(suspectKey(tenant, signal), now + SUSPECT_MS)
     if (key !== null && outcome.plan) {
-      bodies.delete(key)
-      if (bodies.size >= MAX_BODIES) bodies.delete(bodies.keys().next().value!)
-      bodies.set(key, { plan: outcome.plan, until: now + outcome.retryAfterMs, expires: now + REMEMBER_MS })
+      forget(key)
+      const cost = planCost(key, outcome.plan)
+      if (cost > MAX_BODY_BYTES / 16) return
+      while (bodies.size > 0 && (bodies.size >= MAX_BODIES || bodyBytes + cost > MAX_BODY_BYTES)) forget(bodies.keys().next().value!)
+      bodies.set(key, { plan: outcome.plan, until: now + outcome.retryAfterMs, expires: now + REMEMBER_MS, cost })
+      bodyBytes += cost
     }
   } else if (key !== null && outcome.status === 'ok') {
-    bodies.delete(key)
+    forget(key)
   }
 }

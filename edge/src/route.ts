@@ -247,29 +247,48 @@ interface Stored {
   any: boolean
 }
 
-/** One slot's batches go in order, stopping at the first refusal. `token`: the slot's grant (D77). */
+/**
+ * One slot's batches go in order, stopping at the first refusal. `token`: the slot's grant (D77).
+ * A slot that stops before its last batch (a refusal, a status this code does not know, a throw)
+ * gives back what is left of its grant before it answers, so no grant outlives its request
+ * (review of D77, M-2; the shard also drops a grant on a refusal under it, and an unreleased one
+ * expires).
+ */
 async function appendSlot(env: RouteEnv, map: PoolMap, tenant: string, slot: number, batches: Batch[], fingerprints: string[], seriesLimit: number, token: string | null, stored: Stored): Promise<SlotResult> {
+  let stub: DurableObjectStub<Shard> | null = null
+  let sent = 0
+  const done = async (r: SlotResult): Promise<SlotResult> => {
+    if (token !== null && stub !== null && sent < batches.length) {
+      try {
+        await stub.release(tenant, token)
+      } catch {
+        // expires by itself
+      }
+    }
+    return r
+  }
   let last: SlotResult = { status: 'error' }
   try {
-    const stub = env.SHARD.get(env.SHARD.idFromName(shardName(map, slot)))
+    stub = env.SHARD.get(env.SHARD.idFromName(shardName(map, slot)))
     for (let i = 0; i < batches.length; i++) {
       const b = batches[i]!
       last = await stub.append({
         tenant, epoch: map.epoch, fingerprint: fingerprints[i]!, payload: b.bytes, rows: b.rows, seriesIds: b.seriesIds, seriesLimit, ...(token !== null ? { reservation: token } : {}),
       })
       // A status this code does not know is never success (fail closed).
-      if (!KNOWN.has(last.status)) return { status: 'error' }
+      if (!KNOWN.has(last.status)) return await done({ status: 'error' })
       // `invalid` is this Worker contradicting itself; it is not the sender's to fix. Not acknowledged.
-      if (last.status === 'invalid') return { status: 'error' }
+      if (last.status === 'invalid') return await done({ status: 'error' })
       if (last.status === 'backpressure' && (last as { scope: string }).scope === 'overload') noteOverload(map, slot, last.retryAfterMs)
-      if (last.status !== 'ok') return last
+      if (last.status !== 'ok') return await done(last)
+      sent++
       if (!last.duplicate) stored.any = true
     }
   } catch {
     // Overloaded or unreachable shard. Nothing about the batch is known: not acknowledged,
     // and it may have been stored.
     stored.any = true
-    return { status: 'error' }
+    return await done({ status: 'error' })
   }
   return last
 }
