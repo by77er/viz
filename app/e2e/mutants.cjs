@@ -142,6 +142,9 @@ const REVIEW2 = [
   m('m10: the sign-in checkbox is labelled with a statement', R2, 'src/shell/SignIn.tsx', '            Show the key\n', '            The key is shown as typed\n'),
   m('m12: a query that finds the API unreachable raises no banner', R2, 'src/explore/ExplorePage.tsx', 'if (unreachable) void askBackend()', ''),
   m('m12: nothing asks the query again when the API answers', R2, 'src/explore/ExplorePage.tsx', 'if (unreachableRef.current && !loadingRef.current) {', 'if (unreachableRef.current && loadingRef.current) {'),
+  // The amended hit-area check of e2e/dashboards.cjs passes over the legend's "Min" head (the design system's, 43 px wide at 1500 px):
+  // it must still fail on any other control under 44 px there.
+  m('B2, dashboards: a panel\'s links stand in a plain list, under 44 px with a finger (the check that passes over "Min" must still fail)', ['dash:narrow'], 'src/dashboards/PanelView.tsx', '<ul className="vz-links" data-testid="panel-links">', '<ul data-testid="panel-links">'),
   m('m12: a query that fails alone is asked again for ever', R2, 'src/explore/ExplorePage.tsx', "if (backendDown) wasDown.current = true\n    else if (backendUp && wasDown.current) {", "if (backendDown) wasDown.current = true\n    else if (backendUp) {"),
 ]
 const SET = process.env.SET === 'review2' ? { list: REVIEW2, file: 'mutants-review2', title: 'Mutants of the fixes for the second design review (SET=review2 e2e/mutants.cjs)' } : { list: LIST, file: 'mutants-v9', title: 'Mutants of the move to design system v9 (e2e/mutants.cjs)' }

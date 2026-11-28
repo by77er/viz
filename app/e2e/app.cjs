@@ -869,7 +869,10 @@ async function main() {
       await setMockDelay(1500)
       await page.reload(); await page.waitForSelector('[data-testid=chart-reserved]')
       const held = await page.evaluate(() => Math.round(scrollY))
+      // The wheel's scroll is applied when the page's main thread gets to it, which on a loaded machine can be later than 300 ms
+      // (seen once in a whole run: 600 at 300 ms, 250 afterwards): wait up to 1.2 s for it, still inside the answer's 1.5 s.
       await page.mouse.wheel(0, -350); await sleep(300)
+      await page.waitForFunction((h) => Math.round(scrollY) !== h, held, { timeout: 1200 }).catch(() => {})
       const wheeled = await page.evaluate(() => Math.round(scrollY))
       await ready(page); await sleep(1300)
       const left = await page.evaluate(() => Math.round(scrollY))
