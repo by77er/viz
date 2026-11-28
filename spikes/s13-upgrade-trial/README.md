@@ -1,6 +1,6 @@
 # S13: the first release over production, on a stage
 
-**Status (2026-11-28): running.** The owner authorised stage deploys on 2026-11-28 (standing, recorded in
+**Status (2026-11-28): done; the stage is destroyed.** The owner authorised stage deploys on 2026-11-28 (standing, recorded in
 `AGENTS.md`). The two earlier refusals (2026-11-26) were this session's permission check, before that
 authorisation. Results are recorded step by step below as they come; numbers are measured on Cloudflare
 from outside (this sandbox, through its proxy) unless said otherwise.
@@ -32,6 +32,51 @@ endpoints, and `/oauth/authorize` accepts only the resource `https://vis.bitcru.
 the stage's (tagged under its own `OAUTH_CLIENT_KEY`, so production refuses them), but a client that
 follows the stage's metadata is sent to production. The trial takes the resource from the metadata. Fix
 (later release): a stage's `PUBLIC_URL` is its gateway's workers.dev URL.
+
+### Step 2: pull request #9's tree over it (f93806e, 08:04 to 08:15 UTC)
+
+| Check | Result |
+|---|---|
+| `resources.mjs ensure --stage s13` | the six Rate Limiting ids allocated (7886 to 7891) |
+| `VIZ_OAUTH_PUBLIC=1 deploy.sh --stage s13` (prebuilt engines, `SMOKE_KEY` from its file) | **Cloudflare accepted the six `ratelimits` at upload.** exit 0 in 111 s; record forward-only by `oauth-public` for viz-s13-control only, as designed; `OAUTH_CLIENT_KEY` kept; smoke healthy, Remote Write 204 in 377 ms and all 9 samples read 275 ms after the acknowledgement. (A first attempt stopped at `npm ci` with the session's disk full; nothing was uploaded.) |
+| Version API, `GET …/workers/scripts/viz-s13-control/versions/<id>` | each binding listed as `{"name":"OAUTH_RL_SOURCE","namespace_id":"7886","simple":{"limit":120,"period":60},"type":"ratelimit"}`: **`type: ratelimit` and `namespace_id` as a string**, the field `resources.mjs` reads first. M2-2 is settled |
+| `resources.mjs ensure --stage s13` again | passes; all six ids `kept (bound by viz-s13-control)` |
+| `trial.mjs after` | the series written before read after (42); the client registered before passes `/oauth/authorize`; the access token issued before answers at `/mcp`; the refresh token issued before refreshes once and is refused the second time (`invalid_grant`) |
+| Credential limit: one fresh code presented 30 times at `/oauth/token` (wrong verifiers) | 6 answered 400, then 24 answered **429 `too_many_requests` with `Retry-After: 60`** (limit 5 a minute; one more than the limit got through, as a per-location limiter allows) |
+| Source limit: 150 `POST /oauth/register` in 4.6 s | **all 201**. This sandbox's outbound address rotates (12 requests to Cloudflare's trace page came from 8 addresses in one /16), so no single address reached 120 |
+| Source limit again: 1,300 `POST /oauth/register` in 10.7 s, four at a time | 630 answered 201, then **670 answered 429 `too_many_requests` with `Retry-After: 60`**, the first at request 518: consistent with a limit of 120 per address over about five addresses |
+| Workers' invocations, 07:55 to 08:17 UTC (analytics API, `spikes/s10-signals-trial/analytics.mjs`) | fetch 3,082, cron 1, rpc 4, queue 4, **every one with status `success`** (no exception over the cutover, the publisher's 3 → 7 and the shard's 1 → 3 migrations included). The rows are under `__unknown__` rather than script names, so they are not split per Worker. List price of the window: US$0.001 |
+
+### Step 3: an ordinary second release, then single-Worker rollbacks (08:15 to 08:25 UTC)
+
+| Check | Result |
+|---|---|
+| The same tree released again | exit 0 in 82 s; **not forward-only** ("the previous release can open everything this one writes"); key kept; smoke healthy with the data check |
+| `release.mjs rollback --record <step 1's record> --only <w>` for viz-query, viz-gateway, viz-mcp, viz-ruler, viz-ingest, viz-publisher | **each allowed**, exit 0, one Worker restored to fb77292's version each time |
+| The same for viz-control | **refused**, exit 3, nothing changed: "below its floor … oauth-public" |
+| The mixed stage (six Workers of fb77292, viz-control of #9) | `/healthz` healthy, every backend 200; the series read back; the old client passes `/oauth/authorize`; a **fresh grant** made through #9's viz-control answers at fb77292's `/mcp` (200) |
+| The grant from step 1 | its access token answered 401 and its refresh token `invalid_grant` after the limit test. That is the limit test's doing, not the rollback's: the 30 wrong-verifier exchanges ended that client's grant, which is what D44's fix (`e63859e`) specifies for a failed exchange. Not separated by a further test |
+
+### Step 4: cleanup (08:25 UTC)
+
+`resources.mjs destroy --stage s13` (from #9's tree): every Worker, the bucket, the KV namespace, the four
+queues and their consumers deleted, the six rate-limit ids freed; its leftover check lists nothing. The
+inventory after, diffed with the one before (`spikes/s11-large-ledger/inventory.mjs --diff`): no `viz-s13-`
+name remains; the viz names that changed are `viz-preview-app` (spike S14, added 2026-11-27) and
+`viz-spike-s0-do-billing` with its twelve object namespaces (deleted 2026-11-28 on the owner's word); one
+Worker and one custom domain not of viz changed in the account, which this trial did not touch. The trial's
+keys and tokens were shredded; the fb77292 worktree's build directories were removed.
+
+**Cost** (analytics API, 07:55 to 08:17 UTC): US$0.001 at list price; the rest of the trial was a few
+hundred more requests. Within the stated worst case of US$1.
+
+### What this says about merging #9
+
+- The bindings are accepted and read back as the tooling expects; the first production release will not
+  stop at upload or at `resources.mjs` for this reason.
+- The upgrade keeps the key, the clients, issued tokens and data, and is forward-only for viz-control alone.
+- Both limits refuse with 429 and `Retry-After` on Cloudflare.
+- Not shown here: production's own custom domain in front (the stage is on workers.dev), and real traffic.
 
 ## What would be deployed
 
