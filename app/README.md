@@ -236,7 +236,7 @@ touched; `systemChart.ts`, `spec.ts` and `index.ts` are as they were.
 
 ### How each fix is held
 
-New checks: section `review2` of `e2e/app.cjs` (18 checks: M1, M2, m1 to m4, m10, m12),
+New checks: section `review2` of `e2e/app.cjs` (20 checks as run on 2026-11-28 at 10:32, one m12 check added that day: M1, M2, m1 to m4, m10, m12),
 section `reload` (7 checks: B3), one check and three more states in section `touch` (B2), and
 in `e2e/dashboards.cjs` section `reload` (3 checks) and the hit-area measure at 1500 px with a
 finger on each dashboard (3 checks). Unit: `src/lib/scrollKeeper.test.ts`, and cases in
@@ -282,7 +282,44 @@ finger on each dashboard (3 checks). Unit: `src/lib/scrollKeeper.test.ts`, and c
 
 ### Mutants of these fixes
 
-@@MUTANTS@@
+`SET=review2 VIZ_MUTANT_DIR=<scratch dir> node e2e/mutants.cjs`: each mutant undoes one fix on a
+copy of the app in the session's scratch area (never in the tree), builds it and runs the
+checks named. Run 2026-11-28, 08:10 to 10:4x UTC, one mutant at a time with `ONLY=<its name>`
+(a small driver in the scratch area, so that the machine lock was held per mutant and other
+builders' runs could take turns), then the rest in one hold of the lock. The result file,
+assembled from those runs in the harness's own format: `e2e/measurements/mutants-review2.txt`.
+
+**24 mutants** (the 23 written at the pause and one added: the dashboards hit-area check that
+passes over the system's "Min" head must still fail on anything else). **First run: 23
+killed, 1 survived. Answered: 24 of 24 killed** on the final checks.
+
+| Mutant | Caught by |
+|---|---|
+| B2: no stack under the table | `touch`: the tap 16 px above and below the centre; the hit-area measure (189 areas) |
+| B3: nothing puts a reload back | `reload` at all three layouts, and `dashboards.cjs` `reload` (8 checks) |
+| B3: put back once and not held | **survived at first** (by `reload` and `dash:reload`, in the 08:00 probe). On this machine the router's reset comes before the keeper's first placement, so nothing ever undid the position the hold protects. Answered by a new check: a scroll to the top that no input made, 150 ms after landing, is undone (Help, the chart). Killed by it alone, twice (08:10, and in the whole run) |
+| B3: a link opened afresh is restored | unit `scrollKeeper.test.ts` (2 cases) |
+| B3: not ended by the person's own scrolling | `reload`: the wheel during the wait |
+| B3: waits for the answer, not the reserved layout | `reload` at the three layouts |
+| M1: no Copy link button | `review2`: every palette command matched to a control |
+| M1: the address bar's link, not the form shown | `review2`: Copy link; the palette's command (2) |
+| M1: Help says nothing of where commands are | `review2`: Help's sentence |
+| m4: the command copies without a word | `review2`, m4's check. At first it was killed only by the run stopping (a 30 s wait for "Copied" that threw); the wait now ends after 5 s and the check fails by name ("said" is in its detail). Run again: killed by the check |
+| m4: the placeholder "last 24 h" | `review2` |
+| M2: the day left out | unit, and `review2` (6 checks) |
+| M2: the day put before the range on every draw | unit ("once"); in `review2` the run stopped on a 30 s `waitForSelector` (which step was not looked into) |
+| M2: the text form says nothing of a warning | `review2` (2) |
+| M2: the name says nothing of a warning | unit; `review2` |
+| M2: a warning kept into the next whole answer | `review2`, **by the run stopping** on a 30 s `waitForSelector` (which step was not looked into): caught, but not by a named check |
+| m1, m2, m3, m10 | `review2`, one named check each |
+| m12: no banner | `review2`, **by the run stopping** on a 5 s `waitForSelector` (the banner's, by its timeout) |
+| m12: nothing asks the query again | `review2`, **by the run stopping** on a 5 s `waitForSelector` (by its timeout, the error state's going) |
+| m12: a query that fails alone is asked again | **survived at first**: the two m12 checks cut the API whole, so the connection check also failed and the guard was never needed. Answered by a new check: the page opened with only the query's address cut and the check answered 1 s late; the query must be asked once and not again in 4 s, with no banner (it was asked once). @@M12@@ |
+| dashboards: a panel's links out of `vz-links` | `dashboards.cjs` `narrow`: the 1500 px check that passes over "Min" (and the 400 px check), on all three dashboards |
+
+Three kills are by a wait that throws rather than by a named check (m12 twice, M2's kept
+warning): each mutant is caught, but the report names the step that stopped, not the property.
+Not changed here.
 
 ### Images
 
@@ -1275,7 +1312,43 @@ overrule. Each is a choice between real alternatives.
 
 ### The fixes for the second design review (2026-11-28)
 
-@@VERIF@@
+Node 22.23, Chromium (Playwright's headless shell), on the shared machine of 4 cores and
+16 GB; every browser run, build and test run of this work held the machine lock while it ran
+(one job at a time on the machine). The app's source (`src/`, `mock/`, `index.html`,
+configuration) was not changed in this verification; `dist/` was built from it at 07:50 UTC
+and is what the end-to-end suites, the images and the speed runs used. What changed are
+checks: `e2e/app.cjs` (four edits, below) and `e2e/mutants.cjs` (one mutant added).
+**The tree state reported green is the one at @@GREEN@@ UTC** (the last whole `e2e/app.cjs`
+run, after the last edit to any file it or the build reads).
+
+| Check | Result |
+|---|---|
+| `npm test` | 230 tests in 21 files pass (07:50 and 10:05) |
+| `npx tsc --noEmit` | passes (07:50, 10:05) |
+| `npm run check:tokens` | passes: contrast and structure 759/759, 0 literal values in 71 files (07:50, 10:05) |
+| `npm run build` | passes (07:50); the main script 554.6 kB, 178.7 kB compressed |
+| `node e2e/app.cjs`, whole | @@APP@@ |
+| `node e2e/errors.cjs` | 14 of 14 (07:55) |
+| `node e2e/prod.cjs` | 21 of 21 (07:55) |
+| `node e2e/dashboards.cjs`, whole | 106 of 106 (07:57), the amended hit-area check included: "Min" heads 43 px wide counted 6, 1 and 4 on the three dashboards, nothing else under 44 px |
+| Mutants, `SET=review2` | 24: first run 23 killed, 1 survived; answered; 24 of 24 killed ("Mutants of these fixes") |
+| Images | 196 pairs remade from this build ("Images") |
+| Speed, the two touched paths | measured here, 20 runs a layout ("Speed of the two paths touched"); "Show 50 more" over budget by 2 and 5 ms at p75 |
+| `e2e/real.cjs`, `e2e/contract.cjs` | **not run** in this round (no source on the API path changed) |
+
+**Changes to checks, and why.** (1) The B3 wheel check waited a fixed 300 ms for the wheel's
+scroll and failed once in the first whole run (07:52: 600 at 300 ms, 250 afterwards); it now
+waits up to 1.2 s for it. It passed in isolation twice before the change. Not an expectation
+that a fix changes: a timing assumption. (2) New B3 check: the position is held against a
+reset no input made (answers a survivor). (3) The m4 check's wait for "Copied" no longer
+throws; the check reads what the button says (so the mutant fails it by name). (4) New m12
+check: a query that fails alone is not asked again (answers a survivor). No expectation was
+changed because a fix changed it on purpose in this round; the one M2 changed was updated at
+the pause (27 Nov) and passed in every run here.
+
+Two other sessions' snapshot commits ("Work in progress: parallel component build", 08:02
+and later) took in-progress states of `e2e/app.cjs` and the remade images while this work
+ran; those commits are not green states of `app/` and were not made by this work.
 
 ### The move to design system v9 (2026-11-26 and 27; the state the second review saw)
 

@@ -49,11 +49,41 @@ follow-up in `app/README.md`.
 
 ### Suites, on one tree
 
-@@SUITES@@
+The app's source was not changed in this round (only checks were); `dist/` built at 07:50
+UTC from it is what every browser run here used. All runs on 2026-11-28, each holding the
+shared machine lock.
+
+| Suite | Result |
+|---|---|
+| `npm test` | 230 tests in 21 files pass |
+| `npx tsc --noEmit` | passes |
+| `npm run check:tokens` | 759/759; 0 literal values in 71 files |
+| `npm run build` | passes |
+| `node e2e/app.cjs`, whole | @@APP@@ |
+| `node e2e/errors.cjs` | 14 of 14 |
+| `node e2e/prod.cjs` (under the content security policy) | 21 of 21 |
+| `node e2e/dashboards.cjs`, whole | 106 of 106 |
+
+Green at @@GREEN@@ UTC. Changes to checks in this round (none an expectation changed on purpose
+by a fix): a wheel check that read a scroll at a fixed 300 ms now waits for it (it failed
+once in a whole run on a loaded machine); two checks added to answer surviving mutants; the
+m4 check fails by name instead of stopping the run. Details: `app/README.md`, "Verification".
 
 ### Mutants
 
-@@MUT@@
+24 mutants on a copy outside the tree (`app/e2e/measurements/mutants-review2.txt`). First run:
+**23 killed, 1 survived**, plus one that survived in a probe before the run. Both were answered
+with a check that now kills them; **24 of 24 killed** on the final checks:
+
+- *B3, the position placed once and not held*: on this machine the router's reset comes
+  before the first placement, so no check saw the hold. New check: a reset that no input made,
+  150 ms after landing, is undone (Help and the chart).
+- *m12, a query that fails alone asked again*: the m12 checks cut the whole API, so the guard
+  was never needed. New check: only the query's address cut, the connection check answering
+  late; the query is asked once and not again, and no banner shows.
+
+Three mutants are caught by a wait that stops the run rather than by a named check (m12 twice,
+M2's warning kept); the table in `app/README.md` says which.
 
 ### Images
 
