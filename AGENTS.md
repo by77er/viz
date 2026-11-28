@@ -135,6 +135,11 @@ also holds unrelated Workers, buckets and KV namespaces.
   transition, D75). Do not change DNS or routes for any other hostname in that zone.
 - Never print, log or commit the token, an API key, or a Worker secret. Generate secrets at
   deploy time and set them with `wrangler secret put`.
+- **The owner allows stage deploys** (2026-11-28, standing): a stage (`deploy/deploy.sh --stage
+  <name>`, every resource named `viz-<stage>-…`, workers.dev only) may be deployed, exercised and
+  destroyed without asking again, under the rules here (worst-case cost stated first, an expiry,
+  deleted when the measurement is done, recorded in a spike README). Production deploys still go
+  through `main` and the deploy workflow only.
 - Experiments live under `spikes/<name>/`, each with a README that says what is deployed,
   what it costs, how to read the result, and how to delete it. Anything that runs on a
   timer must stop by itself at a deadline.
