@@ -140,6 +140,48 @@ export interface FlushOptions {
   /** Stop after this many segments (the rest stay pending). Default 64. */
   maxSegments?: number
   hooks?: FlushHooks
+  /**
+   * Segments read, encoded and written ahead of the one being admitted (D82). Admission stays in
+   * sequence order; this only overlaps one segment's PUTs with the next one's read and encode.
+   * Default `PIPELINE_DEPTH` (2: the one being admitted and one more); 1 is the order before D82.
+   */
+  pipeline?: number
+  /**
+   * After the last unit, wait up to this long for the ledger's log to reach it, polling
+   * `loggedWatermarks` every `logPollMs`, so the shard is told `recorded` in this run instead of
+   * a retry's (D82). Default 0 (a caller that asks for a flush gets its answer at once); the
+   * queue consumer passes its own (`consumeFlushBatch`, default `LOG_WAIT_MS`).
+   */
+  logWaitMs?: number
+  logPollMs?: number
+  /** At most this many R2 requests in flight, shared with whoever else holds it (the consumer's other runs). Default: a limit of six of this run's own. */
+  r2?: Limiter
+}
+
+/** See `FlushOptions.pipeline`. */
+export const PIPELINE_DEPTH = 2
+/** See `FlushOptions.logPollMs`. */
+export const LOG_POLL_MS = 250
+
+/**
+ * A counting semaphore: at most `size` calls of `run` in flight. One invocation has six outbound
+ * connections (AGENTS.md); the consumer gives every run of a batch the same one for R2 (D82).
+ */
+export class Limiter {
+  private active = 0
+  private readonly waiting: (() => void)[] = []
+  constructor(readonly size = 6) {}
+  async run<T>(f: () => Promise<T>): Promise<T> {
+    if (this.active >= this.size) await new Promise<void>((r) => this.waiting.push(r))
+    else this.active++
+    try {
+      return await f()
+    } finally {
+      const next = this.waiting.shift()
+      if (next) next()
+      else this.active--
+    }
+  }
 }
 
 const PARQUET = 'application/vnd.apache.parquet'
@@ -206,6 +248,7 @@ interface Ctx {
   shard: DurableObjectStub<Shard>
   ledger: DurableObjectStub<Ledger>
   hooks: FlushHooks
+  r2: Limiter
 }
 
 /** Steps 1 to 3: read, encode, write. Returns the unit to report and what was written. */
@@ -243,9 +286,9 @@ async function writeSegment(c: Ctx, seg: Segment): Promise<{ unit: FlushUnit; fi
       ...(f.table === 'spans' ? { hour: (f as EncodedSignalFile).hour ?? -1 } : {}),
     })
     // The files of a segment are independent objects: their PUTs go out together (a PUT
-    // costs about the same whatever its size), at most six at a time.
-    if (puts.length % 6 === 0) await Promise.all(puts)
-    puts.push(putFile(c.env.BUCKET, key, f.bytes, digest))
+    // costs about the same whatever its size), at most six at a time with everything else
+    // this invocation has in flight (`c.r2`).
+    puts.push(c.r2.run(() => putFile(c.env.BUCKET, key, f.bytes, digest)))
     entries.push({ table: f.table, day: f.day, key, bytes: f.bytes.byteLength, rows: f.rows, minTs: f.minTs, maxTs: f.maxTs, level: 0, index: f.index })
   }
   const how = await Promise.all(puts)
@@ -337,6 +380,24 @@ async function committedWatermark(c: Ctx): Promise<{ incarnation: number; seq: n
   return w ? { incarnation: w.incarnation, seq: w.seq } : null
 }
 
+/**
+ * Tell the shard what the ledger's log holds of this stream (steps 5 and 6): `recorded` with the
+ * LOGGED watermark, never the committed one. Returns that watermark (0: none yet).
+ */
+async function recordLogged(c: Ctx, incarnation: number, known?: number): Promise<number> {
+  const logged = known ?? (await loggedWatermark(c, incarnation))
+  if (logged > 0) {
+    const r = await c.shard.recorded(c.tenant, incarnation, logged)
+    if (r.status === 'incarnation_mismatch') throw new Stop('shard_incarnation_changed', `stream ${c.shardName} is now incarnation ${r.incarnation}`)
+    if (r.status === 'not_contiguous') {
+      throw new Stop('shard_not_contiguous', `the shard refused recorded(${logged}); it has recorded through ${r.recordedThrough}`)
+    }
+    // Fail closed on an answer this code does not know: never take it for "recorded".
+    if (r.status !== 'ok') throw new Error(`flush: the shard answered recorded with ${JSON.stringify((r as { status?: unknown }).status)}; retry`)
+  }
+  return logged
+}
+
 async function loggedWatermark(c: Ctx, incarnation: number): Promise<number> {
   const w = (await c.ledger.loggedWatermarks()).find((x) => x.shard === c.shardName)
   // A mark of another incarnation says nothing about this stream.
@@ -355,7 +416,9 @@ export async function flushTenant(env: FlushEnv, engine: FlushEngine, tenant: st
     shard: env.SHARD.get(env.SHARD.idFromName(shardName)),
     ledger: env.LEDGER.get(env.LEDGER.idFromName(tenant)),
     hooks: opts.hooks ?? {},
+    r2: opts.r2 ?? new Limiter(6),
   }
+  const depth = Math.max(1, Math.floor(opts.pipeline ?? PIPELINE_DEPTH))
   const maxSegments = opts.maxSegments ?? 64
   const handled = new Map<number, FlushedSegment>()
   const out: FlushResult = { status: 'ok', tenant, shard: shardName, segments: [], loggedThrough: 0, recordedThrough: 0, awaitingLog: false, remaining: 0, changed: false }
@@ -382,37 +445,54 @@ export async function flushTenant(env: FlushEnv, engine: FlushEngine, tenant: st
           throw new Stop('gap', `the ledger's next sequence for ${shardName} is ${next}, the shard's first pending segment starts at ${first.seqLo}`)
         }
 
-        let n = 0
-        for (const seg of pending) {
-          if (n++ >= maxSegments) {
-            out.remaining = pending.length - maxSegments
-            break
-          }
-          let entry: FlushedSegment
-          if (committed && committed.incarnation === seg.incarnation && seg.seqHi <= committed.seq) {
-            // Already admitted by an earlier or concurrent run: nothing to encode or write.
-            entry = handled.get(seg.seqLo) ?? { incarnation: seg.incarnation, seqLo: seg.seqLo, seqHi: seg.seqHi, outcome: 'already_admitted', files: [] }
-          } else {
-            const { unit, files } = await writeSegment(c, seg)
-            await c.hooks.afterPut?.(seg, files)
-            const { outcome, result } = await report(c, seg, unit)
-            await c.hooks.afterAddUnit?.(seg, result)
-            entry = { incarnation: seg.incarnation, seqLo: seg.seqLo, seqHi: seg.seqHi, outcome, files }
-          }
-          handled.set(seg.seqLo, entry)
-
-          // Steps 5 and 6. The LOGGED watermark: what survives the loss of the ledger's storage.
-          const logged = await loggedWatermark(c, seg.incarnation)
-          if (logged > 0) {
-            const r = await c.shard.recorded(tenant, seg.incarnation, logged)
-            if (r.status === 'incarnation_mismatch') throw new Stop('shard_incarnation_changed', `stream ${shardName} is now incarnation ${r.incarnation}`)
-            if (r.status === 'not_contiguous') {
-              throw new Stop('shard_not_contiguous', `the shard refused recorded(${logged}); it has recorded through ${r.recordedThrough}`)
+        const todo = pending.slice(0, maxSegments)
+        if (pending.length > maxSegments) out.remaining = pending.length - maxSegments
+        const isAdmitted = (seg: Segment) => committed !== null && committed.incarnation === seg.incarnation && seg.seqHi <= committed.seq
+        // D82: up to `depth` segments are read, encoded and written at once; each is admitted
+        // only after every one before it, as before. A segment's PUTs overlap the next one's read
+        // and encode. Whatever is still in flight when this attempt ends is awaited (settled)
+        // before the run goes on: a PUT left running could otherwise race the next attempt's.
+        const writes: (Promise<{ unit: FlushUnit; files: FlushedFile[] }> | undefined)[] = []
+        const startWrite = (j: number) => {
+          const seg = todo[j]
+          if (seg === undefined || writes[j] !== undefined || isAdmitted(seg)) return
+          const w = writeSegment(c, seg)
+          w.catch(() => undefined)
+          writes[j] = w
+        }
+        try {
+          for (const [i, seg] of todo.entries()) {
+            for (let j = i; j < i + depth; j++) startWrite(j)
+            let entry: FlushedSegment
+            if (isAdmitted(seg)) {
+              // Already admitted by an earlier or concurrent run: nothing to encode or write.
+              entry = handled.get(seg.seqLo) ?? { incarnation: seg.incarnation, seqLo: seg.seqLo, seqHi: seg.seqHi, outcome: 'already_admitted', files: [] }
+            } else {
+              const { unit, files } = await writes[i]!
+              await c.hooks.afterPut?.(seg, files)
+              const { outcome, result } = await report(c, seg, unit)
+              await c.hooks.afterAddUnit?.(seg, result)
+              entry = { incarnation: seg.incarnation, seqLo: seg.seqLo, seqHi: seg.seqHi, outcome, files }
             }
-            // Fail closed on an answer this code does not know: never take it for "recorded".
-            if (r.status !== 'ok') throw new Error(`flush: the shard answered recorded with ${JSON.stringify((r as { status?: unknown }).status)}; retry`)
+            handled.set(seg.seqLo, entry)
+            // Steps 5 and 6. The LOGGED watermark: what survives the loss of the ledger's storage.
+            await recordLogged(c, seg.incarnation)
+            await c.hooks.afterRecorded?.(seg)
           }
-          await c.hooks.afterRecorded?.(seg)
+        } finally {
+          await Promise.allSettled(writes.filter((w) => w !== undefined))
+        }
+        // D82: the ledger logs about 0.2-1 s after a commit. Wait for it (bounded), so the shard
+        // frees this run's segments now rather than on a retry seconds later.
+        const last = todo.at(-1)
+        if (last && (opts.logWaitMs ?? 0) > 0) {
+          const until = Date.now() + opts.logWaitMs!
+          let logged = await loggedWatermark(c, last.incarnation)
+          while (logged < last.seqHi && Date.now() < until) {
+            await new Promise((r) => setTimeout(r, Math.max(1, opts.logPollMs ?? LOG_POLL_MS)))
+            logged = await loggedWatermark(c, last.incarnation)
+          }
+          if (logged > 0) await recordLogged(c, last.incarnation, logged)
         }
         break
       } catch (e) {

@@ -266,12 +266,14 @@ describe('safe to run twice and to stop anywhere', () => {
     expect((await read(tenant, [shardName])).canon).toEqual(sent.canon())
   })
 
-  it('converges after a crash between PUT and addUnit, without rewriting any object', async () => {
+  for (const pipeline of [1, 2]) {
+  it(`converges after a crash between PUT and addUnit, without rewriting any object (pipeline ${pipeline})`, async () => {
     const { tenant, shardName, shard, ledger, sent } = await twoSegments()
-    await expect(flush(tenant, shardName, crash('afterPut', 1))).rejects.toThrow('injected crash afterPut')
-    // Objects are in R2, the ledger knows nothing, the shard has recorded nothing.
+    await expect(flush(tenant, shardName, { ...crash('afterPut', 1), pipeline })).rejects.toThrow('injected crash afterPut')
+    // Objects are in R2, the ledger knows nothing, the shard has recorded nothing. With a
+    // pipeline of 2 (D82) the second segment's objects were written too, ahead of its turn.
     const orphans = await dataKeys(tenant)
-    expect(orphans).toHaveLength(2)
+    expect(orphans).toHaveLength(2 * pipeline)
     expect(await liveKeys(ledger)).toEqual([])
     expect(await shard.describe(tenant)).toMatchObject({ recordedThrough: 0 })
     expect((await read(tenant, [shardName])).canon).toEqual(sent.canon()) // still served from the tail
@@ -280,7 +282,7 @@ describe('safe to run twice and to stop anywhere', () => {
     const r = await settled(tenant, shardName)
     expect(r).toMatchObject({ status: 'ok', recordedThrough: 3 })
     expect(r.segments[0]!.files.map((f) => f.put)).toEqual(['exists', 'exists']) // same bytes, same keys
-    expect(r.segments[1]!.files.map((f) => f.put)).toEqual(['created', 'created'])
+    expect(r.segments[1]!.files.map((f) => f.put)).toEqual(pipeline === 1 ? ['created', 'created'] : ['exists', 'exists'])
     expect(await versions(orphans)).toEqual(v) // If-None-Match: the first attempt's objects were not overwritten
     expect(await dataKeys(tenant)).toHaveLength(4)
     expect(await liveKeys(ledger)).toEqual(await dataKeys(tenant))
@@ -288,6 +290,7 @@ describe('safe to run twice and to stop anywhere', () => {
     await discardRecorded(shard)
     expect((await read(tenant, [shardName])).canon).toEqual(sent.canon())
   })
+  }
 
   it('converges after a crash between addUnit and recorded, without a second unit', async () => {
     const { tenant, shardName, shard, ledger, sent } = await twoSegments()

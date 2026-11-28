@@ -1,6 +1,6 @@
 import { TENANT_ID } from '../../contracts/ledger'
 import type { FlushMessage } from '../../shard/src/shard'
-import { type FlushEngine, type FlushEnv, type FlushResult, flushTenant } from './flush'
+import { type FlushEngine, type FlushEnv, type FlushOptions, type FlushResult, Limiter, flushTenant } from './flush'
 
 /**
  * The flush queue's consumer: `{v, tenant, shard}` messages (written by a shard when it seals,
@@ -8,6 +8,9 @@ import { type FlushEngine, type FlushEnv, type FlushResult, flushTenant } from '
  *
  *   - Messages of one batch for the same (tenant, shard) are ONE run: flush handles every
  *     pending segment of the stream, so duplicates and bursts cost nothing.
+ *   - The runs of a batch go at once, at most `maxConcurrentRuns` (D82): a run waits mostly on
+ *     R2 and Durable Objects, so one after another a batch's wall time was the sum (S10: queue
+ *     lag up to 58 s). Their R2 requests share one limit of six, the invocation's connections.
  *   - At-least-once. A group is acknowledged only when its run ended `ok` with nothing left
  *     to do. Otherwise one message of the group is retried (with a growing delay) and the
  *     others are acknowledged, so a group never multiplies. Flush is idempotent, so a
@@ -45,7 +48,18 @@ export interface ConsumerOptions {
   flush?(tenant: string, shard: string): Promise<FlushResult>
   /** Where dead letters go, one call per batch. Default: ONE object in R2, under `{cell}/dead-letters/`. */
   deadLetter?(letters: DeadLetter[]): Promise<void>
+  /** Runs of one batch in flight at once (D82). Default `MAX_CONCURRENT_RUNS`; 1 is the order before D82. */
+  maxConcurrentRuns?: number
+  /** Passed to each run (`FlushOptions.logWaitMs`). Default `LOG_WAIT_MS`. */
+  logWaitMs?: number
+  /** Passed to each run (`FlushOptions.pipeline`). */
+  pipeline?: number
 }
+
+/** See `ConsumerOptions.maxConcurrentRuns`. Bounds memory too: each run holds up to `PIPELINE_DEPTH` segments (about 4 MiB each) and their files. */
+export const MAX_CONCURRENT_RUNS = 3
+/** See `FlushOptions.logWaitMs`: a little over the ledger's measured drain (S10: alarm wall p50 388 ms, R2 PUT p99 962 ms). */
+export const LOG_WAIT_MS = 3000
 
 export interface GroupOutcome {
   tenant: string
@@ -126,11 +140,12 @@ export async function consumeFlushBatch(batch: MessageBatch<unknown>, env: Flush
     }
   }
 
-  const out: GroupOutcome[] = []
-  for (const { msg, messages } of groups.values()) {
+  const r2 = new Limiter(6)
+  const runOpts: FlushOptions = { r2, logWaitMs: opts.logWaitMs ?? LOG_WAIT_MS, ...(opts.pipeline !== undefined ? { pipeline: opts.pipeline } : {}) }
+  const runGroup = async ({ msg, messages }: { msg: FlushMessage; messages: Message<unknown>[] }): Promise<GroupOutcome> => {
     const outcome: GroupOutcome = { tenant: msg.tenant, shard: msg.shard, messages: messages.length, action: 'done' }
     try {
-      const result = await (opts.flush ? opts.flush(msg.tenant, msg.shard) : flushTenant(env, engine, msg.tenant, msg.shard))
+      const result = await (opts.flush ? opts.flush(msg.tenant, msg.shard) : flushTenant(env, engine, msg.tenant, msg.shard, runOpts))
       outcome.result = result
       if (result.status !== 'ok') outcome.why = result.reason ?? 'error'
       // Admitted but the ledger's log has not caught up, so the shard was not told: run again.
@@ -149,8 +164,16 @@ export async function consumeFlushBatch(batch: MessageBatch<unknown>, env: Flush
       if (m === carrier) m.retry({ delaySeconds: retryDelaySeconds(m.attempts) })
       else m.ack()
     }
-    out.push(outcome)
+    return outcome
   }
+  // At most `maxConcurrentRuns` at once; outcomes in the batch's order of first appearance.
+  const list = [...groups.values()]
+  const out: GroupOutcome[] = new Array(list.length)
+  let next = 0
+  const worker = async () => {
+    for (let i = next++; i < list.length; i = next++) out[i] = await runGroup(list[i]!)
+  }
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(list.length, Math.floor(opts.maxConcurrentRuns ?? MAX_CONCURRENT_RUNS))) }, worker))
   return out
 }
 
