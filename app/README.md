@@ -284,7 +284,7 @@ finger on each dashboard (3 checks). Unit: `src/lib/scrollKeeper.test.ts`, and c
 
 `SET=review2 VIZ_MUTANT_DIR=<scratch dir> node e2e/mutants.cjs`: each mutant undoes one fix on a
 copy of the app in the session's scratch area (never in the tree), builds it and runs the
-checks named. Run 2026-11-28, 08:10 to 10:4x UTC, one mutant at a time with `ONLY=<its name>`
+checks named. Run 2026-11-28, 08:10 to 10:52 UTC, one mutant at a time with `ONLY=<its name>`
 (a small driver in the scratch area, so that the machine lock was held per mutant and other
 builders' runs could take turns), then the rest in one hold of the lock. The result file,
 assembled from those runs in the harness's own format: `e2e/measurements/mutants-review2.txt`.
@@ -314,7 +314,7 @@ killed, 1 survived. Answered: 24 of 24 killed** on the final checks.
 | m1, m2, m3, m10 | `review2`, one named check each |
 | m12: no banner | `review2`, **by the run stopping** on a 5 s `waitForSelector` (the banner's, by its timeout) |
 | m12: nothing asks the query again | `review2`, **by the run stopping** on a 5 s `waitForSelector` (by its timeout, the error state's going) |
-| m12: a query that fails alone is asked again | **survived at first**: the two m12 checks cut the API whole, so the connection check also failed and the guard was never needed. Answered by a new check: the page opened with only the query's address cut and the check answered 1 s late; the query must be asked once and not again in 4 s, with no banner (it was asked once). @@M12@@ |
+| m12: a query that fails alone is asked again | **survived at first**: the two m12 checks cut the API whole, so the connection check also failed and the guard was never needed. Answered by a new check: the page opened with only the query's address cut and the check answered 1 s late; the query must be asked once and not again in 4 s, with no banner (it was asked once). Killed by it (10:51) |
 | dashboards: a panel's links out of `vz-links` | `dashboards.cjs` `narrow`: the 1500 px check that passes over "Min" (and the 400 px check), on all three dashboards |
 
 Three kills are by a wait that throws rather than by a named check (m12 twice, M2's kept
@@ -1318,7 +1318,7 @@ Node 22.23, Chromium (Playwright's headless shell), on the shared machine of 4 c
 configuration) was not changed in this verification; `dist/` was built from it at 07:50 UTC
 and is what the end-to-end suites, the images and the speed runs used. What changed are
 checks: `e2e/app.cjs` (four edits, below) and `e2e/mutants.cjs` (one mutant added).
-**The tree state reported green is the one at @@GREEN@@ UTC** (the last whole `e2e/app.cjs`
+**The tree state reported green is the one at 10:53 UTC** (the last whole `e2e/app.cjs`
 run, after the last edit to any file it or the build reads).
 
 | Check | Result |
@@ -1327,7 +1327,7 @@ run, after the last edit to any file it or the build reads).
 | `npx tsc --noEmit` | passes (07:50, 10:05) |
 | `npm run check:tokens` | passes: contrast and structure 759/759, 0 literal values in 71 files (07:50, 10:05) |
 | `npm run build` | passes (07:50); the main script 554.6 kB, 178.7 kB compressed |
-| `node e2e/app.cjs`, whole | @@APP@@ |
+| `node e2e/app.cjs`, whole | 156 of 156 (10:53, after the last edit; 153 of 154 in the first whole run at 07:52, the failure being the wheel check's timing, below) |
 | `node e2e/errors.cjs` | 14 of 14 (07:55) |
 | `node e2e/prod.cjs` | 21 of 21 (07:55) |
 | `node e2e/dashboards.cjs`, whole | 106 of 106 (07:57), the amended hit-area check included: "Min" heads 43 px wide counted 6, 1 and 4 on the three dashboards, nothing else under 44 px |

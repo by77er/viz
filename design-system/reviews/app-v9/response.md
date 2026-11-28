@@ -59,12 +59,12 @@ shared machine lock.
 | `npx tsc --noEmit` | passes |
 | `npm run check:tokens` | 759/759; 0 literal values in 71 files |
 | `npm run build` | passes |
-| `node e2e/app.cjs`, whole | @@APP@@ |
+| `node e2e/app.cjs`, whole | 156 of 156 (153 of 154 in the first whole run; the one failure was a check's timing, since fixed) |
 | `node e2e/errors.cjs` | 14 of 14 |
 | `node e2e/prod.cjs` (under the content security policy) | 21 of 21 |
 | `node e2e/dashboards.cjs`, whole | 106 of 106 |
 
-Green at @@GREEN@@ UTC. Changes to checks in this round (none an expectation changed on purpose
+Green at 10:53 UTC. Changes to checks in this round (none an expectation changed on purpose
 by a fix): a wheel check that read a scroll at a fixed 300 ms now waits for it (it failed
 once in a whole run on a loaded machine); two checks added to answer surviving mutants; the
 m4 check fails by name instead of stopping the run. Details: `app/README.md`, "Verification".
