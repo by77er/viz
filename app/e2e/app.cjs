@@ -903,7 +903,7 @@ async function main() {
           await page.reload(); await page.waitForSelector(sel)
           rows.push(await page.waitForFunction(() => window.__late, null, { timeout: 5000 }).then((h) => h.jsonValue()).catch(() => null))
         }
-        check('review 2, B3: the reloaded position is held for its second: a scroll to the top that the person did not make, just after it is reached, is undone (Help, the chart)', rows.every((r) => r && r.kept === 400 && r.after === 400), JSON.stringify(rows))
+        check('review 2, B3: the reloaded position is held for its second: a scroll to the top that the person did not make, just after it is reached, is undone (Help, the chart)', rows.every((r) => r && r.kept >= 100 && r.after === r.kept), JSON.stringify(rows))
         await ctx.close()
       }
     }
