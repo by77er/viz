@@ -163,11 +163,13 @@ kernel kills processes when memory runs out.
 - Do not run two heavy jobs (a model checker, a large benchmark, a full Rust build) at the
   same time.
 - If a run dies without a result, rerun it; never treat a missing result as a pass.
-- Vitest caches transformed test files, with resolved absolute paths, in `node_modules/.vitest-cache`.
-  A worktree whose `node_modules` is a symlink to another checkout's shares that cache and can load the
-  other tree's files (a review of D77 found a worktree's tests loading the main checkout's
-  `viz_engine.wasm`). In a worktree with linked `node_modules`, run vitest with `--no-cache` (or a
-  cache directory of its own) for any run used as evidence.
+- Vitest keeps a module cache of transformed files, with resolved absolute paths, under
+  `node_modules/.vitest-cache`. A worktree whose `node_modules` is a symlink to another checkout's
+  shares that cache and can load the other tree's files (reviews of D77 found a worktree's tests
+  loading the main checkout's stale `viz_engine.wasm`). In such a worktree, give every run used as
+  evidence a module cache of its own: `--fsModuleCachePath <dir in the worktree>` (or
+  `--no-fsModuleCache`, or `VITEST_FS_MODULE_CACHE_PATH`). `--no-cache` alone does not do it: in
+  vitest 5 it turns off only the results cache.
 - Stop servers you started when you finish.
 
 ## Licensing
