@@ -1,0 +1,1217 @@
+{
+ "when": "2026-11-28T13:59:09.056Z",
+ "layout": "phone",
+ "theme": "light",
+ "view": "dashboard service_red, first chart panel",
+ "cores": 4,
+ "builds": [
+  {
+   "name": "before",
+   "root": "/tmp/claude-0/-home-user-viz/3c79101e-93fd-5a8e-90a7-fca4d8b40aab/scratchpad/b1c5/c4a154b/app"
+  },
+  {
+   "name": "after",
+   "root": "/tmp/claude-0/-home-user-viz/3c79101e-93fd-5a8e-90a7-fca4d8b40aab/scratchpad/b1c5/final/app"
+  }
+ ],
+ "runs": [
+  {
+   "view": "dashboard service_red, first chart panel",
+   "series": null,
+   "build": "before",
+   "run": 1,
+   "load1": 0.89,
+   "lastByte": 814.7,
+   "framesRecorded": 60,
+   "framesCaptured": 78,
+   "framesMatched": 59,
+   "beginFrames": 262,
+   "beginFrameErrors": 0,
+   "unmatched": [
+    {
+     "t": 45.7,
+     "plot": 0,
+     "line": null,
+     "beginFrame": "none at this frame time"
+    }
+   ],
+   "clockOffsetMs": 22391390.223,
+   "maxOffsetDeviationMs": 0.096,
+   "firstNewAt": 798.9,
+   "lineGoneAt": 798.9,
+   "lineOverNew": 0,
+   "images": [
+    {
+     "file": "dashboard-phone-light-before-00762ms-before.png",
+     "t": 762.3,
+     "what": "before",
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "frameTime": 22395906.201,
+     "rafTs": 762.3
+    },
+    {
+     "file": "dashboard-phone-light-before-00799ms-new-result-line-gone.png",
+     "t": 798.9,
+     "what": "new-result-line-gone",
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "frameTime": 22395942.827,
+     "rafTs": 798.9
+    }
+   ],
+   "frames": [
+    {
+     "t": 45.7,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 2,
+     "beginFrame": "none at this frame time",
+     "captured": false
+    },
+    {
+     "t": 94.1,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 108.5,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 124.4,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 142,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 158.6,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 175.8,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 191.6,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 208.9,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 225.7,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 241.7,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 258.2,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 275.4,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 292.3,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 308.8,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 324.9,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 342.4,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 358.2,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 375.5,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 391.5,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 408.3,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 425,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 441.8,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 458.1,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 475.5,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 1,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 496.2,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 511.2,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 528.2,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 544.1,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 561.7,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 578.3,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 1,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 594.9,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 611.5,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 627.5,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 645,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 661,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 677.9,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 1,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 694.2,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 710.8,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 727.6,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 745,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 762.3,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 798.9,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 6,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 868.5,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 988.2,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 1009.1,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 1023.9,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 1041.4,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 1057.7,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 1074,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 1091.4,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 1107.9,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 1123.9,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 1140.8,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 1157.9,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 1174.8,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 1191.4,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 1207.2,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 1224.5,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 1241.4,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    }
+   ]
+  },
+  {
+   "view": "dashboard service_red, first chart panel",
+   "series": null,
+   "build": "after",
+   "run": 1,
+   "load1": 0.9,
+   "lastByte": 806.9,
+   "framesRecorded": 62,
+   "framesCaptured": 80,
+   "framesMatched": 61,
+   "beginFrames": 262,
+   "beginFrameErrors": 0,
+   "unmatched": [
+    {
+     "t": 34.2,
+     "plot": 0,
+     "line": null,
+     "beginFrame": "none at this frame time"
+    }
+   ],
+   "clockOffsetMs": 22396570.752,
+   "maxOffsetDeviationMs": 0.096,
+   "firstNewAt": 792,
+   "lineGoneAt": 792,
+   "lineOverNew": 0,
+   "images": [
+    {
+     "file": "dashboard-phone-light-after-00768ms-before.png",
+     "t": 767.5,
+     "what": "before",
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "frameTime": 22401035.172,
+     "rafTs": 767.5
+    },
+    {
+     "file": "dashboard-phone-light-after-00792ms-new-result-line-gone.png",
+     "t": 792,
+     "what": "new-result-line-gone",
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "frameTime": 22401059.639,
+     "rafTs": 792
+    }
+   ],
+   "frames": [
+    {
+     "t": 34.2,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 2,
+     "beginFrame": "none at this frame time",
+     "captured": false
+    },
+    {
+     "t": 59,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 74.2,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 90.8,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 107.6,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 124.5,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 141,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 158,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 174.6,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 191,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 208,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 224.1,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 240.9,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 257.1,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 274.3,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 291.5,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 307.6,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 324,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 340.6,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 356.5,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 374.4,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 390.4,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 407.3,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 424.1,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 440.4,
+     "line": null,
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 457.4,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 1,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 477.6,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 492.8,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 509.3,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 526,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 543.1,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 559.1,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 1,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 579.2,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 594.5,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 611.2,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 627.7,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 644.8,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 661.1,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 1,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 678.6,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 694.3,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 710.8,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 728.1,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 745.3,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 767.5,
+     "line": "Waiting for the query.",
+     "plot": 0,
+     "stale": false,
+     "changes": 1,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 792,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 5,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 858,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 947,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 961.7,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 978.2,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 995.1,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 1012,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 1028.8,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 1045.4,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 1061.9,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 1078.5,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 1095.1,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 1112.1,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 1128.8,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 1145.5,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 1161.5,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 1178.1,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    },
+    {
+     "t": 1194.8,
+     "line": null,
+     "plot": 1,
+     "stale": false,
+     "changes": 0,
+     "beginFrame": "image",
+     "captured": true
+    }
+   ]
+  }
+ ]
+}

@@ -92,7 +92,7 @@ async function press(page, cdp, selector, done) {
   return page.evaluate(() => window.__m.rec)
 }
 
-const CATS = ['devtools.timeline', 'disabled-by-default-devtools.timeline', 'blink.user_timing', 'v8', 'devtools.timeline.frame', ...(process.argv.includes('--raw') ? ['toplevel', 'loading', 'blink', 'blink.resource', 'mojom', 'ipc', 'netlog', 'net', 'disabled-by-default-toplevel.flow', 'scheduler', 'renderer.scheduler', 'sequence_manager', 'base'] : [])]
+const CATS = ['devtools.timeline', 'disabled-by-default-devtools.timeline', 'blink.user_timing', 'v8', 'devtools.timeline.frame', ...(process.argv.includes('--inval') ? ['disabled-by-default-devtools.timeline.invalidationTracking', 'disabled-by-default-devtools.timeline.stack'] : []), ...(process.argv.includes('--raw') ? ['toplevel', 'loading', 'blink', 'blink.resource', 'mojom', 'ipc', 'netlog', 'net', 'disabled-by-default-toplevel.flow', 'scheduler', 'renderer.scheduler', 'sequence_manager', 'base'] : [])]
 async function traced(cdp, fn) {
   const events = []
   const onData = (d) => { for (const e of d.value) events.push(e) }
@@ -220,13 +220,14 @@ async function main() {
         const t = await traced(cdp, () => press(page, cdp, '[data-testid=run]', 'result'))
         const a = analyse(t, 'result'); a.load1 = load1
         if (process.argv.includes('--frames')) for (const f of t.rec.result.list) console.log(`    change at +${(f.t - t.rec.result.lastByte).toFixed(1)} ms, frame ended +${(f.end - t.rec.result.lastByte).toFixed(1)} ms: ${f.what.join(' | ')}`)
-        if (process.argv.includes('--raw')) fs.writeFileSync(OUT + '.raw.json', JSON.stringify({ rec: t.rec, events: t.events }))
+        if (process.argv.includes('--raw')) fs.writeFileSync(OUT + '.' + i + '.raw.json', JSON.stringify({ rec: t.rec, anchor: t.rec.anchor, events: t.events.filter((e) => e.cat && !e.cat.startsWith('v8') && e.name !== 'ProfileChunk') }))
         runs.push(a)
         console.log(`[${SERIES}${PHONE ? ' phone' : ''}] run ${i + 1}: load ${load1.toFixed(1)} bodyRead->paint ${a.ms.fromBodyRead.toFixed(0)} ms, lastByte->paint ${a.ms.fromLastByte.toFixed(0)} ms, lastByte->bodyRead ${a.marks.lastByteToBodyRead.toFixed(0)}, bodyRead->firstChange ${a.marks.bodyReadToFirstChange.toFixed(0)}, frames ${a.marks.frames}`)
         if (TABLE) {
           await page.waitForTimeout(1500)
           const tt = await traced(cdp, () => press(page, cdp, '[data-testid=view-table]', '[data-testid=result-table] tbody tr'))
           const b = analyse(tt, 'local'); b.load1 = load1
+          if (process.argv.includes('--raw')) fs.writeFileSync(OUT + '.' + i + '.table.raw.json', JSON.stringify({ rec: tt.rec, anchor: tt.rec.anchor, events: tt.events.filter((e) => e.cat && !e.cat.startsWith('v8') && e.name !== 'ProfileChunk') }))
           tables.push(b)
           console.log(`[${SERIES}${PHONE ? ' phone' : ''}] run ${i + 1}: chart->table ${b.ms.local.toFixed(0)} ms`)
         }

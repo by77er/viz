@@ -298,6 +298,7 @@ function numberFormat(step, suffix = '', div = 1) {
     const ctx = document.createElement('canvas').getContext('2d')
     // text widths, kept per font: one map for each font, so a look-up builds no key (the legend asks for every series' name on every draw)
     const widths = new Map(), measure = (text, font) => { let byFont = widths.get(font); if (!byFont) widths.set(font, (byFont = new Map())); let w = byFont.get(text); if (w == null) { ctx.font = font; w = ctx.measureText(text).width; byFont.set(text, w) } return w }
+    const written = { cols: null, head: null, rows: null, note: null } // the markup each part of the legend was last written from (legend())
     let g = null, cache = null, lastW = 0, lastH = 0, tok = null, liveTimer = 0, cursorWas = null; const sizes = { legendW: 0, readW: 0 }
     /* Every token the drawing reads, read once per draw. The spaces are read here too, not on each use: a read of a computed style in the
        crosshair's handler, after it has written the readout, made the browser restyle the page on every move (v9: 7 ms a move at 4x CPU,
@@ -395,7 +396,7 @@ function numberFormat(step, suffix = '', div = 1) {
       const W = svg.clientWidth, HT = svg.clientHeight; if (!W) return; lastW = W; lastH = HT; tok = null; sizes.legendW = tbody.parentElement.clientWidth || W; sizes.readW = readout.clientWidth || W // every size is read before anything is written
       root.querySelector(':scope > .vz-empty')?.remove(); root.removeAttribute('data-error'); legendWrap.inert = false
       if (st.error) st.cursor = null
-      const m = model(); g = layout(m, visibleSet(m)); drawPlot(g); legend(); legendState(); cursor(); describe()
+      const m = model(); g = layout(m, visibleSet(m)); drawPlot(g); legend(true); legendState(); cursor(); describe()
       if (st.error) showError()
       const r = root.closest('.vz-panel')?.querySelector('[data-range]'); if (r) r.textContent = stamp(st.t0, g.long) + ' to ' + stamp(st.t1, g.long)
       root.querySelector('[data-zoom="out"]').disabled = st.t0 <= full.t0 && st.t1 >= full.t1; root.querySelector('[data-zoom="in"]').disabled = m.n <= 4
@@ -429,7 +430,7 @@ function numberFormat(step, suffix = '', div = 1) {
       const el = k === 'other' ? null : lines.querySelector(`:scope > g[data-key="${CSS.escape(k)}"]`); if (el) { el.setAttribute('data-emph-on', ''); lines.appendChild(el) }
     }
 
-    function legend() {
+    function legend(reuse) { // reuse: a draw (a new result, a new range) may keep what is already written; a sort or Show more writes afresh
       const t = tokens(), m = g.m, fmt = g.fmt, unit = m.unit.unit
       const legendW = sizes.legendW, narrow = legendW < 640
       const cols = [['name', 'Series', 0], ['last', 'Last', 1], ['min', 'Min', 2], ['max', 'Max', 2]].filter((c) => !(narrow && c[2] === 2))
@@ -445,33 +446,44 @@ function numberFormat(step, suffix = '', div = 1) {
         return 2 * Math.max(...fs.map((x) => measure(x, t.data))) + measure(' to ', t.data) }
       const widest = (c) => Math.max(...m.coloured.map((s) => measure(fmt.value(c === 'last' ? s.max : s[c]), t.data)), otherW(c), endW)
       const headW = (c, label) => measure(c === 'last' ? 'At ' + stamp(st.t1, g.long) + ', ' + unit : label, t.label) + t.sp(4)
-      tbody.parentElement.querySelector('colgroup')?.remove()
-      thead.insertAdjacentHTML('beforebegin', '<colgroup>' + cols.map(([c, label]) => (c === 'name' ? '<col>' : `<col style="width:${Math.ceil(Math.max(widest(c), headW(c, label)) + t.sp(4))}px">`)).join('') + '</colgroup>')
-      thead.innerHTML = '<tr role="row">' + cols.map(([c, label, pr]) => `<th role="columnheader" class="vz-label${c === 'name' ? '' : ' vz-right'}"${pr === 2 ? ' data-priority="2"' : ''} data-col="${c}"><button class="vz-sort" data-col="${c}">${esc(c === 'last' ? 'Last, ' + unit : label)}</button></th>`).join('') + '</tr>'
+      // On a draw the legend is written part by part, and a part only when its markup differs from what was last written there: a new
+      // result of the same series changes the figures, not the rows, and every element written again is parsed, styled and laid out again
+      // (the table's layout was most of the browser's work after a draw). The DOM is the same as writing every part afresh. With focus in
+      // the legend, and for a sort or Show more (whose handlers do not restate the rows' state), every part is written afresh, as before,
+      // so neither what is shown nor where focus goes changes (design-system/reviews/chart-speed, C5).
+      const afresh = !reuse || !written.cols || legendWrap.contains(document.activeElement)
+      const colsHtml = '<colgroup>' + cols.map(([c, label]) => (c === 'name' ? '<col>' : `<col style="width:${Math.ceil(Math.max(widest(c), headW(c, label)) + t.sp(4))}px">`)).join('') + '</colgroup>', headHtml = '<tr role="row">' + cols.map(([c, label, pr]) => `<th role="columnheader" class="vz-label${c === 'name' ? '' : ' vz-right'}"${pr === 2 ? ' data-priority="2"' : ''} data-col="${c}"><button class="vz-sort" data-col="${c}">${esc(c === 'last' ? 'Last, ' + unit : label)}</button></th>`).join('') + '</tr>'
+      if (afresh || colsHtml !== written.cols) { tbody.parentElement.querySelector('colgroup')?.remove(); thead.insertAdjacentHTML('beforebegin', colsHtml); written.cols = colsHtml }
+      if (afresh || headHtml !== written.head) { thead.innerHTML = headHtml; written.head = headHtml }
       const numW = cols.slice(1).reduce((w, [c, label]) => w + Math.ceil(Math.max(widest(c), headW(c, label)) + t.sp(4)), 0), nameW = Math.max(t.sp(12), legendW - numW - t.sp(12))
       // every row shows the same labels: the most that fit on all of them
       let shownKeys = m.names.order.length; const fitsAll = (k) => m.series.every((s) => measure(m.names.order.slice(0, k).map((q) => s.labels[q] ?? '').join(' · '), t.small) <= nameW); while (shownKeys > 1 && !fitsAll(shownKeys)) shownKeys--
       g.nameKeys = m.names.order.slice(0, shownKeys); g.nameW = nameW
       const name = (s) => `<span class="vz-series-name">${esc(fit(g.nameKeys.map((k) => s.labels[k] ?? ''), nameW, (q) => measure(q, t.small)))}</span>`
       const title = (s) => esc(Object.entries(s.labels).map(([k, v]) => k + '="' + v + '"').join(', '))
-      const cells = (s) => `<td role="cell" class="vz-num vz-right" data-c="last">${fmt.value(s.last)}</td>${narrow ? '' : `<td role="cell" class="vz-num vz-right" data-priority="2">${fmt.value(s.min)}</td><td role="cell" class="vz-num vz-right" data-priority="2">${fmt.value(s.max)}</td>`}`
-      const row = (s, ds) => `<tr role="row" data-key="${esc(s.key)}" title="${title(s)}"><td role="cell"><button class="vz-series" tabindex="-1" aria-pressed="false" aria-label="${title(s)}"><span class="vz-swatch" data-series="${ds}"></span>${name(s)}</button></td>${cells(s)}</tr>`
+      const cells = (s) => [`<td role="cell" class="vz-num vz-right" data-c="last">${fmt.value(s.last)}</td>`, ...(narrow ? [] : [`<td role="cell" class="vz-num vz-right" data-priority="2">${fmt.value(s.min)}</td>`, `<td role="cell" class="vz-num vz-right" data-priority="2">${fmt.value(s.max)}</td>`])]
+      const row = (s, ds) => [`<tr role="row" data-key="${esc(s.key)}" title="${title(s)}"><td role="cell"><button class="vz-series" tabindex="-1" aria-pressed="false" aria-label="${title(s)}"><span class="vz-swatch" data-series="${ds}"></span>${name(s)}</button></td>`, cells(s)]
       const by = st.sort.col, cmp = (a, b) => (by === 'name' ? (a.key < b.key ? -1 : 1) * st.sort.dir : by === 'rank' ? a.slot - b.slot : ((a[by] ?? -Infinity) - (b[by] ?? -Infinity)) * st.sort.dir)
-      let h = [...m.coloured].sort(cmp).map((s) => row(s, s.slot)).join('')
+      // a row is [its first cell, its figure cells]: a figure that changed is written alone
+      const rows = [...m.coloured].sort(cmp).map((s) => row(s, s.slot))
       if (m.other.length) { const rng = (c) => { const v = m.other.map((s) => s[c]).filter((p) => p != null); return v.length ? span(fmt.value, Math.min(...v), Math.max(...v)) : '' }
-        h += `<tr role="row" data-key="other" title="${m.other.length} series drawn as one band, lowest to highest"><td role="cell"><button class="vz-series" tabindex="-1" aria-pressed="false" aria-label="Other: ${m.other.length} series as one band"><span class="vz-swatch" data-series="other"></span><span class="vz-series-name">Other</span><span class="vz-series-rest">${m.other.length} series</span></button></td><td role="cell" class="vz-num vz-right" data-c="last">${rng('last')}</td>${narrow ? '' : `<td role="cell" class="vz-num vz-right" data-priority="2">${rng('min')}</td><td role="cell" class="vz-num vz-right" data-priority="2">${rng('max')}</td>`}</tr>`
-        h += [...m.other].sort(by === 'rank' ? byRank : cmp).slice(0, st.open).map((s) => row(s, 'other')).join('')
+        rows.push([`<tr role="row" data-key="other" title="${m.other.length} series drawn as one band, lowest to highest"><td role="cell"><button class="vz-series" tabindex="-1" aria-pressed="false" aria-label="Other: ${m.other.length} series as one band"><span class="vz-swatch" data-series="other"></span><span class="vz-series-name">Other</span><span class="vz-series-rest">${m.other.length} series</span></button></td>`, [`<td role="cell" class="vz-num vz-right" data-c="last">${rng('last')}</td>`, ...(narrow ? [] : [`<td role="cell" class="vz-num vz-right" data-priority="2">${rng('min')}</td>`, `<td role="cell" class="vz-num vz-right" data-priority="2">${rng('max')}</td>`])]])
+        rows.push(...[...m.other].sort(by === 'rank' ? byRank : cmp).slice(0, st.open).map((s) => row(s, 'other')))
         // the legend's last rows: what can be done with Other, one action to a row, each a legend row tall, so nothing wraps and the rows
         // the legend draws are the rows it reserves, at every width (v9: two actions in one row wrapped at 320 px, 44 px past the reservation)
         const more = st.open < m.other.length ? `<button class="vz-button" data-size="sm" data-more>Show ${Math.min(20, m.other.length - st.open)} more of Other</button>` : `<button class="vz-button" data-size="sm" data-less>Hide the ${m.other.length} in Other</button>`
-        h += [more, ...(legendActions(m).includes('recolour') ? ['<button class="vz-button" data-size="sm" data-recolour>Colour the eight largest</button>'] : [])].map((b) => `<tr role="row" class="vz-legend-actions"><td role="cell" colspan="${cols.length}"><div class="vz-controls" data-size="sm">${b}</div></td></tr>`).join('') }
-      tbody.innerHTML = h
+        rows.push(...[more, ...(legendActions(m).includes('recolour') ? ['<button class="vz-button" data-size="sm" data-recolour>Colour the eight largest</button>'] : [])].map((b) => [`<tr role="row" class="vz-legend-actions"><td role="cell" colspan="${cols.length}"><div class="vz-controls" data-size="sm">${b}</div></td>`, []])) }
+      const html = ([lead, cs]) => lead + cs.join('') + '</tr>', was = written.rows
+      if (afresh || !was || was.length !== rows.length || tbody.rows.length !== rows.length) tbody.innerHTML = rows.map(html).join('')
+      else rows.forEach((r, i) => { const p = was[i]; if (p[0] === r[0] && p[1].length === r[1].length) r[1].forEach((c, j) => { if (c !== p[1][j]) tbody.rows[i].cells[j + 1].outerHTML = c }); else if (html(p) !== html(r)) tbody.rows[i].outerHTML = html(r) })
+      written.rows = rows
       // the note: one line per fact, each cut to fit, so the reserved height holds at any width
       const common = Object.entries(m.names.common).filter(([k]) => k !== '__name__').map(([k, v]) => k + '="' + v + '"').join(', ')
       const lines = [], other = otherNote(m)
       if (common && m.series.length > 1) lines.push(['All series: ', common])
       if (other) lines.push([other.text, ''])
-      note.innerHTML = lines.map(([a, b]) => `<p title="${esc(a + b)}">${esc(a)}${b ? `<span class="vz-qty">${esc(fit([b], Math.max(t.sp(12), legendW - measure(a, t.small)), (q) => measure(q, t.data)))}</span>` : ''}</p>`).join('')
+      const noteHtml = lines.map(([a, b]) => `<p title="${esc(a + b)}">${esc(a)}${b ? `<span class="vz-qty">${esc(fit([b], Math.max(t.sp(12), legendW - measure(a, t.small)), (q) => measure(q, t.data)))}</span>` : ''}</p>`).join('')
+      if (afresh || noteHtml !== written.note) { note.innerHTML = noteHtml; written.note = noteHtml }
       note.hidden = !lines.length
       // The reservation is what the legend draws: its rows (every series row, Other's row, the members shown and one row per action) and its
       // note lines, set on the chart whenever the legend is drawn. So a chart this script draws reserves exactly what it draws, at every width

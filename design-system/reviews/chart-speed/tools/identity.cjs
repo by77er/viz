@@ -58,6 +58,15 @@ async function shot(page, record, name, images) {
   images.set(name, png)
 }
 
+/** Run query again (the same query and range: the same result), and wait until it is drawn and the line has gone. */
+async function runAgain(page) {
+  await page.locator('[data-testid=run]').click()
+  await page.waitForTimeout(150)
+  await page.waitForFunction(() => document.querySelector('[data-testid=run]')?.getAttribute('aria-busy') !== 'true' && !document.querySelector('[data-testid=progress]'), null, { timeout: 30000 })
+  await page.mouse.move(2, 2)
+  await page.waitForTimeout(400)
+}
+
 async function appCase(browser, B, series, theme, width, record, images) {
   const ctx = await browser.newContext({ ...LAYOUTS[width], colorScheme: theme })
   const page = await ctx.newPage()
@@ -70,6 +79,9 @@ async function appCase(browser, B, series, theme, width, record, images) {
   await page.evaluate(() => document.fonts.ready)
   await page.waitForTimeout(1200)
   await shot(page, record, id('rest'), images)
+  // the same result again: the legend's rows are the same (2026-11-28, C5: the legend writes only what changed)
+  await runAgain(page)
+  await shot(page, record, id('run again'), images)
   const plot = page.locator('[data-testid=chart] svg.vz-plot')
   // readout by keyboard: the crosshair five steps from the end
   await plot.focus()
@@ -87,11 +99,18 @@ async function appCase(browser, B, series, theme, width, record, images) {
   for (let k = 0; k < 40; k++) await page.keyboard.press('ArrowLeft')
   await page.keyboard.press('+')
   await shot(page, record, id('zoomed in'), images)
+  // a new window of the same series: the figures change, the rows do not
+  await page.keyboard.press('+')
+  await shot(page, record, id('zoomed in twice'), images)
+  await runAgain(page)
+  await shot(page, record, id('zoomed in, then run again'), images)
+  await plot.focus()
+  await page.keyboard.press('+')
   await page.keyboard.press('-')
   await page.keyboard.press('Escape')
   // Other opened, then a row chosen
   const more = page.locator('[data-testid=chart] [data-more]')
-  if (await more.count()) { await more.first().click(); await shot(page, record, id('Other opened'), images) }
+  if (await more.count()) { await more.first().click(); await shot(page, record, id('Other opened'), images); await runAgain(page); await shot(page, record, id('Other opened, then run again'), images) }
   await page.locator('[data-testid=chart] tbody tr[data-key] .vz-series').first().click()
   await page.mouse.move(2, 2)
   await shot(page, record, id('a legend row chosen'), images)

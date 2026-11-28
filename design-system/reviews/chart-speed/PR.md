@@ -1,5 +1,168 @@
 # Chart speed: a many-series result painted sooner (app-v9 review, B1)
 
+## The third review's conditions: C5 and C4 (2026-11-28, evening)
+
+`third-review.md` kept the waiver for 37 to 200 series, replaced R1 and R2 with R1′, R2′ and the **session rule** (SR), and
+added **C5**: B1's unwaived rows met by SR on the final build. Everything here was **measured here** (this shared 4-core
+machine, Chromium headless shell, CPU 4x, Fast 4G, the development mock, DevTools keeping no body copies, every browser job
+under the shared lock, every run judged). Nothing was measured on a device or on Cloudflare. "final" is the merged tree as
+committed (`4dea3c5`'s `app/` and `design-system/`), "new" is final with the legend change below, `c4a154b` is the anchor
+of the earlier sessions; all built in the scratch area with `node_modules` linked.
+
+| Condition | State | Result |
+|---|---|---|
+| **C5, desktop 36, last byte** | **Change made; met by SR (two sessions under 100); the paired gain is not beyond the noise by C1's rule** | The legend is now written only where it changed (below). Identity: 146 states, every one the same in pixels, markup, names, text form and table; a differential test of 2,480 steps. Paired against final: **−16 ms** last byte (quicker in 13 of 20), −15 ms body read (14 of 20) in session 1; −5 ms (12 of 20) and −3 ms (13 of 20) in session 2; pooled over both, −9 ms (25 of 40) and −8 ms (27 of 40). By SR, "new": session 1 **92 ms**, session 2 **99.7 ms** at the 75th percentile: **two sessions agree, met** (pooled over the 40 runs, 95.4 ms; 7 of 40 over 100) |
+| **C5, phone 36, chart to table** | **Third session run: not met** | 101, 86, **107** ms; pooled over the three sessions (60 runs) **101.1 ms**, 17 of 60 over 100. Not fixed (below) |
+| **C5, phone 200, chart to table** | **Third session run: not met** | 91, 127, **115** ms; pooled **103.1 ms**, 18 of 60 over 100. Not fixed (below) |
+| **C4, the waiting line** | **Materials made; not judged here** | Exact-frame images (both layouts, both themes, 200 and 36 series, and a dashboard panel), the dashboards' frame records, and 20 more phone runs at 36 series with an explanation of the late removals: `waiting-line/README.md`, "C4 after the third review" |
+
+### C5, desktop 36 series: where the legend's time went
+
+`tools/lay.cjs` writes one part of a drawn chart again with its own markup and times the style and layout that follow
+(`data/c5-layout-attribution.txt`, which also has the trace). At 36 series on the desktop, at 4x CPU: the plot's markup
+costs about 4 ms of layout, **the legend's rows about 7 to 12 ms**, both together 12 to 16 ms; unthrottled 0.8, 1.6 and
+2.3 ms. A trace with layout invalidation tracking shows one layout in the frame after a draw, and in it every element of
+the legend (its colgroup, head, and 10 rows with their buttons, figure cells and text) removed and added again on every draw,
+whatever changed.
+
+**Why `table-layout: fixed` "did not help" on 2026-11-27:** the legend already has it (`src/components.css`, line 387:
+"the script sets each figure column's width once per draw"), so the column algorithm was never the cost. Nor is any
+single CSS feature: none of these moved the legend's layout outside the spread between two blocks of the same build
+(7.4 and 10.8 ms): `container-type: normal` on the legend's wrap, no scroll-driven edge animation, `content-visibility:
+visible`, a first column that is not sticky, `overflow: visible` or `overflow: clip` on the cells, `table-layout: auto`,
+every `:has()` rule removed, every `:hover` rule removed. The cost is laying out a table whose every element is new on
+every draw: parsed, styled, given layout objects, laid out with nothing cached. `contain` and `content-visibility` on rows
+cannot apply (layout containment does not apply to table rows), and the legend's rows are on screen at 36 series.
+
+### The change
+
+`design-system/project/components/Chart/preview.html`, `legend()` (regenerated into `dist/viz-chart.js` by
+`tools/build.mjs`): on a draw (a new result, a new range), the legend's four parts (column widths, head, rows, note) are
+each written only when their markup differs from what was last written there, and a row is written cell by cell: a row
+whose first cell (swatch, name, title) is unchanged keeps its element and has only the figure cells that changed written
+again (`outerHTML`, the same parse as before). The DOM is the same as writing every part afresh. Every part is still
+written afresh, as before: on the first draw, with focus anywhere in the legend (so focus is lost exactly as before), and
+for a sort or "Show more" / "Hide" (their handlers do not call `legendState()` after `legend()`, so the head's words and
+`aria-sort` are those of the fresh markup; a first version kept them there, and the differential test below caught it).
+No token, class, markup or CSS changed. The app is unchanged.
+
+What it saves depends on what changed. Running the same query again (the benchmark's workload: the mock returns the
+same result) writes nothing in the legend. A new range of the same series (Zoom in and out, `tools/zoom.cjs`, 200 draws
+per build, desktop, 36 series, CPU 4x, `data/c5-zoom-desktop.txt`) writes the figure cells only: the draw's own script
+time is unchanged (median 20.5 against 20.6 ms) and the layout after it falls from 14.6 to 12.7 ms at the median (17.9 to
+14.3 at the 75th percentile), 36.1 to 33.3 ms in all. **So the benchmark's gain overstates what a person gets when the
+figures change**: about 3 ms then, against about 16 ms in the benchmark, where the result is the one already drawn.
+Other series, or another order, write those rows whole, as before.
+
+### Identity
+
+- `tools/identity.cjs --full-raster --rounds 2` (`data/identity-c5.json`, `.txt`; 13:20 to 13:28 UTC), with four new
+  states that exercise the new path in the app: the same query run again; zoomed in twice; zoomed in, then run again;
+  Other opened, then run again. **146 states per build, final against new: identical in every state** (pixels, chart
+  markup, accessible names, legend row names, text form, table; 258 charts). Same-build captures differed in no state.
+  That run was of the change's first version. **Run again on the final version** (sort and Show more written afresh;
+  `data/identity-c5b.json`, `.txt`; 14:06 to 14:14 UTC): 146 states, **identical in every state**, no same-build noise.
+  The final version's `preview.html` is the one now in the tree.
+- `legend-writes.test.cjs` (new, a differential property test): the same random sequence of results and actions (the
+  same series with new figures, the same result, other series, another order, fewer series, zoom, keyboard readout,
+  Escape, Show more and Hide, a sort, a row chosen, focus on a row before a new result, the other width) is played on the
+  chart of both builds; after every step the chart's whole markup and the focused element must be equal. 40 seeds of 30
+  steps at 900 and at 400 px: **2,480 steps, all equal** (14:03 UTC, on the final "new").
+  The first version of the change failed it: after a sort it kept the head, whose words and `aria-sort` the sort's
+  handler does not restate; the change now writes afresh for a sort and Show more (above).
+- Mutants, on copies of `dist/` in the scratch area (`tools/legend-mutants.sh`, `data/c5-legend-writes.txt`; below under
+  "Mutants"): 7 run, 7 caught in the end; one survived the test's first version and is reported there.
+
+### The gain, paired, and the row by the session rule
+
+**Session 1, desktop** (`data/c5-desktop-s1.json`; started 13:29 UTC, calibration 469 ms, load 0.7 to 1.7, all 80 runs
+judged):
+
+| Series | Build | Load at run start: median (range); runs at or below 4 | Body read to painted, ms | Last byte to painted, ms | Chart to table, ms |
+|---|---|---|---|---|---|
+| 36 | final | 1.4 (0.7 to 1.6); 20 of 20 | 85 / 90 (49 to 104; 20) | 99 / 104 (57 to 121; 20) | 73 / 85 (52 to 111; 20) |
+| 36 | new | 1.4 (0.7 to 1.7); 20 of 20 | 72 / 78 (45 to 87; 20) | 84 / 92 (55 to 102; 20) | 73 / 83 (52 to 105; 20) |
+| 36 | pairs: new less final | | -15; quicker in 14 of 20 | -16; quicker in 13 of 20 | +6; quicker in 8 of 20 |
+| 200 | final | 1.3 (1.1 to 1.5); 20 of 20 | 81 / 94 (68 to 116; 20) | 107 / 118 (88 to 147; 20) | 65 / 82 (56 to 111; 20) |
+| 200 | new | 1.3 (1.1 to 1.5); 20 of 20 | 81 / 92 (61 to 113; 20) | 107 / 121 (84 to 143; 20) | 62 / 75 (56 to 109; 20) |
+| 200 | pairs: new less final | | -6; quicker in 13 of 20 | -1; quicker in 11 of 20 | +0; quicker in 9 of 20 |
+
+**Session 2, desktop** (`data/c5-desktop-s2.json`; started 13:59 UTC, 30 minutes after session 1, calibration 321 ms, load 1.0 to 1.6, all 40 runs judged. Its "new" is the build with the sort fix above (the draw path is the same code as in session 1)):
+
+| Series | Build | Load at run start: median (range); runs at or below 4 | Body read to painted, ms | Last byte to painted, ms | Chart to table, ms |
+|---|---|---|---|---|---|
+| 36 | final | 1.1 (1.0 to 1.6); 20 of 20 | 74 / 94 (54 to 114; 20) | 87 / 109 (63 to 127; 20) | 74 / 95 (53 to 108; 20) |
+| 36 | new | 1.2 (1.1 to 1.6); 20 of 20 | 73 / 84 (49 to 98; 20) | 84 / 100 (59 to 115; 20) | 73 / 85 (52 to 110; 20) |
+| 36 | pairs: new less final | | -3; quicker in 13 of 20 | -5; quicker in 12 of 20 | -6; quicker in 12 of 20 |
+
+Pairs pooled over both sessions (40): last byte −9 ms, quicker in 25 of 40; body read −8 ms, 27 of 40; chart to table −1 ms, 20 of 40.
+
+**The rows by SR** (75th percentile, ms; budget 100):
+
+| Row | Build | Session 1 | Session 2 | By SR |
+|---|---|---|---|---|
+| Desktop 36, last byte | new | 92 (2 of 20 over) | **99.7** (5 of 20 over) | **two sessions agree, met** (pooled over the 40 runs, 95.4 ms; 7 of 40 over 100) |
+| Desktop 36, last byte | final (anchor) | 104 (9 of 20 over) | 109 (8 of 20 over) | — (the earlier sessions: 90, 109, 104, 101; not met, the third review) |
+| Desktop 36, body read | new | 78 | 84 | Met (78, 84) |
+| Desktop 36, chart to table | new | 83 | 85 | Met (83, 85) |
+| Desktop 200, last byte / body read | new | 121 / 92 | — | Waived; under R1′'s 170 / 140. Paired against final: −1 ms (11 of 20 quicker) and −6 ms (13 of 20): no regression by R1′ |
+
+By C1's rule a paired shift "beyond the noise" needs a median outside ±10 ms with 15 or more of 20 pairs on its side
+(the mirror of "5 or fewer quicker"). Session 1's −16 ms with 13 of 20 quicker is outside ±10 ms but not 15 of 20, so on
+its own it is **not** beyond the noise by that rule; session 2 read −5 ms (12 of 20), and both sessions pooled read −9 ms with 25 of 40 quicker (63 %). **So the gain is in the right direction in both sessions but is not shown beyond the noise by C1's rule**, and the row is met by SR with 0.3 ms to spare in session 2. Both are reported as they are; the third review's C5 asks for both, and only the second is met.
+
+### Phone, chart to table: the third session
+
+`data/c5-phone-s3.json` (started 13:11 UTC, calibration 348 ms, load 0.7 to 2.0, all 80 runs judged), final against
+`c4a154b`, 20 runs each, 36 and 200 series:
+
+| Series | Build | Load at run start: median (range); runs at or below 4 | Body read to painted, ms | Last byte to painted, ms | Chart to table, ms |
+|---|---|---|---|---|---|
+| 36 | c4a154b | 1.2 (0.7 to 2.0); 20 of 20 | 83 / 86 (51 to 137; 20) | 91 / 97 (56 to 174; 20) | 83 / 107 (66 to 160; 20) |
+| 36 | final | 1.2 (0.7 to 1.9); 20 of 20 | 66 / 79 (45 to 92; 20) | 75 / 90 (49 to 106; 20) | 90 / 107 (67 to 135; 20) |
+| 36 | pairs: final less c4a154b | | -12; quicker in 13 of 20 | -11; quicker in 14 of 20 | +2; quicker in 8 of 20 |
+| 200 | c4a154b | 1.3 (1.1 to 1.6); 20 of 20 | 118 / 124 (82 to 148; 17) | 137 / 143 (93 to 174; 20) | 97 / 106 (71 to 144; 20) |
+| 200 | final | 1.2 (1.1 to 1.6); 20 of 20 | 82 / 100 (58 to 129; 19) | 98 / 113 (70 to 149; 20) | 97 / 115 (77 to 157; 20) |
+| 200 | pairs: final less c4a154b | | -35; quicker in 14 of 16 | -38; quicker in 17 of 20 | +0; quicker in 9 of 20 |
+
+| Row ("after", 75th percentile, ms) | Morning (the change alone) | C2 (final) | Third (final) | Pooled, 60 runs | By SR |
+|---|---|---|---|---|---|
+| Phone 36, chart to table | 101 | 86 | 107 | **101.1** (17 over 100) | **Not met** |
+| Phone 200, chart to table | 91 | 127 | 115 | **103.1** (18 over 100) | **Not met** |
+| Phone 36, last byte / body read (context) | 78 / 70 | 89 / 77 | 90 / 79 | 88.8 / 77.1 | Met (already decided) |
+
+Neither is caused by the change: paired final less `c4a154b` +2 ms (8 of 20 quicker) at 36 and +0 ms (9 of 20) at 200, as
+in the earlier sessions. The "before" build reads the same rows over the limit too (pooled over its three sessions 105.0
+and 104.5).
+
+**The legend change on the phone** (a fourth phone session, `data/c5-phone-new.json`: new against final, 20 runs each,
+started 14:14 UTC, calibration 413 ms, load 0.5 to 2.0, all 80 runs judged):
+
+| Series | Build | Load at run start: median (range); runs at or below 4 | Body read to painted, ms | Last byte to painted, ms | Chart to table, ms |
+|---|---|---|---|---|---|
+| 36 | final | 1.3 (0.5 to 1.6); 20 of 20 | 57 / 69 (42 to 84; 20) | 64 / 79 (48 to 102; 20) | 91 / 106 (64 to 144; 20) |
+| 36 | new | 1.3 (0.5 to 1.7); 20 of 20 | 53 / 61 (35 to 75; 20) | 63 / 69 (44 to 91; 20) | 85 / 102 (65 to 123; 20) |
+| 36 | pairs: new less final | | -9; quicker in 14 of 20 | -10; quicker in 13 of 20 | 0; quicker in 9 of 20 |
+| 200 | final | 1.5 (1.3 to 1.9); 20 of 20 | 91 / 104 (60 to 118; 18) | 108 / 119 (79 to 138; 20) | 125 / 129 (93 to 151; 20) |
+| 200 | new | 1.5 (1.3 to 2.0); 20 of 20 | 85 / 88 (50 to 108; 16) | 103 / 109 (67 to 133; 20) | 116 / 129 (74 to 148; 20) |
+| 200 | pairs: new less final | | -8; quicker in 10 of 14 | -6; quicker in 12 of 20 | -9; quicker in 12 of 20 |
+
+The change does not move chart to table (paired +0 ms, 9 of 20, at 36; −9 ms, 12 of 20, at 200: equal by C1's rule, so
+SR lets the new build's runs pool with final's), and it leaves both rows over: 102 and 129 ms here; final read 106 and 129
+in the same session, a fourth reading of an already decided row. The result's paint on the phone: paired −10 ms (13 of
+20) at 36 series and −6 ms (12 of 20) at 200, none beyond the noise; the 200-series figures (109 ms last byte, 88 body
+read) are inside R1′'s 130 and 115.
+
+**Not fixed in this round.** A trace of chart to table at 200 series on the phone (`tools/profile.cjs --phone --table
+--raw --inval`, 2 runs with invalidation tracking and 3 without, final, 13:44 UTC; the profiler slows the page: read the
+shares) puts the time in one style recalculation of 131 elements (13 to 22 ms) and one layout (32 to 48 ms, 43 dirty of
+398 objects): the new table's 50 rows (150 figure cells, 216 text nodes, an automatic table layout, a sticky first
+column) and the parked chart, whose layout object is removed and made again when it is parked (`.is-parked` changes its
+`position`). The candidates that change nothing a person sees (a parked state that keeps the chart's `position`; fewer
+layers in the table's sticky column) were not tried: there was no time left in this round for a change, its identity
+run and two more phone sessions. The rows stay **not met**; a reviewer may consider them only after a remedy has been
+tried (third review, §2).
+
 ## The second review's decision, and its conditions (2026-11-28, afternoon)
 
 **The decision** (`second-review.md`): B1 is **waived, not withdrawn**, for one budget row only, "Receives
@@ -25,7 +188,8 @@ shared lock, every run judged: load at run start at most 2.3):
 | **C1** did the build before regress? | **Done: ruled out** | `c4a154b` against `cc50ea2`, 20 alternating runs, desktop, 200 series: paired −8 ms body read (quicker in 9 of 17), −12 ms last byte (12 of 20). Not slower; nothing to remove ("C1", below) |
 | **C2** a second session of the final build | **Done; it fails R2** | Desktop, 36 series, from the last byte: **109 ms** at the 75th percentile (12 of 20 runs over 100; the first session read 90). Phone, 200 series, chart to table: **127 ms** (8 of 20 over; first session 91), not caused by the change (paired −4) and not covered by the waiver. Phone, 36 series, chart to table: 86 ms (101 in the first): the sessions disagree. The 200-series paints stay inside R1's bounds; desktop chart to table at 200 is inside in both (94, 93) ("C2", below) |
 | **C3** what `PR.md` says | Done here | The corrections the review lists are made below (points 1 to 6 of its "What `PR.md` must change"); the pull request's description is still to say the same |
-| **C4** the waiting line's frames | **Records made; not reviewed** | `waiting-line/` (before and after, both layouts, 36 and 200 series, and the 300 ms minimum). It needs a verdict from a reviewer who did not write it |
+| **C4** the waiting line's frames | **Records and images made; not reviewed** | `waiting-line/` (before and after, both layouts, 36 and 200 series, and the 300 ms minimum; since the third review also the exact-frame images, the dashboards' records and 20 more phone runs at 36 series). It needs a verdict from a reviewer who did not write it |
+| **C5** (third review) B1's unwaived rows by the session rule | **Desktop 36 met; phone chart to table not met** | See "The third review's conditions", above |
 
 **So the waiver has not taken effect, and by its own R2 it would be reopened at once:** the 36-series
 result paint on the desktop read over 100 ms at the 75th percentile in a judged session (109 ms from the
@@ -467,6 +631,11 @@ Tuning steps, each measured; the ones that did nothing are kept.
 | (2026-11-27) `vector-effect: none`, `table-layout: fixed` on the legend, `content-visibility: visible` | layout time of the result's frame | no effect, or inside the noise of 3 runs | no |
 | (2026-11-28) Each series put on the grid in the parser, as it is read | `ab.cjs`, alternating, together with the next step | see the tables | yes |
 | (2026-11-28) Typed arrays through the chart's interface (D76) | same | see the tables | yes |
+| (2026-11-28, C5) On the legend's wrap: `container-type: normal`; no scroll-driven edge animation; both | `tools/lay.cjs`, the legend's rows written again, layout after it, 11 rounds at 4x CPU | 13.9, 10.7, 10.9 ms against 7.4 to 11.8 for the same build | no: inside the noise (and both are visible at other widths) |
+| (2026-11-28, C5) `content-visibility: visible` on the chart; first column not sticky; cells `overflow: visible`; `table-layout: auto` | same | 9.7, 9.6, 8.9, 8.0 ms | no: inside the noise |
+| (2026-11-28, C5) Every `:has()` rule removed; every `:hover` rule removed | same | 9.5, 10.8 ms | no: inside the noise (diagnostic only) |
+| (2026-11-28, C5) `overflow: clip` in place of `hidden` on the legend's cells, names and note | same, unthrottled, 41 rounds | 1.8 against 1.6 and 2.0 ms | no |
+| (2026-11-28, C5) The legend written only where it changed, on a draw | `ab.cjs`, two sessions; `tools/zoom.cjs` | paired −16 and −5 ms (last byte); zoom: layout 14.6 to 12.7 ms | yes |
 
 The two steps of 2026-11-28 were measured together, with the earlier patches, as one "after": the
 lock that every browser run waits for (shared with three other builders, 10 to 30 minutes a turn)
@@ -478,7 +647,7 @@ points (721 points on a plot about 1,300 px wide); deferring the legend rows or 
 
 ## Mutants
 
-On copies in the scratch area, never in the tree. Every one was caught.
+On copies in the scratch area, never in the tree. Every one was caught, except one of the legend's (below), reported as it is.
 
 | Mutant | Caught by |
 |---|---|
@@ -493,6 +662,13 @@ On copies in the scratch area, never in the tree. Every one was caught.
 | Parser: a series placed with its last sample left out | `app/src/api/matrixGrid.test.ts` |
 | Spec: the typed form not scaled | `app/src/charts/typedSpec.test.ts` |
 | Spec: the typed form copying when not scaled | `app/src/charts/typedSpec.test.ts` |
+| (C5) Legend: a changed figure cell not written | `legend-writes.test.cjs` (900 px, seed 1, step 4) |
+| (C5) Legend: focus in the legend not looked at | `legend-writes.test.cjs` (step 11, focus on a row then new figures) |
+| (C5) Legend: the note not written again | `legend-writes.test.cjs` (step 8, other series) |
+| (C5) Legend: a row whose first cell changed not written | `legend-writes.test.cjs` (step 8, other series) |
+| (C5) Legend: the column widths not written again | `legend-writes.test.cjs` (step 4, the same result after a zoom) |
+| (C5) Legend: a sort or Show more keeping what is written | `legend-writes.test.cjs` |
+| (C5) Legend: the head not written again | `legend-writes.test.cjs` (step 9, the other width). It **survived** the test's first version, which never changed the width: at one width the head's markup is its words, which `legendState()` and `cursor()` write anyway; the step "the other width" was added for it |
 
 The 2026-11-27 mutant "x positions written to whole pixels" was not run again: path text is covered
 by the markup hashes of `identity.cjs`, which compare it character for character.
@@ -604,19 +780,37 @@ command under the shared lock with the Cloudflare credentials removed from its e
 
 No suite needed a change, and no expectation was changed.
 
+**After the third review's round** (2026-11-28, 14:24 to 14:33 UTC, under the shared lock, credentials removed): on a copy
+of HEAD (`4dea3c5`) with the legend change, in the scratch area with `node_modules` linked (the shared tree had other
+builders' edits in progress in `app/`), its `preview.html` the same file as the tree's:
+
+| Check | Result |
+|---|---|
+| `node tools/build.mjs` (design system) | wrote `dist/` |
+| `node tools/check.mjs project/components/Chart` | exit 0: rendered audit 0 failures (30 previews, both themes, rest, hover, press, a finger's press, reserved heights), contrast and structure 873 of 873, literal values 0 |
+| `cd design-system && npm test` | 199 tests: 139 pass, 0 fail, 60 skipped (the slow set) |
+| `npx vitest run --no-cache --maxWorkers=2` (app) | 26 files, 252 tests pass (the first run failed to load `mock/monitors.test.ts`: the copy lacked `../ruler/openapi.json`; with it copied from HEAD, all pass) |
+| `npx tsc --noEmit` | clean |
+| `npm run check:tokens` | 759 of 759; 0 literal values in 81 files |
+| `npm run build` | passes |
+| `node e2e/app.cjs`, `errors.cjs`, `prod.cjs`, `dashboards.cjs`, `monitors.cjs` | 156 of 156, 14 of 14, 23 of 23, 106 of 106, 69 of 69 |
+| `legend-writes.test.cjs` | 2,480 steps equal; 7 mutants caught (one only after the width step was added) |
+| `tools/identity.cjs --full-raster --rounds 2` | 146 states identical (twice: first and final version of the change) |
+
 ## Open items
 
-- **The waiver**: decided (`second-review.md`), but not in effect: C2 fails R2 (the desktop's 36-series
-  result paint, 109 ms from the last byte in the second session, 101 in a third block), and C4 waits for
-  a reviewer. The phone's chart to table at 200 series read 127 ms in the second session, outside the
-  waiver. F1 to F4 stand (`second-review.md`); the waiver lapses on 2026-12-31 without F1.
+- **The waiver**: decided (`second-review.md`, `third-review.md`), not in effect. C5: the desktop's 36-series
+  rows are met by SR with the legend change (99.7 ms in the second session: no margin), but its paired gain is not
+  beyond the noise by C1's rule; the phone's chart to table is **not met** at 36 and 200 series (pooled 101.1 and
+  103.1 ms over three sessions) and needs a fix in the table's markup or CSS, or a waiver of its own. C4 waits for a
+  reviewer. F1 to F4 stand; the waiver lapses on 2026-12-31 without F1.
+- The waiting line's `shownAt` is stamped in a passive effect, so its 300 ms can start late (C4, item 3 in
+  `waiting-line/README.md`); a layout effect would not. For the app's reviewer.
 - `design-system/tools/speed.mjs` enables the Network domain with its buffers on (line 118): its figures
   for large bodies may carry the same DevTools cost. The system's owner should apply the same change
   there (or say why not).
 - The harness's own copy of the body costs 10 to 20 ms after the last byte at 200 series (10 runs):
   take the two rows from separate runs, or accept it and say so.
-- Rows within a tenth of their limit: measured in a second session ("C2"). The phone's 36-series chart to
-  table (101, then 86 ms) is not settled by the two.
 - `app.patch` changes one frame a person sees (the waiting line goes one frame sooner): the frame records
   are in `waiting-line/`; the app's reviewer judges them (C4).
 - The dashboards view still uses the chart's first form; moving it to the typed form is one argument
@@ -634,7 +828,14 @@ No suite needed a change, and no expectation was changed.
 | `tools/harness-edit.cjs` | the harness change, as applied to `ab.cjs` and `app/e2e/measure.cjs` |
 | `tools/profile.cjs`, `tools/micro.cjs`, `tools/summarise.cjs`, `tools/pixdiff.py` | the profile, the micro-benchmarks, the tables, where two images differ |
 | `tools/waiting-frames.cjs` | the frame record of the end of a wait, and the waiting line's 300 ms minimum (C4; `waiting-line/README.md`) |
-| `waiting-line/` | C4's frame records, before and after, both layouts, with a note (`README.md`) |
+| `waiting-line/` | C4's frame records, before and after, both layouts, with a note (`README.md`); since the third review the exact-frame images (`images/`, `shots-*.json`), the dashboards' records and 20 phone runs at 36 series |
+| `legend-writes.test.cjs` | (C5) the legend written part by part against written afresh: markup and focus after every step of random sequences (needs `VIZ_BEFORE`, `VIZ_AFTER`: two `design-system/` dirs with `dist/`) |
+| `tools/lay.cjs`, `tools/lay-variants-*.json` | (C5) where the layout after a draw goes, by part, with CSS variants |
+| `tools/zoom.cjs` | (C5) a new range of the same series, timed in the page, two builds alternated |
+| `tools/frame-shots.cjs`, `tools/compose.py` | (C4) images of exact frames, by begin-frame control, and the before/after sheets |
+| `tools/pool.py`, `tools/pair.py` | a row's 75th percentile per session and pooled (SR); paired medians split by order |
+| `tools/legend-mutants.sh` | the legend's mutants, as run (scratch paths) |
+| `data/c5-*.json`, `data/c5-*.txt`, `data/identity-c5*` | the third review's sessions, the layout attribution, the zoom timing, identity |
 | `data/c1-desktop.json`, `data/c2-desktop.json`, `data/c2-phone.json`, `data/merge-desktop.json` | the afternoon's runs: C1, C2, and the merged tree against the change alone |
 | `data/` | every run with its load (`ab-desktop.json`, `ab-phone.json`, `method.json`, `clone.json`), the identity results; `2026-11-27/` holds the paused session's files (its tables and profiles), measured with the buffers |
 
@@ -656,6 +857,16 @@ VIZ_BEFORE=<before>/design-system/project/components/Chart/preview.html VIZ_AFTE
 node tools/profile.cjs --lib <before>/app/e2e/lib.cjs --root <after unminified app> --series 36,200 --runs 5 --nobuffer [--phone] [--table]
 node tools/summarise.cjs ab.json
 VIZ_APP_LIB=<before>/app/e2e/lib.cjs node tools/waiting-frames.cjs --builds before=<before>/app,after=<after>/app --runs 3 --min-runs 5 [--phone] --out waiting-line/frames-desktop.json
+# the third review (C5, C4)
+node tools/identity.cjs --builds final=<final>,new=<new> --rounds 2 --full-raster --out data/identity-c5b.json
+VIZ_BEFORE=<final>/design-system VIZ_AFTER=<new>/design-system node --test legend-writes.test.cjs
+VIZ_E2E_APP_PORT=… VIZ_E2E_MOCK_PORT=… node tools/lay.cjs --lib <before>/app/e2e/lib.cjs --root <final>/app --series 36 --n 11 --variants tools/lay-variants-1.json
+node tools/zoom.cjs --lib <before>/app/e2e/lib.cjs --builds final=<final>/app,new=<new>/app --series 36 --n 25 --rounds 4
+VIZ_APP_LIB=<c4a154b>/app/e2e/lib.cjs node tools/ab.cjs --builds final=<final>/app,new=<new>/app --series 36 --runs 20 --skip typing,crosshair,local --out data/c5-desktop-s2.json
+python3 -I tools/pool.py responseFull 36 data/c5-desktop-s1.json:new data/c5-desktop-s2.json:new
+node tools/frame-shots.cjs --builds before=<c4a154b>/app,after=<final>/app [--phone] --theme light --series 200,36 [--dashboard] --out waiting-line/shots-….json --images <dir>
+python3 -I tools/compose.py waiting-line/images waiting-line/shots-*.json   (reads the frames from <dir> next to the json as images/)
+node tools/waiting-frames.cjs --builds before=…,after=… --dashboard [--phone] --runs 3 --min-runs 0 --out waiting-line/frames-dashboard-desktop.json
 ```
 
 The afternoon's runs (C1, C2, the merge check, C4) used the same commands, with `before`, `cc50ea2`,
