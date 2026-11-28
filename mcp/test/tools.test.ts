@@ -190,7 +190,7 @@ describe('query', () => {
       expect(typeof item.last).toBe('number')
     }
     const link = new URL(r.structured.data.link)
-    expect(link.origin + link.pathname).toBe('https://vis.bitcru.sh/explore')
+    expect(link.origin + link.pathname).toBe('https://viz.bitcru.sh/explore')
     expect(link.searchParams.get('q')).toBe('sum by (service) (rate(http_server_requests_total{env="prod"}[5m]))')
     expect(Number(link.searchParams.get('to'))).toBe(NOW * 1000)
     expect(Number(link.searchParams.get('from'))).toBe((NOW - 3600) * 1000)

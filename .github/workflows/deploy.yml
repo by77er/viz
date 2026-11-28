@@ -1,4 +1,4 @@
-# Every push to main deploys vis.bitcru.sh. deploy/README.md describes the whole path.
+# Every push to main deploys viz.bitcru.sh. deploy/README.md describes the whole path.
 #
 #   push to main ──► checks (ci.yml, the same jobs a pull request runs)
 #                ──► deploy: deploy/deploy.sh = resources, configure, upload every Worker,
@@ -53,14 +53,14 @@ jobs:
       contents: read
 
   deploy:
-    name: Deploy vis.bitcru.sh
+    name: Deploy viz.bitcru.sh
     needs: checks
     if: ${{ github.event_name == 'push' || inputs.rollback_to == '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     environment:
       name: production
-      url: https://vis.bitcru.sh
+      url: https://viz.bitcru.sh
     permissions:
       contents: read
     env:
@@ -130,13 +130,13 @@ jobs:
           retention-days: 90
 
   rollback:
-    name: Roll back vis.bitcru.sh to ${{ inputs.rollback_to }}
+    name: Roll back viz.bitcru.sh to ${{ inputs.rollback_to }}
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.rollback_to != '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment:
       name: production
-      url: https://vis.bitcru.sh
+      url: https://viz.bitcru.sh
     permissions:
       contents: read
       actions: read
@@ -181,7 +181,8 @@ jobs:
           SHA: ${{ inputs.rollback_to }}
         run: |
           node deploy/configure.mjs --ids-optional --release "$SHA" --quiet > /dev/null
-          node deploy/smoke.mjs
+          # --no-hosts: the restored release may predate D75 (its issuer is then vis.bitcru.sh).
+          node deploy/smoke.mjs --no-hosts
       - name: Rollback record
         if: ${{ always() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

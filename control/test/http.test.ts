@@ -27,12 +27,12 @@ describe('HTTP surface', () => {
       const res = await call(t.admin, method, path, body)
       expect(res.status, `${method} ${path}`).toBe(status)
       expect(res.headers.get('Content-Type'), `${method} ${path}`).toBe('application/problem+json')
-      expect(res.body).toMatchObject({ type: expect.stringMatching(/^https:\/\/vis\.bitcru\.sh\/problems\//), title: expect.any(String), status, code: expect.any(String), detail: expect.any(String), fix: expect.any(String) })
+      expect(res.body).toMatchObject({ type: expect.stringMatching(/^https:\/\/viz\.bitcru\.sh\/problems\//), title: expect.any(String), status, code: expect.any(String), detail: expect.any(String), fix: expect.any(String) })
       expect(res.body.fix.length).toBeGreaterThan(10)
       expect(res.headers.get('Cache-Control')).toBe('no-store')
     }
     expect((await call(t.admin, 'PUT', '/keys', {})).headers.get('Allow')).toBe('GET, POST')
-    const outside = await worker.fetch!(new Request('https://vis.bitcru.sh/api/v1/write') as never, env as never, {} as ExecutionContext)
+    const outside = await worker.fetch!(new Request('https://viz.bitcru.sh/api/v1/write') as never, env as never, {} as ExecutionContext)
     expect(outside.status).toBe(404)
 
     // bodies: must be JSON, of a sane size
@@ -46,12 +46,12 @@ describe('HTTP surface', () => {
 
   it('CORS: only origins on the allow-list get CORS headers', async () => {
     const t = await newTenant()
-    const allowed = 'https://vis.bitcru.sh'
+    const allowed = 'https://viz.bitcru.sh'
     const ok = await get(t.admin, '/whoami', { Origin: allowed })
     expect(ok.headers.get('Access-Control-Allow-Origin')).toBe(allowed)
     expect(ok.headers.get('Access-Control-Expose-Headers')).toContain('ETag')
     expect(ok.headers.get('Vary')).toBe('Origin')
-    for (const origin of ['https://evil.example', 'https://vis.bitcru.sh.evil.example', 'http://vis.bitcru.sh', 'null']) {
+    for (const origin of ['https://evil.example', 'https://viz.bitcru.sh.evil.example', 'http://viz.bitcru.sh', 'null']) {
       const res = await get(t.admin, '/whoami', { Origin: origin })
       expect(res.status).toBe(200)
       expect(res.headers.get('Access-Control-Allow-Origin'), origin).toBeNull()
