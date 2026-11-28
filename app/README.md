@@ -18,10 +18,12 @@ control's `/api/v1/control/whoami`, `/api/v1/control/dashboards` and
 > gateway has to do with it ("Needed changes in deploy/", and `serve.json` as data); `deploy/`
 > is another builder's, who is building the gateway to serve the app by `serve.json`
 > (`../deploy/README.md`). The app was not run behind that gateway here.
-> **Its design is not reviewed.** The move to design system v9 is described in
-> `../design-system/reviews/app-v9/response.md`, status "not reviewed"; it goes to an
-> independent design reviewer next and is not ready to merge until then (AGENTS.md, "Design
-> changes", 5).
+> **Its design is not approved.** The move to design system v9 was rejected by an independent
+> review (`../design-system/reviews/app-v9/review.md`, 2026-11-27); the fixes are verified and
+> `../design-system/reviews/app-v9/response.md` is the disposition, status "awaiting
+> re-review". Its blocker B1 (a result with many series painted late) is being handled
+> separately in the design system's chart, so it is not ready to merge until that lands and a
+> reviewer approves (AGENTS.md, "Design changes", 5).
 >
 > **The backend used for development and most tests is a mock** (`mock/`): synthetic data and
 > a subset of PromQL. It is not the viz query backend, and the UI shows a banner whenever it
@@ -235,7 +237,7 @@ touched; `systemChart.ts`, `spec.ts` and `index.ts` are as they were.
 ### How each fix is held
 
 New checks: section `review2` of `e2e/app.cjs` (18 checks: M1, M2, m1 to m4, m10, m12),
-section `reload` (5 checks: B3), one check and three more states in section `touch` (B2), and
+section `reload` (7 checks: B3), one check and three more states in section `touch` (B2), and
 in `e2e/dashboards.cjs` section `reload` (3 checks) and the hit-area measure at 1500 px with a
 finger on each dashboard (3 checks). Unit: `src/lib/scrollKeeper.test.ts`, and cases in
 `timeInput.test.ts` and `charts/spec.test.ts`.
@@ -260,7 +262,14 @@ finger on each dashboard (3 checks). Unit: `src/lib/scrollKeeper.test.ts`, and c
   in the middle of `services_overview`, the last of `pod_capacity`) and the list. Also: an
   address opened afresh starts at the top in a tab that remembers a position; the reloaded
   page is in place before its answer arrives (the mock answering 1.5 s late); a wheel turned
-  meanwhile is not undone.
+  meanwhile is not undone. And (added 2026-11-28, when the mutant that places the position
+  once and does not hold it survived every other check): on Help and on the chart, a scroll
+  to the top that no input made, 150 ms after the reloaded page is in place, is undone. That
+  is what the router's reset does when its first page renders after the page is already
+  tall; on this machine it comes first, so only a reset made by the check shows the hold.
+  The wheel check now waits up to 1.2 s for the wheel's scroll instead of reading it at
+  300 ms: in one whole run of 2026-11-28 the scroll had not been applied at 300 ms (600, then
+  250 when read later), which is the page's main thread being late, not the keeper.
 - **M1**: the palette is opened on Explore and every command it lists (19) is matched to a
   control that is on the page and visible; a command with no control fails the check. Copy
   link copies the address with the form shown and says "Copied"; the palette's command leaves
@@ -273,30 +282,73 @@ finger on each dashboard (3 checks). Unit: `src/lib/scrollKeeper.test.ts`, and c
 
 ### Mutants of these fixes
 
-`SET=review2 VIZ_MUTANT_DIR=<scratch dir> node e2e/mutants.cjs`: each undoes one fix on a
-copy in the session's scratch area (never in the tree), builds it and runs the checks named.
-Results: `e2e/measurements/mutants-review2.txt`.
-
-**Not run.** The work was paused (2026-11-27) before this set ran once: 23 mutants are written
-(`e2e/mutants.cjs`, `REVIEW2`), none has been applied, and there is no result file. Until it
-is run, no check above is known to fail without its fix, except by the review's own
-observations of the app before the fixes.
+@@MUTANTS@@
 
 ### Images
 
-`../design-system/reviews/app-v9/compare/` was **not made again**: the run was
-stopped by the pause while it pictured the build before, and the directory still holds the
-170 pairs of 26 Nov, which predate these fixes. A trial of the new states alone worked for
-both builds (22 pairs, not kept). To make them: `VIZ_SHOTS_KEEP_BEFORE=1 node e2e/v9-shots.cjs
-<before app dir> . <work dir> ../design-system/reviews/app-v9/compare`; the build before (commit
-`5db517f` against v9's stylesheet) and its images were in a scratch area that is gone, so it
-has to be built again, or the run made without `VIZ_SHOTS_KEEP_BEFORE`.
+`../design-system/reviews/app-v9/compare/` was made again on 2026-11-28, 08:14 to 08:45 UTC,
+from the final build (`dist/` built 07:50 UTC from the source as it is now; no source file of
+the app changed after it), by
+
+```sh
+node e2e/v9-shots.cjs <before app dir> . <work dir> ../design-system/reviews/app-v9/compare
+```
+
+(a whole run: no `VIZ_SHOTS_KEEP_BEFORE`, every state pictured for both builds). **Before** is
+commit `5db517f` built again in the scratch area against this tree's `design-system/dist`
+(v9; no commit has changed `design-system/src` or `tokens.json` since 26 Nov 07:00) with this
+tree's `node_modules` plus `uplot` 1.6.32, which the app no longer depends on, fetched with
+the integrity its lockfile records. Its `dist/assets` came out byte for byte under the same
+hashed names as the build the 26 Nov pairs were made from. Its own `prebuild` (which writes
+`design-system/dist`) was not run.
+
+- **196 pairs**, both themes, 1440 and 400 px (single-width states as in the table above
+  them in `response.md`), the same mock, data and steps for both builds. 26 more than on
+  26 Nov: the five states of the review's M3 (`partial-answer`, `waiting-10s-alternative`,
+  `stopped-at-60s`, `busy-asking-again`, `api-unreachable`; 4 each), `sign-in-api-unreachable`
+  (4) and `touch-table-200-show-more` (B2's control at 400 px with a coarse pointer, every
+  hit area outlined and measured; 2). No state of 26 Nov was dropped.
+- **"New view: nothing to compare"** (the build before cannot reach the state):
+  `time-range-not-read`, `signed-out`, `sign-in-api-unreachable` (12 images). Every other
+  pair, the five M3 states included, has a picture of the build before.
+- Stored as `v9-shots.cjs` stores them: a 256-colour palette that holds every token colour
+  exactly (the algorithm of `e2e/encode-review-images.py`, which the script runs itself; the
+  `.py` file was **not** run on the review directory, whose non-`--flat` mode deletes a pair
+  with no `before/` single beside it, and this directory keeps none). Then recompressed
+  losslessly with oxipng (level 6, `pyoxipng` in a scratch virtualenv), every file checked
+  pixel for pixel against the encoded one before it replaced it: 16,285,129 to 15,351,182
+  bytes (**14.6 MiB**; `du -sh` prints 15M). The 26 Nov directory was 14 MB for 170 pairs.
+- `shots.mjs measure` on the after build, 400 px and 320 px with a coarse pointer: sideways
+  overflow 0 px; one hit area under 44 px in each measured image, the query editor's inner
+  box (240.3 x 22.8 px), which is its box and not what a finger gets (the well around it is
+  44 px; the first review's B2 and this review's "author's claims" say the same); "Show 50
+  more of 200" is no longer reported (before: 148.8 x 42.5 px in the same state).
+- Looked at: `stopped-at-60s-1440-light` and `partial-answer-1440-dark` (both right). The
+  other 194 were not looked at one by one.
 
 ### Speed of the two paths touched
 
-**Not measured.** `e2e/measure-review2.cjs` is written for it (one run of 20 at each layout of
-"Show 50 more" to 100 rows painted and of "Copy link" to "Copied" painted, on the reference
-setup of `measure.cjs`) and **has never been run**: the work was paused first.
+**Measured here**, 2026-11-28 09:10 to 09:19 UTC, `node e2e/measure-review2.cjs` once, under
+the machine lock (another builder's speed runs took turns with it; none ran at the same time
+as it): Chromium headless, CPU slowed 4x, Fast 4G, the built app on the mock, a fresh context
+per run, 20 runs at each layout (1440 x 900 with a mouse; 400 x 800 with touch, a coarse
+pointer and device scale 2). From the input's own timestamp to the end of the frame in which
+the result is on screen. The 1-minute load (what `uptime` prints) was read at the start of
+every run and is in `e2e/measurements/review2-touched-paths.json` with each time; 4 cores;
+calibration 420 ms. After the build only: the fixes did not change the code of either path
+but for one wrapper's class (B2) and a new button (M1), so there is no "before" run.
+
+| Path | Budget | Desktop: p75 (median, worst) | Phone: p75 (median, worst) | Within? |
+|---|---|---|---|---|
+| "Show 50 more" under the table of 200 series, to 100 rows painted | 100 ms (a local change) | **102** (77, 117) | **105** (93, 192) | **no**, by 2 and 5 ms at p75 |
+| "Copy link" in Explore's head, to "Copied" painted | 100 ms | 46 (43, 62) | 59 (56, 78) | yes |
+
+Load at run start: desktop median 2.0 (1.4 to 2.2), phone 1.6 (1.4 to 2.0); every run judged
+(at or below the core count). **"Show 50 more" is over its budget at both layouts** by a
+margin smaller than the spread between runs (desktop 51 to 117 ms); it renders 50 more rows
+of the system's table in one React commit. It was not measured before the fixes and was not
+tuned here: a follow-up (below). Not measured: the reload's landing time (B3 is held by
+position and shift checks, not by a time budget), the banner of m12.
 
 ### Follow-ups left (the review's ids)
 
@@ -311,6 +363,7 @@ setup of `measure.cjs`) and **has never been run**: the work was paused first.
 | m9 | The address does not carry the colour map | The system's algorithm and a question for its owner; more than a few lines in the app |
 | m11 | A range across midnight reads "18:49 to 00:49" in the head | The chart writes that range. Where the page writes it (a result with no series) both days are now said (`rangeWords`) |
 | m13 | Fields are 15 px with a coarse pointer; iOS zooms a focused field under 16 px | Needs a device; then the system's decision |
+| (speed) | "Show 50 more" to 100 rows painted: p75 102 ms desktop, 105 ms phone, against 100 ms ("Speed of the two paths touched") | Found by this verification; not tuned. Rendering fewer rows per press, or the rows in two commits with the first 50 at once, are the candidates; each needs its own before and after |
 
 Known limits of the B3 fix: a position past the end of the reloaded page is not restored (a
 table lengthened by "Show 50 more", Other opened in the legend: neither is in the address, so
@@ -1220,6 +1273,12 @@ overrule. Each is a choice between real alternatives.
 
 ## Verification
 
+### The fixes for the second design review (2026-11-28)
+
+@@VERIF@@
+
+### The move to design system v9 (2026-11-26 and 27; the state the second review saw)
+
 Run on 2026-11-26 and 27 (UTC), Node 22.23, Chromium (Playwright's headless shell), on a
 machine of 4 cores and 16 GB shared with other builders. Every suite in this table was run on
 the final source and build (after the last source change, 2026-11-27 00:13 UTC), one browser
@@ -1805,12 +1864,9 @@ The shell's script is 146.0 kB compressed (the limit is 200 kB): 10.6 kB less th
   (`../design-system/reviews/app-v9/response.md`). The app was not run behind the gateway
   that `deploy/` is building: that the gateway serves it rightly rests on `serve.json` and on
   `e2e/prod.cjs`'s own static server, not on a run against it.
-- **The images are older than the last source changes.** The pairs under
-  `../design-system/reviews/app-v9/compare/` were made at 20:37 to 20:45 UTC on 26 Nov. The
-  source changed after that (layout shift on a first load, the error boundary, the scroll
-  position kept, the table's rows prepared in idle time); none is meant to change a settled
-  state, and one pair looked at again (`explore-400-light`) shows the final build's page,
-  but the pairs were **not made again** and not compared image by image.
+- **The images.** The pairs under `../design-system/reviews/app-v9/compare/` were made again
+  from the final build on 2026-11-28 (196 pairs; "The second design review: fixes", "Images").
+  Only two were looked at one by one.
 - **Speed.** **A result's first paint is over the 100 ms limit with many series** (from the last byte: 119 ms at 36 series and 244 ms at 200 on the final build, desktop; 96 and 177 ms before), which is the cost of the design system's SVG chart on a result of this size (need 15). **The phone layout of the final build was not measured at all**, and there is no complete before-and-after run of the final build: the last two source changes (the scroll position kept, the table prepared in idle time) were measured only by the desktop tuning run at 36 and 200 series, on a busy machine. Thin margins were not taken again ("Speed").
 - **The chart is the design system's script, and the app depends on what it writes.** The
   fix-ups in `src/charts/` find things by the chart's own class names and words (`thead

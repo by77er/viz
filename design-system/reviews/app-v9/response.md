@@ -1,100 +1,102 @@
 # The app on design system v9
 
-**Status: rejected by the independent review (`review.md`, 2026-11-27); fixes in progress,
-paused. Not ready for re-review.** See "Paused 2026-11-27" directly below; the rest of this
-file is the author's account as the reviewer read it, and is not yet updated for the fixes.
+**Status: awaiting re-review.** The independent review of 2026-11-27 (`review.md`) rejected
+the app: three blockers, three majors, thirteen minors. This file is the author's answer to it,
+finding by finding, for the next reviewer. **B1 is not answered here**: it is in progress
+separately (the design system's chart, by another builder), and nothing below claims it; by
+the rubric the app cannot be approved while it stands. Everything else the review required
+(its "Required before the next review", 2 to 7) is done and verified on one tree, below.
 
-## Paused 2026-11-27
+Below that, from "The change as first reviewed", is the account the first reviewer read, kept
+as it was except where it described images, waits or states that this round changed (each such
+place says so).
 
-All work was paused at about 02:33 UTC, part way through the fixes for the second review.
-Written by the session that was making them. Nothing was committed by it, nothing deployed, no
-Cloudflare call. (Another session's snapshot commit, `e6cbe5e` "Work in progress: parallel
-component build", took the app's files in while they were being edited; that commit is not a
-green state of `app/`.) The source of every fix below is in `app/`; `npx tsc --noEmit` passes
-on it (run once, at the pause). The detail of each fix, its cause and its checks is in
-`app/README.md`, "The second design review: fixes".
+## The second review: disposition
 
-### State, finding by finding
+Checks are in `app/e2e/app.cjs` (sections `review2`, `reload`, `touch`) and
+`app/e2e/dashboards.cjs` (`reload`, `narrow`) unless named otherwise; each fix is undone by a
+mutant on a copy of the app outside the tree, and the checks named must fail
+(`app/e2e/measurements/mutants-review2.txt`). Images are `compare/app-v9-<state>-<width>-<theme>.png`.
+The detail of each cause and fix is in `app/README.md`, "The second design review: fixes".
 
-| Finding | State | Verified by | Left to do |
+| Finding | Disposition | What a person sees now | Evidence |
 |---|---|---|---|
-| **B1** speed with many series | **In progress elsewhere** (the design system's chart, `../chart-speed/`). Not worked on here, not claimed | | |
-| **B2** "Show 50 more of 200" | **Done, verified by a check; the check's teeth unverified** | `e2e/app.cjs`, section `touch`: a tap 16 px above and 16 px below the button's centre each show 50 more rows, at 400, 320 and 1500 px, coarse; the hit-area measure passes with the table of 200 in it (passed, 02:19 and in the whole run of 02:23) | The mutant (no stack) was not run. The hit-area measure over the dashboards views at 1500 px, coarse, finds the chart legend's "Min" sort head 43 px wide on every dashboard with a chart: the design system's (the review's "Same row" note), not the app's. `e2e/dashboards.cjs` was amended to count and report it and fail on anything else; **that amended check has not been run** |
-| **B3** a reload lands at the top | **Done, verified by checks; teeth unverified** | `e2e/app.cjs`, section `reload` (5 checks, passed twice): Explore's chart of 36 series, the table of 200, Explore signed in with a key, Help; at 1500 and 400 px fine and at 400 px coarse (coarse in Blink, `isMobile`, no `hasTouch`, guarded): same scroll position, anchor within 1 px (0 in every case), layout shift 0.0000. `e2e/dashboards.cjs`, section `reload` (3 checks, passed once): two dashboards and the list, landed 0 px off, shift at most 0.0091 | The six B3 mutants were not run, so it is not shown that these checks fail without the fix (the review saw 7 of 7 at the top before it) |
-| **M1** palette, Copy link | **Done, verified by checks; teeth unverified** | section `review2`: all 19 commands the palette lists on Explore are matched to a visible control; "Copy link" copies the address with the form shown and says "Copied"; the palette's command leaves the focus on it; Help's sentence | Mutants not run. No before/after image of the head with the new button |
-| **M2** day and warning in the text form and the name | **Done, verified by checks; teeth unverified** | section `review2` (7 checks) and unit cases in `charts/spec.test.ts` | Mutants not run |
-| **M3** five states imaged | **In progress** | The states are in `e2e/v9-shots.cjs` (`partial-answer`, `waiting-10s-alternative`, `stopped-at-60s`, `busy-asking-again`, `api-unreachable`, `sign-in-api-unreachable`, and `touch-table-200-show-more`). A trial of all but the 60 s stop made 22 pairs from both builds, which were looked at and are right; they were in scratch and are gone | **`compare/` was not remade: it still holds the 170 pairs of 26 Nov, which predate every fix here.** The whole run was stopped by the pause while picturing the build before. `stopped-at-60s` has never been pictured |
-| m1 empty head's range | Done, verified (`review2`, and unit `rangeWords`) | | mutant not run |
-| m2 Step placeholder | Done, verified (`review2`) | | mutant not run |
-| m3 Tab stop in the palette | Done, verified (`review2`) | | mutant not run |
-| m4 Copy a link says nothing; palette placeholder | Done, verified (`review2`) | | mutants not run |
-| m10 sign-in checkbox label | Done, verified (`review2`) | | mutant not run |
-| m12 unreachable API: banner and asking again | Done, verified (`review2`, 2 checks: banner within 5 s, the query asked again by itself 10.4 s after the API came back, 2 requests while it was away) | | mutants not run. The banner is inserted above the page, so the page moves down when it appears (as the banner always did) |
-| m5, m6, m9, m11, m13; m7, m8 (the system's chart) | **Not started**; listed as follow-ups with reasons in `app/README.md` | | |
+| **B1** a result with many series is painted late | **In progress separately** (the design system's chart). Not worked on here; nothing claimed | (unchanged by this round) | none from this round |
+| **B2** "Show 50 more of 200" takes a tap on 34.5 px of 44 | **Fixed** | What follows the table (the shared labels, the button) is a `vz-stack` with it, `space-4` clear of the last row: the whole 44 px is the button's, with either pointer | A tap 16 px above and 16 px below the button's centre each show 50 more, at 400, 320 and 1500 px with a coarse pointer; the page's hit-area measure passes with the table of 200 in it. Mutant "no stack": killed. Image `touch-table-200-show-more` (every hit area outlined; `shots.mjs` reports the button 148.8 x 42.5 px before and nothing after). **Same row, the system's:** the chart legend's "Min" sort head is 43 px wide at 1500 px with a coarse pointer on every dashboard with a chart; `dashboards.cjs` counts it (6, 1 and 4 on the three dashboards) and fails on anything else, which a mutant shows (a panel's links out of `vz-links`: killed by the 1500 px check). A follow-up for the system's owner |
+| **B3** a reload lands at the top | **Fixed** | A reload (or a return through the history to the same address) lands where the page was, in the first frame tall enough to hold it, and holds there for 1 s; the person's first wheel, touch, pointer or key ends it. A link opened afresh starts at the top | Four pages (the chart of 36, the table of 200, Explore signed in, Help) at 1500 and 400 px fine and 400 px coarse (coarse in Blink, not touch emulation): same position, anchor within 1 px (0 in every case), shift 0.0000; two dashboards and the list (landed 0 px off). In place before a late answer; a wheel meanwhile not undone; a reset made 150 ms after landing undone (added in this round: without it, "placed once, not held" survived). Six mutants: all killed |
+| **M1** the palette opens only by keyboard; "Copy a link" had no control | **Fixed** | "Copy link", a small button in Explore's page head; says "Copied" or "Could not copy". Help says the palette lists the page's commands and that each is also a control | All 19 commands the palette lists on Explore matched to a visible control; Copy link copies the address with the form shown. Three mutants killed. Images: every Explore pair's head (e.g. `explore`, `command-palette`) |
+| **M2** the text form and the chart's name leave out the day and the warning | **Fixed** | The name and the text form's first line say "18 Nov, 09:30 to 12:30" as the head does (also zoomed, and under "The latest query failed"); with a warning the name ends "The API sent a warning: the result may be incomplete." and the text form's second line is the head's sentence; the next whole answer removes both | `review2` (7 checks) and unit cases in `charts/spec.test.ts`. Five mutants killed. Image `partial-answer` |
+| **M3** five designed states not imaged | **Fixed** | | `partial-answer`, `waiting-10s-alternative`, `stopped-at-60s`, `busy-asking-again`, `api-unreachable`, and `sign-in-api-unreachable`: both themes, 1440 and 400 px, each with the build before except the last (that build had no sign-in) |
+| Required 7: images from the final build | **Done** | | `compare/` remade 2026-11-28 from the build this file reports on: 196 pairs ("Images", below) |
+| m1 empty head's range | **Fixed** | "18 Nov, 09:30 to 12:30 · every 15 s · …" | `review2`, unit `rangeWords`; mutant killed; image `empty` |
+| m2 Step placeholder "30 s" | **Fixed** | No placeholder; the help line says the step in use | `review2`; mutant killed; image `explore` |
+| m3 Tab stops on the palette's list | **Fixed** | Tab leaves the field for the next control, not the list | `review2`; mutant killed |
+| m4 "Copy a link" says nothing; placeholder names a command | **Fixed** | The command presses Copy link, which takes the focus and says "Copied"; the field has no placeholder | `review2`; two mutants killed; image `command-palette` |
+| m5 the table's "< 1" | Follow-up | | A decision for the system's Number rules (the table's own precision) |
+| m6 Table, Text, JSON after a failure | Follow-up | | More than a few lines; one rule for the Unit select is needed first |
+| m7 320 px: legend label dropped; empty band; tenant breaks | Follow-up | | The legend is the system's chart; the kept place is not decided here |
+| m8 Other cannot be closed | Follow-up | | The system's chart |
+| m9 the address does not carry the colour map | Follow-up | | The system's algorithm, and a question for its owner |
+| m10 sign-in checkbox label | **Fixed** | "Show the key" | `review2`; mutant killed; images `no-key`, `key-refused` |
+| m11 a range across midnight in the head | Follow-up (half) | Where the page writes a range (a result with no series) both days are said; the chart's own head does not | Unit `rangeWords` |
+| m12 an unreachable API raises no banner and nothing asks again | **Fixed** | A query that gets no answer asks the probe again at once; if that fails the banner shows and the probe is asked every 10 s; when it answers, the failed query is asked again by itself. A query that fails alone is not repeated | `review2` (banner within 5 s; asked again 10.4 s after the API came back; 2 requests while it was away); three mutants killed; image `api-unreachable`. The banner is inserted above the page, so the page moves down when it appears (as before) |
+| m13 15 px fields with a coarse pointer | Follow-up | | Needs a device |
 
-### What was learned about B3's cause
+**Found by this verification, not by the review:** "Show 50 more" to 100 rows painted is over
+its 100 ms budget at p75, by 2 ms (desktop) and 5 ms (phone) ("Speed", below). The fix did not
+change that path's code; it was not measured before the fixes and is not tuned here. It is a
+follow-up in `app/README.md`.
 
-Two things, both needed for the page to land at the top, and neither is `content-visibility`
-or a reserved height (the reserved layout is exact, which is why the fix lands to the pixel):
+### Suites, on one tree
 
-1. The browser restores a scroll position only while the document loads. At `load` this page is
-   one window tall, because the app draws after its script has run and the API has said whose
-   key the tab holds (`RequireKey` draws nothing while the session is `checking`).
-2. The router scrolls the window to (0, 0) when its first page has rendered.
-   `@tanstack/router-core` `scroll-restoration.js`: `router._scroll.n` ("reset next") starts
-   `true`, and the `onRendered` handler that acts on it is installed by the router's constructor
-   whether or not the `scrollRestoration` option is set. The app's `resetScroll: false` is on
-   its own later navigations and does not reach the first render. This is also why Help, which
-   has no data, landed at the top.
+@@SUITES@@
 
-The fix (`app/src/lib/scrollKeeper.ts`, installed in `main.tsx` before the app renders): the
-position is written to `sessionStorage` at `pagehide` and on `visibilitychange` to hidden; on a
-`reload` navigation of the same path (or `back_forward` to the same address) a `ResizeObserver`
-on the document puts it back in the first frame the page is tall enough (after layout, before
-paint), a `scroll` listener holds it for 1 s against the router's reset, and the first wheel,
-touch, pointer or key event ends it. Turning the router's own `scrollRestoration` on was
-considered and not taken: it restores at the first render, when the page is still short, and
-switches `history.scrollRestoration` to manual for every navigation. Known limits are in the
-README (a position past the end of the reloaded page; a scrollbar drag in the held second).
+### Mutants
 
-### Suites on the tree as it stands (source last changed 02:21 UTC; `dist/` built then)
+@@MUT@@
 
-| Suite | Result |
-|---|---|
-| `npx tsc --noEmit` | passes (at the pause) |
-| `npm test` | 230 tests in 21 files pass (02:30, the new cases included) |
-| `npm run check:tokens` | passes: 759/759, 0 literal values in 71 files (02:30) |
-| `npm run build` | passes (02:21) |
-| `node e2e/app.cjs`, whole | **153 of 154** at 02:23. The one failure was an expectation of the old text ("…, /s, 09:30 to 12:30, …" in "text form: the chart's own sentences"), which M2 changes on purpose; the expectation was updated and **the whole suite was not run again** |
-| `e2e/app.cjs`, sections `review2`, `reload`, `touch` | all pass (31 checks, 02:19 to 02:22) |
-| `e2e/dashboards.cjs` | **only sections `narrow` and `reload`**: 16 of 19; the three failures are the "Min" head at 1500 px above, since reported by the check instead; not run again. The other sections were not run on this tree |
-| `e2e/errors.cjs`, `e2e/prod.cjs` | **not run** on this tree |
-| Mutants (`SET=review2 … e2e/mutants.cjs`, 23 written) | **not run** |
-| Speed of the two touched paths (`e2e/measure-review2.cjs`) | **not run**; the script itself has never been executed |
-| Images | **not remade** (above) |
+### Images
 
-This tree is therefore **not a green state**: do not snapshot `app/` from it for a pull request
-to `main` until the eight commands of the task have each passed once on it.
+`compare/` holds **196 pairs** (15,351,182 bytes, 14.6 MiB), made 2026-11-28 08:14 to 08:45
+UTC by `app/e2e/v9-shots.cjs` from the final build and from commit `5db517f` built again
+(whose assets came out byte for byte as the 26 Nov build's). The same mock, data (the fixed
+window 18 Nov 2026, 09:30 to 12:30 UTC) and steps for both. 26 pairs are new since 26 Nov
+(the six states above and `touch-table-200-show-more`); none was dropped. "New view: nothing
+to compare" (the build before could not reach the state): `time-range-not-read`,
+`signed-out`, `sign-in-api-unreachable`. Stored with a palette that holds every token colour
+exactly, then recompressed losslessly (oxipng; each file checked pixel for pixel). Measured
+by `shots.mjs` on the after build at 400 and 320 px with a coarse pointer: sideways overflow
+0 px; one hit area under 44 px per image, the query editor's inner box (22.8 px tall, inside
+the 44 px well; the first review settled that it is its box and not what a finger gets).
+Looked at one by one: two (`stopped-at-60s-1440-light`, `partial-answer-1440-dark`).
 
-### To resume
+### Speed of the two paths this round touched
 
-1. `cd app && npm run build`, then `node e2e/app.cjs`, `e2e/errors.cjs`, `e2e/prod.cjs`,
-   `e2e/dashboards.cjs` (ports: `VIZ_E2E_APP_PORT`, `VIZ_E2E_MOCK_PORT`; another builder used
-   8931, 8940 and 8941, which the defaults' derived ports can meet).
-2. `SET=review2 VIZ_MUTANT_DIR=<scratch> node e2e/mutants.cjs`; answer any survivor. The one
-   most likely to survive is "the position is put back once and not held": whether the router's
-   reset comes after the keeper's first placement depends on timing.
-3. Remake `compare/` (`e2e/v9-shots.cjs`, about 20 minutes: the 60 s stop is pictured four times
-   a build). The build before (commit `5db517f`, built against v9's stylesheet) and its 162
-   images were in the scratch area and are gone; build it again, or accept "New view" for it.
-4. `node e2e/measure-review2.cjs` once (check `pgrep -f measure` first), and put its two rows
-   in the README where it says "Not measured".
-5. Fill the README's "Mutants of these fixes", "Images" and "Speed" from those runs, update its
-   Verification table, rewrite this file as the disposition for the re-review, status
-   "awaiting re-review". If the chart-speed work hands over `../chart-speed/app.patch`: the
-   lines this work touched in `app/src/charts/` are listed in the README (`fixups.ts`: three
-   functions added; `Chart.tsx`: the import, two props, `live`, the accessible-name lines of
-   `fix`, and `fixForm`).
+**Measured here** (Chromium on this machine, 4x CPU, Fast 4G, 20 runs at each layout, p75
+(median, worst), load read at every run's start, 2026-11-28 09:10 to 09:19 UTC; after only):
+
+| Path | Budget | Desktop | Phone | Within? |
+|---|---|---|---|---|
+| "Show 50 more" to 100 rows painted | 100 ms | 102 (77, 117) | 105 (93, 192) | **no** |
+| "Copy link" to "Copied" painted | 100 ms | 46 (43, 62) | 59 (56, 78) | yes |
+
+Load at run start: desktop median 2.0 (1.4 to 2.2), phone 1.6 (1.4 to 2.0), on 4 cores; all
+40 runs judged. Nothing here was measured on Cloudflare or a device. The speed of a result
+with many series is B1's and is not measured by this round.
+
+### What this round did not do
+
+- B1 (above). m5 to m9, m11's chart half and m13: follow-ups, listed with reasons in
+  `app/README.md`.
+- No device, Safari or Firefox; no screen reader by ear; `e2e/real.cjs` and
+  `e2e/contract.cjs` (the real API) were not run again (no source on the API path changed).
+- Of the 196 pairs, two were looked at one by one.
+
+## The change as first reviewed
+
+What follows is the account the first reviewer read (2026-11-27), describing the move to v9.
+Where it described the images, or states then not imaged, it is updated and says so; its
+check counts and speed tables are of that state.
 
 - Change: the web app (`app/`) moved from design system v4 to v9, made servable in production
   behind the gateway, with sign-in by API key. Scope: the Explore view that existed, Help and
@@ -167,7 +169,7 @@ system's component, which the app now uses, not code of the app's.
 | m8 ring clipped on the last legend row | **Fixed** by the system | Drawn inside the row by its cells. Check "m7, m8"; image `legend-row-focus` |
 | m9 Settings' gap and missing scrim | Gone | Settings is a page; the only dialog is the command palette, on the scrim. Check "m9" |
 | m10 the palette's field has no visible label | **Fixed** | "Command". Check "m10"; image `command-palette` |
-| m11 the 10 s and 60 s waits not imaged | **Checked, still not imaged** | `VIZ_SLOW=1 node e2e/app.cjs`: the control at 10 s and the stop at 60 s |
+| m11 the 10 s and 60 s waits not imaged | **Checked; imaged since 2026-11-28** (`waiting-10s-alternative`, `stopped-at-60s`) | `VIZ_SLOW=1 node e2e/app.cjs`: the control at 10 s and the stop at 60 s |
 | Leftovers named in "The six questions" | Gone | Hashed colours, the per-series legend, full-height toolbar controls, date pickers, "15s", the "At" column, the dashed crosshair, Settings as a dialog |
 
 ## Presence test
@@ -262,7 +264,9 @@ New compositions, from existing components only:
 
 ## Images
 
-`compare/` holds 170 pairs (14 MB), made by `app/e2e/v9-shots.cjs` through
+*(Updated 2026-11-28: `compare/` was made again from the final build, 196 pairs; see "Images" under the disposition at the top. The table of states below is the same with the additions marked.)*
+
+`compare/` is made by `app/e2e/v9-shots.cjs` through
 `tools/shots.mjs` scenarios and `shots.mjs compare`: left, the app as it was (commit `5db517f`,
 built against the same v9 stylesheet, which is what a build of it gives today); right, this
 change. The same mock, the same data (the fixed window 18 Nov 2026, 09:30 to 12:30 UTC), the
@@ -275,7 +279,8 @@ made them are written beside the work directory by the script.
 |---|---|
 | Views by address | `explore`, `many-series-36`, `many-series-200`, `gap`, `bytes`, `p95-seconds`, `no-unit`, `one-series-no-labels`, `table`, `table-36`, `text`, `json`, `empty`, `error`, `error-step-too-small`, `start`, `help`, `settings` |
 | What a person does | `crosshair` (1440), `crosshair-36`, `legend-row-chosen`, `legend-row-focus` (1440), `legend-row-pressed` (1440), `other-opened`, `zoomed-in`, `command-palette`, `time-range`, `time-range-not-read` (after only), `focus-run-query` (1440), `focus-query-editor` (1440), `error-after-a-result` |
-| Waiting | `waiting-1s`, `waiting-cancel-offered`, `waiting-previous-query`, `cancelled`, `first-result-waiting` (a reload with the answer 2.5 s late) |
+| Waiting | `waiting-1s`, `waiting-cancel-offered`, `waiting-previous-query`, `cancelled`, `first-result-waiting` (a reload with the answer 2.5 s late); added 2026-11-28: `waiting-10s-alternative`, `stopped-at-60s`, `busy-asking-again` |
+| Added 2026-11-28 (the second review's M3, B2) | `partial-answer`, `api-unreachable`, `sign-in-api-unreachable` (after only), `touch-table-200-show-more` (400, coarse; every hit area outlined) |
 | Touch, zoom, greyscale | `touch`, `touch-table`, `touch-hit-areas` (36 series; every hit area outlined), `touch-320`, `zoom-200` (200%: 720 px at twice the scale), `greyscale` |
 | Sign-in, on an API that needs a key | `no-key`, `key-refused`, `key-without-read-scope`, `signed-in`, `settings-signed-in`, `signed-out` (after only) |
 
@@ -284,12 +289,12 @@ In "before", the sign-in states are what that build did with the same key in its
 
 Measured by `shots.mjs` on the after build (`measure`): at 400 px and at 320 px with a coarse
 pointer, sideways overflow 0 px, smallest text 11 px (`micro`), every hit area at least 44 px
-(21 to 33 measured per image), none covered, no drawn box reached by a neighbour's hit area,
+(21 to 33 measured per image; on 2026-11-28 the measure also reports the query editor's inner box, 22.8 px tall inside its 44 px well, in each image), none covered, no drawn box reached by a neighbour's hit area,
 no link inside a sentence; at 200% zoom, overflow 0 px.
 
-Not imaged: the 10 s and 60 s rows of the waiting table; the "API does not answer" banner;
-the sign-in form when the API could not be asked; hover states of single controls (they are
-the system's).
+Not imaged: hover states of single controls (they are the system's). (The 10 s and 60 s rows,
+the "API does not answer" banner and the sign-in form when the API could not be asked were
+not imaged on 27 Nov; they are since 2026-11-28.)
 
 ## Speed
 
@@ -659,21 +664,19 @@ for at this width:
 
 ## What is not done
 
-- **Not reviewed** (this document's status). **Not deployed**: the gateway's part is specified
+- **Awaiting re-review** (this document's status). **Not deployed**: the gateway's part is specified
   in `app/README.md` ("Needed changes in deploy/") and checked locally by `app/e2e/prod.cjs`;
   nothing was deployed.
 - Dashboards and monitors screens, logs, traces: not built (out of scope).
 - **Speed on the final build**: measured only at the desktop layout for 36 and 200 series, in
   one tuning run on a busy machine; the phone layout of the final build is not measured, and
   no thin-margin row was taken again ("Speed").
-- **The images were not made again** after the last source changes (none is meant to change
-  a settled state; one pair was looked at again).
+- The images were made again from the final build on 2026-11-28 (top of this file).
 - m7, second half: a segmented control is one tab stop per segment (need 12).
 - B2's remainder: body size is 15 px (need 9).
 - A shared link does not carry the colour map (need 11).
 - More samples than pixel columns are drawn as they are (need 6; "Speed", the typed step).
 - A window that spans a clock change shows times before the change an hour off on the chart
   (need 1).
-- The 10 s and 60 s waits are checked but not imaged.
 - Not checked: Safari and Firefox, real touch hardware, a screen reader by ear, enlarged
   text as distinct from zoom, a deployed viz.
