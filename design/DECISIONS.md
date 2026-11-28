@@ -4720,3 +4720,35 @@ the chart, so identity between the forms is a property of one function.
 **Would change if** results with gaps become common at many series (then (c), with the identity check
 extended to gaps), or the chart moves its drawing to a worker or a canvas (then the form it is handed
 is decided there).
+
+## D78. The web app's first release lists Explore, Help and Settings; dashboards and monitors are built, served and unlisted until their re-review passes
+
+**Decision** (2026-11-28, the owner's: "Merge the UI with Explore, Help and Settings live at
+viz.bitcru.sh today, the speed misses recorded as known issues; dashboards and monitors stay hidden
+from the nav until their fixes pass re-review, then follow in a second PR"). One list in the app,
+`app/src/shell/released.ts` (`RELEASED_VIEWS`), says which views a person is offered: the shell's
+navigation, the command palette's "Go to" commands and Help's sections name those and no others.
+It holds Explore, Help and Settings. Dashboards and monitors keep their routes, their documents in
+`app/serve.json` and their tests; they open at `/dashboards` and `/monitors` and nothing in the app
+links to them. The pull request that releases them adds them to the list. The speed rows that are
+not met are recorded in `app/README.md`, "Released in this version", with their figures and sources.
+This merge is made on the owner's decision, not on an approving design review (AGENTS.md, "Design
+changes", 5 and 7): the round 3 re-review rejected Explore on one speed row and rejected dashboards
+and monitors (`design-system/reviews/app-v9/rereview.md`).
+
+**Alternatives.** (a) Wait for every view to pass re-review and merge all at once: nothing of the
+interface is served meanwhile, and Explore, which a reviewer found at approve level apart from one
+row 2 to 5 ms over, waits on two views with blockers of their own. (b) Remove dashboards and
+monitors from the build, or their documents from `serve.json`: their tests would stop running on the
+tree that merges, a reload at their address would be the JSON 404, and bringing them back would
+touch the build, `serve.json` and the gateway's document list, which this release keeps as the
+stage served them. (c) A flag read at run time (a variable on the
+gateway, a query parameter): a second way to show unreviewed views to people, and a gateway change.
+
+**Why.** One list, read by the three places that name views, makes the follow-up a one-line change,
+keeps every suite of the unlisted views running against their addresses, and changes nothing in the
+gateway, `_headers`, the document's headers or `serve.json`.
+
+**Would change if** the dashboards and monitors fixes pass re-review (then both are added to the
+list, and this entry is rewritten to say so), or a person is found relying on an unlisted view's
+address before then (then the unlisted views say on screen that they are not released yet).
