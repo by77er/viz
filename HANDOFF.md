@@ -4,6 +4,23 @@ Written for whoever resumes this work (the owner said about a week). It lives on
 branch only and is deleted when the work it lists is done; it is not for `main`. The session's
 scratch directory does not survive the pause, so everything needed is in the repository.
 
+## Paused 2026-11-28 evening (owner out of budget)
+
+- **Production** (`viz.bitcru.sh`, release 39468db): the API, ingest with D77, and the web UI (Explore,
+  Help, Settings; dashboards and monitors served but unlisted, D78). Tenant `main` bootstrapped; its
+  keys were handed to the owner (scratch `prod-keys/`: delete once the owner confirms they saved them).
+  `vis.bitcru.sh` is an alias (D75). The zone's Web Analytics beacon is blocked by the app's CSP.
+- **Merged today:** #9, #10 (viz.bitcru.sh), #11 (D77 ingest), #12 (the UI, on the owner's decision).
+- **In progress (each paused with a "Paused" note):** round-4 fixes for dashboards and monitors on this
+  branch (`app/README.md`), then a re-review and a one-line PR adding them to `RELEASED_VIEWS`;
+  traces and logs read side (D81, branch `…-signals-read`, `spikes/s17-signals-volume/`) and write side
+  (D82, branch `…-signals-write`, `spikes/s18-signals-write/`), each to get an adversarial review.
+- **Decision numbers in use:** up to D80 on main; D81 and D82 reserved for the signals work. D80 needs
+  the D-M3 colour rule amendment (in the round-4 fix report).
+- **Open:** B1 (phone Chart→Table rows; F1 due 2026-12-31); design-system tool minors; Event Timing
+  as the speed tool's definition of "shows"; metric-name catalog and metadata (suggested); tenantship
+  deferred by the owner; rotate the Cloudflare token (owner).
+
 ## Waiting on the owner
 
 1. ~~A stage deploy, or an override~~: the owner allowed stage deploys, standing (2026-11-28, in
