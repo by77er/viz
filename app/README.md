@@ -3529,3 +3529,22 @@ design-system snapshot (the sizes `e2e/measure.cjs` records in `rapi-{before,aft
 gzip level 9, as `e2e/measure.cjs` computes it. The shell's script grows by 5.7 kB
 compressed (the parser, the error kinds and advice, the retries) to 156.6 kB, under the
 200 kB limit. The worker reader is not in the build (nothing imports it but its type).
+
+## Paused: the fourth design review's fixes (2026-11-28, 18:45 UTC, not committed)
+
+Paused at the owner's request (budget) in the middle of the work for `../design-system/reviews/app-v9/rereview-r4.md`.
+Everything below is uncommitted in the shared tree; `npx tsc --noEmit` passes at the pause. No session by the session rule
+exists for the final code: the timings named are trials (4 to 8 runs a build, alternating against the round-3 build, measured
+here) or one superseded session. A draft of the full section is in the author's scratch area, not here.
+
+| Finding | State at the pause |
+|---|---|
+| **D-B3** (blocker) | **Not done; the code is mid-change and unverified.** New `src/dashboards/drawSoon.ts`; `PanelView.tsx` `DeferredChart` reads where its panel is in the answer's render. Measured and not kept: drawing charts in the frame's scroll steps plus near charts (1.5 or 3 screens) in tasks of their own, with or without waiting for on-screen panels, and one chart per frame: the jump (`e2e/measure-dashboards.cjs --jump`, new) stayed at 250 to 400 ms on the desktop, and near drawing made on-screen panels later (trial p75 164 and 259). Session S1 of that version (`e2e/measurements/rereview4/superseded/`): jump desktop 377 against 360 before, phone 214 (worst in view 369) against 281. The cause, profiled: the 3 to 4 charts a jump brings into view are answered in the same burst as the lowest, at 20 to 45 ms each at 4x. **The last edit (not run)**: charts within ten screens drawn in their answer's task (as before D-B2), further ones as jobs (near, idle, or in the frame they enter). Its e2e checks (`[D-B3]`, both `[speed]` checks, rewritten for it) have not been run. Next: run `VIZ_ONLY=jump,dashboard node e2e/dashboards.cjs`, then the jump and on-screen rows, two sessions |
+| **D-M3** (major) | **Done, verified by tests**: the lead's rule in `colours.ts` `seed` (the panel's eight largest coloured; the dashboard's colour kept when free in the panel, else the next free; nothing larger than a coloured series in Other). `colours.test.ts` (2 new tests against the chart's own rules, 1 rewritten) and `dashboards.cjs` `[D-M3]` passed (full dashboards suite 125 of 125, on the build before the last D-B3 edit). The note's "now" is the chart's sentence, not edited; with the rule it no longer arises on a first load. Mutants written (`SET=r4`), not run |
+| **M-B2** (blocker) | **Done, verified by e2e**: `SilenceMenu` measures itself before the frame and on resize, `data-align="end"` / `data-flip` by the Menu rule. `monitors.cjs` `[menu]` at 640, 1024, 1500 px and 200% zoom passed (suite 81 of 81). Mutants written, not run; images not remade |
+| **M-B1** (blocker) | **Done in code, not proven**: react-query notifies at the end of the resolving task (`notifyManager.setScheduler(queueMicrotask)`, `main.tsx`); one `Intl.NumberFormat` per arguments (`lib/numberFormats.ts`, unit test). Identity: 6 of 6 chart markups byte-identical before/after (monitor, Pod capacity). The harness's `firstPaint` became invalid for the new build (its copy's read resolves after the page's draw: reads 21 ms); added `firstPaintNet` (from `responseEnd`) and `firstPaintRead` (from the page's own read; not yet run). Superseded S1, desktop: `firstPaintNet` 110 after against 125 before, paired median -10 (p25 -32, p75 +26): not beyond noise, **row not met (100)** |
+| Minors | Fixed with checks that passed: n-o1, n-o4, n-o5, n-d3, n-d2 (heatmap words only), n-d1 (CSS, not imaged). Left: n-d2 units, n-d4, n-o2, n-o3, n-o6 (the chart's) |
+
+Not done: `npm test`/`tsc`/`check:tokens`/`build` and the five e2e suites on the final tree (the unit suite, 263 of 263, and
+`check:tokens` passed before the last D-B3 edit), the mutants, the images in `reviews/app-dashboards/` and `app-monitors/`, the
+round-4 disposition tables in their `PR.md`. Trial records `e2e/measurements/r4try-*` are trials, not sessions.
