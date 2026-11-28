@@ -6,7 +6,8 @@ import { useWaiting } from '../explore/waiting'
 import { installFocusKeeper } from '../lib/focusKeeper'
 import { CommandPalette } from './CommandPalette'
 import { ErrorBoundary } from './ErrorBoundary'
-import { useCommands, useCommandsContext } from './commands'
+import { useCommands, useCommandsContext, type Command } from './commands'
+import { isReleased, type View } from './released'
 import { useSession } from './session'
 import { SignIn } from './SignIn'
 import { useTheme } from './theme'
@@ -87,11 +88,18 @@ export function AppShell() {
   useCommands(
     'shell',
     [
-      { id: 'nav-explore', group: 'Navigation', title: 'Go to Explore', keywords: 'metrics query promql', run: () => void navigate({ to: '/explore' }) },
-      { id: 'nav-dashboards', group: 'Navigation', title: 'Go to Dashboards', keywords: 'boards panels overview list', run: () => void navigate({ to: '/dashboards' }) },
-      { id: 'nav-monitors', group: 'Navigation', title: 'Go to Monitors', keywords: 'alerts alerting firing on call acknowledge silence', run: () => void navigate({ to: '/monitors' }) },
-      { id: 'nav-help', group: 'Navigation', title: 'Go to Help', keywords: 'keyboard shortcuts about docs', run: () => void navigate({ to: '/help' }) },
-      { id: 'nav-settings', group: 'Navigation', title: 'Go to Settings', keywords: 'api key tenant theme sign out', run: () => void navigate({ to: '/settings' }) },
+      // The sections this version lists (released.ts); an unlisted one is reached by its address only.
+      ...(
+        [
+          ['explore', { id: 'nav-explore', group: 'Navigation', title: 'Go to Explore', keywords: 'metrics query promql', run: () => void navigate({ to: '/explore' }) }],
+          ['dashboards', { id: 'nav-dashboards', group: 'Navigation', title: 'Go to Dashboards', keywords: 'boards panels overview list', run: () => void navigate({ to: '/dashboards' }) }],
+          ['monitors', { id: 'nav-monitors', group: 'Navigation', title: 'Go to Monitors', keywords: 'alerts alerting firing on call acknowledge silence', run: () => void navigate({ to: '/monitors' }) }],
+          ['help', { id: 'nav-help', group: 'Navigation', title: 'Go to Help', keywords: 'keyboard shortcuts about docs', run: () => void navigate({ to: '/help' }) }],
+          ['settings', { id: 'nav-settings', group: 'Navigation', title: 'Go to Settings', keywords: 'api key tenant theme sign out', run: () => void navigate({ to: '/settings' }) }],
+        ] satisfies [View, Command][]
+      )
+        .filter(([view]) => isReleased(view))
+        .map(([, command]) => command),
       { id: 'theme-light', group: 'Settings', title: 'Use the light theme', run: () => setPref('light') },
       { id: 'theme-dark', group: 'Settings', title: 'Use the dark theme', run: () => setPref('dark') },
       { id: 'theme-system', group: 'Settings', title: 'Follow the system theme', run: () => setPref('system') },
@@ -114,19 +122,21 @@ export function AppShell() {
       </a>
       <nav className="vz-nav" aria-label="Sections">
         <span className="vz-nav-name">viz</span>
-        <Link to="/explore">Explore</Link>
-        <Link to="/dashboards">Dashboards</Link>
-        <Link to="/monitors">Monitors</Link>
-        <Link to="/help">Help</Link>
+        {isReleased('explore') && <Link to="/explore">Explore</Link>}
+        {isReleased('dashboards') && <Link to="/dashboards">Dashboards</Link>}
+        {isReleased('monitors') && <Link to="/monitors">Monitors</Link>}
+        {isReleased('help') && <Link to="/help">Help</Link>}
         {/* The tenant is the key's, never a choice: text, not a link. */}
         {tenant && (
           <span className="vz-nav-end vz-secondary" data-testid="tenant" title={`Signed in to the tenant ${tenant}`}>
             {tenant}
           </span>
         )}
-        <Link to="/settings" className={tenant ? undefined : 'vz-nav-end'}>
-          Settings
-        </Link>
+        {isReleased('settings') && (
+          <Link to="/settings" className={tenant ? undefined : 'vz-nav-end'}>
+            Settings
+          </Link>
+        )}
       </nav>
 
       {(mock || unreachable) && (

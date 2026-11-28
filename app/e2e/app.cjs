@@ -501,7 +501,7 @@ async function main() {
         await page.keyboard.press('Tab')
       }
       const names = stops.map((s) => s.name)
-      const order = ['Skip to content', 'Explore', 'Dashboards', 'Monitors', 'Help', 'Settings', 'copy-link', 'query editor', 'run', 'preset-15m', 'preset-1h', 'preset-6h', 'preset-24h', 'preset-7d', 'earlier', 'later', 'time-from', 'time-to', 'step', 'unit', 'view-chart', 'view-table', 'view-text', 'view-json']
+      const order = ['Skip to content', 'Explore', 'Help', 'Settings', 'copy-link', 'query editor', 'run', 'preset-15m', 'preset-1h', 'preset-6h', 'preset-24h', 'preset-7d', 'earlier', 'later', 'time-from', 'time-to', 'step', 'unit', 'view-chart', 'view-table', 'view-text', 'view-json']
       check('keyboard: the stops come in reading order, from the skip link through the query, the range and the forms to the chart', order.every((n, i) => names[i] === n), names.join(' > '))
       check('keyboard: the plot is one stop, the zoom buttons follow, each sortable head is one, and the legend is one', names.slice(order.length).join(' > ') === [names[order.length], 'Zoom in', 'Series', 'Last, /s', 'Min', 'Max', names[names.length - 1]].join(' > ') && names[order.length].startsWith('Query result: ') && names.length === order.length + 7, names.slice(order.length).join(' > '))
       check('keyboard: the ring is drawn at every stop, and focus never falls to the document', stops.every((s) => s.ring && s.name !== 'body'), stops.filter((s) => !s.ring).map((s) => s.name).join(', '))
@@ -789,6 +789,10 @@ async function main() {
         if (!ok) without.push(t)
       }
       check(`review 2, M1: every command the palette lists on Explore (${titles.length}) is also a control on the page, so none needs a keyboard`, titles.length >= 16 && without.length === 0, without.join(' | ') || titles.join(' | '))
+      // This version lists Explore, Help and Settings only (src/shell/released.ts): dashboards and monitors are reached by their address.
+      check('released views: the palette goes to Explore, Help and Settings, and offers no Dashboards or Monitors', titles.filter((t) => /^Go to /.test(t)).join(',') === 'Go to Explore,Go to Help,Go to Settings', titles.filter((t) => /^Go to /.test(t)).join(','))
+      const navNow = await page.evaluate(() => [...document.querySelectorAll('nav.vz-nav a')].map((a) => a.textContent))
+      check('released views: the navigation lists Explore, Help and Settings, not Dashboards or Monitors', navNow.join(',') === 'Explore,Help,Settings', navNow.join(','))
       await page.click('[data-testid=view-table]')
       await page.click('[data-testid=copy-link]')
       await page.waitForFunction(() => document.querySelector('[data-testid=copy-link]').textContent === 'Copied')
@@ -810,6 +814,8 @@ async function main() {
       await page.goto(`${APP}/help`); await page.waitForSelector('[data-testid=open-commands]')
       const help = await text(page, 'main')
       check('review 2, M1: Help says the palette lists the commands of the page it is opened on, and that each is also a control', help.includes('The command palette lists the commands of the page it is opened on.') && help.includes('every command is also a control on its page'))
+      const helpSections = await page.evaluate(() => [...document.querySelectorAll('main h2.vz-section-title')].map((h) => h.textContent.trim()))
+      check('released views: Help has sections for Explore, the keyboard and API keys, none for Dashboards or Monitors, and its palette paragraph names neither', helpSections.join(',') === 'Explore,Keyboard,API keys' && !/dashboard|monitor/i.test(help), helpSections.join(','))
       // m12: a query that finds the API unreachable raises the page's banner, and is asked again by itself when the API answers.
       await page.goto(url(Q_RATE)); await ready(page)
       let sentWhileDown = 0

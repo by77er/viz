@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { MOD, useCommandsContext } from './commands'
+import { isReleased } from './released'
 
 const SHORTCUTS: [string[], string][] = [
   [[MOD, 'Enter'], 'Run the query, from the editor or anywhere on Explore'],
@@ -45,29 +46,33 @@ export function HelpPage() {
             Times are typed as "18 Nov 09:16", "09:16" for today, "now" or "now - 6 h", and read in this device's time zone, which the time range states.
           </p>
         </section>
-        <section className="vz-section" aria-labelledby="help-dashboards">
-          <h2 className="vz-section-title" id="help-dashboards">
-            Dashboards
-          </h2>
-          <p className="vz-text">
-            Dashboards lists this tenant's dashboards and shows one at a time, read-only: its panels over a time range, with its variables as controls. The range
-            and the variables' values are in the address. Each panel has a text form and a link that opens its query in Explore. A panel of a kind this app does
-            not draw yet (a heatmap, a text note) is shown as its text form, and says so. Dashboards cannot be edited here yet, and the key needs the
-            dashboards:read scope.
-          </p>
-        </section>
-        <section className="vz-section" aria-labelledby="help-monitors">
-          <h2 className="vz-section-title" id="help-monitors">
-            Monitors
-          </h2>
-          <p className="vz-text">
-            Monitors lists this tenant's monitors, the ones that need attention first, each with its state as a mark and words. One monitor shows its message,
-            runbook and threshold as written, its query drawn with the threshold over a range around now, its alerts, and its history of state changes,
-            notifications and what people did. On call you can acknowledge its firing alerts (repeat notifications stop until they resolve; nothing is hidden)
-            and silence them for 15 min, 1 h or 4 h; a silence can be undone for 60 s. Both need a key with the monitors:ack scope, and reading needs
-            monitors:read. Monitors cannot be created or edited here yet.
-          </p>
-        </section>
+        {isReleased('dashboards') && (
+          <section className="vz-section" aria-labelledby="help-dashboards">
+            <h2 className="vz-section-title" id="help-dashboards">
+              Dashboards
+            </h2>
+            <p className="vz-text">
+              Dashboards lists this tenant's dashboards and shows one at a time, read-only: its panels over a time range, with its variables as controls. The range
+              and the variables' values are in the address. Each panel has a text form and a link that opens its query in Explore. A panel of a kind this app does
+              not draw yet (a heatmap, a text note) is shown as its text form, and says so. Dashboards cannot be edited here yet, and the key needs the
+              dashboards:read scope.
+            </p>
+          </section>
+        )}
+        {isReleased('monitors') && (
+          <section className="vz-section" aria-labelledby="help-monitors">
+            <h2 className="vz-section-title" id="help-monitors">
+              Monitors
+            </h2>
+            <p className="vz-text">
+              Monitors lists this tenant's monitors, the ones that need attention first, each with its state as a mark and words. One monitor shows its message,
+              runbook and threshold as written, its query drawn with the threshold over a range around now, its alerts, and its history of state changes,
+              notifications and what people did. On call you can acknowledge its firing alerts (repeat notifications stop until they resolve; nothing is hidden)
+              and silence them for 15 min, 1 h or 4 h; a silence can be undone for 60 s. Both need a key with the monitors:ack scope, and reading needs
+              monitors:read. Monitors cannot be created or edited here yet.
+            </p>
+          </section>
+        )}
         <section className="vz-section" aria-labelledby="help-keys">
           <h2 className="vz-section-title" id="help-keys">
             Keyboard
@@ -104,8 +109,10 @@ export function HelpPage() {
           </div>
           <p className="vz-text">
             The command palette lists the commands of the page it is opened on. Opened here it has the sections, the theme and Sign out; on Explore it also has
-            running the query, the forms of the result, the time ranges and Copy link, on a dashboard its refresh and its text form, and on a monitor acknowledge, silence for 1 h and read again. It is a shortcut for a
-            keyboard: every command is also a control on its page.
+            running the query, the forms of the result, the time ranges and Copy link
+            {isReleased('dashboards') && ', on a dashboard its refresh and its text form'}
+            {isReleased('monitors') && ', on a monitor acknowledge, silence for 1 h and read again'}. It is a shortcut for a keyboard: every command is also a control
+            on its page.
           </p>
           <div className="vz-controls">
             <button className="vz-button" onClick={() => setPaletteOpen(true)} aria-keyshortcuts="Control+K Meta+K" data-testid="open-commands">
