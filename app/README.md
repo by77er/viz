@@ -366,7 +366,39 @@ system's README has it; the session rule of `design-system/reviews/chart-speed/t
 for rows within 10% of their limit (a second session). Figures in ms, the 75th percentile, then
 the median and the worst run. All "measured here".
 
-**Session X (15:17 to 15:32 UTC), the final build** (bar one change, below). Dashboards, desktop:
+**What is met, by the session rule (the final build, sessions X and Y; the 75th percentile):**
+
+| Row (limit) | Dashboards desktop | Dashboards phone | Monitors desktop | Monitors phone |
+|---|---|---|---|---|
+| Opens the view: shell painted (100) | 63, 75: met (before 78, 85) | 96, 91: met, both within 10% (before 103, 89) | 72, 64: met (before 80, 80) | 80, 180: **sessions disagree** (before 112, 148): <!-- Z-RESULT --> |
+| A panel on screen / the chart painted after its answer (100) | 73, 62: met (before 44, 66) | 48, 40: met (before 37, 38) | 80, 74: met (before 125, 120) | 76, 96: met, Y within 10% (before 128, 150) |
+| Range pressed: every panel waiting (100) | 48, 64: met (before 120, 136) | 72, 72: met (before 144, 152) | | |
+| Range pressed: first request sent (100) | 61, 69: met (before 51, 49) | 83, 83: met (before 70, 74) | | |
+| Layout shift (0.05) | 0.0016 (before 0.0032) | 0.0000 | 0.0028, 0.0021 (before 0.0000) | 0.0000 |
+
+Read with care:
+
+- **The slowest of all twelve panels, off screen included, is slower by design**: 394 to 502 ms
+  after its answer in the final build (before: 71 to 155 in these sessions), because a chart off
+  screen is drawn when the page is idle. Nobody sees those panels until they are drawn; the row a
+  person sees is "a panel on screen". If the reviewer reads the budget row as every panel of the
+  page, this change does not meet it, and the row before it did not either.
+- **The build before already met the on-screen row on the desktop in these sessions** (44 to 83):
+  the 144 to 197 ms the review quoted were measured on 2026-11-27, before the chart's speed change
+  was merged. The deferral's paired effect on the on-screen row is mixed: -28 (session 1), +7 (X),
+  -12 (Y) on the desktop; -15, +6, -7 on the phone.
+- **"Opens the view" for the monitors is measured differently from the review's figures**: as the
+  press's next paint when the page is drawn in the press's task, which the build before also did
+  (its router's navigation ran in microtasks of the press's task). By the old definition, the
+  build before reads 103 (desktop) and 150 (phone) in session X, because that definition's task
+  waits behind the monitor body's render the page queues after the frame. Both definitions are
+  printed (`viewChange`, `viewChangeTask`).
+- The first request of a new range leaves 8 to 15 ms later than before (paired), still under 100:
+  it now follows the frame that shows the panels waiting.
+- A layout shift of 0.0021 to 0.0028 on opening a monitor at the desktop (limit 0.05), new with
+  this change and not found; the reserved "Message, as sent" row took it from 0.0028 to 0.0021.
+
+**Session X (15:17 to 15:32 UTC), the final build but one change**: the monitor page's "Message, as sent" row reserved from the first frame (a layout change made after X found a shift of 0.0028 on the desktop; no timing path changes). Session Y is the final build. Dashboards, desktop:
 
 | What | before p75 (median, worst) | after p75 (median, worst) | paired difference, after - before: median (p25 to p75), n |
 |---|---|---|---|
@@ -436,7 +468,79 @@ Monitors, phone:
 
 monitors, phone; load 0.88 to 1.50 (median 1.16), 0 of 80 samples above 4; 2026-11-28T15:29:44.880Z to 2026-11-28T15:32:25.342Z; calibration 309 ms; void 0
 
-<!-- SESSION-Y -->
+**Session Y (15:48 to 16:04 UTC), the final build**, 31 minutes after X (the session rule).
+Dashboards, desktop:
+
+| What | before p75 (median, worst) | after p75 (median, worst) | paired difference, after - before: median (p25 to p75), n |
+|---|---|---|---|
+| viewChange | 85 (67, 132) | 75 (63, 90) | -5 (-28 to 7), 20 |
+| viewInp | 80 (64, 128) | 72 (64, 88) | -8 (-24 to 0), 20 |
+| firstPaint | 39 (13, 57) | 38 (31, 76) | 4 (-11 to 23), 20 |
+| paintWorstOn | 66 (43, 165) | 62 (42, 76) | -12 (-32 to 6), 20 |
+| paintWorst | 152 (100, 216) | 449 (372, 557) | 295 (229 to 327), 20 |
+| paintWorstOff | 149 (95, 216) | 449 (372, 557) | 302 (229 to 327), 20 |
+| rangeSend | 49 (44, 80) | 69 (59, 99) | 15 (6 to 27), 20 |
+| rangeBusy | 136 (112, 208) | 64 (56, 88) | -64 (-96 to -48), 20 |
+| rangeBusyTask | 131 (109, 204) | 110 (99, 152) | -12 (-52 to 6), 20 |
+| rangeInp | 136 (112, 208) | 64 (56, 88) | -64 (-96 to -48), 20 |
+| rangePaintWorstOn | 54 (48, 72) | 55 (43, 113) | -8 (-29 to 16), 20 |
+| rangePaintWorst | 94 (69, 149) | 82 (56, 113) | -21 (-39 to 11), 20 |
+| clsView.all | 0.0032 (0.0032, 0.0032) | 0.0016 (0.0014, 0.0016) | -0.0018 (-0.0018 to -0.0015), 20 |
+| clsRange.all | 0.0001 (0.0001, 0.0007) | 0.0073 (0.0001, 0.0089) | 0.0000 (0.0000 to 0.0068), 20 |
+
+load 0.35 to 1.41 (median 1.15), 0 of 80 samples above 4; 2026-11-28T15:48:27.873Z to 2026-11-28T15:53:24.547Z; calibration 344 ms
+
+Dashboards, phone:
+
+| What | before p75 (median, worst) | after p75 (median, worst) | paired difference, after - before: median (p25 to p75), n |
+|---|---|---|---|
+| viewChange | 89 (76, 141) | 91 (78, 137) | 1 (-5 to 16), 20 |
+| viewInp | 80 (72, 128) | 88 (72, 128) | 0 (-8 to 8), 20 |
+| firstPaint | 38 (35, 60) | 40 (30, 55) | -7 (-18 to 6), 20 |
+| paintWorstOn | 38 (35, 60) | 40 (30, 55) | -7 (-18 to 6), 20 |
+| paintWorst | 103 (63, 164) | 425 (361, 480) | 285 (240 to 333), 20 |
+| paintWorstOff | 103 (63, 164) | 425 (361, 480) | 285 (240 to 333), 20 |
+| rangeSend | 74 (61, 95) | 83 (70, 109) | 8 (-13 to 20), 20 |
+| rangeBusy | 152 (120, 200) | 72 (56, 88) | -72 (-88 to -56), 20 |
+| rangeBusyTask | 157 (123, 208) | 127 (107, 176) | -16 (-35 to -9), 20 |
+| rangeInp | 152 (120, 200) | 72 (56, 88) | -72 (-88 to -56), 20 |
+| rangePaintWorstOn | 30 (23, 52) | 28 (24, 48) | 1 (-17 to 12), 20 |
+| rangePaintWorst | 61 (52, 128) | 73 (48, 147) | 1 (-11 to 22), 20 |
+| clsView.all | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000 to 0.0000), 20 |
+| clsRange.all | 0.0001 (0.0001, 0.0001) | 0.0001 (0.0001, 0.0001) | 0.0000 (0.0000 to 0.0000), 20 |
+
+load 1.07 to 2.22 (median 1.74), 0 of 80 samples above 4; 2026-11-28T15:56:17.517Z to 2026-11-28T16:01:08.471Z; calibration 303 ms
+
+Monitors, desktop:
+
+| What | before p75 (median, worst) | after p75 (median, worst) | paired difference, after - before: median (p25 to p75), n |
+|---|---|---|---|
+| viewChange | 80 (72, 96) | 64 (64, 72) | -8 (-24 to -8), 20 |
+| viewChangeTask | 104 (96, 124) | 144 (141, 167) | 43 (25 to 52), 20 |
+| viewInp | 80 (72, 96) | 64 (64, 72) | -8 (-24 to -8), 20 |
+| firstPaint | 120 (116, 142) | 74 (69, 104) | -50 (-57 to -35), 20 |
+| ackPressed | 33 (28, 47) | 29 (27, 34) | -2 (-8 to 1), 20 |
+| ackInp | 24 (24, 32) | 24 (24, 32) | 0 (-8 to 0), 20 |
+| cls | 0.0000 (0.0000, 0.0000) | 0.0021 (0.0021, 0.0021) | 0.0021 (0.0021 to 0.0021), 20 |
+
+monitors, desktop; load 0.99 to 1.38 (median 1.10), 0 of 80 samples above 4; 2026-11-28T15:53:33.385Z to 2026-11-28T15:56:11.768Z; calibration 325 ms; void 0
+
+Monitors, phone:
+
+| What | before p75 (median, worst) | after p75 (median, worst) | paired difference, after - before: median (p25 to p75), n |
+|---|---|---|---|
+| viewChange | 148 (96, 244) | 180 (104, 252) | 0 (-48 to 90), 20 |
+| viewChangeTask | 168 (147, 244) | 212 (186, 252) | 42 (5 to 64), 20 |
+| viewInp | 112 (96, 152) | 104 (96, 136) | 0 (-32 to 16), 20 |
+| firstPaint | 150 (127, 206) | 96 (82, 135) | -49 (-77 to -27), 20 |
+| ackPressed | 67 (62, 70) | 52 (43, 61) | -14 (-21 to -3), 20 |
+| ackInp | 56 (48, 56) | 48 (40, 56) | -8 (-16 to 0), 20 |
+| cls | 0.0000 (0.0000, 0.0002) | 0.0000 (0.0000, 0.0000) | 0.0000 (0.0000 to 0.0000), 20 |
+
+monitors, phone; load 1.03 to 1.53 (median 1.18), 0 of 80 samples above 4; 2026-11-28T16:01:17.518Z to 2026-11-28T16:04:02.466Z; calibration 324 ms; void 0
+
+<!-- SESSION-Z -->
+
 
 **Session 1 (14:47 to 15:03 UTC), an earlier build**: the dashboards without the commands change
 below; the monitors with the press shown in its own task but the router's change in the same task.

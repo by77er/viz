@@ -76,12 +76,20 @@ function instrument() {
   }
   addEventListener('pointerup', onPress, true)
   addEventListener('click', onPress, true)
+  // With a finger the click can come a frame after the pointer's release: the frames that count are those begun since the click,
+  // the event the page acts on (session Y found half the phone runs read by the other definition for want of this).
+  addEventListener('click', (e) => {
+    if (!(m.press && e.target.closest(m.press.selector)) || m.clickFrames !== undefined) return
+    m.clickFrames = 0
+    const tick = () => { m.clickFrames++; if (m.clickFrames < 120) requestAnimationFrame(tick) }
+    requestAnimationFrame(tick)
+  }, true)
   const once = (name) => { if (m.marks[name] === undefined) { m.marks[name] = null; afterFrame((t) => (m.marks[name] = t)) } }
   const watch = () => {
     if (!m.press) return
     if (m.phase === 'view') {
       const title = document.querySelector('[data-testid=monitor-title]')
-      if (title && title.textContent.trim().length > 1 && document.querySelector('[data-testid=monitor-mark]')) { if (m.shellFrames === undefined) m.shellFrames = m.frames; once('view:shell') }
+      if (title && title.textContent.trim().length > 1 && document.querySelector('[data-testid=monitor-mark]')) { if (m.shellFrames === undefined) { m.shellFrames = m.frames; m.shellClickFrames = m.clickFrames } once('view:shell') }
       if (document.querySelector('[data-testid=monitor-chart] svg.vz-plot .vz-line')) once('view:chart')
       if (document.querySelector('[data-testid=history-line]') && document.querySelector('[data-testid=monitor-chart] svg.vz-plot')) once('view:settled')
     }
@@ -122,8 +130,8 @@ async function run(browser, id, APP) {
     // next paint as Event Timing reports it; otherwise, as before, a task queued from the animation callback of the frame after
     // the task that showed it (`viewChangeTask`, printed too: a task the page queues after that frame delays it).
     r.viewChangeTask = v.marks['view:shell'] - v.press.t
-    const pressPaint = Math.max(...v.events.filter((e) => ['pointerdown', 'pointerup', 'click'].includes(e.name) && e.t >= v.press.t - 200 && e.t <= v.press.t + 50).map((e) => e.t + e.duration))
-    r.viewInPress = v.shellFrames === 0
+    const pressPaint = Math.max(...v.events.filter((e) => ['pointerdown', 'pointerup', 'click'].includes(e.name) && e.t >= v.press.t - 200 && e.t <= v.press.t + 300).map((e) => e.t + e.duration))
+    r.viewInPress = v.shellFrames === 0 || v.shellClickFrames === 0
     r.viewChange = r.viewInPress && Number.isFinite(pressPaint) ? pressPaint - v.press.t : r.viewChangeTask
     r.firstPaint = v.marks['view:chart'] - Math.max(...v.arrived)
     r.viewInp = Math.max(0, ...v.events.filter((e) => e.t >= v.press.t - 50 && e.t <= v.press.t + 500).map((e) => e.duration))
