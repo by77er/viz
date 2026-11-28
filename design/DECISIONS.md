@@ -4956,3 +4956,110 @@ re-examined in their re-review.
 | The controls follow `whoami`'s scopes; the API's 403 also disables them | Always enabled, the API refuses | The task: say why before the press; never send a write the key cannot make | Scopes can change under a session often |
 | The undo is offered by the API's `undoUntil` on an estimated API clock | A local 60 s timer | The window is the API's; a constant would drift from it | The API answers with the time left |
 | No optimistic change: the write's answer is shown, then the monitor is re-read; older reads are dropped | Optimistic update; TanStack Query's cache | A write someone else will see is said only when the API has said it; one mechanism for superseded reads that the tests can break | Writes become slow enough to need an optimistic state |
+
+## D81. Trace by ID reads by membership: every `spans` and `trace_index` row group's `trace_id` bloom filter is named in its fragment (`bf`) and fetched alone before the group; span calls hold only the spans inside the found traces' pieces; the row caps are checked before a fetch on the rows certain to be held
+
+(2026-11-28. Answers spike S10's findings, `spikes/s10-signals-trial/README.md` "The margin", "Where
+the read path stops" and "What it means" (D62), measured on Cloudflare: at about 690,000 spans in
+an hour every trace query was refused, trace by ID included, and logs sent together but far apart
+in time refused each other's queries. It builds items 1 and 4 of D62's "Follow-up design" and part
+of item 3; item 2, searches paging `trace_index` in waves, is not built (below). The contract
+changed first, in its own commit: `contracts/TRACES.md` "Index fragments" (`bf`) and the
+`trace_index` bloom filter, `contracts/engine.ts` (`tqProbe`, `SignalFilePlan.bloom`, `.skipped`,
+`.certain`, `SignalBudget.ranges`; ABI 9 of `engine/wasm-query`).)
+
+**Decision.**
+
+1. **Every `spans` and `trace_index` row group names its `trace_id` bloom filter in the index
+   fragment**: `"bf":[offset,length]`, added within version 1 (readers ignore unknown fields,
+   COMPATIBILITY.md §3.2). `spans` already wrote a Parquet split-block bloom filter on `trace_id`
+   per row group (1%, folded to the group's distinct ids) and nothing read it; `trace_index` now
+   writes one too. The writer places a group's filter right after its column chunks (Parquet's
+   default), so the fragment's `off`, `len` and `foot` keep their meaning and an older reader
+   never needs the bytes. Flush and compaction write it with the same writers
+   (`engine/storage` `SpansFileWriter`, `IndexFileWriter`), so a compaction output has it as
+   soon as its engine module is of this release; no ordering changes, nothing for `compact/` to do.
+2. **Trace by ID reads by membership.** For each table: the fragments choose the row groups by
+   time (and, for `trace_index`, by the id's range), as before; the chosen groups' filters are
+   fetched, one range each, through the leaf pool; the engine (`tqProbe`) drops the groups whose
+   filter says the id is not there; only the rest are fetched with the footer. A group whose
+   fragment names no filter (every file written before D81), whose filter was not handed over or
+   does not parse, is kept: a filter only saves reads. The filters' bytes count against
+   `maxFetchBytes` and their files against `maxFiles`, and are refused before they are fetched.
+3. **Search and whole-trace metrics hold only the spans inside the found traces' pieces.** The
+   `ranges` `tqExtent` gives (D62, ABI 8: every span of a found trace that starts inside the bound
+   starts inside one of them) are handed to the span call too (`SignalBudget.ranges`): a span that
+   starts outside every range is passed over before it is decoded, as a span outside the bound is.
+   No found trace loses a span, and a trace that was not found cannot be made found by losing some
+   (its extent only shrinks), so the answer is the same; what changes is that the other traces'
+   spans in the same flush row groups are no longer held and counted against `maxSpans`.
+4. **The row caps are checked before a fetch on the rows certain to be held**, not on every row of
+   the row groups chosen (`SignalFilePlan.certain`): for spans, the rows of the groups whose span
+   starts lie wholly inside the call's range (and inside one range); for logs, the rows of the
+   groups wholly inside a selector's range whose every stream (from the fragment's stream list)
+   that selector admits. Both are lower bounds of what the engine counts (it counts every copy it
+   holds, before de-duplication), so the pre-check refuses only what the engine would refuse; the
+   engine counts the rest exactly. The fetch stays bounded by `maxFetchBytes` and the memory by
+   `maxDecodedBytes`.
+
+**Alternatives considered (numbers: S10's 69 bytes of `spans` and 27 of `trace_index` per span,
+flush units of about 10,500 spans, about 66 an hour at 700,000 spans an hour; "measured here" is
+`engine/wasm-query` `d81_measure_trace_by_id_over_an_hour_of_units`, native release build, 66 such
+units of synthetic single-span traces at 24 B of `spans` and 36 B of `trace_index` per span).**
+
+| Alternative | What it costs | Why not (now) |
+|---|---|---|
+| A membership filter per file **in the fragment** (in the ledger) | 16 KiB of bitset per unit (base64 about 22 KB) per table: about 1.4 MB of fragment per hour per table in every ledger plan answer at 700,000 spans an hour, 35 MB a day | The ledger's plan answers and partition index objects would carry tens of MB per query; a range read of 16 KiB from R2 costs one round trip (AGENTS.md) |
+| Read each candidate file's **footer** (it locates the filters) and then its filters | One more round of range reads (footers of 3 to 30 KB per file) | `bf` locates the filter without the footer; the footer is fetched only with a group that may hold the id |
+| **`spans` sorted (or clustered) by trace id** | A file-format change of `spans` (sort order and row groups) in flush and compaction | Search prunes by service, name and time (research 04 §6.2: measured far better for search); the filters give trace by ID what clustering would, at 1.5 bytes a span |
+| A **per-trace offset index** in `trace_index` (the row group of each piece) | A new column, kept true through compaction of both tables, which are compacted independently (D68) | Fragments name hours, logical references that survive compaction; an offset would not |
+| **Smaller `trace_index` row groups** so that `min_tid`/`max_tid` prune | Every file read still costs its footer (3 to 30 KB), and a compacted day file would have hundreds of groups in its footer | Pruning per file by a 16 KiB filter, without the footer, is cheaper for flush units; small groups help compacted files and stay open (would change if) |
+| **Split search over leaves** (`maxFetchBytes` per leaf) | Leaf protocol, partial extents by trace-id range | Built later if waves (below) do not suffice; it does not help trace by ID |
+| Raise `maxFetchBytes` | An isolate holds the files it fetched (128 MB) | Moves the ceiling by the factor raised; the filters move it by about 12 (measured here) |
+
+**Why.** Measured here (alternated three times, without and with the filters, the same ids):
+trace by ID over one hour of 66 units (693,000 spans) fetched **41.7 MB without the filters**
+(every `trace_index` file whole, every `spans` file of the hour) and **2.8 to 3.4 MB with them**
+(2.16 MB of filters, 16,401 bytes per unit and table, then one or two units' row groups); the
+engine's own time 3.6 to 3.9 s without, 55 to 106 ms with (native, not WASM). Every answer was the
+same. At S10's bytes the filters are about 1.5 bytes per trace per table (16 KiB for 10,500 ids),
+so `maxFetchBytes` (16 MiB) bounds, modelled:
+- **trace by ID with a hint**: the filters of `trace_index` over the hint and both margins (4 h
+  and the hint) plus those of `spans` in the trace's hours, plus its groups: about 1.1 MB per hour
+  of `trace_index` units at 700,000 single-span traces an hour, so about **12 to 14 hours of units,
+  i.e. a hinted lookup at up to about 2 M spans an hour** (S10 refused at 690,000 in five minutes);
+  a trace of 12 spans divides the `trace_index` part by 12;
+- **trace by ID without a hint**: every `trace_index` file the tenant holds, by one filter each
+  (flush units) or by the one row group whose id range holds the id (compacted, sorted files,
+  whose 2 MiB groups have filters of about 64 to 128 KiB): about **14 hours of uncompacted units
+  at 700,000 spans an hour**, more once compaction merges them. Newest-first waves are not built.
+- **search**: unchanged for `trace_index`: the bound's fragments are read whole, so a search is
+  refused once `trace_index` over the window and both margins passes 16 MiB, about **620,000
+  single-span traces in those hours, or about 7 M spans at 12 spans a trace** (S10). Its spans
+  are now held only inside the found traces' pieces (3.), so a short window over busy hours is no
+  longer refused by `maxSpans` for its row groups' other traces.
+- **logs**: blocks of one stream sent together and far apart in time no longer refuse each
+  other's queries before a fetch; a query whose window holds more than `maxLogRows` rows is still
+  refused, by the engine.
+
+**What is not built, and is next.** (a) Searches page `trace_index` within the bound in waves
+under a per-wave byte cap (D62 follow-up 2): it is what lifts the search ceiling above; its passes
+hold ids only (64 bytes each), so at single-span traces the after-window margin's ids bind first
+(about 520,000 traces, D62 r3-m3). (b) Newest-first waves for hintless trace by ID (stop at the
+newest day holding the trace, then read its margin). (c) Smaller row groups at flush, so a hit
+costs a small group. None of them changes answers.
+
+**Compatibility.** Additive within version 1 of the fragment and of the Parquet files: a reader of
+the previous release ignores `bf` and the new filter (it reads the same row groups and footer as
+before); this release reads files written before D81 as before (no `bf`: nothing is probed).
+So reader and writer may ship in one release, and a rollback across it is safe in both directions
+(UPGRADES.md). The engine ABI is 9 (`tqProbe`; a span call's budget carries `ranges`): the query
+Worker and its leaves load one module, so they cannot disagree. Shown by tests: the query suites
+pass on fixtures written before D81 (no filter is read; every answer the same) and on fixtures
+written now (filters read and ruling out units; every answer the same with them on and off).
+
+**Would change if.** Cloudflare shows the filter reads cost too much (a range read each: then
+coalesce a file's filters into one read, or move them into the footer region); hintless lookups
+over long retention are common (newest-first waves, then compacted `trace_index` cut in smaller
+groups); searches at single-span volume matter (waves, then split execution); a tenant's traces
+span many units (the probe then keeps many groups; ranges per trace).
