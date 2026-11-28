@@ -359,23 +359,31 @@ of every run is recorded (`measurements/*-timings.json`) and was at or below 4 i
 - Not measured: typing, crosshair, the 36- and 200-series rows, theme change, INP over a session;
   `tools/speed.mjs --compare` on the fixture and `app/e2e/measure-dashboards.cjs` on the app.
 
-## 9. Independent judgement: not obtained
+## 9. Independent judgement (2026-11-28)
 
-The brief asked for one independent reviewer, given only the images, the task list and the rubric.
-**It was not run.** This investigation ran as a subagent without a tool to start another agent,
-and a separate cloud session would not have the uncommitted images. Nothing here should be read as
-an independent verdict; the judgements in sections 6 and 7 are the author's.
+Taken after this study was written, by a reviewer given only `images/`, `tasks.md`, the rubric and the
+system's README; in full in `judgement.md`. In brief:
 
-To run it, give a reviewer who has not seen this README:
+- **A: approve** (no blockers or majors), but it saves almost nothing (about 30 px of the 1440 first
+  screen; the 400 px first screens are unchanged).
+- **B: reject until re-imaged, then approve with changes.** The direction the reviewer would merge.
+  Required: image the waiting, "Not updating" and error states with B's panel head (1440 and 400, both
+  themes; without them the States row is a blocker); re-take the 400 px full pages (a legend appears to
+  end without a series and a table looks cut: a blocker if real); give every legend figure its unit and
+  meaning ("Last, req/s") and keep a whole-range figure (Min/Max or max) on small panels; keep Show
+  earlier and Show later together at 400 px, on a row apart from the variables; "Open in Explore", and
+  quiet buttons aligned with the panel's edge.
+- **C: reject.** Blocker: one page-level "updated" line hides a panel that stopped updating. Majors: the
+  description, the only place thresholds are stated, behind a menu; Show earlier/later only inside the
+  range menu; a cut-off step/unit summary.
+- Take from C: a figure and its status on one line (B has it), and at 400 px Step and Unit folded into
+  one control with a label that is not cut. Reject C's page-level age, its menu as the only path, and
+  hiding Show earlier/later.
+- The reviewer could not judge task 3 (read an exact value) for any option: no image shows the readout.
 
-- the images in `images/` (pairs are labelled "baseline" and "option A/B/C", nothing else);
-- `tasks.md` (the nine tasks, with the person);
-- `design-system/project/review.md` (the rubric) and `project/README.md`;
-- the instruction: rank options A, B and C (against the baseline) for clarity at a glance and for
-  discoverability for a first-time on-call person; tie every finding to an image and a rubric
-  row; say which option they would merge, with which changes.
-
-Record the verdict here, verbatim-summarised, with where it disagrees with section 10.
+**Where it differs from section 10:** both choose B. The reviewer does not endorse dropping Min/Max from
+small charts (the owner's question in §10 is answered: keep a whole-range figure), and makes the state
+images and the 400 px re-take conditions of merging.
 
 ## 10. Recommendation
 
