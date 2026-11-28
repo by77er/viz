@@ -66,15 +66,11 @@ about $0.05.
 npx wrangler delete --name viz-spike-s0-do-billing
 ```
 
-**Still deployed on 2026-11-26.** The measurement is done and the objects are idle (see
-"Did it stop?"); deleting the Worker is left to the owner. Left deployed it bills nothing
-for duration, invocations or rows, because nothing wakes the objects. It holds 245,760 bytes
-of SQLite storage across the twelve objects (measured on Cloudflare, 24–26 November), which
-is inside the 5 GB allowance and would be $0.00005 a month at $0.20 per GB-month. Two
-things remain while it exists: the `workers.dev` endpoint answers 404 to anyone without the
-key, and each such request counts as a Worker request; and a holder of the key can call
-`/start` again, for at most 48 hours a call. Deleting the Worker also deletes the objects
-and their stored counters, so `/status` can no longer be read; the analytics stay.
+**Deleted on 2026-11-28** by the owner's instruction (`npx wrangler delete --name
+viz-spike-s0-do-billing`, which succeeded). The measurement was done and the objects idle; deleting the
+Worker also deleted its twelve objects and their stored counters (245,760 bytes of SQLite storage,
+measured on Cloudflare, 24–26 November), so `/status` can no longer be read. The analytics stay, and
+the result below was read from `/status` before the deletion.
 
 ## Result
 

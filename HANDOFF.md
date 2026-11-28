@@ -19,7 +19,7 @@ scratch directory does not survive the pause, so everything needed is in the rep
    one agent's command output (the session transcript) and one scratch file, deleted at once. It was
    found in no repository file, commit or scratch file. After rotating: the cloud environment's secret
    and the two GitHub secrets.
-4. **Delete `viz-spike-s0-do-billing`**: its measurement is done; the permission check wants the
+4. ~~Delete `viz-spike-s0-do-billing`~~: done 2026-11-28.
    owner's word (`npx wrangler delete --name viz-spike-s0-do-billing` from `spikes/s0-do-billing/`).
 5. Optional: open the S12 page on a real phone (`spikes/s12-reload-on-a-phone/README.md`); it is the
    one thing that would reopen the waived design-system blocker. Then that Worker is deleted.
@@ -31,7 +31,7 @@ scratch directory does not survive the pause, so everything needed is in the rep
 | production (`viz-gateway` and six more, `vis.bitcru.sh`) | release fb77292 (pull request #8): the API only, OAuth without rate limits | replaced when #9 merges and deploys |
 | `viz-preview-app` (workers.dev) | spike S14: the web app's build (Explore, dashboards read-only, Help, Settings) on the app's **mock** API | answers 410 after 2026-12-04; delete when the gateway serves the app |
 | `viz-spike-s12-reload` (workers.dev) | static pages for the phone test | until the owner has tested or declined |
-| `viz-spike-s0-do-billing` | finished spike | until the owner allows deleting it |
+| `viz-spike-s0-do-billing` | deleted 2026-11-28 | |
 
 No stage exists. Nothing runs on a timer.
 
