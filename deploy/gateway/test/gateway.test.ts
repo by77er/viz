@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import control from '../../../control/src/index'
 import { type Env, ENTRYPOINTS, HEALTH_PATHS, handle, routeOf } from '../src/index'
 
-const BASE = 'https://vis.bitcru.sh'
+const BASE = 'https://viz.bitcru.sh'
 const call = (path: string, init?: RequestInit) => exports.default.fetch(new Request(`${BASE}${path}`, init))
 
 interface Echo {

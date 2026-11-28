@@ -1,7 +1,7 @@
 /**
- * viz-gateway: the one public entry point (`vis.bitcru.sh`). It owns no data and makes no
- * decisions about tenants: it picks a backend by path and hands the request over through a
- * service binding, unchanged.
+ * viz-gateway: the one public entry point (`viz.bitcru.sh`; `vis.bitcru.sh` too while D75's
+ * transition lasts). It owns no data and makes no decisions about tenants: it picks a backend by
+ * path and hands the request over through a service binding, unchanged.
  *
  *   /api/v1/write, /api/v1/push, /v1/metrics                    → INGEST  (viz-ingest: edge)
  *   /v1/traces, /v1/logs, /loki/api/v1/push                     → INGEST  (OTLP/HTTP traces and logs, Loki push;
@@ -26,6 +26,19 @@
  *                                                                 the one-time secret VIZ_BOOTSTRAP is set
  *   anything else                                               → 404, JSON listing the entry points
  *
+ * Hosts (D75): the canonical host is PUBLIC_URL's (viz.bitcru.sh in production, a stage's
+ * workers.dev URL). A host named in VIZ_HOST_ALIASES (vis.bitcru.sh, the old address) gets:
+ *   - the data paths (ingest, the Prometheus/Tempo/Loki reads, and the ruler's Prometheus reads
+ *     /api/v1/rules and /api/v1/alerts) served as on the canonical host, no redirect (a Remote
+ *     Write sender may not follow one on POST, and most clients drop Authorization when a redirect
+ *     changes host), each answer with `Deprecation: @<unix s>` (RFC 9745) and
+ *     `Link: <https://<canonical><path>>; rel="successor-version"` (RFC 5829);
+ *   - everything else (OAuth and its metadata, /mcp, control, monitors, bootstrap, /healthz, any
+ *     other path) a 308 to the same path and query on the canonical host: one issuer only.
+ * Any other host (a test, a stage) is served as the canonical host: production routes only its two
+ * custom domains to this Worker (no workers.dev, no preview URLs), and the issuer is PUBLIC_URL
+ * whatever the Host. Aliases configured but unreadable: an alias host gets 500, never a guess.
+ *
  * Transparency: the request object is passed on as it arrived (method, URL, headers, body
  * stream), and the backend's response is returned with its status, status text, headers and
  * body stream; the only change is the added `x-viz-route` header. Nothing is buffered.
@@ -47,6 +60,13 @@ export interface Env {
   VIZ_BOOTSTRAP?: string
   /** The release (git SHA) this version was built from; set by deploy/configure.mjs. */
   VIZ_RELEASE?: string
+  /** The canonical public origin, e.g. https://viz.bitcru.sh: where an alias host redirects to. Set by deploy/configure.mjs. */
+  PUBLIC_URL?: string
+  /**
+   * Old hostnames kept for a transition (D75), set by deploy/configure.mjs from deploy/workers.json
+   * `domain_aliases`: JSON `[{ "host": "vis.bitcru.sh", "deprecated": <unix seconds> }]`. Absent or `[]`: none.
+   */
+  VIZ_HOST_ALIASES?: string
 }
 
 export type Backend = 'ingest' | 'query' | 'control' | 'ruler' | 'mcp'
@@ -288,8 +308,81 @@ function notFound(): Response {
   return json(404, { status: 'error', errorType: 'not_found', error: 'not found', entrypoints: ENTRYPOINTS }, 'gateway')
 }
 
+// ---- hosts (D75) ----
+
+export interface HostAlias {
+  host: string
+  /** When the alias was deprecated, unix seconds: the `Deprecation` header's date (RFC 9745 §2.1). */
+  deprecated: number
+}
+
+/** VIZ_HOST_ALIASES read, or null when it is set but not a list of `{ host, deprecated }`. */
+export function hostAliases(raw: string | undefined): HostAlias[] | null {
+  if (raw === undefined || raw.trim() === '') return []
+  try {
+    const v = JSON.parse(raw) as unknown
+    if (!Array.isArray(v)) return null
+    const out: HostAlias[] = []
+    for (const a of v as Partial<HostAlias>[]) {
+      if (typeof a !== 'object' || a === null || typeof a.host !== 'string' || !/^[a-z0-9.-]+$/.test(a.host) || !Number.isSafeInteger(a.deprecated) || a.deprecated! < 0) return null
+      out.push({ host: a.host, deprecated: a.deprecated! })
+    }
+    return out
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The paths a data sender or a data source calls, served on an alias host as before: ingest, the
+ * Prometheus, Tempo and Loki reads, and the ruler's Prometheus reads (a Grafana Prometheus data
+ * source asks /api/v1/rules and /api/v1/alerts of the same URL it queries).
+ */
+export function isDataPath(path: string): boolean {
+  const r = routeOf(path)
+  return r === 'ingest' || r === 'query' || RULER_PATHS.has(path)
+}
+
+/** The canonical origin (scheme://host) from PUBLIC_URL, or null when it is not a usable origin. */
+function canonicalOrigin(env: Env): string | null {
+  try {
+    const u = new URL(env.PUBLIC_URL ?? '')
+    return u.protocol === 'https:' || u.protocol === 'http:' ? u.origin : null
+  } catch {
+    return null
+  }
+}
+
+/** An alias host's answer: the data path served with its deprecation headers, everything else a 308 to the canonical host. */
+async function onAlias(req: Request, env: Env, url: URL, alias: HostAlias, origin: string): Promise<Response> {
+  if (isDataPath(url.pathname)) {
+    const res = await forward(req, env, routeOf(url.pathname) as Backend)
+    res.headers.set('Deprecation', `@${alias.deprecated}`)
+    // The path only: the query is the sender's, and a long query string does not belong in a header.
+    res.headers.append('Link', `<${origin}${url.pathname}>; rel="successor-version"`)
+    return res
+  }
+  // 308 keeps the method and the body (RFC 9110 §15.4.9); 301/302 let a client turn POST into GET.
+  const location = `${origin}${url.pathname}${url.search}`
+  // no-store (json()): a cached permanent redirect would outlive a rollback to a release before D75.
+  return json(308, { status: 'moved', error: `${url.host} has moved to ${new URL(origin).host}; use ${location}`, location }, 'redirect', { Location: location })
+}
+
 export async function handle(req: Request, env: Env, now = Date.now()): Promise<Response> {
-  const route = routeOf(new URL(req.url).pathname)
+  const url = new URL(req.url)
+  const aliases = hostAliases(env.VIZ_HOST_ALIASES)
+  const origin = canonicalOrigin(env)
+  if (aliases === null || (aliases.length > 0 && origin === null)) {
+    // Misconfigured: the canonical host (and any host that is not an alias) is still served; a host that may be an alias is not guessed at.
+    if (origin === null || url.host !== new URL(origin).host) {
+      console.error('gateway: VIZ_HOST_ALIASES or PUBLIC_URL is not usable')
+      return json(500, { status: 'error', errorType: 'internal', error: 'the gateway\'s host configuration is not usable; nothing was done' }, 'gateway')
+    }
+  } else {
+    const alias = aliases.find((a) => a.host === url.hostname)
+    if (alias && origin !== null && url.host !== new URL(origin).host) return onAlias(req, env, url, alias, origin)
+  }
+  const route = routeOf(url.pathname)
   if (route === null) return notFound()
   if (route === 'health') return health(req, env)
   if (route === 'bootstrap') return bootstrap(req, env, now)

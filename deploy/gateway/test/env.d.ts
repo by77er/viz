@@ -14,5 +14,7 @@ declare namespace Cloudflare {
     DEFAULT_POOL?: string
     VIZ_RELEASE?: string
     VIZ_BOOTSTRAP?: string
+    PUBLIC_URL?: string
+    VIZ_HOST_ALIASES?: string
   }
 }

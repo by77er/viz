@@ -28,6 +28,8 @@ export function installFakeAccount(tmp) {
     const ok = (result) => new Response(JSON.stringify({ success: true, result }), { status: 200 })
     const notFound = () => new Response(JSON.stringify({ success: false, errors: [{ code: 10007, message: 'not found' }] }), { status: 404 })
     const path = u.pathname.replace(/^\/client\/v4\/accounts\/[^/]+/, '')
+    // The account's Workers Custom Domains (D75; lib/domains.mjs): `state.domains`, `[{ hostname, service }]`.
+    if (u.hostname === 'api.cloudflare.com' && method === 'GET' && path === '/workers/domains') return ok(state.domains ?? [])
     const m = /^\/workers\/scripts(?:\/([^/]+)(?:\/(deployments|versions|secrets)(?:\/([^/]+))?)?)?$/.exec(path)
     if (u.hostname !== 'api.cloudflare.com' || method !== 'GET' || !m) return new Response(JSON.stringify({ success: false, errors: [{ code: 0, message: `fake API: no ${method} ${path}` }] }), { status: 400 })
     const [, name, sub, id] = m

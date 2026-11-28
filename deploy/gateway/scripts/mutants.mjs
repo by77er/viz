@@ -43,6 +43,17 @@ const MUTANTS = [
   ['Tempo\'s /api/echo is not routed (a Grafana data source\'s check gets 404)', "  '/api/echo',\n", ''],
   ['/api/echo matched as a prefix (/api/echo/x, /api/echox reach query)', "  if (SIGNAL_QUERY_PATHS.has(path) || SIGNAL_QUERY_PATTERNS", "  if (path.startsWith('/api/echo') || SIGNAL_QUERY_PATHS.has(path) || SIGNAL_QUERY_PATTERNS"],
   ['every /loki/ path goes to query (/loki/api/v1/tail, index, rules reach it)', "  if (SIGNAL_QUERY_PATHS.has(path) || SIGNAL_QUERY_PATTERNS", "  if (path.startsWith('/loki/') || SIGNAL_QUERY_PATHS.has(path) || SIGNAL_QUERY_PATTERNS"],
+  // D75: hosts
+  ['D75: a data path is redirected on vis', '  if (isDataPath(url.pathname)) {', '  if (false) {'],
+  ['D75: OAuth (and its metadata) served on vis', "  return r === 'ingest' || r === 'query' || RULER_PATHS.has(path)", "  return r === 'ingest' || r === 'query' || RULER_PATHS.has(path) || CONTROL_OAUTH_PATHS.has(path) || MCP_OAUTH_PATHS.has(path)"],
+  ['D75: the redirect drops the query string', 'const location = `${origin}${url.pathname}${url.search}`', 'const location = `${origin}${url.pathname}`'],
+  ['D75: 302 instead of 308 (POST may become GET)', 'return json(308, {', 'return json(302, {'],
+  ['D75: 301 instead of 308 (POST may become GET)', 'return json(308, {', 'return json(301, {'],
+  ['D75: no Deprecation header on vis', "    res.headers.set('Deprecation', `@${alias.deprecated}`)\n", ''],
+  ['D75: Link names the old host', "res.headers.append('Link', `<${origin}${url.pathname}>", "res.headers.append('Link', `<${url.origin}${url.pathname}>"],
+  ['D75: Link replaces a backend\'s own Link', "res.headers.append('Link'", "res.headers.set('Link'"],
+  ['D75: any non-canonical host is treated as an alias', 'if (alias && origin !== null && url.host !== new URL(origin).host) return onAlias(req, env, url, alias, origin)', 'if (origin !== null && url.host !== new URL(origin).host) return onAlias(req, env, url, alias ?? { host: url.hostname, deprecated: 0 }, origin)'],
+  ['D75: unreadable aliases are taken as none', '  const aliases = hostAliases(env.VIZ_HOST_ALIASES)', '  const aliases = hostAliases(env.VIZ_HOST_ALIASES) ?? []'],
 ]
 
 // It edits gateway/src/index.ts in place: run it in a copy outside any git work tree
