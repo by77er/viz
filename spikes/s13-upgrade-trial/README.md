@@ -1,13 +1,9 @@
-# S13: the first release over production, on a stage (prepared, NOT RUN)
+# S13: the first release over production, on a stage
 
-**Status (2026-11-26): not run. Nothing was deployed.** The session's permission check refused the
-first deploy to Cloudflare (fb77292's `deploy.sh --stage s13`), and a message from another agent is no
-user's consent, so the trial stopped there. It was tried once more after the owner's reply ("Finish
-everything needed", relayed by the coordinator), and the permission check refused it again, with the
-same reason ("Destructive or Unwanted Actions"; it suggests a permission rule for Bash in the user's
-settings). The trial needs that rule, or the command run by a person. The only Cloudflare calls made were read-only: the
-account inventory below. Everything here is ready to run once a person allows deploying a `viz-s13-*`
-stage.
+**Status (2026-11-28): running.** The owner authorised stage deploys on 2026-11-28 (standing, recorded in
+`AGENTS.md`). The two earlier refusals (2026-11-26) were this session's permission check, before that
+authorisation. Results are recorded step by step below as they come; numbers are measured on Cloudflare
+from outside (this sandbox, through its proxy) unless said otherwise.
 
 It settles what the review of D69, round 2, M2-2 (`design/reviews/d69-deploy-safety-r2.md`) found
 unverified, before this tree's first release goes over production (`deploy/README.md`, "The first
@@ -18,6 +14,24 @@ release over the 2026-11-19 production"):
 - and, against real Workers, everything the fakes showed: the key kept, the release forward-only for
   viz-control only, the limits refusing with 429, data written before the upgrade read after it, the
   storage migrations, and the single-Worker rollbacks M2-1 opened.
+
+## Results
+
+### Step 1: fb77292 with its own tooling (2026-11-28, 07:56 to 08:10 UTC)
+
+| Check | Result |
+|---|---|
+| `deploy.sh --stage s13` from fb77292's worktree (prebuilt engines, its own `npm ci`) | exit 0 in 104 s; seven Workers promoted; `OAUTH_CLIENT_KEY` created on `viz-s13-control`; smoke `/healthz` healthy (ingest 63 ms, query 50, control 32, ruler 42, mcp 79) |
+| `bootstrap.mjs --tenant s13-trial --stage s13` | admin and smoke keys written to 0600 files in the session's scratch directory; nothing printed |
+| `trial.mjs seed` (this directory) | Remote Write 204; the series read back (42); `POST /oauth/register` 201; one grant (authorize, approve with the admin key: 201, code exchanged with its PKCE verifier); the access token answers `tools/list` at `/mcp` (200) |
+
+**Finding S13-1 (minor, all releases so far): a stage advertises production's OAuth issuer.** On a
+stage, `configure.mjs` leaves `PUBLIC_URL` as the component's own (`https://vis.bitcru.sh`), so
+`viz-s13-gateway`'s `/.well-known/oauth-authorization-server` names `https://vis.bitcru.sh` as issuer and
+endpoints, and `/oauth/authorize` accepts only the resource `https://vis.bitcru.sh/mcp`. Tokens are still
+the stage's (tagged under its own `OAUTH_CLIENT_KEY`, so production refuses them), but a client that
+follows the stage's metadata is sent to production. The trial takes the resource from the metadata. Fix
+(later release): a stage's `PUBLIC_URL` is its gateway's workers.dev URL.
 
 ## What would be deployed
 
@@ -41,7 +55,7 @@ Production (`viz-control`, `viz-ingest` and the rest, `viz-lake`, `viz-config`, 
 Under US$0.05 modelled; **stated as under US$1 worst case**. The Rate Limiting binding's page names
 no price. Usage is to be read from the analytics API afterwards.
 
-## Done before the stop
+## Done before the first stop (2026-11-26)
 
 | What | Result |
 |---|---|
