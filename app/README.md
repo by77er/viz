@@ -2,37 +2,18 @@
 
 The viz frontend: an **Explore** view for metrics, **Dashboards, read-only** (the list, and
 one dashboard at a time) and **Monitors, the on-call slice** (the list, one monitor, acknowledge
-and silence with undo), with sign-in by API key, built to be served as static files by the
-gateway at `vis.bitcru.sh/` and to call the API on the same origin (`/api/v1/query_range`,
-`/query`, `/labels`, `/label/<name>/values`, `/series`, `/metadata`, `/status/buildinfo`, and
-control's `/api/v1/control/whoami`, `/api/v1/control/dashboards` and
-`/api/v1/control/dashboards/<id>`).
+and silence with undo), with sign-in by API key, served as static files by the gateway at
+`viz.bitcru.sh/` (D74, D75; on `vis.bitcru.sh` its pages are a 308 to viz) and calling the API on
+the same origin (`/api/v1/query_range`, `/query`, `/labels`, `/label/<name>/values`, `/series`,
+`/metadata`, `/status/buildinfo`, and control's `/api/v1/control/whoami`,
+`/api/v1/control/dashboards` and `/api/v1/control/dashboards/<id>`).
 
-> **Monitors (2026-11-28) is the newest slice and its design is not reviewed.** What it is, how
-> it was checked, its mutants, its speed and what it leaves out are under "Monitors, the on-call
-> slice"; the images for the design reviewer are in `../design-system/reviews/app-monitors/`.
-> It calls the ruler's `/api/v1/monitors…` routes on the same origin. The real ruler was not run
-> here: the mock is held to `ruler/openapi.json`.
->
-> **Dashboards (2026-11-27) is the slice before it and its design is not reviewed.** What it is,
-> how it was checked, its mutants, its speed and what it leaves out are under "Dashboards,
-> read-only"; the images for the design reviewer are in
-> `../design-system/reviews/app-dashboards/`. The sections after it describe the app as it
-> was before (Explore, sign-in, the move to design system v9), and where they say "the one
-> working view" or count tests, they count that state.
-
-> **It is not deployed.** The build is ready to serve and this README says exactly what the
-> gateway has to do with it ("Needed changes in deploy/", and `serve.json` as data); `deploy/`
-> is another builder's, who is building the gateway to serve the app by `serve.json`
-> (`../deploy/README.md`). The app was not run behind that gateway here.
-> **Its design is not approved.** The move to design system v9 was rejected by an independent
-> review (`../design-system/reviews/app-v9/review.md`, 2026-11-27); the fixes are verified and
-> `../design-system/reviews/app-v9/response.md` is the disposition, status "awaiting
-> re-review". Its blocker B1 (a result with many series painted late) has the chart speed
-> change applied and a second reviewer's waiver at 37 to 200 series with conditions
-> (`../design-system/reviews/chart-speed/second-review.md`), which is **not in effect**: the
-> second session failed its R2 (the desktop's 36-series paint, 109 ms). It is not ready to merge
-> until a reviewer approves (AGENTS.md, "Design changes", 5).
+> **This version lists Explore, Help and Settings; dashboards and monitors are built and
+> unlisted** ("Released in this version", next). The owner decided on 2026-11-28 to ship Explore
+> with its speed misses recorded as known issues, and to list dashboards and monitors in a second
+> pull request once their fixes pass re-review. The sections after "Released in this version"
+> describe each slice as it was built and checked; where they say "the one working view" or count
+> tests, they count the state they describe.
 >
 > **The backend used for development and most tests is a mock** (`mock/`): synthetic data and
 > a subset of PromQL. It is not the viz query backend, and the UI shows a banner whenever it
@@ -40,6 +21,51 @@ control's `/api/v1/control/whoami`, `/api/v1/control/dashboards` and
 > `wrangler dev --local` (`real/`): `e2e/real.cjs` runs the app on it, sign-in included, and
 > `e2e/contract.cjs` sends the same requests to it and to the mock and compares the answers
 > ("Mock and real API").
+
+## Released in this version
+
+**Listed (in the navigation, the command palette and Help):** Explore, Help, Settings, and
+sign-in by API key. **Built and unlisted:** Dashboards and Monitors. Their pages, tests and
+routes are all kept: `/dashboards` and `/monitors` are documents in `serve.json` and open at
+their address, but nothing in the app links to them. They stay unlisted until the fixes for their
+re-review pass (`../design-system/reviews/app-v9/rereview.md`, round 3, 2026-11-28: both
+**rejected**, on speed blockers and, for dashboards, an agent-written dashboard shown unmarked).
+
+**The switch** is `src/shell/released.ts`, `RELEASED_VIEWS`: the shell's navigation, the
+palette's "Go to" commands and Help's sections list exactly the views in it. The pull request that
+releases dashboards and monitors adds `'dashboards', 'monitors'` there, and changes the
+expectations in `e2e/app.cjs` (the Tab order, "released views"), `e2e/dashboards.cjs` and
+`e2e/monitors.cjs` (the "unlisted" checks of their list sections) back to listing them.
+`serve.json`, the gateway, `_headers` and the document's headers are not touched by the switch,
+so the serving fingerprint the stage vouched for (`../deploy/records/app-stage-evidence.json`,
+`90565874…`) holds either way.
+
+**Design review state.** Round 3 (`rereview.md`): Explore, Help, Settings and the palette are
+**rejected on one speed row only**; everything a person sees there is at approve level (every
+earlier blocker and major the reviewer could judge fixed, nothing regressed, three new minors
+n1 to n3). The waiting line's one-frame change is **approved** in that review, from its records;
+the exact-frame images made afterwards for the third review's C4
+(`../design-system/reviews/chart-speed/waiting-line/`) have not been judged by a reviewer.
+Dashboards and monitors are **rejected** (above).
+
+### Known issues: speed rows not met
+
+All measured here (this shared 4-core machine, Chromium headless shell, CPU 4x, Fast 4G, the
+development mock); none on a device or on Cloudflare. 75th percentiles; budget 100 ms.
+
+| Row | Figures | Source | State |
+|---|---|---|---|
+| Explore, "Show 50 more of 200" (table) | **102 ms** desktop, **105 ms** phone (20 runs each, one session) | `../design-system/reviews/app-v9/response.md`; judged a blocker in `rereview.md`, E-B1 | Not met. A second, alternating session would settle a row this close; if it holds, paint the first screen of the 50 rows first |
+| Explore, a result of 37 to 200 series painted (B1) | 110 / 127 ms (median / p75) after the body was read, desktop at 4x CPU (first review's figures) | `../design-system/reviews/chart-speed/second-review.md` (waiver offered), `third-review.md` (waiver stands, R1 and R2 replaced by R1′, R2′ and the session rule, new condition C5) | **Waived on conditions that are not all met, so the waiver has not taken effect.** It lapses on **2026-12-31 unless F1** (the system's owner decides how a many-series result meets the budget) is decided |
+| Explore, desktop, 36 series, paint from the last byte (B1, never waived) | 90, 109, 104, 101 ms over four sessions before the legend change (pooled 105); after it, **92** and **99.7 ms** in two sessions | `third-review.md` §1.6 and C5; `../design-system/reviews/chart-speed/PR.md`, "The third review's conditions" | Met by the session rule in the author's measurement, with no margin; the paired gain is not beyond the noise by C1's rule. Not yet judged by a reviewer |
+| Explore, phone, Chart → Table, 36 series (B1, never waived) | 101, 86, 107 ms in three sessions; **pooled 101.1 ms** (17 of 60 runs over 100) | `chart-speed/PR.md`, "Phone, chart to table: the third session" | **Not met.** Not caused by the chart change; needs a fix in the table's markup or CSS, or a waiver of its own after that is tried (`third-review.md`, C5) |
+| Explore, phone, Chart → Table, 200 series (B1, never waived) | 91, 127, 115 ms in three sessions; **pooled 103.1 ms** (18 of 60 over 100) | as above | **Not met**, as above |
+| Dashboards (unlisted) | slowest panel painted 144 to 197 ms after its answer; all panels marked waiting after a range change 127 to 165 ms | `rereview.md`, D-B2; "Speed (dashboards)" below | Not met; one reason the view is unlisted |
+| Monitors (unlisted) | opening a monitor 117 ms desktop, 146 ms phone; its chart painted 143 / 122 ms after the answer | `rereview.md`, part 3; "Speed (monitors)" below | Not met; one reason the view is unlisted |
+
+The design rule (AGENTS.md, "Design changes", 5 and 7) is that a change merges on an approve
+verdict. This version merges on the owner's decision instead, with these rows open; it is not an
+approval, and none of the reviews above is read as one.
 
 ## Design system
 
@@ -217,6 +243,8 @@ vitest 5 · fast-check 4 · axe-core 4.14.
 There is no logs or traces view, no editing of dashboards or monitors and no key management
 ("Not implemented"). The gateway serves six document paths (`serve.json`): `/`, `/explore`,
 `/dashboards`, `/monitors`, `/help`, `/settings`.
+In this version `/dashboards` and `/monitors` are unlisted: they open at their address, but the
+navigation, the palette and Help do not name them ("Released in this version").
 
 ## The second design review: fixes (2026-11-27)
 
@@ -1656,6 +1684,29 @@ overrule. Each is a choice between real alternatives.
 
 ## Verification
 
+### The release switch, with the legend change (2026-11-28 evening)
+
+`src/shell/released.ts` and its three readers (navigation, palette, Help), on `design-system/` as at the
+development branch's 853913f (the chart legend's redraw change), on the UI branch. Every command held
+the shared machine lock, with the Cloudflare credentials removed; vitest with a module cache of its own.
+
+| Check | Result |
+|---|---|
+| `npm test` | 252 tests in 26 files pass |
+| `npx tsc --noEmit` | passes |
+| `npm run check:tokens` | 759/759; 0 literal values in 82 files |
+| `npm run build`; `node ../deploy/ci/app-build.mjs dist` | pass |
+| `node e2e/app.cjs` | 159 of 159 (three "released views" checks new; the Tab order without Dashboards and Monitors) |
+| `node e2e/errors.cjs` | 14 of 14 |
+| `node e2e/prod.cjs` | 23 of 23 |
+| `node e2e/dashboards.cjs` | 107 of 107 (the list section checks the view is unlisted and opens it at its address) |
+| `node e2e/monitors.cjs` | 70 of 70 at 16:14 UTC (the list section checks the view is unlisted and opens it at its address). **Two earlier runs, at 16:06 and 16:08 UTC, read 69 of 70**, and so did a run with the chart from before the legend change at 16:10: "the two markers … and the firing span" found the span's label cut to "Firing", not "Firing since 15:47". The mock's incident fires at minute 47 of every third hour (`mock/monitors.ts`, `lastIncidentStart`), so for about the first 25 minutes after it the span is too narrow for its label and the chart shortens it. The check depends on the time of day; it is not this change's, and it is not fixed here (Known issues) |
+
+The deploy tooling's `servingFingerprint` on the branch with the switch: `90565874546a…`, equal to the
+S16 entry in `../deploy/records/app-stage-evidence.json` (the switch is in `src/`, which the fingerprint
+does not cover, and `serve.json` is unchanged). No mutant run was made for the switch: it is not a safety
+property, and each of the e2e checks above fails if a view is listed.
+
 ### The merged tree (2026-11-28 afternoon)
 
 The fixes for the second review, the chart speed change (`../design-system/reviews/chart-speed/app.patch`)
@@ -2305,10 +2356,20 @@ The shell's script is 146.0 kB compressed (the limit is 200 kB): 10.6 kB less th
 
 ## Known issues and risks
 
-- **Not reviewed and not deployed.** The design change waits for an independent review
-  (`../design-system/reviews/app-v9/response.md`). The app was not run behind the gateway
-  that `deploy/` is building: that the gateway serves it rightly rests on `serve.json` and on
-  `e2e/prod.cjs`'s own static server, not on a run against it.
+- **`e2e/monitors.cjs` fails one check for about 25 minutes after each mock incident fires** (minute
+  47 of every third hour UTC: 00:47, 03:47, …): "the two markers … and the firing span" expects the
+  span's label "Firing since hh:mm", and the chart shortens it to "Firing" while the span is narrow.
+  Seen 2026-11-28 at 16:06, 16:08 and 16:10 UTC (the last with the chart from before the legend change)
+  and passing at 16:14 with the same code. The check should accept the shortened label, or the mock
+  should place the incident at a fixed distance from now.
+- **Released with speed rows open, on the owner's decision (2026-11-28), not on an approval.** The
+  rows and their state are in "Released in this version", "Known issues: speed rows not met"; the
+  points below that predate it keep their own dates. Dashboards and monitors are unlisted.
+- **Run behind the gateway on a stage, once.** Stage `s16` (`../spikes/s16-app-stage/`, measured
+  on Cloudflare on 2026-11-28) served this app's build with the gateway's serving code as it is
+  here: the smoke test and four of the five by-hand checks passed; the rollback to a version
+  without the app (check 8, second half) was not made. Before that, that the gateway serves it
+  rightly rested on `serve.json` and on `e2e/prod.cjs`'s own static server.
 - **The images.** The pairs under `../design-system/reviews/app-v9/compare/` were made again
   from the merged build on 2026-11-28 11:30 to 11:50 UTC (196 pairs; the "before" halves kept from
   08:14; `response.md`, "Images"), and `../design-system/reviews/app-dashboards/` at 11:18 UTC; the
