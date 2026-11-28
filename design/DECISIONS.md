@@ -4307,6 +4307,252 @@ every append); the extra row write shows in the bill (then (c4) at a release tha
 only for shards that are read with ranges); the walk shows on a shard's CPU (then (i)); Cloudflare's
 SQLite reads or bills differently from workerd's here (the experiments above).
 
+## D73. "Colour the eight largest" is offered only when pressing it would change a colour
+
+**Decision** (2026-11-19, the lead; built in design system v9). A chart offers "Colour the eight
+largest" only when one of the eight largest series on screen is not coloured. The review rubric
+(`design-system/project/review.md`) and the Chart rules say so, and a property check (P8) tests it.
+
+**Alternatives.** (a) Offer it wherever a series on screen is in Other, as the rubric said through
+v8: the v8 review found it offered at load, where pressing it changes nothing and nothing says why.
+(b) Keep offering it and add a note, "the eight largest are coloured": one more line of text on
+every chart for a control that does nothing.
+
+**Why.** The design system's feedback rule, every response meaningful, outranks a rule about where
+a control appears: a control that can do nothing is not offered.
+
+**Would change if** people look for the control to confirm that the largest are coloured (then (b),
+as a state of the legend, not a button).
+
+## D74. viz-gateway serves the web app: hashed assets and the icon as its own Workers Static Assets, by exact path, without invoking the Worker; the documents from the Worker, out of a variable; every other path, an unknown API path and a missing asset included, the JSON 404; a release carries the build it was made with, verified before upload, and the earlier builds' files a page already open may still ask for
+
+(Written 2026-11-26. The owner's leaning was "Static Assets, the Worker first only on non-asset
+paths"; this is that in cost and in who answers what, but not in configuration: the obvious
+configuration of it, `run_worker_first: ["/*", "!/assets/*"]`, was observed to answer a missing
+asset with a 404 that carries the asset's caching, see (b). Code: `deploy/lib/app.mjs`,
+`deploy/app.mjs`, `deploy/gateway/src/index.ts`, `deploy/configure.mjs`, `deploy/release.mjs`,
+`deploy/smoke.mjs`, `deploy/deploy.sh`, `deploy/workers.json`. Not deployed: every platform fact
+below is labelled read (Cloudflare's documentation, 2026-11-26), observed (local workerd, wrangler
+4.164.0) or not verified; `deploy/README.md`, "The web app", has the table.
+
+Revised 2026-11-27 after its adversarial review (`design/reviews/d74-gateway-app.md`, approve with
+changes). This text replaces the first one in four places: point 3 no longer says "the build was
+made here, not handed in" (the build is made by a job that holds no secret and handed over,
+verified); point 2's entity tag and the build hash cover the headers; point 4 has a bound in
+time; point 6 is new. Alternatives (g) and (h) record what was weighed for the two.
+
+Noted 2026-11-28, when D74 was assembled with D75 for `main`: the app is served on `viz.bitcru.sh`
+only; on `vis.bitcru.sh` its documents are a 308 to viz and its files are answered by the asset layer
+(D75, "The web app on vis.bitcru.sh"). Point 6's premise changed: D74 now reaches production over
+5255b39, which already carries the `oauth-public` floor, so that release is not forward-only for that
+reason; the rule itself stands, for the reason it gives first: how Cloudflare serves all this has been
+seen only locally.)
+
+**Decision.** `app/serve.json` is the specification of how the app's build is served; the gateway
+serves by it and by nothing else.
+
+1. **Who answers.** viz-gateway's version holds the build as its static assets, routed asset-first
+   by exact path: `assets: { directory, html_handling: "none", not_found_handling: "none",
+   run_worker_first: false }`, no binding. A path that is a file of the build (everything under
+   `/assets/`, and `/favicon.svg`) is answered by Cloudflare without invoking the Worker, with the
+   headers of a generated `_headers` file (`Cache-Control: public, max-age=31536000, immutable`
+   and `nosniff` for assets, the content type set per extension from serve.json rather than left to
+   the uploader). Every other path invokes the Worker, which routes exactly as before: the API first
+   (`routeOf`), then the app's documents (the `documents` of serve.json: `/`, `/explore`, `/help`,
+   `/settings`, …; GET and HEAD only), then the JSON 404 it always gave. So an unknown API path, a
+   hashed asset this version does not hold, `/index.html`, `/explore/` and a POST to a page are all
+   that 404, `no-store`, never the document. **The API has a part of the path space of its own**
+   (`deploy/gateway/src/api-roots.json`: `/api/`, `/v1/`, `/loki/`, `/oauth/`, `/.well-known/`,
+   `/mcp`, `/healthz`): the gateway routes nothing outside it and serves no document inside it,
+   and the deploy reads the same file to refuse a serve.json whose asset prefix, files or
+   documents lie inside it. "The API first" would otherwise hold for documents only: the asset
+   layer answers a path that is a file before the Worker runs.
+2. **The document is not an asset.** `index.html` is never uploaded. The Worker serves it from a
+   variable, `VIZ_APP` (`{ v, build, etag, documents, headers, document }`, about 1.6 kB of the
+   5 kB a variable holds), which `configure.mjs` writes from serve.json and the build. The asset
+   directory then holds nothing but public files, so no path, however encoded, reaches anything
+   else through the asset layer; the document always carries serve.json's document headers (the
+   Content-Security-Policy, `no-cache`, `nosniff`, `X-Frame-Options`, the rest) because only the
+   Worker can send it, and the Worker refuses to serve a `VIZ_APP` without a policy, with a
+   cacheable document, or naming a path in the API's part of the path space. It adds an `ETag` (a
+   hash of the document's bytes and of the headers it is sent with, so a release that only changes
+   the policy is revalidated to a 200 with the new headers) and answers a matching `If-None-Match`
+   with 304. A gateway without the variable (another harness, a version from before this) has no
+   app and answers as it always did.
+3. **A release carries its build, and the build is made where no secret is.** The build runs
+   third-party code (npm install scripts, Vite and its plugins), so it is a step of its own:
+   `deploy/app.mjs handover` exports the app's sources (what git tracks or does not ignore under
+   `app/` and the directories `deploy/workers.json` says it needs, `design-system/` and
+   `dashboard/src`, less what no build reads) to a directory outside the checkout,
+   builds there with the app's own `npm run build`, reads the result by serve.json's rules
+   (anything they do not cover is refused), and writes the build with a description: release,
+   source hash, commit, how dependencies were installed, every file's SHA-256. In the deploy
+   workflow that runs in a job that is given no secret and no environment; the job that holds the
+   Cloudflare token receives the result as an artifact and runs none of it. `deploy/app.mjs build
+   --from` there takes it as data: it hashes its own checkout's sources (git and SHA-256 of file
+   bytes; no code of the app runs), refuses a build whose description is not of this release, of
+   that source hash and of this serve.json, or whose files are not, one by one, what the
+   description names, then stages the upload directory and writes the stamp. `configure.mjs`
+   takes the build only if the stamp is of this release and target, the sources and serve.json
+   are unchanged since, and the directory uploaded is the one stamped and what was stamped;
+   `release.mjs` checks the same again, and that the generated config uploads exactly that
+   directory with exactly those variables, before anything is uploaded (exit 3).
+   **What "handed in" means for production**: a build is taken only with a stamp whose source
+   hash is the hash of this checkout's sources at the release's commit, whether it was made by
+   this tool in place (`export`) or handed over and verified (`handover`); a bare `dist/`
+   (`prebuilt`), which nothing ties to the sources, is refused. Production, when the release is a
+   commit, also demands that git can read the checkout (it fails closed where git cannot: no
+   work tree, another owner), that the checkout is that commit with unchanged app sources, and
+   that dependencies were installed from the lockfiles, not linked. A stage may go without the
+   app only when configured `--without-app`, and its record says so. The release record names the
+   build (hash, document hash, files, kept files, sources, how it came and was installed).
+   The build hash covers the document, the files and serve.json's rules, so two releases that send
+   different headers are two builds. Removing the credentials from the build's environment, which
+   `deploy.sh` also does for a local deploy, is not this boundary and is not called one
+   (`deploy/README.md`, "Who can read the Cloudflare token").
+4. **A page opened before a deploy.** A version serves only its own assets (read). So each release
+   also carries the hashed files of the previous `keep_builds` (3) builds that the new build no
+   longer has: read from the serving version's `VIZ_APP_FILES` variable, fetched from the
+   deployment itself, kept only if their SHA-256 is the recorded one, aged and dropped after three
+   later builds, or `keep_days` (30) after they stopped being a current build's, whichever comes
+   first (judged at each release). A file that cannot be had is dropped and named, never a
+   failure; the operator can keep none in a release (`VIZ_APP_NO_CARRY`, the workflow's
+   `app_drop_kept_files`), which is how a known-bad build's files stop being served. A build whose
+   own file list does not fit the variable (about 50 files) names none, and says so loudly: the
+   next release can keep nothing of it. What the gateway cannot do, and what the app must then do,
+   is in `deploy/README.md`, "Update in place" and "Needed changes in app/".
+5. **Rollback (D69 unchanged).** A version's assets and variables come back with it, so a rollback
+   of viz-gateway restores the app that version served, or none. No check is added or removed: the
+   gateway writes no recorded format and has no schema or floor. `release.mjs rollback` says which
+   build, or none, the restored gateway serves; a rollback of viz-gateway alone to fb77292's
+   version (no assets, no variable) is allowed and leaves every page and asset path the JSON 404
+   until a release with the app serves again, the API untouched. The app is a caller of the API in
+   the last Worker promoted and the first rolled back, as D69's order wants.
+6. **A stage goes before the first production release with the app, or the owner says why not.**
+   How Cloudflare serves all this was seen in local workerd and read in documentation, and the
+   first production release with the app is forward-only (D69's `oauth-public` floor), so a failed
+   app check there rolls nothing back. `release.mjs`, for production, when the viz-gateway serving
+   now has no app, refuses the release before anything is uploaded unless
+   `deploy/records/app-stage-evidence.json` holds a complete entry (a stage's release, its passed
+   smoke test with the app checked, five by-hand checks each passed with a note, who vouches) for
+   this release's serving fingerprint: a hash over the gateway's source, the asset configuration,
+   the generated `_headers`, the document's headers and wrangler's version. The owner may override
+   with a reason, which is logged and recorded in the release. The entry is a person's committed
+   statement bound to the code by a hash; the tool cannot prove the stage existed. What makes it
+   more than a sentence is that the default is now a refusal.
+
+**Alternatives.**
+
+(a) *Static Assets with the Worker first on every path* (`run_worker_first: true`, the Worker
+fetching each file through the binding). Exact control of every answer, and the simplest to
+reason about. Rejected on cost and on the critical path: every asset of a first load is a billed
+Worker request plus a binding call (7 files today; modelled at list price, $0.30 per million
+requests past the 10 million included, up to $2.10 per million first loads against $0 for (b′)),
+and each waits for a Worker invocation. Would be taken if the asset layer's answers ever differ
+from serve.json in a way `_headers` cannot fix.
+
+(b) *The Worker first except under the asset prefix* (`run_worker_first: ["/*", "!/assets/*"]`,
+the document fetched through the binding). The same cost as the decision. **Rejected on an
+observation**: a request that matches a negative pattern goes to the asset layer whether or not
+the file exists, and a missing file is then answered by Cloudflare, not by the Worker, as an
+empty 404 **with the `_headers` rules of the path attached**: `Cache-Control: public,
+max-age=31536000, immutable` on a 404 (observed locally, 2026-11-26; the documentation says such
+paths "follow the default asset-first routing behavior", which reads as if the Worker were
+invoked). A browser that asked a not yet updated location for a new build's chunk, or an old
+page asking for an old chunk, would keep that 404 for a year. It also needs `index.html` among
+the assets, where a path that normalises to it is served without its policy unless the Worker is
+first there too.
+
+(c) *Assets first with `not_found_handling: "single-page-application"` and `_headers`.* The
+cheapest: documents are free too. Rejected: every unknown path a browser navigates to, API paths
+included, gets `index.html` with 200 (read: navigation requests are served the fallback without
+invoking the Worker), which is exactly what must not happen; serve.json lists four documents, not
+"anything". A variant with one HTML file per document and no fallback keeps the JSON 404 but
+answers `/explore/` and `/index.html` with redirects and a POST with 405, and leaves the policy to
+a file format with a line limit; it saves one Worker request per navigation ($0.30 per million,
+modelled), against a page load that then makes several API requests through the same Worker.
+
+(d) *A separate `viz-app` Worker* on the same hostname. Two Workers on one custom domain need
+routes by path, a second release unit and a second rollback target, and the API-before-app
+precedence would live in route patterns instead of one function with tests. Nothing is gained:
+static assets are free on either Worker.
+
+(e) *Every file embedded in the script.* No asset layer at all, but 1.1 MB of script (measured:
+today's build), every asset a billed request, and the script re-parsed for it. Only the document
+is embedded, as data in a variable.
+
+(f) *The hashed files in KV or R2, shared by all versions.* Would make every version able to
+serve every build's files, which is the one thing Static Assets cannot do (4, and the seconds of
+propagation). Rejected for now: a store to fill before each promotion and to empty some day, a
+read on a path that is free today, and the six-connection and R2 latency rules to respect; kept
+as what would replace point 4.
+
+(g) *Where the build runs* (review, M-1). *In the deploy job, with the credentials removed from
+the build's environment*: what was first built. Rejected: a process of the same user reads an
+ancestor's environment (reproduced by the review with a dummy value) and can rewrite files a later
+step runs; the variable's absence is not isolation. *The `app` job of the checks hands over its
+build*: the job is a matrix entry that builds in place, for tests; a release build wants the
+export and its description, and a job that is nothing else. *The deploy job rebuilds inside a
+sandbox* (a container without network or mounts): more machinery than a second job, and still on
+the runner that holds the token. Chosen: a job with no secret, its output verified as data. What
+that does not buy: the app's locked dependencies still decide what the page is, and the deploy
+tooling's own locked dependencies still run beside the token (installed without install scripts,
+in a step without secrets).
+
+(h) *What makes a stage precede production* (review, M-2). *A sentence in the README*: what there
+was; enforced by nothing. *The workflow deploys a stage itself before production*: every release
+would create, check and delete seven Workers, a bucket and queues, for a rule that matters once;
+and the five by-hand checks are not automatable. *Evidence required at every change of the serving
+fingerprint*: honest, but every new API route in the gateway would need a stage, and the override
+would become routine, which is theatre. Chosen: the first release only, a committed entry bound to
+the fingerprint, an override that leaves a record.
+
+**Why.** The two requirements, minimum cost and "an unknown API path stays a JSON 404", are both
+met by letting Cloudflare answer only what cannot be anything else: an exact path of a file of
+the build. Everything that needs a decision reaches the code that has the tests. Keeping the
+document out of the asset directory removes the class of path tricks instead of enumerating them,
+and makes the policy a property of the only code that can send the page. The build is tied to the
+release by hashes checked where the upload happens, because a generated directory outlives the
+run that made it and a stale one would otherwise be released silently.
+
+**Cost of it** (modelled at Cloudflare's list prices, read 2026-11-26; not measured on
+Cloudflare). Asset requests: $0 ("Requests to static assets are free and unlimited"; unless
+Workers Caching is enabled for the Worker, which bills cached asset responses as requests: it is
+not). Documents: one Worker request per navigation or reload, $0.30 per million past the included
+10 million, and well under a millisecond of CPU (a set lookup and a response from memory; not
+measured). Storage of assets: $0. The release: one more `npm ci` and build per deploy (measured
+here: 4.8 s for the export build with a warm npm cache, on the shared machine at load 1 to 2;
+on a GitHub runner not measured, modelled 30 to 90 s with a cold cache), and up to
+`keep_builds` builds' changed files fetched from the deployment (a few requests). The experiment
+that settles the request counts: N loads of the app on a stage, then Workers requests and asset
+requests of `viz-<stage>-gateway` read from Cloudflare's analytics API for that window.
+
+**Would change if.** The document outgrows a variable (`configure` refuses at 4,500 bytes: then a
+text module bundled into the script at configure time, or the binding with the Worker first on
+the document's own path only). Cloudflare's asset layer is seen, on a stage, to answer anything
+differently from the local run (a content type, a method, a normalised path): then (a) for the
+affected paths. Version skew at promotion or a page older than three builds shows in real use
+(broken chunk loads in the app's error reports): then (f), or a release in two promotions (files
+first, document second) as Cloudflare's guide describes. The app gains a login flow or
+per-tenant pages: the document stops being one static file and the Worker serves it from code.
+A second front end appears: then (d) per front end. `app/serve.json` gains a rule: `deploy/lib/app.mjs`
+refuses it until the gateway serves by it.
+The build grows past what `VIZ_APP_FILES` names (4,500 bytes: about 50 files; 7 today; one chunk
+per route would pass it): the deploy then says loudly that the next release keeps nothing of the
+build, and the list must move out of a variable (a manifest file among the assets that the deploy
+reads back, or (f)).
+An app release fixes a security defect: a gateway rollback restores the older app with no "not
+below build X" check, which is right until then; that release would add a floor for the build,
+as D69 has for formats, and the kept files of the defective build would be dropped with
+`app_drop_kept_files`.
+The stage rule (6): a change to the asset configuration or to how the document is served proves
+risky after the first release (a smoke test fails in production on such a change): then evidence
+is required whenever the serving fingerprint differs from the serving version's, which needs the
+fingerprint recorded in `VIZ_APP_FILES`. The override is used without a reason that holds: then
+the rule is theatre and should be replaced by the workflow deploying a stage itself. GitHub
+offers the build job's output with provenance the deploy job can verify (artifact attestations):
+then the handover's description becomes a signed statement instead of a self-description.
+
 ## D75. viz.bitcru.sh is the address; vis.bitcru.sh stays on the gateway for a transition, serving the data paths as before with deprecation headers and answering everything else with a 308 to viz; OAuth has one issuer, viz
 
 (Written 2026-11-28. Decided by the lead on the owner's word, "viz pls": the product is served at
@@ -4412,3 +4658,65 @@ picks N; 14 is suggested), measured from Cloudflare's analytics for the host (th
 requests filtered on `vis.bitcru.sh`), not estimated: then the separate change that removes it. A
 sender is found that cannot keep working on vis (then that path too is served there); a client is
 found that cannot reconnect (then (g), bounded in time).
+
+**The web app on vis.bitcru.sh** (added 2026-11-28, when D74, written on the development branch,
+and this decision were assembled into one release; `deploy/README.md`, "The app on vis.bitcru.sh").
+The app is served on viz only. Its page calls the API on its own origin, with the key it holds per
+origin, and on vis every call that is not a data path would itself be a 308 that drops
+`Authorization`: a page on vis could not work, and one issuer wants one origin. So on vis:
+- **documents** (GET and HEAD of the paths `app/serve.json` lists, with any query) are not data
+  paths, and get point 2's 308 to the same path and query on viz, `no-store`; never the page, never a
+  304 to a revalidation, no policy. A browser that opens vis lands on viz;
+- **a path of the app that reaches the Worker** but is no file of the version (a missing hashed
+  asset, `/index.html`, `/explore/`) gets the same 308, and is the JSON 404 on viz;
+- **a file of the version** (`/assets/<hashed>`, `/favicon.svg`) is answered by Cloudflare's asset
+  layer before the Worker runs, as on viz, 200 with its headers. D74 routes asset-first by exact path
+  (`run_worker_first: false`), and the asset layer knows no host: `run_worker_first` takes path
+  patterns only (read: Cloudflare's documentation; observed in local workerd with `Host:
+  vis.bitcru.sh`, `deploy/test/app-serve.test.mjs`). **Accepted, the one exception to point 2**: the
+  files are public, content-hashed and free to serve; no page on vis asks for them (its documents
+  redirect, and the page's references are relative); and a request for one still shows in vis's
+  traffic, so the end of the transition is judged as before.
+- Aliases configured but unreadable: a document on a host that may be an alias is the 500 of point 2,
+  never the page.
+
+Alternatives weighed for this. (i) `run_worker_first: true`, so the Worker redirects the files too
+(D74 (a)): every asset of every page load on viz a billed Worker request and an invocation on the
+critical path, to redirect requests no page makes. (ii) A zone redirect rule for
+`vis.bitcru.sh/assets/*`: zone configuration outside the repository's tooling, as (f). (iii) Serve
+the app on vis too: two origins, a key per origin, and the page's own API calls answered with 308s.
+Would change if: vis's analytics show requests under `/assets/` (then (ii), or the transition's end);
+`run_worker_first` gains a host condition (then the files redirect too). A stage cannot show any of
+this (it has no custom domain): `deploy/smoke.mjs` checks the documents and a missing asset on vis
+after every production deploy.
+
+## D76. The chart takes a series' values in either of two forms: an array with null for a gap, or a Float64Array with a value that is not finite for a gap
+
+**Decision** (2026-11-28, the lead's decision on the app-v9 review's B1; built in the design system's
+Chart, `project/components/Chart/preview.html`, and so in `dist/viz-chart.js`). `spec.series[k].values`
+is either the first form, an array of numbers in which `null` is a gap, or a `Float64Array` in which a
+value that is not finite (NaN, ±Infinity) is a gap. The chart reads a series' window once on entry
+(`windowOf`): a typed series with no gap in the window is held as a view of the caller's array, with no
+copy; one with a gap becomes an array with `null` for each gap, the first form. Everything after that
+point reads one form, so the picture, the legend, the readout and the text form are the same for the
+same values in either form (checked over 600 random results: `design-system/reviews/chart-speed/
+model-equivalence.test.mjs`, and in the browser by `design-system/reviews/chart-speed/tools/identity.cjs`).
+The chart never writes to what it is given. The first form stays: the system's own preview and fixture
+and the app's dashboards use it. The app's Explore view passes its result's own Float64Arrays
+(`app/src/charts/spec.ts`, `toSpec(…, typed: true)`), copied only when the unit is scaled.
+
+**Alternatives.** (a) Arrays only, as before: the app copied every value of a result into a new array
+before the chart copied its window again, 144,000 values twice at 200 series, after the last byte of
+the answer (about 14 ms of the 100 ms budget at 4x CPU, and young-generation collection after it).
+(b) Typed arrays only: every caller and the system's own demos and fixture would change at once, for no
+gain where results are small. (c) Typed arrays with every test for a gap in the chart made to accept
+NaN (about a dozen places): no copy even with gaps, but every one of those places is a new way for the
+two forms to draw differently, and a result with gaps is the uncommon case.
+
+**Why.** The budget ("Receives a result: paint it … 100 ms after it arrives") is spent after the last
+byte, and the copy did nothing a person sees. Converting at one place, on entry, keeps one form inside
+the chart, so identity between the forms is a property of one function.
+
+**Would change if** results with gaps become common at many series (then (c), with the identity check
+extended to gaps), or the chart moves its drawing to a worker or a canvas (then the form it is handed
+is decided there).

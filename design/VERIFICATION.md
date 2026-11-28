@@ -101,13 +101,17 @@ Spikes run since under numbers this table does not use, each with its README:
 - **S11** (`spikes/s11-large-ledger/`): the S4 row above.
 - **S12** (`spikes/s12-reload-on-a-phone/`, deployed 2026-11-26): the design system's pages on
   a public address, to see whether a phone loses its scroll position on reload as the emulator
-  did in the v9 review. For the interface, which is on the development branch, not on `main`.
+  did in the v9 review. Still deployed until the owner has run the phone test or decided not to.
 - **S13** (`spikes/s13-upgrade-trial/`): the first release over production, on a stage.
   **Measured 2026-11-28** (on Cloudflare, a `viz-s13-*` stage, destroyed afterwards): Cloudflare
   accepted viz-control's six Rate Limiting bindings at upload, and its version API lists them as
   `type: ratelimit` with `namespace_id` (review of D69, round 2, M2-2, settled). #9's release was
   deployed to production the same day. Finding S13-1 (a stage advertised production's issuer) is
   fixed by D75: a stage's `PUBLIC_URL` is its gateway's workers.dev URL.
+- **S14** (`spikes/s14-app-preview/`, deployed 2026-11-27): the web app's build with the app's
+  mock API on a workers.dev address, for the owner to look at before the gateway served the real
+  one (D74). Synthetic data only, bound to no viz resource; it answers 410 after 2026-12-04, and is
+  deleted once `viz.bitcru.sh` serves the app (its README records that).
 
 ## 5. Evidence required per milestone
 
