@@ -28,6 +28,11 @@
 // is on for the first run of every build and case, and the frames from the last byte to the settled result are saved
 // as JPEG (screencast frames are matched to the record by wall-clock time; the screencast is off in every other run).
 //
+// --dashboard (2026-11-28, C4 of ../third-review.md): the same record for a dashboard panel, whose waiting line is the same hook
+// (useWaiting): the dashboard `service_red`, its first panel with a chart; the mock holds every query 700 ms and Refresh is pressed.
+// The record follows that panel: its line (data-testid=panel-progress), its plot, "Showing the previous range" (panel-stale).
+// Part 2 is not run for it.
+//
 // Part 2, the line's minimum (unthrottled, no network shaping): the mock holds every query back 450 ms, so the line
 // is shown at 400 ms and the answer comes at about 450 ms. Per run: the first painted frame with the line and the
 // first without it; `held` is the difference, and must be at least WAIT.minShown (300 ms). 4, 36 and 200 series.
@@ -39,9 +44,9 @@ const { spawn } = require('node:child_process')
 const lib = require(process.env.VIZ_APP_LIB || path.resolve(__dirname, '../../../../app/e2e/lib.cjs'))
 const { chromium, Q_RATE } = lib
 const arg = (name, fallback) => { const i = process.argv.indexOf(`--${name}`); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback }
-const PHONE = process.argv.includes('--phone')
+const PHONE = process.argv.includes('--phone'), DASH = process.argv.includes('--dashboard')
 const RUNS = Number(arg('runs', '3')), MIN_RUNS = Number(arg('min-runs', '5'))
-const CASES = arg('series', '36,200').split(',').map(Number)
+const CASES = DASH ? [0] : arg('series', '36,200').split(',').map(Number)
 const MIN_CASES = arg('min-series', '4,36,200').split(',').map(Number)
 const OUT = arg('out', null), IMAGES = arg('images', null)
 const MOCK_PORT = Number(process.env.VIZ_E2E_MOCK_PORT || 8931)
@@ -54,17 +59,19 @@ const NO_BUFFERS = { maxTotalBufferSize: 0, maxResourceBufferSize: 0 }
 const MIN_SHOWN = 300
 if (!OUT || BUILDS.length === 0) throw new Error('--builds and --out are needed')
 
-function instrument() {
+function instrument(dash) {
   const m = (window.__f = { on: false, frames: [], plot: 0, changes: 0, tUp: null, done: false })
   new MutationObserver((records) => {
     if (!m.on) return
-    const panel = document.querySelector('[data-testid=result]')
+    const panel = scope()
     for (const r of records) {
       if (panel && panel.contains(r.target)) m.changes++
-      if (r.type === 'childList' && r.target instanceof Element && r.target.closest('svg.vz-plot')) { m.plot++; break }
+      if (r.type === 'childList' && r.target instanceof Element && r.target.closest('svg.vz-plot') && (!dash || (panel && panel.contains(r.target)))) { m.plot++; break }
     }
   }).observe(document, { subtree: true, childList: true, characterData: true, attributes: true })
+  const scope = () => (dash ? document.querySelector('[data-testid=panel]:has([data-testid=chart])') : document.querySelector('[data-testid=result]'))
   const state = () => {
+    if (dash) { const panel = scope(), p = panel?.querySelector('[data-testid=panel-progress]'); return { line: p ? (p.querySelector('[role=status]')?.textContent ?? '') : null, plot: m.plot, stale: !!panel?.querySelector('[data-testid=panel-stale]') } }
     const p = document.querySelector('[data-testid=progress]')
     return { line: p ? (p.querySelector('[data-testid=progress-text]')?.textContent ?? '') : null, plot: m.plot, stale: !!document.querySelector('[data-testid=stale]') }
   }
@@ -88,7 +95,7 @@ const up = async (u) => { for (let i = 0; i < 200; i++) { if (await get(u)) retu
 const mockDelay = (ms) => get(`http://127.0.0.1:${MOCK_PORT}/__mock/delay?ms=${ms}`)
 
 async function press(page, cdp) {
-  const box = await page.locator('[data-testid=run]').first().boundingBox()
+  const box = await page.locator(DASH ? '[data-testid=refresh]' : '[data-testid=run]').first().boundingBox()
   const x = box.x + box.width / 2, y = box.y + box.height / 2
   if (PHONE) {
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] })
@@ -116,7 +123,8 @@ async function settle(page) {
 
 function derive(rec, tUp) {
   const frames = rec.frames.map((f) => ({ ...f, t: +(f.ts - tUp).toFixed(1) }))
-  const lastByte = rec.responseEnd == null ? null : +(rec.responseEnd - tUp).toFixed(1)
+  // a dashboard sends one query per panel, answered in any order: the record's new chart is the panel's first plot written after the press
+  const lastByte = DASH || rec.responseEnd == null ? null : +(rec.responseEnd - tUp).toFixed(1)
   // The new chart: the first frame from the last byte on whose plot was written after the frame before the last byte.
   const before = lastByte == null ? -1 : frames.findIndex((f) => f.t >= lastByte) - 1
   const base = before >= 0 ? frames[before].plot : 0
@@ -158,20 +166,21 @@ async function main() {
       out.frames[n] = Object.fromEntries(BUILDS.map((b) => [b.name, []]))
       for (let i = 0; i < RUNS; i++) {
         for (const B of i % 2 ? [...BUILDS].reverse() : BUILDS) {
-          await mockDelay(n === 36 ? 300 : 0)
+          await mockDelay(0)
           const ctx = await browser.newContext(LAYOUT)
           const page = await ctx.newPage()
-          await page.addInitScript(instrument)
+          await page.addInitScript(instrument, DASH)
           const cdp = await ctx.newCDPSession(page)
           await cdp.send('Network.enable', NO_BUFFERS)
           const impl = page._connection.toImpl(page)
           await (impl.delegate || impl._delegate)._mainFrameSession._client.send('Network.enable', NO_BUFFERS)
           await cdp.send('Network.emulateNetworkConditions', FAST_4G)
           await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 })
-          await page.goto(`http://127.0.0.1:${B.port}/explore?q=${encodeURIComponent(QUERIES[n])}&from=${T0}&to=${T1}`)
+          await page.goto(DASH ? `http://127.0.0.1:${B.port}/dashboards?id=service_red&from=${T0}&to=${T1}` : `http://127.0.0.1:${B.port}/explore?q=${encodeURIComponent(QUERIES[n])}&from=${T0}&to=${T1}`)
           await page.waitForSelector('[data-testid=chart] svg.vz-plot .vz-line', { state: 'attached', timeout: 60000 })
-          await page.waitForSelector('.cm-content')
+          if (!DASH) await page.waitForSelector('.cm-content')
           await page.waitForTimeout(1200)
+          await mockDelay(DASH ? 700 : n === 36 ? 300 : 0)
           const load1 = os.loadavg()[0]
           const shots = []
           const filming = IMAGES && i === 0
@@ -206,13 +215,13 @@ async function main() {
     }
     // ---- part 2
     await mockDelay(450)
-    for (const n of MIN_CASES) {
+    for (const n of DASH ? [] : MIN_CASES) {
       out.minimum[n] = Object.fromEntries(BUILDS.map((b) => [b.name, []]))
       for (let i = 0; i < MIN_RUNS; i++) {
         for (const B of i % 2 ? [...BUILDS].reverse() : BUILDS) {
           const ctx = await browser.newContext(LAYOUT)
           const page = await ctx.newPage()
-          await page.addInitScript(instrument)
+          await page.addInitScript(instrument, DASH)
           const cdp = await ctx.newCDPSession(page)
           await page.goto(`http://127.0.0.1:${B.port}/explore?q=${encodeURIComponent(QUERIES[n])}&from=${T0}&to=${T1}`)
           await page.waitForSelector('[data-testid=chart] svg.vz-plot .vz-line', { state: 'attached', timeout: 60000 })

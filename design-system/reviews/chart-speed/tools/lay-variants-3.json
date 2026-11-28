@@ -1,0 +1,6 @@
+{"base": "",
+ "clip": ".vz-chart .vz-table.vz-legend-table th, .vz-chart .vz-table.vz-legend-table td { overflow: clip; } .vz-chart .vz-series-name { overflow: clip; min-width: 0; } .vz-chart .vz-series-rest { overflow: clip; } .vz-chart .vz-legend-note > p { overflow: clip; }",
+ "cellsClip": ".vz-chart .vz-table.vz-legend-table th, .vz-chart .vz-table.vz-legend-table td { overflow: clip; }",
+ "noSticky": ".vz-chart .vz-table th:first-child, .vz-chart .vz-table td:first-child { position: static; }",
+ "base2": ""
+}
