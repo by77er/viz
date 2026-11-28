@@ -1,6 +1,160 @@
 # Chart speed: a many-series result painted sooner (app-v9 review, B1)
 
-## Where it stands, 2026-11-28
+## The second review's decision, and its conditions (2026-11-28, afternoon)
+
+**The decision** (`second-review.md`): B1 is **waived, not withdrawn**, for one budget row only, "Receives
+a result: paint it … 100 ms after it arrives", in Explore, for results of more than 36 and up to 200
+series, both layouts, both definitions of "arrives". It takes effect when C1 to C4 are done and lapses on
+**2026-12-31 unless F1** (the system's owner decides how a many-series result meets the budget, recorded
+in `design/DECISIONS.md`) is decided by then. **Not waived:** anything at 36 series or fewer; chart to
+table at any size; the dashboards view; results above 200 series; the waiting-line change (C4).
+
+**What reopens it** (the review's R1 to R6): R1, a judged alternating 20-run measurement at 200 series
+over 140 / 170 ms (desktop, body read / last byte) or 115 / 130 ms (phone) at the 75th percentile; **R2,
+any 36-series result paint over 100 ms at the 75th percentile in a judged session**; R3, once viz is
+deployed, more than 1 in 20 Explore results with more than 100 series; R4, a mid-range phone painting a
+200-series result more than 200 ms after the last byte (75th percentile); R5, F1 not decided by
+2026-12-31; R6, anything shown during the extra time stops being true.
+
+**The conditions, as they stand** (all **measured here**: this shared 4-core machine, Chromium headless
+shell, CPU 4x, Fast 4G, the development mock, DevTools keeping no copy of bodies, every run under the
+shared lock, every run judged: load at run start at most 2.3):
+
+| Condition | State | Result |
+|---|---|---|
+| **C1** did the build before regress? | **Done: ruled out** | `c4a154b` against `cc50ea2`, 20 alternating runs, desktop, 200 series: paired −8 ms body read (quicker in 9 of 17), −12 ms last byte (12 of 20). Not slower; nothing to remove ("C1", below) |
+| **C2** a second session of the final build | **Done; it fails R2** | Desktop, 36 series, from the last byte: **109 ms** at the 75th percentile (12 of 20 runs over 100; the first session read 90). Phone, 200 series, chart to table: **127 ms** (8 of 20 over; first session 91), not caused by the change (paired −4) and not covered by the waiver. Phone, 36 series, chart to table: 86 ms (101 in the first): the sessions disagree. The 200-series paints stay inside R1's bounds; desktop chart to table at 200 is inside in both (94, 93) ("C2", below) |
+| **C3** what `PR.md` says | Done here | The corrections the review lists are made below (points 1 to 6 of its "What `PR.md` must change"); the pull request's description is still to say the same |
+| **C4** the waiting line's frames | **Records made; not reviewed** | `waiting-line/` (before and after, both layouts, 36 and 200 series, and the 300 ms minimum). It needs a verdict from a reviewer who did not write it |
+
+**So the waiver has not taken effect, and by its own R2 it would be reopened at once:** the 36-series
+result paint on the desktop read over 100 ms at the 75th percentile in a judged session (109 ms from the
+last byte; 97 ms from the body read, 4 of 20 over), and a third block of 20 runs, taken to check the
+merge, read 101 ms for the merged tree and 104 ms for the change alone. By the review's C2: "If … any 36-series result paint
+reads over 100 ms at the 75th percentile again, B1 is not resolved … It needs a fix, or a second reviewer
+of its own." The same session's "before" read 140 ms there, so the change is still quicker (paired −36 ms,
+17 of 20), and the merged tree is not slower than the change alone (paired +2 ms; "C2", the merge
+check). No fix was tried in this round: the invisible candidates this file names (the legend table's
+layout, perhaps 5 to 10 ms; the harness's own copy of the body, measured only at 200 series) were not
+worked on. This is reported, not judged here.
+
+## C1: did the build before regress?
+
+The review's question: "before" (`c4a154b`) read about 50 ms slower at 200 series on the desktop than the
+first reviewer's session on `cc50ea2`. Rule: if `c4a154b` is slower beyond the noise (a paired median
+outside ±10 ms with 5 or fewer of 20 pairs quicker), find the cause.
+
+Both commits' `app/` and `design-system/` were taken with `git archive` into the scratch area, built there
+(`node tools/build.mjs`, then `vite build`) with the tree's `node_modules` linked, and measured with
+`tools/ab.cjs --skip typing,crosshair,local --series 200 --runs 20` (one mock, `c4a154b`'s, for both).
+The design system's chart is the same at both commits (`git diff cc50ea2 c4a154b` touches only `app/`).
+
+**desktop**: started 2026-11-28 11:10 UTC, calibration 391 ms, 4 cores, load 0.9 to 1.6 at run start, all
+40 runs judged; layout shift 0 in every run; neither DevTools session held the body in any run.
+`data/c1-desktop.json`
+
+| Series | Build | Body read to painted, ms | Last byte to painted, ms | Chart to table, ms |
+|---|---|---|---|---|
+| 200 | cc50ea2 (the first reviewer's) | 193 / 205 (126 to 240; 18) | 222 / 228 (146 to 271; 20) | 74 / 97 (51 to 113; 20) |
+| 200 | c4a154b ("before" of this change) | 187 / 196 (121 to 229; 19) | 207 / 221 (140 to 257; 20) | 66 / 91 (57 to 115; 20) |
+| 200 | pairs: c4a154b less cc50ea2 | −8; quicker in 9 of 17 | −12; quicker in 12 of 20 | +1; quicker in 9 of 20 |
+
+**Finding: not slower.** By the rule, `c4a154b` is not slower than `cc50ea2`; if anything it is a little
+quicker, within noise. Split by which build went first, the paired body read is −25 and +31 ms and the
+last byte −27 and −10 ms: an order effect of the same size as the one the review found in `clone.json`,
+and no sign either way. So the ~50 ms between sessions is not code that came in with the dashboards
+(`7469d5a`) or the app's fixes (`aa120dc`): `cc50ea2` itself reads about 200 ms in this session, against
+143 ms in the first reviewer's. Nothing was removed, and no identity run was needed. What differs between
+the sessions (the machine's other work; the DevTools buffers, on in the earlier sessions, which the
+review showed do not touch the body-read row) was not separated. This session's calibration task read
+391 ms, against 325 to 342 ms in this morning's sessions.
+
+## C2: the second session of the final build
+
+"Before" is `c4a154b` (built as for C1); **"after" is the merged tree as it is now**: commit `67d9d73`'s
+`app/` (this change and the monitors view), whose `app/src` is unchanged since, with the `dist/` built
+from it at 11:05 UTC, copied to the scratch area so that nothing else could rebuild it during the runs.
+`tools/ab.cjs --skip typing,crosshair,local --runs 20`, desktop at 36 and 200 series, phone at 4, 36 and
+200 series. A cell is median / 75th percentile (lowest to highest; runs that have the figure).
+
+**desktop**: Chromium, CPU 4x, Fast 4G, 1440x900, fine pointer, fresh context per run; builds alternated run by run; DevTools keeps no copy of response bodies. Started 2026-11-28 11:20 UTC, calibration 336 ms, 4 cores. `c2-desktop.json`
+
+| Series | Build | Load at run start: median (range); runs at or below 4 | Body read to painted, ms | Last byte to painted, ms | Chart to table, ms |
+|---|---|---|---|---|---|
+| 36 | before | 1.1 (1.0 to 1.3); 20 of 20 | 116 / 127 (74 to 149; 20) | 129 / 140 (80 to 167; 20) | 69 / 88 (50 to 114; 20) |
+| 36 | after | 1.1 (1.0 to 1.3); 20 of 20 | 89 / 97 (55 to 110; 20) | 104 / 109 (57 to 131; 20) | 64 / 98 (50 to 108; 20) |
+| 36 | pairs: after less before | | -36; quicker in 17 of 20 | -36; quicker in 17 of 20 | +1; quicker in 9 of 20 |
+| 200 | before | 1.2 (1.1 to 1.6); 20 of 20 | 133 / 180 (114 to 241; 20) | 166 / 203 (135 to 280; 20) | 72 / 95 (53 to 115; 20) |
+| 200 | after | 1.2 (1.1 to 1.6); 20 of 20 | 100 / 125 (69 to 137; 14) | 124 / 153 (74 to 174; 20) | 61 / 93 (54 to 125; 20) |
+| 200 | pairs: after less before | | -50; quicker in 13 of 14 | -43; quicker in 18 of 20 | -8; quicker in 14 of 20 |
+
+**phone**: Chromium, CPU 4x, Fast 4G, 400x800, coarse pointer, touch, device scale 2, fresh context per run; builds alternated run by run; DevTools keeps no copy of response bodies. Started 2026-11-28 11:50 UTC, calibration 346 ms, 4 cores. `c2-phone.json`
+
+| Series | Build | Load at run start: median (range); runs at or below 4 | Body read to painted, ms | Last byte to painted, ms | Chart to table, ms |
+|---|---|---|---|---|---|
+| 4 | before | 1.2 (1.0 to 1.4); 20 of 20 | 37 / 43 (32 to 75; 20) | 43 / 54 (38 to 85; 20) | 64 / 80 (42 to 89; 20) |
+| 4 | after | 1.2 (1.0 to 1.5); 20 of 20 | 40 / 52 (33 to 70; 20) | 51 / 65 (39 to 83; 20) | 62 / 70 (44 to 89; 20) |
+| 4 | pairs: after less before | | +1; quicker in 8 of 20 | +4; quicker in 6 of 20 | -4; quicker in 11 of 20 |
+| 36 | before | 1.1 (1.0 to 1.9); 20 of 20 | 70 / 91 (52 to 114; 20) | 76 / 100 (59 to 131; 20) | 82 / 96 (65 to 130; 20) |
+| 36 | after | 1.1 (1.0 to 1.8); 20 of 20 | 65 / 77 (42 to 93; 20) | 72 / 89 (47 to 103; 20) | 80 / 86 (66 to 131; 20) |
+| 36 | pairs: after less before | | -4; quicker in 11 of 20 | -3; quicker in 11 of 20 | +1; quicker in 9 of 20 |
+| 200 | before | 1.5 (1.3 to 2.2); 20 of 20 | 91 / 103 (81 to 144; 15) | 111 / 124 (94 to 169; 20) | 92 / 104 (71 to 162; 20) |
+| 200 | after | 1.5 (1.3 to 2.2); 20 of 20 | 89 / 101 (56 to 130; 18) | 109 / 122 (70 to 152; 20) | 92 / 127 (70 to 181; 20) |
+| 200 | pairs: after less before | | -3; quicker in 8 of 15 | +1; quicker in 9 of 20 | -4; quicker in 11 of 20 |
+
+Every run of both layouts started at a load at or below 4 (the most was 2.3), so every row is judged;
+layout shift from the press to the settled result was 0 in all 200 runs; neither DevTools session held the
+body in any run. Calibration 336 ms (desktop) and 346 ms (phone).
+
+**The rows the review named, from the two sessions together** ("after", 75th percentile, ms; budget 100;
+the first session is the morning's `ab-desktop.json` and `ab-phone.json`, on the change alone):
+
+| Row | First session | Second session | Runs over 100 (first; second) | Reading |
+|---|---|---|---|---|
+| **Desktop, 36 series, last byte** | 90 | **109** | 4; 12 of 20 | **Over in the second session.** R2 of the waiver; "B1 is not resolved" by C2 |
+| Desktop, 36 series, body read | 80 | 97 | 1; 4 of 20 | Inside in both; within a tenth of the limit in the second |
+| Phone, 36 series, chart to table | **101** | 86 | 6; 3 of 20 | Over in the first, inside in the second: the two sessions do not agree, so it is not settled either way |
+| Desktop, 200 series, chart to table | 94 | 93 | 3; 1 of 20 | Inside in both (thin): the two sessions agree |
+| **Phone, 200 series, chart to table** | 91 | **127** | 1; 8 of 20 | **Over in the second session** (before: 104, paired −4 ms). Not caused by the change and not covered by the waiver ("Chart to table at any size") |
+| Desktop, 200 series, body read | 127 | 125 (14 runs; with the 6 missing filled in from their last byte, 125) | — | Over; waived; under R1's 140 |
+| Desktop, 200 series, last byte | 156 | 153 | — | Over; waived; under R1's 170 |
+| Phone, 200 series, body read | 101 (17 runs; filled in, 101 to 104) | 101 (18 runs; the 2 missing rank 16 and 17 of 20 by last byte; filled in, 105) | — | Over; waived; under R1's 115 |
+| Phone, 200 series, last byte | 118 | 122 | — | Over; waived; under R1's 130 |
+| Phone, 36 series, result paint | 70 / 78 | 77 / 89 | 0, 2; 0, 2 of 20 | Inside in both |
+| Desktop, 36 series, chart to table | 59 | 98 | 1; 2 of 20 | Inside in both; within a tenth of the limit in the second (not a row the review named) |
+
+**Other things this session shows.**
+
+- **At 4 series on the phone "after" is a little slower again**: paired +1 ms (body read) and +4 ms (last
+  byte), quicker in 8 and 6 of 20 (the first session: +1 and +4, 8 and 8 of 20); 75th percentiles 43 to 52
+  and 54 to 65 ms. Two sessions now agree on a few milliseconds' cost, 35 ms inside the budget. Its cause
+  was not looked for.
+- **At 200 series on the phone the change gained nothing in this session**: paired −3 ms body read (8 of
+  15 quicker) and +1 ms last byte (9 of 20), against −20 and −15 ms in the first. On the desktop it gained
+  −50 and −43 ms (13 of 14, 18 of 20), and at 36 series −36 ms both ways (17 of 20).
+- **This session read slower than the first for both builds at 36 series on the desktop** (before: 127 /
+  140 here, 113 / 127 there): the change kept its gain, and the absolute figure moved with the session by
+  about the noise between blocks. That is how a row at 90 ms became 109 ms.
+
+**The merge, checked**: the merged tree against the change alone (`a3ba07d`'s `app/`, the author's
+`b1/after` build, whose source equals `a3ba07d`), alternated, desktop, 36 series, 20 runs:
+started 12:01 UTC, load 0.9 to 1.4, all 40 runs judged. `data/merge-desktop.json`
+
+| Series | Build | Body read to painted, ms | Last byte to painted, ms | Chart to table, ms |
+|---|---|---|---|---|
+| 36 | a3ba07d (the change alone) | 79 / 89 (59 to 138; 20) | 91 / **104** (67 to 156; 20) | 64 / 80 (48 to 100; 20) |
+| 36 | final (the merged tree) | 84 / 89 (57 to 104; 20) | 96 / **101** (67 to 120; 20) | 71 / 94 (53 to 112; 20) |
+| 36 | pairs: final less a3ba07d | +4; quicker in 8 of 20 | +2; quicker in 8 of 20 | +12; quicker in 8 of 20 |
+
+By C1's rule the merge did not make Explore slower beyond the noise (paired +4 and +2 ms, 8 of 20
+quicker). Chart to table reads +12 ms with 8 of 20 quicker, and +18 / −3 ms split by which build went
+first: an order effect, not a shift by that rule. **This third block reads the desktop's 36-series last
+byte over 100 ms at the 75th percentile for both builds** (101 and 104 ms): the second session's 109 ms
+was not a stray block. The monitors view adds no work to Explore's result path (its changes outside
+`src/monitors/` are a route, a navigation link and command, Help text, a client method and three
+optional fields of the chart's spec).
+
+## Where it stands, 2026-11-28 (morning; the first session)
 
 This replaces the account paused on 2026-11-27 (its tables are not comparable with these: see "The
 measuring method"). Everything below was **measured here**: this shared 4-core machine, Chromium
@@ -20,12 +174,17 @@ load is given with every figure.
    the same before and after in all 102 states; screenshots are bit-identical too once Chromium
    rasterises whole layers (the earlier stray pixels were partial raster, and they occurred
    between two captures of one build as often as between builds).
-4. **The result's paint meets the budget** at 4, 12 and 36 series on both layouts by both
-   definitions, and chart to table at 200 series on the phone is inside (91 ms, near the limit). **At 200
-   series it is not**: the 75th percentile is 127 ms (body read) and 156 ms
-   (last byte) on the desktop, 101 and 118 ms on the phone, down from 190 / 218 and 106 / 125 (paired
-   medians −59 / −61 ms on the desktop, −20 / −15 ms on the phone). The medians on the phone, 79 and
-   95 ms, are inside.
+4. **The result's paint met the budget in this session** at 4, 12 and 36 series on both layouts by both
+   definitions, and chart to table at 200 series on the phone was inside (91 ms, near the limit). **Chart
+   to table on the phone at 36 series did not: 101 ms** at the 75th percentile (6 of 20 runs over 100), a
+   Speed failure by the rubric's measure, not caused by this change (113 ms before), not covered by the
+   waiver, and measured again in the second session (86 ms there: "C2"). **At 200 series the paint is
+   over**: the 75th percentile is 127 ms (body read) and 156 ms (last byte) on the desktop, 101 and
+   118 ms on the phone, down from 190 / 218 and 106 / 125 (paired medians −59 / −61 ms on the desktop,
+   −20 / −15 ms on the phone). The phone's 101 ms body read is from 17 runs: the 3 runs without the
+   figure are among the slowest by last byte (ranks 14, 15 and 19 of 20), and filled in from their last
+   byte less the median gap the 75th percentile is 101 to 104 ms. (As context only, since the budget is
+   the 75th percentile: the phone's medians were 79 and 95 ms.)
 5. So a **waiver request** for the 200-series rows is at the end, with what a person sees and what
    would meet the budget.
 
@@ -42,8 +201,13 @@ judged; "after" is the change):
 | Chart to table, after | 42 | 63 | 59 | 94 | 71 | 82 | 101, over by 1 | 91 |
 
 Bold is over. Rows within a tenth of the limit (phone 200 body read after, 101; chart to table at 200,
-94 and 91; phone 36 chart to table after, 101; desktop 36 last byte after, 90) should be measured
-twice by the review's rule: they were measured once, in one session.
+94 and 91; phone 36 chart to table after, 101; desktop 36 last byte after, 90) needed a second session
+by the review's rule, **because two blocks of 20 runs of one build differ here by about that much**: at
+4 series the 75th percentiles of one build measured twice in `method.json` differ by 7 to 10 ms in all
+three rows (chart to table included, which has no network in it), and at 200 series rows that the change
+under test could not touch differ by about 20 ms (chart to table: 98 against 77 in `method.json`, 75
+against 98 in `clone.json`). So a 75th percentile within about 10 ms of 100 cannot be called from one
+session. The second session is under "C2", below.
 
 ## The measuring method (the lead's decision 1)
 
@@ -231,8 +395,12 @@ often.
 Every run of both layouts started at a load at or below 4 (the most was 2.8), so every row is judged by
 the README's rule. The "before" figures read higher here than on 2026-11-27 for desktop 200 (190 against
 135 ms at the 75th percentile, body read): "before" is now commit `c4a154b`, which carries the app's
-fixes for the second review (`aa120dc`), and the earlier session ran on `0aa0f7a`; the cause was not
-looked into, and before and after share it.
+fixes for the second review (`aa120dc`), and the earlier session ran on `0aa0f7a`. **C1 (below, "C1:
+did the build before regress?") ruled the code out**: alternated in one session, `c4a154b` is not
+slower than `cc50ea2`, the build the first reviewer measured (and `0aa0f7a` lies between the two);
+both read about 200 ms there. So the difference between sessions is not a commit's; what does
+differ between those sessions (the machine's other work, the DevTools buffers then on) was not
+separated.
 
 **No regression on a small result**, with one exception to watch: at 4 series on the phone "after" read
 a little slower (pairs +1 ms body read, +4 ms last byte, quicker in 8 of 20 each; 75th percentiles 43 to
@@ -331,9 +499,13 @@ by the markup hashes of `identity.cjs`, which compare it character for character
 
 ## Waiver request: the result's first paint at 200 series
 
-For a second reviewer. The rows: "Receives a result: paint it … 100 ms after it arrives", at 200 series,
-both layouts, both definitions. Everything else in B1 is met in this session (above), the chart to
-table row at 200 on the phone included, though near its limit.
+For a second reviewer (decided in `second-review.md`: waived with conditions; see the top of this
+file). The rows: "Receives a result: paint it … 100 ms after it arrives", at 200 series, both layouts,
+both definitions. **Not everything else in B1 was met in this session:** the phone's 36-series chart to
+table read 101 ms at the 75th percentile (6 of 20 runs over 100), a Speed failure by the rubric's
+measure, not caused by this change (113 ms before), and not covered by this request. Chart to table at
+200 on the phone was inside (91 ms), near its limit. (In the second session, "C2", the first read 86 ms
+and the second 127 ms.)
 
 **The best measured numbers** (this session, 20 alternating runs, every run judged, load 1.2 to 2.8):
 
@@ -410,22 +582,43 @@ All under the shared lock, credentials removed from the environment.
 | the same, on the shared tree's `app/` as it is now with `app.patch` applied, in a copy | `tsc` clean; 23 files, 233 tests pass (10:32 UTC) |
 | `git apply --check design-system/reviews/chart-speed/app.patch` | the shared tree | passes |
 | mutants | copies in the scratch area | 8 of 8 new ones caught (above) |
-| the app's e2e suites | | **not run** (Open items) |
+| the app's e2e suites | | **not run** on the patched app at the time (see the next table) |
+
+**On the merged tree** (2026-11-28 afternoon: this change and the monitors view on top of the app's
+fixes for the second review, commit `67d9d73`; the app's source has not changed since), every
+command under the shared lock with the Cloudflare credentials removed from its environment:
+
+| Check | Result |
+|---|---|
+| `npm test` | 26 files, 252 tests pass |
+| `npx tsc --noEmit` | clean |
+| `npm run check:tokens` | 759 of 759; 0 literal values in 81 files |
+| `npm run build` | passes (`dist/` 11:05 UTC, the build every browser run below used) |
+| `node e2e/app.cjs` | 156 of 156 |
+| `node e2e/errors.cjs` | 14 of 14 (the error paths go through the new parser) |
+| `node e2e/prod.cjs` | 23 of 23 |
+| `node e2e/dashboards.cjs` | 106 of 106 |
+| `node e2e/monitors.cjs` | 69 of 69 |
+| `node e2e/real.cjs` (the real API under `wrangler dev --local`; nothing deployed, no account used) | 25 of 25 |
+| `node e2e/contract.cjs` (the same requests to the real API and the mock) | 116 of 116; two error messages differ in wording, which the app does not read (reported, not failures). It rewrote `e2e/measurements/contract-real.json` |
+
+No suite needed a change, and no expectation was changed.
 
 ## Open items
 
-- **The waiver** above, for a second reviewer.
+- **The waiver**: decided (`second-review.md`), but not in effect: C2 fails R2 (the desktop's 36-series
+  result paint, 109 ms from the last byte in the second session, 101 in a third block), and C4 waits for
+  a reviewer. The phone's chart to table at 200 series read 127 ms in the second session, outside the
+  waiver. F1 to F4 stand (`second-review.md`); the waiver lapses on 2026-12-31 without F1.
 - `design-system/tools/speed.mjs` enables the Network domain with its buffers on (line 118): its figures
   for large bodies may carry the same DevTools cost. The system's owner should apply the same change
   there (or say why not).
 - The harness's own copy of the body costs 10 to 20 ms after the last byte at 200 series (10 runs):
   take the two rows from separate runs, or accept it and say so.
-- Rows within a tenth of their limit, measured once, in one session (see the budget table): a second
-  session is needed before they are called passes.
-- `app.patch` changes one frame a person sees (the waiting line goes one frame sooner): the app's
-  reviewer.
-- The app's e2e suites (`app.cjs`, `errors.cjs`, `dashboards.cjs`, `prod.cjs`) were not run on the
-  patched app here: the app builder runs them on the shared tree and they need long turns of the lock.
+- Rows within a tenth of their limit: measured in a second session ("C2"). The phone's 36-series chart to
+  table (101, then 86 ms) is not settled by the two.
+- `app.patch` changes one frame a person sees (the waiting line goes one frame sooner): the frame records
+  are in `waiting-line/`; the app's reviewer judges them (C4).
 - The dashboards view still uses the chart's first form; moving it to the typed form is one argument
   (`typed: true` in `dashboards/PanelView.tsx`) and needs its own before and after.
 - The design-system images (`shots.mjs`) were not made again: identity shows there is nothing to show.
@@ -440,6 +633,9 @@ All under the shared lock, credentials removed from the environment.
 | `tools/identity.cjs` | identity of rendering between builds; `--rounds`, `--full-raster`, `--series`, `--widths` |
 | `tools/harness-edit.cjs` | the harness change, as applied to `ab.cjs` and `app/e2e/measure.cjs` |
 | `tools/profile.cjs`, `tools/micro.cjs`, `tools/summarise.cjs`, `tools/pixdiff.py` | the profile, the micro-benchmarks, the tables, where two images differ |
+| `tools/waiting-frames.cjs` | the frame record of the end of a wait, and the waiting line's 300 ms minimum (C4; `waiting-line/README.md`) |
+| `waiting-line/` | C4's frame records, before and after, both layouts, with a note (`README.md`) |
+| `data/c1-desktop.json`, `data/c2-desktop.json`, `data/c2-phone.json`, `data/merge-desktop.json` | the afternoon's runs: C1, C2, and the merged tree against the change alone |
 | `data/` | every run with its load (`ab-desktop.json`, `ab-phone.json`, `method.json`, `clone.json`), the identity results; `2026-11-27/` holds the paused session's files (its tables and profiles), measured with the buffers |
 
 `chart.patch` and `harness-nobuffer.patch` of 2026-11-27 are gone: the first is now in the chart's
@@ -459,4 +655,9 @@ node tools/identity.cjs --builds before=<before>,after=<after> --rounds 2 [--ful
 VIZ_BEFORE=<before>/design-system/project/components/Chart/preview.html VIZ_AFTER=<after>/design-system/project/components/Chart/preview.html node --test model-equivalence.test.mjs
 node tools/profile.cjs --lib <before>/app/e2e/lib.cjs --root <after unminified app> --series 36,200 --runs 5 --nobuffer [--phone] [--table]
 node tools/summarise.cjs ab.json
+VIZ_APP_LIB=<before>/app/e2e/lib.cjs node tools/waiting-frames.cjs --builds before=<before>/app,after=<after>/app --runs 3 --min-runs 5 [--phone] --out waiting-line/frames-desktop.json
 ```
+
+The afternoon's runs (C1, C2, the merge check, C4) used the same commands, with `before`, `cc50ea2`,
+`a3ba07d` and the merged tree as the builds, ports 8971 to 8995, and `c4a154b`'s `app/e2e/lib.cjs` (so
+its mock) for every one.

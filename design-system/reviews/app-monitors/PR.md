@@ -33,6 +33,13 @@ when, is anyone on it, what does the query look like against its threshold, and 
 
 ## The images
 
+**Checked against the merged build** (commit `67d9d73`, 2026-11-28 11:16 UTC) and not remade: the 52
+images were made again from it and compared pixel for pixel. 11 are identical; the other 41 differ
+where the page follows the clock (the mock's monitors are computed relative to now: "Firing since …",
+durations, "Evaluated … ago", the values and the chart's time axis), and in the palette's
+anti-aliased edges; checked by eye on `01-list-light-1440` and `03-monitor-firing-light-1440`. The
+navigation, Explore's chart path and the layout are as these images show them.
+
 `node app/e2e/monitors-shots.cjs` wrote them from the built app on the development mock
 (synthetic data; the banner at the top of every image says so and is the app's, not part of
 this change), the mock reset before each image. Each state is in both themes at 1440 px (mouse)

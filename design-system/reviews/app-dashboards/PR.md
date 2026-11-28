@@ -33,6 +33,11 @@ what it is for.
 
 ## The images
 
+**Remade 2026-11-28 11:18 UTC from the merged build** (commit `67d9d73`: the app's fixes for the
+second review, the chart speed change and the monitors view): the navigation now has "Monitors", which
+is the only difference from the earlier set apart from times shown while waiting and the palette's
+anti-aliased edges (compared pixel for pixel before replacing them).
+
 `node app/e2e/dashboards-shots.cjs` wrote them from the built app on the development mock
 (synthetic data; the yellow-marked banner at the top of every image says so and is the
 app's, not part of this change). Each state is captured in both themes at 1440 px (mouse) and

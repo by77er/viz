@@ -28,9 +28,11 @@ control's `/api/v1/control/whoami`, `/api/v1/control/dashboards` and
 > **Its design is not approved.** The move to design system v9 was rejected by an independent
 > review (`../design-system/reviews/app-v9/review.md`, 2026-11-27); the fixes are verified and
 > `../design-system/reviews/app-v9/response.md` is the disposition, status "awaiting
-> re-review". Its blocker B1 (a result with many series painted late) is being handled
-> separately in the design system's chart, so it is not ready to merge until that lands and a
-> reviewer approves (AGENTS.md, "Design changes", 5).
+> re-review". Its blocker B1 (a result with many series painted late) has the chart speed
+> change applied and a second reviewer's waiver at 37 to 200 series with conditions
+> (`../design-system/reviews/chart-speed/second-review.md`), which is **not in effect**: the
+> second session failed its R2 (the desktop's 36-series paint, 109 ms). It is not ready to merge
+> until a reviewer approves (AGENTS.md, "Design changes", 5).
 >
 > **The backend used for development and most tests is a mock** (`mock/`): synthetic data and
 > a subset of PromQL. It is not the viz query backend, and the UI shows a banner whenever it
@@ -222,9 +224,9 @@ The independent review of the app on v9 (`../design-system/reviews/app-v9/review
 it: three blockers, three majors, thirteen minors. This section is what was changed for it, how
 each fix is held, and what is left. The finding-by-finding disposition for the re-review is
 `../design-system/reviews/app-v9/response.md`, "The second review". **B1 (a result with many
-series is painted late) is not fixed here**: the design system's chart is being changed for it
-by another builder (`../design-system/reviews/chart-speed/`), and nothing in this section
-claims it.
+series is painted late) is not fixed here**: the design system's chart was changed for it by
+another builder (`../design-system/reviews/chart-speed/`, now applied), and nothing in this
+section claims it. Its state is under "Known issues and risks".
 
 ### What was changed
 
@@ -341,6 +343,9 @@ Not changed here.
 
 ### Images
 
+(The "after" halves were made again from the merged build at 11:30 to 11:50 UTC, the "before"
+halves kept: `../design-system/reviews/app-v9/response.md`, "Images". What follows is the 08:14 run.)
+
 `../design-system/reviews/app-v9/compare/` was made again on 2026-11-28, 08:14 to 08:45 UTC,
 from the final build (`dist/` built 07:50 UTC from the source as it is now; no source file of
 the app changed after it), by
@@ -409,7 +414,7 @@ position and shift checks, not by a time budget), the banner of m12.
 
 | Id | What | Why not now |
 |---|---|---|
-| **B1** | A result with many series is painted late | In progress elsewhere: the design system's chart (`../design-system/reviews/chart-speed/`). Not worked on here |
+| **B1** | A result with many series is painted late | The chart speed change is applied (`../design-system/reviews/chart-speed/`); waived at 37 to 200 series with conditions, not in effect ("Known issues and risks") |
 | B2, second part | The legend's "Min" sort head is 43 px wide at 1500 px with a coarse pointer | The design system's chart. Now also counted by `e2e/dashboards.cjs` at 1500 px |
 | m5 | The table gives values under 1 as "< 1" (it takes the chart's number format) | A decision for the system's Number rules: the table's own precision |
 | m6 | After a failure, Table, Text and JSON show the message alone; the Unit select follows the failed query there | More than a few lines: the previous table kept under the message, one rule for the select |
@@ -1651,6 +1656,32 @@ overrule. Each is a choice between real alternatives.
 
 ## Verification
 
+### The merged tree (2026-11-28 afternoon)
+
+The fixes for the second review, the chart speed change (`../design-system/reviews/chart-speed/app.patch`)
+and the monitors view, merged (commit `67d9d73`; `src/` unchanged since). Every command held the shared
+machine lock, with the Cloudflare credentials removed from its environment; `dist/` built at 11:05 UTC.
+
+| Check | Result |
+|---|---|
+| `npm test` | 252 tests in 26 files pass |
+| `npx tsc --noEmit` | passes |
+| `npm run check:tokens` | 759/759; 0 literal values in 81 files |
+| `npm run build` | passes |
+| `node e2e/app.cjs` | 156 of 156 |
+| `node e2e/errors.cjs` | 14 of 14 |
+| `node e2e/prod.cjs` | 23 of 23 |
+| `node e2e/dashboards.cjs` | 106 of 106 |
+| `node e2e/monitors.cjs` | 69 of 69 |
+| `node e2e/real.cjs` | 25 of 25 |
+| `node e2e/contract.cjs` | 116 of 116 (two error messages differ in wording; reported, not failures); it rewrote `e2e/measurements/contract-real.json` |
+
+All green at 12:02 UTC, each on its first run; nothing was changed to make a suite pass and no
+expectation changed. The parser change (series placed on the grid as the body is read) goes through
+the error and partial-answer paths in `errors.cjs` and `app.cjs`, and the real API's answers through
+`real.cjs` and `contract.cjs`. Speed of the merged tree: `../design-system/reviews/chart-speed/PR.md`,
+"C2" (it is not slower than the chart speed change alone: paired +2 ms at 36 series, desktop).
+
 ### The fixes for the second design review (2026-11-28)
 
 Node 22.23, Chromium (Playwright's headless shell), on the shared machine of 4 cores and
@@ -2279,8 +2310,20 @@ The shell's script is 146.0 kB compressed (the limit is 200 kB): 10.6 kB less th
   that `deploy/` is building: that the gateway serves it rightly rests on `serve.json` and on
   `e2e/prod.cjs`'s own static server, not on a run against it.
 - **The images.** The pairs under `../design-system/reviews/app-v9/compare/` were made again
-  from the final build on 2026-11-28 (196 pairs; "The second design review: fixes", "Images").
-  Only two were looked at one by one.
+  from the merged build on 2026-11-28 11:30 to 11:50 UTC (196 pairs; the "before" halves kept from
+  08:14; `response.md`, "Images"), and `../design-system/reviews/app-dashboards/` at 11:18 UTC; the
+  monitors images were checked against the merged build and not remade (they differ only where the
+  page follows the clock). Few were looked at one by one. With "Monitors" in the navigation, the strip
+  scrolls with Help and Settings partly out of view at 320 px.
+- **The first paint of a many-series result is over budget, under a waiver that is not in effect**
+  (`../design-system/reviews/chart-speed/second-review.md`, PR.md "C1" and "C2"). At 200 series
+  Explore paints a result 125 / 153 ms (desktop; body read / last byte, 75th percentile) and 101 /
+  122 ms (phone) after it arrives, against 100 ms: waived at more than 36 and up to 200 series **until
+  F1 is decided or 2026-12-31**, whichever comes first, and reopened by R1 to R6. Measured here (CPU
+  4x, Fast 4G, the mock), never on a device. **Not waived and over in a judged session:** the desktop's
+  36-series paint from the last byte (109 ms; 101 ms in a third block: R2), and the phone's chart to
+  table at 200 series (127 ms). Not measured: more than 200 series (F2), the dashboards view (F3). The
+  figures in the next point are from before the change.
 - **Speed.** **A result's first paint is over the 100 ms limit with many series** (from the last byte: 119 ms at 36 series and 244 ms at 200 on the final build, desktop; 96 and 177 ms before), which is the cost of the design system's SVG chart on a result of this size (need 15). **The phone layout of the final build was not measured at all**, and there is no complete before-and-after run of the final build: the last two source changes (the scroll position kept, the table prepared in idle time) were measured only by the desktop tuning run at 36 and 200 series, on a busy machine. Thin margins were not taken again ("Speed").
 - **The chart is the design system's script, and the app depends on what it writes.** The
   fix-ups in `src/charts/` find things by the chart's own class names and words (`thead

@@ -1,5 +1,5 @@
 {
-  "when": "2026-11-27T01:53:52.644Z",
+  "when": "2026-11-28T12:01:40.214Z",
   "real": "real/stack.mjs (wrangler dev --local: deploy/gateway, stack, query, control)",
   "cases": [
     {
@@ -122,7 +122,7 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "4784",
         "x-viz-cache-hits": "0",
-        "x-viz-engine-ms": "27",
+        "x-viz-engine-ms": "19",
         "x-viz-execution": "single",
         "x-viz-files-listed": "2",
         "x-viz-files-read": "1",
@@ -133,7 +133,7 @@
         "x-viz-leaf-reruns": "0",
         "x-viz-leaf-rounds": "1",
         "x-viz-leaves-used": "1",
-        "x-viz-ledger-version": "3",
+        "x-viz-ledger-version": "2",
         "x-viz-plan-attempts": "1",
         "x-viz-pruning": "series-only",
         "x-viz-r2-gets": "1",
@@ -185,7 +185,7 @@
         "x-viz-leaf-reruns": "0",
         "x-viz-leaf-rounds": "1",
         "x-viz-leaves-used": "1",
-        "x-viz-ledger-version": "3",
+        "x-viz-ledger-version": "2",
         "x-viz-plan-attempts": "1",
         "x-viz-pruning": "series-only",
         "x-viz-r2-gets": "0",
@@ -226,7 +226,7 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "4784",
         "x-viz-cache-hits": "1",
-        "x-viz-engine-ms": "2",
+        "x-viz-engine-ms": "4",
         "x-viz-execution": "single",
         "x-viz-files-listed": "2",
         "x-viz-files-read": "1",
@@ -237,7 +237,7 @@
         "x-viz-leaf-reruns": "0",
         "x-viz-leaf-rounds": "1",
         "x-viz-leaves-used": "1",
-        "x-viz-ledger-version": "3",
+        "x-viz-ledger-version": "2",
         "x-viz-plan-attempts": "1",
         "x-viz-pruning": "series-only",
         "x-viz-r2-gets": "0",
@@ -289,7 +289,7 @@
         "x-viz-leaf-reruns": "0",
         "x-viz-leaf-rounds": "0",
         "x-viz-leaves-used": "0",
-        "x-viz-ledger-version": "3",
+        "x-viz-ledger-version": "2",
         "x-viz-plan-attempts": "1",
         "x-viz-pruning": "series-only",
         "x-viz-r2-gets": "0",
@@ -330,7 +330,7 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "4784",
         "x-viz-cache-hits": "1",
-        "x-viz-engine-ms": "0",
+        "x-viz-engine-ms": "1",
         "x-viz-execution": "single",
         "x-viz-files-listed": "2",
         "x-viz-files-read": "1",
@@ -341,7 +341,7 @@
         "x-viz-leaf-reruns": "0",
         "x-viz-leaf-rounds": "1",
         "x-viz-leaves-used": "1",
-        "x-viz-ledger-version": "3",
+        "x-viz-ledger-version": "2",
         "x-viz-plan-attempts": "1",
         "x-viz-pruning": "series-only",
         "x-viz-r2-gets": "0",
@@ -382,7 +382,7 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "4784",
         "x-viz-cache-hits": "1",
-        "x-viz-engine-ms": "4",
+        "x-viz-engine-ms": "0",
         "x-viz-execution": "single",
         "x-viz-files-listed": "2",
         "x-viz-files-read": "1",
@@ -393,7 +393,7 @@
         "x-viz-leaf-reruns": "0",
         "x-viz-leaf-rounds": "1",
         "x-viz-leaves-used": "1",
-        "x-viz-ledger-version": "3",
+        "x-viz-ledger-version": "2",
         "x-viz-plan-attempts": "1",
         "x-viz-pruning": "series-only",
         "x-viz-r2-gets": "0",
@@ -538,7 +538,7 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "0",
         "x-viz-cache-hits": "0",
-        "x-viz-engine-ms": "12",
+        "x-viz-engine-ms": "17",
         "x-viz-execution": "single",
         "x-viz-files-listed": "2",
         "x-viz-files-read": "0",
@@ -549,7 +549,7 @@
         "x-viz-leaf-reruns": "0",
         "x-viz-leaf-rounds": "0",
         "x-viz-leaves-used": "0",
-        "x-viz-ledger-version": "3",
+        "x-viz-ledger-version": "2",
         "x-viz-plan-attempts": "1",
         "x-viz-pruning": "fragments",
         "x-viz-r2-gets": "0",
@@ -590,7 +590,7 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "0",
         "x-viz-cache-hits": "0",
-        "x-viz-engine-ms": "11",
+        "x-viz-engine-ms": "10",
         "x-viz-execution": "single",
         "x-viz-files-listed": "2",
         "x-viz-files-read": "0",
@@ -641,8 +641,8 @@
         "content-type": "application/json",
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "1331315",
-        "x-viz-cache-hits": "1",
-        "x-viz-engine-ms": "101",
+        "x-viz-cache-hits": "0",
+        "x-viz-engine-ms": "61",
         "x-viz-execution": "single",
         "x-viz-files-listed": "2",
         "x-viz-files-read": "2",
@@ -656,7 +656,7 @@
         "x-viz-ledger-version": "3",
         "x-viz-plan-attempts": "1",
         "x-viz-pruning": "fragments",
-        "x-viz-r2-gets": "1",
+        "x-viz-r2-gets": "2",
         "x-viz-reader-calls": "0",
         "x-viz-route": "query",
         "x-viz-rows-decoded": "0",
@@ -746,7 +746,7 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "0",
         "x-viz-cache-hits": "0",
-        "x-viz-engine-ms": "0",
+        "x-viz-engine-ms": "1",
         "x-viz-execution": "single",
         "x-viz-files-listed": "2",
         "x-viz-files-read": "0",
@@ -798,7 +798,7 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "0",
         "x-viz-cache-hits": "0",
-        "x-viz-engine-ms": "1",
+        "x-viz-engine-ms": "0",
         "x-viz-execution": "single",
         "x-viz-files-listed": "2",
         "x-viz-files-read": "0",
@@ -907,12 +907,12 @@
         "x-viz-files-listed": "2",
         "x-viz-files-read": "2",
         "x-viz-files-skipped": "0",
-        "x-viz-leaf-calls": "3",
+        "x-viz-leaf-calls": "1",
         "x-viz-leaf-max-samples": "0",
         "x-viz-leaf-peak-wasm-bytes": "0",
         "x-viz-leaf-reruns": "0",
         "x-viz-leaf-rounds": "1",
-        "x-viz-leaves-used": "3",
+        "x-viz-leaves-used": "1",
         "x-viz-ledger-version": "3",
         "x-viz-plan-attempts": "1",
         "x-viz-pruning": "fragments",
@@ -954,7 +954,7 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "606315",
         "x-viz-cache-hits": "3",
-        "x-viz-engine-ms": "1",
+        "x-viz-engine-ms": "0",
         "x-viz-execution": "single",
         "x-viz-files-listed": "2",
         "x-viz-files-read": "2",
@@ -1006,7 +1006,7 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "606315",
         "x-viz-cache-hits": "3",
-        "x-viz-engine-ms": "2",
+        "x-viz-engine-ms": "0",
         "x-viz-execution": "single",
         "x-viz-files-listed": "2",
         "x-viz-files-read": "2",
@@ -1058,7 +1058,7 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "0",
         "x-viz-cache-hits": "0",
-        "x-viz-engine-ms": "0",
+        "x-viz-engine-ms": "1",
         "x-viz-execution": "single",
         "x-viz-files-listed": "0",
         "x-viz-files-read": "0",
@@ -1110,7 +1110,7 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "606315",
         "x-viz-cache-hits": "3",
-        "x-viz-engine-ms": "1",
+        "x-viz-engine-ms": "2",
         "x-viz-execution": "single",
         "x-viz-files-listed": "2",
         "x-viz-files-read": "2",
@@ -1162,17 +1162,17 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "606315",
         "x-viz-cache-hits": "3",
-        "x-viz-engine-ms": "1",
+        "x-viz-engine-ms": "2",
         "x-viz-execution": "single",
         "x-viz-files-listed": "2",
         "x-viz-files-read": "2",
         "x-viz-files-skipped": "0",
-        "x-viz-leaf-calls": "2",
+        "x-viz-leaf-calls": "3",
         "x-viz-leaf-max-samples": "0",
         "x-viz-leaf-peak-wasm-bytes": "0",
         "x-viz-leaf-reruns": "0",
         "x-viz-leaf-rounds": "1",
-        "x-viz-leaves-used": "2",
+        "x-viz-leaves-used": "3",
         "x-viz-ledger-version": "3",
         "x-viz-plan-attempts": "1",
         "x-viz-pruning": "fragments",
@@ -1266,7 +1266,7 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "606315",
         "x-viz-cache-hits": "3",
-        "x-viz-engine-ms": "4",
+        "x-viz-engine-ms": "8",
         "x-viz-execution": "single",
         "x-viz-files-listed": "2",
         "x-viz-files-read": "2",
@@ -1318,7 +1318,7 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "0",
         "x-viz-cache-hits": "0",
-        "x-viz-engine-ms": "2",
+        "x-viz-engine-ms": "4",
         "x-viz-execution": "single",
         "x-viz-files-listed": "0",
         "x-viz-files-read": "0",
@@ -1422,7 +1422,7 @@
         "vary": "Origin, Accept-Encoding",
         "x-viz-bytes-read": "0",
         "x-viz-cache-hits": "0",
-        "x-viz-engine-ms": "0",
+        "x-viz-engine-ms": "1",
         "x-viz-execution": "single",
         "x-viz-files-listed": "0",
         "x-viz-files-read": "0",
@@ -1791,12 +1791,12 @@
         "x-viz-files-listed": "2",
         "x-viz-files-read": "2",
         "x-viz-files-skipped": "0",
-        "x-viz-leaf-calls": "3",
+        "x-viz-leaf-calls": "2",
         "x-viz-leaf-max-samples": "0",
         "x-viz-leaf-peak-wasm-bytes": "0",
         "x-viz-leaf-reruns": "0",
         "x-viz-leaf-rounds": "1",
-        "x-viz-leaves-used": "3",
+        "x-viz-leaves-used": "2",
         "x-viz-ledger-version": "3",
         "x-viz-plan-attempts": "1",
         "x-viz-pruning": "fragments",
@@ -2548,7 +2548,7 @@
         "x-viz-tail-mode": "",
         "x-viz-wasm-memory-bytes": "18677760"
       },
-      "body": "{\"status\":\"success\",\"data\":{\"resultType\":\"scalar\",\"result\":[1795744402.531,\"1\"]}}"
+      "body": "{\"status\":\"success\",\"data\":{\"resultType\":\"scalar\",\"result\":[1795867270.109,\"1\"]}}"
     },
     {
       "name": "no key",
@@ -2782,7 +2782,7 @@
         "x-viz-tail-mode": "",
         "x-viz-wasm-memory-bytes": "18677760"
       },
-      "body": "{\"status\":\"success\",\"data\":{\"resultType\":\"scalar\",\"result\":[1795744402.651,\"1\"]}}"
+      "body": "{\"status\":\"success\",\"data\":{\"resultType\":\"scalar\",\"result\":[1795867270.192,\"1\"]}}"
     },
     {
       "name": "dashboards: the list",
@@ -2801,7 +2801,7 @@
         "vary": "Origin",
         "x-viz-route": "control"
       },
-      "body": "{\"items\":[{\"id\":\"checkout_path\",\"name\":\"Checkout path\",\"intent\":\"The two services a purchase passes through. Answers: when checkout is slow, is it checkout itself or orders behind it?\",\"tags\":[\"checkout\",\"on-call\"],\"owner\":null,\"panels\":4,\"revision\":\"87ed8106b3ec08575e3197784ec3fbae\",\"number\":1,\"createdAt\":\"2026-11-27T01:53:14.444Z\",\"createdBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-27T01:53:14.444Z\",\"lastChangedBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},{\"id\":\"pod_capacity\",\"name\":\"Pod capacity\",\"intent\":\"Capacity review. Answers: which pods are close to their limits, and how request durations are distributed.\",\"tags\":[\"capacity\",\"platform\"],\"owner\":\"platform\",\"panels\":6,\"revision\":\"48e32c11c2b1b6521bc3e5db0812e97c\",\"number\":1,\"createdAt\":\"2026-11-27T01:53:14.423Z\",\"createdBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-27T01:53:14.423Z\",\"lastChangedBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},{\"id\":\"service_red\",\"name\":\"Service: rate, errors, duration\",\"intent\":\"One service at a time. Answers: is this service healthy, and which route or status is the cause when it is not?\",\"tags\":[\"on-call\",\"red\"],\"owner\":\"payments\",\"panels\":5,\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"number\":1,\"createdAt\":\"2026-11-27T01:53:14.402Z\",\"createdBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-27T01:53:14.402Z\",\"lastChangedBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},{\"id\":\"services_overview\",\"name\":\"Services overview\",\"intent\":\"On-call view of the four API services. Answers: is anything unhealthy, and is it traffic, errors, latency or a pod?\",\"tags\":[\"on-call\",\"services\"],\"owner\":\"platform\",\"panels\":12,\"revision\":\"3c5be9d2eb7e57b49f… (2336 bytes)"
+      "body": "{\"items\":[{\"id\":\"checkout_path\",\"name\":\"Checkout path\",\"intent\":\"The two services a purchase passes through. Answers: when checkout is slow, is it checkout itself or orders behind it?\",\"tags\":[\"checkout\",\"on-call\"],\"owner\":null,\"panels\":4,\"revision\":\"87ed8106b3ec08575e3197784ec3fbae\",\"number\":1,\"createdAt\":\"2026-11-28T12:01:07.573Z\",\"createdBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-28T12:01:07.573Z\",\"lastChangedBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},{\"id\":\"pod_capacity\",\"name\":\"Pod capacity\",\"intent\":\"Capacity review. Answers: which pods are close to their limits, and how request durations are distributed.\",\"tags\":[\"capacity\",\"platform\"],\"owner\":\"platform\",\"panels\":6,\"revision\":\"48e32c11c2b1b6521bc3e5db0812e97c\",\"number\":1,\"createdAt\":\"2026-11-28T12:01:07.555Z\",\"createdBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-28T12:01:07.555Z\",\"lastChangedBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},{\"id\":\"service_red\",\"name\":\"Service: rate, errors, duration\",\"intent\":\"One service at a time. Answers: is this service healthy, and which route or status is the cause when it is not?\",\"tags\":[\"on-call\",\"red\"],\"owner\":\"payments\",\"panels\":5,\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"number\":1,\"createdAt\":\"2026-11-28T12:01:07.534Z\",\"createdBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-28T12:01:07.534Z\",\"lastChangedBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},{\"id\":\"services_overview\",\"name\":\"Services overview\",\"intent\":\"On-call view of the four API services. Answers: is anything unhealthy, and is it traffic, errors, latency or a pod?\",\"tags\":[\"on-call\",\"services\"],\"owner\":\"platform\",\"panels\":12,\"revision\":\"3c5be9d2eb7e57b49f… (2336 bytes)"
     },
     {
       "name": "dashboards: search by name",
@@ -2820,7 +2820,7 @@
         "vary": "Origin",
         "x-viz-route": "control"
       },
-      "body": "{\"items\":[{\"id\":\"pod_capacity\",\"name\":\"Pod capacity\",\"intent\":\"Capacity review. Answers: which pods are close to their limits, and how request durations are distributed.\",\"tags\":[\"capacity\",\"platform\"],\"owner\":\"platform\",\"panels\":6,\"revision\":\"48e32c11c2b1b6521bc3e5db0812e97c\",\"number\":1,\"createdAt\":\"2026-11-27T01:53:14.423Z\",\"createdBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-27T01:53:14.423Z\",\"lastChangedBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null}],\"total\":1,\"next\":null}"
+      "body": "{\"items\":[{\"id\":\"pod_capacity\",\"name\":\"Pod capacity\",\"intent\":\"Capacity review. Answers: which pods are close to their limits, and how request durations are distributed.\",\"tags\":[\"capacity\",\"platform\"],\"owner\":\"platform\",\"panels\":6,\"revision\":\"48e32c11c2b1b6521bc3e5db0812e97c\",\"number\":1,\"createdAt\":\"2026-11-28T12:01:07.555Z\",\"createdBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-28T12:01:07.555Z\",\"lastChangedBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null}],\"total\":1,\"next\":null}"
     },
     {
       "name": "dashboards: search by owner",
@@ -2839,7 +2839,7 @@
         "vary": "Origin",
         "x-viz-route": "control"
       },
-      "body": "{\"items\":[{\"id\":\"service_red\",\"name\":\"Service: rate, errors, duration\",\"intent\":\"One service at a time. Answers: is this service healthy, and which route or status is the cause when it is not?\",\"tags\":[\"on-call\",\"red\"],\"owner\":\"payments\",\"panels\":5,\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"number\":1,\"createdAt\":\"2026-11-27T01:53:14.402Z\",\"createdBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-27T01:53:14.402Z\",\"lastChangedBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null}],\"total\":1,\"next\":null}"
+      "body": "{\"items\":[{\"id\":\"service_red\",\"name\":\"Service: rate, errors, duration\",\"intent\":\"One service at a time. Answers: is this service healthy, and which route or status is the cause when it is not?\",\"tags\":[\"on-call\",\"red\"],\"owner\":\"payments\",\"panels\":5,\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"number\":1,\"createdAt\":\"2026-11-28T12:01:07.534Z\",\"createdBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-28T12:01:07.534Z\",\"lastChangedBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null}],\"total\":1,\"next\":null}"
     },
     {
       "name": "dashboards: search by a word of the intent",
@@ -2858,7 +2858,7 @@
         "vary": "Origin",
         "x-viz-route": "control"
       },
-      "body": "{\"items\":[{\"id\":\"checkout_path\",\"name\":\"Checkout path\",\"intent\":\"The two services a purchase passes through. Answers: when checkout is slow, is it checkout itself or orders behind it?\",\"tags\":[\"checkout\",\"on-call\"],\"owner\":null,\"panels\":4,\"revision\":\"87ed8106b3ec08575e3197784ec3fbae\",\"number\":1,\"createdAt\":\"2026-11-27T01:53:14.444Z\",\"createdBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-27T01:53:14.444Z\",\"lastChangedBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null}],\"total\":1,\"next\":null}"
+      "body": "{\"items\":[{\"id\":\"checkout_path\",\"name\":\"Checkout path\",\"intent\":\"The two services a purchase passes through. Answers: when checkout is slow, is it checkout itself or orders behind it?\",\"tags\":[\"checkout\",\"on-call\"],\"owner\":null,\"panels\":4,\"revision\":\"87ed8106b3ec08575e3197784ec3fbae\",\"number\":1,\"createdAt\":\"2026-11-28T12:01:07.573Z\",\"createdBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-28T12:01:07.573Z\",\"lastChangedBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null}],\"total\":1,\"next\":null}"
     },
     {
       "name": "dashboards: search that matches nothing",
@@ -2896,7 +2896,7 @@
         "vary": "Origin",
         "x-viz-route": "control"
       },
-      "body": "{\"items\":[{\"id\":\"checkout_path\",\"name\":\"Checkout path\",\"intent\":\"The two services a purchase passes through. Answers: when checkout is slow, is it checkout itself or orders behind it?\",\"tags\":[\"checkout\",\"on-call\"],\"owner\":null,\"panels\":4,\"revision\":\"87ed8106b3ec08575e3197784ec3fbae\",\"number\":1,\"createdAt\":\"2026-11-27T01:53:14.444Z\",\"createdBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-27T01:53:14.444Z\",\"lastChangedBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},{\"id\":\"service_red\",\"name\":\"Service: rate, errors, duration\",\"intent\":\"One service at a time. Answers: is this service healthy, and which route or status is the cause when it is not?\",\"tags\":[\"on-call\",\"red\"],\"owner\":\"payments\",\"panels\":5,\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"number\":1,\"createdAt\":\"2026-11-27T01:53:14.402Z\",\"createdBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-27T01:53:14.402Z\",\"lastChangedBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},{\"id\":\"services_overview\",\"name\":\"Services overview\",\"intent\":\"On-call view of the four API services. Answers: is anything unhealthy, and is it traffic, errors, latency or a pod?\",\"tags\":[\"on-call\",\"services\"],\"owner\":\"platform\",\"panels\":12,\"revision\":\"3c5be9d2eb7e57b49fb54833f2de6016\",\"number\":1,\"createdAt\":\"2026-11-27T01:53:14.359Z\",\"createdBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-27T01:53:14.359Z\",\"lastChangedBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null}],\"total\":3,\"next\":null}"
+      "body": "{\"items\":[{\"id\":\"checkout_path\",\"name\":\"Checkout path\",\"intent\":\"The two services a purchase passes through. Answers: when checkout is slow, is it checkout itself or orders behind it?\",\"tags\":[\"checkout\",\"on-call\"],\"owner\":null,\"panels\":4,\"revision\":\"87ed8106b3ec08575e3197784ec3fbae\",\"number\":1,\"createdAt\":\"2026-11-28T12:01:07.573Z\",\"createdBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-28T12:01:07.573Z\",\"lastChangedBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},{\"id\":\"service_red\",\"name\":\"Service: rate, errors, duration\",\"intent\":\"One service at a time. Answers: is this service healthy, and which route or status is the cause when it is not?\",\"tags\":[\"on-call\",\"red\"],\"owner\":\"payments\",\"panels\":5,\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"number\":1,\"createdAt\":\"2026-11-28T12:01:07.534Z\",\"createdBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-28T12:01:07.534Z\",\"lastChangedBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},{\"id\":\"services_overview\",\"name\":\"Services overview\",\"intent\":\"On-call view of the four API services. Answers: is anything unhealthy, and is it traffic, errors, latency or a pod?\",\"tags\":[\"on-call\",\"services\"],\"owner\":\"platform\",\"panels\":12,\"revision\":\"3c5be9d2eb7e57b49fb54833f2de6016\",\"number\":1,\"createdAt\":\"2026-11-28T12:01:07.501Z\",\"createdBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-28T12:01:07.501Z\",\"lastChangedBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null}],\"total\":3,\"next\":null}"
     },
     {
       "name": "dashboards: part of a tag is not the tag",
@@ -2934,7 +2934,7 @@
         "vary": "Origin",
         "x-viz-route": "control"
       },
-      "body": "{\"items\":[{\"id\":\"pod_capacity\",\"name\":\"Pod capacity\",\"intent\":\"Capacity review. Answers: which pods are close to their limits, and how request durations are distributed.\",\"tags\":[\"capacity\",\"platform\"],\"owner\":\"platform\",\"panels\":6,\"revision\":\"48e32c11c2b1b6521bc3e5db0812e97c\",\"number\":1,\"createdAt\":\"2026-11-27T01:53:14.423Z\",\"createdBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-27T01:53:14.423Z\",\"lastChangedBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},{\"id\":\"services_overview\",\"name\":\"Services overview\",\"intent\":\"On-call view of the four API services. Answers: is anything unhealthy, and is it traffic, errors, latency or a pod?\",\"tags\":[\"on-call\",\"services\"],\"owner\":\"platform\",\"panels\":12,\"revision\":\"3c5be9d2eb7e57b49fb54833f2de6016\",\"number\":1,\"createdAt\":\"2026-11-27T01:53:14.359Z\",\"createdBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-27T01:53:14.359Z\",\"lastChangedBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null}],\"total\":2,\"next\":null}"
+      "body": "{\"items\":[{\"id\":\"pod_capacity\",\"name\":\"Pod capacity\",\"intent\":\"Capacity review. Answers: which pods are close to their limits, and how request durations are distributed.\",\"tags\":[\"capacity\",\"platform\"],\"owner\":\"platform\",\"panels\":6,\"revision\":\"48e32c11c2b1b6521bc3e5db0812e97c\",\"number\":1,\"createdAt\":\"2026-11-28T12:01:07.555Z\",\"createdBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-28T12:01:07.555Z\",\"lastChangedBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},{\"id\":\"services_overview\",\"name\":\"Services overview\",\"intent\":\"On-call view of the four API services. Answers: is anything unhealthy, and is it traffic, errors, latency or a pod?\",\"tags\":[\"on-call\",\"services\"],\"owner\":\"platform\",\"panels\":12,\"revision\":\"3c5be9d2eb7e57b49fb54833f2de6016\",\"number\":1,\"createdAt\":\"2026-11-28T12:01:07.501Z\",\"createdBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-28T12:01:07.501Z\",\"lastChangedBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null}],\"total\":2,\"next\":null}"
     },
     {
       "name": "dashboards: search and tag",
@@ -2953,7 +2953,7 @@
         "vary": "Origin",
         "x-viz-route": "control"
       },
-      "body": "{\"items\":[{\"id\":\"checkout_path\",\"name\":\"Checkout path\",\"intent\":\"The two services a purchase passes through. Answers: when checkout is slow, is it checkout itself or orders behind it?\",\"tags\":[\"checkout\",\"on-call\"],\"owner\":null,\"panels\":4,\"revision\":\"87ed8106b3ec08575e3197784ec3fbae\",\"number\":1,\"createdAt\":\"2026-11-27T01:53:14.444Z\",\"createdBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-27T01:53:14.444Z\",\"lastChangedBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null}],\"total\":1,\"next\":null}"
+      "body": "{\"items\":[{\"id\":\"checkout_path\",\"name\":\"Checkout path\",\"intent\":\"The two services a purchase passes through. Answers: when checkout is slow, is it checkout itself or orders behind it?\",\"tags\":[\"checkout\",\"on-call\"],\"owner\":null,\"panels\":4,\"revision\":\"87ed8106b3ec08575e3197784ec3fbae\",\"number\":1,\"createdAt\":\"2026-11-28T12:01:07.573Z\",\"createdBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-28T12:01:07.573Z\",\"lastChangedBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null}],\"total\":1,\"next\":null}"
     },
     {
       "name": "dashboards: the first page of two",
@@ -2972,7 +2972,7 @@
         "vary": "Origin",
         "x-viz-route": "control"
       },
-      "body": "{\"items\":[{\"id\":\"checkout_path\",\"name\":\"Checkout path\",\"intent\":\"The two services a purchase passes through. Answers: when checkout is slow, is it checkout itself or orders behind it?\",\"tags\":[\"checkout\",\"on-call\"],\"owner\":null,\"panels\":4,\"revision\":\"87ed8106b3ec08575e3197784ec3fbae\",\"number\":1,\"createdAt\":\"2026-11-27T01:53:14.444Z\",\"createdBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-27T01:53:14.444Z\",\"lastChangedBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},{\"id\":\"pod_capacity\",\"name\":\"Pod capacity\",\"intent\":\"Capacity review. Answers: which pods are close to their limits, and how request durations are distributed.\",\"tags\":[\"capacity\",\"platform\"],\"owner\":\"platform\",\"panels\":6,\"revision\":\"48e32c11c2b1b6521bc3e5db0812e97c\",\"number\":1,\"createdAt\":\"2026-11-27T01:53:14.423Z\",\"createdBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-27T01:53:14.423Z\",\"lastChangedBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null}],\"total\":4,\"next\":\"WyJwb2RfY2FwYWNpdHkiXQ\"}"
+      "body": "{\"items\":[{\"id\":\"checkout_path\",\"name\":\"Checkout path\",\"intent\":\"The two services a purchase passes through. Answers: when checkout is slow, is it checkout itself or orders behind it?\",\"tags\":[\"checkout\",\"on-call\"],\"owner\":null,\"panels\":4,\"revision\":\"87ed8106b3ec08575e3197784ec3fbae\",\"number\":1,\"createdAt\":\"2026-11-28T12:01:07.573Z\",\"createdBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-28T12:01:07.573Z\",\"lastChangedBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},{\"id\":\"pod_capacity\",\"name\":\"Pod capacity\",\"intent\":\"Capacity review. Answers: which pods are close to their limits, and how request durations are distributed.\",\"tags\":[\"capacity\",\"platform\"],\"owner\":\"platform\",\"panels\":6,\"revision\":\"48e32c11c2b1b6521bc3e5db0812e97c\",\"number\":1,\"createdAt\":\"2026-11-28T12:01:07.555Z\",\"createdBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-28T12:01:07.555Z\",\"lastChangedBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null}],\"total\":4,\"next\":\"WyJwb2RfY2FwYWNpdHkiXQ\"}"
     },
     {
       "name": "dashboards: the limit the app asks with",
@@ -2991,7 +2991,7 @@
         "vary": "Origin",
         "x-viz-route": "control"
       },
-      "body": "{\"items\":[{\"id\":\"checkout_path\",\"name\":\"Checkout path\",\"intent\":\"The two services a purchase passes through. Answers: when checkout is slow, is it checkout itself or orders behind it?\",\"tags\":[\"checkout\",\"on-call\"],\"owner\":null,\"panels\":4,\"revision\":\"87ed8106b3ec08575e3197784ec3fbae\",\"number\":1,\"createdAt\":\"2026-11-27T01:53:14.444Z\",\"createdBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-27T01:53:14.444Z\",\"lastChangedBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},{\"id\":\"pod_capacity\",\"name\":\"Pod capacity\",\"intent\":\"Capacity review. Answers: which pods are close to their limits, and how request durations are distributed.\",\"tags\":[\"capacity\",\"platform\"],\"owner\":\"platform\",\"panels\":6,\"revision\":\"48e32c11c2b1b6521bc3e5db0812e97c\",\"number\":1,\"createdAt\":\"2026-11-27T01:53:14.423Z\",\"createdBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-27T01:53:14.423Z\",\"lastChangedBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},{\"id\":\"service_red\",\"name\":\"Service: rate, errors, duration\",\"intent\":\"One service at a time. Answers: is this service healthy, and which route or status is the cause when it is not?\",\"tags\":[\"on-call\",\"red\"],\"owner\":\"payments\",\"panels\":5,\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"number\":1,\"createdAt\":\"2026-11-27T01:53:14.402Z\",\"createdBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-27T01:53:14.402Z\",\"lastChangedBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},{\"id\":\"services_overview\",\"name\":\"Services overview\",\"intent\":\"On-call view of the four API services. Answers: is anything unhealthy, and is it traffic, errors, latency or a pod?\",\"tags\":[\"on-call\",\"services\"],\"owner\":\"platform\",\"panels\":12,\"revision\":\"3c5be9d2eb7e57b49f… (2336 bytes)"
+      "body": "{\"items\":[{\"id\":\"checkout_path\",\"name\":\"Checkout path\",\"intent\":\"The two services a purchase passes through. Answers: when checkout is slow, is it checkout itself or orders behind it?\",\"tags\":[\"checkout\",\"on-call\"],\"owner\":null,\"panels\":4,\"revision\":\"87ed8106b3ec08575e3197784ec3fbae\",\"number\":1,\"createdAt\":\"2026-11-28T12:01:07.573Z\",\"createdBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-28T12:01:07.573Z\",\"lastChangedBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},{\"id\":\"pod_capacity\",\"name\":\"Pod capacity\",\"intent\":\"Capacity review. Answers: which pods are close to their limits, and how request durations are distributed.\",\"tags\":[\"capacity\",\"platform\"],\"owner\":\"platform\",\"panels\":6,\"revision\":\"48e32c11c2b1b6521bc3e5db0812e97c\",\"number\":1,\"createdAt\":\"2026-11-28T12:01:07.555Z\",\"createdBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-28T12:01:07.555Z\",\"lastChangedBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},{\"id\":\"service_red\",\"name\":\"Service: rate, errors, duration\",\"intent\":\"One service at a time. Answers: is this service healthy, and which route or status is the cause when it is not?\",\"tags\":[\"on-call\",\"red\"],\"owner\":\"payments\",\"panels\":5,\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"number\":1,\"createdAt\":\"2026-11-28T12:01:07.534Z\",\"createdBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-28T12:01:07.534Z\",\"lastChangedBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},{\"id\":\"services_overview\",\"name\":\"Services overview\",\"intent\":\"On-call view of the four API services. Answers: is anything unhealthy, and is it traffic, errors, latency or a pod?\",\"tags\":[\"on-call\",\"services\"],\"owner\":\"platform\",\"panels\":12,\"revision\":\"3c5be9d2eb7e57b49f… (2336 bytes)"
     },
     {
       "name": "dashboards: a limit of 0",
@@ -3084,7 +3084,7 @@
         "vary": "Origin",
         "x-viz-route": "control"
       },
-      "body": "{\"dashboard\":{\"id\":\"service_red\",\"name\":\"Service: rate, errors, duration\",\"intent\":\"One service at a time. Answers: is this service healthy, and which route or status is the cause when it is not?\",\"tags\":[\"on-call\",\"red\"],\"owner\":\"payments\",\"panels\":5,\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"number\":1,\"createdAt\":\"2026-11-27T01:53:14.402Z\",\"createdBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-27T01:53:14.402Z\",\"lastChangedBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},\"number\":1,\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"current\":true,\"view\":\"spec\",\"spec\":{\"apiVersion\":\"viz.dashboard/v1\",\"metadata\":{\"id\":\"service_red\",\"title\":\"Service: rate, errors, duration\",\"intent\":\"One service at a time. Answers: is this service healthy, and which route or status is the cause when it is not?\",\"tags\":[\"on-call\",\"red\"]},\"time\":{\"from\":\"now-1h\",\"to\":\"now\"},\"variables\":{\"service\":{\"kind\":\"query\",\"label\":\"Service\",\"query\":{\"lang\":\"promql\",\"expr\":\"label_values(http_requests_total, service)\"},\"default\":\"checkout\"},\"status\":{\"kind\":\"enum\",\"label\":\"Status\",\"values\":[\"200\",\"400\",\"500\"],\"includeAll\":true,\"default\":\"*\"}},\"queries\":{\"rate_by_route\":{\"lang\":\"promql\",\"expr\":\"sum by (route) (rate(http_requests_total{service=\\\"$service\\\",status=~\\\"$status\\\"}[$__rate]))\",\"legend\":\"{{route}}\"},\"err_ratio\":{\"lang\":\"promql\",\"expr\":\"sum(rate(http_requests_total{service=\\\"$service\\\",status=\\\"500\\\"}[$__rate])) / sum(rate(http_requests_total{service=\\\"$service\\\"}[$__rate]))\"},\"p50\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.5, sum by (le) (rate(http_request_duration_seconds_bucket{service=\\\"$service\\\"}[$__rate])))\",\"legend\":\"p50\"},\"p95\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service=\\\"$service\\\"}[$__rate])))\",\"legend\":\"p95\"},\"by_status\":{\"lang\":\"promql\",\"expr\":\"sum by (status) (rate(http_requests_total{service=\\… (3169 bytes)"
+      "body": "{\"dashboard\":{\"id\":\"service_red\",\"name\":\"Service: rate, errors, duration\",\"intent\":\"One service at a time. Answers: is this service healthy, and which route or status is the cause when it is not?\",\"tags\":[\"on-call\",\"red\"],\"owner\":\"payments\",\"panels\":5,\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"number\":1,\"createdAt\":\"2026-11-28T12:01:07.534Z\",\"createdBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-28T12:01:07.534Z\",\"lastChangedBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},\"number\":1,\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"current\":true,\"view\":\"spec\",\"spec\":{\"apiVersion\":\"viz.dashboard/v1\",\"metadata\":{\"id\":\"service_red\",\"title\":\"Service: rate, errors, duration\",\"intent\":\"One service at a time. Answers: is this service healthy, and which route or status is the cause when it is not?\",\"tags\":[\"on-call\",\"red\"]},\"time\":{\"from\":\"now-1h\",\"to\":\"now\"},\"variables\":{\"service\":{\"kind\":\"query\",\"label\":\"Service\",\"query\":{\"lang\":\"promql\",\"expr\":\"label_values(http_requests_total, service)\"},\"default\":\"checkout\"},\"status\":{\"kind\":\"enum\",\"label\":\"Status\",\"values\":[\"200\",\"400\",\"500\"],\"includeAll\":true,\"default\":\"*\"}},\"queries\":{\"rate_by_route\":{\"lang\":\"promql\",\"expr\":\"sum by (route) (rate(http_requests_total{service=\\\"$service\\\",status=~\\\"$status\\\"}[$__rate]))\",\"legend\":\"{{route}}\"},\"err_ratio\":{\"lang\":\"promql\",\"expr\":\"sum(rate(http_requests_total{service=\\\"$service\\\",status=\\\"500\\\"}[$__rate])) / sum(rate(http_requests_total{service=\\\"$service\\\"}[$__rate]))\"},\"p50\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.5, sum by (le) (rate(http_request_duration_seconds_bucket{service=\\\"$service\\\"}[$__rate])))\",\"legend\":\"p50\"},\"p95\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service=\\\"$service\\\"}[$__rate])))\",\"legend\":\"p95\"},\"by_status\":{\"lang\":\"promql\",\"expr\":\"sum by (status) (rate(http_requests_total{service=\\… (3169 bytes)"
     },
     {
       "name": "dashboard: twelve panels",
@@ -3104,7 +3104,7 @@
         "vary": "Origin",
         "x-viz-route": "control"
       },
-      "body": "{\"dashboard\":{\"id\":\"services_overview\",\"name\":\"Services overview\",\"intent\":\"On-call view of the four API services. Answers: is anything unhealthy, and is it traffic, errors, latency or a pod?\",\"tags\":[\"on-call\",\"services\"],\"owner\":\"platform\",\"panels\":12,\"revision\":\"3c5be9d2eb7e57b49fb54833f2de6016\",\"number\":1,\"createdAt\":\"2026-11-27T01:53:14.359Z\",\"createdBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-27T01:53:14.359Z\",\"lastChangedBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},\"number\":1,\"revision\":\"3c5be9d2eb7e57b49fb54833f2de6016\",\"current\":true,\"view\":\"spec\",\"spec\":{\"apiVersion\":\"viz.dashboard/v1\",\"metadata\":{\"id\":\"services_overview\",\"title\":\"Services overview\",\"intent\":\"On-call view of the four API services. Answers: is anything unhealthy, and is it traffic, errors, latency or a pod?\",\"tags\":[\"on-call\",\"services\"]},\"time\":{\"from\":\"now-3h\",\"to\":\"now\"},\"queries\":{\"req_total\":{\"lang\":\"promql\",\"expr\":\"sum(rate(http_requests_total[$__rate]))\"},\"err_ratio\":{\"lang\":\"promql\",\"expr\":\"sum(rate(http_requests_total{status=\\\"500\\\"}[$__rate])) / sum(rate(http_requests_total[$__rate]))\"},\"p95_all\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[$__rate])))\"},\"pods_up\":{\"lang\":\"promql\",\"expr\":\"sum(up)\"},\"req_by_service\":{\"lang\":\"promql\",\"expr\":\"sum by (service) (rate(http_requests_total[$__rate]))\",\"legend\":\"{{service}}\"},\"err_by_service\":{\"lang\":\"promql\",\"expr\":\"sum by (service) (rate(http_requests_total{status=\\\"500\\\"}[$__rate]))\",\"legend\":\"{{service}}\"},\"p95_by_service\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.95, sum by (le, service) (rate(http_request_duration_seconds_bucket[$__rate])))\",\"legend\":\"{{service}}\"},\"req_by_route\":{\"lang\":\"promql\",\"expr\":\"sum by (service, route, status) (rate(http_requests_total[$__rate]))\",\"legend\":\"{{service}} {{route}} {{status}}\"},\"cpu_by_pod\":{\"lang\":\"promql\",\"expr\"… (5672 bytes)"
+      "body": "{\"dashboard\":{\"id\":\"services_overview\",\"name\":\"Services overview\",\"intent\":\"On-call view of the four API services. Answers: is anything unhealthy, and is it traffic, errors, latency or a pod?\",\"tags\":[\"on-call\",\"services\"],\"owner\":\"platform\",\"panels\":12,\"revision\":\"3c5be9d2eb7e57b49fb54833f2de6016\",\"number\":1,\"createdAt\":\"2026-11-28T12:01:07.501Z\",\"createdBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-28T12:01:07.501Z\",\"lastChangedBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},\"number\":1,\"revision\":\"3c5be9d2eb7e57b49fb54833f2de6016\",\"current\":true,\"view\":\"spec\",\"spec\":{\"apiVersion\":\"viz.dashboard/v1\",\"metadata\":{\"id\":\"services_overview\",\"title\":\"Services overview\",\"intent\":\"On-call view of the four API services. Answers: is anything unhealthy, and is it traffic, errors, latency or a pod?\",\"tags\":[\"on-call\",\"services\"]},\"time\":{\"from\":\"now-3h\",\"to\":\"now\"},\"queries\":{\"req_total\":{\"lang\":\"promql\",\"expr\":\"sum(rate(http_requests_total[$__rate]))\"},\"err_ratio\":{\"lang\":\"promql\",\"expr\":\"sum(rate(http_requests_total{status=\\\"500\\\"}[$__rate])) / sum(rate(http_requests_total[$__rate]))\"},\"p95_all\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[$__rate])))\"},\"pods_up\":{\"lang\":\"promql\",\"expr\":\"sum(up)\"},\"req_by_service\":{\"lang\":\"promql\",\"expr\":\"sum by (service) (rate(http_requests_total[$__rate]))\",\"legend\":\"{{service}}\"},\"err_by_service\":{\"lang\":\"promql\",\"expr\":\"sum by (service) (rate(http_requests_total{status=\\\"500\\\"}[$__rate]))\",\"legend\":\"{{service}}\"},\"p95_by_service\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.95, sum by (le, service) (rate(http_request_duration_seconds_bucket[$__rate])))\",\"legend\":\"{{service}}\"},\"req_by_route\":{\"lang\":\"promql\",\"expr\":\"sum by (service, route, status) (rate(http_requests_total[$__rate]))\",\"legend\":\"{{service}} {{route}} {{status}}\"},\"cpu_by_pod\":{\"lang\":\"promql\",\"expr\"… (5672 bytes)"
     },
     {
       "name": "dashboard: a fragment used twice",
@@ -3124,7 +3124,7 @@
         "vary": "Origin",
         "x-viz-route": "control"
       },
-      "body": "{\"dashboard\":{\"id\":\"checkout_path\",\"name\":\"Checkout path\",\"intent\":\"The two services a purchase passes through. Answers: when checkout is slow, is it checkout itself or orders behind it?\",\"tags\":[\"checkout\",\"on-call\"],\"owner\":null,\"panels\":4,\"revision\":\"87ed8106b3ec08575e3197784ec3fbae\",\"number\":1,\"createdAt\":\"2026-11-27T01:53:14.444Z\",\"createdBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-27T01:53:14.444Z\",\"lastChangedBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},\"number\":1,\"revision\":\"87ed8106b3ec08575e3197784ec3fbae\",\"current\":true,\"view\":\"spec\",\"spec\":{\"apiVersion\":\"viz.dashboard/v1\",\"metadata\":{\"id\":\"checkout_path\",\"title\":\"Checkout path\",\"intent\":\"The two services a purchase passes through. Answers: when checkout is slow, is it checkout itself or orders behind it?\",\"tags\":[\"checkout\",\"on-call\"]},\"time\":{\"from\":\"now-3h\",\"to\":\"now\"},\"panels\":{},\"layout\":{\"kind\":\"rows\",\"rows\":[{\"title\":\"checkout\",\"items\":[{\"fragment\":\"service_pair\",\"as\":\"checkout\",\"with\":{\"service\":\"checkout\"}}]},{\"title\":\"orders\",\"items\":[{\"fragment\":\"service_pair\",\"as\":\"orders\",\"with\":{\"service\":\"orders\"}}]}]},\"fragments\":{\"service_pair\":{\"description\":\"Request rate and p95 latency of one service.\",\"params\":{\"service\":{\"description\":\"The service label.\"}},\"queries\":{\"rate\":{\"lang\":\"promql\",\"expr\":\"sum by (route) (rate(http_requests_total{service=\\\"$service\\\"}[$__rate]))\",\"legend\":\"{{route}}\"},\"p95\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service=\\\"$service\\\"}[$__rate])))\",\"legend\":\"p95\"}},\"panels\":{\"rate\":{\"kind\":\"timeseries\",\"title\":\"Requests by route\",\"description\":\"Throughput per route of this service.\",\"unit\":\"req/s\",\"queries\":[\"rate\"]},\"latency\":{\"kind\":\"timeseries\",\"title\":\"p95 latency\",\"description\":\"95th percentile of request duration of this service.\",\"unit\":\"s\",\"queries\":[\"p95\"]}},\"layout\":{\"kind\":\"rows\",\"r… (2040 bytes)"
+      "body": "{\"dashboard\":{\"id\":\"checkout_path\",\"name\":\"Checkout path\",\"intent\":\"The two services a purchase passes through. Answers: when checkout is slow, is it checkout itself or orders behind it?\",\"tags\":[\"checkout\",\"on-call\"],\"owner\":null,\"panels\":4,\"revision\":\"87ed8106b3ec08575e3197784ec3fbae\",\"number\":1,\"createdAt\":\"2026-11-28T12:01:07.573Z\",\"createdBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-28T12:01:07.573Z\",\"lastChangedBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},\"number\":1,\"revision\":\"87ed8106b3ec08575e3197784ec3fbae\",\"current\":true,\"view\":\"spec\",\"spec\":{\"apiVersion\":\"viz.dashboard/v1\",\"metadata\":{\"id\":\"checkout_path\",\"title\":\"Checkout path\",\"intent\":\"The two services a purchase passes through. Answers: when checkout is slow, is it checkout itself or orders behind it?\",\"tags\":[\"checkout\",\"on-call\"]},\"time\":{\"from\":\"now-3h\",\"to\":\"now\"},\"panels\":{},\"layout\":{\"kind\":\"rows\",\"rows\":[{\"title\":\"checkout\",\"items\":[{\"fragment\":\"service_pair\",\"as\":\"checkout\",\"with\":{\"service\":\"checkout\"}}]},{\"title\":\"orders\",\"items\":[{\"fragment\":\"service_pair\",\"as\":\"orders\",\"with\":{\"service\":\"orders\"}}]}]},\"fragments\":{\"service_pair\":{\"description\":\"Request rate and p95 latency of one service.\",\"params\":{\"service\":{\"description\":\"The service label.\"}},\"queries\":{\"rate\":{\"lang\":\"promql\",\"expr\":\"sum by (route) (rate(http_requests_total{service=\\\"$service\\\"}[$__rate]))\",\"legend\":\"{{route}}\"},\"p95\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service=\\\"$service\\\"}[$__rate])))\",\"legend\":\"p95\"}},\"panels\":{\"rate\":{\"kind\":\"timeseries\",\"title\":\"Requests by route\",\"description\":\"Throughput per route of this service.\",\"unit\":\"req/s\",\"queries\":[\"rate\"]},\"latency\":{\"kind\":\"timeseries\",\"title\":\"p95 latency\",\"description\":\"95th percentile of request duration of this service.\",\"unit\":\"s\",\"queries\":[\"p95\"]}},\"layout\":{\"kind\":\"rows\",\"r… (2040 bytes)"
     },
     {
       "name": "dashboard: its outline",
@@ -3144,7 +3144,7 @@
         "vary": "Origin",
         "x-viz-route": "control"
       },
-      "body": "{\"dashboard\":{\"id\":\"pod_capacity\",\"name\":\"Pod capacity\",\"intent\":\"Capacity review. Answers: which pods are close to their limits, and how request durations are distributed.\",\"tags\":[\"capacity\",\"platform\"],\"owner\":\"platform\",\"panels\":6,\"revision\":\"48e32c11c2b1b6521bc3e5db0812e97c\",\"number\":1,\"createdAt\":\"2026-11-27T01:53:14.423Z\",\"createdBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-27T01:53:14.423Z\",\"lastChangedBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},\"number\":1,\"revision\":\"48e32c11c2b1b6521bc3e5db0812e97c\",\"current\":true,\"view\":\"outline\",\"outline\":{\"metadata\":{\"id\":\"pod_capacity\",\"title\":\"Pod capacity\",\"intent\":\"Capacity review. Answers: which pods are close to their limits, and how request durations are distributed.\",\"tags\":[\"capacity\",\"platform\"]},\"time\":{\"from\":\"now-6h\",\"to\":\"now\"},\"variables\":[],\"panels\":[{\"id\":\"cpu\",\"kind\":\"timeseries\",\"title\":\"CPU by pod\",\"unit\":\"cores\",\"queries\":[\"cpu\"]},{\"id\":\"durations\",\"kind\":\"heatmap\",\"title\":\"Request duration distribution\",\"unit\":\"s\",\"queries\":[\"buckets\"]},{\"id\":\"memory\",\"kind\":\"stat\",\"title\":\"Memory in use\",\"unit\":\"bytes\",\"queries\":[\"mem_total\"]},{\"id\":\"sample\",\"kind\":\"timeseries\",\"title\":\"CPU of three sampled pods\",\"unit\":\"cores\",\"queries\":[\"sampled\"]},{\"id\":\"notes\",\"kind\":\"text\",\"title\":\"How to read this\",\"unit\":null,\"queries\":[]},{\"id\":\"restarts\",\"kind\":\"timeseries\",\"title\":\"Restarts by pod\",\"unit\":\"ops/s\",\"queries\":[\"restarts\"]}],\"fragments\":[]}}"
+      "body": "{\"dashboard\":{\"id\":\"pod_capacity\",\"name\":\"Pod capacity\",\"intent\":\"Capacity review. Answers: which pods are close to their limits, and how request durations are distributed.\",\"tags\":[\"capacity\",\"platform\"],\"owner\":\"platform\",\"panels\":6,\"revision\":\"48e32c11c2b1b6521bc3e5db0812e97c\",\"number\":1,\"createdAt\":\"2026-11-28T12:01:07.555Z\",\"createdBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-28T12:01:07.555Z\",\"lastChangedBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},\"number\":1,\"revision\":\"48e32c11c2b1b6521bc3e5db0812e97c\",\"current\":true,\"view\":\"outline\",\"outline\":{\"metadata\":{\"id\":\"pod_capacity\",\"title\":\"Pod capacity\",\"intent\":\"Capacity review. Answers: which pods are close to their limits, and how request durations are distributed.\",\"tags\":[\"capacity\",\"platform\"]},\"time\":{\"from\":\"now-6h\",\"to\":\"now\"},\"variables\":[],\"panels\":[{\"id\":\"cpu\",\"kind\":\"timeseries\",\"title\":\"CPU by pod\",\"unit\":\"cores\",\"queries\":[\"cpu\"]},{\"id\":\"durations\",\"kind\":\"heatmap\",\"title\":\"Request duration distribution\",\"unit\":\"s\",\"queries\":[\"buckets\"]},{\"id\":\"memory\",\"kind\":\"stat\",\"title\":\"Memory in use\",\"unit\":\"bytes\",\"queries\":[\"mem_total\"]},{\"id\":\"sample\",\"kind\":\"timeseries\",\"title\":\"CPU of three sampled pods\",\"unit\":\"cores\",\"queries\":[\"sampled\"]},{\"id\":\"notes\",\"kind\":\"text\",\"title\":\"How to read this\",\"unit\":null,\"queries\":[]},{\"id\":\"restarts\",\"kind\":\"timeseries\",\"title\":\"Restarts by pod\",\"unit\":\"ops/s\",\"queries\":[\"restarts\"]}],\"fragments\":[]}}"
     },
     {
       "name": "dashboard: resolved with defaults",
@@ -3164,7 +3164,7 @@
         "vary": "Origin",
         "x-viz-route": "control"
       },
-      "body": "{\"dashboard\":{\"id\":\"service_red\",\"name\":\"Service: rate, errors, duration\",\"intent\":\"One service at a time. Answers: is this service healthy, and which route or status is the cause when it is not?\",\"tags\":[\"on-call\",\"red\"],\"owner\":\"payments\",\"panels\":5,\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"number\":1,\"createdAt\":\"2026-11-27T01:53:14.402Z\",\"createdBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-27T01:53:14.402Z\",\"lastChangedBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},\"number\":1,\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"current\":true,\"view\":\"resolved\",\"resolved\":{\"apiVersion\":\"viz.dashboard/v1\",\"metadata\":{\"id\":\"service_red\",\"title\":\"Service: rate, errors, duration\",\"intent\":\"One service at a time. Answers: is this service healthy, and which route or status is the cause when it is not?\",\"tags\":[\"on-call\",\"red\"]},\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"variables\":{\"service\":{\"values\":[\"checkout\"],\"all\":false},\"status\":{\"values\":[],\"all\":true}},\"queries\":{\"rate_by_route\":{\"lang\":\"promql\",\"expr\":\"sum by (route) (rate(http_requests_total{service=\\\"checkout\\\",status=~\\\".*\\\"}[5m]))\",\"source\":\"/queries/rate_by_route\",\"legend\":\"{{route}}\"},\"err_ratio\":{\"lang\":\"promql\",\"expr\":\"sum(rate(http_requests_total{service=\\\"checkout\\\",status=\\\"500\\\"}[5m])) / sum(rate(http_requests_total{service=\\\"checkout\\\"}[5m]))\",\"source\":\"/queries/err_ratio\"},\"p50\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.5, sum by (le) (rate(http_request_duration_seconds_bucket{service=\\\"checkout\\\"}[5m])))\",\"source\":\"/queries/p50\",\"legend\":\"p50\"},\"p95\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service=\\\"checkout\\\"}[5m])))\",\"source\":\"/queries/p95\",\"legend\":\"p95\"},\"by_status\":{\"lang\":\"promql\",\"expr\":\"sum by (status) (rate(http_requests_total{service=\\\"checkout\\\",status=~\\\".*\\\"}[5m]))\",\"source\":\"/queries/by_status\",\"l… (3427 bytes)"
+      "body": "{\"dashboard\":{\"id\":\"service_red\",\"name\":\"Service: rate, errors, duration\",\"intent\":\"One service at a time. Answers: is this service healthy, and which route or status is the cause when it is not?\",\"tags\":[\"on-call\",\"red\"],\"owner\":\"payments\",\"panels\":5,\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"number\":1,\"createdAt\":\"2026-11-28T12:01:07.534Z\",\"createdBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-28T12:01:07.534Z\",\"lastChangedBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},\"number\":1,\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"current\":true,\"view\":\"resolved\",\"resolved\":{\"apiVersion\":\"viz.dashboard/v1\",\"metadata\":{\"id\":\"service_red\",\"title\":\"Service: rate, errors, duration\",\"intent\":\"One service at a time. Answers: is this service healthy, and which route or status is the cause when it is not?\",\"tags\":[\"on-call\",\"red\"]},\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"variables\":{\"service\":{\"values\":[\"checkout\"],\"all\":false},\"status\":{\"values\":[],\"all\":true}},\"queries\":{\"rate_by_route\":{\"lang\":\"promql\",\"expr\":\"sum by (route) (rate(http_requests_total{service=\\\"checkout\\\",status=~\\\".*\\\"}[5m]))\",\"source\":\"/queries/rate_by_route\",\"legend\":\"{{route}}\"},\"err_ratio\":{\"lang\":\"promql\",\"expr\":\"sum(rate(http_requests_total{service=\\\"checkout\\\",status=\\\"500\\\"}[5m])) / sum(rate(http_requests_total{service=\\\"checkout\\\"}[5m]))\",\"source\":\"/queries/err_ratio\"},\"p50\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.5, sum by (le) (rate(http_request_duration_seconds_bucket{service=\\\"checkout\\\"}[5m])))\",\"source\":\"/queries/p50\",\"legend\":\"p50\"},\"p95\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service=\\\"checkout\\\"}[5m])))\",\"source\":\"/queries/p95\",\"legend\":\"p95\"},\"by_status\":{\"lang\":\"promql\",\"expr\":\"sum by (status) (rate(http_requests_total{service=\\\"checkout\\\",status=~\\\".*\\\"}[5m]))\",\"source\":\"/queries/by_status\",\"l… (3427 bytes)"
     },
     {
       "name": "dashboard: resolved with a variable",
@@ -3184,7 +3184,7 @@
         "vary": "Origin",
         "x-viz-route": "control"
       },
-      "body": "{\"dashboard\":{\"id\":\"service_red\",\"name\":\"Service: rate, errors, duration\",\"intent\":\"One service at a time. Answers: is this service healthy, and which route or status is the cause when it is not?\",\"tags\":[\"on-call\",\"red\"],\"owner\":\"payments\",\"panels\":5,\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"number\":1,\"createdAt\":\"2026-11-27T01:53:14.402Z\",\"createdBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-27T01:53:14.402Z\",\"lastChangedBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},\"number\":1,\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"current\":true,\"view\":\"resolved\",\"resolved\":{\"apiVersion\":\"viz.dashboard/v1\",\"metadata\":{\"id\":\"service_red\",\"title\":\"Service: rate, errors, duration\",\"intent\":\"One service at a time. Answers: is this service healthy, and which route or status is the cause when it is not?\",\"tags\":[\"on-call\",\"red\"]},\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"variables\":{\"service\":{\"values\":[\"orders\"],\"all\":false},\"status\":{\"values\":[\"500\"],\"all\":false}},\"queries\":{\"rate_by_route\":{\"lang\":\"promql\",\"expr\":\"sum by (route) (rate(http_requests_total{service=\\\"orders\\\",status=~\\\"500\\\"}[5m]))\",\"source\":\"/queries/rate_by_route\",\"legend\":\"{{route}}\"},\"err_ratio\":{\"lang\":\"promql\",\"expr\":\"sum(rate(http_requests_total{service=\\\"orders\\\",status=\\\"500\\\"}[5m])) / sum(rate(http_requests_total{service=\\\"orders\\\"}[5m]))\",\"source\":\"/queries/err_ratio\"},\"p50\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.5, sum by (le) (rate(http_request_duration_seconds_bucket{service=\\\"orders\\\"}[5m])))\",\"source\":\"/queries/p50\",\"legend\":\"p50\"},\"p95\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service=\\\"orders\\\"}[5m])))\",\"source\":\"/queries/p95\",\"legend\":\"p95\"},\"by_status\":{\"lang\":\"promql\",\"expr\":\"sum by (status) (rate(http_requests_total{service=\\\"orders\\\",status=~\\\"500\\\"}[5m]))\",\"source\":\"/queries/by_status\",\"legend\"… (3419 bytes)"
+      "body": "{\"dashboard\":{\"id\":\"service_red\",\"name\":\"Service: rate, errors, duration\",\"intent\":\"One service at a time. Answers: is this service healthy, and which route or status is the cause when it is not?\",\"tags\":[\"on-call\",\"red\"],\"owner\":\"payments\",\"panels\":5,\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"number\":1,\"createdAt\":\"2026-11-28T12:01:07.534Z\",\"createdBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-28T12:01:07.534Z\",\"lastChangedBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},\"number\":1,\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"current\":true,\"view\":\"resolved\",\"resolved\":{\"apiVersion\":\"viz.dashboard/v1\",\"metadata\":{\"id\":\"service_red\",\"title\":\"Service: rate, errors, duration\",\"intent\":\"One service at a time. Answers: is this service healthy, and which route or status is the cause when it is not?\",\"tags\":[\"on-call\",\"red\"]},\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"variables\":{\"service\":{\"values\":[\"orders\"],\"all\":false},\"status\":{\"values\":[\"500\"],\"all\":false}},\"queries\":{\"rate_by_route\":{\"lang\":\"promql\",\"expr\":\"sum by (route) (rate(http_requests_total{service=\\\"orders\\\",status=~\\\"500\\\"}[5m]))\",\"source\":\"/queries/rate_by_route\",\"legend\":\"{{route}}\"},\"err_ratio\":{\"lang\":\"promql\",\"expr\":\"sum(rate(http_requests_total{service=\\\"orders\\\",status=\\\"500\\\"}[5m])) / sum(rate(http_requests_total{service=\\\"orders\\\"}[5m]))\",\"source\":\"/queries/err_ratio\"},\"p50\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.5, sum by (le) (rate(http_request_duration_seconds_bucket{service=\\\"orders\\\"}[5m])))\",\"source\":\"/queries/p50\",\"legend\":\"p50\"},\"p95\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service=\\\"orders\\\"}[5m])))\",\"source\":\"/queries/p95\",\"legend\":\"p95\"},\"by_status\":{\"lang\":\"promql\",\"expr\":\"sum by (status) (rate(http_requests_total{service=\\\"orders\\\",status=~\\\"500\\\"}[5m]))\",\"source\":\"/queries/by_status\",\"legend\"… (3419 bytes)"
     },
     {
       "name": "dashboard: resolved with a value that must be escaped",
@@ -3204,7 +3204,7 @@
         "vary": "Origin",
         "x-viz-route": "control"
       },
-      "body": "{\"dashboard\":{\"id\":\"service_red\",\"name\":\"Service: rate, errors, duration\",\"intent\":\"One service at a time. Answers: is this service healthy, and which route or status is the cause when it is not?\",\"tags\":[\"on-call\",\"red\"],\"owner\":\"payments\",\"panels\":5,\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"number\":1,\"createdAt\":\"2026-11-27T01:53:14.402Z\",\"createdBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-27T01:53:14.402Z\",\"lastChangedBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},\"number\":1,\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"current\":true,\"view\":\"resolved\",\"resolved\":{\"apiVersion\":\"viz.dashboard/v1\",\"metadata\":{\"id\":\"service_red\",\"title\":\"Service: rate, errors, duration\",\"intent\":\"One service at a time. Answers: is this service healthy, and which route or status is the cause when it is not?\",\"tags\":[\"on-call\",\"red\"]},\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"variables\":{\"service\":{\"values\":[\"x\\\"} or up{a=\\\"\"],\"all\":false},\"status\":{\"values\":[],\"all\":true}},\"queries\":{\"rate_by_route\":{\"lang\":\"promql\",\"expr\":\"sum by (route) (rate(http_requests_total{service=\\\"x\\\\\\\"} or up{a=\\\\\\\"\\\",status=~\\\".*\\\"}[5m]))\",\"source\":\"/queries/rate_by_route\",\"legend\":\"{{route}}\"},\"err_ratio\":{\"lang\":\"promql\",\"expr\":\"sum(rate(http_requests_total{service=\\\"x\\\\\\\"} or up{a=\\\\\\\"\\\",status=\\\"500\\\"}[5m])) / sum(rate(http_requests_total{service=\\\"x\\\\\\\"} or up{a=\\\\\\\"\\\"}[5m]))\",\"source\":\"/queries/err_ratio\"},\"p50\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.5, sum by (le) (rate(http_request_duration_seconds_bucket{service=\\\"x\\\\\\\"} or up{a=\\\\\\\"\\\"}[5m])))\",\"source\":\"/queries/p50\",\"legend\":\"p50\"},\"p95\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service=\\\"x\\\\\\\"} or up{a=\\\\\\\"\\\"}[5m])))\",\"source\":\"/queries/p95\",\"legend\":\"p95\"},\"by_status\":{\"lang\":\"promql\",\"expr\":\"sum by (status) (rate(http_requests_total{service=\\\"x\\\\\\… (3511 bytes)"
+      "body": "{\"dashboard\":{\"id\":\"service_red\",\"name\":\"Service: rate, errors, duration\",\"intent\":\"One service at a time. Answers: is this service healthy, and which route or status is the cause when it is not?\",\"tags\":[\"on-call\",\"red\"],\"owner\":\"payments\",\"panels\":5,\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"number\":1,\"createdAt\":\"2026-11-28T12:01:07.534Z\",\"createdBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-28T12:01:07.534Z\",\"lastChangedBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},\"number\":1,\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"current\":true,\"view\":\"resolved\",\"resolved\":{\"apiVersion\":\"viz.dashboard/v1\",\"metadata\":{\"id\":\"service_red\",\"title\":\"Service: rate, errors, duration\",\"intent\":\"One service at a time. Answers: is this service healthy, and which route or status is the cause when it is not?\",\"tags\":[\"on-call\",\"red\"]},\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"variables\":{\"service\":{\"values\":[\"x\\\"} or up{a=\\\"\"],\"all\":false},\"status\":{\"values\":[],\"all\":true}},\"queries\":{\"rate_by_route\":{\"lang\":\"promql\",\"expr\":\"sum by (route) (rate(http_requests_total{service=\\\"x\\\\\\\"} or up{a=\\\\\\\"\\\",status=~\\\".*\\\"}[5m]))\",\"source\":\"/queries/rate_by_route\",\"legend\":\"{{route}}\"},\"err_ratio\":{\"lang\":\"promql\",\"expr\":\"sum(rate(http_requests_total{service=\\\"x\\\\\\\"} or up{a=\\\\\\\"\\\",status=\\\"500\\\"}[5m])) / sum(rate(http_requests_total{service=\\\"x\\\\\\\"} or up{a=\\\\\\\"\\\"}[5m]))\",\"source\":\"/queries/err_ratio\"},\"p50\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.5, sum by (le) (rate(http_request_duration_seconds_bucket{service=\\\"x\\\\\\\"} or up{a=\\\\\\\"\\\"}[5m])))\",\"source\":\"/queries/p50\",\"legend\":\"p50\"},\"p95\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service=\\\"x\\\\\\\"} or up{a=\\\\\\\"\\\"}[5m])))\",\"source\":\"/queries/p95\",\"legend\":\"p95\"},\"by_status\":{\"lang\":\"promql\",\"expr\":\"sum by (status) (rate(http_requests_total{service=\\\"x\\\\\\… (3511 bytes)"
     },
     {
       "name": "dashboard: resolved, fragments expanded",
@@ -3224,7 +3224,7 @@
         "vary": "Origin",
         "x-viz-route": "control"
       },
-      "body": "{\"dashboard\":{\"id\":\"checkout_path\",\"name\":\"Checkout path\",\"intent\":\"The two services a purchase passes through. Answers: when checkout is slow, is it checkout itself or orders behind it?\",\"tags\":[\"checkout\",\"on-call\"],\"owner\":null,\"panels\":4,\"revision\":\"87ed8106b3ec08575e3197784ec3fbae\",\"number\":1,\"createdAt\":\"2026-11-27T01:53:14.444Z\",\"createdBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-27T01:53:14.444Z\",\"lastChangedBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},\"number\":1,\"revision\":\"87ed8106b3ec08575e3197784ec3fbae\",\"current\":true,\"view\":\"resolved\",\"resolved\":{\"apiVersion\":\"viz.dashboard/v1\",\"metadata\":{\"id\":\"checkout_path\",\"title\":\"Checkout path\",\"intent\":\"The two services a purchase passes through. Answers: when checkout is slow, is it checkout itself or orders behind it?\",\"tags\":[\"checkout\",\"on-call\"]},\"revision\":\"87ed8106b3ec08575e3197784ec3fbae\",\"variables\":{},\"queries\":{\"checkout.rate\":{\"lang\":\"promql\",\"expr\":\"sum by (route) (rate(http_requests_total{service=\\\"checkout\\\"}[5m]))\",\"source\":\"/fragments/service_pair/queries/rate\",\"legend\":\"{{route}}\"},\"checkout.p95\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service=\\\"checkout\\\"}[5m])))\",\"source\":\"/fragments/service_pair/queries/p95\",\"legend\":\"p95\"},\"orders.rate\":{\"lang\":\"promql\",\"expr\":\"sum by (route) (rate(http_requests_total{service=\\\"orders\\\"}[5m]))\",\"source\":\"/fragments/service_pair/queries/rate\",\"legend\":\"{{route}}\"},\"orders.p95\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service=\\\"orders\\\"}[5m])))\",\"source\":\"/fragments/service_pair/queries/p95\",\"legend\":\"p95\"}},\"panels\":{\"checkout.rate\":{\"kind\":\"timeseries\",\"title\":\"Requests by route\",\"description\":\"Throughput per route of this service.\",\"unit\":\"req/s\",\"queries\":[\"checkout.rate\"],\"source\":\"/fragments/service_pair/pane… (3200 bytes)"
+      "body": "{\"dashboard\":{\"id\":\"checkout_path\",\"name\":\"Checkout path\",\"intent\":\"The two services a purchase passes through. Answers: when checkout is slow, is it checkout itself or orders behind it?\",\"tags\":[\"checkout\",\"on-call\"],\"owner\":null,\"panels\":4,\"revision\":\"87ed8106b3ec08575e3197784ec3fbae\",\"number\":1,\"createdAt\":\"2026-11-28T12:01:07.573Z\",\"createdBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-28T12:01:07.573Z\",\"lastChangedBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},\"number\":1,\"revision\":\"87ed8106b3ec08575e3197784ec3fbae\",\"current\":true,\"view\":\"resolved\",\"resolved\":{\"apiVersion\":\"viz.dashboard/v1\",\"metadata\":{\"id\":\"checkout_path\",\"title\":\"Checkout path\",\"intent\":\"The two services a purchase passes through. Answers: when checkout is slow, is it checkout itself or orders behind it?\",\"tags\":[\"checkout\",\"on-call\"]},\"revision\":\"87ed8106b3ec08575e3197784ec3fbae\",\"variables\":{},\"queries\":{\"checkout.rate\":{\"lang\":\"promql\",\"expr\":\"sum by (route) (rate(http_requests_total{service=\\\"checkout\\\"}[5m]))\",\"source\":\"/fragments/service_pair/queries/rate\",\"legend\":\"{{route}}\"},\"checkout.p95\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service=\\\"checkout\\\"}[5m])))\",\"source\":\"/fragments/service_pair/queries/p95\",\"legend\":\"p95\"},\"orders.rate\":{\"lang\":\"promql\",\"expr\":\"sum by (route) (rate(http_requests_total{service=\\\"orders\\\"}[5m]))\",\"source\":\"/fragments/service_pair/queries/rate\",\"legend\":\"{{route}}\"},\"orders.p95\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service=\\\"orders\\\"}[5m])))\",\"source\":\"/fragments/service_pair/queries/p95\",\"legend\":\"p95\"}},\"panels\":{\"checkout.rate\":{\"kind\":\"timeseries\",\"title\":\"Requests by route\",\"description\":\"Throughput per route of this service.\",\"unit\":\"req/s\",\"queries\":[\"checkout.rate\"],\"source\":\"/fragments/service_pair/pane… (3200 bytes)"
     },
     {
       "name": "dashboard: a view it does not have",
@@ -3262,7 +3262,7 @@
         "vary": "Origin",
         "x-viz-route": "control"
       },
-      "body": "{\"dashboard\":{\"id\":\"service_red\",\"name\":\"Service: rate, errors, duration\",\"intent\":\"One service at a time. Answers: is this service healthy, and which route or status is the cause when it is not?\",\"tags\":[\"on-call\",\"red\"],\"owner\":\"payments\",\"panels\":5,\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"number\":1,\"createdAt\":\"2026-11-27T01:53:14.402Z\",\"createdBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-27T01:53:14.402Z\",\"lastChangedBy\":{\"subject\":\"key:k_oy8BsIygagTLDayZPyElTq\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},\"number\":1,\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"current\":true,\"view\":\"spec\",\"spec\":{\"apiVersion\":\"viz.dashboard/v1\",\"metadata\":{\"id\":\"service_red\",\"title\":\"Service: rate, errors, duration\",\"intent\":\"One service at a time. Answers: is this service healthy, and which route or status is the cause when it is not?\",\"tags\":[\"on-call\",\"red\"]},\"time\":{\"from\":\"now-1h\",\"to\":\"now\"},\"variables\":{\"service\":{\"kind\":\"query\",\"label\":\"Service\",\"query\":{\"lang\":\"promql\",\"expr\":\"label_values(http_requests_total, service)\"},\"default\":\"checkout\"},\"status\":{\"kind\":\"enum\",\"label\":\"Status\",\"values\":[\"200\",\"400\",\"500\"],\"includeAll\":true,\"default\":\"*\"}},\"queries\":{\"rate_by_route\":{\"lang\":\"promql\",\"expr\":\"sum by (route) (rate(http_requests_total{service=\\\"$service\\\",status=~\\\"$status\\\"}[$__rate]))\",\"legend\":\"{{route}}\"},\"err_ratio\":{\"lang\":\"promql\",\"expr\":\"sum(rate(http_requests_total{service=\\\"$service\\\",status=\\\"500\\\"}[$__rate])) / sum(rate(http_requests_total{service=\\\"$service\\\"}[$__rate]))\"},\"p50\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.5, sum by (le) (rate(http_request_duration_seconds_bucket{service=\\\"$service\\\"}[$__rate])))\",\"legend\":\"p50\"},\"p95\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service=\\\"$service\\\"}[$__rate])))\",\"legend\":\"p95\"},\"by_status\":{\"lang\":\"promql\",\"expr\":\"sum by (status) (rate(http_requests_total{service=\\… (3169 bytes)"
+      "body": "{\"dashboard\":{\"id\":\"service_red\",\"name\":\"Service: rate, errors, duration\",\"intent\":\"One service at a time. Answers: is this service healthy, and which route or status is the cause when it is not?\",\"tags\":[\"on-call\",\"red\"],\"owner\":\"payments\",\"panels\":5,\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"number\":1,\"createdAt\":\"2026-11-28T12:01:07.534Z\",\"createdBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"lastChangedAt\":\"2026-11-28T12:01:07.534Z\",\"lastChangedBy\":{\"subject\":\"key:k_fUDn5D6nEdBVeJa560CBFJ\",\"kind\":\"key\",\"name\":\"first admin key\"},\"state\":null},\"number\":1,\"revision\":\"bc3d92c538ea2ce90ef76ecd72e3849e\",\"current\":true,\"view\":\"spec\",\"spec\":{\"apiVersion\":\"viz.dashboard/v1\",\"metadata\":{\"id\":\"service_red\",\"title\":\"Service: rate, errors, duration\",\"intent\":\"One service at a time. Answers: is this service healthy, and which route or status is the cause when it is not?\",\"tags\":[\"on-call\",\"red\"]},\"time\":{\"from\":\"now-1h\",\"to\":\"now\"},\"variables\":{\"service\":{\"kind\":\"query\",\"label\":\"Service\",\"query\":{\"lang\":\"promql\",\"expr\":\"label_values(http_requests_total, service)\"},\"default\":\"checkout\"},\"status\":{\"kind\":\"enum\",\"label\":\"Status\",\"values\":[\"200\",\"400\",\"500\"],\"includeAll\":true,\"default\":\"*\"}},\"queries\":{\"rate_by_route\":{\"lang\":\"promql\",\"expr\":\"sum by (route) (rate(http_requests_total{service=\\\"$service\\\",status=~\\\"$status\\\"}[$__rate]))\",\"legend\":\"{{route}}\"},\"err_ratio\":{\"lang\":\"promql\",\"expr\":\"sum(rate(http_requests_total{service=\\\"$service\\\",status=\\\"500\\\"}[$__rate])) / sum(rate(http_requests_total{service=\\\"$service\\\"}[$__rate]))\"},\"p50\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.5, sum by (le) (rate(http_request_duration_seconds_bucket{service=\\\"$service\\\"}[$__rate])))\",\"legend\":\"p50\"},\"p95\":{\"lang\":\"promql\",\"expr\":\"histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service=\\\"$service\\\"}[$__rate])))\",\"legend\":\"p95\"},\"by_status\":{\"lang\":\"promql\",\"expr\":\"sum by (status) (rate(http_requests_total{service=\\… (3169 bytes)"
     },
     {
       "name": "dashboard: a revision it does not have",

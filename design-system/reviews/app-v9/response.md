@@ -2,10 +2,16 @@
 
 **Status: awaiting re-review.** The independent review of 2026-11-27 (`review.md`) rejected
 the app: three blockers, three majors, thirteen minors. This file is the author's answer to it,
-finding by finding, for the next reviewer. **B1 is not answered here**: it is in progress
-separately (the design system's chart, by another builder), and nothing below claims it; by
-the rubric the app cannot be approved while it stands. Everything else the review required
-(its "Required before the next review", 2 to 7) is done and verified on one tree, below.
+finding by finding, for the next reviewer, who now judges Explore, the dashboards and the monitors
+view together on one merged tree (commit `67d9d73`: these fixes, the chart speed change for B1 and
+the monitors view). Everything the review required (its "Required before the next review", 2 to 7)
+is done and verified, below. **B1 has a second reviewer's decision** (`../chart-speed/second-review.md`):
+waived at more than 36 and up to 200 series, with conditions C1 to C4, until 2026-12-31 unless the
+system's owner decides F1. **The waiver is not in effect:** C1 and C3 are done, C4's frame records wait
+for a reviewer, and **C2's second session failed R2**, the waiver's own reopening rule: the desktop's
+36-series result paint read 109 ms from the last byte at the 75th percentile (and 101 ms in a third
+block), over the 100 ms that was never waived. By the review's C2, "B1 is not resolved" until that has
+a fix or a second reviewer of its own ("B1, the waiver", below).
 
 Below that, from "The change as first reviewed", is the account the first reviewer read, kept
 as it was except where it described images, waits or states that this round changed (each such
@@ -21,7 +27,7 @@ The detail of each cause and fix is in `app/README.md`, "The second design revie
 
 | Finding | Disposition | What a person sees now | Evidence |
 |---|---|---|---|
-| **B1** a result with many series is painted late | **In progress separately** (the design system's chart). Not worked on here; nothing claimed | (unchanged by this round) | none from this round |
+| **B1** a result with many series is painted late | **Waived with conditions at 37 to 200 series; not in effect** (below) | The chart is painted sooner (desktop, 36 series: −36 ms paired; 200 series: −43 to −61 ms) and draws the same pixels and markup; at 200 series it is still over 100 ms after the answer arrives; the waiting line goes in the render that shows the result | `../chart-speed/PR.md` (C1, C2), `../chart-speed/second-review.md`, `../chart-speed/waiting-line/` (C4) |
 | **B2** "Show 50 more of 200" takes a tap on 34.5 px of 44 | **Fixed** | What follows the table (the shared labels, the button) is a `vz-stack` with it, `space-4` clear of the last row: the whole 44 px is the button's, with either pointer | A tap 16 px above and 16 px below the button's centre each show 50 more, at 400, 320 and 1500 px with a coarse pointer; the page's hit-area measure passes with the table of 200 in it. Mutant "no stack": killed. Image `touch-table-200-show-more` (every hit area outlined; `shots.mjs` reports the button 148.8 x 42.5 px before and nothing after). **Same row, the system's:** the chart legend's "Min" sort head is 43 px wide at 1500 px with a coarse pointer on every dashboard with a chart; `dashboards.cjs` counts it (6, 1 and 4 on the three dashboards) and fails on anything else, which a mutant shows (a panel's links out of `vz-links`: killed by the 1500 px check). A follow-up for the system's owner |
 | **B3** a reload lands at the top | **Fixed** | A reload (or a return through the history to the same address) lands where the page was, in the first frame tall enough to hold it, and holds there for 1 s; the person's first wheel, touch, pointer or key ends it. A link opened afresh starts at the top | Four pages (the chart of 36, the table of 200, Explore signed in, Help) at 1500 and 400 px fine and 400 px coarse (coarse in Blink, not touch emulation): same position, anchor within 1 px (0 in every case), shift 0.0000; two dashboards and the list (landed 0 px off). In place before a late answer; a wheel meanwhile not undone; a reset made 150 ms after landing undone (added in this round: without it, "placed once, not held" survived). Six mutants: all killed |
 | **M1** the palette opens only by keyboard; "Copy a link" had no control | **Fixed** | "Copy link", a small button in Explore's page head; says "Copied" or "Could not copy". Help says the palette lists the page's commands and that each is also a control | All 19 commands the palette lists on Explore matched to a visible control; Copy link copies the address with the form shown. Three mutants killed. Images: every Explore pair's head (e.g. `explore`, `command-palette`) |
@@ -47,7 +53,52 @@ its 100 ms budget at p75, by 2 ms (desktop) and 5 ms (phone) ("Speed", below). T
 change that path's code; it was not measured before the fixes and is not tuned here. It is a
 follow-up in `app/README.md`.
 
+### B1, the waiver
+
+**Decided** by a second reviewer (`../chart-speed/second-review.md`, 2026-11-28): the Speed row
+"Receives a result: paint it … 100 ms after it arrives" is waived for Explore results of more than 36
+and up to 200 series, both layouts, both definitions of "arrives". **Not waived:** 36 series or fewer;
+chart to table at any size; the dashboards view; more than 200 series; the waiting-line change (C4).
+It takes effect when C1 to C4 are done and **lapses on 2026-12-31 unless F1** (the system's owner decides
+how a many-series result meets the budget, in `design/DECISIONS.md`) is decided. It is reopened by R1 (a
+200-series 75th percentile over 140 / 170 ms on the desktop, 115 / 130 ms on the phone), **R2 (any
+36-series result paint over 100 ms at the 75th percentile in a judged session)**, R3 (usage, once
+deployed: more than 1 in 20 Explore results over 100 series), R4 (a mid-range phone over 200 ms after the
+last byte at 200 series), R5 (the deadline) and R6 (anything shown during the wait stops being true).
+
+| Condition | State |
+|---|---|
+| C1, did "before" regress | **Ruled out.** `c4a154b` against `cc50ea2`, 20 alternating runs, desktop, 200 series: paired −8 ms (body read, 9 of 17 quicker) and −12 ms (last byte, 12 of 20). Not slower; nothing to remove |
+| C2, a second session | **Made; fails R2.** Desktop, 36 series, last byte: 109 ms (90 in the first session; 101 in a third block). Phone, 200 series, chart to table: 127 ms (91 in the first), outside the waiver, not caused by the change. Phone, 36 series, chart to table: 86 ms (101 in the first): the sessions disagree. The 200-series rows stay under R1. Tables: `../chart-speed/PR.md`, "C2" |
+| C3, `PR.md` true | Done |
+| C4, the waiting line's frames | Records made (`../chart-speed/waiting-line/`); **needs a reviewer who did not write it** |
+
+So for this re-review B1 stands: the 36-series row is over in two of three blocks of 20 runs on the
+desktop, and phone chart to table at 200 series is over in one of two sessions. These were measured
+here (this shared machine, CPU 4x, Fast 4G, the mock); nothing was measured on a device or on Cloudflare.
+
 ### Suites, on one tree
+
+**On the merged tree** (commit `67d9d73`: these fixes, the chart speed change and the monitors view;
+the app's source unchanged since), 2026-11-28 11:05 to 12:02 UTC, every command holding the shared
+machine lock with the Cloudflare credentials removed from its environment, `dist/` built at 11:05 UTC:
+
+| Suite | Result |
+|---|---|
+| `npm test` | 252 tests in 26 files pass |
+| `npx tsc --noEmit` | passes |
+| `npm run check:tokens` | 759/759; 0 literal values in 81 files |
+| `npm run build` | passes |
+| `node e2e/app.cjs` | 156 of 156 |
+| `node e2e/errors.cjs` | 14 of 14 |
+| `node e2e/prod.cjs` | 23 of 23 |
+| `node e2e/dashboards.cjs` | 106 of 106 |
+| `node e2e/monitors.cjs` | 69 of 69 |
+| `node e2e/real.cjs` (the real API, `wrangler dev --local`) | 25 of 25 |
+| `node e2e/contract.cjs` | 116 of 116 (two error messages differ in wording; the app reads neither) |
+
+Every suite passed on its first run; nothing was changed to make it pass, and no expectation was
+changed. The rest of this section is the fixes' own verification before the merge.
 
 The app's source was not changed in this round (only checks were); `dist/` built at 07:50
 UTC from it is what every browser run here used. All runs on 2026-11-28, each holding the
@@ -87,6 +138,18 @@ M2's warning kept); the table in `app/README.md` says which.
 
 ### Images
 
+**Remade from the merged build**, 2026-11-28 11:30 to 11:50 UTC: `VIZ_SHOTS_KEEP_BEFORE=1 node
+e2e/v9-shots.cjs` with the "before" singles of the 08:14 run below (commit `5db517f`, which does not
+change) and every "after" state pictured again from the merged tree's `dist/` (11:05 UTC); the same
+196 pairs and names; recompressed with oxipng and checked pixel for pixel: 15,411,317 bytes. Compared
+with the set below, pixel for pixel: every pair differs, because **the navigation now has "Monitors"**
+(in every image); beyond it, Help (its text on monitors), Settings (the mock's key now lists the monitors
+scopes), times that follow the clock, and the palette's anti-aliased edges. Explore's chart is drawn the
+same (the chart speed change's identity proof, `../chart-speed/PR.md`, "Identity"). `shots.mjs measure`
+on the after build: sideways overflow 0 px at 400 and 320 px; the navigation strip scrolls, with
+Settings partly out of view at 400 px (as before) and Help and Settings at 320 px (Help is new: the
+strip has one more link). The account below is of the 08:14 set.
+
 `compare/` holds **196 pairs** (15,351,182 bytes, 14.6 MiB), made 2026-11-28 08:14 to 08:45
 UTC by `app/e2e/v9-shots.cjs` from the final build and from commit `5db517f` built again
 (whose assets came out byte for byte as the 26 Nov build's). The same mock, data (the fixed
@@ -116,10 +179,10 @@ with many series is B1's and is not measured by this round.
 
 ### What this round did not do
 
-- B1 (above). m5 to m9, m11's chart half and m13: follow-ups, listed with reasons in
+- B1 (above: the waiver is decided but not in effect). m5 to m9, m11's chart half and m13: follow-ups, listed with reasons in
   `app/README.md`.
-- No device, Safari or Firefox; no screen reader by ear; `e2e/real.cjs` and
-  `e2e/contract.cjs` (the real API) were not run again (no source on the API path changed).
+- No device, Safari or Firefox; no screen reader by ear. (`e2e/real.cjs` and `e2e/contract.cjs`
+  were run on the merged tree, whose parser changed: above.)
 - Of the 196 pairs, two were looked at one by one.
 
 ## The change as first reviewed

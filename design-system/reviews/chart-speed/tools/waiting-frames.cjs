@@ -18,6 +18,10 @@
 //   plot        how many times the chart's plot has been written since the press (childList changes under svg.vz-plot)
 //   stale       "Showing the previous query" (data-testid=stale) is in the head
 //   changes     DOM mutation records inside the result panel since the previous frame
+//   moved       what the task after the frame read, when it differs from the callback's reading. That task runs only after
+//               every task queued before it, so when the result's render comes first `moved` shows a later state, or one
+//               between two tasks that no frame painted: the callback's reading is the one painted, unless a ResizeObserver
+//               changed it after layout
 // The record marks the last byte (Resource Timing responseEnd of query_range). Derived per run: the first frame
 // that shows the new chart, the first frame without the line, the frames that show the line over the new chart
 // (`lineOverNew`), and how many frames after the last byte changed the panel. With --images, Chromium's screencast
@@ -173,7 +177,7 @@ async function main() {
           const filming = IMAGES && i === 0
           if (filming) {
             cdp.on('Page.screencastFrame', (e) => { shots.push({ wall: e.metadata.timestamp * 1000, data: e.data }); cdp.send('Page.screencastFrameAck', { sessionId: e.sessionId }).catch(() => {}) })
-            await cdp.send('Page.startScreencast', { format: 'jpeg', quality: 70, everyNthFrame: 1 })
+            await cdp.send('Page.startScreencast', { format: 'jpeg', quality: 60, everyNthFrame: 1, maxWidth: PHONE ? 400 : 960, maxHeight: PHONE ? 800 : 600 })
             await page.waitForTimeout(300)
             shots.length = 0
           }
