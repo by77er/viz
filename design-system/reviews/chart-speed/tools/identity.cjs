@@ -24,6 +24,15 @@ const OUT = arg('out', 'identity.json'), IMAGES = arg('images', null)
 const ONLY = arg('only', '')
 /** --rounds 2: every build is captured this many times, in turn. Two captures of one build can differ in a few antialiased pixels (see the control in PR.md), so a state is pixel-identical between two builds when any capture of one equals, bit for bit, any capture of the other. Markup, names and text must be equal in every capture. */
 const ROUNDS = Number(arg('rounds', '1'))
+/** --series 4 / --widths 1440: only those app cases (to look again at a few states). */
+const SERIES = arg('series', '4,36,200').split(',').map(Number), WIDTHS = arg('widths', '1440,400').split(',').map(Number)
+/**
+ * --full-raster: Chromium repaints the whole of a layer when any of it changes (--disable-partial-raster). With partial raster, a
+ * region that is repainted (the crosshair, a legend row, the plot after a zoom) is rasterised again on its own, and a path edge that
+ * crosses its border can be antialiased one level differently from the same edge drawn whole: the same markup then gives a few pixels
+ * that differ by 1 in one channel, between two captures of one build as between two builds (PR.md, "Identity").
+ */
+const FULL_RASTER = process.argv.includes('--full-raster')
 const T0 = Date.UTC(2026, 10, 18, 9, 30), T1 = Date.UTC(2026, 10, 18, 12, 30)
 const QUERIES = { 4: 'sum by (service) (rate(http_requests_total[5m]))', 36: 'sum by (service, route, status) (rate(http_requests_total[5m]))', 200: 'viz_synthetic_series' }
 const LAYOUTS = { 1440: { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 }, 400: { viewport: { width: 400, height: 800 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 } }
@@ -136,13 +145,13 @@ async function main() {
   // the design system's generated pages, served as files (fonts and the fixture's data are fetched)
   const TYPES = { '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.js': 'text/javascript', '.json': 'application/json', '.woff2': 'font/woff2' }
   const statics = BUILDS.map((B) => http.createServer((req, res) => { const f = path.join(B.root, 'design-system/dist', decodeURIComponent(new URL(req.url, 'http://x').pathname)); fs.readFile(f, (err, data) => { if (err) { res.writeHead(404).end(); return } res.writeHead(200, { 'Content-Type': TYPES[path.extname(f)] || 'application/octet-stream', 'Cache-Control': 'no-store' }).end(data) }) }).listen(B.port + 20, '127.0.0.1'))
-  const browser = await chromium.launch()
+  const browser = await chromium.launch(FULL_RASTER ? { args: ['--disable-partial-raster'] } : {})
   const records = {}, pngs = {}
   try {
     for (let round = 0; round < ROUNDS; round++) for (const B of BUILDS) {
       const record = {}, images = new Map()
-      for (const width of [1440, 400]) for (const theme of ['light', 'dark']) {
-        if (ONLY !== 'system') for (const series of [4, 36, 200]) await appCase(browser, B, series, theme, width, record, images)
+      for (const width of WIDTHS) for (const theme of ['light', 'dark']) {
+        if (ONLY !== 'system') for (const series of SERIES) await appCase(browser, B, series, theme, width, record, images)
         if (ONLY !== 'app') for (const file of ['preview/Chart.html', 'fixture/index.html']) await systemCase(browser, B, file, theme, width, record, images)
         console.log(`${B.name}, capture ${round + 1}: ${theme}, ${width} px done (${Object.keys(record).length} states so far)`)
       }
@@ -174,7 +183,7 @@ async function main() {
   }
   const sameBuildNoise = Object.fromEntries(BUILDS.map((B) => [B.name, { statesWithMoreThanOneImage: Object.values(records[B.name]).filter((r) => r.pngs.length > 1).length, statesWithUnstableMarkup: Object.entries(records[B.name]).filter(([, r]) => r.unstable.length).map(([k, r]) => k + ': ' + r.unstable.join(', ')) }]))
   const themesDiffer = names.filter((k) => k.includes(', light, ')).every((k) => records[first][k].png !== (records[first][k.replace(', light, ', ', dark, ')] || {}).png)
-  const out = { when: new Date().toISOString(), builds: BUILDS.map((b) => ({ name: b.name, root: b.root })), states: names.length, chartsInStates: names.reduce((a, k) => a + records[first][k].chartCount, 0), comparedWith: first, capturesPerBuild: ROUNDS, sameBuildNoise, differences, lightAndDarkDiffer: themesDiffer, records }
+  const out = { when: new Date().toISOString(), builds: BUILDS.map((b) => ({ name: b.name, root: b.root })), states: names.length, chartsInStates: names.reduce((a, k) => a + records[first][k].chartCount, 0), comparedWith: first, capturesPerBuild: ROUNDS, fullRaster: FULL_RASTER, sameBuildNoise, differences, lightAndDarkDiffer: themesDiffer, records }
   fs.writeFileSync(OUT, JSON.stringify(out, null, 1) + '\n')
   console.log(`${names.length} states per build, ${BUILDS.length} builds; every light image differs from its dark one: ${themesDiffer}`)
   for (const B of BUILDS) console.log(`${B.name}: ${ROUNDS} captures; states whose captures were not all the same image: ${sameBuildNoise[B.name].statesWithMoreThanOneImage}; states whose markup changed between captures: ${sameBuildNoise[B.name].statesWithUnstableMarkup.length}`)

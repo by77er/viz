@@ -1,0 +1,16 @@
+before, capture 1: light, 1440 px done (7 states so far)
+before, capture 1: dark, 1440 px done (14 states so far)
+after, capture 1: light, 1440 px done (7 states so far)
+after, capture 1: dark, 1440 px done (14 states so far)
+before, capture 2: light, 1440 px done (7 states so far)
+before, capture 2: dark, 1440 px done (14 states so far)
+after, capture 2: light, 1440 px done (7 states so far)
+after, capture 2: dark, 1440 px done (14 states so far)
+before, capture 3: light, 1440 px done (7 states so far)
+before, capture 3: dark, 1440 px done (14 states so far)
+after, capture 3: light, 1440 px done (7 states so far)
+after, capture 3: dark, 1440 px done (14 states so far)
+14 states per build, 2 builds; every light image differs from its dark one: true
+before: 3 captures; states whose captures were not all the same image: 0; states whose markup changed between captures: 0
+after: 3 captures; states whose captures were not all the same image: 0; states whose markup changed between captures: 0
+before vs after: identical in every state (pixels, chart markup, accessible names, legend row names, text form, table)

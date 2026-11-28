@@ -52,7 +52,10 @@
 //               figure leaves out reading and parsing the body. Kept for comparison with earlier files.
 //   responseFull  the last byte of the response (Resource Timing responseEnd of the
 //               query_range request) -> the same paint. This one includes decoding and parsing
-//               the body: 3.6 MB of JSON for 200 series.
+//               the body: 3.6 MB of JSON for 200 series. Since 2026-11-28 DevTools keeps no copy of
+//               the body during these runs (networkWithoutCopies; --buffer for the earlier way):
+//               with its copies this figure carried about 70 ms at 200 series that no browser
+//               without DevTools spends.
 //   inp         the longest Event Timing duration of any interaction in the run, before the
 //               typing and crosshair steps (comparable with earlier files); inpAll includes them
 //   crosshair   30 pointer moves across the plot, one at a time: mousemove -> end of the next
@@ -87,9 +90,45 @@ const Q_SYNTH = 'viz_synthetic_series'
 const QUERIES = { 4: Q_RATE, 12: 'pod_memory_working_set_bytes', 36: lib.Q_MANY, 200: Q_SYNTH }
 const T0 = Date.UTC(2026, 10, 18, 9, 30), T1 = Date.UTC(2026, 10, 18, 12, 30)
 /** --builds before=<app dir>,after=<app dir>: measured in turn, run by run (A B, B A, A B, ...), so both meet the same machine. */
-const BUILDS = arg('builds', '').split(',').filter(Boolean).map((x, k) => ({ name: x.split('=')[0], root: path.resolve(x.split('=')[1]), app: `http://127.0.0.1:${Number(process.env.VIZ_AB_PORT || 8940) + k}`, port: Number(process.env.VIZ_AB_PORT || 8940) + k }))
+// A build's name may end in +buffer or +noclone: that build is measured so (to compare two methods on one build, run by run).
+const BUILDS = arg('builds', '').split(',').filter(Boolean).map((x, k) => ({ name: x.split('=')[0], buffer: x.split('=')[0].includes('+buffer'), noclone: x.split('=')[0].includes('+noclone'), root: path.resolve(x.split('=')[1]), app: `http://127.0.0.1:${Number(process.env.VIZ_AB_PORT || 8940) + k}`, port: Number(process.env.VIZ_AB_PORT || 8940) + k }))
 const MOCK_PORT = Number(process.env.VIZ_E2E_MOCK_PORT || 8931)
-const NOBUFFER = process.argv.includes('--nobuffer')
+/**
+ * DevTools keeps no copy of response bodies during timed runs (2026-11-28, design-system/reviews/chart-speed/PR.md).
+ * With the Network domain enabled (Playwright enables it for every page, and this script enables it again in its own session for the
+ * network shaping), each of those two agents buffers every response body and, when the load finishes, decodes it on the page's main
+ * thread for Network.getResponseBody: at 4x CPU about 70 ms for the 200-series body (3.4 MB), between the last byte and the page's next
+ * task. A browser without DevTools open does no such work, so a timed run must not either: both agents are enabled with no buffer.
+ * Playwright's own session is not a public interface, so if it cannot be reached the run stops (it never measures with the buffers
+ * silently), and every run checks afterwards that neither agent holds the query's body (r.bodyCopies: both false).
+ * --buffer keeps the buffers, as this script measured until 2026-11-27 (figures taken so are not comparable with later ones).
+ */
+const BUFFER = process.argv.includes('--buffer')
+/** --noclone: the page's fetch is not wrapped with the harness's own copy of the body (so no "body read" figure): to see what that copy costs "from the last byte". */
+const NOCLONE = process.argv.includes('--noclone')
+const NO_BUFFERS = { maxTotalBufferSize: 0, maxResourceBufferSize: 0 }
+async function networkWithoutCopies(page, cdp, buffer = BUFFER) {
+  await cdp.send('Network.enable', buffer ? {} : NO_BUFFERS)
+  if (buffer) return
+  let client
+  try {
+    const impl = page._connection.toImpl(page)
+    client = (impl.delegate || impl._delegate)._mainFrameSession._client
+  } catch (e) {
+    throw new Error(`cannot reach Playwright's own DevTools session (${e.message}): its body buffer cannot be turned off; run with --buffer and say so`)
+  }
+  await client.send('Network.enable', NO_BUFFERS)
+}
+/** Whether DevTools (this script's session, and Playwright's) kept a copy of the last query_range body: both false unless --buffer. */
+function watchCopies(page, cdp) {
+  const w = { id: null, res: null }
+  cdp.on('Network.responseReceived', (e) => { if (e.response.url.includes('query_range')) w.id = e.requestId })
+  page.on('response', (res) => { if (res.url().includes('query_range')) w.res = res })
+  return async () => ({
+    devtools: w.id ? await cdp.send('Network.getResponseBody', { requestId: w.id }).then(() => true, () => false) : null,
+    playwright: w.res ? await w.res.body().then(() => true, () => false) : null,
+  })
+}
 const OUT = arg('out', null)
 /** --skip typing,crosshair: leave those steps out (for quicker comparisons of candidates). */
 const SKIP = new Set(arg('skip', 'typing,crosshair').split(',').filter(Boolean))
@@ -118,7 +157,7 @@ const p75 = (xs) => { const s = xs.filter((x) => x != null && Number.isFinite(x)
 const median = (xs) => { const s = xs.filter((x) => x != null && Number.isFinite(x)).sort((a, b) => a - b); return s.length ? s[Math.floor((s.length - 1) / 2)] : null }
 
 // Runs in the page before any of its scripts.
-function instrument() {
+function instrument(opt) {
   const m = (window.__m = { shifts: [], events: [], resp: null, respPaint: null, respFull: null, rec: null })
   try {
     new PerformanceObserver((l) => { for (const e of l.getEntries()) m.shifts.push({ value: e.value, recent: e.hadRecentInput, t: e.startTime }) }).observe({ type: 'layout-shift', buffered: true })
@@ -129,7 +168,7 @@ function instrument() {
   const realFetch = window.fetch
   window.fetch = async (...a) => {
     const res = await realFetch(...a)
-    if (String(a[0] && a[0].url ? a[0].url : a[0]).includes('query_range')) res.clone().text().then(() => { m.resp = performance.now() })
+    if (String(a[0] && a[0].url ? a[0].url : a[0]).includes('query_range') && !(opt && opt.noclone)) res.clone().text().then(() => { m.resp = performance.now() })
     return res
   }
   // A worker that answers for the page (a candidate reads the matrix in one): the time its
@@ -294,10 +333,10 @@ async function measureCase(browser, SERIES) {
       const B = (i % 2 ? [...BUILDS].reverse() : BUILDS)[j % BUILDS.length]
       const ctx = await browser.newContext({ ...LAYOUT, colorScheme: 'light' })
       const page = await ctx.newPage()
-      await page.addInitScript(instrument)
+      await page.addInitScript(instrument, { noclone: NOCLONE || B.noclone })
       const cdp = await ctx.newCDPSession(page)
-      // --nobuffer: DevTools keeps no copy of response bodies (neither this session's Network agent nor Playwright's own)
-      if (NOBUFFER) { const impl = page._connection.toImpl(page); await (impl.delegate || impl._delegate)._mainFrameSession._client.send('Network.enable', { maxTotalBufferSize: 0, maxResourceBufferSize: 0 }) } else await cdp.send('Network.enable')
+      await networkWithoutCopies(page, cdp, BUFFER || B.buffer)
+      const copies = watchCopies(page, cdp)
       await cdp.send('Network.emulateNetworkConditions', FAST_4G)
       await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 })
       const load1 = os.loadavg()[0]
@@ -326,6 +365,8 @@ async function measureCase(browser, SERIES) {
       const shifts = await page.evaluate((from) => window.__m.shifts.filter((s) => s.t >= from), run.shiftFrom)
       r.clsRun = shifts.filter((s) => !s.recent).reduce((a, s) => a + s.value, 0)
       r.clsRunAll = shifts.reduce((a, s) => a + s.value, 0)
+      r.bodyCopies = await copies()
+      if (!(BUFFER || B.buffer) && (r.bodyCopies.devtools || r.bodyCopies.playwright)) throw new Error(`DevTools kept a copy of the body although its buffers are off: ${JSON.stringify(r.bodyCopies)}`)
 
       // ---- local changes
       if (hasTable) {
@@ -425,7 +466,7 @@ async function main() {
   for (const B of BUILDS) start(B.root, ['node_modules/vite/bin/vite.js', 'preview', '--port', String(B.port), '--host', '127.0.0.1', '--strictPort'])
   await up(`http://127.0.0.1:${MOCK_PORT}/api/v1/status/buildinfo`)
   for (const B of BUILDS) await up(B.app)
-  const result = { when: new Date().toISOString(), layout: PHONE ? 'phone' : 'desktop', setup: `Chromium, CPU 4x, Fast 4G, ${PHONE ? '400x800, coarse pointer, touch, device scale 2' : '1440x900, fine pointer'}, fresh context per run; builds alternated run by run${NOBUFFER ? '; DevTools keeps no copy of response bodies' : ''}`, cores: CORES, calibrationMs: CALIBRATION_MS, builds: BUILDS.map((b) => ({ name: b.name, root: b.root })), cases: {} }
+  const result = { when: new Date().toISOString(), layout: PHONE ? 'phone' : 'desktop', setup: `Chromium, CPU 4x, Fast 4G, ${PHONE ? '400x800, coarse pointer, touch, device scale 2' : '1440x900, fine pointer'}, fresh context per run; builds alternated run by run${NOCLONE ? '; no harness copy of the body (--noclone)' : ''}${BUFFER ? '; DevTools buffers response bodies (--buffer, as before 2026-11-28)' : '; DevTools keeps no copy of response bodies'}`, cores: CORES, calibrationMs: CALIBRATION_MS, builds: BUILDS.map((b) => ({ name: b.name, root: b.root })), cases: {} }
   try {
     const browser = await chromium.launch()
     for (const SERIES of CASES) {

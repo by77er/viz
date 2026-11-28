@@ -1,302 +1,462 @@
 # Chart speed: a many-series result painted sooner (app-v9 review, B1)
 
-## Paused 2026-11-27
+## Where it stands, 2026-11-28
 
-Work stopped on the owner's instruction before it was finished. **Nothing in the shared tree was
-changed** except this directory: the chart's source, `dist/` and `app/` are as they were (checked:
-`design-system/project/components/Chart/preview.html` is byte-identical to commit `0aa0f7a`). Nothing
-was committed. Everything below was **measured here** (this shared 4-core machine, Chromium headless
-shell under Playwright, CPU slowed 4x, Fast 4G, the development mock on localhost); the load is given
-with every figure. The scratch copy it was built in is gone; the patches and tools here rebuild it.
+This replaces the account paused on 2026-11-27 (its tables are not comparable with these: see "The
+measuring method"). Everything below was **measured here**: this shared 4-core machine, Chromium
+headless shell under Playwright, CPU slowed 4x, Fast 4G, the development mock on localhost, every
+heavy job under the shared machine lock (so no other browser ran during a timing run); the 1-minute
+load is given with every figure.
 
-**Where it stands, in five lines.**
+1. **The harness no longer measures itself.** DevTools no longer keeps a copy of the response body
+   during timed runs; every run checks that it did not. On 4 series the old and new method agree
+   within noise; at 200 series the new one reads 74 ms less "from the last byte" (paired median, 19 of 20
+   pairs quicker; below, "The measuring method").
+2. **The change** does the per-value work once, while the body downloads (each series is put on the
+   time grid by the parser as soon as it has been read), hands the chart the result's own typed
+   arrays (D76: the chart takes a `Float64Array` with NaN for a gap, as well as its first form), and
+   keeps the earlier chart and waiting-line patches.
+3. **Identity is shown.** Chart markup, accessible names, legend row names, text form and table are
+   the same before and after in all 102 states; screenshots are bit-identical too once Chromium
+   rasterises whole layers (the earlier stray pixels were partial raster, and they occurred
+   between two captures of one build as often as between builds).
+4. **The result's paint meets the budget** at 4, 12 and 36 series on both layouts by both
+   definitions, and chart to table at 200 series on the phone is inside (91 ms, near the limit). **At 200
+   series it is not**: the 75th percentile is 127 ms (body read) and 156 ms
+   (last byte) on the desktop, 101 and 118 ms on the phone, down from 190 / 218 and 106 / 125 (paired
+   medians −59 / −61 ms on the desktop, −20 / −15 ms on the phone). The medians on the phone, 79 and
+   95 ms, are inside.
+5. So a **waiver request** for the 200-series rows is at the end, with what a person sees and what
+   would meet the budget.
 
-1. The change in hand (`chart.patch` and `app.patch`) makes the result's paint a little quicker and
-   **does not bring 200 series on the desktop inside the budget**: 20 alternating runs, body read to
-   painted, 75th percentile 135 ms before and 118 ms after, against 100.
-2. Its measured gain is small and partly inside the noise: the median of paired differences is
-   -9 ms at 36 series on the desktop (quicker in 16 of 20 pairs), -12 ms at 200 (9 of 16), -4 ms at
-   36 and at 200 on the phone (13 and 11 of 20). The profile had promised three times that.
-3. **Identity is not proven.** One run of the comparison found the chart's markup, accessible names,
-   legend row names, text form and table the same before and after in 94 of 102 states (the other 8
-   are the fixture page, whose markup carries a time stamp and differs between two runs of one build too), and
-   screenshots that differ in 12 states (by 1 to 11 pixels, or by a 4 px shift of words in the head that
-   follows the clock), as two runs of the *same* build also do (11 states). The tool was changed to
-   settle that and was not run again.
-4. "From the last byte" cannot be met at 200 series as the harness measures it: about 70 ms of that
-   row is DevTools keeping its own copy of the body (below). That is the largest single finding.
-5. What would meet the budget at 200 series is not in these patches: fewer passes over the 144,000
-   values (options at the end). One of them is prototyped, tested for equivalence, and unmeasured.
+**Which rows meet the budget** (75th percentile of 20 alternating runs, ms; budget 100; every run
+judged; "after" is the change):
 
-**Files here.**
+| Row | Desktop 4 | Desktop 12 | Desktop 36 | Desktop 200 | Phone 4 | Phone 12 | Phone 36 | Phone 200 |
+|---|---|---|---|---|---|---|---|---|
+| Body read to painted, before | 62 | 84 | **113** | **190** | 43 | 80 | 86 | **106** |
+| Body read to painted, after | 40 | 71 | 80 | **127** | 50 | 64 | 70 | **101** |
+| Last byte to painted, before | 71 | 92 | **127** | **218** | 58 | 87 | 100 | **125** |
+| Last byte to painted, after | 46 | 80 | 90 | **156** | 65 | 70 | 78 | **118** |
+| Chart to table, before | 37 | 61 | 87 | 98 | 66 | 83 | **113** | 88 |
+| Chart to table, after | 42 | 63 | 59 | 94 | 71 | 82 | 101, over by 1 | 91 |
 
-| File | What it is | State |
-|---|---|---|
-| `chart.patch` | `design-system/project/components/Chart/preview.html`: the model's two loops, path text, the width cache. Applies to the tree with `git apply` | **unproven work in progress**: identity not established; `tools/check.mjs` and `npm test` of the design system not run on it (`tools/test/chart-rules.test.mjs` alone: 21 of 21) |
-| `app.patch` | `app/src/explore/waiting.tsx`: the waiting line goes in the render that shows the result | **unproven work in progress**: `tsc` clean, 224 unit tests pass, `e2e/app.cjs` 128 of 130 with the same two keyboard-order checks failing before and after; `errors.cjs`, `dashboards.cjs`, `prod.cjs` not run; changes one frame a person can see, so it needs the app's reviewer |
-| `app-option-one-pass.prototype.patch` | Option 1 below: `specOfMatrix` in `app/src/charts/spec.ts`, used by Explore | **unproven prototype, never measured**; made against `0aa0f7a`, and `ExplorePage.tsx` has changed since, so its third file needs applying by hand |
-| `harness-nobuffer.patch` | `--nobuffer` for `app/e2e/measure.cjs` | proposal, not applied; reaches into Playwright's own session |
-| `model-equivalence.test.mjs` | `chartModel` and `textLines` before and after over 600 random results | passes; three mutants caught (below) |
-| `tools/` | `profile.cjs`, `ab.cjs` (alternating before/after), `identity.cjs`, `summarise.cjs`, `micro.cjs` | as used; `identity.cjs` holds changes made after its one run (repeated captures, the age not displayed, the fixture's time stamp left out) that have never been run |
-| `data/` | `ab-desktop.json`, `ab-phone.json` (the tables below, every run with its load), `ab-try*.json` (the earlier 4- and 6-run trials), `prof-*.txt` (profiles), `identity.txt`, `identity-first-run.json` | |
+Bold is over. Rows within a tenth of the limit (phone 200 body read after, 101; chart to table at 200,
+94 and 91; phone 36 chart to table after, 101; desktop 36 last byte after, 90) should be measured
+twice by the review's rule: they were measured once, in one session.
 
-## What changed in the patches
+## The measuring method (the lead's decision 1)
 
-**`chart.patch`** (the one source of `dist/viz-chart.js`):
+**What changed.** `app/e2e/measure.cjs` and `tools/ab.cjs` enable the DevTools Network domain, for
+the network shaping, with no body buffer (`Network.enable {maxTotalBufferSize: 0,
+maxResourceBufferSize: 0}`), in their own session and in Playwright's own session for the page
+(which Playwright enables for every page; it is not a public interface, so if it cannot be reached
+the run stops instead of measuring with the buffer). With the buffers, each of the two agents kept
+a copy of the body and decoded it on the page's main thread when the load finished (about 70 ms for
+the 3.4 MB of 200 series at 4x CPU, found in the trace on 2026-11-27), work no browser without
+DevTools open does. `--buffer` keeps the old way. The rows are otherwise defined as before: "from
+the last byte" is Resource Timing's `responseEnd` of the query to the end of the last frame of the
+result's burst of changes; "body read" is from when the harness's own copy of the body
+(`res.clone().text()`) has been read.
 
-1. `chartModel`: each series' last, lowest and highest value are read in an indexed loop, not
-   `for … of`; the Other band is gathered series by series into two `Float64Array`s, not step by
-   step across 192 arrays.
-2. Path data: every series of a draw shares its x positions, so each is written as text once per
-   draw and not once per series; the band's edges reuse the y text its area was written with. The
-   text of every `d` is meant to be the same, character for character.
-3. Text widths are cached in one map per font, so a look-up builds no key string.
+**How it is checked.** Every run asks both DevTools sessions for the query's body afterwards
+(`Network.getResponseBody`, and Playwright's `response.body()`): with the buffers both give it, without
+them neither does, and a run in which either does stops with an error. In the runs below: with the buffers (`--buffer`) both sessions held the body in all 40 of 40 runs; without them neither did, in every one of the 40 runs of the method check without them, the 20 of the check of the harness's copy and the 320 runs of the comparison.
 
-No token, class, markup or CSS. **`app.patch`**: `useWaiting` hides the waiting line in the render
-that shows the result when it has been up for its 300 ms; before, an effect hid it one render later,
-so every wait over 400 ms (always, at 200 series on Fast 4G) rendered the page twice and left the
-line over the new result for one more frame (seen in `tools/profile.cjs --frames`: three changes to
-the panel in two frames before, two changes in one frame after).
+**The two methods on one build, alternated run by run** (the build before the change, 20 runs each):
 
-## The profile before (where the time went)
+| Series | Method | Load at run start: median (range); runs at or below 4 | Body read to painted, ms | Last byte to painted, ms | Chart to table, ms |
+|---|---|---|---|---|---|
+| 4 | with the buffers | 1.8 (1.2 to 2.3); 20 of 20 | 50 / 57 (40 to 74; 20) | 57 / 71 (45 to 91; 20) | 37 / 47 (26 to 59; 20) |
+| 4 | without | 1.8 (1.3 to 2.4); 20 of 20 | 50 / 66 (37 to 79; 20) | 55 / 79 (41 to 92; 20) | 43 / 57 (34 to 70; 20) |
+| 4 | pairs: without less with | | +0; quicker in 9 of 20 | −2; quicker in 11 of 20 | +6; quicker in 6 of 20 |
+| 200 | with the buffers | 2.2 (1.6 to 3.9); 20 of 20 | 154 / 168 (114 to 216; 18) | 267 / 286 (194 to 332; 20) | 65 / 98 (49 to 122; 20) |
+| 200 | without | 2.3 (1.6 to 3.5); 20 of 20 | 149 / 194 (119 to 220; 18) | 173 / 225 (141 to 251; 20) | 67 / 77 (55 to 95; 20) |
+| 200 | pairs: without less with | | +5; quicker in 7 of 16 | −74; quicker in 19 of 20 | −7; quicker in 10 of 20 |
 
-`tools/profile.cjs`: a Chrome trace (`devtools.timeline`) and a sampling CPU profile (250 µs)
-around the press on Run query, cut to the window; median of 5 runs; an unminified build of the
-same source so that functions have names (it runs about a tenth slower than the measured build,
-and the profiler adds to that: read the shares, not the totals). Full output: `data/prof-before-*.txt`.
+Desktop layout, started 2026-11-28 09:37 UTC, calibration 342 ms, 4 cores. `data/method.json`.
 
-| From "a copy of the body has been read" to "painted", ms at 4x CPU | Desktop 36 | Desktop 200 | Phone 36 | Phone 200 |
-|---|---|---|---|---|
-| **Total** (load at run start 2.3 to 4.5) | 90 | 165 | 77 | 115 |
-| App, React render of the page | 10 | 31 | 10 | 24 |
-| of which: result on the time grid (`alignSeries`) | 7 | 14 | 2 | 9 |
-| of which: grid to the chart's arrays (`toSpec`) | < 1 | 14 | 3 | 9 |
-| Chart, `draw()` | 42 | 60 | 26 | 39 |
-| of which: the model (`chartModel`: figures of every series, slots, the band) | 10 | 26 | 6 | 15 |
-| of which: the plot's markup (`drawPlot`: path text, then `innerHTML`) | 20 | 22 | 11 | 10 |
-| of which: the legend (`legend`) | 6 | 10 | 6 | 7 |
-| of which: the text form | 2 | 2 | 1 | 1 |
-| Garbage collection (young generation) | 6 | 17 | 4 | 8 |
-| Browser: layout | 13 | 15 | 15 | 11 |
-| Browser: parse of the chart's markup | 4 | 5 | 2 | 3 |
-| Browser: style, pre-paint, paint | 6 | 9 | 6 | 6 |
-| A second render and frame to take the waiting line away (from one trace: a 13 ms task, then a frame of 7 to 10 ms; the phone's was seen, not timed) | 0 | about 15 to 20 | 0 | present |
+**Reading.** On 4 series the two methods agree within noise: medians 50 and 50 ms (body read), 57 and
+55 ms (last byte), paired differences +0 and −2 ms, quicker in 9 and 11 of 20; the 75th percentiles
+(57 against 66, 71 against 79) differ by less than the spread of either. At 200 series the body read
+row is unchanged (paired +5 ms, quicker in 7 of 16), which is consistent with DevTools decoding its
+copies before the harness's own copy resolves (not checked in a trace this time). The last byte row falls by 74 ms in the pairs (median 267 to 173 ms,
+quicker in 19 of 20): that is the DevTools work, and it is now out of every figure below. Earlier
+figures, the review's and 2026-11-27's included, are not comparable with these.
 
-What the profile says, against the candidates in the brief:
+**The harness's own copy of the body** (`res.clone()`, which the "body read" row needs) was checked
+the same way: 10 alternating runs at 200 series on the build before, with and without
+it (`--noclone`), last byte to painted: 158 / 201 with the copy, 149 / 161 without, paired −19 ms,
+quicker in 8 of 10. So the harness's own copy also costs something after the last byte at 200 series
+(its decoding of 3.4 MB on the page's main thread), about 10 to 20 ms on 10 runs: **not removed** here,
+because the "body read" row is defined by that copy, and both rows come from one run. It weighs on both
+builds alike; it is in "Open items". At 4 to 36 series it was not measured (the body is a tenth of the
+size or less).
 
-- **JSON parse** is not in this window: the app reads the body as it arrives into typed arrays
-  (`api/matrix.ts`), and its last piece is done before the harness's copy resolves.
-- **DOM nodes for the uncoloured series**: there are none to save. Other is already one band (three
-  paths) however many series it holds; a 200-series plot's markup is 131 parser tokens.
-- **Reads after writes**: one (`svg.clientWidth` at the start of a draw, 1 to 3 ms, because React
-  has just written the head). Left alone: the same layout is due at the frame anyway.
-- **Legend rows beyond the visible ones, table preparation**: already not on this path (the legend
-  holds 8 rows and Other; the table is prepared in idle time).
-- **Decimation to the pixel grid**: 721 points on a plot about 1,300 px wide on the desktop, so there
-  is nothing to drop there; not done on the phone either (identity would have to be shown per width).
-- What it does show: three passes over all 144,000 values in interpreted or half-optimised code
-  (the page has run each loop once before, at load), 17,000 `toFixed` calls for 8,600 points, a
-  young-generation collection of arrays that all survive, and a whole extra render for the waiting line.
-- **Layout (13 to 15 ms) is the legend table**, not the SVG: with the legend table not displayed the
-  same draw lays out in 5 ms; with the plot's text not displayed 12 ms; with its paths not displayed
-  15 ms. It is the same at 4 and at 200 series. Not changed here (see "What did not help").
+**The system's README** does not say how "from the last byte" is taken, so no sentence there needed
+correcting. For the reviewer: `design-system/tools/speed.mjs` also enables the Network domain with
+its buffers on (line 118); its "arrives" is when its own copy of the body has been read, so the same
+cost may sit in its figures for large bodies. Not changed here (it is the system's tool, outside this
+change); recorded under "Open items".
 
-**The harness's own cost, found on the way.** From the last byte to "a copy of the body has been
-read" is 23 to 33 ms at 36 series and 58 to 100 ms at 200. Most of that is neither the app nor the
-chart: with the DevTools Network domain enabled (Playwright enables it for every page, and
-`measure.cjs` and `speed.mjs` enable it again in their own session), each agent keeps a copy of the
-body and decodes it on the page's main thread when the load finishes
-(`ResponseBodyLoader::DidFinishLoadingBody`, two `TextResourceDecoder::Decode` of 3,436,881 bytes:
-72 ms in one task at 4x CPU, before the page's next task can run). With both buffers set to zero
-(`Network.enable {maxTotalBufferSize: 0, maxResourceBufferSize: 0}` on both sessions) the same
-build's last byte to body read fell from about 100 ms to 25 to 32 ms. No browser without DevTools
-open does this work. So the row "from the last byte" carries about 70 ms at 200 series that a person never waits for
-(at 36 series it was not measured; by the size of the body it would be about 12 ms). `harness-nobuffer.patch` adds this as an option to
-`app/e2e/measure.cjs` (not applied; it reaches into Playwright's own session, which is not a public
-interface, so the default should stay and a figure taken with it should say so). The tables below give the row as the harness defines it. The 20-run comparison without the buffers was
-queued and not run before the pause; what exists is three runs each way of the build before the change
-(last byte to body read 129, 101 and 264 ms with the buffers; 29, 25 and 256 ms, then 32, 260 and 261 ms
-without: the runs near 260 ms are the ones in which the harness's own copy resolved after the paint).
+## What changed
 
-A second thing about the harness: its "body read" figure is only taken when its own copy of the body
-resolves before the result's first change to the page. When the app is ahead of that copy the run
-has no such figure (it still has "from the last byte"). The number of runs behind each cell is in
-the tables for that reason.
+**App** (`app.patch`, against the shared tree's `app/` as it is now):
+
+1. `api/matrix.ts`, `api/client.ts`, `lib/series.ts`: `MatrixParser` takes the query's grid, and puts
+   each series on it (`placeOnGrid`, the code `alignSeries` ran, moved into one function both call) in
+   the piece of the body that ends that series, so the work is done while the rest downloads.
+   `alignSeries` uses a series' placement only when its start, end and step are exactly the query's,
+   and otherwise places it itself, as before; an off-grid sample still sends the whole result down the
+   general path.
+2. `charts/spec.ts`, `charts/systemChart.ts`, `explore/ExplorePage.tsx`: `toSpec(…, typed: true)` hands
+   the chart the result's own `Float64Array`s (NaN for a gap; a copy only when the unit is scaled).
+   Explore uses it; the dashboards keep the first form.
+3. `explore/waiting.tsx` (the earlier `app.patch`): the waiting line goes in the render that shows the
+   result, so a wait over 400 ms no longer renders the page twice and leaves the line over the new
+   result for one more frame. **This changes one frame a person can see** (the line is gone one frame
+   sooner); it needs the app's reviewer.
+4. `e2e/measure.cjs`: the harness change above.
+5. Tests: `api/matrixGrid.test.ts` (400 random bodies, cut into random pieces, on and off the grid,
+   with gaps, NaN, ±Inf, and a stale grid: `alignSeries` gives the same with and without the parser's
+   placement), `charts/typedSpec.test.ts` (300 random results in six units: the typed form is the first
+   form with NaN for null, and is the result's own array when not scaled). `spec.test.ts` is untouched.
+
+**Design system** (`design-system/project/components/Chart/preview.html`, the source of
+`dist/viz-chart.js`):
+
+1. `windowOf` (new): a series' window, in either form (D76). A typed series with no gap in the window is
+   a view of the caller's array (no copy); one with a gap becomes the first form, with null for each gap.
+   Everything after reads one form.
+2. The earlier `chart.patch`: indexed loops for a series' figures; the Other band gathered series by
+   series into two `Float64Array`s; every x position written as text once per draw; the band's edges
+   reusing the y text of its area; text widths cached per font. Same path text, character for character.
+
+No token, class, markup or CSS. `design/DECISIONS.md` D76 records the interface change.
+
+## Identity
+
+`tools/identity.cjs`, 102 states per build: Explore at 4, 36 and 200 series, light and dark, 1440 px
+and 400 px (touch, device scale 2), at rest, with a keyboard readout, with a pointer readout (1440
+only), zoomed in, with Other opened, with a legend row chosen, as table and as text; and the design
+system's own Chart preview and fixture pages in the same themes and widths, at rest and with a
+keyboard readout on every chart. Per state: SHA-256 of a full-page screenshot and of every chart's
+markup, the charts' accessible names, the legend rows' names, the text forms, the table. Every build is
+captured twice, in turn; a state's pixels match when some capture of one build equals some capture of
+the other bit for bit; everything else must be equal in every capture.
+
+**Run 1, the browser as every other tool runs it** (`data/identity.json`, `data/identity.txt`; 2
+captures per build, 09:08 to 09:14 UTC):
+
+- **Chart markup, accessible names, legend row names, text form, table: the same before and after in
+  all 102 states**, and the same in every capture of each build. (The fixture page's time stamp,
+  `data-for`, is left out of the markup hash, as is the result's age from the screenshots.)
+- **Screenshots: 101 of 102 states match.** The one that does not, "app 4 series, light, 1440 px, a
+  legend row chosen", differs in 6 pixels, by 1 in one channel, between the plot's left and right
+  edges (`tools/pixdiff.py`). Two captures of the *same* build were not the same image in 8 states
+  (before) and 11 (after), all of them Explore at 4 series and 1440 px, and all after the first redraw
+  (readouts, zoom, a chosen row, table, text): the same kind of difference, with the same markup.
+- **The cause is partial raster.** With the same markup, Chromium repaints only the region that
+  changed (the crosshair, a row, the plot after a zoom) and rasterises it on its own; a path edge that
+  crosses the region's border is antialiased one level differently from the same edge drawn whole. So
+  which pixels differ depends on what was repainted before the capture, not on the build. The 5 stray
+  pixels of 2026-11-27 were this.
+
+**Run 2, the noisy states again, 3 captures per build, with and without whole-layer raster**
+(`--full-raster`, Chromium's `--disable-partial-raster`; `data/identity-4-partial.*`,
+`data/identity-4-full.*`, 09:35 to 09:37 UTC; the 14 states of Explore at 4 series, 1440 px):
+
+| Raster | States whose captures differed, before | …, after | Before vs after |
+|---|---|---|---|
+| partial (the default) | 8 of 14 | 6 of 14 | identical (some capture of each matches) |
+| whole layers | **0 of 14** | **0 of 14** | **identical, every capture bit for bit** |
+
+**Run 3, all 102 states with whole-layer raster, 2 captures per build** (`data/identity-full-raster.json`,
+`.txt`, 09:54 to 10:00 UTC): **before and after identical in every state: pixels, chart markup,
+accessible names, legend row names, text form, table** (214 charts in the states). Same-build captures
+differed in one state (before: "app 200 series, light, 1440 px, Other opened"), one of whose two images
+is the after build's, bit for bit; it was not looked into further. Every light image differs from its
+dark one (the themes were applied). The comparison images are not committed: there is no difference
+to show.
+
+`model-equivalence.test.mjs`: the chart's model, colour map and text form are the same before and
+after over 600 random results (first test), and the same for the typed form as for the first form over
+600 more (second test).
 
 ## Before and after
 
-`tools/ab.cjs`: `app/e2e/measure.cjs` with the two builds taken in turn, run by run (before, after;
-after, before; …), 20 runs each, typing, crosshair and the forms other than the table left out. A
-cell is median / 75th percentile (lowest to highest; runs that have the figure). Budget: 100 ms.
-"Before" is commit `0aa0f7a`; "after" is both patches.
+`tools/ab.cjs`: the two builds taken in turn, run by run (before, after; after, before; …), 20 runs
+each, in one session per layout, the typing, crosshair and other local steps left out. A cell is
+median / 75th percentile (lowest to highest; runs that have the figure). Budget: 100 ms. "Before" is
+the shared tree's `app/` and `design-system/` at commit `c4a154b`; "after" is that plus both patches.
+"Pairs" is the median of (after less before) over runs taken one after the other, and in how many
+pairs after was quicker. The "body read" figure is taken only when the harness's copy of the body
+resolves before the result's first change to the page; the count of runs behind each cell says how
+often.
 
-**desktop**: Chromium, CPU 4x, Fast 4G, 1440x900, fine pointer, fresh context per run; builds alternated run by run. Started 2026-11-27 02:13 UTC, calibration 332 ms, 4 cores. `ab-desktop.json`
-
-| Series | Build | Load at run start: median (range); runs at or below 4 | Body read to painted, ms | Last byte to painted, ms | Chart to table, ms |
-|---|---|---|---|---|---|
-| 36 | before | 2.7 (1.6 to 3.3); 20 of 20 | 79 / 89 (48 to 131; 20) | 103 / 111 (89 to 157; 20) | 57 / 61 (41 to 85; 20) |
-| 36 | after | 2.5 (1.7 to 3.2); 20 of 20 | 74 / 76 (39 to 122; 20) | 97 / 105 (62 to 157; 20) | 56 / 62 (43 to 94; 20) |
-| 36 | pairs: after less before | | -9; quicker in 16 of 20 | -8; quicker in 15 of 20 | -2; quicker in 10 of 20 |
-| 200 | before | 3.8 (2.3 to 4.4); 13 of 20 | 122 / 135 (91 to 179; 18) | 206 / 223 (173 to 265; 20) | 66 / 72 (57 to 95; 20) |
-| 200 | after | 3.5 (2.2 to 4.5); 13 of 20 | 114 / 118 (88 to 187; 18) | 204 / 216 (168 to 296; 20) | 63 / 72 (45 to 147; 20) |
-| 200 | pairs: after less before | | -12; quicker in 9 of 16 | -5; quicker in 11 of 20 | -4; quicker in 12 of 20 |
-
-**phone**: Chromium, CPU 4x, Fast 4G, 400x800, coarse pointer, touch, device scale 2, fresh context per run; builds alternated run by run. Started 2026-11-27 02:21 UTC, calibration 352 ms, 4 cores. `ab-phone.json`
+**desktop**: Chromium, CPU 4x, Fast 4G, 1440x900, fine pointer, fresh context per run; builds alternated run by run; DevTools keeps no copy of response bodies. Started 2026-11-28 09:19 UTC, calibration 325 ms, 4 cores. `ab-desktop.json`
 
 | Series | Build | Load at run start: median (range); runs at or below 4 | Body read to painted, ms | Last byte to painted, ms | Chart to table, ms |
 |---|---|---|---|---|---|
-| 36 | before | 2.1 (1.7 to 2.7); 20 of 20 | 58 / 66 (47 to 75; 20) | 70 / 79 (58 to 96; 20) | 81 / 84 (65 to 121; 20) |
-| 36 | after | 2.1 (1.6 to 2.6); 20 of 20 | 58 / 63 (42 to 76; 20) | 72 / 76 (52 to 87; 20) | 78 / 83 (60 to 106; 20) |
-| 36 | pairs: after less before | | -4; quicker in 13 of 20 | -3; quicker in 11 of 20 | -4; quicker in 12 of 20 |
-| 200 | before | 3.3 (2.2 to 5.2); 14 of 20 | 91 / 93 (82 to 117; 20) | 142 / 148 (127 to 176; 20) | 91 / 96 (77 to 144; 20) |
-| 200 | after | 3.4 (2.3 to 5.8); 13 of 20 | 87 / 98 (73 to 118; 20) | 135 / 154 (111 to 179; 20) | 91 / 98 (71 to 131; 20) |
-| 200 | pairs: after less before | | -4; quicker in 11 of 20 | -8; quicker in 12 of 20 | -1; quicker in 10 of 20 |
+| 4 | before | 1.2 (1.2 to 1.6); 20 of 20 | 53 / 62 (37 to 77; 20) | 58 / 71 (40 to 86; 20) | 33 / 37 (31 to 50; 20) |
+| 4 | after | 1.3 (1.1 to 1.5); 20 of 20 | 37 / 40 (34 to 64; 20) | 42 / 46 (38 to 78; 20) | 36 / 42 (29 to 72; 20) |
+| 4 | pairs: after less before | | -12; quicker in 19 of 20 | -10; quicker in 17 of 20 | +2; quicker in 8 of 20 |
+| 12 | before | 1.2 (1.0 to 1.9); 20 of 20 | 73 / 84 (61 to 120; 20) | 80 / 92 (64 to 128; 20) | 48 / 61 (36 to 82; 20) |
+| 12 | after | 1.3 (1.1 to 2.0); 20 of 20 | 60 / 71 (50 to 108; 20) | 67 / 80 (56 to 115; 20) | 54 / 63 (41 to 79; 20) |
+| 12 | pairs: after less before | | -10; quicker in 14 of 20 | -10; quicker in 14 of 20 | +5; quicker in 9 of 20 |
+| 36 | before | 1.3 (1.1 to 2.0); 20 of 20 | 94 / 113 (71 to 142; 20) | 108 / 127 (80 to 158; 20) | 61 / 87 (49 to 96; 20) |
+| 36 | after | 1.3 (1.1 to 1.8); 20 of 20 | 70 / 80 (55 to 109; 20) | 82 / 90 (63 to 122; 20) | 55 / 59 (50 to 101; 20) |
+| 36 | pairs: after less before | | -29; quicker in 18 of 20 | -32; quicker in 18 of 20 | -6; quicker in 12 of 20 |
+| 200 | before | 1.8 (1.3 to 2.7); 20 of 20 | 164 / 190 (96 to 223; 20) | 192 / 218 (115 to 252; 20) | 75 / 98 (49 to 135; 20) |
+| 200 | after | 1.8 (1.2 to 2.8); 20 of 20 | 110 / 127 (76 to 145; 18) | 136 / 156 (98 to 174; 20) | 67 / 94 (57 to 105; 20) |
+| 200 | pairs: after less before | | -59; quicker in 17 of 18 | -61; quicker in 19 of 20 | -4; quicker in 14 of 20 |
 
-**Not measured:** 4 and 12 series (queued, stopped by the pause, so "no regression on a small result"
-is not shown); the comparison without DevTools' buffers; a second session. The review asked that a
-row within a tenth of its limit be measured twice: none of these was.
+**phone**: Chromium, CPU 4x, Fast 4G, 400x800, coarse pointer, touch, device scale 2, fresh context per run; builds alternated run by run; DevTools keeps no copy of response bodies. Started 2026-11-28 10:06 UTC, calibration 326 ms, 4 cores. `ab-phone.json`
 
-**Which rows meet the budget in this session** (75th percentile, as the harness defines the rows):
+| Series | Build | Load at run start: median (range); runs at or below 4 | Body read to painted, ms | Last byte to painted, ms | Chart to table, ms |
+|---|---|---|---|---|---|
+| 4 | before | 1.2 (0.9 to 1.6); 20 of 20 | 37 / 43 (29 to 61; 20) | 43 / 58 (32 to 78; 20) | 63 / 66 (48 to 88; 20) |
+| 4 | after | 1.1 (0.9 to 1.3); 20 of 20 | 41 / 50 (31 to 68; 20) | 54 / 65 (35 to 81; 20) | 66 / 71 (40 to 87; 20) |
+| 4 | pairs: after less before | | +1; quicker in 8 of 20 | +4; quicker in 8 of 20 | -1; quicker in 10 of 20 |
+| 12 | before | 1.0 (0.7 to 1.5); 20 of 20 | 76 / 80 (44 to 89; 20) | 82 / 87 (48 to 96; 20) | 72 / 83 (49 to 93; 20) |
+| 12 | after | 1.0 (0.8 to 1.5); 20 of 20 | 57 / 64 (40 to 72; 20) | 63 / 70 (43 to 79; 20) | 70 / 82 (50 to 128; 20) |
+| 12 | pairs: after less before | | -17; quicker in 15 of 20 | -18; quicker in 14 of 20 | -4; quicker in 12 of 20 |
+| 36 | before | 1.1 (0.8 to 1.4); 20 of 20 | 74 / 86 (57 to 109; 20) | 82 / 100 (63 to 120; 20) | 87 / 113 (73 to 125; 20) |
+| 36 | after | 1.1 (0.8 to 1.3); 20 of 20 | 60 / 70 (42 to 91; 20) | 69 / 78 (48 to 103; 20) | 84 / 101 (65 to 124; 20) |
+| 36 | pairs: after less before | | -18; quicker in 16 of 20 | -19; quicker in 15 of 20 | -9; quicker in 11 of 20 |
+| 200 | before | 1.3 (1.0 to 1.5); 20 of 20 | 98 / 106 (78 to 137; 18) | 114 / 125 (88 to 163; 20) | 84 / 88 (75 to 126; 20) |
+| 200 | after | 1.2 (1.0 to 1.4); 20 of 20 | 79 / 101 (53 to 128; 17) | 95 / 118 (64 to 139; 20) | 82 / 91 (72 to 123; 20) |
+| 200 | pairs: after less before | | -20; quicker in 12 of 15 | -15; quicker in 15 of 20 | -4; quicker in 11 of 20 |
 
-| Row | Desktop 36 | Desktop 200 | Phone 36 | Phone 200 |
-|---|---|---|---|---|
-| Body read to painted, before | 89, inside | **135, over** | 66, inside | 93, inside |
-| Body read to painted, after | 76, inside | **118, over** | 63, inside | 98, inside by 2 |
-| Last byte to painted, before | **111, over** | **223, over** | 79, inside | **148, over** |
-| Last byte to painted, after | **105, over** | **216, over** | 76, inside | **154, over** |
-| Chart to table, before | 61 | 72 | 84 | 96, inside by 4 |
-| Chart to table, after | 62 | 72 | 83 | 98, inside by 2 |
+Every run of both layouts started at a load at or below 4 (the most was 2.8), so every row is judged by
+the README's rule. The "before" figures read higher here than on 2026-11-27 for desktop 200 (190 against
+135 ms at the 75th percentile, body read): "before" is now commit `c4a154b`, which carries the app's
+fixes for the second review (`aa120dc`), and the earlier session ran on `0aa0f7a`; the cause was not
+looked into, and before and after share it.
 
-The build before the change read lower here than in the review (109, 143 and 119 ms there for desktop
-36, desktop 200 and phone 200; 89, 135 and 93 here): the machine, not the code. So the phone's
-200-series rows and the desktop's 36-series row "inside" above are this session's reading of a row the
-review found over, and are not a pass. At 200 series on the desktop 7 of the 20 runs of each build
-began at a load above 4 and by the README's rule are not judged; the 9 runs of each at a load of 3.5
-or less read 126 / 140 before and 112 / 116 after.
-
-**Why the gain is smaller than the profile's sum.** The profile was taken with the sampling profiler
-on an unminified build, which keeps the loops in the slower tiers; in the measured build the optimiser
-has most of them compiled by the second result (`tools/micro.cjs`: the figures loop is 10.6 ms as
-`for … of` and 3.8 ms indexed on its second run in a page, and about 5 ms either way from the third).
-The earlier short trials (`ab-try*.json`, 4 and 6 runs) read -22 and -16 ms at 200 series; the 20-run
-tables are the ones to believe.
+**No regression on a small result**, with one exception to watch: at 4 series on the phone "after" read
+a little slower (pairs +1 ms body read, +4 ms last byte, quicker in 8 of 20 each; 75th percentiles 43 to
+50 and 58 to 65), inside the budget by 35 ms and inside the spread of either build. On the desktop at 4
+series after was quicker (−12 and −10 ms, 19 and 17 of 20).
 
 ## Chart to table at 200 series on the phone
 
-Not the same cause, and not fixed. Profile of the build before, median of 5 (92 ms; load 3.6 to 4.2):
-script 21 ms (React rendering the table's 50 rows, 11 ms), layout 27 ms, style 14 ms, paint and
-pre-paint 9 ms, layerise, hit test and commit 7 ms, the rest tasks with nothing named in them. It is
-the browser styling and laying out the table and the page around it as the chart is parked; the
-chart's script is not in it. This session read 96 and 98 ms at the 75th percentile (the review: 114
-to 122). A fix would be in the table's markup or CSS, or in showing fewer rows first, which a person
-would see.
+Not changed by this work, and **inside the budget in this session**: 84 / 88 ms before and 82 / 91 after
+(median / 75th percentile, 20 runs each, load 1.0 to 1.5, paired −4 ms). The review read 114 to 122 ms
+and the paused session 96 and 98, so this row moves with the machine more than any other, and at 91
+it is within a tenth of the limit: it needs a second session before it is called a pass. The profile
+of 2026-11-27 put it in the browser's style (14 ms) and layout (27 ms) of the table and the page around
+it as the chart is parked, with React's rendering of the table's 50 rows 11 ms; the profile after (`data/prof-after-phone-table.txt`, 5 runs under the profiler,
+median 135 ms there) reads the same: script 37 ms (React's table 5), layout 30, style 18, paint and
+pre-paint 14.
+Nothing cheap was found: the fixes would be in the table's markup or CSS (which needs its own identity
+proof and the app's reviewer), or showing fewer rows first, which a person would see.
 
-## Identity: what was checked and what was not
+## The profile after
 
-`tools/identity.cjs`, one run, three builds (before, after, and a second copy of before as a
-control), 102 states per build: Explore at 4, 36 and 200 series, light and dark, 1440 px and 400 px
-(touch, device scale 2), at rest, with a keyboard readout, with a pointer readout (1440 only), zoomed
-in, with Other opened, with a legend row chosen, as table and as text; and the design system's own
-Chart preview and fixture pages in the same themes and widths, at rest and with a keyboard readout on
-every chart. Per state: SHA-256 of a full-page screenshot and of every chart's markup, the charts'
-accessible names, the legend rows' names, the text forms, the table. Output: `data/identity.txt`,
-`data/identity-first-run.json`.
+`tools/profile.cjs --nobuffer` on an unminified build of "after" (so functions have names; it runs
+slower than the measured build and the profiler adds to that: read the shares, not the totals), median
+of 5 runs, 10:46 to 10:48 UTC, load 0.1 to 1.0. Full output: `data/prof-after-desktop.txt`,
+`data/prof-after-phone.txt`, `data/prof-after-phone-table.txt`.
 
-- **Chart markup, accessible names, legend row names, text form, table: the same before and after in
-  every Explore state and on the Chart preview page.** On the fixture page the markup hash differs in
-  all 8 states, between the two copies of *before* as well: the page stamps each chart with the time
-  its data was fetched (`data-for`); its screenshots are the same in 7 of 8 states (one pixel in the eighth).
-- **Screenshots: 12 states differ between before and after (one of them on the fixture), and 11 between before and its own copy.**
-  Three kinds, read from the images: (a) in the text form at 1440 px, the head's range and step sit 4 px
-  to one side (about 1,500 pixels): the age of the result, which the tool hid but left in the layout, is
-  "just now" or "5 s ago" by the clock; (b) 1 to 11 single pixels at the crosshair's dots and at the
-  plot's left and right edges at 1440 px, 1 to 6 of them between two runs of the same build; (c) 4
-  pixels at the left edge of the Chart preview at 1440 px light, and 1 on the fixture at 400 px light,
-  between before and after only, of the same kind as (b).
-- So no difference was found that the change explains, and **pixel identity is not shown**. The tool now
-  removes the age from the layout, leaves the fixture's stamp out of the hash, and captures every build
-  several times, calling a state identical when any capture of one build equals any capture of the other
-  bit for bit (`--rounds`). That version has not been run. If (c) survives it, it has to be explained
-  before the chart patch is applied.
-- `model-equivalence.test.mjs`: the model, the colour map and the text form are the same before and
-  after over 600 random results. It does not cover path text, which only the markup comparison does.
+| From the body read to painted, ms under the profiler | Desktop 36 | Desktop 200 | Phone 200 |
+|---|---|---|---|
+| **Total** (median of 5) | 124 | 161 | 79 |
+| Script (timeline `FunctionCall`) | 69 | 101 | 51 |
+| of which unattributed native work (`(program)`: mostly the browser's own work inside script, the chart's `innerHTML` and the reads of layout) | 42 | 46 | 33 |
+| of which the chart's plot markup (`drawPlot`, `path`, `lineMarkup`, `bandMarkup`, `xText`, `y`) | 26 | 24 | 7 |
+| of which the chart's model (`chartModel` and its per-series loop, `windowOf`, `key`, `model`) | 5 | 22 | 3 |
+| of which the legend (`legend`, `otherW`) | 7 | 9 | 2 |
+| of which a forced layout (`get clientWidth` at the start of a draw) | 1 | 5 | 2 |
+| of which garbage collection | 5 | 8 | 1 |
+| of which the app's grid (`alignSeries`, `seriesKey`, `seriesName`) | 1 | 5 | 2 |
+| Browser: layout | 23 | 25 | 16 |
+| Browser: parse of the chart's markup | 8 | 8 | 3 |
+| Browser: paint, pre-paint, layerise, style | 10 | 12 | 8 |
+
+Against the profile before (`data/2026-11-27/prof-before-desktop.txt`, desktop 200: 165 ms under the
+profiler, `alignSeries` 14, `toSpec` 14, the model 26, plot markup 22, legend 10, GC 17): the app's two
+passes are gone from this window (`alignSeries` is 1 ms: the placement happens while the body
+downloads), `toSpec` is gone, collection is halved. What is left at 200 series on the desktop is the
+chart's drawing itself (markup about 24 ms and the native work of `innerHTML` and its parse), the model
+(about 20 ms: the per-series figures over 144,000 values, the keys of 200 series and the colour map),
+the legend (9) and the browser's layout (25). The two sessions' profiles were taken at different loads
+(4.5 there, 0.3 here) and on different commits, so only the shares compare.
 
 ## What did not help, and what was not tried
 
-Tuning steps in order, each measured here; the ones that did nothing are kept.
+Tuning steps, each measured; the ones that did nothing are kept.
 
 | Step | How it was measured | Result | Kept |
 |---|---|---|---|
-| Indexed loop for a series' figures, in place of `for … of` | `tools/micro.cjs`: 200 x 721 values in a page at 4x CPU, the loop's second run in the page (what the harness's run is) | 10.6 ms to 3.8 ms (later runs: about 5 either way) | yes |
-| The band series by series into typed arrays, in place of step by step | same | 10.6 ms to 0.9 ms | yes |
-| x text once per draw | same, 8,652 points | 9.4 ms to 6.7 ms on the second run, 9.5 to 1.0 once optimised | yes |
-| Text-width cache without a concatenated key | not measured alone (under 1 ms in the profile) | no measurable change by itself | yes: it only removes work |
-| Waiting line hidden in the result's render (app) | frames after the result in `tools/profile.cjs --frames` | 3 changes in 2 frames became 2 changes in 1 frame at 200 series | yes (app patch) |
-| `Array.from(typed)`, spread, or `slice.call` for the grid-to-array copy in `toSpec` | `tools/micro.cjs` | 16 to 33 ms against 5 ms for the loop the app has | no: slower |
-| `v - v === 0` in place of `Number.isFinite` there | same | 4.7 against 5.4 ms on the second run: inside the noise | no |
-| `vector-effect: none` on the plot's shapes (the plot is never scaled) | `tools/profile.cjs --css`, layout time of the result's frame, 36 series | 13.8 ms to 13.6 ms | no: no effect |
-| `table-layout: fixed` on the legend table | same | 15.1 ms to 13.8 ms, inside the noise of 3 runs | no: not shown to help, and it would need its own identity proof |
-| `content-visibility: visible` on the chart | same | 14.1 ms | no: no effect |
+| (2026-11-27) Indexed loop for a series' figures, in place of `for … of` | `tools/micro.cjs`: 200 x 721 values in a page at 4x CPU, the loop's second run | 10.6 ms to 3.8 ms (later runs: about 5 either way) | yes |
+| (2026-11-27) The band series by series into typed arrays | same | 10.6 ms to 0.9 ms | yes |
+| (2026-11-27) x text once per draw | same, 8,652 points | 9.4 ms to 6.7 ms on the second run | yes |
+| (2026-11-27) Text-width cache without a concatenated key | not measured alone | no measurable change | yes: it only removes work |
+| (2026-11-27) Waiting line hidden in the result's render (app) | frames after the result | 3 changes in 2 frames became 2 in 1 | yes |
+| (2026-11-27) `Array.from(typed)`, spread, `slice.call` for the copy in `toSpec` | `tools/micro.cjs` | 16 to 33 ms against 5 ms for the loop | no: slower |
+| (2026-11-27) `v - v === 0` for `Number.isFinite` there | same | inside the noise | no |
+| (2026-11-27) `vector-effect: none`, `table-layout: fixed` on the legend, `content-visibility: visible` | layout time of the result's frame | no effect, or inside the noise of 3 runs | no |
+| (2026-11-28) Each series put on the grid in the parser, as it is read | `ab.cjs`, alternating, together with the next step | see the tables | yes |
+| (2026-11-28) Typed arrays through the chart's interface (D76) | same | see the tables | yes |
 
-Not tried, because the profile did not point at them: one path element for Other's lines (Other is
-already one band), deferring legend rows or the text form (2 ms together, and the app's fixes and
-tests read them in the same task), decimating points. Not done, because it would change what a
-person sees: painting the coloured series first and the rest a frame later.
+The two steps of 2026-11-28 were measured together, with the earlier patches, as one "after": the
+lock that every browser run waits for (shared with three other builders, 10 to 30 minutes a turn)
+left room for one complete alternating comparison per layout, not one per step. So their separate
+shares are not measured; the profile after shows where the time now goes.
 
+Not tried: a two-step or canvas rendering (it changes what a person sees: out of scope); decimating
+points (721 points on a plot about 1,300 px wide); deferring the legend rows or the text form.
 
 ## Mutants
 
-On copies in the scratch area, never in the tree.
+On copies in the scratch area, never in the tree. Every one was caught.
 
 | Mutant | Caught by |
 |---|---|
-| Band: lowest taken as `p > lo` | `model-equivalence.test.mjs`, case 0 |
-| A series' figures read to `length - 1` | `model-equivalence.test.mjs`, case 0 |
-| Band: the first member of Other left out | `model-equivalence.test.mjs`, case 0 |
-| x positions written to whole pixels (`toFixed(0)`) | **not run**: prepared for `identity.cjs --only system`, stopped by the pause |
+| (2026-11-27) Band: lowest taken as `p > lo` | `model-equivalence.test.mjs`, first test |
+| (2026-11-27) A series' figures read to `length - 1` | `model-equivalence.test.mjs`, first test |
+| (2026-11-27) Band: the first member of Other left out | `model-equivalence.test.mjs`, first test |
+| Chart: a NaN in a typed series kept as a value | `model-equivalence.test.mjs`, second test |
+| Chart: a typed gap written as 0, not null | `model-equivalence.test.mjs`, second test |
+| Chart: a typed window one step short | `model-equivalence.test.mjs`, second test |
+| Series: the parser's placement used without checking it is the query's grid | `app/src/api/matrixGrid.test.ts` |
+| Series: ±Inf kept on the grid | `app/src/api/matrixGrid.test.ts` |
+| Parser: a series placed with its last sample left out | `app/src/api/matrixGrid.test.ts` |
+| Spec: the typed form not scaled | `app/src/charts/typedSpec.test.ts` |
+| Spec: the typed form copying when not scaled | `app/src/charts/typedSpec.test.ts` |
 
-## What I believe the fix is, and how far it is
+The 2026-11-27 mutant "x positions written to whole pixels" was not run again: path text is covered
+by the markup hashes of `identity.cjs`, which compare it character for character.
 
-Remaining at 200 series on the desktop, from the profile of the patched build (148 ms under the
-profiler at a load of 4.5 to 4.8, so shares only): the app's two passes over the result 29 ms
-(`alignSeries` 20, `toSpec` 9), the chart's draw about 55 ms (model 16, plot markup 16, legend 10),
-layout 14 ms (the legend table), garbage collection 6 ms, React about 12 ms. Three options, largest first:
+## Waiver request: the result's first paint at 200 series
 
-1. **Do the per-value work once, and before the last byte.** The parser already fills typed arrays as
-   the body arrives; putting each finished series on the time grid there (the window is known when the
-   request is sent) takes `alignSeries` off the path by both definitions. It needs `app/src/api/` and
-   `app/src/lib/`, outside what I was asked to patch. A smaller step inside the asked-for directories is
-   prototyped (`app-option-one-pass.prototype.patch`): one pass from the parsed result to the chart's
-   arrays, the grid form made in idle time for the table, falling back to the two passes when a sample
-   is off the grid. It gives what `alignSeries` then `toSpec` give on 200-odd random results (one
-   test, passing). Estimated 10 to 20 ms at 200 series from the profile; **not measured**.
-2. **Typed arrays through the chart's interface** (a gap as NaN, or the series' figures handed over
-   with it): removes `toSpec`'s copy and the chart's own pass. It changes the chart's contract in about
-   a dozen places that test for a gap, so it is a decision for `design/DECISIONS.md`, not a tuning step.
-   Estimated 10 to 15 ms; not measured.
-3. **The legend table's layout** (8 to 9 of the 13 to 15 ms of layout at every size): two cheap CSS
-   changes did nothing; the cause was not found (the table sits in a container-query, sticky,
-   scroll-timeline wrapper).
+For a second reviewer. The rows: "Receives a result: paint it … 100 ms after it arrives", at 200 series,
+both layouts, both definitions. Everything else in B1 is met in this session (above), the chart to
+table row at 200 on the phone included, though near its limit.
 
-None of these is a two-step paint, and none changes what is drawn. With 1 and 2 together my estimate
-for 200 series on the desktop is about 85 to 95 ms at the median from the body read, which leaves the
-75th percentile near the limit: I would not promise the row. And **the harness needs a decision first**:
-whether "from the last byte" includes DevTools' own copy of the body. With it, that row is about 200 ms
-at 200 series whatever the page does.
+**The best measured numbers** (this session, 20 alternating runs, every run judged, load 1.2 to 2.8):
+
+| 200 series | Body read to painted: median / p75 | Last byte to painted: median / p75 |
+|---|---|---|
+| Desktop, before | 164 / 190 | 192 / 218 |
+| Desktop, after | 110 / 127 | 136 / 156 |
+| Phone, before | 98 / 106 | 114 / 125 |
+| Phone, after | 79 / 101 | 95 / 118 |
+
+Of the last byte row, about 10 to 20 ms at 200 series is the harness's own copy of the body (10 runs,
+"The measuring method"), which a person's browser does not make either; it is in both builds, so the
+comparison stands, and the absolute figure overstates by about that much.
+
+**The remaining breakdown** at 200 series on the desktop ("The profile after", shares of 161 ms under
+the profiler): the chart's plot markup and the browser's native work in drawing it about 45 per cent,
+the model about 14, the browser's layout about 16, the legend about 6, parse, paint and style about 12,
+collection 5, the app 3. The work that is proportional to the number of values (the model's pass over
+144,000 values, and writing them as path text for the drawn lines and the band) is about a third; the
+rest is drawing an SVG of this size and laying out the legend, the same at 36 series.
+
+**What a person sees.** When a query returns 200 series, the chart appears about an eighth of a
+second after the answer has arrived on a desktop window with a mid-range phone's CPU (median 0.11 s, 3
+in 4 within 0.13 s, from the last byte 0.14 and 0.16 s), and about a tenth of a second on the phone
+layout (0.08 and 0.10 s; 0.10 and 0.12 s). Before this change it was a sixth to a fifth of a second on
+the desktop. Nothing moves meanwhile (layout shift from the press to the settled result: 0 in all 80 runs at
+200 series), the previous result stays visible under the waiting line, and the press is answered at
+once. The whole wait, from releasing Run query to the result painted, is 1.72 s on the desktop and
+1.04 s on the phone at the median ("after"; 1.76 and 1.06 before), most of it the 3.4 MB answer on Fast
+4G, so the paint after the last byte is the last 8 or 9 per cent of the wait.
+
+**How often.** Not measured: viz is not deployed (`app/README.md`), so there is no record of what
+people query. What can be said: in Explore a result has 200 series only when a query groups by a
+label with that many values (per pod, per route and status across a fleet) or returns raw series
+unaggregated; the chart colours 8 and folds the rest into Other, so such a result is legible but not
+the common way to ask. In dashboards the panels are written by people for reading, and a 200-series
+panel is unusual; the dashboards view also still uses the chart's first form (and so did not gain
+the typed path), and its speed is not in this comparison. The 36-series case, which is common in
+Explore (`sum by (service, route, status)`), now meets the budget on both layouts.
+
+**What would meet it, and what it would change for a person.**
+
+1. *Draw on a canvas, or in a worker* (`OffscreenCanvas`): the plot's markup (path text, `innerHTML`,
+   the browser's parse, style and layout of it) would go. It changes the picture's pixels and the way
+   the plot is read by assistive technology (the SVG's structure), so it is a design change of the
+   system's chart, not tuning. Out of scope by the lead's decision.
+2. *A two-step paint*: the coloured lines first, the band and the legend in the next frame. A person
+   would see a frame without the band. Out of scope by the lead's decision.
+3. *The legend table's layout* (about 8 of the browser's 13 to 15 ms of layout at every size, found on
+   2026-11-27): no cause was found and two CSS changes did nothing. Finding it would change nothing a
+   person sees, and might give 5 to 10 ms; not enough alone.
+4. *Draw from a partial result as it arrives*, refining in place ("coarse data first, refined in
+   place", as the budget's own row allows): the chart would show part of the series, or a coarse grid,
+   before the last byte. A person would see the chart fill in. It is allowed by the README's wording,
+   but it is a change of what is seen, so it is the system owner's call.
+5. *The harness's copy of the body*: taking "body read" and "last byte" in separate runs (with and
+   without the copy) removes 10 to 20 ms from the last-byte row at 200 series. It changes no pixel and
+   only the measurement; it is not enough alone for the desktop.
+
+My estimate: (3) and (5) together might bring the phone inside at the 75th percentile, not the desktop;
+the desktop needs (1), (2) or (4).
+
+## Checks run
+
+All under the shared lock, credentials removed from the environment.
+
+| Check | Where | Result |
+|---|---|---|
+| `node design-system/tools/build.mjs` | the shared tree, with the chart change | wrote `dist/` |
+| `node design-system/tools/check.mjs design-system/project/components/Chart` | the shared tree | exit 0: rendered audit 0 failures (30 previews, both themes, rest, hover, press, a finger's press, reserved heights), contrast and structure 873 of 873, literal values 0 |
+| `cd design-system && npm test` | the shared tree | 199 tests: 139 pass, 0 fail, 60 skipped (the slow set, `test:slow`, not run) |
+| `model-equivalence.test.mjs` | the scratch copies (before, after) | 2 of 2 pass |
+| `npx tsc --noEmit`, `npx vitest run` | the scratch "after" | tsc clean; 23 files, 233 tests pass (before the last edit, a type annotation in `typedSpec.test.ts`, after which `npm run build`, which runs `tsc --noEmit`, was clean) |
+| the same, on the shared tree's `app/` as it is now with `app.patch` applied, in a copy | `tsc` clean; 23 files, 233 tests pass (10:32 UTC) |
+| `git apply --check design-system/reviews/chart-speed/app.patch` | the shared tree | passes |
+| mutants | copies in the scratch area | 8 of 8 new ones caught (above) |
+| the app's e2e suites | | **not run** (Open items) |
+
+## Open items
+
+- **The waiver** above, for a second reviewer.
+- `design-system/tools/speed.mjs` enables the Network domain with its buffers on (line 118): its figures
+  for large bodies may carry the same DevTools cost. The system's owner should apply the same change
+  there (or say why not).
+- The harness's own copy of the body costs 10 to 20 ms after the last byte at 200 series (10 runs):
+  take the two rows from separate runs, or accept it and say so.
+- Rows within a tenth of their limit, measured once, in one session (see the budget table): a second
+  session is needed before they are called passes.
+- `app.patch` changes one frame a person sees (the waiting line goes one frame sooner): the app's
+  reviewer.
+- The app's e2e suites (`app.cjs`, `errors.cjs`, `dashboards.cjs`, `prod.cjs`) were not run on the
+  patched app here: the app builder runs them on the shared tree and they need long turns of the lock.
+- The dashboards view still uses the chart's first form; moving it to the typed form is one argument
+  (`typed: true` in `dashboards/PanelView.tsx`) and needs its own before and after.
+- The design-system images (`shots.mjs`) were not made again: identity shows there is nothing to show.
+
+## Files here
+
+| File | What it is |
+|---|---|
+| `app.patch` | every `app/` change, against the shared tree's `app/` as it is now (`git apply --check` passes) |
+| `model-equivalence.test.mjs` | the chart's model and text form before and after (needs `VIZ_BEFORE`), and the typed form against the first (needs nothing) |
+| `tools/ab.cjs` | alternating before/after; `--buffer`, `--noclone`, and builds named `x+buffer` or `x+noclone` to compare methods on one build |
+| `tools/identity.cjs` | identity of rendering between builds; `--rounds`, `--full-raster`, `--series`, `--widths` |
+| `tools/harness-edit.cjs` | the harness change, as applied to `ab.cjs` and `app/e2e/measure.cjs` |
+| `tools/profile.cjs`, `tools/micro.cjs`, `tools/summarise.cjs`, `tools/pixdiff.py` | the profile, the micro-benchmarks, the tables, where two images differ |
+| `data/` | every run with its load (`ab-desktop.json`, `ab-phone.json`, `method.json`, `clone.json`), the identity results; `2026-11-27/` holds the paused session's files (its tables and profiles), measured with the buffers |
+
+`chart.patch` and `harness-nobuffer.patch` of 2026-11-27 are gone: the first is now in the chart's
+source, the second in `app.patch`. `app-option-one-pass.prototype.patch` is gone: option 1 was done in
+the parser instead.
 
 ## How to run it again
 
-Two checkouts side by side, each with `app/`, `design-system/` and `dashboard/` (the app imports
-it) and `node_modules` linked: `before` at `0aa0f7a`, `after` with the patches; `npm run build` in
-each `design-system/` and then each `app/`. Ports 8931 (mock) and 8940 upward; nothing touches Cloudflare.
+Two copies side by side, each with `app/`, `design-system/` and `dashboard/` and `node_modules` linked:
+`before` at the commit before, `after` with the patches; `npm run build` in each `design-system/` and
+then each `app/`. Ports 8971 (mock) and 8980 upward; nothing touches Cloudflare.
 
 ```
-node tools/identity.cjs --builds before=<dir>,after=<dir> --rounds 2 --out identity.json --images diff/
+VIZ_APP_LIB=<before>/app/e2e/lib.cjs node tools/ab.cjs --builds before=<before>/app,after=<after>/app --series 4,12,36,200 --runs 20 --skip typing,crosshair,local [--phone] --out ab.json
+node tools/ab.cjs --builds buffer+buffer=<before>/app,nobuffer=<before>/app --series 4,200 --runs 20 --skip typing,crosshair,local --out method.json
+node tools/identity.cjs --builds before=<before>,after=<after> --rounds 2 [--full-raster] --out identity.json --images diff/
 VIZ_BEFORE=<before>/design-system/project/components/Chart/preview.html VIZ_AFTER=<after>/design-system/project/components/Chart/preview.html node --test model-equivalence.test.mjs
-node tools/ab.cjs --builds before=<dir>/app,after=<dir>/app --skip typing,crosshair,local --series 200,36,12,4 --runs 20 [--phone] [--nobuffer] --out ab.json
-node tools/profile.cjs --root <dir>/app --series 36,200 --runs 5 [--phone] [--table] [--frames] [--noprofiler] [--nobuffer]
+node tools/profile.cjs --lib <before>/app/e2e/lib.cjs --root <after unminified app> --series 36,200 --runs 5 --nobuffer [--phone] [--table]
 node tools/summarise.cjs ab.json
 ```
-
-Then, before the chart patch goes in: `node design-system/tools/build.mjs`,
-`node design-system/tools/check.mjs design-system/project/components/Chart`, `cd design-system && npm test`.

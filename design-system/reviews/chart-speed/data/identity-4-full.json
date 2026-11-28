@@ -1,0 +1,568 @@
+{
+ "when": "2026-11-28T09:36:52.053Z",
+ "builds": [
+  {
+   "name": "before",
+   "root": "/tmp/claude-0/-home-user-viz/3c79101e-93fd-5a8e-90a7-fca4d8b40aab/scratchpad/b1/before"
+  },
+  {
+   "name": "after",
+   "root": "/tmp/claude-0/-home-user-viz/3c79101e-93fd-5a8e-90a7-fca4d8b40aab/scratchpad/b1/after"
+  }
+ ],
+ "states": 14,
+ "chartsInStates": 14,
+ "comparedWith": "before",
+ "capturesPerBuild": 3,
+ "fullRaster": true,
+ "sameBuildNoise": {
+  "before": {
+   "statesWithMoreThanOneImage": 0,
+   "statesWithUnstableMarkup": []
+  },
+  "after": {
+   "statesWithMoreThanOneImage": 0,
+   "statesWithUnstableMarkup": []
+  }
+ },
+ "differences": [],
+ "lightAndDarkDiffer": true,
+ "records": {
+  "before": {
+   "app 4 series, light, 1440 px, rest": {
+    "png": "6b6c631decf374c7f36daa51091542a8ccc48d509473cefc5aa0ba065b2625cb",
+    "charts": "eda73f9f380950c0bf0f90048d075aa98ed2198030f4f0e1138e86cfbdf41efd",
+    "chartCount": 1,
+    "names": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30. 4 series. Left and right arrows read values; plus and minus zoom."
+    ],
+    "rows": "0045e885d6bf1866ff5282cc7eb41c331b3ce981a95b06648fd9bc3cf98f5bb2",
+    "rowCount": 4,
+    "text": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30, one value every 15 s. 4 series.catalog: last 572, lowest 427, highest 593.auth: last 136, lowest 117, highest 171.orders: last 122, lowest 91, highest 132.checkout: last 102, lowest 75, highest 103."
+    ],
+    "table": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 137544,
+    "pngs": [
+     "6b6c631decf374c7f36daa51091542a8ccc48d509473cefc5aa0ba065b2625cb"
+    ],
+    "unstable": []
+   },
+   "app 4 series, light, 1440 px, readout by keyboard": {
+    "png": "2da2191b10ca0a7d8e8964a7eac5c184ab089680dce1d18096b0b1de314b30eb",
+    "charts": "68237603a980942a92056a0635f45ed57174e148de0603a36057765f69a4f25e",
+    "chartCount": 1,
+    "names": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30. 4 series. Left and right arrows read values; plus and minus zoom."
+    ],
+    "rows": "0045e885d6bf1866ff5282cc7eb41c331b3ce981a95b06648fd9bc3cf98f5bb2",
+    "rowCount": 4,
+    "text": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30, one value every 15 s. 4 series.catalog: last 572, lowest 427, highest 593.auth: last 136, lowest 117, highest 171.orders: last 122, lowest 91, highest 132.checkout: last 102, lowest 75, highest 103."
+    ],
+    "table": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 141427,
+    "pngs": [
+     "2da2191b10ca0a7d8e8964a7eac5c184ab089680dce1d18096b0b1de314b30eb"
+    ],
+    "unstable": []
+   },
+   "app 4 series, light, 1440 px, readout by pointer": {
+    "png": "a3d912c81d413dab2d2e2af9e649b0c0dc3be70a7b3bab8ec73bb982d559fd24",
+    "charts": "dae7ad19051f2a0a682ef3e0ce186409501d54c39ae6f894b2e54e33751e22d5",
+    "chartCount": 1,
+    "names": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30. 4 series. Left and right arrows read values; plus and minus zoom."
+    ],
+    "rows": "0045e885d6bf1866ff5282cc7eb41c331b3ce981a95b06648fd9bc3cf98f5bb2",
+    "rowCount": 4,
+    "text": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30, one value every 15 s. 4 series.catalog: last 572, lowest 427, highest 593.auth: last 136, lowest 117, highest 171.orders: last 122, lowest 91, highest 132.checkout: last 102, lowest 75, highest 103."
+    ],
+    "table": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 142532,
+    "pngs": [
+     "a3d912c81d413dab2d2e2af9e649b0c0dc3be70a7b3bab8ec73bb982d559fd24"
+    ],
+    "unstable": []
+   },
+   "app 4 series, light, 1440 px, zoomed in": {
+    "png": "35f062cfc05ec20b1614c971bd560c82267e4d1a939a48dc48313f97cc12ec3a",
+    "charts": "d6c39d3707b160ad3be76d6890efc086b8b85e8d1140ab3ce8a46bbde84cfdac",
+    "chartCount": 1,
+    "names": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 11:00 to 12:30. 4 series. Left and right arrows read values; plus and minus zoom."
+    ],
+    "rows": "0045e885d6bf1866ff5282cc7eb41c331b3ce981a95b06648fd9bc3cf98f5bb2",
+    "rowCount": 4,
+    "text": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 11:00 to 12:30, one value every 15 s. 4 series.catalog: last 572, lowest 450, highest 593.auth: last 136, lowest 130, highest 171.orders: last 122, lowest 101, highest 132.checkout: last 102, lowest 79, highest 103."
+    ],
+    "table": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 132420,
+    "pngs": [
+     "35f062cfc05ec20b1614c971bd560c82267e4d1a939a48dc48313f97cc12ec3a"
+    ],
+    "unstable": []
+   },
+   "app 4 series, light, 1440 px, a legend row chosen": {
+    "png": "5f4485784734768062020354351d8a8b82023fe9e21b1c0b2c1dc5c4ff540ad0",
+    "charts": "e6c5dced9f95205cceb5206c1c359316b32b2ea6e1361fa23ca1e5ee51219781",
+    "chartCount": 1,
+    "names": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30. 4 series, 1 chosen. Left and right arrows read values; plus and minus zoom."
+    ],
+    "rows": "0045e885d6bf1866ff5282cc7eb41c331b3ce981a95b06648fd9bc3cf98f5bb2",
+    "rowCount": 4,
+    "text": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30, one value every 15 s. 4 series; 1 drawn, as chosen in the legend.catalog: last 572, lowest 427, highest 593."
+    ],
+    "table": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 111794,
+    "pngs": [
+     "5f4485784734768062020354351d8a8b82023fe9e21b1c0b2c1dc5c4ff540ad0"
+    ],
+    "unstable": []
+   },
+   "app 4 series, light, 1440 px, table": {
+    "png": "211011299fa1368b5eadbe29295da16ac036f2f36269a476f44d6be0a0d834e5",
+    "charts": "16cd2ca5b2668fc27e6bd1c38bedc5e3bb8026b0c83f8384a2c5deddca9d4cfa",
+    "chartCount": 1,
+    "names": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30. 4 series. Left and right arrows read values; plus and minus zoom."
+    ],
+    "rows": "0045e885d6bf1866ff5282cc7eb41c331b3ce981a95b06648fd9bc3cf98f5bb2",
+    "rowCount": 4,
+    "text": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30, one value every 15 s. 4 series.catalog: last 572, lowest 427, highest 593.auth: last 136, lowest 117, highest 171.orders: last 122, lowest 91, highest 132.checkout: last 102, lowest 75, highest 103."
+    ],
+    "table": "f10bce106c3b9f7dc6171d705a7c738967a19ff30127b00ec58a20d3373dffdc",
+    "bytes": 90723,
+    "pngs": [
+     "211011299fa1368b5eadbe29295da16ac036f2f36269a476f44d6be0a0d834e5"
+    ],
+    "unstable": []
+   },
+   "app 4 series, light, 1440 px, text": {
+    "png": "5b3282e3ef5f03112cbeb14370335ff54c0eb01139aa75c07e6f2ce3a2e6bbfc",
+    "charts": "16cd2ca5b2668fc27e6bd1c38bedc5e3bb8026b0c83f8384a2c5deddca9d4cfa",
+    "chartCount": 1,
+    "names": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30. 4 series. Left and right arrows read values; plus and minus zoom."
+    ],
+    "rows": "0045e885d6bf1866ff5282cc7eb41c331b3ce981a95b06648fd9bc3cf98f5bb2",
+    "rowCount": 4,
+    "text": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30, one value every 15 s. 4 series.catalog: last 572, lowest 427, highest 593.auth: last 136, lowest 117, highest 171.orders: last 122, lowest 91, highest 132.checkout: last 102, lowest 75, highest 103."
+    ],
+    "table": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 111168,
+    "pngs": [
+     "5b3282e3ef5f03112cbeb14370335ff54c0eb01139aa75c07e6f2ce3a2e6bbfc"
+    ],
+    "unstable": []
+   },
+   "app 4 series, dark, 1440 px, rest": {
+    "png": "4ed6c3ff6151da7a488279fde1865ebe0560af8edc1ece8b5636a72150817fac",
+    "charts": "eda73f9f380950c0bf0f90048d075aa98ed2198030f4f0e1138e86cfbdf41efd",
+    "chartCount": 1,
+    "names": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30. 4 series. Left and right arrows read values; plus and minus zoom."
+    ],
+    "rows": "0045e885d6bf1866ff5282cc7eb41c331b3ce981a95b06648fd9bc3cf98f5bb2",
+    "rowCount": 4,
+    "text": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30, one value every 15 s. 4 series.catalog: last 572, lowest 427, highest 593.auth: last 136, lowest 117, highest 171.orders: last 122, lowest 91, highest 132.checkout: last 102, lowest 75, highest 103."
+    ],
+    "table": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 138720,
+    "pngs": [
+     "4ed6c3ff6151da7a488279fde1865ebe0560af8edc1ece8b5636a72150817fac"
+    ],
+    "unstable": []
+   },
+   "app 4 series, dark, 1440 px, readout by keyboard": {
+    "png": "b00fd1008191c43ae186640cddfa8a207d560de54de5973fb94b136f408e1b91",
+    "charts": "68237603a980942a92056a0635f45ed57174e148de0603a36057765f69a4f25e",
+    "chartCount": 1,
+    "names": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30. 4 series. Left and right arrows read values; plus and minus zoom."
+    ],
+    "rows": "0045e885d6bf1866ff5282cc7eb41c331b3ce981a95b06648fd9bc3cf98f5bb2",
+    "rowCount": 4,
+    "text": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30, one value every 15 s. 4 series.catalog: last 572, lowest 427, highest 593.auth: last 136, lowest 117, highest 171.orders: last 122, lowest 91, highest 132.checkout: last 102, lowest 75, highest 103."
+    ],
+    "table": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 142611,
+    "pngs": [
+     "b00fd1008191c43ae186640cddfa8a207d560de54de5973fb94b136f408e1b91"
+    ],
+    "unstable": []
+   },
+   "app 4 series, dark, 1440 px, readout by pointer": {
+    "png": "fbecb22ed50b430eeb739629f2ab57bc5cfd94086c4bb646097429553fb90dbf",
+    "charts": "dae7ad19051f2a0a682ef3e0ce186409501d54c39ae6f894b2e54e33751e22d5",
+    "chartCount": 1,
+    "names": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30. 4 series. Left and right arrows read values; plus and minus zoom."
+    ],
+    "rows": "0045e885d6bf1866ff5282cc7eb41c331b3ce981a95b06648fd9bc3cf98f5bb2",
+    "rowCount": 4,
+    "text": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30, one value every 15 s. 4 series.catalog: last 572, lowest 427, highest 593.auth: last 136, lowest 117, highest 171.orders: last 122, lowest 91, highest 132.checkout: last 102, lowest 75, highest 103."
+    ],
+    "table": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 143914,
+    "pngs": [
+     "fbecb22ed50b430eeb739629f2ab57bc5cfd94086c4bb646097429553fb90dbf"
+    ],
+    "unstable": []
+   },
+   "app 4 series, dark, 1440 px, zoomed in": {
+    "png": "63aefaefb56bc744ca0a9f26998592e00939dcfe5c027c35d99fee0d187e1202",
+    "charts": "d6c39d3707b160ad3be76d6890efc086b8b85e8d1140ab3ce8a46bbde84cfdac",
+    "chartCount": 1,
+    "names": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 11:00 to 12:30. 4 series. Left and right arrows read values; plus and minus zoom."
+    ],
+    "rows": "0045e885d6bf1866ff5282cc7eb41c331b3ce981a95b06648fd9bc3cf98f5bb2",
+    "rowCount": 4,
+    "text": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 11:00 to 12:30, one value every 15 s. 4 series.catalog: last 572, lowest 450, highest 593.auth: last 136, lowest 130, highest 171.orders: last 122, lowest 101, highest 132.checkout: last 102, lowest 79, highest 103."
+    ],
+    "table": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 133460,
+    "pngs": [
+     "63aefaefb56bc744ca0a9f26998592e00939dcfe5c027c35d99fee0d187e1202"
+    ],
+    "unstable": []
+   },
+   "app 4 series, dark, 1440 px, a legend row chosen": {
+    "png": "82fc34591a5b84ef44ff2c06cfe455587578a537520be02571b1e1c291068cac",
+    "charts": "e6c5dced9f95205cceb5206c1c359316b32b2ea6e1361fa23ca1e5ee51219781",
+    "chartCount": 1,
+    "names": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30. 4 series, 1 chosen. Left and right arrows read values; plus and minus zoom."
+    ],
+    "rows": "0045e885d6bf1866ff5282cc7eb41c331b3ce981a95b06648fd9bc3cf98f5bb2",
+    "rowCount": 4,
+    "text": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30, one value every 15 s. 4 series; 1 drawn, as chosen in the legend.catalog: last 572, lowest 427, highest 593."
+    ],
+    "table": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 111931,
+    "pngs": [
+     "82fc34591a5b84ef44ff2c06cfe455587578a537520be02571b1e1c291068cac"
+    ],
+    "unstable": []
+   },
+   "app 4 series, dark, 1440 px, table": {
+    "png": "513548a0c9c6db626b376970c7127af8126d3336fdbc098e39996d0ded77647f",
+    "charts": "16cd2ca5b2668fc27e6bd1c38bedc5e3bb8026b0c83f8384a2c5deddca9d4cfa",
+    "chartCount": 1,
+    "names": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30. 4 series. Left and right arrows read values; plus and minus zoom."
+    ],
+    "rows": "0045e885d6bf1866ff5282cc7eb41c331b3ce981a95b06648fd9bc3cf98f5bb2",
+    "rowCount": 4,
+    "text": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30, one value every 15 s. 4 series.catalog: last 572, lowest 427, highest 593.auth: last 136, lowest 117, highest 171.orders: last 122, lowest 91, highest 132.checkout: last 102, lowest 75, highest 103."
+    ],
+    "table": "f10bce106c3b9f7dc6171d705a7c738967a19ff30127b00ec58a20d3373dffdc",
+    "bytes": 90207,
+    "pngs": [
+     "513548a0c9c6db626b376970c7127af8126d3336fdbc098e39996d0ded77647f"
+    ],
+    "unstable": []
+   },
+   "app 4 series, dark, 1440 px, text": {
+    "png": "ca4d858d68315c5ae02a14eab4385a0c9ee8a080802c93c282afd4875d0d1a8d",
+    "charts": "16cd2ca5b2668fc27e6bd1c38bedc5e3bb8026b0c83f8384a2c5deddca9d4cfa",
+    "chartCount": 1,
+    "names": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30. 4 series. Left and right arrows read values; plus and minus zoom."
+    ],
+    "rows": "0045e885d6bf1866ff5282cc7eb41c331b3ce981a95b06648fd9bc3cf98f5bb2",
+    "rowCount": 4,
+    "text": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30, one value every 15 s. 4 series.catalog: last 572, lowest 427, highest 593.auth: last 136, lowest 117, highest 171.orders: last 122, lowest 91, highest 132.checkout: last 102, lowest 75, highest 103."
+    ],
+    "table": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 110716,
+    "pngs": [
+     "ca4d858d68315c5ae02a14eab4385a0c9ee8a080802c93c282afd4875d0d1a8d"
+    ],
+    "unstable": []
+   }
+  },
+  "after": {
+   "app 4 series, light, 1440 px, rest": {
+    "png": "6b6c631decf374c7f36daa51091542a8ccc48d509473cefc5aa0ba065b2625cb",
+    "charts": "eda73f9f380950c0bf0f90048d075aa98ed2198030f4f0e1138e86cfbdf41efd",
+    "chartCount": 1,
+    "names": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30. 4 series. Left and right arrows read values; plus and minus zoom."
+    ],
+    "rows": "0045e885d6bf1866ff5282cc7eb41c331b3ce981a95b06648fd9bc3cf98f5bb2",
+    "rowCount": 4,
+    "text": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30, one value every 15 s. 4 series.catalog: last 572, lowest 427, highest 593.auth: last 136, lowest 117, highest 171.orders: last 122, lowest 91, highest 132.checkout: last 102, lowest 75, highest 103."
+    ],
+    "table": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 137544,
+    "pngs": [
+     "6b6c631decf374c7f36daa51091542a8ccc48d509473cefc5aa0ba065b2625cb"
+    ],
+    "unstable": []
+   },
+   "app 4 series, light, 1440 px, readout by keyboard": {
+    "png": "2da2191b10ca0a7d8e8964a7eac5c184ab089680dce1d18096b0b1de314b30eb",
+    "charts": "68237603a980942a92056a0635f45ed57174e148de0603a36057765f69a4f25e",
+    "chartCount": 1,
+    "names": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30. 4 series. Left and right arrows read values; plus and minus zoom."
+    ],
+    "rows": "0045e885d6bf1866ff5282cc7eb41c331b3ce981a95b06648fd9bc3cf98f5bb2",
+    "rowCount": 4,
+    "text": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30, one value every 15 s. 4 series.catalog: last 572, lowest 427, highest 593.auth: last 136, lowest 117, highest 171.orders: last 122, lowest 91, highest 132.checkout: last 102, lowest 75, highest 103."
+    ],
+    "table": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 141427,
+    "pngs": [
+     "2da2191b10ca0a7d8e8964a7eac5c184ab089680dce1d18096b0b1de314b30eb"
+    ],
+    "unstable": []
+   },
+   "app 4 series, light, 1440 px, readout by pointer": {
+    "png": "a3d912c81d413dab2d2e2af9e649b0c0dc3be70a7b3bab8ec73bb982d559fd24",
+    "charts": "dae7ad19051f2a0a682ef3e0ce186409501d54c39ae6f894b2e54e33751e22d5",
+    "chartCount": 1,
+    "names": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30. 4 series. Left and right arrows read values; plus and minus zoom."
+    ],
+    "rows": "0045e885d6bf1866ff5282cc7eb41c331b3ce981a95b06648fd9bc3cf98f5bb2",
+    "rowCount": 4,
+    "text": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30, one value every 15 s. 4 series.catalog: last 572, lowest 427, highest 593.auth: last 136, lowest 117, highest 171.orders: last 122, lowest 91, highest 132.checkout: last 102, lowest 75, highest 103."
+    ],
+    "table": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 142532,
+    "pngs": [
+     "a3d912c81d413dab2d2e2af9e649b0c0dc3be70a7b3bab8ec73bb982d559fd24"
+    ],
+    "unstable": []
+   },
+   "app 4 series, light, 1440 px, zoomed in": {
+    "png": "35f062cfc05ec20b1614c971bd560c82267e4d1a939a48dc48313f97cc12ec3a",
+    "charts": "d6c39d3707b160ad3be76d6890efc086b8b85e8d1140ab3ce8a46bbde84cfdac",
+    "chartCount": 1,
+    "names": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 11:00 to 12:30. 4 series. Left and right arrows read values; plus and minus zoom."
+    ],
+    "rows": "0045e885d6bf1866ff5282cc7eb41c331b3ce981a95b06648fd9bc3cf98f5bb2",
+    "rowCount": 4,
+    "text": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 11:00 to 12:30, one value every 15 s. 4 series.catalog: last 572, lowest 450, highest 593.auth: last 136, lowest 130, highest 171.orders: last 122, lowest 101, highest 132.checkout: last 102, lowest 79, highest 103."
+    ],
+    "table": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 132420,
+    "pngs": [
+     "35f062cfc05ec20b1614c971bd560c82267e4d1a939a48dc48313f97cc12ec3a"
+    ],
+    "unstable": []
+   },
+   "app 4 series, light, 1440 px, a legend row chosen": {
+    "png": "5f4485784734768062020354351d8a8b82023fe9e21b1c0b2c1dc5c4ff540ad0",
+    "charts": "e6c5dced9f95205cceb5206c1c359316b32b2ea6e1361fa23ca1e5ee51219781",
+    "chartCount": 1,
+    "names": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30. 4 series, 1 chosen. Left and right arrows read values; plus and minus zoom."
+    ],
+    "rows": "0045e885d6bf1866ff5282cc7eb41c331b3ce981a95b06648fd9bc3cf98f5bb2",
+    "rowCount": 4,
+    "text": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30, one value every 15 s. 4 series; 1 drawn, as chosen in the legend.catalog: last 572, lowest 427, highest 593."
+    ],
+    "table": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 111794,
+    "pngs": [
+     "5f4485784734768062020354351d8a8b82023fe9e21b1c0b2c1dc5c4ff540ad0"
+    ],
+    "unstable": []
+   },
+   "app 4 series, light, 1440 px, table": {
+    "png": "211011299fa1368b5eadbe29295da16ac036f2f36269a476f44d6be0a0d834e5",
+    "charts": "16cd2ca5b2668fc27e6bd1c38bedc5e3bb8026b0c83f8384a2c5deddca9d4cfa",
+    "chartCount": 1,
+    "names": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30. 4 series. Left and right arrows read values; plus and minus zoom."
+    ],
+    "rows": "0045e885d6bf1866ff5282cc7eb41c331b3ce981a95b06648fd9bc3cf98f5bb2",
+    "rowCount": 4,
+    "text": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30, one value every 15 s. 4 series.catalog: last 572, lowest 427, highest 593.auth: last 136, lowest 117, highest 171.orders: last 122, lowest 91, highest 132.checkout: last 102, lowest 75, highest 103."
+    ],
+    "table": "f10bce106c3b9f7dc6171d705a7c738967a19ff30127b00ec58a20d3373dffdc",
+    "bytes": 90723,
+    "pngs": [
+     "211011299fa1368b5eadbe29295da16ac036f2f36269a476f44d6be0a0d834e5"
+    ],
+    "unstable": []
+   },
+   "app 4 series, light, 1440 px, text": {
+    "png": "5b3282e3ef5f03112cbeb14370335ff54c0eb01139aa75c07e6f2ce3a2e6bbfc",
+    "charts": "16cd2ca5b2668fc27e6bd1c38bedc5e3bb8026b0c83f8384a2c5deddca9d4cfa",
+    "chartCount": 1,
+    "names": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30. 4 series. Left and right arrows read values; plus and minus zoom."
+    ],
+    "rows": "0045e885d6bf1866ff5282cc7eb41c331b3ce981a95b06648fd9bc3cf98f5bb2",
+    "rowCount": 4,
+    "text": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30, one value every 15 s. 4 series.catalog: last 572, lowest 427, highest 593.auth: last 136, lowest 117, highest 171.orders: last 122, lowest 91, highest 132.checkout: last 102, lowest 75, highest 103."
+    ],
+    "table": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 111168,
+    "pngs": [
+     "5b3282e3ef5f03112cbeb14370335ff54c0eb01139aa75c07e6f2ce3a2e6bbfc"
+    ],
+    "unstable": []
+   },
+   "app 4 series, dark, 1440 px, rest": {
+    "png": "4ed6c3ff6151da7a488279fde1865ebe0560af8edc1ece8b5636a72150817fac",
+    "charts": "eda73f9f380950c0bf0f90048d075aa98ed2198030f4f0e1138e86cfbdf41efd",
+    "chartCount": 1,
+    "names": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30. 4 series. Left and right arrows read values; plus and minus zoom."
+    ],
+    "rows": "0045e885d6bf1866ff5282cc7eb41c331b3ce981a95b06648fd9bc3cf98f5bb2",
+    "rowCount": 4,
+    "text": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30, one value every 15 s. 4 series.catalog: last 572, lowest 427, highest 593.auth: last 136, lowest 117, highest 171.orders: last 122, lowest 91, highest 132.checkout: last 102, lowest 75, highest 103."
+    ],
+    "table": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 138720,
+    "pngs": [
+     "4ed6c3ff6151da7a488279fde1865ebe0560af8edc1ece8b5636a72150817fac"
+    ],
+    "unstable": []
+   },
+   "app 4 series, dark, 1440 px, readout by keyboard": {
+    "png": "b00fd1008191c43ae186640cddfa8a207d560de54de5973fb94b136f408e1b91",
+    "charts": "68237603a980942a92056a0635f45ed57174e148de0603a36057765f69a4f25e",
+    "chartCount": 1,
+    "names": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30. 4 series. Left and right arrows read values; plus and minus zoom."
+    ],
+    "rows": "0045e885d6bf1866ff5282cc7eb41c331b3ce981a95b06648fd9bc3cf98f5bb2",
+    "rowCount": 4,
+    "text": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30, one value every 15 s. 4 series.catalog: last 572, lowest 427, highest 593.auth: last 136, lowest 117, highest 171.orders: last 122, lowest 91, highest 132.checkout: last 102, lowest 75, highest 103."
+    ],
+    "table": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 142611,
+    "pngs": [
+     "b00fd1008191c43ae186640cddfa8a207d560de54de5973fb94b136f408e1b91"
+    ],
+    "unstable": []
+   },
+   "app 4 series, dark, 1440 px, readout by pointer": {
+    "png": "fbecb22ed50b430eeb739629f2ab57bc5cfd94086c4bb646097429553fb90dbf",
+    "charts": "dae7ad19051f2a0a682ef3e0ce186409501d54c39ae6f894b2e54e33751e22d5",
+    "chartCount": 1,
+    "names": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30. 4 series. Left and right arrows read values; plus and minus zoom."
+    ],
+    "rows": "0045e885d6bf1866ff5282cc7eb41c331b3ce981a95b06648fd9bc3cf98f5bb2",
+    "rowCount": 4,
+    "text": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30, one value every 15 s. 4 series.catalog: last 572, lowest 427, highest 593.auth: last 136, lowest 117, highest 171.orders: last 122, lowest 91, highest 132.checkout: last 102, lowest 75, highest 103."
+    ],
+    "table": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 143914,
+    "pngs": [
+     "fbecb22ed50b430eeb739629f2ab57bc5cfd94086c4bb646097429553fb90dbf"
+    ],
+    "unstable": []
+   },
+   "app 4 series, dark, 1440 px, zoomed in": {
+    "png": "63aefaefb56bc744ca0a9f26998592e00939dcfe5c027c35d99fee0d187e1202",
+    "charts": "d6c39d3707b160ad3be76d6890efc086b8b85e8d1140ab3ce8a46bbde84cfdac",
+    "chartCount": 1,
+    "names": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 11:00 to 12:30. 4 series. Left and right arrows read values; plus and minus zoom."
+    ],
+    "rows": "0045e885d6bf1866ff5282cc7eb41c331b3ce981a95b06648fd9bc3cf98f5bb2",
+    "rowCount": 4,
+    "text": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 11:00 to 12:30, one value every 15 s. 4 series.catalog: last 572, lowest 450, highest 593.auth: last 136, lowest 130, highest 171.orders: last 122, lowest 101, highest 132.checkout: last 102, lowest 79, highest 103."
+    ],
+    "table": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 133460,
+    "pngs": [
+     "63aefaefb56bc744ca0a9f26998592e00939dcfe5c027c35d99fee0d187e1202"
+    ],
+    "unstable": []
+   },
+   "app 4 series, dark, 1440 px, a legend row chosen": {
+    "png": "82fc34591a5b84ef44ff2c06cfe455587578a537520be02571b1e1c291068cac",
+    "charts": "e6c5dced9f95205cceb5206c1c359316b32b2ea6e1361fa23ca1e5ee51219781",
+    "chartCount": 1,
+    "names": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30. 4 series, 1 chosen. Left and right arrows read values; plus and minus zoom."
+    ],
+    "rows": "0045e885d6bf1866ff5282cc7eb41c331b3ce981a95b06648fd9bc3cf98f5bb2",
+    "rowCount": 4,
+    "text": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30, one value every 15 s. 4 series; 1 drawn, as chosen in the legend.catalog: last 572, lowest 427, highest 593."
+    ],
+    "table": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 111931,
+    "pngs": [
+     "82fc34591a5b84ef44ff2c06cfe455587578a537520be02571b1e1c291068cac"
+    ],
+    "unstable": []
+   },
+   "app 4 series, dark, 1440 px, table": {
+    "png": "513548a0c9c6db626b376970c7127af8126d3336fdbc098e39996d0ded77647f",
+    "charts": "16cd2ca5b2668fc27e6bd1c38bedc5e3bb8026b0c83f8384a2c5deddca9d4cfa",
+    "chartCount": 1,
+    "names": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30. 4 series. Left and right arrows read values; plus and minus zoom."
+    ],
+    "rows": "0045e885d6bf1866ff5282cc7eb41c331b3ce981a95b06648fd9bc3cf98f5bb2",
+    "rowCount": 4,
+    "text": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30, one value every 15 s. 4 series.catalog: last 572, lowest 427, highest 593.auth: last 136, lowest 117, highest 171.orders: last 122, lowest 91, highest 132.checkout: last 102, lowest 75, highest 103."
+    ],
+    "table": "f10bce106c3b9f7dc6171d705a7c738967a19ff30127b00ec58a20d3373dffdc",
+    "bytes": 90207,
+    "pngs": [
+     "513548a0c9c6db626b376970c7127af8126d3336fdbc098e39996d0ded77647f"
+    ],
+    "unstable": []
+   },
+   "app 4 series, dark, 1440 px, text": {
+    "png": "ca4d858d68315c5ae02a14eab4385a0c9ee8a080802c93c282afd4875d0d1a8d",
+    "charts": "16cd2ca5b2668fc27e6bd1c38bedc5e3bb8026b0c83f8384a2c5deddca9d4cfa",
+    "chartCount": 1,
+    "names": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30. 4 series. Left and right arrows read values; plus and minus zoom."
+    ],
+    "rows": "0045e885d6bf1866ff5282cc7eb41c331b3ce981a95b06648fd9bc3cf98f5bb2",
+    "rowCount": 4,
+    "text": [
+     "Query result: sum by (service) (rate(http_requests_total[5m])), /s, 18 Nov, 09:30 to 12:30, one value every 15 s. 4 series.catalog: last 572, lowest 427, highest 593.auth: last 136, lowest 117, highest 171.orders: last 122, lowest 91, highest 132.checkout: last 102, lowest 75, highest 103."
+    ],
+    "table": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 110716,
+    "pngs": [
+     "ca4d858d68315c5ae02a14eab4385a0c9ee8a080802c93c282afd4875d0d1a8d"
+    ],
+    "unstable": []
+   }
+  }
+ }
+}
