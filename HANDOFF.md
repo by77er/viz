@@ -13,7 +13,8 @@ scratch directory does not survive the pause, so everything needed is in the rep
 4. ~~Delete `viz-spike-s0-do-billing`~~: done 2026-11-28.
 5. Optional: open the S12 page on a real phone (`spikes/s12-reload-on-a-phone/README.md`); it is the
    one thing that would reopen the waived design-system blocker. Then that Worker is deleted.
-6. Asked 2026-11-28: whether the product should move from `vis.bitcru.sh` to `viz.bitcru.sh`.
+6. ~~Move to `viz.bitcru.sh`~~: done (D75, pull request #10, deployed 2026-11-28). Removing the `vis`
+   alias waits for the owner's word.
 7. People, teams and invite codes: explored (`design/proposals/accounts-and-teams.md`), then
    **deferred by the owner** (2026-11-28): "get the core system working first, then worry about
    tenantship". Core first: the UI live, ingest correctness and throughput, traces and logs queryable at
@@ -23,7 +24,7 @@ scratch directory does not survive the pause, so everything needed is in the rep
 
 | Name | What | Until |
 |---|---|---|
-| production (`viz-gateway` and six more, `vis.bitcru.sh`) | release 375e9ba (pull request #9) since 2026-11-28 08:36 UTC: the API only, OAuth with D70's rate limits; healthy after the deploy | moves to `viz.bitcru.sh` with D75 (its pull request is being built) |
+| production (`viz-gateway` and six more) | release 5255b39 (pull request #10, D75) since 2026-11-28 ~10:08 UTC at **`viz.bitcru.sh`**; `vis.bitcru.sh` kept as an alias (data paths served with Deprecation headers, everything else 308 to viz). The API only, OAuth with D70's rate limits. Host checks passed by hand after the deploy | |
 | `viz-preview-app` (workers.dev) | spike S14: the web app's build (Explore, dashboards read-only, Help, Settings) on the app's **mock** API | answers 410 after 2026-12-04; delete when the gateway serves the app |
 | `viz-spike-s12-reload` (workers.dev) | static pages for the phone test | until the owner has tested or declined |
 | `viz-spike-s0-do-billing` | deleted 2026-11-28 | |
@@ -62,6 +63,14 @@ suites, images, response.md); B1 is being re-measured with a harness that no lon
 own copy of the body, and fixed with identical rendering (or a waiver request written); the monitors
 view (list, one monitor, acknowledge, silence with undo) is built in a separate worktree and merged
 afterwards as a patch. The owner's decisions above are still open.
+
+## Before the UI pull request
+
+`main` now holds #9 and #10 as squash commits; this branch has #9's content and a different gateway
+change (D74). Merge `origin/main` into a worktree of this branch first and resolve `deploy/` (gateway,
+`configure.mjs`, `release.mjs`, `smoke.mjs`, tests), `design/` (D75 placed after D74, DESIGN, the page)
+and `AGENTS.md` by hand; then run deploy's suites. The app's serving (D74) needs stage evidence for the
+new gateway fingerprint before production (now allowed).
 
 ## In progress when paused
 
