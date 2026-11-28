@@ -7,10 +7,12 @@ changes no component: everything it needs from one is under "Needed changes".
 | File | What it does |
 |---|---|
 | `workers.json` | Which Workers exist, in dependency order (callees first), which are deployed, and why the others are not. Deployment-wide settings: domain, observability sampling, Durable Object code-update mode, resource names, shared vars |
-| `configure.mjs` | Generates each Worker's production (or staged) wrangler config into `generated/` from the component's own `wrangler.jsonc` |
-| `resources.mjs` | Creates the R2 bucket, KV namespace and queues (idempotent); `destroy --stage` deletes a stage |
-| `release.mjs` | Upload every Worker, then promote callees first; the migration gate; release records (with schema versions and whether the release is forward-only); rollback, refused across a forward-only release; `plan` |
-| `lib/secrets.mjs` | Worker secrets the deploy generates (viz-control's `OAUTH_CLIENT_KEY`): put on the release's upload only where missing, value on wrangler's stdin, replaced only when asked ("Worker secrets the deploy generates") |
+| `configure.mjs` | Generates each Worker's production (or staged) wrangler config into `generated/` from the component's own `wrangler.jsonc`; D70's gate on viz-control's rate limits, `OAUTH_PUBLIC`, and no `placement` on viz-control and viz-mcp ("Rate limits in front of OAuth") |
+| `resources.mjs` | Creates the R2 bucket, KV namespace and queues (idempotent), and gives viz-control's Rate Limiting bindings namespace ids of their own (reads the account's bindings; creates nothing); `destroy --stage` deletes a stage and frees its ids |
+| `release.mjs` | Upload every Worker, then promote callees first; the migration gate; release records (with schema and format versions, rollback floors, and whether the release is forward-only); rollback of a record (or `--only` some of its Workers, the others judged as they serve), refused across a forward-only release, under a format version a restored Worker does not read, below a rollback floor, or across the OAuth key's creation or rotation; `plan` |
+| `lib/formats.mjs` | Reads each Worker's format versions (written and read) from its components' `FORMATS` maps and read lists, for the manifest, the `VIZ_FORMATS` var of each version, and the rollback check (D69) |
+| `lib/floors.mjs` | Rollback floors a switch raises (`INGEST_SIGNALS`; `OAUTH_PUBLIC`): which Workers, how each is judged (schema version or a `VIZ_FLOORS` stamp), and the deploy and rollback refusals, or a forward-only mark where a rule says so (D64, D69) |
+| `lib/secrets.mjs` | Worker secrets the deploy generates (viz-control's `OAUTH_CLIENT_KEY`): put on the release's upload only where missing, value on wrangler's stdin, replaced only when asked, never on another run's upload, never on a viz-control without its rate limits (D70); rollbacks across its creation or rotation refused ("Worker secrets the deploy generates") |
 | `lib/schemas.mjs` | Reads every Durable Object class's `SchemaSpec` from the component sources (esbuild, no Worker run) for the manifest, the `VIZ_SCHEMAS` var of each version, and the rollback check |
 | `deploy.sh` | The whole deploy: WASM, `npm ci`, resources, configure, release, smoke test, automatic rollback |
 | `smoke.mjs` | `/healthz` until the release just promoted answers, then a real Remote Write and a query that must return it within 60 s |
@@ -20,9 +22,12 @@ changes no component: everything it needs from one is under "Needed changes".
 | `stage/` | The one shim a staged deployment needs (queue names, see "Needed changes" 1) |
 | `trial/` | Trial 2: `sink/index.ts`, a webhook receiver Worker for a stage, and `trial2.mjs`, which drives a stage end to end (monitors, alerting, MCP) and reports. Trial 3: `probe/index.ts`, a stand-in for the ruler's `SINK` binding |
 | `ci/matrix.mjs` | Which components CI checks in this checkout |
-| `scripts/mutants-release.mjs` | Mutation check of the schema rules in `release.mjs`, `configure.mjs`, `lib/schemas.mjs`, and of the class-binding allowlist and viz-mcp's bindings (run on a copy) |
-| `scripts/mutants-secrets.mjs` | Mutation check of the generated secrets (`lib/secrets.mjs`, its use in `release.mjs`, stdin in `lib/wrangler.mjs`; run on a copy) |
-| `test/fake-wrangler.mjs` | A stand-in for wrangler that `test/secrets.test.mjs` runs as a real child process (`VIZ_WRANGLER_BIN`, tests only) |
+| `scripts/mutants-release.mjs` | Mutation check of the schema, format and floor rules in `release.mjs`, `configure.mjs`, `lib/schemas.mjs`, `lib/formats.mjs`, `lib/floors.mjs`, of the class-binding allowlist and viz-mcp's bindings, of the workflow's main-only gate, of D70's gate in `configure.mjs` and of the rate-limit ids in `resources.mjs` (run on a copy) |
+| `scripts/mutants-secrets.mjs` | Mutation check of the generated secrets (`lib/secrets.mjs`, its use in `release.mjs`, stdin in `lib/wrangler.mjs`, the API timeout in `lib/cf.mjs`, D70's gate on the key; run on a copy) |
+| `test/fake-wrangler.mjs` | A stand-in for wrangler that the end-to-end tests (`secrets`, `release-checks`, `review-d69`, `workflow`, `oauth-gate`, `upgrade-production`) run as a real child process (`VIZ_WRANGLER_BIN`, tests only), with `test/fake-account.mjs` answering the Cloudflare API from the same state (versions show their vars, secrets and Rate Limiting bindings) |
+| `test/upgrade-production.test.mjs`, `test/fixtures/production-fb77292.json` | The first release this tool makes over production as deployed on 2026-11-19 from fb77292 ("The first release over the 2026-11-19 production"); the fixture holds the vars fb77292's own configure.mjs generates for production |
+| `test/oauth-gate.test.mjs`, `test/resources.test.mjs` | D70's gate on the key and the oauth-public floor, end to end; the rate-limit id allocation |
+| `records/<sha>.formats.json`, `scripts/record-formats.mjs` | The format versions a release from before format records writes and reads, made from its own sources (`git archive`) by this tree's `lib/formats.mjs`; release.mjs uses one wherever a record or version of that release declares none. Today: fb77292 (review of D69, round 2, M2-1) |
 | `resources.json` | KV namespace ids by title (not secret; rewritten by `resources.mjs`) |
 | `generated/` | Build output: configs, manifests, release records. Git-ignored |
 
@@ -33,14 +38,17 @@ push to main
   └─ .github/workflows/deploy.yml   (concurrency group deploy-production; one run at a time)
        ├─ checks: ci.yml, the same jobs a pull request runs; builds both WASM engines once
        └─ deploy (GitHub environment "production"):
+            0. refuse any ref but main (an older commit's own tooling never runs: "Rollback")
             1. download the WASM modules the checks built and tested
             2. acknowledgements: dispatch input + "Migration:" trailers of every commit since
                the release serving now (read from the version tag on Cloudflare)
             3. deploy/deploy.sh
                  npm ci (deploy/, stack/, control/, query/, ruler/, mcp/)
                  resources.mjs ensure       R2 viz-lake, KV viz-config, queues viz-flush, viz-maint,
-                                            viz-flush-dlq, viz-maint-dlq
-                 configure.mjs              generated/production/*.jsonc + manifest.json
+                                            viz-flush-dlq, viz-maint-dlq; viz-control's six Rate Limiting
+                                            namespace ids (the account's bindings read, nothing created)
+                 configure.mjs              generated/production/*.jsonc + manifest.json; refuses a
+                                            viz-control without its rate limits (D70)
                  release.mjs deploy         plan → refuse unacknowledged migrations (exit 3)
                                             phase 1: upload every Worker (serves nothing); viz-control's
                                                      OAUTH_CLIENT_KEY put on its upload if missing
@@ -55,7 +63,8 @@ push to main
 ```
 
 A manual run (`workflow_dispatch`) does the same with an `acknowledge_migrations` input, or,
-with `rollback_to: <sha>`, restores the release recorded for that commit instead.
+with `rollback_to: <sha>`, restores the release recorded for that commit instead. Either only on
+`main`: a run on any other ref is refused before checkout (D69; review of D69, M-2).
 
 ## Topology and routes
 
@@ -86,11 +95,16 @@ with `rollback_to: <sha>`, restores the release recorded for that commit instead
 | `POST /v1/metrics` | viz-ingest | OTLP/HTTP metrics |
 | `POST /api/v1/push` | viz-ingest | routed as asked; edge does not serve it yet (404 from edge) |
 | `/api/v1/query`, `/query_range`, `/labels`, `/series`, `/metadata`, `/api/v1/label/*`, `/api/v1/status/*` | viz-query | |
+| `/api/v1/plan` (exactly) | viz-query | what a query would read, without running it (added 2026-11-19; the ruler and mcp reach it through their own `QUERY` bindings) |
+| `POST /v1/traces`, `POST /v1/logs` (exactly) | viz-ingest | OTLP/HTTP traces and logs, the OTLP default paths (opentelemetry.io/docs/specs/otlp/, "OTLP/HTTP Request", read 2026-11-19). edge serves them only while `INGEST_SIGNALS` names the signal, else 404 (added 2026-11-19, stage 3 of traces and logs) |
+| `POST /loki/api/v1/push` (exactly) | viz-ingest | Loki push (grafana.com/docs/loki/latest/reference/loki-http-api/, read 2026-11-19); edge serves it only while `INGEST_SIGNALS` names `logs` |
+| Tempo: `/api/traces/<id>`, `/api/v2/traces/<id>`, `/api/search`, `/api/search/tags`, `/api/v2/search/tags`, `/api/search/tag/<tag>/values`, `/api/v2/search/tag/<tag>/values`, `/api/metrics/query_range`, `/api/metrics/query`, `/api/echo` | viz-query | the paths of the "Query" section of grafana.com/docs/tempo/latest/api_docs/ (read 2026-11-19) that viz-query serves (`query/src/sigroutes.ts`); exact paths, a path parameter is one non-empty segment. viz-query answers them only while `QUERY_SIGNALS` names `traces`, else 404. `GET /api/echo` ("Returns status code 200 and body `echo` when the query frontend is up"), the check a Grafana Tempo data source may make, answers `echo` behind the key like every path (D62; query review m-4; routed 2026-11-26). Tempo's `POST /api/v2/traces/diff` has the shape of a trace id and reaches viz-query, which does not serve it (an invalid id) |
+| Loki: `/loki/api/v1/query`, `/query_range`, `/labels`, `/label/<name>/values`, `/series` | viz-query | the query paths of grafana.com/docs/loki/latest/reference/loki-http-api/ that viz-query serves; only while `QUERY_SIGNALS` names `logs`, else 404. Every other `/loki/…` path (tail, index stats and volume, patterns, detected fields, rules, delete, format_query, status), Loki's `/otlp/v1/logs`, the deprecated `/api/prom/…` and Tempo's `/api/status/buildinfo`, `/api/overrides` are 404 at the gateway |
 | `/api/v1/control`, `/api/v1/control/*` | viz-control | |
 | `GET /api/v1/rules`, `GET /api/v1/alerts`, `/api/v1/monitors`, `/api/v1/monitors/*` | viz-ruler | Prometheus' rule and alert reads, and the monitors API (monitors, groups, rule files, backtest, detectors, notifier config, silences): `ruler/src/http.ts` `ROUTES`. `/api/v2/alerts` (Alertmanager ingestion) is not served |
 | `/mcp` (exactly), `/api/v1/agent`, `/api/v1/agent/*` | viz-mcp | MCP over Streamable HTTP, and the same tools as JSON. `/mcp/` and `/mcp/x` are 404 at the gateway |
 | `/.well-known/oauth-protected-resource`, `/.well-known/oauth-protected-resource/mcp` (exactly) | viz-mcp | OAuth protected resource metadata of `/mcp` (RFC 9728, D44) |
-| `/.well-known/oauth-authorization-server`, `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke` (exactly) | viz-control | The OAuth authorization server for MCP clients (D44; methods in `control/README.md`). `/oauth/register` answers 503 and is not advertised while viz-control has no `OAUTH_CLIENT_KEY`, which the deploy generates ("Worker secrets the deploy generates"). In production `configure.mjs` sets `PUBLIC_URL` for viz-control (the issuer) and viz-mcp (the resource's origin) from `workers.json`'s `domain`, overriding a component that disagrees with a warning, so the two cannot differ; a stage keeps the component's value |
+| `/.well-known/oauth-authorization-server`, `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke` (exactly) | viz-control | The OAuth authorization server for MCP clients (D44; methods in `control/README.md`). `/oauth/register` answers 503 and is not advertised while viz-control has no `OAUTH_CLIENT_KEY`, which the deploy generates ("Worker secrets the deploy generates"), and only on a viz-control with its six Rate Limiting bindings ("Rate limits in front of OAuth"). In production `configure.mjs` sets `PUBLIC_URL` for viz-control (the issuer) and viz-mcp (the resource's origin) from `workers.json`'s `domain`, overriding a component that disagrees with a warning, so the two cannot differ; a stage keeps the component's value |
 | `GET /healthz` | the gateway | asks each backend's own `GET /healthz` through its service binding (ingest, query, control, ruler, mcp; none is public, since the gateway answers `/healthz` itself); 200 `healthy` or 503 naming the backend. The ruler's and mcp's say 503 when a binding they need is missing |
 | `POST /api/v1/bootstrap` | the gateway | exists only while the one-time secret is set ("Bootstrap") |
 | anything else | the gateway | 404, JSON listing the entry points. No web UI and no page: the UI comes later, through design review |
@@ -167,11 +181,12 @@ licence is MIT OR Apache-2.0):
 | Fact | Source | What the deploy does |
 |---|---|---|
 | "`wrangler secret put` creates a new version of the Worker and deploys it immediately." "If using gradual deployments, instead use the `wrangler versions secret put` command": it "will only create a new version of the Worker, that can then be deployed using `wrangler versions deploy`" | [Secrets](https://developers.cloudflare.com/workers/configuration/secrets/); [Wrangler commands](https://developers.cloudflare.com/workers/wrangler/commands/workers/) ("This action creates a new version of the Worker and deploys it immediately") | `versions secret put`, never `secret put`: nothing is deployed outside phase 2 |
-| `versions secret put` patches the **newest** version (`PATCH …/versions/latest` with the secret in `env`), tags it with `--tag` and `--message`, reads the value from stdin when stdin is not a terminal, and fails (10222) on a Worker with no version | wrangler source, `src/versions/secrets/put.ts` and `index.ts` | Runs right after viz-control's upload, once the newest version is checked to be that upload; the new version must then list the secret and carry this release's `VIZ_RELEASE`; it is tagged with the release |
+| `versions secret put` patches the **newest** version (`PATCH …/versions/latest` with the secret in `env`), tags it with `--tag` and `--message`, reads the value from stdin when stdin is not a terminal, and fails (10222) on a Worker with no version | wrangler source, `src/versions/secrets/put.ts` and `index.ts` | Runs right after viz-control's upload, once the newest version is checked to be that upload and to carry this run's `VIZ_DEPLOY_RUN`; the new version must then list the secret and carry this release's `VIZ_RELEASE` and this run's `VIZ_DEPLOY_RUN` (below); it is tagged with the release |
 | `secret put` is refused (10214, 10215) while the newest version is not the deployed one, "to prevent accidental deployment when using Worker versions and secrets together"; on a Worker that does not exist it creates one whose code is `export default { fetch() {} }`, answering yes by itself in CI | wrangler source, `src/secret/index.ts` | Not used here. (`bootstrap.mjs` uses it on the gateway, which exists by then) |
-| "secrets are never deleted by deployments"; wrangler uploads with `keep_bindings: ["secret_text", "secret_key"]`, which the API calls "binding types to keep from previous_upload"; an `inherit` binding's version "Defaults to "latest"" | [Wrangler commands](https://developers.cloudflare.com/workers/wrangler/commands/workers/); [API: upload a version](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/versions/methods/create/); wrangler source | Once made, the key rides along on every later version and the deploy only checks it is there. That uploads inherit from the newest version is read into "previous_upload", not stated, and not measured ("Known risks") |
-| The API lists "the names of secrets bound to a Worker script" (from which version is not said); a version's `resources.bindings` list secrets by name and type | [API: list secrets](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/secrets/methods/list/); the version API (read back on Cloudflare in Trial 3 for `VIZ_SCHEMAS`) | Presence is judged by name only: on the version to be promoted, and, for the refusal below, in the secret list and the serving versions |
-| The rollback documentation says nothing about secrets. wrangler's `rollback` handles an API error 10220 ("The following secrets have changed") by asking and retrying with `force`; `versions deploy`, which `release.mjs` rolls back with, does not | [Rollbacks](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/); wrangler source, `src/versions/rollback/index.ts` | Nothing special. Whether a rollback to a version without the key is refused is not known ("Known risks") |
+| "secrets are never deleted by deployments"; wrangler uploads with `keep_bindings: ["secret_text", "secret_key"]`, which the API calls "binding types to keep from previous_upload"; an `inherit` binding's version "Defaults to "latest"" | [Wrangler commands](https://developers.cloudflare.com/workers/wrangler/commands/workers/); [API: upload a version](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/versions/methods/create/); wrangler source. **Measured on Cloudflare, 2026-11-19, S9**: an upload inherits the **newest** version's secrets, whatever made it, not the deployed version's | Once made, the key rides along on every later version and the deploy only checks it is there |
+| The API lists "the names of secrets bound to a Worker script" (from which version is not said); a version's `resources.bindings` list secrets by name and type | [API: list secrets](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/secrets/methods/list/); the version API. **Measured, S9**: the list names the **newest** version's secrets, not the serving one's | Presence is judged by name only, on versions: the one to be promoted, and, for the refusal below, the serving ones and every one newer. The secret list is not read (it adds nothing to that scan) |
+| A version read straight after it is created is sometimes not there yet | **Measured, S9**: 2 of 16 such reads failed, a 404 and a version without the secret just put, both on a Worker about a minute old; later reads saw it after 193–368 ms | The upload (or the version just deployed) and the keyed version are read again, backing off from 250 ms, for up to 10 s (`VIZ_FRESH_READ_MS`) |
+| The rollback documentation says nothing about secrets. wrangler's `rollback` handles an API error 10220 ("The following secrets have changed") by asking and retrying with `force`; `versions deploy`, which `release.mjs` rolls back with, has no `force` | [Rollbacks](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/); wrangler source, `src/versions/rollback/index.ts`; `wrangler versions deploy --help`. **Measured, S9**: a rollback to a version **without** the key is allowed and serves without it until the next deploy; one to a version whose value **differs** (across a rotation) is refused with 10220 | Both refused by `release.mjs rollback` before any Worker moves ("Rollbacks across the key", below) |
 
 **The step.** `versions secret put` on the version this release just made, only when that version
 does not carry the key:
@@ -188,27 +203,70 @@ does not carry the key:
   exists, so no request reaches viz-control without the key; a failure there stops the release
   before the gateway.
 
-**Never over one that exists.** If viz-control has the key now (its secret list, a version
-serving now, or a version newer than every serving one) but the version to be promoted does not
-carry it, the release is **refused, exit 3, before anything is promoted**, naming where it was
+**Never over one that exists.** If viz-control has the key now (a version serving now, or a
+version newer than every serving one; a serving version that cannot be read stops the release) but
+the version to be promoted does not carry it, the release is **refused, exit 3, before anything is promoted**, naming where it was
 seen: a new value would invalidate every registered client, and since the credential tag (D44,
-review M-2) every code and token too. A version newer than the serving one is what a rollback
-across the release that created the key leaves behind (review of D53, m-9): before, an upload
-that then did not inherit the key was given a new one silently. After such a refusal, promote the
-release that has the key again (`release.mjs rollback --record` to its record, or deploy its
-commit), or replace the key on purpose (`VIZ_ROTATE_SECRETS`). Reading the newer versions costs
-one list call and one read per newer version (none normally; up to the 100 Cloudflare keeps). A
-put is also refused when the newest version is not this release's upload (it would build on code
-that is not this release).
+review M-2) every code and token too. The upload is read again, within the 10 s budget, until the
+key it inherited shows, not only until the upload exists (review of D69, m-7: S9 saw a fresh
+version shown for a read without a secret it carried). A version newer than the serving one is what
+a rollback across the release that created the key leaves behind (review of D53, m-9): before, an
+upload that then did not inherit the key was given a new one silently. **What lifts this refusal**
+(review of D69, m-6): neither a rollback nor deploying again. The refused upload is now the newest
+version, a rollback does not change which version is newest, and the next upload inherits from it,
+so every later release is refused the same way. The exit the tool offers is replacing the key on
+purpose (`VIZ_ROTATE_SECRETS=OAUTH_CLIENT_KEY`), which invalidates every registered client; one
+that would keep the key, an upload that inherits the secret from the keyed version by id, is not
+verified ("Known risks"). Reading the newer versions costs one list call and one read per newer
+version (none normally; up to the 100 Cloudflare keeps). A put is also refused when the newest
+version is not this release's upload (it would build on code that is not this release).
 
 Why not the alternatives (D53): `wrangler secret put` before phase 1 deploys the serving code plus
 the key outside any release record, is refused whenever an undeployed version is newest, and
 creates a placeholder Worker on the first deploy; after phase 2 it is a second deployment (the
 Tenant objects move twice, and the new release serves for a while without the key);
 `--secrets-file` needs the value in a file; by hand, it is forgotten and the symptom is a quiet
-503. **Would change if** a stage shows uploads not inheriting the key, or a rollback refused with
-10220; control verifies under two keys (then rotation can overlap and be automatic); or wrangler
-takes secrets on stdin for `versions upload` (then code and key in one version).
+503. **Would change if** control verifies under two keys (then rotation can overlap and be automatic,
+and a rollback across one stops breaking clients); wrangler takes secrets on stdin for `versions
+upload` (then code and key in one version); or `versions deploy` takes `force` (D53).
+
+**Another run of the same release** (review of D53, m-11; D69). Every version a run uploads or
+deploys carries `VIZ_DEPLOY_RUN`, a UUID made for that run (`--var`; prefixed with the GitHub run id
+in CI), and the record names it (`run`). `versions secret put` patches whatever version is newest
+when Cloudflare applies it, and the keyed version keeps that version's vars, so: before the put, the
+newest version must be this run's upload and carry this run's mark (else exit 3, nothing put); after
+it, the keyed version must carry this run's mark, or the key went on another run's upload (one that
+uploaded between the check and the put) and nothing is promoted (exit 3). The tag and message cannot
+do this: the put overwrites both. What it cannot do: stop the key from **landing** on the other
+run's version (the PATCH has no condition). That version is never promoted by either run (the other
+promotes its own upload, or refuses because its upload is no longer the newest), but as the newest
+version it is what the next upload inherits from: if the refused run was rotating, that next upload
+carries the rotated key and its record says `kept` ("Known risks").
+
+**Rollbacks across the key** (measured on Cloudflare, 2026-11-19, spike S9; D53, D69).
+`release.mjs rollback` reads the restored version of viz-control and every version newer than it,
+and refuses, exit 3, before any Worker moves:
+
+- **across the release that created the key** (the restored version lacks it, a newer one carries
+  it): Cloudflare allows that rollback, and the restored version serves **without** the key until
+  the next deploy: `/oauth/register` 503, no `registration_endpoint`, every registered client 400
+  "not registered" at `/oauth/authorize`, and (from control's code, not measured) its codes and
+  tokens refused. Done anyway with `--accept-secret-loss OAUTH_CLIENT_KEY`; the next deploy brings the
+  key back (uploads inherit the newest version's). deploy.sh's automatic rollback never passes it.
+- **across a rotation** (a newer version was made by the deploy's put of the key, read from its
+  message `…; OAUTH_CLIENT_KEY rotated|created`): Cloudflare refuses that rollback (10220) and
+  `versions deploy` cannot force it; before this check the tool rolled the callers back first and
+  then failed at viz-control (exit 1, a mixed deployment no record names). Refused always. Fix
+  forward; or restore the other Workers only (`release.mjs rollback --record … --only
+  viz-publisher,viz-ingest,…`): viz-control keeps serving, a callee newer than its callers, and
+  that rollback is judged like any other, with viz-control **as it serves** (review of D69, M-1):
+  refused when a format version viz-control wrote or writes is one the restored Workers do not read
+  (format versions, below), or when it leaves a Worker below a rollback floor. A forced rollback
+  through the API would serve the old key only until the next release took the rotated one back
+  while its record says `kept` (measured): `kept` compares names, not values.
+
+A failed promotion (phase 2) leaves a viz-control whose key the release created or rotated on that
+version, and puts back only the others.
 
 **Plan.** `release.mjs plan`, and the plan `deploy` prints first, have one line per generated
 secret: `secret OAUTH_CLIENT_KEY on viz-control: not set; would be created on the version uploaded
@@ -227,9 +285,9 @@ node deploy/release.mjs plan --rotate-secret OAUTH_CLIENT_KEY        # what it w
 ```
 
 The new key goes on that release's upload exactly as a first one would, the record says
-`rotated`, and every registered client must register again. A failed smoke test rolls back as for
-any release, to versions that carry the old key (so the old registrations work again; see "Known
-risks" for whether Cloudflare allows that rollback). A name the deploy does not generate is
+`rotated`, and every registered client must register again. A failed smoke test does **not**
+roll back: the rollback across the rotation is refused before anything moves (Cloudflare would
+refuse it with 10220, measured in S9), so the rotated release keeps serving and the job fails. A name the deploy does not generate is
 refused, exit 3, before anything is uploaded. The workflow has no input for this yet ("Needed
 changes").
 
@@ -245,6 +303,90 @@ the real wrangler. `lib/wrangler.mjs` therefore runs every wrangler command that
 stdin (this put, and `bootstrap.mjs`'s `secret put`) with `WRANGLER_LOG_SANITIZE=true` and
 `WRANGLER_WRITE_LOGS=false` (`SECRET_RUN_ENV`), whatever the environment says; other commands keep
 the environment's settings.
+
+## Rate limits in front of OAuth (D70)
+
+viz-control serves OAuth publicly only behind D70's first layer: six Cloudflare Rate Limiting
+bindings (`control/README.md`, "Rate limits in front of OAuth (D70)"; the review of D70, M-2, found
+"required before public exposure" enforced nowhere; done here 2026-11-26). `control/wrangler.jsonc`
+declares them with placeholder ids; the limits are **modelled, not measured on real traffic**:
+
+| Binding | Limit / 60 s, per Cloudflare location |
+|---|---|
+| `OAUTH_RL_SOURCE` | 120 |
+| `OAUTH_RL_SOURCE_48` | 1,200 |
+| `OAUTH_RL_CREDENTIAL` | 5 |
+| `OAUTH_RL_TENANT` | 6,000 |
+| `OAUTH_RL_BEARER` | 1,200 |
+| `OAUTH_RL_BEARER_TENANT` | 30,000 |
+
+`workers.json` gives viz-control an `oauth` block: the binding names and the period are read from
+control's own source (`control/src/ratelimit.ts` `LIMITERS` and `RATE_PERIOD_S`, evaluated as schemas
+are), so the deploy follows control if it adds one.
+
+**What each check refuses** (all before anything is uploaded):
+
+| Where | Refused |
+|---|---|
+| `configure.mjs`, any deployment | a `ratelimits` entry whose name is not in `LIMITERS`; one bound twice; a key other than `name`, `namespace_id`, `simple`; a limit that is not a positive integer; a period other than 60 (the Worker's `Retry-After` assumes it; the platform also allows 10); a missing id (`resources.mjs` not run) unless `--ids-optional`; a placeholder that survives; an id outside viz's range; two bindings of one deployment with one id; `ratelimits` on a Worker with no `oauth` block |
+| `configure.mjs`, production | a viz-control without all six, naming the missing ones (exit 1: `deploy.sh` stops before the release); `--oauth-without-rate-limits` and `--oauth-public` (stage flags) |
+| `configure.mjs`, a stage | the same, unless configured `--oauth-without-rate-limits` (`VIZ_OAUTH_WITHOUT_RATE_LIMITS=1` for `deploy.sh`): the bindings are dropped, and the manifest and release record say `oauthWithoutRateLimits: true` |
+| `configure.mjs` | `placement` on viz-control or viz-mcp (`no_placement` in `workers.json`: per-location budgets assume each request is counted where it arrives; review of D70, m-8); `OAUTH_PUBLIC` set by a component config or `VIZ_STAGE_VARS` |
+| `release.mjs deploy` and `plan` (exit 3) | a manifest configured `--ids-optional` (its ids are placeholders); creating or rotating `OAUTH_CLIENT_KEY` on a viz-control whose generated config lacks any of the bindings its manifest records as required, each with period 60, a positive limit and an allocated id, or binds one id twice, or whose manifest records no gate at all; a stage passes only when its manifest and viz-control both say `--oauth-without-rate-limits` |
+| `lib/secrets.mjs` at the put | the same check again, just before `versions secret put` (defence in depth; a `SecretRefused`) |
+
+A key that is already there is **kept** whatever the gate says (nothing is put): the gate decides
+whether OAuth is turned on, and configure has already refused a production config without the
+bindings.
+
+**Namespace ids** (`resources.mjs ensure`, every deploy). A `namespace_id` "uniquely defines this rate
+limiting namespace within your Cloudflare account" (the binding page, read 2026-11-19), and the
+account holds unrelated Workers. Nothing is created on Cloudflare: a namespace exists only as bindings
+name it. So:
+
+1. **Read the account, read only.** List the scripts, and for each its deployment's serving versions
+   and its newest version, and collect every binding of type `ratelimit` (`namespace_id`). One script
+   list, then a deployment read, a version list and one to three version reads per script, four
+   scripts at a time: about 110 GET calls for the 28 scripts the account had on 2026-11-26. The
+   `ratelimit` type and `namespace_id` field are wrangler's upload shape (training knowledge): **not
+   read from Cloudflare's version API**; the fakes assume it (the stage trial that settles it is
+   prepared, not run). What cannot be read no longer stops every deploy (review of D69, round 2,
+   m2-1), but **no id is ever taken that cannot be proven free**:
+   - an id that is there but cannot be a decimal number (`"abc"`) can equal no viz id: ignored,
+     with a WARNING line;
+   - anything else (no id, a field this does not know, a binding type that names a rate limit in
+     another shape, a script whose versions cannot be read): **in doubt**. Then only ids this
+     deployment's own viz-control already binds are kept (they are in use already; nothing new is
+     taken), with a WARNING; an id only recorded in `resources.json` is not kept, and any new id is
+     refused, naming the script (exit 1 at `resources.mjs`, before configure). So an odd binding of an
+     unrelated script refuses only a deployment's first allocation (a new stage; production's first
+     release) until that script is fixed or gone;
+   - viz-control's own binding unreadable (the shape risk on viz's side, review M2-2) is not a doubt:
+     its ids come from `resources.json`, else the same deterministic pick, with a WARNING, so a
+     fix-forward deploy is not stopped.
+2. **Keep** the id this deployment's own viz-control already binds under that name (its serving
+   version, else its newest), else the one recorded in `resources.json`, unless another script binds
+   it: an id seen on a script whose name does not start with `viz-` is **refused** (logged, a new one
+   taken, the counters reset), and so is one another viz deployment (production, another stage, a
+   spike) binds or has recorded.
+3. **Otherwise allocate** from viz's range, `workers.json` `resources.ratelimit_ids` (7000–7999): the
+   lowest free id at or after a start that the deployed name picks (FNV-1a), wrapping. Allocation is
+   deterministic for one account state, so a CI checkout, whose `resources.json` starts empty, gets
+   the same ids every run; two stages allocated at once from different checkouts rarely pick alike.
+4. Record them in `resources.json` `ratelimit_namespaces` under `<deployed worker>/<binding>`
+   (`viz-control/OAUTH_RL_SOURCE`, `viz-trial-control/OAUTH_RL_SOURCE`). `destroy --stage` removes
+   the stage's entries: nothing to delete on Cloudflare.
+
+**`OAUTH_PUBLIC`.** Every production viz-control config that passes the gate gets the plain var
+`OAUTH_PUBLIC=1`; a stage only with `--oauth-public` (`VIZ_OAUTH_PUBLIC=1`), which needs the bindings.
+It is the switch of the rollback floor `oauth-public` ("Rollback floors"). The record's `oauth` says,
+for viz-control, the bindings' ids, whether a stage left them out as asked, and whether `OAUTH_PUBLIC`
+is set.
+
+The gateway forwards each request unchanged (`forward` passes `req`), so `CF-Connecting-IP` reaches
+viz-control, and it reads no `x-real-ip`: nothing changed there. Optional and by hand, outside the
+deploy: a WAF rate-limiting rule on `vis.bitcru.sh` for the four `/oauth/` paths, above the Worker's
+source limit, that leaves Cloudflare's Workers address alone (`control/README.md`).
 
 ## Class bindings across Workers (`binds_classes`)
 
@@ -300,8 +442,17 @@ these five (Trial 2 measured the four before viz-publisher was deployed).
   "forwardOnly": true,
   "forwardOnlyBecause": [{ "worker": "viz-ingest", "kind": "schema", "component": "ledger.Ledger", "previousKnows": 1,
     "latest": 3, "compat": 2, "migrations": [{ "version": 2, "readableFrom": 2, "name": "…" }, "…"], "why": "…" }],
+  "formats": { "viz-ruler": { "store.anomaly-state": { "writes": 1, "reads": [1, 2] }, "…": "…" }, "viz-ingest": { "r2.dead-letters": { "writes": 2, "reads": [1, 2] }, "kv.settings": { "writes": null, "reads": [1] }, "…": "…" }, "viz-gateway": {}, "…": "…" },
+  "formatsComplete": true,
+  "floors": [{ "name": "signal-data", "writer": "viz-ingest", "var": "INGEST_SIGNALS", "value": null, "on": false,
+    "workers": [{ "worker": "viz-publisher", "atFloor": true, "servingAtFloor": true }, "…"] },
+    { "name": "oauth-public", "writer": "viz-control", "var": "OAUTH_PUBLIC", "value": "1", "on": true,
+    "workers": [{ "worker": "viz-control", "atFloor": true, "servingAtFloor": true }] }],
   "via": { "viz-ingest": "deploy", "viz-control": "versions", "...": "..." },
   "secrets": [{ "worker": "viz-control", "name": "OAUTH_CLIENT_KEY", "action": "kept", "versionId": "…" }],
+  "run": "<the VIZ_DEPLOY_RUN of every version this run uploaded>",
+  "oauth": [{ "worker": "viz-control", "ratelimits": { "OAUTH_RL_SOURCE": "7594", "…": "…" }, "withoutRateLimits": false, "public": true }],
+  "oauthWithoutRateLimits": false,
   "workers": [{ "name": "viz-ingest", "versionId": "…", "migrationTag": "v2", "release": "<sha>" }, "…"] }
 ```
 
@@ -335,21 +486,184 @@ keeps what each version knows for as long as it keeps the version.
   although B, serving then, is additive. A target record without schema versions, or a newer
   version that declares none, is refused too (never guessed).
 
+**Format versions** (contracts/COMPATIBILITY.md §6; D69; review of D60, m-13; review of D69, M-1).
+`workers.json` says, for **every** deployed Worker and **completely**, what its code writes and
+reads: the `FORMATS` maps of its components (`"writes": ["ruler/src/schema.ts#FORMATS"]`), their read
+lists (`"reads": ["janitor/src/formats.ts#READS"]`; `"reads_of": { "store.anomaly-state":
+"ruler/src/schema.ts#ANOMALY_STATE_READS" }`, which also takes a reader's one-version constant such
+as `edge/src/auth.ts#KEY_RECORD_VERSION` or `contracts/control.ts#CONTROL_SERVICE_VERSION`), and
+the formats its code reads with no version of its own (`"reads_v1": { "kv.pool":
+"edge/src/route.ts: …" }`, read as version 1 only, with where; "Needed changes in components" lists them). A
+Worker that reads none says so (`"formats": {}`, the gateway); configure refuses a deployed Worker
+without a `formats` block. A format a Worker does not list, it does not read. `lib/formats.mjs` reads
+them from the sources as schemas are read, into the manifest, the record (`formatsComplete: true`)
+and **every version's `VIZ_FORMATS` var** (`complete: true`, also when empty). Declared today
+(read from the sources on 2026-11-19): viz-publisher (5 written), viz-ingest (flush, compact, janitor
+and stack: 7 written, among them `r2.dead-letters` at 2, read at 1 and 2; and 4 of control's read
+only: `kv.settings`, `kv.key`, `kv.pool`, the API key), viz-control (15 written), viz-query (4 read:
+`kv.key`, `kv.pool`, `kv.settings`, the API key), viz-ruler (14 written, `store.anomaly-state` at the
+gate `ANOMALY_STATE_WRITE`, 1 now, read at 1 and 2; 4 read: `kv.key`, the API key and control's two
+RPC answers), viz-mcp (4 read: `kv.key`, the API key, `rpc.oauth`, `credential.oauth`), viz-gateway
+(none). Two tests hold the declarations to the
+code: a `FORMATS` map in a deployed component that is not declared fails one; the other bundles each
+Worker's main as wrangler does (esbuild's list of inputs) and fails if its sources read one of
+control's KV records (`` `key:${…}` ``, `pool:`, `limits:`/`retention:`, `revocation:`), parse the
+API key or an OAuth credential, or call control's RPCs, without the Worker declaring that format. Rules:
+
+- A Worker reads a format it writes at the version it writes, unless a read list says more; two read
+  lists for one format intersect; a Worker that writes a version it does not read is refused at
+  configure (§3.3 applied to the release itself). The publisher's `read.…` entries name formats the
+  ledger writes, which no writer declares: not recorded.
+- **What a release reads** of a format is what every Worker of it that reads the format reads, per
+  Worker: a Worker that **declares nothing** (a version without `VIZ_FORMATS`, a record without its
+  entry) is taken to read **version 1 of every format** (§3.1 "absent means 1"); a declaration from
+  before they were complete (D69's: a var without `complete`, a record without `formatsComplete`),
+  version 1 of every format it does not list; a complete one, exactly what it lists.
+- **Forward-only** (kind `format`) when this release writes a version that not every Worker serving
+  now reads, any Worker the deploy asked about (this release's and the others of `workers.json`),
+  not only those declaring the format (review of D69, M-1 (c)). deploy.sh does not roll it back
+  automatically, and a failed promotion does not put back a Worker it is forward-only for.
+- **Rollback refusal**, judged against what the Workers the rollback **restores** read (their record
+  entries; a record entry of a Worker left out is no reader):
+  - any version newer than the target's, of a restored Worker that writes formats, wrote a version
+    they do not read: the ruler's gate on, then a rollback below the release with the version 2
+    reader, is refused, also after a rollback to that reader (everything that ran since the target
+    is judged);
+  - **a Worker the record leaves out** (a record without it, or `--only`) keeps serving, so what it
+    wrote and writes stays under the restored ones (review of D69, M-1): every version Cloudflare
+    keeps of each such Worker that writes formats is judged, those newer than its version in the
+    record when the record names one (`--only` keeps it), all of them otherwise, and its serving
+    version always. Before this, a record without viz-control (the way round the rotation refusal
+    this README offered) put viz-ingest's janitor back to a `kv.settings` reader of version 1 while
+    viz-control kept writing 2 (reproduced, RV-1);
+  - a version that declares no formats, of a Worker that writes them, is refused as unknown. A
+    Worker that writes none (viz-query, viz-mcp, viz-gateway) is judged only as a reader.
+- **Old records** (no `formats`), a record's Worker without an entry, and formats an incomplete
+  declaration does not list, are taken to read **version 1 only** (§6 Bootstrapping): the side that
+  refuses more. **Except a release with a formats record** (`deploy/records/<sha>.formats.json`,
+  made by `scripts/record-formats.mjs` from that commit's own sources: its `FORMATS` maps, `READS`
+  lists and version constants, read through this tree's declarations): its record, and every version
+  that declares nothing but carries its `VIZ_RELEASE` (or tag), read what the file says. Today one,
+  fb77292, what production first served (review of D69, round 2, M2-1). What it costs today: viz-ingest writes `r2.dead-letters` 2, so the first release with
+  format records over a deployment without them is forward-only, and a rollback to a record from
+  before them across a viz-ingest upload is refused (tested). The same holds once more for this
+  change: over a deployment whose viz-query, viz-mcp and viz-gateway versions declare nothing (all
+  from before it), the first release with complete declarations is forward-only, and a rollback to a
+  record from before it across a viz-ingest upload is refused. Nothing is in production, so only
+  stages pay it.
+
+**Rollback floors** (D64, D69; review of traces and logs, M-4; review of D69). `workers.json`
+`rollback_floors`: once a version of viz-ingest whose `INGEST_SIGNALS` names anything has existed
+(any name: a value edge does not know counts too; a JSON var counts, and so does a **secret** of that
+name, whose value cannot be read: review of D69, m-2), span and log data may be in the deployment
+whatever the switch says later, and each of these must stay at its floor. "Has existed" is read from
+the versions Cloudflare keeps, the 100 newest of viz-ingest: once the switch-on version ages out of
+them, it is no longer seen ("Known risks", m-1):
+
+| Worker | Floor | Judged by | What an older one does with the data |
+|---|---|---|---|
+| viz-publisher | D64 | `publisher.Publisher` schema ≥ 4 (VIZ_SCHEMAS; pinned against the frozen releases `publisher/test/n1` (3, metric tables only) and `test/d64` (4, reads the three); D67's migration 5 is additive) | stops every tenant whose log names a span or log table, metrics included (stuck, not lost) |
+| viz-query | D62 | `VIZ_FLOORS` stamp, given by configure only when `query/src/shards.ts` exports `checkSignal` and `signalOfShard` | reads every shard a plan names; a metrics read with no series filter (`{__name__=~"…"}`, cardinality, `/api/v1/status/tsdb`) is handed span and log batches whole and fails (M-4, reproduced by the reviewer) |
+| viz-ingest | D63 | `VIZ_FLOORS` stamp, when `janitor/src/janitor.ts#DEFAULT_SIGNAL_DAYS` and `contracts/ledger.ts#TRACE_TABLES`, `#LOG_TABLES` exist | stalls span and log flush (`invalid_unit`, `encodeSegment` throwing on a span batch) and their retention (M-4, from the code) |
+
+Refused, exit 3, before anything is uploaded or moved:
+
+- a release that **sets the switch** unless each of the three is at its floor **in this release and
+  as it serves now**. "Every release a rollback could reach" is read as: the serving release (what
+  deploy.sh's automatic rollback and phase 2's restore put back without asking) and this one; every
+  older release is reached only through `release.mjs rollback`, which refuses a Worker below its
+  floor from the moment this release's viz-ingest is uploaded (an uploaded version counts, as for
+  schemas). Requiring every version Cloudflare keeps to be at the floor would hold the switch off
+  for about 100 releases. A floor Worker this release does not deploy (`deploy: false`, or left out
+  of the manifest) is judged **as it serves**: it would read what the switch lets in (review of D69,
+  m-3; before, it was not judged at all). One that does not exist in the deployment has no floor
+  there. This applies to **every** release with the switch on, not only the one that turns it on;
+- a release with one of its own Workers **below its floor while any viz-ingest version Cloudflare
+  keeps set the switch** (redeploying older code; turning the switch off leaves the data). The
+  history is read (one list, then reads until one with the switch) only when a Worker is below its
+  floor, never normally;
+- a release while viz-ingest's serving or newest version carries `INGEST_SIGNALS` **as a secret**
+  (`wrangler secret put` is a natural way to turn it on without a commit): every upload inherits the
+  newest version's secrets, so the switch would be on whatever the release's config says, and its
+  value cannot be read. Remove the secret and set the switch as a var in a release. Checking costs
+  one list and a read or two per deploy (review of D69, m-2);
+- a **rollback**, of the whole release or of any Workers a record names (the others are judged as
+  they serve, also one put below its floor by hand), that would leave one below its floor while any
+  kept viz-ingest version set the switch.
+
+**One floor Worker off its floor, with the switch on** (review of D69, m-8): since every release
+with the switch on judges the serving floor Workers, a viz-query (say) left below its floor as it
+serves (a gradual deployment started by hand, a `wrangler rollback`, the dashboard) refuses every
+release, each push to main included. The way out keeps the switch on: restore that Worker alone, from
+a record in which it is at its floor: the workflow with `rollback_to` and `rollback_only: viz-query`,
+or `node deploy/release.mjs rollback --record <release.json> --only viz-query` (judged like any
+rollback; the others keep what serves), or deploy a stamped
+version of it at 100% by hand (`wrangler versions deploy <version>@100% --name viz-query`). Turning
+the switch off in a release is not needed. **Never rename a rule** in `workers.json`: every version
+is stamped with the rule's name, so a renamed rule finds every serving version below its floor and
+refuses the same way; add a rule instead.
+
+Allowed: every rollback that keeps each at its floor, among them to the release just before the
+switch (the switch goes off, the data stays readable) and viz-publisher from D67 to D64. The record's
+`floors` says what each floor saw. A stamp needs a release with this check to have served before the
+switch can go on (fail closed: an unstamped version is below the floor).
+
+**The review's m-5 (of traces and logs): D64 must ship as its own release for the D67 → D64 rollback to exist.** The floor is "schema 4
+or later", whatever served. The tool cannot make D64 ship alone: it deploys the commit it is given,
+and D64 and D67 are on the same branch now. If they reach a deployment in one release, no publisher
+at exactly 4 ever serves there, the oldest publisher a rollback can reach once the switch is on is
+the first with D67, and the D67 → D64 rollback that `publisher/test/signals.test.ts` shows does not
+exist there; nothing is lost by that. To have it, deploy a commit with D64 and without D67 first.
+
+**The second rule, `oauth-public`** (D69, point 6; second review of D70, m-3; added 2026-11-26).
+Once OAuth is public, rolling viz-control back to `3cbabb8` or earlier (PR #8, what production first
+served, among them) would mint credentials without an expiry the Worker can see and bring B-1 back;
+to a release with D70's second round but not its third, R3-B1. The switch is `OAUTH_PUBLIC` on
+viz-control, which configure sets on every production viz-control ("Rate limits in front of OAuth").
+viz-control is both the writer and the one floor Worker:
+
+| Worker | Floor | Judged by | What an older one does |
+|---|---|---|---|
+| viz-control | D70, third round | `VIZ_FLOORS` stamp, given by configure only when `contracts/oauth.ts` exports `CREDENTIAL_LAYOUT` and `DEAD_INACTIVE_REASONS`, `control/src/deadlist.ts` `recordDead` and `control/src/ratelimit.ts` `LISTED` | mints credentials the Worker can never refuse as expired (B-1), lets one dead credential spend a tenant's fuse after a limiter fault (R2-M1) or a stock of refresh tokens trip it for 30 days (R2-M2), or lets a thief stop reuse detection (R3-B1) |
+
+It is judged as `signal-data` is, with one difference (`"serving_below_floor": "forward-only"` on the
+rule): a release that sets `OAUTH_PUBLIC` while the viz-control **it replaces** serves below the floor
+is not refused but goes out **forward-only** for viz-control (kind `floor` in `forwardOnlyBecause`):
+`deploy.sh` does not roll it back automatically, and a failed promotion does not put that viz-control
+back. Refusing, as `signal-data` does, would strand production: configure sets the switch on every
+production release, so the "release it at its floor without the switch first" remedy does not exist,
+and production's viz-control, deployed on 2026-11-19 by fb77292's tooling, is unstamped ("The first
+release over the 2026-11-19 production"). From the moment this release's viz-control is uploaded,
+`release.mjs rollback` refuses that older viz-control as any rollback below a floor. Everything else is
+as for `signal-data`: once a kept viz-control version had the switch, a release or a rollback that
+leaves viz-control below its floor is refused (exit 3), and so is a release while `OAUTH_PUBLIC` is a
+secret on viz-control. **Never rename the rule.**
+
 `previous.json` is the same shape, captured from Cloudflare just before phase 1: what an
 automatic rollback restores. Every version is also tagged with the release SHA on
 Cloudflare (`workers/tag`), which is how a later deploy finds the release serving now.
 
 ## Rollback
 
-**By hand**: Actions → Deploy → Run workflow, `rollback_to` = the full SHA of a commit whose
-deploy run succeeded. The job downloads that run's release record and runs `release.mjs
-rollback`: every Worker back to its recorded version id, callers first (viz-gateway,
+**By hand**: Actions → Deploy → Run workflow on `main`, `rollback_to` = the full SHA of a commit
+whose deploy run succeeded (and `rollback_only`, to restore only some of its Workers). The job
+downloads that run's release record and runs `release.mjs rollback`: every Worker back to its recorded version id, callers first (viz-gateway,
 viz-query, viz-control, viz-ingest), then the smoke test. Locally:
-`node deploy/release.mjs rollback --record <release.json> [--stage S]`.
+`node deploy/release.mjs rollback --record <release.json> [--stage S] [--only viz-query,…]`;
+`--only` restores just the Workers it names (production or deployed names; an unknown one is
+refused), and every other Worker keeps what serves now and is judged as it serves, exactly as for a
+record with fewer Workers. Run a local rollback only while no deploy runs: CI serialises its own runs
+in `deploy-production`, but a laptop is outside that group, and the checks and the restore are not
+atomic against a deploy that turns `INGEST_SIGNALS` on in between ("Known risks", m-4).
 
-It refuses, changing nothing, when a recorded version no longer exists (Cloudflare keeps 100),
-when any Worker's Durable Object migration tag in force differs from the recorded one, or when
-storage a newer version wrote cannot be opened by the target (schema versions, above).
+It refuses, changing nothing (exit 3), when a recorded version no longer exists (Cloudflare keeps
+100), when any Worker's Durable Object migration tag in force differs from the recorded one, when
+storage a newer version wrote cannot be opened by the target (schema versions, above), when a
+format version that a newer version of a restored Worker wrote, or that a Worker it leaves serving
+wrote or writes, cannot be read by the Workers it restores (format versions, above), when it would
+leave a Worker below its rollback floor after `INGEST_SIGNALS` was on (above), or when it crosses
+the creation (unless `--accept-secret-loss OAUTH_CLIENT_KEY`) or a rotation of viz-control's OAuth
+key ("Rollbacks across the key").
 Cloudflare refuses the same thing itself (measured in the trial: `versions deploy` of a
 pre-migration version answers code 10210, "the version depends on Durable Object migration
 "v1", but the current deployment is using migration "v2""); the tool's check says why before
@@ -359,30 +673,48 @@ Cloudflare will not run code from before it on that class's objects, and their s
 already be in the new shape; no version from before the migration can serve again. A bad
 release that applied a migration is repaired by a new commit (fix forward), never by a
 rollback. `contracts/COMPATIBILITY.md` §6 extends this to schema versions inside SQLite, which
-this tool checks too (above), and to wire formats, which it does not (see "Not implemented").
+this tool checks too (above), and to wire formats, which it checks since D69 (above).
 
 **Automatically**: when the smoke test fails after a deploy that applied no migration and is
-not forward-only, `deploy.sh` restores `previous.json`, checks health again, and fails the job.
-When the release applied a migration, or is forward-only for a schema, it does not roll back; it
-fails with an error naming the migrations or classes and the instruction to fix forward.
+not forward-only, `deploy.sh` restores `previous.json` (through `release.mjs rollback`, so every
+refusal above applies), checks health again, and fails the job. When the release applied a
+migration, or is forward-only for a schema or a format, it does not roll back; it fails with an
+error naming the migrations, classes or formats and the instruction to fix forward.
 
-**Redeploying an older commit** (instead of restoring its versions): run the workflow on
-that commit. That builds new versions of old code and goes through the same migration gate,
-which refuses if the old config lacks a migration that is now applied.
+**Older code, without a record** (the record's artifact expired after 90 days, or its versions
+aged out of the 100 Cloudflare keeps): restore the code in a **new commit on main** (`git revert`,
+or check out the components' directories from the older commit) and let it deploy. Main's tooling
+then builds new versions of the old code and judges them like any release: the migration gate
+(refused if the old config lacks a migration that is now applied), the rollback floors (a viz-query
+from before D62 is refused once `INGEST_SIGNALS` has been on; and configure refuses a floor's
+evidence the old code does not have, until `workers.json` says otherwise in the same commit), the
+format versions and the OAuth key. **Never run the Deploy workflow on an older commit, or that
+commit's `deploy.sh`** (review of D69, M-2): either runs that commit's own tooling, and a commit from
+before D69 judges none of these (the review deployed a viz-query from before D62 over span and log
+data that way, with `b322599`'s tooling). The workflow refuses any ref but main as the first step of
+both jobs that hold the Cloudflare credentials; an older commit's own workflow has no such step,
+which is why the `production` environment allows deployments from main only ("One-time setup").
+`deploy.sh` run by hand from an older checkout cannot be stopped from here: do not.
 
 A rollback restores versions: code, bindings and vars, and the secrets each version carries (a
-version from before viz-control's generated key has none: "Known risks"). It does not restore
-routes, crons or queue consumers (not versioned), nor data.
+version from before viz-control's generated key has none, which is why such a rollback is refused
+unless accepted). It does not restore routes, crons or queue consumers (not versioned), nor data.
 
 ## When a deploy fails
 
 | Where | What is left serving | What to do |
 |---|---|---|
 | Refused (exit 3): unacknowledged migration | the previous release, untouched | add the trailer or the dispatch input, if the migration is intended |
+| Refused (exit 3): a rollback floor, the switch about to go on (`INGEST_SIGNALS` set while a floor Worker in this release, or serving, is below its floor) | the previous release, untouched | release the Workers at their floors without the switch first, let them serve, then set it ("Rollback floors") |
+| Refused (exit 3): a rollback floor with the switch already on in the serving release (a floor Worker off its floor as it serves: a gradual deployment or a `wrangler rollback` by hand) | the previous release, untouched; every later release is refused the same way | restore that Worker alone: the workflow with `rollback_to` and `rollback_only: viz-query`, or `release.mjs rollback --record <a record where it is at its floor> --only viz-query` ("Rollback floors", m-8); turning the switch off is not needed |
+| Refused (exit 3): a floor Worker of this release below its floor after the switch was on, or `INGEST_SIGNALS` (or `OAUTH_PUBLIC`) a secret on its writer | the previous release, untouched | deploy that Worker at or above its floor; remove the secret and set the switch as a var |
+| configure.mjs failed (exit 1, before the release): a viz-control without its six rate limits, a bad limit, period or id, `placement` on viz-control or viz-mcp, `OAUTH_PUBLIC` set by a component | the previous release, untouched | fix `control/wrangler.jsonc` (or the component); for a missing id run `resources.mjs ensure` ("Rate limits in front of OAuth") |
+| Refused (exit 3): the key would be created or rotated on a viz-control without its rate limits, or the manifest was configured `--ids-optional` | the previous release, untouched | configure again without `--ids-optional`, after `resources.mjs ensure`; a stage that is to run without the rate limits: `--oauth-without-rate-limits` |
+| Stopped (exit 1) before anything changed: a serving viz-control version could not be read, so whether its key is set is unknown | the previous release, untouched | deploy again (S9 saw such reads fail for a moment) |
 | Phase 1 (upload) | the previous release, untouched (uploaded versions serve nothing) | fix the build |
-| Phase 1, generated secret: refused (exit 3: set now but missing from the upload, or the newest version is not this release's) or the put failed (exit 1) | the previous release, untouched | read the reason; never rotate to make it pass unless replacing the key is intended ("Worker secrets the deploy generates") |
-| Phase 2, a new viz-control's key could not be put | viz-control without the key (`/oauth/register` 503); nothing after it was promoted | deploy again: the next release puts the key on its upload |
-| Phase 2, before any migration was applied | Workers promoted so far are put back automatically | read the wrangler error in the log |
+| Phase 1, generated secret: refused (exit 3: set now but missing from the upload after the 10 s re-read, the newest version is not this run's upload, or the key went on another run's upload) or the put failed (exit 1, also when the new version did not show within 10 s) | the previous release, untouched | read the reason; another run: let it finish, then deploy again. "Set but missing" is not lifted by a rollback or a new deploy: only by rotating, which invalidates every registered client ("Known risks"); never rotate to make it pass unless that is accepted ("Worker secrets the deploy generates") |
+| Phase 2, a new (or migrating) viz-control's key could not be put, or one of the three key refusals above on it (exit 1, not 3: logged "REFUSED in phase 2, after promotion began") | the Workers before it promoted; viz-control serving its `wrangler deploy` version without the key (`/oauth/register` 503); nothing after it promoted; with a migration applied, nothing rolled back | deploy again: the next release puts the key on its upload, or inherits it from the newest version |
+| Phase 2, before any migration was applied | Workers promoted so far are put back automatically, except one the release is forward-only for (then nothing is put back) and a viz-control whose key the release created or rotated (it stays) | read the wrangler error in the log |
 | Phase 2, after a migration was applied | a mix; nothing is rolled back | fix forward |
 | Smoke test, no migration | the previous release, restored automatically | the job fails; read the smoke output |
 | Smoke test, with migration | the new release | fix forward |
@@ -398,12 +730,30 @@ that happens, dispatch it again.
 
 ## One-time setup (the owner)
 
-1. **Repository secrets** (Settings → Secrets and variables → Actions):
+0. **Rate limits need no Cloudflare resource, only ids.** viz-control's six Rate Limiting bindings
+   (D70) take namespace ids that `resources.mjs ensure` allocates from 7000–7999 on every deploy,
+   after reading which ids the account's scripts bind (read only; "Rate limits in front of OAuth").
+   Nothing is created and there is nothing to set by hand; reading other scripts' versions needs no
+   permission beyond Workers Scripts edit (training knowledge: edit includes read; not checked on
+   the account). The only resource-like choice is the range, in
+   `workers.json` `resources.ratelimit_ids`; if a script that is not viz's ever binds an id in it, the
+   next deploy moves viz off it (logged).
+1. **Before this tree is merged to main**, set the `production` environment's rule below (main only,
+   with the two Cloudflare secrets as its own): main's workflow until then (fb77292's) has no
+   main-only step (review of D69, round 2, m2-4).
+   **Repository secrets** (Settings → Secrets and variables → Actions):
    `CLOUDFLARE_API_TOKEN` (Workers Scripts edit, Workers R2 Storage edit, Workers KV edit,
    Queues edit, and Workers custom domains on the bitcru.sh zone; no DNS permission is
    needed) and `CLOUDFLARE_ACCOUNT_ID`. The workflow uses the GitHub environment
    `production`, which GitHub creates on first use; add protection rules to it if a person
    should approve each deploy.
+   **Required: the `production` environment deploys from `main` only** (Settings → Environments →
+   production → Deployment branches and tags → Selected branches: `main`), and the two Cloudflare
+   secrets are that environment's secrets rather than the repository's. The workflow's own first
+   step refuses any other ref, but an older commit's workflow has no such step: without the rule, a
+   run of the Deploy workflow on an older branch would get the credentials and run that commit's
+   tooling, which may predate the release-safety checks (D69; review of D69, M-2). Nothing in the
+   repository can check this setting.
 2. **First deploy**: run the Deploy workflow on `main` with `acknowledge_migrations` =
    `viz-publisher@v1 viz-ingest@v1 viz-control@v1 viz-query@v1 viz-ruler@v2` (see above). It
    creates `viz-lake`, `viz-config` and the four queues, deploys the seven Workers and attaches
@@ -442,6 +792,80 @@ is the ordinary 404. The token never appears on a command line or in a log, and 
 is stored. A version created while the secret existed would carry it, but it expires after 10
 minutes regardless.
 
+## The first release over the 2026-11-19 production
+
+The owner deployed production on 2026-11-19 from main at fb77292 (PR #8) with that commit's own
+tooling, which predates D69: `vis.bitcru.sh/healthz` reports that release, viz-control has
+`OAUTH_CLIENT_KEY` and advertises `/oauth/register`, with no Rate Limiting bindings. Its versions carry
+`VIZ_SCHEMAS` but no `VIZ_FORMATS`, `VIZ_FLOORS` or `VIZ_DEPLOY_RUN`, its record has schemas and no
+formats, and viz-control has no `OAUTH_PUBLIC`. The first release of this tree goes over that.
+
+**How it was checked.** `test/upgrade-production.test.mjs`, against the fakes, not Cloudflare. The
+fake account holds production as fb77292's tool leaves it: every Worker's vars exactly as fb77292's
+own `configure.mjs` generates them for production (run on a `git archive` of fb77292 in a scratch
+directory on 2026-11-26; `test/fixtures/production-fb77292.json`), each Worker created by `wrangler
+deploy`, viz-control's key put and deployed, the gateway's bootstrap secret put and deleted, and two
+scripts of the account that are not viz's, plus a viz spike, binding Rate Limiting ids where viz would
+otherwise take its first two. What versions Cloudflare keeps is **modelled** from fb77292's
+`release.mjs` and `bootstrap.mjs`, not read from the account. Then the real `resources.mjs`
+(rate-limit ids), `configure.mjs` (production, this tree's component configs) and `release.mjs` (plan,
+deploy, rollback), twice. What it shows, step by step:
+
+| Step | Result |
+|---|---|
+| Durable Object migrations | **none**: the newest tags are fb77292's (viz-publisher v1, viz-ingest v1, viz-control v1, viz-query v1, viz-ruler v2), so nothing to acknowledge; every Worker is uploaded, then promoted |
+| Schemas | additive only: `publisher.Publisher` 3 → 7 and `shard.Shard` 1 → 3, both readable from 1; `ledger.Ledger` 3/2, `control.Tenant` 3/1 and the ruler's three unchanged |
+| `resources.mjs ensure` | six ids for `viz-control/OAUTH_RL_*`, none bound by the unrelated scripts or the spike; only GET calls |
+| `configure.mjs` | **the gate passes** with the six bindings and their ids; viz-control gets `OAUTH_PUBLIC=1` and is stamped `oauth-public` |
+| Format versions | fb77292's Workers declare none, so their reads come from `deploy/records/fb7729280d79f41e4f9fa40be1867c0fd2491352.formats.json`, made from fb77292's own sources (review of D69, round 2, M2-1): every format version this tree writes is one fb77292 reads (its ingest already wrote `r2.dead-letters` 2 and read 1 and 2) |
+| `release.mjs plan` | not refused; the key `set (serving version …); kept`; **FORWARD-ONLY** once: `oauth-public` (the serving viz-control is below the floor), and by nothing else |
+| `release.mjs deploy` | exit 0; **the key is kept** (no put; the same value serves, so every registered client stays registered); viz-control serves with the six bindings and `OAUTH_PUBLIC`; the record says `forwardOnly: true` (viz-control, kind `floor`), `oauth-public` on, viz-control at the floor, serving one not |
+| Automatic rollback | **not attempted**: `deploy.sh`'s own forward-only expression, run on the record, gives `viz-control below the oauth-public floor before it` |
+| A failed promotion | puts back what it promoted before viz-control (viz-publisher, viz-ingest), and nothing once viz-control is promoted |
+| Rollback of the whole release, to `previous.json` or to fb77292's record | **refused**, nothing moved, by one problem: `viz-control … below its floor … set OAUTH_PUBLIC=1` |
+| Rollback of one Worker (`--only`, the workflow's `rollback_only`), to either record | **allowed** for viz-publisher, viz-ingest, viz-query, viz-ruler, viz-mcp and viz-gateway, each alone, the others left as they serve; **refused** for viz-control (its floor). Several of the six together are judged the same way (each by its schemas, formats and floors, the others as they serve) |
+| The next release | ids kept (bound by viz-control); not forward-only; viz-control at its floor here and serving; the key kept; a rollback to the first release is allowed |
+
+Before this change's forward-only option, the same run is **refused at the plan** (exit 3: "this
+release sets OAUTH_PUBLIC=1, and the viz-control serving now is below its floor"), and every later
+release with it: production could not have taken any release of this tree. That is the mutant
+"oauth-public: workers.json no longer says forward-only", which the test kills. Before fb77292's
+formats record (round 2 of the review of D69, M2-1, RV2-1), the release was also forward-only for
+viz-ingest, and every rollback to fb77292, `--only` any Worker included, was refused by
+`r2.dead-letters`, which fb77292's ingest itself writes at 2 and reads at 1 and 2.
+
+**What the owner must know or do before merging this to main:**
+
+0. **First: the `production` environment must allow `main` only, and hold the two Cloudflare
+   secrets** (one-time setup, 1), before this tree is merged. fb77292's workflow, which is main's
+   until then, has no main-only step, so until the rule is set a dispatch on another ref runs that
+   ref's own tooling; and from this release on, an older commit's tooling would not judge the
+   `oauth-public` floor or the gate either. Nothing in the repository can check the setting.
+1. **It is forward-only, for viz-control only.** If its smoke test fails, `deploy.sh` does not roll
+   back: the job fails, the new release keeps serving. A rollback of the whole release, or of
+   viz-control, to fb77292 is refused (viz-control's floor: fb77292's viz-control mints credentials
+   without an expiry and has none of D70's fixes). **Every other Worker can go back alone**:
+   `rollback_to: fb7729280d79f41e4f9fa40be1867c0fd2491352` with `rollback_only: viz-query` (or
+   viz-gateway, viz-mcp, viz-ruler, viz-ingest, viz-publisher; locally `release.mjs rollback --record
+   <its release.json, or previous.json> --only viz-query`). The workflow finds fb77292's record only
+   if fb77292's deploy run uploaded its `release-<sha>` artifact (90 days); `previous.json` of the
+   first release is in that release's artifact. Nothing else in the path refuses: no migration to
+   acknowledge (no `acknowledge_migrations`, no `Migration:` trailer), no secret to set, nothing to
+   create.
+2. **OAuth's key is kept.** Codes and tokens fb77292's viz-control issued (layout 1, no expiry the
+   Worker can see) keep working until they expire at their objects; new ones carry their expiry.
+3. **The rate-limit ids** come from the real account at that deploy, through the GETs above. The
+   binding shape the scan reads (`type: ratelimit`, `namespace_id`) is training knowledge. This is a
+   first allocation: if any other script shows a rate-limit binding whose id cannot be read,
+   `resources.mjs` refuses to allocate (it cannot prove an id free), names the script, and nothing is
+   deployed; if one shows under an unrelated type name, a collision with an unrelated script would go
+   unseen ("Known risks").
+4. **Not yet run on Cloudflare** (review of D69, round 2, M2-2): whether Cloudflare accepts the six
+   bindings at upload, and the field names its version API lists them under. The stage trial that
+   settles both, `spikes/s13-upgrade-trial/`, is prepared and not run.
+5. After it, every production release carries the six bindings and `OAUTH_PUBLIC`, and viz-control
+   cannot go back below D70's third round.
+
 ## CI
 
 `.github/workflows/ci.yml` runs on pull requests to `main`, pushes to `claude/**`, and is
@@ -454,7 +878,14 @@ Components not in the checkout are skipped with a notice: on `main` today that i
 and `design-system/` (and `app/` also needs `design-system/`). One test file imports from a
 directory that may be absent and is excluded, with a warning, when it is:
 `stack/test/e2e.test.ts` (imports hyparquet from `bench/node_modules`, so `bench/` is
-`npm ci`'d for stack). Each exclusion names the import that justifies it, and
+`npm ci`'d for stack, and for flush, compact and engine/wasm, whose tests read their files back
+with it). query's trace and log tests need fixtures that are generated and git-ignored (tens of
+MB): its job installs the Rust toolchain and `edge/`'s packages and runs
+`query/tools/gen-signal-fixtures.sh` before tsc (`rust` and `prepare` in the matrix), and
+`query/test/signals.bench.ts`, a benchmark over fixtures CI does not generate, is excluded with a
+warning. Pull request #9's first CI run failed on all four (2026-11-26): the development branch's
+suites had only run on a machine where `bench/node_modules` and the fixtures already existed.
+Each exclusion names the import that justifies it, and
 `test/matrix.test.mjs` fails once the file no longer contains it (commit 587f3df, which
 also dropped the exclusion of `query/test/http.test.ts`: it no longer imports `app/`).
 Actions are pinned to full commit SHAs (checkout v7.0.1, setup-node v7.1.0, cache v6.1.0,
@@ -465,6 +896,298 @@ module proxy and cross-checked against GitHub's tag pages). Rust comes from the 
 ## How it was verified
 
 All measured here unless it says Cloudflare.
+
+- **The review of D69, round 2, its findings fixed (2026-11-26)** (`design/reviews/d69-deploy-safety-r2.md`,
+  approve with changes: 2 majors, 4 minors). Nothing deployed; the Cloudflare API only read (an
+  inventory). **M2-1**: `deploy/records/fb77292….formats.json` from fb77292's own sources
+  (`scripts/record-formats.mjs`; the same maps as an independent run of this tree's reader over a
+  `git archive` of fb77292). The review's RV2-1 is now a test that passes for viz-query, viz-gateway,
+  viz-mcp, viz-ruler, viz-ingest and viz-publisher (`--only`, to fb77292's record and to
+  `previous.json`) and still refuses viz-control, by its floor alone; the upgrade test now expects the
+  first release forward-only by `oauth-public` only, and a whole rollback refused by that one problem;
+  a unit test holds the file and its lookup (by record, by `VIZ_RELEASE`, by tag). **m2-1**: the scan
+  reports what it cannot read; tests for an id that cannot be a number (ignored), a missing id and an
+  unreadable script (a first allocation refused, naming it; nothing recorded), ids viz-control already
+  binds kept in doubt, a recorded-only id not kept in doubt, viz-control's own unreadable binding (not a
+  doubt), and the review's RV2-4 end to end against the fake account. **m2-2**: COMPATIBILITY §6 states
+  the forward-only option. **m2-3**: `contracts/oauth.ts` and D70 say about 1 in 11,600 (checked:
+  1/62 × 79,200 / 62^4 minutes, 1 in 11,567 by 2026-12-26) and that production issued layout 1.
+  **m2-4**: one-time setup and the owner notes put the environment rule first. **M2-2**: the stage
+  trial `spikes/s13-upgrade-trial/` is prepared and **not run** (the session's permission check
+  refused deploying to Cloudflare).
+
+  Mutants (scratch copy, at most 2 workers): **9 of 9 new killed** (M2-1 4: the record not used for a
+  target, nor for a version, a version known by its tag only, the record's ingest reading 1 only; m2-1
+  5: new ids taken in doubt, a recorded id kept in doubt, a non-numeric id a doubt, viz-control's own a
+  doubt, an unreadable script stopping the scan). Suites (`cd deploy`): `npx tsc --noEmit` clean; `npx
+  vitest run --maxWorkers=2` 183 of 183; `node --test --test-concurrency=2 'test/*.test.mjs'` **135 of
+  135** (4 new: RV2-1, the formats record, m2-1's two); `bash -n deploy.sh` clean; `control` and `mcp`
+  `npx tsc --noEmit` clean (the contract comment).
+
+- **D70's gate, the rate-limit ids, the `oauth-public` floor and `/api/echo` (2026-11-26).** Nothing
+  deployed; the Cloudflare API not called. New tests: `test/configure.test.mjs` 9 (the gate's six
+  bindings and period read from control's source and declared by `control/wrangler.jsonc`;
+  production with all six passes, ids replaced, `OAUTH_PUBLIC` set, stamped; production without the
+  block refused naming all six, each one of the six removed in turn refused naming it, and the
+  command's exit 1 without ids; period 10, limits 0, −5, 1.5 and "5", an unknown name, a binding
+  twice, an unknown key, an id `"0"`, one outside the range and two bindings with one id refused; a
+  stage without them only with `--oauth-without-rate-limits`, recorded, refused for production and
+  with `--oauth-public`; `OAUTH_PUBLIC` from a component or `VIZ_STAGE_VARS` refused; `placement`
+  refused on viz-control and viz-mcp, in production and a stage, viz-query's kept; `kv.oauth-dead` 1
+  declared for viz-control only; the rule parses with its four exports, a missing one refused);
+  `test/resources.test.mjs` 6 (allocation excludes every id an unrelated script binds, even in
+  viz's range; refuses to reuse a recorded or own id an unrelated script binds; production and two
+  stages, recorded or bound, never collide, a spike's ids excluded; production keeps its own ids;
+  deterministic; out of range not kept; range exhausted; the scan reads serving and newest versions,
+  GET only, skips Durable Object namespace ids, refuses an unreadable id or an unknown rate-limit
+  type; `ensure` against the fake account records, reuses and `destroy` frees a stage's ids);
+  `test/oauth-gate.test.mjs` 9 (end to end: the key refused on production without the bindings, one
+  missing, all missing, no gate record, on rotation, and in `plan`, nothing uploaded; created with
+  all six; a stage refused without the flag or with it on only one side, passed with both and
+  recorded; production ignores it; an `--ids-optional` manifest refused; the put itself refuses;
+  `OAUTH_PUBLIC` over an unstamped viz-control forward-only and its rollback refused; over a
+  stamped one ordinary; once seen, an unstamped viz-control refused as a release and as a rollback;
+  `signal-data` still refuses); `test/upgrade-production.test.mjs` 1 ("The first release over the
+  2026-11-19 production"). The existing fixtures of `secrets`, `review-d69` and `release-checks`
+  now carry what configure writes since the gate (viz-control's bindings and stamp; the
+  `oauth-public` floor in the record), and one lag count in `secrets` rose by one read (the new
+  rule's look for a secret switch). Gateway: `/api/echo` routed, `GET` with its key reaching query
+  exactly as sent, and `/api/echo/`, `/api/echox`, `/api/echo/x`, `/api/v2/echo` 404.
+
+  **Counterfactual.** With `serving_below_floor` removed from `workers.json` (a scratch copy), the
+  upgrade test fails at the plan: "this release sets OAUTH_PUBLIC=1, and the viz-control serving now
+  is below its floor" (exit 3), which is what the rule as `control/README.md` first wrote it would do
+  to production.
+
+  **control** (`control/wrangler.jsonc` gained the block): `npx tsc --noEmit` clean. The block made
+  control's test plugin bind the production limits in every control test, and 22 unrelated tests
+  failed; control's builder made `control/vitest.config.ts` hand the plugin a copy of the config
+  without `ratelimits` (reported by the coordinator; control passes 222 of 222 since its round 3).
+  My own run of control's suite in a scratch copy (0fe7684, already with that workaround) gave 220 of
+  221, the one failure (`ratelimit-review-r2.test.ts`, "the list is shared …") the same with the
+  committed `wrangler.jsonc`, 2 runs of 2: round 3 in progress then, not this change.
+
+  **Mutants**, in scratch copies of the tree (no git; node_modules linked; the copy now also needs
+  `engine/wasm/js` and `engine/wasm-query/js`, which the bundling test resolves), at most 2 test
+  workers. `mutants-release.mjs` now runs `oauth-gate`, `resources` and `upgrade-production` too, and
+  takes `re:<pattern>` to choose mutants; `mutants-secrets.mjs` runs `oauth-gate` too.
+  - **Release, the 30 new** (the gate 10, `OAUTH_PUBLIC` 3, placement 2, one across Workers, the
+    floor 5, `deploy.sh` 1, `--ids-optional` 1, ids 7): first run **27 of 30 killed**. *Two bindings
+    of one deployment with one id, across Workers* survived: unreachable, since only a Worker with an
+    `oauth` block may carry `ratelimits` and only viz-control has one; the check and the mutant were
+    removed. *Another deployment's recorded ids are not excluded* survived: the test recorded ids
+    stage a1 would never pick; it now records exactly the ids a1 would take first. *An id a script
+    that is not viz's binds is not excluded* did not apply (its pattern assumed a line break). On a
+    fresh copy of the final tree, both remaining ones: **2 of 2 killed**. So 29 of 29 in the end.
+  - **Release, the 60 older ones**, on a copy of the final tree: **59 of 60 killed**, one not applied
+    (*the switch goes on while a Worker serving now is below its floor*: its line now carries the
+    forward-only condition); rewritten, **1 of 1 killed**. So 60 of 60.
+  - **Secrets, all 46** (8 new for the gate): **44 of 46 killed**, every new one among them. Two
+    older patterns did not apply (lines this change extended: the refusal list, and the `gate`
+    argument): rewritten, and on a fresh copy **2 of 2 killed**.
+  - **Gateway, all 30** (2 new: `/api/echo` not routed, and matched as a prefix): **30 of 30 killed**.
+
+  Each kill is a named test failing; the lists with the test that killed each are in the scripts'
+  output. **Suites at the end** (`cd deploy`): `npx tsc --noEmit` clean; `npx vitest run
+  --maxWorkers=2` **183 of 183** (5 more: `/api/echo` routed, its GET test, and four near misses in
+  place of `/api/echo` as a 404); `node --test --test-concurrency=2 'test/*.test.mjs'` **131 of 131**
+  (106 before: 25 new); `bash -n deploy.sh` clean (shellcheck not installed here). `cd control && npx
+  tsc --noEmit` clean.
+
+- **The review of D69, its findings fixed (2026-11-19)** (`design/reviews/d69-deploy-safety.md`,
+  approve with changes: 2 majors, 9 minors). Nothing deployed; the Cloudflare API not called. The
+  review's two fake extensions are now the tree's: `keep` (Cloudflare keeps only the n newest
+  versions, never a serving one) and `uploadSecretLag` (an upload shown without the secret it
+  inherited for its first n reads); `test/fake-account.mjs` also shows a non-string var as a JSON var.
+
+  | Finding | Disposition | Evidence |
+  |---|---|---|
+  | M-1 (a, b): format rollbacks judged only the Workers the record names | **Fixed.** The restored Workers are the only readers under the target (a record entry of a Worker left out is no reader); every kept version of each Worker that writes formats and is left out (since its version in the record, all when the record does not name it, its serving one always) is judged against them. `--only` (and the workflow's `rollback_only`) restores some Workers of a whole record. The rotation refusal and this README no longer offer a bare record without viz-control; they offer `--only`, judged | RV-1a, RV-1b, and a left-out viz-control rolled back since (its newer kept version counts); unit tests of the rule |
+  | M-1 (c): undeclared readers never counted | **Fixed.** Every deployed Worker declares, completely, what it reads (configure refuses one without a `formats` block); one that declares nothing reads version 1 of every format, per Worker; D69's declarations (no `complete`) read version 1 of what they do not list. Forward-only asks every serving Worker. Components declare where they had a constant (edge's `KEY_RECORD_VERSION`, contracts' `CONTROL_SERVICE_VERSION` and `OAUTH_VERSION`); elsewhere `workers.json` declares version 1 for them (`reads_v1`), listed under "Needed changes in components" | M-1 (c) end to end (a viz-query that declares nothing: the release writing `kv.settings` 2 forward-only, the rollback refused); configure tests: every Worker declares; each Worker's bundled sources (esbuild's inputs from its main) against the declarations, for control's KV records, the API key and OAuth credential layouts and control's RPC answers |
+  | M-2: an older commit's own tooling ran | **Fixed** (decision in D69, point 5): only main is deployed, with main's tooling. Both jobs with the credentials refuse any other ref first; the `production` environment allows main only (one-time setup, a setting); older code goes out again as a commit on main | `test/workflow.test.mjs`: the gate is the first step of both jobs and refuses `refs/heads/rv-b322599` (the review's RV-3), a `claude/…` branch and a tag; no checkout of another ref; no advice to run an older commit; and the release `b322599` makes is refused by main's tooling once the switch was on |
+  | m-1: the switch's evidence ages out of the 100 kept versions | **Known risk**, not fixed (the review's scenario and remedy under "Known risks"); the text now says "among the kept versions" | RV-4 not ported (it reproduces the risk) |
+  | m-2: a secret or JSON `INGEST_SIGNALS` unseen | **Fixed.** A binding of any type with the switch's name counts (a secret as on); a release is refused while viz-ingest's serving or newest version carries it as a secret | RV-5 (rollback refused, the next release refused, nothing uploaded); a JSON var seen |
+  | m-3: a floor Worker outside the release not judged at switch-on | **Fixed.** Judged as it serves | RV-6: refused, nothing uploaded |
+  | m-4: check, then act against a concurrent deploy | **Known risk**, not fixed; documented (local rollbacks must not overlap a deploy) | RV-10 not ported |
+  | m-5: the run-mark refusal on the `wrangler deploy` path is exit 1 with Workers promoted | **Text and messages made true**: that path cannot refuse before promotion (viz-control has no version before phase 2). D69 point 3, `deploy.sh` and the failure table say exit 3 in phase 1 and exit 1 in phase 2; the messages say what serves, and the log says "REFUSED in phase 2, after promotion began (exit 1)" | RV-7: exit 1, the message names what serves and no longer says "Nothing is promoted" |
+  | m-6: "set but missing from the upload" has no non-destructive exit | **Known risk**, documented with the review's scenario; the README's remedy (rollback or redeploy) corrected, and the refusal says neither lifts it | RV-8 now pins the message (k3 still refused) |
+  | m-7: re-read waits for existence; `fetch` has no timeout; `VIZ_FRESH_READ_MS=""` is 0 | **Fixed.** The upload is read until the key it inherited shows; the budget is wall-clock; every API request times out after 30 s (`VIZ_CF_TIMEOUT_MS`) and is retried; an empty variable is the default | RV-11 with budgets `300` and `""`: kept, no new put; a request that never answers is abandoned at 200 ms and retried |
+  | m-8: one off-floor Worker refuses every release; the remedy undocumented | **Fixed** in documentation and as a command: `--only` / `rollback_only` restores that Worker alone; never rename a rule | RV-9: refused, then `--only viz-query` restores viz-query alone (no other Worker moved), and the next release with the switch goes out |
+  | m-9: claims the code does not bear out | **Corrected**: `release.mjs`'s header, this README's "Contract issues" (§6 was edited in 799ea36, after the code), COMPATIBILITY §6's bullet (its own change), DESIGN.md's two paragraphs, `deploy.sh`'s exit codes, and the failure table's missing row (a serving viz-control version that cannot be read: exit 1, nothing changed) | text |
+
+  **Before and after.** The regression tests (`test/review-d69.test.mjs`, 12, and
+  `test/workflow.test.mjs`, 2) were copied, with the fakes, into a scratch copy of `deploy/`,
+  `contracts/` and `.github/` as the review read them (9958cb3, identical to this branch's head before
+  the change) and run there: **13 of 14 fail**, 12 on their assertions (exit 0 where 3 is expected:
+  RV-1a, RV-5, the JSON var, RV-6; not forward-only and the rollback allowed: M-1 (c); the old
+  messages: RV-1b, RV-7, RV-8; exit 3 where 0 is expected: RV-11; three Workers restored where one was
+  asked: RV-9; the left-out viz-control rolled back since: refused for another reason; no gate step:
+  the workflow), and one, the API timeout, hangs until the event loop drains and is cancelled, which
+  is the fault. The one that passes there is RV-3's half that already held: the tool of that commit
+  refuses the release `b322599` would make; what failed was that the workflow ran `b322599`'s own
+  tool. After the change all 14 pass. Not ported: RV-4 (m-1) and RV-10 (m-4), which reproduce risks
+  left open, and the review's "held" test.
+
+  **Mutants**, in a copy of the tree in a scratch directory (no git; node_modules linked; the copy
+  needs `.github/`, `dashboard/` and `anomaly/src/` too, which the bundling test reads), at most 2
+  test workers. `mutants-release.mjs` now also runs `review-d69` and `workflow`; `mutants-secrets.mjs`
+  also runs `review-d69`. **`mutants-release.mjs`: 60 of 60 killed** (19 new: 12 for M-1, 2 for M-2, 3
+  for m-2, 1 each for m-3 and m-8; 10 earlier patterns rewritten to the new code). The first run, on a
+  copy taken before two earlier patterns were rewritten, applied 57 of 59 and killed all 57; the two
+  rewritten ones and one added after it were run on a fresh copy of the final tree and killed (3 of
+  3). **`mutants-secrets.mjs`: 38 of 38 killed** (7 new: 2 for m-5, 1 for m-6, 3 for m-7, 1 for M-1's
+  message; one earlier pattern rewritten). Every kill is a named test failing; none survived.
+
+  | Mutant (new) | Killed by |
+  |---|---|
+  | M-1: the Workers a record leaves out are not judged | RV-1a; RV-1b; the left-out viz-control rolled back since |
+  | M-1: a left-out Worker judged by its serving version only | the left-out viz-control rolled back since |
+  | M-1: a left-out Worker's own record entry still reads | the M-1 unit test of the rule |
+  | M-1: a left-out kept version declaring nothing ignored | the same |
+  | M-1 (c): a Worker that declares nothing reads nothing | `readsOf`'s unit test; M-1 (c) end to end |
+  | M-1 (c): forward-only asks only serving Workers that declare | the forward-only unit test; M-1 (c) end to end |
+  | M-1 (c): an incomplete var, or record, taken as complete | `VIZ_FORMATS` unit test; M-1 (c); the format rollback unit tests |
+  | M-1 (c): configure deploys a Worker without `formats`; one declaring none carries no `VIZ_FORMATS`; `reads_v1` not read; viz-query's `kv.pool` dropped from `workers.json` | the configure tests (every Worker declares; formats into each version's var; the bundled-sources test) |
+  | M-2: either job's gate lets any ref through (2) | the workflow test |
+  | m-2: a secret switch, a JSON-var switch, or a secret on the writer at deploy, not seen (3) | RV-5; the JSON var |
+  | m-3: a floor Worker outside the release not judged | RV-6 |
+  | m-8: `--only` ignored | RV-9; RV-1a |
+  | m-5: the deploy-path refusal says nothing is promoted; logged as a promotion failure (2) | RV-7 |
+  | m-6: the refusal no longer says rollback and redeploy do not lift it | RV-8 |
+  | m-7: read until it exists only; `""` a 0 ms budget; no API timeout (3) | RV-11 (both budgets); the API timeout test |
+  | M-1: the rotation refusal advises a bare record without viz-control | RV-1b |
+
+  **Suites, at the end** (`cd deploy`): `npx tsc --noEmit` clean; `npx vitest run --maxWorkers=2`
+  **178 of 178**; `node --test --test-concurrency=2 'test/*.test.mjs'` **106 of 106** (88 before:
+  review-d69 12 and workflow 2 new, release 19 → 21, configure 27 → 29; release-checks' and secrets'
+  fixtures follow configure's complete `VIZ_FORMATS`). `bash -n deploy.sh` clean; shellcheck and
+  actionlint are not installed here; the workflow was parsed as YAML and its two gate scripts run by
+  the workflow test.
+
+- **D69: format versions, rollback floors, run marks, and S9's measurements in the secret steps
+  (2026-11-19).** Nothing deployed; the Cloudflare API not called (another builder's stage
+  experiment ran from a separate checkout). The fakes follow what S9 measured on Cloudflare: the
+  secret list names the newest version's secrets; `versions deploy` of a version that served before
+  and whose value of a secret differs from the serving one is refused with 10220, one that lacks the
+  secret is allowed, a new version (a rotation's promotion) is allowed; a version just created can
+  answer 404, or show without the secret just put, for its first reads (`readLag`, `secretLag`);
+  `racePut` lets another run of the same release upload between the checks and the put; `ignoreVar`
+  uploads without `--var`. Shared by the end-to-end tests in `test/fake-account.mjs`.
+
+  **Tests that fail without the change.** The two end-to-end files that drive the real `deploy`,
+  `plan` and `rollback` (`test/release-checks.test.mjs`, 14 tests, and `test/secrets.test.mjs`, 21)
+  were copied, with the fakes, into a scratch copy of the tree as it was before this change and run
+  there: **23 of 35 fail**, each on its assertion (exit 0 where 3 is expected, a record without
+  `floors` or `formats`, the old restore across a rotation hitting 10220 after the gateway was rolled
+  back). The 12 that pass there are the 11 earlier secrets tests and the floors' negative control
+  ("while the switch was never on, they refuse nothing"). One earlier test, m-9's refusal, fails
+  there too, on its message only: the old code cites the secret list, which the fake now models as
+  the newest version's (S9). The 13 unit tests of new functions (`release.test.mjs` 8,
+  `configure.test.mjs` 5) cannot run against code that lacks them.
+
+  What each new test shows (the end-to-end ones):
+
+  | Test | Before this change |
+  |---|---|
+  | floors: the switch refused while the serving publisher (schema 3), query or ingest (unstamped) is below its floor; nothing uploaded; `plan` says the same | exit 0 |
+  | floors: the switch refused with one of the release's own Workers below its floor (query unstamped; publisher schema 3) | exit 0 |
+  | floors: allowed once a release at every floor has served; the record's `floors` | no `floors` |
+  | floors: once a kept viz-ingest version set the switch, a release with a Worker below its floor is refused with the switch off, also when the newest viz-ingest version has it off | exit 0 |
+  | floors: a rollback below a floor after the switch, whole or of one Worker (query, publisher, ingest each alone), refused; nothing restored | exit 0 |
+  | floors: a rollback at every floor allowed (to the release before the switch; publisher schema 5 → 4), then below refused | the second exit 0 |
+  | floors: a Worker the record does not name is judged as it serves (query put below its floor by hand) | exit 0 |
+  | floors: while the switch was never on, nothing refused | passes (control) |
+  | m-13: a → b (reads 2) → c (writes 2): to b allowed, then to a refused, b serving | exit 0, no `formats` |
+  | m-13: c over a (reads 1 only) is forward-only (kind `format`), and its automatic rollback target refused | not forward-only |
+  | m-13: a record from before format versions: allowed while only 1 was written since, refused once 2 was | exit 0 |
+  | m-13: what it costs today (`r2.dead-letters` 2 refuses a rollback to an old record) | exit 0 |
+  | m-13: a newer version that declares no formats is refused as unknown | exit 0 |
+  | a failed promotion after a Worker the release is forward-only for was promoted puts nothing back | restored |
+  | m-11: another run uploads between the check and the put: the key is on its version, exit 3, nothing promoted | exit 0, that version promoted |
+  | m-11: every upload carries `VIZ_DEPLOY_RUN`; two runs differ; the record names its run | no mark |
+  | m-11: an upload without this run's mark gets no put (refused before it) | put made |
+  | S9: a version not seen yet (404, or without the secret just put) is read again, and the deploy goes on | exit 1 |
+  | S9: a version that does not show within the budget stops the release, nothing promoted | other message |
+  | S9, created: rollback across the key's creation refused up front; accepted, it serves without the key; the next deploy keeps the key | exit 0 |
+  | S9, rotated: rollback across a rotation refused up front, also when accepting the loss; a record without viz-control goes ahead | gateway rolled back, then 10220 at viz-control |
+  | S9: a failed promotion leaves a viz-control with a rotated key on it | restore hits 10220 |
+  | a serving version that cannot be read stops the release, no key made | went on (a new key over the existing one) |
+
+  Unit tests: `release.test.mjs` (format rollback rule, `readsOf`, forward-only by format,
+  `VIZ_FORMATS` parsing, the floor rule as `workers.json` states it, malformed rules refused, the
+  deploy and rollback floor rules); `configure.test.mjs` (formats read from the real components into
+  the manifest and each version's `VIZ_FORMATS`, with the ruler's gate read from its source; every
+  `FORMATS` map in a deployed component declared; a Worker writing what it does not read, one format
+  at two versions, and read lists with nothing in common refused; viz-query and viz-ingest stamped
+  `VIZ_FLOORS`, a declaration without its evidence refused, a schema floor naming no class refused;
+  the publisher's floor pinned against `publisher/test/n1` (schema 3, metric tables only),
+  `test/d64` (schema 4, reads the three) and `src/` (schema ≥ 4, publishes them)).
+
+  **Suites, at the end** (`cd deploy`): `npx tsc --noEmit` clean; `npx vitest run --maxWorkers=2`
+  **178 of 178**; `node --test --test-concurrency=2 'test/*.test.mjs'` **88 of 88** (52 before this change:
+  release-checks 14 new, secrets 12 → 21, release 11 → 19, configure 22 → 27). `bash -n deploy.sh`
+  clean; shellcheck is not installed here, so deploy.sh's changed lines were not linted. One gateway
+  test had started to fail meanwhile through no change here: control's `/healthz` now answers `ok`
+  and then lines on OAuth's key and rate limiters (D70, committed by control's builder), and the
+  test pinned the whole body `ok\n`; it now checks the status and the first line, which is what
+  control documents ("the gateway reads only the status"). The gateway's mutants were not re-run
+  (its source did not change; the test still checks the path asked and the 503s).
+
+  **Mutants**, each run in a fresh copy of the tree in a scratch directory (node_modules linked; the
+  scripts refuse a git work tree), whose unmutated tests the scripts check first; at most 2 test
+  workers. First runs: `node scripts/mutants-release.mjs` **40 of 41 killed**; the survivor, *a
+  schema floor naming no class of its Worker is not refused by configure()*, lived because
+  `configure()` read `workers.json` only from disk and the test called the check directly: it now
+  takes a `plan`, and a test configures one with a wrong floor (killed on re-run). `node
+  scripts/mutants-secrets.mjs` **30 of 31**: the earlier mutant *plan mode puts the secret* survived
+  because its injected `ensureSecrets` call has no run id, which the new run check refuses before
+  any put (the guard made that form equivalent); it now puts directly (killed on re-run). One kill
+  was not a kill: *the secret check of a rollback is never run* left a parenthesis unbalanced, the
+  test file did not load, and the script counted its failure; the replacement is fixed, and both
+  scripts now count a test file that does not load as NO RUN. Final runs, on the final code:
+  `mutants-release.mjs` **41 of 41 killed**, `mutants-secrets.mjs` **31 of 31 killed**, every kill
+  a named test failing. The new mutants and the tests that killed them:
+
+  | Mutant (release, 26 new; 15 earlier) | Killed by |
+  |---|---|
+  | formats: forward-only by format not marked | m-13 forward-only; the failed promotion that puts nothing back |
+  | formats rollback: the check never run / a version written since accepted / only schema-bearing Workers' versions read | m-13: a → b → c, to b allowed, to a refused (and 4 others) |
+  | formats rollback: a newer version declaring no formats ignored | m-13: unknown version refused |
+  | formats rollback: workers.json's format Workers not judged for an old record | m-13: old record; what it costs today |
+  | formats: a release declaring nothing taken to read every version | m-13: old record; what it costs today (5) |
+  | formats: what a release reads is the union over its Workers | formats: what every Worker of it reads |
+  | formats: two read lists in one Worker united | formats: … read lists with nothing in common refused |
+  | formats: a Worker writing what it does not read accepted | the same |
+  | formats: `read.` entries recorded as written | formats read from the components; the same |
+  | configure: no VIZ_FORMATS on versions | formats read from the components, into each version's VIZ_FORMATS |
+  | floors: the switch on while a serving Worker is below its floor | the switch refused while the serving publisher, query or ingest is below; the pure deploy rule |
+  | floors: the switch on while the release's own Worker is below its floor | own Worker below its floor; the pure deploy rule |
+  | floors: history never read with the switch off | a kept viz-ingest version set the switch |
+  | floors: only the newest writer version looked at | the same (the newest has the switch off, an older one had it on) |
+  | floors rollback: the check never run / allowed whatever the switch did | rollback below a floor refused, whole or one Worker (3, 4) |
+  | floors rollback: a Worker the record does not name not judged / its live state not read | a Worker the record does not name is judged as it serves |
+  | floors: only the signal names edge knows count | the floor rule as workers.json states it (`metrics2`) |
+  | floors: schema floor off by one | 7 tests |
+  | configure: a floor stamped without its evidence / no VIZ_FLOORS on versions | stamped on the evidence of their sources |
+  | configure: a schema floor naming no class not refused | the same test, through `configure({ plan })` (after the fix above) |
+  | phase 2: a failed promotion restores across a forward-only Worker | the failed promotion that puts nothing back |
+
+  | Mutant (secrets, 12 new; 19 earlier, two of them rewritten) | Killed by |
+  |---|---|
+  | m-11: the keyed version's VIZ_DEPLOY_RUN not checked after the put | another run uploads between the check and the put |
+  | m-11: the newest version's mark not checked before the put | an upload without this run's mark gets no put |
+  | m-11: uploads without the mark | absent, a failed put, rotation, … (every keyed deploy) |
+  | m-11: phase 2's `wrangler deploy` without the mark | a first deploy |
+  | m-11: every run has the same mark | two runs carry different values |
+  | S9: a just-created version read once | a version not seen yet is read again |
+  | S9: a rollback across the key's creation not refused | S9, created |
+  | S9: `--accept-secret-loss` ignored | S9, created |
+  | S9: a rollback across a rotation not refused | S9, rotated |
+  | S9: the secret check of a rollback never run | S9, created; S9, rotated (after the fix above) |
+  | S9: a failed promotion restores viz-control across its own rotation | S9: a failed promotion leaves viz-control on its rotated key |
+  | a serving version that cannot be read taken as not carrying the key | a serving version that cannot be read stops the release |
+  | (rewritten) m-9: newer versions not scanned (the scan, not the old `newestServing` guard) | m-9 (2) |
+  | (rewritten) plan mode puts the secret (directly) | plan |
 
 - **After the review of D44, D52, D53 and D60** (`design/reviews/d44-d52-d53-d60.md`,
   2026-11-19; nothing deployed, the Cloudflare API not called). `test/secrets.test.mjs` **12 of
@@ -640,6 +1363,28 @@ All measured here unless it says Cloudflare.
   The five above are this change's: run on 2026-11-19 with the other 13, in a scratch copy
   whose `gateway/` was equal to the shared tree's: **18 of 18 killed** (the script now runs
   vitest with at most 2 workers).
+
+- **Stage 3 of traces and logs (2026-11-19): the span, log, Tempo, Loki and plan routes.**
+  Nothing deployed. `npx vitest run --maxWorkers=2`: **178 of 178** (3 files; 83 more than the
+  last count above: 22 newly routed paths and 61 near misses that must 404, among them `/v1/logs`,
+  which was a 404 before, `/api/traces/`, `/api/traces/abc/x`, `/api/search/tag//values`,
+  `/loki/api/v1/label/x/values/y`, `/loki/api/v1/tail`, `/loki/api/v1/index/stats`, `/otlp/v1/logs`,
+  `/api/echo`, `/api/v1/planx`). `node --test --test-concurrency=2 'test/*.test.mjs'`: **47 of 47**.
+  `npx tsc --noEmit` clean. Through the gateway in front of the real ingest and query Workers:
+  `stack/README.md`, "Through the gateway". `node gateway/scripts/mutants.mjs`, run from `deploy/`
+  in a copy of the tree in a scratch directory after the copy's suite passed unmutated (178 of
+  178): **28 of 28 killed**; the copy's `gateway/src/index.ts` equal to the shared tree's afterwards.
+  This change's seven, and how many tests failed for each:
+
+  | Mutant | Killed by (tests failing) |
+  |---|---|
+  | a trace path goes to ingest (OTLP traces and Tempo share `/api/traces/…`) | the Tempo trace-by-ID rows (5) |
+  | every `/loki/` path goes to ingest (where the push is served) | the Loki rows and Loki near misses (29) |
+  | the span and log ingest paths are not routed | `/v1/traces`, `/v1/logs`, `/loki/api/v1/push` rows (4) |
+  | the Tempo and Loki read paths are not routed | their rows (18) |
+  | a trace id matched as a prefix (`/api/traces/abc/x` reaches query) | the trace-id near misses (4) |
+  | `/api/v1/plan` is not routed | its row (2) |
+  | every `/loki/` path goes to query (`/loki/api/v1/tail`, index, rules reach it) | the Loki near misses (23) |
 
 - `wrangler deploy --dry-run` of all four generated production configs: bundles (viz-ingest
   2,642.54 KiB / 799.96 KiB gzip, viz-control 303.48 / 58.00, viz-query 2,625.71 / 824.97,
@@ -904,7 +1649,11 @@ the scratch directory; the shared tree's `resources.json` was never written.
 Modelled, not read from Cloudflare's analytics (Trial 3 read invocation counts from it, above). Production idle: three Durable Object
 Workers and the gateway cost nothing while unused; the hourly cron reads KV only
 (`stack/README.md`, "Idle means free"); storage is whatever `viz-lake` and the queues hold.
-Per deploy: about 8 to 12 API calls and 4 to 8 version uploads; no charge beyond requests.
+Per deploy: about 8 to 12 API calls and 4 to 8 version uploads; no charge beyond requests. Since
+D70's ids, `resources.mjs ensure` also reads the account's scripts' bindings: about 4 GET calls per
+script (about 110 for the 28 scripts on the account on 2026-11-26), modelled, not counted on Cloudflare. The Rate
+Limiting binding itself has no price on its page (read 2026-11-19): worst case of the bindings,
+unknown and not modelled.
 The trial (below) was stated before it ran as under US$1 worst case: at most 30 minutes of
 20 Remote Write requests and 1 query a second through four Workers, a few hundred R2 writes
 from flushes, a few thousand queue operations, one KV namespace and one small bucket, at
@@ -916,11 +1665,66 @@ right after the trial for 23:10–23:50 UTC, returned no rows for the `viz-trial
 
 ## Needed changes in components
 
+From stage 3 of traces and logs (2026-11-19): what is still needed before `INGEST_SIGNALS` and
+`QUERY_SIGNALS` are set in a production deployment (the gateway routes their paths already; both
+Workers answer them 404 until then):
+
+- **The rollback floors (D64, D69): done here.** The release tooling refuses `INGEST_SIGNALS` until
+  viz-publisher, viz-query and viz-ingest are at their floors in the release and as they serve, and
+  then refuses any release or rollback below them ("Rollback floors"). Before the switch: a release
+  with this check must have served (the stamps), and, for the D67 → D64 rollback to exist, D64 must
+  have served on its own (m-5).
+- **Floors declared by the components themselves.** viz-query's and viz-ingest's floors are
+  declared in `workers.json`, with exports as evidence. Wanted: a constant in each (e.g. a `READS`
+  entry for the span and log data in `query/src/` and in the write path), which `workers.json` would
+  then point at, as it points at the `FORMATS` maps.
+- **Read versions declared by the components themselves** (review of D69, M-1 (c)). Every Worker now
+  declares in `workers.json` what it reads. Where a component has a version constant for it,
+  `workers.json` points at it (edge's `KEY_RECORD_VERSION` for `kv.key`; `contracts/control.ts`'s
+  `CONTROL_SERVICE_VERSION` for control's two RPC answers the ruler reads; `contracts/oauth.ts`'s
+  `OAUTH_VERSION` for `rpc.oauth`, which viz-mcp reads). Where it has none, `workers.json` declares
+  version 1 on its behalf (`reads_v1`): `edge/src/route.ts` (`pool:` and `limits:`, in viz-ingest and
+  viz-query), `flush/src/sweep.ts` (`pool:`), `stack/src/index.ts` (`retention:`), `query/src/config.ts`
+  (`limits:`), `edge/src/auth.ts`'s `KEY_RE` (the API key's layout, in every Worker that authenticates)
+  and `contracts/oauth.ts`'s `parseCredential` (the OAuth credential's layout, in viz-mcp). Wanted: a
+  `READS` entry or a version constant in each, as the janitor's `READS` has for `kv.settings`, which
+  `workers.json` would then point at instead.
+- **A trial on Cloudflare: run once, to be run again.** Spike S10 ran stages 1 to 3 on a stage on
+  2026-11-19 (`spikes/s10-signals-trial/README.md`, measured on Cloudflare, on the query build
+  before ABI 8): the memory budgets held; a compaction run was killed at the 30 s CPU limit; every
+  trace query was refused above about 240,000 spans in an hour; a small request cost edge seconds
+  of decode CPU. Not yet run there: the same shapes on the ABI 8 build with today's caps
+  (`maxSpans` 18,000, `maxLogRows` 30,000), and Grafana against a staged gateway. Both are
+  conditions for `QUERY_SIGNALS` (D62).
+- **Where the flags are set.** Neither is in `workers.json` or a component config; setting them is
+  a var on viz-ingest and on viz-query (a release). They are per deployment, not per tenant.
+- **A client run.** No Grafana Tempo or Loki data source, and no OTLP SDK exporter, has been
+  pointed at the gateway. Tempo's `/api/echo` is routed to viz-query since 2026-11-26 (it answers
+  `echo` behind the key while `QUERY_SIGNALS` names `traces`); `/api/status/buildinfo` is not served
+  (whether Grafana's data source check needs it was not verified). `query/README.md`, "Grafana",
+  describes the run.
+
+From D70's gate (2026-11-26), for `control/`'s owner (not edited here):
+
+- **`control/README.md`, "Needed changes elsewhere (rate limits, D70)"**: items 1 to 6 and the
+  `control/wrangler.jsonc` block are done here; its "It is not added now" paragraph and the opening
+  "in progress" sentence are out of date. Item 6's test "a release setting it while the serving
+  viz-control is unstamped is refused" was not built as written: such a release is forward-only
+  instead (D69, point 6), because refusing would strand production.
+- **`control/README.md`** (line about layout 1 read early): "about 1 in 13,000" is about 1 in 11,600 by
+  2026-12-26, and production has issued layout 1 since 2026-11-19 (corrected in `contracts/oauth.ts`
+  and D70 by the review of D69, round 2, m2-3).
+- **`control/vitest.config.ts`** now strips `ratelimits` from the config it hands the test plugin
+  (control's builder, after the block made 22 tests fail): a test of control that wants the real
+  bindings has to add them itself.
+
 From the generated OAuth key (D53; none made here):
 
 - **`.github/workflows/deploy.yml`: an input to rotate a generated secret** (`rotate_secrets`,
   passed to `deploy.sh` as `VIZ_ROTATE_SECRETS`), so a rotation can run in CI rather than from a
-  workstation ("Worker secrets the deploy generates", Rotation).
+  workstation ("Worker secrets the deploy generates", Rotation); and one for `rollback_to` to accept
+  losing the key (`accept_secret_loss`, passed as `--accept-secret-loss`), so that a refused rollback
+  across the key's creation can be done on purpose from CI.
 - **`control/README.md` "Needed changes" 9**: the deploy now generates `OAUTH_CLIENT_KEY`; that
   item's owner can mark the key part done. Its other part, `PUBLIC_URL` equal for viz-control and
   viz-mcp, is not enforced by the deploy: both component configs say `https://vis.bitcru.sh`, which
@@ -998,50 +1802,149 @@ deployment and nothing here needs it: the gateway has no page and no static asse
 
 ## Not implemented
 
-- **Wire-format versions in the rollback check.** Schema versions are checked (above); the
-  versions of formats a release reads and writes (queue messages, R2 objects, KV records:
-  COMPATIBILITY.md §6) are not recorded, so a rollback below the reader of a format is not
-  refused by the tool.
+- **A WAF rate-limiting rule** on `vis.bitcru.sh` for the `/oauth/` paths (D70 (c)): by hand, outside
+  the deploy; not made.
+- **A check that the account's rate-limit ids stay clear between deploys**: the scan runs at each
+  `resources.mjs ensure`, not continuously; an unrelated script that starts binding viz's id is seen
+  only at the next deploy.
+- **The gate on a key that is kept**: `lib/secrets.mjs` refuses to create or rotate
+  `OAUTH_CLIENT_KEY` without the bindings, not to keep one; configure already refuses a production
+  viz-control without them, so only a manifest written by hand could promote one.
+
+- **Formats no component lists.** Format versions are recorded from the components' `FORMATS`
+  maps and read lists, and from `workers.json`'s `reads_v1` (D69; review of D69, M-1); readers are
+  judged per Worker, including Workers a rollback leaves out. Formats no writer keeps in a `FORMATS`
+  map are not recorded at all, so neither their writers nor their readers are judged: the ledger's
+  segments and checkpoints (which the publisher reads, its `read.…` entries), shard's `series-window`
+  byte, shard's tail pages (`TAIL_READ_VERSION`, `shard/src/tail.ts`, which viz-query reads), edge's
+  records, and `Tenant.provision`'s answer (the gateway's bootstrap).
+- **A partial rollback does not judge the Workers it leaves out as readers** of what the restored
+  ones write (an older writer under a newer reader, which matters only after a reader dropped an old
+  version, §4's contract step). §6 asks only that the target read what was written.
 - **Gradual (percentage) rollouts.** Every promotion is 100%. Splitting would put two
   versions of the write path's objects in service at once; the tooling refuses nothing about
   it but never does it.
 - **Alerting** on a failed deploy beyond the failed job and its summary.
-- **The workflows have not run on GitHub** (see above).
-- **Generated secrets on Cloudflare.** Never run there: the inheritance of the key by later
-  uploads, the put on a version that serves nothing, and rollbacks across the release that
-  created the key are modelled by the fake, not measured ("Known risks" has the experiment).
+- **How the workflows ran on GitHub is not recorded here.** The owner ran Deploy on main on
+  2026-11-19 (production serves fb77292, the release of pull request #8). Its run log was not read
+  into this README; the upgrade test models what that run left from fb77292's own tooling.
+- **Generated secrets on Cloudflare** were measured by spike S9 (2026-11-19: created case twice,
+  rotated case once, first deploy once) on viz-control alone. Not run there: the up-front refusals
+  and the read retries added since (modelled by the fakes, which now follow S9), m-11's run marks,
+  and a whole stack's rollback.
 - **Rotation without a deploy, or with overlap.** A rotation is a release; control verifies under
   one key only, so every registered client is invalidated at once. No workflow input yet.
 
+## Contract issues
+
+- **COMPATIBILITY.md §6, "A floor raised by a switch", was written after the code** (also
+  publisher/README.md, contract issue 16). D69's floors were implemented first (`lib/floors.mjs` from 3f8582d) and
+  the bullet added to §6 afterwards (799ea36), against AGENTS.md's "contracts first"; the review of D69
+  (m-9) found the bullet said more than the code: it spoke of a format version the switch starts
+  (D69 (c) rejected modelling it as one, and none is recorded), of "every reader" (the readers are a
+  hand list in `workers.json`), of "the first version with the switch on" (the code sees any version
+  Cloudflare still keeps, m-1), and of the readers "in it and as it serves" (only those in the
+  release, m-3; and the code judges every release with the switch on, not only the one turning it
+  on). This change corrects the bullet in its own commit, to what the code does now (m-3 fixed; m-1
+  stated as the window it is), keeps D69's per-Worker floors, and adds to §6 what M-1 made the code
+  do: formats are read per Worker (one that declares nothing reads version 1 of every format), and a
+  rollback of some Workers judges the others as they wrote and write.
+- **§6 "per format the versions it reads and writes"** is implemented from the components' `FORMATS`
+  maps, the read lists three keep (the janitor's and flush's `READS`, the ruler's
+  `ANOMALY_STATE_READS`), the version constants three readers use (edge's `KEY_RECORD_VERSION`,
+  `contracts/control.ts`'s `CONTROL_SERVICE_VERSION`, `contracts/oauth.ts`'s `OAUTH_VERSION`), and, for
+  readers with no version in their code, `workers.json`'s `reads_v1`, taken as version 1 ("Needed
+  changes in components" lists them). §3.1 asks only for the written versions in one place; a
+  `READS` map in every component would make "what a release reads" come from the code rather than
+  from a declaration a test holds to a few signatures.
+
 ## Known risks
 
-- **Another run of the same release can upload between the newest-version check and the put**
-  (review of D53, m-11, reproduced against the fakes): the key then goes on that run's version,
-  which carries the same `VIZ_RELEASE`, and it is promoted. CI runs are serialised by the
-  `deploy-production` concurrency group; a run from a workstation is not. On the release that
-  creates the key, two such runs can each make a different key, and the second promotion
-  invalidates client ids registered and tokens issued in between. Open: tag each upload with a
-  value unique to the run and check that tag on the keyed version.
-- **A rollback below a release that writes anomaly state version 2 is not refused** (review of
-  D60, m-13): release records carry schema versions, not format versions (D46), so once the
-  ruler's gate is on, a rollback to a release without the reader leaves those rules
-  `state_unreadable` until rolled forward. Open: format versions in the release record before the
-  release that turns the gate on ("Not implemented", wire-format versions).
-- **Rollback across the release that created (or rotated) the OAuth key** (D53). The versions
-  restored do not carry the key (or carry the old one). Not documented, not measured: whether
-  `versions deploy` of such a version is refused (wrangler's own `rollback` handles an API error
-  10220, "secrets have changed", by asking; `release.mjs` uses `versions deploy`, which does not),
-  and, if allowed, which value serves (secondary sources say a rollback keeps the current secret
-  values). If refused, the automatic rollback of that one release fails loudly and the new release
-  keeps serving; if allowed, `/oauth/register` answers 503 until the next deploy. And whether the
-  next deploy then keeps the key depends on uploads inheriting from the newest version, which is
-  read from the documentation, not measured; if they inherit from the deployed version instead, it
-  refuses (exit 3): since the review of D53 (m-9) the key is also looked for on the versions newer
-  than the serving one, where the rolled-back release left it, so no new key is made silently (the
-  review reproduced that against the fakes; tested). **Experiment**: on a stage,
-  deploy R0 without the key, R1 (creates it), `release.mjs rollback` to R0's record, then R2;
-  record whether the rollback is refused (10220), what `/oauth/register` answers, and whether R2
-  keeps or creates the key. Cost: three releases of a stage, cents.
+- **The Rate Limiting binding's shape in Cloudflare's version API is not verified** (D70's ids; review
+  of D69, round 2, M2-2). The scan reads bindings of type `ratelimit` with `namespace_id` (or
+  `namespaceId`), wrangler's upload shape (training knowledge; the fakes assume it). Since round 2
+  an unreadable binding on viz-control itself no longer stops later deploys, and one elsewhere stops
+  only a first allocation; but a shape under an unrelated type name would make other scripts' ids
+  invisible, so a collision with an unrelated script would go unseen and the counters would be
+  shared. Whether Cloudflare accepts the six bindings at upload is unknown too (if not, phase 1 fails
+  before anything is promoted, and production can take no release of this tree until code changes).
+  The experiment: `spikes/s13-upgrade-trial/` (prepared; not run, the session's permission check
+  refused deploying to Cloudflare).
+- **Two allocations at once can pick the same id.** Two stages ensured at the same time from different
+  checkouts see the same free ids; the start each name picks makes a clash unlikely, not impossible.
+  The next `ensure` of either sees the other's bound id and moves off it (the counters reset).
+- **Per-location limits are modelled** (control's README); none of the six has run on Cloudflare.
+- **The first release over the 2026-11-19 production is forward-only** ("The first release over the
+  2026-11-19 production"): no automatic rollback; fix forward.
+
+- **A run refused after its put leaves its key on the newest version** (m-11, D69). When another run
+  uploaded between the check and the put, the key lands on that run's version (the PATCH has no
+  condition); nothing promotes it, but the next upload inherits the newest version's secrets
+  (measured, S9), so that key becomes the key at the next deploy. On a creation that is harmless (no
+  client was registered under another key); on a rotation it completes the rotation one release
+  late, with the record saying `kept`. CI runs are serialised by the `deploy-production` group.
+- **`kept` compares names, not values.** It means "the newest version's value" (S9). A rollback across
+  a rotation forced outside the tool (the API's `?force=true`, wrangler's `rollback`, the dashboard)
+  brings the old key back until the next release, which returns to the rotated one silently. The
+  tool refuses such a rollback; nothing stops one done by hand.
+- **A rotation is detected by the deploy's own message** (`…; OAUTH_CLIENT_KEY rotated`). A key put by
+  hand without it is not seen as one; Cloudflare's 10220 then still refuses the rollback, after the
+  callers were rolled back (exit 1), as before.
+- **Floors by evidence rest on a declaration.** viz-query's and viz-ingest's floors are stamps that
+  configure gives when the named exports exist; the exports show the code has D62's and D63's
+  readers, not that they behave. The declaration was added after D62 and D63, so a commit from
+  before them has none and its versions are below the floors (fail closed).
+- **Old records cannot be rolled back to across a viz-ingest upload** (D69): they are taken to read
+  version 1 of every format, and viz-ingest writes `r2.dead-letters` 2. Since the review of D69 the
+  same holds for D69's records, whose viz-query, viz-mcp and viz-gateway declare nothing. Fix forward,
+  or restore that code in a new commit on main. The first release with format records over a
+  deployment without them, and the first with complete declarations over one with D69's, are
+  forward-only for the same reason (no automatic rollback).
+- **The switch's evidence ages out with the versions Cloudflare keeps** (review of D69, m-1; not
+  fixed). "Once a version with `INGEST_SIGNALS` on has existed" is read from viz-ingest's kept
+  versions, the 100 newest. The review's scenario (RV-4, reproduced with the fakes keeping 4): the
+  switch goes on in r2 and off in r3; runs that fail between viz-ingest's upload and viz-query's add
+  viz-ingest versions and no viz-query version (phase 1 uploads in `workers.json` order); once r2's
+  viz-ingest version falls out of the window, a record naming only viz-query, whose target is from
+  before D62 and still kept, is accepted. In practice every record the tool writes is at the floors
+  (stamped), so this needs a below-floor version made by hand, or kept from before the stamps. The
+  review's remedy, not built: carry the evidence forward (once seen, stamp every later version of
+  every floor Worker, e.g. `VIZ_FLOORS` with `seen: ["signal-data"]`, and carry it in each record),
+  so it lives as long as any later version.
+- **Check, then act: a local rollback is not atomic against a deploy** (review of D69, m-4; not
+  fixed). `release.mjs rollback` computes every refusal, then restores. The review's scenario
+  (RV-10, a deterministic interleaving with the fakes): a rollback to a record with a schema-3
+  publisher passes its checks (the switch was never seen); a deploy that sets `INGEST_SIGNALS` then
+  passes its own (the serving publisher is at its floor) and completes; the rollback restores the
+  schema-3 publisher, under the switch. CI serialises its deploys and rollbacks in `deploy-production`;
+  a laptop run is outside that group. Run a local rollback only while no deploy runs ("Rollback").
+  The review's remedy, not built: re-check the floors immediately before each restore step.
+- **A key set but missing from the upload has no non-destructive way out** (review of D69, m-6; not
+  fixed; the README advised a rollback or a redeploy, which do not lift it, and no longer does). The
+  refusal fires only when the newest version lacked the key at upload; the refused upload then becomes
+  the newest version, a rollback does not change which version is newest, and redeploying uploads from
+  it again. The review's scenario (RV-8): one upload that did not inherit the key (k2, refused); a
+  rollback to k1 (allowed); k3 and k4 refused all the same, after Cloudflare inherits normally again.
+  The only exit the tool offers is `VIZ_ROTATE_SECRETS=OAUTH_CLIENT_KEY`, the invalidation of every
+  registered client that the refusal exists to prevent. A way that keeps the key, not verified here:
+  an upload whose secret binding inherits from the keyed version by id (the version API's `inherit`
+  binding takes a version, "Defaults to latest"; wrangler does not expose it), or the dashboard. The
+  m-7 re-read (the upload read again until its inherited key shows) removes the case where only the
+  read lagged.
+- **Only main deploys, but only the workflow and a setting enforce it** (review of D69, M-2). The
+  Deploy workflow refuses any ref but main as the first step of the jobs that hold the credentials;
+  an older commit's own workflow has no such step, and only the `production` environment's branch
+  rule ("One-time setup") keeps it from the credentials. That rule is a repository setting nothing
+  here can check. `deploy.sh` run by hand from an older checkout, with the two Cloudflare variables,
+  runs that checkout's tooling; nothing can refuse that from here.
+- **Complete read declarations rest on `workers.json` and a test of signatures** (review of D69,
+  M-1 (c)). "A format a Worker does not list, it does not read" is as true as the declarations; the
+  test that bundles each Worker checks only control's KV records, the API key and OAuth credential
+  layouts and control's RPC answers. A new cross-Worker read of another kind is caught only if its
+  writer's `FORMATS` map names it and someone adds the reader; until then, nothing judges it.
+- **A Worker whose `versions deploy` succeeded and whose `triggers deploy` failed is not put back**
+  after a failed promotion: it is not yet counted as promoted, so it keeps the new version (found
+  while writing the phase-2 tests; not changed here).
 - **Reading the schemas runs component code in Node.** `lib/schemas.mjs` evaluates the bundle of
   the spec modules (and what they import) in a `vm` context; a spec module that does more than
   define values at load time (a top-level call to a platform API) makes configure fail, loudly.
@@ -1070,7 +1973,8 @@ deployment and nothing here needs it: the gateway has no page and no static asse
   objects 29.7 s later), so for that half minute new Worker code calls old object code. A
   rollback is itself a new deployment and moves every object again.
 - **Rollback is only as good as the record.** Artifacts expire after 90 days and Cloudflare
-  keeps 100 versions; after that, go back by deploying an old commit.
+  keeps 100 versions; after that, older code goes out again only as a new commit on main, judged by
+  main's tooling ("Rollback": never by running the workflow, or `deploy.sh`, of the older commit).
 - **The trial ran from a snapshot of a working tree that others were editing**, with the WASM
   built from that snapshot; CI builds and deploys one commit, which cannot have that problem
   (see the trial, release N0).

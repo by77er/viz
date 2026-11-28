@@ -7,7 +7,9 @@
 // fully anchored with `.` matching a newline (as TraceQL and label matchers use it) on every
 // subject. It prints each case where viz differs (acceptance or matches) and a summary,
 // and exits 1 if any differs. Patterns viz reports as Unsupported (Unicode classes) are counted
-// and not compared.
+// and not compared. Where the case file has viz's group names (a caller that keeps names), they
+// must be Go's SubexpNames, or Unsupported exactly where Go has a name Rust cannot hold (one that
+// starts with a digit, or a name used twice).
 package main
 
 import (
@@ -19,9 +21,12 @@ import (
 )
 
 type answer struct {
-	Matches     *string `json:"matches"`
-	Error       *string `json:"error"`
-	Unsupported bool    `json:"unsupported"`
+	Matches          *string   `json:"matches"`
+	Error            *string   `json:"error"`
+	Unsupported      bool      `json:"unsupported"`
+	Names            *[]string `json:"names"`
+	NamesUnsupported bool      `json:"names_unsupported"`
+	NamesError       *string   `json:"names_error"`
 }
 
 type file struct {
@@ -41,10 +46,10 @@ func main() {
 	if err := json.Unmarshal(raw, &f); err != nil {
 		panic(err)
 	}
-	var agreeOK, agreeErr, unsupported, unsupportedGoErr, surrogates, differ int
+	var agreeOK, agreeErr, unsupported, unsupportedGoErr, surrogates, differ, namesSame, namesUnsupported int
 	surrogate := regexp.MustCompile(`(?i)\\x\{0*d[89a-f][0-9a-f]{2}\}`)
 	for _, c := range f.Cases {
-		_, goErr := regexp.Compile(c.Pattern)
+		goRe, goErr := regexp.Compile(c.Pattern)
 		if c.Viz.Unsupported {
 			unsupported++
 			if goErr != nil {
@@ -65,6 +70,36 @@ func main() {
 			differ++
 			fmt.Printf("DIFF %q: Go accepts, viz rejects (%s)\n", c.Pattern, *c.Viz.Error)
 			continue
+		}
+		// Group names as a caller that keeps them sees them.
+		goNames := goRe.SubexpNames()[1:]
+		unholdable := false
+		seen := map[string]bool{}
+		for _, n := range goNames {
+			if n != "" && (n[0] >= '0' && n[0] <= '9' || seen[n]) {
+				unholdable = true
+			}
+			seen[n] = true
+		}
+		switch {
+		case c.Viz.NamesError != nil:
+			differ++
+			fmt.Printf("DIFF %q: Go accepts, viz keeping names rejects (%s)\n", c.Pattern, *c.Viz.NamesError)
+			continue
+		case c.Viz.NamesUnsupported:
+			if !unholdable {
+				differ++
+				fmt.Printf("DIFF %q: viz keeping names says Unsupported; Go's names %q\n", c.Pattern, goNames)
+				continue
+			}
+			namesUnsupported++
+		case c.Viz.Names != nil:
+			if unholdable || strings.Join(goNames, "\x00") != strings.Join(*c.Viz.Names, "\x00") || len(goNames) != len(*c.Viz.Names) {
+				differ++
+				fmt.Printf("DIFF %q: group names differ: go=%q viz=%q\n", c.Pattern, goNames, *c.Viz.Names)
+				continue
+			}
+			namesSame++
 		}
 		// Fully anchored with `.` matching a newline. "^(?s:" + p + ")$" with MatchString is what
 		// Tempo's answers agree with (it matches U+FFFD for \x{D800}, as Tempo does; Go's
@@ -113,6 +148,7 @@ func main() {
 	}
 	fmt.Printf("%d patterns: %d accepted by both with identical matches on %d subjects, %d rejected by both, %d Unsupported in viz (%d of them rejected by Go), %d differ only on U+FFFD through a surrogate escape, %d differ\n",
 		len(f.Cases), agreeOK, len(f.Subjects), agreeErr, unsupported, unsupportedGoErr, surrogates, differ)
+	fmt.Printf("names kept: %d with Go's group names, %d Unsupported (a name Rust cannot hold: a leading digit or a repeat)\n", namesSame, namesUnsupported)
 	if differ > 0 {
 		os.Exit(1)
 	}

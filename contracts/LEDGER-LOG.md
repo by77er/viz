@@ -134,16 +134,18 @@ that length), and a rebuild streams the base or a checkpoint into SQLite (below)
 with the state is **time**: a rebuild or a new incarnation reads and writes the whole state
 while requests are refused, retryably. `addUnit` answers `full` (nothing changed, retryable)
 once the state, estimated as each live file's key and index fragment plus 448 bytes, would
-exceed 300 MiB (`STATE_MAX_BYTES`; about 300,000 files of S4's shape, the largest state
-measured). `replace` and `expire` are never refused, so compaction and retention make room.
+exceed the cap: 16 MiB by default (`STATE_MAX_BYTES`, kept by the review of D47/D48/D55, P-2
+and P-3, until a release whose rollback floor has D47 and D55 lifts it after a rebuild and a
+first publication are measured within the CPU limit on Cloudflare), at most 300 MiB
+(`STATE_MEASURED_MAX_BYTES`; about 300,000 files of S4's shape, the largest state measured).
+`replace` and `expire` are never refused, so compaction and retention make room.
 Measured in workerd (2026-11-19, `ledger/bench/checkpoint.bench.test.ts`, the release before as
 the counterfactual on the same data): at 100,000 files a checkpoint blocked the object for
 2 ms at a time instead of 0.93 s and added 14 MB of process memory instead of 410 MB; at
 300,000 files (this release only) a checkpoint took 9.3 s in 272 parts, a rebuild 20 s, and the
-process peaked at 536 MB (`ledger/README.md`). Not measured on Cloudflare. **The publisher
-still reads a new incarnation's base whole** (`publisher/src/log.ts`): until it reads it with
-`readLedgerLogStream`, a state above about 16 MiB can make a publisher re-base fail
-(`ledger/README.md`, "Needed changes elsewhere").
+process peaked at 536 MB (`ledger/README.md`). Not measured on Cloudflare. The publisher
+re-bases from a base or checkpoint streamed into SQLite (D55, `publisher/README.md`, "Re-base
+in bounded memory"); it no longer reads a base whole.
 
 ## Logged
 
@@ -161,9 +163,7 @@ first outbox row". It lags the committed watermark by up to one drain cycle.
   incarnation: a rebuilt ledger has none, and a ledger converted from the first layout has
   their effect in the new base, which is already in R2.
 - **Checkpoints** are deleted once a newer checkpoint of their incarnation is complete, its
-  manifest in R2 (the ledger's rebuild and the publisher's re-base read them; a reader that
-  listed the older manifest meets a missing part as `incomplete` and lists again): first the
-  older manifests, then every
+  manifest in R2 (only the ledger's rebuild reads them): first the older manifests, then every
   part that is not the new checkpoint's (older checkpoints' parts, and abandoned attempts'), so
   no listed manifest ever names a part that is gone. Never before: while a newer one is being
   written, the older one is what a rebuild uses. A failure leaves the rest for the next one.
@@ -222,8 +222,8 @@ incarnation (phase `stuck`), never replays one layout and skips the other (revie
   readers-first release:** a reader that knows only format 1 (the release before) sees its
   manifest as `unsupported` and passes over it for an older checkpoint or the base, which is
   always there, so it still rebuilds exactly (tested, `ledger/test/checkpoint.test.ts`); the
-  release before's publisher reads no checkpoint (it re-bases from the base), this release's
-  reads both formats (D55), and part keys parse as nothing to an older `parseLedgerLogKey`. The schema change that goes with it (migration 3: tables `ckpt` and
+  publisher never reads checkpoints, and part keys parse as nothing to an older
+  `parseLedgerLogKey`. The schema change that goes with it (migration 3: tables `ckpt` and
   `ckpt_pre`) is additive (`readableFrom` 2), so the release before stays a rollback target;
   a checkpoint it leaves untracked is abandoned. A state above 16 MiB cannot be rebuilt by that
   release in one isolate, so after a rollback such a tenant is stuck, not lost, until rolled

@@ -2,7 +2,9 @@
 //!
 //! A plain C ABI over `viz-storage`, for `wasm32-unknown-unknown`. The TypeScript binding
 //! in `js/` is the only intended caller; together they implement the storage half of
-//! `contracts/engine.ts` (`encodeSegment`, `select`).
+//! `contracts/engine.ts` (`encodeSegment`, `select`, `mergeFiles`), the flush of spans and
+//! logs (`SignalFlushEngine`: `encodeSpans`, `encodeLogs`) and their compaction
+//! (`mergeSignalFiles`, ABI 4).
 //!
 //! Like every engine crate this does no I/O. Malformed input comes back as an error
 //! result, never as a trap: every byte of a request is bounds-checked before use.
@@ -57,14 +59,51 @@
 //! read in place from the request). Peak is about inputs + output + one decoded row group
 //! per input; see the README for measurements.
 //!
+//! ### `viz_encode_spans`, `viz_encode_logs`
+//!
+//! Flush of span (`VZB1` signal 2) and log-record (signal 3) batches
+//! (`viz_storage::encode_spans`, `encode_logs`; contracts/TRACES.md, contracts/LOGS.md).
+//! Added in ABI 3; the metric operations above are unchanged.
+//!
+//! Request: as `viz_encode_segment`, `u32 n_batches`, then per batch `u32 len, bytes`.
+//!
+//! Ok payload: `u32 n_files`, then per file `u8 table (2 = spans, 3 = trace_index, 4 = logs),
+//! u8 hour (0 to 23 for `spans`, 255 for the other tables), u8[2] zero, u64 rows,
+//! i64 min_ns, i64 max_ns, u32 day_len, day, u32 index_len, index, u32 bytes_len, bytes`.
+//! Times are Unix NANOSECONDS (what the files hold); the binding derives milliseconds.
+//! `spans` files come first, by hour, then `trace_index` files, by day (the storage crate's
+//! order). A batch of the other signal (or of metrics) is an error naming it.
+//!
+//! ### `viz_merge_signal_files`
+//!
+//! Compaction of the span and log tables (`viz_storage::merge_signal_files_shared`;
+//! contracts/TRACES.md and LOGS.md, "Compaction"): several files of ONE table and one
+//! partition (an hour of `spans`, a day of `trace_index` or `logs`) become one file; a `logs`
+//! output carries its token filter (LOGS.md §6). Inputs are given lowest precedence first, as
+//! for `viz_merge_files`. Added in ABI 4; nothing above changed.
+//!
+//! Request: `u8 table (2 = spans, 3 = trace_index, 4 = logs), u8[3] zero, u32 n_inputs`, then
+//! each input file as `u32 len, bytes`.
+//!
+//! Ok payload: `u8 table, u8 hour (0 to 23 for `spans`, 255 otherwise), u8[2] zero, u64 rows,
+//! i64 min_ns, i64 max_ns, u32 day_len, day, u32 index_len, index, u64 file_len, u32 n_chunks`,
+//! then per chunk `u64 ptr, u64 len, u64 cap`: the header of `viz_encode_spans`' files, then the
+//! file left where the writer wrote it, in chunks of at most 1 MiB whose lengths add up to
+//! `file_len`. The caller copies each chunk out in order and releases it with
+//! `viz_free_file(ptr, cap)`. Unlike `viz_merge_files`, the module never joins the file into one
+//! buffer, which at the step budget would grow its memory by the file's size again.
+//!
 //! ### `viz_abi_version`
 //!
-//! Returns 2 (1 had no `viz_merge_files`). The binding refuses a module that answers
-//! anything else.
+//! Returns 4 (1 had no `viz_merge_files`, 2 no `viz_encode_spans` / `viz_encode_logs`, 3 no
+//! `viz_merge_signal_files`). The binding refuses a module that answers anything else.
 
-use viz_storage::{encode_segment, merge_files_shared, select, EncodedFile, MatchOp, Matcher, ScanInput, SeriesData, Table, WriteOptions};
+use viz_storage::{
+    encode_logs, encode_segment, encode_spans, merge_files_shared, merge_signal_files_chunked, select, EncodedFile, MatchOp, Matcher, ScanInput, SeriesData,
+    SignalFile, SignalMergeOptions, SignalTable, Table, WriteOptions,
+};
 
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = 4;
 const OK: u32 = 0;
 const ERR: u32 = 1;
 
@@ -223,6 +262,64 @@ pub unsafe extern "C" fn viz_encode_segment(ptr: *const u8, len: usize) -> *mut 
     }
 }
 
+/// The table byte of a span or log file in an ABI 3 result.
+fn signal_table_byte(t: SignalTable) -> u8 {
+    match t {
+        SignalTable::Spans => 2,
+        SignalTable::TraceIndex => 3,
+        SignalTable::Logs => 4,
+    }
+}
+
+fn signal_payload_len(files: &[SignalFile]) -> usize {
+    4 + files.iter().map(|f| 4 + 24 + 4 + f.day.len() + 4 + f.index.len() + 4 + f.bytes.len()).sum::<usize>()
+}
+
+fn signal_result(r: Result<Vec<SignalFile>, String>) -> *mut u8 {
+    match r {
+        Err(m) => error(m),
+        Ok(files) => result(OK, signal_payload_len(&files), |out| {
+            out.extend_from_slice(&(files.len() as u32).to_le_bytes());
+            for f in &files {
+                out.extend_from_slice(&[signal_table_byte(f.table), f.hour.unwrap_or(255), 0, 0]);
+                out.extend_from_slice(&f.rows.to_le_bytes());
+                out.extend_from_slice(&f.min_ts.to_le_bytes());
+                out.extend_from_slice(&f.max_ts.to_le_bytes());
+                for part in [f.day.as_bytes(), f.index.as_bytes(), f.bytes.as_slice()] {
+                    out.extend_from_slice(&(part.len() as u32).to_le_bytes());
+                    out.extend_from_slice(part);
+                }
+            }
+        }),
+    }
+}
+
+fn batches_of(req: &[u8]) -> Result<Vec<&[u8]>, String> {
+    let mut r = Req { b: req, at: 0 };
+    let n = r.u32("n_batches")?;
+    let batches = r.items(n, "batch")?;
+    r.end()?;
+    Ok(batches)
+}
+
+/// See the crate documentation.
+///
+/// # Safety
+/// `ptr..ptr+len` must be readable.
+#[no_mangle]
+pub unsafe extern "C" fn viz_encode_spans(ptr: *const u8, len: usize) -> *mut u8 {
+    signal_result(batches_of(request(ptr, len)).and_then(|b| encode_spans(&b).map_err(|e| e.to_string())))
+}
+
+/// See the crate documentation.
+///
+/// # Safety
+/// `ptr..ptr+len` must be readable.
+#[no_mangle]
+pub unsafe extern "C" fn viz_encode_logs(ptr: *const u8, len: usize) -> *mut u8 {
+    signal_result(batches_of(request(ptr, len)).and_then(|b| encode_logs(&b).map_err(|e| e.to_string())))
+}
+
 fn do_merge(req: &[u8]) -> Result<EncodedFile, String> {
     let mut r = Req { b: req, at: 0 };
     let table = match r.take(4, "table")? {
@@ -270,7 +367,7 @@ pub unsafe extern "C" fn viz_merge_files(ptr: *const u8, len: usize) -> *mut u8 
     })
 }
 
-/// Release the file buffer of a `viz_merge_files` result.
+/// Release the file buffer of a `viz_merge_files` result, or one chunk of a `viz_merge_signal_files` result.
 ///
 /// # Safety
 /// `ptr` and `cap` must be the `file_ptr` and `file_cap` of one such result, passed once.
@@ -279,6 +376,62 @@ pub unsafe extern "C" fn viz_free_file(ptr: *mut u8, cap: usize) {
     if !ptr.is_null() && cap > 0 {
         drop(Vec::from_raw_parts(ptr, 0, cap));
     }
+}
+
+fn do_merge_signal(req: &[u8]) -> Result<(SignalFile, Vec<Vec<u8>>), String> {
+    let mut r = Req { b: req, at: 0 };
+    let table = match r.take(4, "table")? {
+        [2, 0, 0, 0] => SignalTable::Spans,
+        [3, 0, 0, 0] => SignalTable::TraceIndex,
+        [4, 0, 0, 0] => SignalTable::Logs,
+        other => return Err(format!("unknown signal table {:?}", other)),
+    };
+    let n = r.u32("n_inputs")?;
+    let inputs = r.items(n, "input file")?;
+    r.end()?;
+    // SAFETY: as in `do_merge`: the request outlives the call and nothing borrowed survives it.
+    let shared: Vec<bytes::Bytes> =
+        inputs.iter().map(|f| bytes::Bytes::from_static(unsafe { std::mem::transmute::<&[u8], &'static [u8]>(*f) })).collect();
+    merge_signal_files_chunked(table, &shared, &SignalMergeOptions::default()).map_err(|e| e.to_string())
+}
+
+/// See the crate documentation.
+///
+/// # Safety
+/// `ptr..ptr+len` must be readable.
+#[no_mangle]
+pub unsafe extern "C" fn viz_merge_signal_files(ptr: *const u8, len: usize) -> *mut u8 {
+    let (f, chunks) = match do_merge_signal(request(ptr, len)) {
+        Err(m) => return error(m),
+        Ok(x) => x,
+    };
+    let SignalFile { table, day, hour, rows, min_ts, max_ts, index, .. } = f;
+    let file_len: usize = chunks.iter().map(Vec::len).sum();
+    // Leak each chunk to the caller; `viz_free_file` takes it back.
+    let parts: Vec<(usize, usize, usize)> = chunks
+        .into_iter()
+        .map(|c| {
+            let mut c = std::mem::ManuallyDrop::new(c);
+            (c.as_mut_ptr() as usize, c.len(), c.capacity())
+        })
+        .collect();
+    result(OK, 28 + 4 + day.len() + 4 + index.len() + 12 + 24 * parts.len(), |out| {
+        out.extend_from_slice(&[signal_table_byte(table), hour.unwrap_or(255), 0, 0]);
+        out.extend_from_slice(&rows.to_le_bytes());
+        out.extend_from_slice(&min_ts.to_le_bytes());
+        out.extend_from_slice(&max_ts.to_le_bytes());
+        for part in [day.as_bytes(), index.as_bytes()] {
+            out.extend_from_slice(&(part.len() as u32).to_le_bytes());
+            out.extend_from_slice(part);
+        }
+        out.extend_from_slice(&(file_len as u64).to_le_bytes());
+        out.extend_from_slice(&(parts.len() as u32).to_le_bytes());
+        for (p, l, c) in &parts {
+            for v in [*p, *l, *c] {
+                out.extend_from_slice(&(v as u64).to_le_bytes());
+            }
+        }
+    })
 }
 
 fn do_select(req: &[u8]) -> Result<Vec<SeriesData>, String> {

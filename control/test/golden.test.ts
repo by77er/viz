@@ -8,9 +8,10 @@
 import { describe, expect, it } from 'vitest'
 import { revisionOf } from '../../dashboard/src/index.ts'
 import { FORMATS } from '../src/schema'
-import { OAUTH_SCOPES } from '../../contracts/oauth'
+import { OAUTH_SCOPES, credentialExpiresAt } from '../../contracts/oauth'
+import { sha256Hex } from '../../dashboard/src/index.ts'
 import { decodeRequest, encodeRequest, seal, signRegistration, unseal, verifyClientId } from '../src/oauth'
-import { RESOURCE, approve, authorize, codeOf, connect, newClient, pkce } from './oauth'
+import { RESOURCE, approve, authorize, codeOf, connect, newClient, pkce, revokeAtServer } from './oauth'
 import { goldenFile } from './golden'
 import { decodeCursor, encodeCursor } from '../src/util'
 import { expectGolden, goldenDir } from './golden'
@@ -68,6 +69,23 @@ describe('golden formats: every format this component writes has a golden file f
       limits: scrub(await raw(`limits:${t.tenant}`), t.tenant),
     })
     expectGolden(file('kv.pool'), { format: 'kv.pool', version: FORMATS['kv.pool'], pool: scrub(await raw(`pool:${t.tenant}`), t.tenant) })
+  })
+
+  it('kv.oauth-dead: a credential its object called dead, as the Worker lists it (src/deadlist.ts, D70 round 2)', async () => {
+    const t = await newTenant('golden')
+    const c = await connect(t.admin)
+    expect((await revokeAtServer(c.clientId, c.access)).status).toBe(200)
+    const { keys } = await env.CONFIG.list({ prefix: `oauth-dead:${t.tenant}:` })
+    expect(keys.map((k) => k.name)).toEqual([`oauth-dead:${t.tenant}:${sha256Hex(c.access)}`])
+    // It expires with the credential: its encoded expiry plus the Worker's 60 s of grace.
+    expect(keys[0]!.expiration).toBe(Math.ceil((credentialExpiresAt(c.access)! + 60_000) / 1000))
+    expectGolden(file('kv.oauth-dead'), {
+      format: 'kv.oauth-dead',
+      version: FORMATS['kv.oauth-dead'],
+      key: keys[0]!.name.replace(t.tenant, '<tenant>').replace(/[0-9a-f]{64}$/, '<SHA-256 of the whole credential, hex>'),
+      value: await raw(keys[0]!.name),
+      expiration: 'KV expiration: the credential\'s encoded expiry plus 60 s, in whole seconds, rounded up',
+    })
   })
 
   it('credential.api-key: the shape of a key handed out, which edge must keep accepting', async () => {

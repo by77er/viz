@@ -17,7 +17,7 @@ pub mod plan;
 pub mod value;
 
 use ast::{FieldExpr, Query, RootExpr, Stage, Static};
-pub use data::{AttrValue, Event, Kind, Link, MemSource, ServiceStats, Span, SpanSource, Status, Trace, TraceSummary};
+pub use data::{AttrValue, Event, Kind, Link, MemSource, Resource, ServiceStats, Span, SpanSource, Status, Trace, TraceSummary};
 use eval::{echo_key, field_value, run_pipeline, Spanset, TraceCtx};
 pub use metrics::RangeRequest;
 pub use parser::{nesting, MAX_DEPTH, MAX_QUERY_BYTES, MAX_REGEXES, REGEX_DFA_SIZE_LIMIT, REGEX_NEST_LIMIT, REGEX_SIZE_LIMIT};
@@ -37,6 +37,9 @@ pub enum Error {
     Eval(String),
     /// The span source failed.
     Source(String),
+    /// What a metrics evaluation would hold passes `Limits::max_bytes` (`metrics::Meter`):
+    /// refused before `what` was made, with the bytes it would have held.
+    Memory { what: &'static str, max: u64, used: u64 },
 }
 
 impl Error {
@@ -75,6 +78,7 @@ impl std::fmt::Display for Error {
             Error::Unsupported(m) => write!(f, "{m}"),
             Error::Eval(m) => write!(f, "evaluation error: {m}"),
             Error::Source(m) => write!(f, "span source error: {m}"),
+            Error::Memory { what, max, used } => write!(f, "the query's {what} would hold {used} bytes, more than the {max} it may hold"),
         }
     }
 }
@@ -215,6 +219,10 @@ impl SearchResponse {
     pub fn to_json(&self) -> String {
         json::search_json(self)
     }
+    /// The length in bytes of [`SearchResponse::to_json`], computed without writing it.
+    pub fn json_len(&self) -> u64 {
+        json::search_json_len(self)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -222,12 +230,18 @@ pub struct MetricsResponse {
     pub series: Vec<metrics::Series>,
     pub request: RangeRequest,
     pub stats: Stats,
+    /// What `series` is charged by the evaluation's meter (`Limits::max_bytes`).
+    pub held_bytes: u64,
 }
 
 impl MetricsResponse {
     /// The body of Tempo's `/api/metrics/query_range` (and `/api/metrics/query`).
     pub fn to_json(&self) -> String {
         json::metrics_json(&self.series, &self.request, &self.stats)
+    }
+    /// The length in bytes of [`MetricsResponse::to_json`], computed without writing it.
+    pub fn json_len(&self) -> u64 {
+        json::metrics_json_len(&self.series, &self.request, &self.stats)
     }
 }
 
@@ -236,11 +250,15 @@ impl MetricsResponse {
 pub struct Limits {
     pub max_series: usize,
     pub max_points: u64,
+    /// Bytes the evaluation may hold: its series' accumulators, histogram buckets and output
+    /// series, counted as they are made (`metrics::Meter`); past it `Error::Memory`, before the
+    /// structure is built. Default: no limit.
+    pub max_bytes: u64,
 }
 
 impl Default for Limits {
     fn default() -> Self {
-        Limits { max_series: 10_000, max_points: 11_000 }
+        Limits { max_series: 10_000, max_points: 11_000, max_bytes: u64::MAX }
     }
 }
 
@@ -269,6 +287,44 @@ fn plan_root(root: &RootExpr, start: u64, end: u64) -> ReadPlan {
 
 /// Runs a search query.
 pub fn search(src: &dyn SpanSource, query: &str, req: &SearchRequest) -> Result<SearchResponse, Error> {
+    search_with(src, query, req, &mut metrics::Meter::new(u64::MAX))
+}
+
+/// Bytes charged for one span of a search result beside its strings and echoed values.
+const SPAN_RESULT: u64 = 160;
+/// Bytes charged for one trace of a search result beside its strings.
+const TRACE_RESULT: u64 = 256;
+
+fn val_bytes(v: &Val) -> u64 {
+    match v {
+        Val::Str(s) => s.len() as u64,
+        _ => 0,
+    }
+}
+
+fn span_result_bytes(x: &SpanResult) -> u64 {
+    SPAN_RESULT + (x.span_id.len() + x.name.len()) as u64 + x.attributes.iter().map(|(k, v)| 64 + k.len() as u64 + val_bytes(v)).sum::<u64>()
+}
+
+fn spans_bytes(t: &TraceResult) -> u64 {
+    t.spansets.iter().flat_map(|ss| ss.spans.iter()).map(span_result_bytes).sum()
+}
+
+fn result_bytes(t: &TraceResult) -> u64 {
+    TRACE_RESULT
+        + (t.trace_id.len() + t.root_service_name.len() + t.root_trace_name.len()) as u64
+        + t.spansets
+            .iter()
+            .map(|ss| SPAN_RESULT + ss.attributes.iter().map(|(k, v)| 64 + k.len() as u64 + val_bytes(v)).sum::<u64>() + ss.spans.iter().map(span_result_bytes).sum::<u64>())
+            .sum::<u64>()
+        + t.service_stats.iter().map(|s| 64 + s.service.len() as u64).sum::<u64>()
+}
+
+/// [`search`] with the results it keeps counted by `meter` ([`metrics::Meter`]): each trace's
+/// result (its spans and the values they echo) is charged when it is made, released when the
+/// limit cuts it; refused, with `Error::Memory`, past the meter's `max`. On success `meter.used`
+/// is what the results returned are charged.
+pub fn search_with(src: &dyn SpanSource, query: &str, req: &SearchRequest, meter: &mut metrics::Meter) -> Result<SearchResponse, Error> {
     let root = parse(query)?;
     let Query::Search(stages) = &root.query else {
         return Err(Error::Eval("a metrics query cannot be run as a search; use query_range".into()));
@@ -292,20 +348,28 @@ pub fn search(src: &dyn SpanSource, query: &str, req: &SearchRequest) -> Result<
         if sets.is_empty() {
             return Ok(());
         }
-        found.push(trace_result(&mut ctx, sets, &echo, spss));
+        // A trace's result is made (one span's echoed values at a time), then charged before it
+        // is kept: refused before the results pass the meter by more than one trace's.
+        let r = trace_result(&mut ctx, sets, &echo, spss, meter)?;
+        // The rest of the trace's result (its spans were charged as they were made).
+        meter.charge(result_bytes(&r).saturating_sub(spans_bytes(&r)), "search results")?;
+        found.push(r);
         if found.len() >= limit.saturating_mul(4).max(64) {
-            sort_and_cut(&mut found, limit);
+            sort_and_cut(&mut found, limit, meter);
         }
         Ok(())
     })?;
-    sort_and_cut(&mut found, limit);
+    sort_and_cut(&mut found, limit, meter);
     Ok(SearchResponse { traces: found, stats })
 }
 
 /// Most recent first (by trace start), then by trace id, so results do not depend on the
-/// order the source returns traces in.
-fn sort_and_cut(v: &mut Vec<TraceResult>, limit: usize) {
+/// order the source returns traces in. What is cut is released.
+fn sort_and_cut(v: &mut Vec<TraceResult>, limit: usize, meter: &mut metrics::Meter) {
     v.sort_by(|a, b| b.start_unix_nano.cmp(&a.start_unix_nano).then_with(|| a.trace_id.cmp(&b.trace_id)));
+    if v.len() > limit {
+        meter.release(v[limit..].iter().map(result_bytes).sum());
+    }
     v.truncate(limit);
 }
 
@@ -341,7 +405,9 @@ fn echo_fields(stages: &[Stage]) -> Vec<(String, FieldExpr)> {
     out
 }
 
-fn trace_result(ctx: &mut TraceCtx, sets: Vec<Spanset>, echo: &[(String, FieldExpr)], spss: usize) -> TraceResult {
+/// A trace's search result; each span's result is charged to `meter` as it is made (one span's
+/// echoed values are held before the charge).
+fn trace_result(ctx: &mut TraceCtx, sets: Vec<Spanset>, echo: &[(String, FieldExpr)], spss: usize, meter: &mut metrics::Meter) -> Result<TraceResult, Error> {
     let t = ctx.trace;
     let mut spansets = Vec::with_capacity(sets.len());
     for ss in sets {
@@ -351,27 +417,20 @@ fn trace_result(ctx: &mut TraceCtx, sets: Vec<Spanset>, echo: &[(String, FieldEx
             x.start_unix_nano.cmp(&y.start_unix_nano).then_with(|| x.span_id.cmp(&y.span_id))
         });
         let matched = idx.len() as u32;
-        let spans = idx
-            .into_iter()
-            .take(spss)
-            .map(|i| {
-                let s = &t.spans[i];
-                let mut attributes = Vec::new();
-                for (k, e) in echo {
-                    let v = field_value(e, ctx, i).into_owned();
-                    if !v.is_nil() {
-                        attributes.push((k.clone(), v));
-                    }
+        let mut spans = Vec::with_capacity(idx.len().min(spss));
+        for i in idx.into_iter().take(spss) {
+            let s = &t.spans[i];
+            let mut attributes = Vec::new();
+            for (k, e) in echo {
+                let v = field_value(e, ctx, i).into_owned();
+                if !v.is_nil() {
+                    attributes.push((k.clone(), v));
                 }
-                SpanResult {
-                    span_id: hex(&s.span_id),
-                    name: s.name.clone(),
-                    start_unix_nano: s.start_unix_nano,
-                    duration_nanos: s.duration(),
-                    attributes,
-                }
-            })
-            .collect();
+            }
+            let r = SpanResult { span_id: hex(&s.span_id), name: s.name.clone(), start_unix_nano: s.start_unix_nano, duration_nanos: s.duration(), attributes };
+            meter.charge(span_result_bytes(&r), "search results")?;
+            spans.push(r);
+        }
         let attributes = ss.attrs.into_iter().map(|(k, v)| (k, if v.is_nil() { Val::Str("nil".to_string().into()) } else { v })).collect();
         spansets.push(SpansetResult { spans, matched, attributes });
     }
@@ -386,7 +445,7 @@ fn trace_result(ctx: &mut TraceCtx, sets: Vec<Spanset>, echo: &[(String, FieldEx
         Some((s, n)) => (s.clone().unwrap_or_default(), n.clone()),
         None => (String::new(), String::new()),
     };
-    TraceResult {
+    Ok(TraceResult {
         trace_id: hex_trimmed(&t.trace_id),
         root_service_name,
         root_trace_name,
@@ -394,7 +453,7 @@ fn trace_result(ctx: &mut TraceCtx, sets: Vec<Spanset>, echo: &[(String, FieldEx
         duration_ms: u32::try_from(sum.end_unix_nano.saturating_sub(sum.start_unix_nano) / 1_000_000).unwrap_or(u32::MAX),
         spansets,
         service_stats: sum.services.clone(),
-    }
+    })
 }
 
 /// Runs a metrics query over `(start, end]` at `step` (`RangeRequest`), with default limits.
@@ -408,8 +467,9 @@ pub fn query_range_with(src: &dyn SpanSource, query: &str, req: &RangeRequest, l
         return Err(Error::Eval("not a metrics query: add a metrics function such as | rate()".into()));
     };
     let plan = plan_root(&root, req.start_unix_nano, req.end_unix_nano);
-    let (series, stats) = metrics::evaluate(src, m, &plan, req, limits.max_series, limits.max_points)?;
-    Ok(MetricsResponse { series, request: *req, stats })
+    let mut meter = metrics::Meter::new(limits.max_bytes);
+    let (series, stats) = metrics::evaluate_with(src, m, &plan, req, limits.max_series, limits.max_points, &mut meter)?;
+    Ok(MetricsResponse { series, request: *req, stats, held_bytes: meter.used })
 }
 
 /// An instant metrics query: one value over `(start, end]`, at `end`.

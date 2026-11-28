@@ -8,7 +8,7 @@ it is given, so it runs unchanged in WASM, natively and in a deterministic simul
 Builds for the host and for `wasm32-unknown-unknown`.
 
 ```
-CARGO_TARGET_DIR=$PWD/target cargo test -j 2 -- --test-threads 2           # 49 tests
+CARGO_TARGET_DIR=$PWD/target cargo test -j 2 -- --test-threads 2           # 78 tests (19 in tests/otel.rs, 10 in tests/sigmerge.rs)
 CARGO_TARGET_DIR=$PWD/target cargo build --release --target wasm32-unknown-unknown
 node tools/hyparquet_check.mjs      # independent reader (after cargo test --test export)
 cargo run --release --example independent -- DIR && python3 tools/independent_check.py DIR   # PyArrow and DuckDB
@@ -74,6 +74,41 @@ Design choices worth knowing:
   WASM build produced byte-for-byte the same total size, and a merge of several flushes
   is byte-identical to one flush of the same batches).
 
+## Spans and logs (stage 1, 2026-11-19)
+
+New modules; the metrics code and its outputs are untouched (the golden files of
+`tests/golden/v1-2026-11-18` are still byte-identical). Contracts: `contracts/BATCH.md`
+(signals 2 and 3), `contracts/TRACES.md`, `contracts/LOGS.md`; decisions D57, D58.
+
+| API | What it does |
+|---|---|
+| `otel::decode_spans`, `otel::decode_logs`, `otel::encode_spans`, `otel::encode_logs`, `otel::stream_id` | `VZB1` signals 2 and 3 (`src/otel.rs`). Decode borrows, validates every rule of the contract (header, 8-byte alignment and zero padding, offsets, UTF-8, attribute lists sorted and unique with known types, ids, kinds, statuses, times, the label-name rule, every size limit) and never panics; for every input that decodes, encode gives the same bytes. `stream_id` is `batch::series_id`. |
+| `encode_spans(batches)` | Flush of span batches (`src/spans.rs`): one `spans` file per hour of start time (`SignalFile.hour`), then one `trace_index` file per day of the fragments' first start. Later row wins on `(trace_id, span_id)`. Sorted by `service_name` (nulls first), `span_name`, `start`, `trace_id`, `span_id`; promoted columns and typed residual maps; events and links as lists of structs; bloom filter on `trace_id`; page index on the sorted and pruned columns; the index fragment of `TRACES.md`. |
+| `encode_logs(batches)` | Flush of log batches (`src/logs.rs`): one `logs` file per day; sorted by `service_name`, `stream_id`, `ts`, `line`, `metadata`; rows equal on the row key are one (the later supplies the other columns); `line` pages at most 1 MiB; bloom filter on `trace_id`; the fragment of `LOGS.md` §5 with its bounded `streams` list. |
+| `*_with(…, &SignalWriteOptions)` | Smaller row groups and pages for tests. Row groups are cut at 100,000 rows or 16 MiB as the contracts count bytes. |
+| `read_spans`, `read_trace_index`, `read_logs`, `read_logs_row_groups` | Whole-file (or chosen row groups) readers through the `parquet` crate's record API (`src/otelread.rs`), rebuilding the logical view: promoted columns and residual maps merged into one sorted typed list. For tests and tools; not the query path. |
+| `merge_fragments` | `trace_index` fragments of one trace merged as `TRACES.md` says. |
+
+**What reads the files** (AGENTS.md, "Independent readers"):
+
+- `readback/` (a separate crate, never shipped): `readback CORPUS OUT [units]` takes the
+  corpus `edge/scripts/otel-corpus.mjs` writes (random requests encoded by protobufjs,
+  decoded by edge's own decoders into batches, and the expected rows computed by the
+  generator from its model), flushes the batches in 4 units, reads every file back, and
+  requires: every span and log row equal to the expected one (duplicates across units
+  resolved, the later unit winning); each unit's `trace_index` equal to what its spans say;
+  every edge batch re-encoding to the same bytes; and **viz-traceql and viz-logql** giving
+  byte-identical answers over the files and over their in-memory sources built from the
+  expected rows: 24 TraceQL searches and 6 metrics queries through `SpanSource` (files, and
+  files with the engine's pruning), 12 LogQL log queries and 6 metric queries through a
+  `LogSource` over the files (`FileLogs`: reads the row groups the index fragment admits,
+  pruning on and off).
+- `tools/otel_independent_check.py`: **PyArrow 26.0.1 and DuckDB 2.0.0** read every file and
+  every column; schema, row-group caps, sort order, partitions, promoted and residual
+  columns, nulls, every fragment field against the file, every logical row against the
+  expected one (doubles by their bits in PyArrow), each unit's `trace_index` recomputed from
+  its spans, and DuckDB's value of every cell equal to PyArrow's.
+
 ## What is not implemented
 
 - `queryRange`, `queryInstant`, `selectors` from `contracts/engine.ts` (PromQL): not this
@@ -90,6 +125,15 @@ Design choices worth knowing:
 - Promoted label columns, rollup tables, native histograms.
 - Zero-copy file input: each Parquet file is copied once into a `bytes::Bytes` because
   the `parquet` reader needs an owned buffer.
+- **Spans and logs, stage 2**: a query-path reader in this crate (one exists since 2026-11-19 in
+  `engine/wasm-query/src/sigfiles.rs`: row groups chosen from the index fragments, decoded through
+  the record API row group by row group, tail batches merged in; column readers with page index
+  and bloom filters are not built), re-aggregating `trace_index` from de-duplicated spans
+  (compaction merges fragments; D68), the nested-set columns, per-tenant promotion, a query that
+  reads the token filter (the reader is here, `tokens::TokenFilter`; no query path calls it), and
+  zstd. The readers here (`read_*`) use the record API and hold a whole file's rows.
+- **Compaction merges are CPU-bound and row-at-a-time** (the record API, about 5 MB/s of spans and
+  9 MB/s of logs natively): a column-at-a-time merge was not built.
 
 ## How it was verified
 
@@ -298,7 +342,243 @@ full-metric scan touches the same row groups. The table and the decision (the co
 unchanged: below the 3× bar as the engine reads, and 40 remaining bits collide) are in
 `design/DECISIONS.md` D19. Nothing in the crate uses it.
 
+## Spans and logs: verification and measurements
+
+**Mutants (2026-11-19)**, `python3 tools/mutants.py otel` on a scratch copy (the shared tree
+untouched, the copy deleted), each against `tests/otel.rs`: **16 of 17 killed** on the first
+run. The survivor, "span flags written even when zero", lived because the generator almost
+never produced flags 0; the generator now does half the time, and the mutant is killed
+(`spans_flush_and_read_back`). The PyArrow check would also have caught it ("flags null when
+zero").
+
+| Mutant | Killed by |
+|---|---|
+| spans sorted by `span_name` before `service_name` (a sort key out of order) | `spans_flush_and_read_back` |
+| logs sorted by `stream_id` before `service_name` | `logs_flush_and_read_back` |
+| a residual bool attribute dropped | `spans_flush_and_read_back` |
+| a non-string `service.name` dropped instead of kept residual | `promoted_columns_hold_exactly_their_keys`, `spans_flush_and_read_back` |
+| the earlier of duplicate spans wins | `spans_flush_and_read_back` |
+| duplicate log rows kept | `logs_flush_and_read_back` |
+| spans partitioned by two-hour windows | `partitions_split_at_hour_and_day_boundaries`, `spans_flush_and_read_back` |
+| `trace_index` takes the latest root | `fragments_merge_as_the_contract_says`, `spans_flush_and_read_back` |
+| `trace_index` error count counts every non-unset span | `spans_flush_and_read_back` |
+| span flags written even when zero | `spans_flush_and_read_back` (after the generator fix) |
+| span fragment `min_dur` over starts | `spans_flush_and_read_back` |
+| log fragment `sid` last = first | `logs_flush_and_read_back` |
+| log fragment stream's last row group not advanced | `logs_flush_and_read_back` |
+| `line` written in 1 MiB pieces (pages over 1 MiB) | `line_pages_are_at_most_one_mib` |
+| `stream_id` hashed differently from `series_id` (labels reversed) | `stream_id_is_series_id` |
+| decode accepts an all-zero `trace_id` | `span_decoder_refuses_each_rule` |
+| decode accepts unsorted attributes | `span_decoder_refuses_each_rule` |
+
+The mutants of `edge` (tenant from the body, partial success miscounted, `stream_id` rules, a
+dropped attribute, and 15 more) are in `edge/README.md`: 19 of 19 killed.
+
+
+```
+CARGO_PROFILE_DEV_DEBUG=0 cargo test -j 2 --test otel -- --test-threads 2           # 19 tests
+node ../../edge/scripts/otel-corpus.mjs CORPUS SEED 2                               # edge decodes protobufjs-encoded requests
+(cd readback && cargo run --release -- CORPUS OUT 4)                                # Rust read-back and the two engines
+python3 -I tools/otel_independent_check.py OUT                                      # PyArrow and DuckDB (a venv with both)
+cargo run --release --example otel_bench -- 1 20000 3                               # encode throughput and size
+python3 tools/mutants.py otel                                                       # on a scratch copy
+```
+
+**Tests** (`tests/otel.rs`, 19, all passing on 2026-11-19; with them the whole suite is 68
+of 68 and the WASM build succeeds). Properties (proptest, generators in `tests/otelgen`:
+every attribute type, keys and values with Unicode (astral, U+E000, U+FFFF), control
+characters, empty strings, NaN payloads, ±Inf, −0, the promoted keys with right and wrong
+types, ids from small pools so duplicates and many-span traces are common, starts across an
+hour and a day boundary): batches round-trip and re-encode to the same bytes (200 cases
+each); damaged batches never panic; **decode → flush → read back equals the input** for spans
+(150 cases, row groups of 1 to 5 rows, pages of 3) and logs (150), in the contract's order and
+partitions, the later duplicate winning, every fragment field equal to the file's metadata;
+the same rows split differently give the same bytes; per-batch `trace_index` fragments merge
+into the fragment of the whole. Fixed tests: each decoder rule refused with its message, every
+proper prefix refused, maximal values accepted and read back (8,192-byte names, a 1,024-byte
+key with a 65,536-byte value, 128 events and links, a 256 KiB line, 128 metadata entries of 64
+KiB, 32 labels with an 8,192-byte value), promotion exactly as `TRACES.md` says, the file layout
+(compression, offset index, page index, bloom filters, dictionaries, statistics, sorting
+columns), `line` pages at most 1 MiB with lines up to 256 KiB, both row-group caps, hour and day
+boundaries (including 1970-01-01 and 2262-04-11), the bounded `streams` list, and `stream_id`
+against values computed in Python.
+
+**Cross-language read-back** (2026-11-19, seeds 1 to 5, scale 2: 9,420 spans in 300 traces a
+seed and 28,414 log rows, from 86 OTLP traces requests and 515 OTLP logs and Loki push
+requests, protobuf and JSON, including retries, clamped ends, orphan spans, a 65,536-byte
+attribute, an 8,192-byte span name, a 256 KiB line): `readback` **0 failures** in 37,677 to
+41,327 checks a seed (every edge batch also re-encodes to the same bytes); TraceQL **60 of 60** answers identical a seed (30 queries, all
+non-empty; files, and files with pruning); LogQL **36 of 36** identical a seed (18 queries, 17
+or 18 non-empty; files with fragment pruning off and on). PyArrow and DuckDB **0 failures** in
+253,606 to 274,915 checks a seed. One finding, written into `contracts/TRACES.md`: merged
+`trace_index` fragments over-count 43 to 52 of 300 traces a seed, exactly those with a span
+retried into another unit. The run also found a bug in `edge` (a double inside an array or
+key-value list read from the wrong bytes when the body was a Node `Buffer`), fixed there.
+
+**Measured here** (`examples/otel_bench.rs`, release build, Linux x86-64, 4 shared cores at
+load average 8 to 9, one thread, not WASM, not Cloudflare). The generator is described in the
+example's header: 20 services × 5 instances, 200 span names, ~12 spans a trace, 6 to 8
+attributes a span (a high-cardinality user id, 30% with a 40–200-byte SQL statement), 10% with
+an event, 2% with a link; log lines of 80–260 bytes of logfmt with a random request id, 50
+streams, 2–4 metadata entries, 30% with trace ids. Flushes of 20,000 rows, batches of at most 1
+MiB; only `encode_spans` / `encode_logs` timed.
+
+| Per million | Input batches | Parquet out | Encode time (min of 3; all three) |
+|---|---|---|---|
+| spans (with their `trace_index`) | 352.3 MB | 95.5 MB | 4.85 s (4.85, 4.96, 6.89) |
+| log lines | 311.7 MB | 58.6 MB | 1.86 s (1.86, 2.02, 2.47) |
+
+So about 5 µs a span and 2 µs a log line natively, and Parquet at 27% (spans) and 19% (logs)
+of the batch bytes. The WASM speed of these encoders was not measured (no binding exports
+them yet). A single cold 20,000-span segment took 10.9 s per million spans; the table is the
+steady state over 50 segments.
+
+## Compaction of spans and logs (2026-11-19)
+
+Contracts: `contracts/TRACES.md` and `LOGS.md`, "Compaction", and LOGS.md §6 (the token filter,
+whose place inside the file was settled first, D65); design/DECISIONS.md D68. Metric code and
+output are untouched: the golden files of `tests/golden/v1-2026-11-18` are still byte-identical,
+and flush's span and log output is unchanged (its writers were split into row-group-at-a-time
+writers that flush and compaction share; every existing test, the byte-for-byte determinism
+property included, passes as before).
+
+| API | What it does |
+|---|---|
+| `merge_signal_files(table, inputs)`, `merge_signal_files_shared(table, &[Bytes], &SignalMergeOptions)` | Compaction of one table and partition (`src/sigmerge.rs`), inputs lowest precedence first. `spans`: files of ONE hour; a first pass over the two id columns finds, per `(trace_id, span_id)`, the last occurrence (later input, then later row), then a k-way merge in the contract's order keeps only those. `trace_index`: files of ONE day; the rows of one trace become one (`merge_fragments`, the later input's root on a tie, at most 64 services by most spans then name, `services_truncated`). `logs`: files of ONE day; a row is dropped when the next row in the merged order (ties: the later input after) has the same row key, as flush does. Refuses (`SignalError::Merge`) no inputs, no rows, an unsorted input, rows of two partitions (checked on every row read, winners or not), and a file of another table. |
+| `merge_signal_files_chunked` | The same, the output left in the 1 MiB chunks it was written in (the WASM binding copies them out one by one). |
+| `SignalMergeOptions` | `write` (default: flush's, row groups cut at `MERGE_ROW_GROUP_BYTES` = 2 MiB instead of 16), `token_filter` (default on; off gives exactly the bytes a flush of the same rows would), `token_filter_max_tokens` (default `MAX_FILTER_TOKENS`, 2^19). |
+| `tokens::{for_each_token, tokens, literal_tokens}` | The token rule of LOGS.md §6 (runs of ASCII letters and digits and non-ASCII characters, at least 4 bytes, ASCII-lowercased, cut to 64 bytes at a character boundary), and the tokens strictly inside a literal. |
+| `tokens::TokenFilterBuilder` | Builds a file's `VZT1` filter while its row groups are written: tokens in 1 MiB arena chunks, an open-addressing table at most 3/4 full, one bitset byte per 8 row groups (about 12 bytes a token besides its bytes); past the bound it frees everything and the file gets no filter. `write` streams the filter in 64 KiB pieces. |
+| `tokens::TokenFilter` | Reads a filter: `parse` checks the header and sizes, `lookup`/`has` binary-search the blocks' first tokens and scan one block (checking prefix lengths, bounds and order), `may_match(rg, required)` is false only when some clause has no literal whose implied tokens are all in the row group; any doubt answers true. `entries` decodes all. `token_filter_location` reads `viz.token_filter` from a file's footer. |
+
+How a merged `logs` file carries its filter: the `LogsFileWriter` writes it through
+`SerializedFileWriter::write_all` after the last row group (and its bloom filter), records
+`viz.token_filter` = `"{off},{len}"` in the footer's key-value metadata and `"tok":[off,len]` in
+the fragment, whose `foot` then starts where the filter ends.
+
+### How it was verified
+
+```
+CARGO_TARGET_DIR=$PWD/target cargo test -j 2 -- --test-threads 2      # 78 tests, 10 in tests/sigmerge.rs
+cargo run --release --example merge_independent -- DIR 40 && python3 -I tools/merge_independent_check.py DIR
+cargo run --release --example otel_bench -- merge 8 25000 3 [DIR]      # throughput, size, peak heap
+python3 tools/mutants.py sigmerge tokens otel                           # on a scratch copy
+```
+
+**`tests/sigmerge.rs`** (10 tests, all passing with the rest of the suite, **78 of 78**, on
+2026-11-19 at load average 11 to 15; properties 120 cases each, on the span and log generators of
+`tests/otelgen`, which produce duplicates within and across batches, every attribute type, NaN,
+Unicode, and starts across an hour and a day): units of 1 to 2 batches, 1 to 4 units, each flushed
+as flush does, then every partition merged in unit order with row groups of 1 to 5 rows and pages
+of 3:
+
+- `spans_merge_per_hour_into_the_deduplicated_union`: the merged rows, read back, are the
+  reference computed from the batches alone (within a unit the later row, across units the later
+  unit), and the merged bytes, fragment and bounds are exactly those of ONE flush of a batch
+  holding just those rows; merging in two steps (the first inputs, then that output with the
+  rest) gives the same bytes; the fragment agrees with the footer.
+- `trace_index_merges_fragments_per_day`: the merged rows equal the fragments recomputed here
+  from each unit's spans and merged by an implementation of the contract's rule written in the
+  test; `min_tid`/`max_tid` per row group; two-step merges equal.
+- `logs_merge_per_day_into_the_deduplicated_union_with_its_token_filter`: without the filter the
+  bytes and fragment equal one flush of the reference rows (rows are also re-sent by another
+  unit with their other columns changed, so which input wins shows); with it, the same rows and row
+  groups, `tok` after the last row group, `foot` starting where it ends, the footer's
+  `viz.token_filter` equal to `tok`; the filter lists exactly the tokens of each row group's
+  lines and metadata values, computed by a tokenizer written over characters in the test; for
+  literals cut from the lines and some fixed ones, `may_match` never rules out a row group that
+  holds a line containing the literal, and rules one out exactly when an implied token is missing.
+- `default_layout_merges_are_one_flush`: with the merge's default options, merged bytes equal a
+  flush of the same rows with the same options (spans and logs).
+- Fixed: refusals (two days, two hours, another table, no input, an unsorted file written by hand
+  with the `parquet` crate); 64 services kept by the rule (80 spans, 70 services); a root span
+  stored by two units takes the later unit's fragment, in either order; the token rule (case,
+  3-byte runs, `_` splits, non-ASCII, a cut at 64 bytes inside a two-byte character) and implied
+  tokens; the filter's exact bytes for a small case, lookups before, between and after blocks,
+  damaged filters refused and a refused filter never pruning, 40 tokens over 70 row groups, the
+  bound; a merge past the bound writes no filter and is then byte-identical to one without.
+
+**Independent readers** (`examples/merge_independent.rs`, `tools/merge_independent_check.py`):
+40 random cases of 2 to 5 units of span and log batches (random attributes of every type with
+NaN, -0 and infinities, Unicode, ids from small pools so duplicates are common, starts across an
+hour and a day, row groups of 1 to 12 rows or the default), every partition merged. PyArrow
+26.0.1 and DuckDB 2.0.0 read every input and output whole; the check computes what each output
+must hold from the INPUTS' rows itself (the last input's row per key, a trace's rows merged with
+the later input's root on a tie, at most 64 services), compares every column exactly (doubles by
+their bits), checks one partition per file, row-group caps, every fragment field against the
+footer, and for `logs` parses the `VZT1` filter from the bytes at `viz.token_filter` and requires
+exactly the tokens of each row group (its own tokenizer). Run 2026-11-19 on the final code:
+**0 failures** in 245,592 checks (40 cases, seed 20261119: 120 spans, 67 trace_index and 89 logs
+outputs, every logs output with its filter) and 345,571 checks (60 cases, seed 7: 180, 88, 143).
+
+### Mutants (`python3 tools/mutants.py sigmerge tokens otel`, on a scratch copy)
+
+Run 2026-11-19 (the copy deleted after, the shared tree untouched): **30 of 30 killed** in the
+end, the 17 `otel` mutants of the flush encoders included (one pattern updated: the logs writer's
+stream tuple moved a field). One survived the first run, "the earlier input wins a duplicate log
+row": the log generator gives each batch its own random streams, so two units almost never held
+one row key. The logs property now re-sends rows of one unit in another with their other columns
+changed; the mutant is killed by it.
+
+| Mutant | Killed by |
+|---|---|
+| a span merged across hours (the merge accepts two hours' rows) | `merges_refuse_what_they_cannot_merge`, `spans_merge_per_hour_…`, `default_layout_…` |
+| a lost row in a logs merge: rows differing only in metadata taken for one | `logs_merge_per_day_…`, `default_layout_…` |
+| a lost row in a logs merge: the last row never written | `logs_merge_per_day_…`, `default_layout_…`, `a_merge_past_the_token_bound_…` |
+| the earlier input wins a duplicate span | `spans_merge_per_hour_…`, `default_layout_…` |
+| the earlier input wins a duplicate log row | `logs_merge_per_day_…` (after the generator fix above) |
+| trace_index fragments of one trace not merged (the last kept) | `trace_index_merges_fragments_per_day`, `trace_index_keeps_64_services_by_the_rule`, `a_root_span_stored_by_two_units_…` |
+| trace_index keeps more than 64 services | `trace_index_keeps_64_services_by_the_rule` |
+| a token filter that misses 4-byte tokens | `tokens_follow_the_rule`, `the_filter_bytes_are_the_contract_s`, `logs_merge_per_day_…`, `a_merge_past_the_token_bound_…` |
+| a token filter that misses the metadata values' tokens | `logs_merge_per_day_…` |
+| a token filter that misses a row group's last row | `logs_merge_per_day_…`, `a_merge_past_the_token_bound_…` |
+| a literal implying its edge runs (prunes a group holding a longer run) | `tokens_follow_the_rule`, `the_filter_bytes_are_the_contract_s`, `logs_merge_per_day_…` |
+| the filter's bitsets one row group off | `the_filter_bytes_are_the_contract_s`, `logs_merge_per_day_…` |
+| `foot` starting at the last row group although a filter follows it | `logs_merge_per_day_…` |
+
+"An output deleted by its own step" is a mutant of compact/ (compact/README.md): killed there.
+
+### Memory and speed (measured here, not on Cloudflare)
+
+Native, release build, Linux x86-64, one thread, 4 shared cores at load average 4 to 5
+(`otel_bench merge 8 25000 3`, peak heap counted by a global allocator; the generator is the
+one described in the example's header: 20 services, 200 span names, a high-cardinality user id,
+log lines of logfmt with a unique 16-hex-digit request id):
+
+| Table | Inputs | Input MB (rows) | Output MB (row groups) | Merge (min of 3) | Throughput | Peak heap with the inputs |
+|---|---|---|---|---|---|---|
+| spans (one hour) | 8 | 16.13 (177,860) | 16.57 (49) | 3.06 s | 5.3 MB/s, 58 k rows/s | 60 MB |
+| trace_index (one day) | 8 | 0.91 (16,672) | 0.88 (2) | 0.15 s | 6.1 MB/s | 21 MB |
+| logs (one day) | 8 | 11.69 (200,000) | 15.90 (34), of which the token filter 4.01 (25%) | 1.24 s | 9.4 MB/s, 161 k rows/s | 50 MB |
+
+Output size: spans files grow 3% (more, smaller row groups than the inputs' single groups:
+49 instead of 7 at 16 MiB groups, dictionaries repeated); logs grow by their filter: 206,905
+distinct tokens, most of them request ids, about 19 bytes each. What the filter buys on that
+file: a search for one request id (`|= "request_id=… "`) keeps on average **1.00 of 34** row
+groups (50 ids). In WASM (`engine/wasm/tools/measure_signal_merge.mjs`, engine/wasm/README.md)
+the same merges peak at 62 MB (spans), 62 MB (logs, 11 MB in) and 81 MB (logs, 16 MB in) and
+take 4.0, 1.8 and 2.4 s.
+
+How the memory came down (spans, the 8 inputs above): 199 MB of heap with 16 MiB output row
+groups decoded whole and a contiguous output (6 times a group's counted size: owned strings, a
+resource entry and its split per row, the views and the leaves); readers decoding 64 values at a
+time per column instead of 1024 (the record reader's default held 2.3 MB per open spans file);
+the winners of pass 1 in one sorted vector instead of a hash map; resource entries interned;
+the output written in chunks (a growing `Vec` doubled past the inputs' size); 2 MiB row groups.
+Smaller groups than 2 MiB were not measured below; 4 MiB left spans at 75 MB in WASM.
+
 ## Known risks
+
+- **Compaction memory is near an isolate's at the step budget** for logs whose lines carry unique
+  ids (81 MB of WASM memory at 16 MB in, 22 MB out with the filter; with the JS side about
+  119 MB, modelled). The bound on distinct tokens (2^19) caps the builder at about 15 MB; a file
+  over it simply has no filter.
+- **The token filter grows a logs file by up to a quarter** when lines carry unique ids (25%
+  measured on the benchmark's lines), for a filter no query reads yet.
+- **A merged spans file can order a re-sent span differently** when the span id was re-sent with
+  a start in another hour (contracts/TRACES.md, "Compaction").
+- **Merged row groups are small** (2 MiB of data, about 2 to 4k spans or 6k log rows): more
+  fragment bytes in the ledger per file, finer pruning.
 
 - **Partial reads trust the planner.** A row group whose `series_id` chunk is not in a sparse
   file is skipped as "left out on purpose": if a caller left out one that holds a selected
@@ -320,6 +600,15 @@ unchanged: below the 3× bar as the engine reads, and 40 remaining bits collide)
 - **Timings are not from Cloudflare** and the 128 MB isolate limit was not exercised.
 - **Statistics for `value`** exclude NaNs (the `parquet` crate's behaviour); nothing in
   this crate prunes on `value`.
+- **Spans and logs flush holds a whole segment** decoded (borrowed rows plus per-row
+  attribute splits) and the output. A 20,000-span segment is about 7 MB of batches; memory in
+  WASM was not measured.
+- **The WASM rlib grew** from 2.52 MB to 5.65 MB with the span and log code; a module linking
+  `encode_spans` and `encode_logs` was not built or measured.
+- **`resource_fp` and `stream_id` are trusted**, as `series_id` is: a forged batch could group
+  rows under a wrong resource or stream. Only `edge` writes batches.
+- **The record-API readers** hold every row of a file as `parquet::record::Row`s; fine for
+  tests and tools, not for the query path.
 
 ## Contract issues
 

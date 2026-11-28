@@ -1,7 +1,7 @@
 {
   "name": "F15_sweeper_trusts_unlogged_registration",
   "kind": "finding",
-  "label": "F15: janitor.ts calls an old-incarnation flush file dead because the ledger has a newer incarnation, whose registration is not yet logged; ledger rebuild",
+  "label": "F15: janitor.ts (first version) calls an old-incarnation flush file dead because the ledger has a newer incarnation, whose registration is not yet logged; ledger rebuild",
   "cfg": {
     "nt": 1,
     "ns": 1,
@@ -46,7 +46,18 @@
     "fpScope": "stream",
     "tailScope": "stream",
     "noRetryAcrossLoss": true,
-    "retain": false
+    "retain": false,
+    "sweepSteps": false,
+    "sweepAge": true,
+    "purgeSteps": false,
+    "startSteps": false,
+    "goal": "query",
+    "sweepGone": "both",
+    "sweepOrder": "listFirst",
+    "sweepNewerLogged": true,
+    "maxSweeps": 99,
+    "maxRB": 0,
+    "rbFix": "none"
   },
   "props": [
     "I11_LiveFilesReadable"
@@ -57,7 +68,7 @@
   "states": 518127,
   "transitions": 2018428,
   "depth": 17,
-  "seconds": 29.4,
+  "seconds": 17.3,
   "collisionProb": 7.3e-9,
   "violated": "I11_LiveFilesReadable",
   "trace": [

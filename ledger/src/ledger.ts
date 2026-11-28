@@ -32,6 +32,7 @@ import {
   type LedgerChange,
   type LedgerJanitorRpc,
   type LiveFile,
+  type LoggedWatermark,
   PRECEDENCE_PER_VERSION,
   SHARD_NAME,
   type OrphanCheck,
@@ -39,11 +40,15 @@ import {
   type LedgerRpc,
   type Plan,
   type PlanRequest,
+  type RegisterResult,
   type ReplaceRequest,
   type ReplaceResult,
   type StreamRef,
+  TABLES,
+  type LedgerTable,
   type Table,
   type Watermark,
+  dataKeyPrefix,
 } from '../../contracts/ledger'
 import { type SchemaSpec, type SchemaTooNew, SchemaTooNewError, columnsOf, openSchema, refusalOf } from '../../contracts/schema'
 
@@ -168,6 +173,15 @@ export interface LogStatus {
   stateLimitBytes: number
   /** A checkpoint being written in parts (format 2), if any: its version, how far it is, and its parts so far. */
   checkpoint: { version: number; phase: 'files' | 'tombstones' | 'manifest'; parts: number; files: number; tombstones: number; bytes: number } | null
+  /**
+   * Registrations committed but not yet logged (D61): while there are any, a shard refuses the
+   * writes of those new streams. With `pendingSince`, what an operator alerts on when the log
+   * cannot be written (review m-1): a stuck or failing drain shows here as registrations that
+   * wait, not only as a growing `pending`.
+   */
+  registrationsPending: number
+  /** When the oldest change still in the outbox was committed (Unix ms), or null. */
+  pendingSince: number | null
 }
 
 /**
@@ -183,8 +197,20 @@ export class LedgerUnavailableError extends Error {
   }
 }
 
-const TABLES: readonly Table[] = ['metric_samples', 'metric_series']
 const DAY = /^\d{4}-\d{2}-\d{2}$/
+const HOUR_MS = 3_600_000
+
+/**
+ * The hour of its day that a `spans` file's times lie in (contracts/TRACES.md "Object keys": one
+ * file per hour of start time, keyed `…/day={day}/hour={HH}/`), or null when `[minTs, maxTs]`
+ * is not inside one hour of `day`. Its key must lie under that hour's prefix.
+ */
+function spanHour(f: FileEntry): number | null {
+  const start = Date.parse(`${f.day}T00:00:00Z`)
+  if (!Number.isFinite(start) || f.minTs < start) return null
+  const hour = Math.floor((f.minTs - start) / HOUR_MS)
+  return hour <= 23 && f.maxTs < start + (hour + 1) * HOUR_MS ? hour : null
+}
 const CHANGE_OBJECT = /\/(\d{12,})\.json$/
 /** Default: the alarm runs this long after the first unlogged commit, so a burst shares a segment. */
 export const DRAIN_DELAY_MS = 200
@@ -201,16 +227,22 @@ const SEGMENTS_PER_ALARM = 16
 export const CHECKPOINT_EVERY = 256
 /**
  * Default: `addUnit` refuses new files (`full`) once the state would exceed this many bytes, as
- * estimated by `entryBytes` (review S-2). Checkpoints are written in parts and a rebuild streams
- * into SQLite (contracts/LEDGER-LOG.md, "Checkpoints"; D47), so no step holds the state in
- * memory and memory no longer sets the bound (measured flat from 8,000 to 300,000 files). What
- * grows with the state is TIME: a rebuild or a new incarnation reads and writes all of it, and
- * requests are refused (retryably) meanwhile: 20 s at 300,000 files here. This is the largest
- * state measured (300,000 S4-shaped files, about 298 MiB; ledger/README.md). Raising it needs
- * that time measured on Cloudflare. The publisher still reads a new incarnation's base whole
- * (ledger/README.md, "Needed changes elsewhere").
+ * estimated by `entryBytes` (review S-2), unless `LEDGER_STATE_MAX_BYTES` says otherwise.
+ *
+ * 16 MiB, the cap of the releases before D47. This release itself handles far more: checkpoints
+ * are written in parts and a rebuild streams into SQLite (contracts/LEDGER-LOG.md,
+ * "Checkpoints"; D47), and the publisher re-bases from a base or checkpoint without holding it
+ * (D55), so memory is flat from 8,000 to 300,000 files (`STATE_MEASURED_MAX_BYTES`). What
+ * grows with the state is TIME: a rebuild or a new incarnation reads and writes all of it while
+ * requests are refused (retryably), 20 s at 300,000 files here. The default stays at 16 MiB
+ * (review of D47/D48/D55, P-2 and P-3) until a release lifts it, which needs both: a rollback
+ * floor that has D47 and D55 (a release before them cannot hold or checkpoint a larger state),
+ * and a rebuild and a first publication of such a state measured within a Durable Object's CPU
+ * limit on Cloudflare. viz-ingest also pins it in its vars (stack/wrangler.jsonc).
  */
-export const STATE_MAX_BYTES = 300 * 1024 * 1024
+export const STATE_MAX_BYTES = 16 * 1024 * 1024
+/** The largest state measured (300,000 S4-shaped files, about 298 MiB; ledger/README.md): what a release that lifts `STATE_MAX_BYTES` may set, and no more. */
+export const STATE_MEASURED_MAX_BYTES = 300 * 1024 * 1024
 /**
  * A checkpoint of a state whose estimate is at most this is written in format 1 (one object,
  * built in one step, as before): about one part's worth, so no step builds more than a part.
@@ -369,6 +401,7 @@ function fileProblem(f: FileEntry, prefix: (f: FileEntry) => string): string | n
   if (!isCount(f.bytes) || !isCount(f.rows) || !isCount(f.level)) return `bad bytes/rows/level for ${f.key}`
   if (!Number.isSafeInteger(f.minTs) || !Number.isSafeInteger(f.maxTs) || f.minTs > f.maxTs) return `bad time range for ${f.key}`
   if (typeof f.index !== 'string') return `index fragment must be a string for ${f.key}`
+  if (f.table === 'spans' && spanHour(f) === null) return `spans file ${f.key}: its times are not inside one hour of ${f.day}`
   // Only this tenant's objects, of this table and day (contracts/ledger.ts `FileEntry.key`):
   // whatever the ledger lists, the janitor will one day delete.
   const p = prefix(f)
@@ -399,7 +432,7 @@ function refProblem(ref: StreamRef): string | null {
 }
 
 const toEntry = (r: Row): LiveFile => ({
-  table: r.tbl as Table,
+  table: r.tbl as LedgerTable,
   day: r.day as string,
   key: r.key as string,
   bytes: r.bytes as number,
@@ -586,14 +619,19 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     return r ? toStored(r) : null
   }
 
-  /** Where a file of this table and day must be: `{cell}/data/{table}/tenant={tenant}/day={day}/`. */
-  private readonly keyPrefix = (f: FileEntry): string => `${this.cell}/data/${f.table}/tenant=${this.tenant}/day=${f.day}/`
+  /**
+   * Where a file of this table and day must be: `{cell}/data/{table}/tenant={tenant}/day={day}/`,
+   * and for `spans` under the hour its times lie in, `…/hour={HH}/` (contracts/ledger.ts
+   * `dataKeyPrefix`; `fileProblem` has checked that hour exists).
+   */
+  private readonly keyPrefix = (f: FileEntry): string =>
+    dataKeyPrefix(this.cell, f.table, this.tenant, f.day, f.table === 'spans' ? (spanHour(f) ?? undefined) : undefined)
 
   /**
    * Inside the transaction that removes `keys` from the live set: remember them, with the
    * version that removal is about to get, until their objects have been deleted.
    */
-  private bury(keys: { key: string; table: Table }[]): void {
+  private bury(keys: { key: string; table: LedgerTable }[]): void {
     const version = this.version() + 1
     const at = Date.now()
     for (const k of keys) {
@@ -654,7 +692,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
   private record(
     kind: LedgerChange['kind'],
     added: LiveFile[],
-    removed: { key: string; table: Table }[],
+    removed: { key: string; table: LedgerTable }[],
     watermark?: Watermark,
     unit?: { seqLo: number; seqHi: number },
   ): number {
@@ -662,7 +700,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     const version = this.version() + 1
     this.setMeta('version', version)
     const change: LedgerChange = { ledgerIncarnation: this.ledgerIncarnation(), version, at: Date.now(), kind, added, removed: removed.map((r) => r.key) }
-    if (removed.length > 0) change.removedFiles = removed.map((r) => ({ key: r.key, table: r.table }))
+    if (removed.length > 0) change.removedFiles = removed.map((r) => ({ key: r.key, table: r.table })) as LedgerChange['removedFiles'] // any LedgerTable: see the contract's note on `removedFiles`
     if (watermark) change.watermark = watermark
     if (unit) change.unit = unit
     sql.exec(`INSERT INTO outbox (version, body) VALUES (?, ?)`, version, JSON.stringify(change))
@@ -787,15 +825,16 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
 
   // ───────────────────────────── LedgerRpc ─────────────────────────────
 
-  async registerStream(ref: StreamRef): Promise<{ version: number; previousIncarnation: number | null }> {
+  async registerStream(ref: StreamRef): Promise<RegisterResult> {
     const g = this.gate()
     if (g) await g
     const problem = refProblem(ref)
     if (problem) throw new Error(`ledger: ${problem}`)
     const known = this.stream(ref.shard)
     if (known && known.incarnation === ref.incarnation) {
-      // Idempotent: a retried registration gets the answer the first one got.
-      return { version: this.version(), previousIncarnation: known.previousIncarnation }
+      // Idempotent: a retried registration gets the answer the first one got, and whether it
+      // is logged by now (D61): derived from the outbox, never stored (review B-1).
+      return { version: this.version(), previousIncarnation: known.previousIncarnation, logged: this.registrationLogged(ref.shard, ref.incarnation) }
     }
     // Incarnations are ordered (a larger number is newer). A lower one is a stale shard or a
     // late message; registering it would rewind the watermark of the live stream. The
@@ -805,7 +844,61 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     }
     const version = this.ctx.storage.transactionSync(() => this.register(ref, known))
     this.afterCommit()
-    return { version, previousIncarnation: known?.incarnation ?? null }
+    // Only committed: its change is in the outbox until a segment holding it is written.
+    return { version, previousIncarnation: known?.incarnation ?? null, logged: false }
+  }
+
+  /**
+   * Registrations committed but not yet logged, by shard: the incarnations a `register_stream`
+   * change still in the outbox names. One read of the outbox (a drain cycle of rows; more while
+   * the drain is stuck), parsing only registration changes. Outbox rows leave only with the
+   * segment that holds them (`segmentWritten`) or with a new incarnation, whose base is in R2
+   * before it commits (`startIncarnation`); and every release writes and drains the same
+   * outbox. So a committed registration that no row names is in the logged prefix, whatever
+   * release committed or drained it: nothing here can be left stale by a rollback (D61;
+   * review B-1).
+   */
+  private pendingRegistrations(): Map<string, Set<number>> {
+    const out = new Map<string, Set<number>>()
+    for (const r of this.ctx.storage.sql.exec(`SELECT body FROM outbox WHERE instr(body, '"kind":"register_stream"') > 0`)) {
+      const c = JSON.parse(r.body as string) as LedgerChange
+      if (c.kind !== 'register_stream' || !c.watermark) continue
+      let set = out.get(c.watermark.shard)
+      if (!set) out.set(c.watermark.shard, (set = new Set()))
+      set.add(c.watermark.incarnation)
+    }
+    return out
+  }
+
+  /** Is this stream's committed registration of `incarnation` in the logged prefix? (The caller has checked it is the committed one.) */
+  private registrationLogged(shard: string, incarnation: number): boolean {
+    // A logged unit of the incarnation proves it at once: the log is a prefix of versions, and
+    // a unit's version is above its stream's registration (`logged` moves only for the
+    // stream's current incarnation, and is reset to 0 by a registration).
+    const r = this.ctx.storage.sql.exec(`SELECT logged FROM stream WHERE shard = ? AND incarnation = ?`, shard, incarnation).toArray()[0]
+    if (r && (r.logged as number) > 0) return true
+    return !this.pendingRegistrations().get(shard)?.has(incarnation)
+  }
+
+  /**
+   * Every stream with its logged watermark and its logged incarnation (contracts/ledger.ts
+   * `LoggedWatermark`), as one synchronous read. The outbox is read only if some stream's
+   * logged watermark is 0 (otherwise every registration is proven logged by a logged unit).
+   */
+  private loggedStreams(): LoggedWatermark[] {
+    const rows = this.ctx.storage.sql.exec(`SELECT shard, incarnation, logged, prev_incarnation FROM stream ORDER BY shard`).toArray()
+    const pending = rows.some((r) => (r.logged as number) === 0) ? this.pendingRegistrations() : new Map<string, Set<number>>()
+    return rows.map((r): LoggedWatermark => {
+      const shard = r.shard as string
+      const incarnation = r.incarnation as number
+      const seq = r.logged as number
+      const prev = r.prev_incarnation as number | null
+      const waiting = pending.get(shard)
+      // The committed incarnation if its registration is logged; else the one registered
+      // before it, if that registration is logged; else 0 (unknown, and low is the safe side).
+      const loggedIncarnation = seq > 0 || !waiting?.has(incarnation) ? incarnation : prev !== null && !waiting.has(prev) ? prev : 0
+      return { shard, incarnation, seq, loggedIncarnation }
+    })
   }
 
   /** Inside a transaction: create the stream, or replace its incarnation and restart at 0. */
@@ -973,13 +1066,13 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     if (g) await g
     // One table (`table`) or several (`tables`): every named table's old days leave in ONE
     // change, so a samples file and its series file leave together (contracts/TABLES.md).
-    const tables = 'tables' in req && req.tables !== undefined ? req.tables : [(req as { table: Table }).table]
+    const tables = 'tables' in req && req.tables !== undefined ? req.tables : [(req as { table: LedgerTable }).table]
     if (!Array.isArray(tables) || tables.length === 0 || tables.some((t) => !TABLES.includes(t))) throw new Error('ledger: unknown table')
     if (typeof req.beforeDay !== 'string' || !DAY.test(req.beforeDay)) throw new Error('ledger: beforeDay must be YYYY-MM-DD')
     const sql = this.ctx.storage.sql
     const named = [...new Set(tables)]
     const result = this.ctx.storage.transactionSync(() => {
-      const gone: { key: string; table: Table }[] = []
+      const gone: { key: string; table: LedgerTable }[] = []
       for (const table of named) {
         for (const r of sql.exec(`SELECT key FROM file WHERE tbl = ? AND day < ? ORDER BY key`, table, req.beforeDay)) gone.push({ key: r.key as string, table })
       }
@@ -1000,19 +1093,16 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     return result
   }
 
-  async loggedWatermarks(): Promise<Watermark[]> {
+  async loggedWatermarks(): Promise<LoggedWatermark[]> {
     const g = this.gate()
     if (g) await g
-    return this.ctx.storage.sql
-      .exec(`SELECT shard, incarnation, logged FROM stream ORDER BY shard`)
-      .toArray()
-      .map((r): Watermark => ({ shard: r.shard as string, incarnation: r.incarnation as number, seq: r.logged as number }))
+    return this.loggedStreams()
   }
 
   // ───────────────────────────── LedgerJanitorRpc ─────────────────────────────
 
   private static toTombstone(r: Row): Tombstone {
-    return { key: r.key as string, table: r.tbl as Table, version: r.version as number, at: r.at as number }
+    return { key: r.key as string, table: r.tbl as LedgerTable, version: r.version as number, at: r.at as number }
   }
 
   /** The lowest version still in the outbox: everything below it is in R2. */
@@ -1074,10 +1164,7 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     // No await: the three answers describe one instant.
     const live = keys.filter((k) => this.liveFile(k) !== null)
     const tombstoned = keys.filter((k) => sql.exec(`SELECT 1 AS x FROM tombstone WHERE key = ?`, k).toArray().length > 0)
-    const logged = sql
-      .exec(`SELECT shard, incarnation, logged FROM stream ORDER BY shard`)
-      .toArray()
-      .map((r): Watermark => ({ shard: r.shard as string, incarnation: r.incarnation as number, seq: r.logged as number }))
+    const logged = this.loggedStreams()
     return { live, tombstoned, logged }
   }
 
@@ -1098,6 +1185,10 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     this.checkpointRetryAt = 0
     try {
       const written = await this.drainSerial(Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER)
+      // A drain that worked ends any backoff, as one by the alarm does: the log writes again,
+      // so the next commits are logged at the usual delay, not when an old backoff runs out.
+      this.failures = 0
+      this.retryNotBefore = 0
       this.stuck = null
       return { written }
     } catch (e) {
@@ -1614,6 +1705,9 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
     const first = ready ? this.meta('seg_first') : null
     const last = ready ? this.meta('seg_last') : null
     const ck = ready ? this.checkpointRow() : null
+    let registrationsPending = 0
+    if (ready) for (const set of this.pendingRegistrations().values()) registrationsPending += set.size
+    const oldest = ready ? sql.exec(`SELECT body FROM outbox ORDER BY version LIMIT 1`).toArray()[0] : undefined
     return {
       phase: this.refusal ? 'refused' : this.corrupt ? 'corrupt' : this.stuck ? 'stuck' : this.needsStart ? 'starting' : 'ready',
       ledgerIncarnation: ready ? this.meta('incarnation') : null,
@@ -1630,6 +1724,8 @@ export class Ledger extends DurableObject<LedgerEnv> implements LedgerRpc, Ledge
       stateBytes: ready ? (this.meta('state_bytes') ?? 0) : 0,
       stateLimitBytes: this.stateMaxBytes,
       checkpoint: ck ? { version: ck.version, phase: ck.phase, parts: ck.parts, files: ck.files, tombstones: ck.tombstones, bytes: ck.bytes } : null,
+      registrationsPending,
+      pendingSince: oldest ? ((JSON.parse(oldest.body as string) as LedgerChange).at ?? null) : null,
     }
   }
 

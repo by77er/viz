@@ -9,6 +9,9 @@ import tenant from '../src/tenant.ts?raw'
 import oauthOps from '../src/ops-oauth.ts?raw'
 import oauthHttp from '../src/oauth-http.ts?raw'
 import oauthLib from '../src/oauth.ts?raw'
+import deadlist from '../src/deadlist.ts?raw'
+import introspection from '../src/introspection.ts?raw'
+import ratelimit from '../src/ratelimit.ts?raw'
 
 /** House rules (AGENTS.md, "Durable Objects") that can be checked by reading the source. */
 const sources: Record<string, string> = { audit, dashboards, keys, proposals, settings, tenant, oauthOps, oauthHttp, oauthLib }
@@ -68,5 +71,17 @@ describe('house rules, read from the source', () => {
     expect(oauthHttp).not.toMatch(/searchParams\.get\('tenant'\)|form\.tenant|headers\.get\('X-/i)
     // nothing OAuth logs a request's parameters: the one log line names the path and the error's class
     for (const src of [oauthOps, oauthHttp, oauthLib]) expect([...src.matchAll(/console\.(log|error|warn|info)\(([^)]*)\)/g)].map((m) => m[2])).toEqual(src === oauthHttp ? ["'control: oauth endpoint failed', path, e instanceof Error ? e.name : 'error'"] : [])
+    // ... and the rate limits and the list of dead credentials log fixed messages once per isolate,
+    // with an error's message at most: never a key, which holds an address, a tenant or a hash.
+    for (const src of [ratelimit, deadlist, introspection]) expect([...src.matchAll(/console\.(log|error|warn|info)\(([^)]*)\)/g)].map((m) => m[2])).toEqual(src === introspection ? [] : ['message', 'message, detail'])
+    // The one KV write outside the Tenant object's outbox: the Worker's list of dead OAuth credentials
+    // (src/deadlist.ts, D70 after its second review). It holds no tenant state, only what a tenant's
+    // object answered about a credential: one put, under its own prefix, expiring with the credential,
+    // and never a delete. Nothing else in the Worker touches KV.
+    for (const [file, src] of Object.entries({ index, introspection, ratelimit })) expect(src, file).not.toMatch(/\.kv\.|CONFIG\.(put|delete|get)/)
+    expect([...deadlist.matchAll(/CONFIG\.(put|delete|list)\(/g)].map((m) => m[1])).toEqual(['put'])
+    expect(deadlist).toContain('env.CONFIG.put(key, JSON.stringify({ v: 1, reason }), { expiration })')
+    expect(deadlist).toContain("export const DEAD_PREFIX = 'oauth-dead:'")
+    expect(deadlist).toContain('`${DEAD_PREFIX}${c.tenant}:${sha256Hex(credential)}`')
   })
 })

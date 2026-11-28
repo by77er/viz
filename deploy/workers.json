@@ -1,5 +1,5 @@
 {
-  "$comment": "What deploy/configure.mjs generates and deploy/release.mjs deploys. `workers` is in dependency order: callees before callers (viz-ingest binds viz-publisher's Publisher class; viz-ruler calls viz-query, viz-ingest and viz-control; viz-mcp calls viz-query, viz-control and viz-ruler; viz-gateway calls all of them but viz-publisher). Promotion follows this order; rollback goes the other way. Every Durable Object class a Worker defines is declared under `schemas` (its SchemaSpec, `<path>.ts#<EXPORT>`, read into release records: contracts/COMPATIBILITY.md §6) or `unversioned` (why it keeps no storage). Every Durable Object class a Worker binds from ANOTHER Worker (by script_name) is listed under `binds_classes` as `<worker>:<class>`, with why: such a binding can call every method of every object of the class (any tenant), so configure.mjs refuses one that is not listed. A Worker that needs one question answered binds a named entrypoint of the other Worker instead (viz-mcp: viz-control's OAuthIntrospection, contracts/oauth.ts).",
+  "$comment": "What deploy/configure.mjs generates and deploy/release.mjs deploys. `workers` is in dependency order: callees before callers (viz-ingest binds viz-publisher's Publisher class; viz-ruler calls viz-query, viz-ingest and viz-control; viz-mcp calls viz-query, viz-control and viz-ruler; viz-gateway calls all of them but viz-publisher). Promotion follows this order; rollback goes the other way. Every Durable Object class a Worker defines is declared under `schemas` (its SchemaSpec, `<path>.ts#<EXPORT>`, read into release records: contracts/COMPATIBILITY.md §6) or `unversioned` (why it keeps no storage). Every Durable Object class a Worker binds from ANOTHER Worker (by script_name) is listed under `binds_classes` as `<worker>:<class>`, with why: such a binding can call every method of every object of the class (any tenant), so configure.mjs refuses one that is not listed. A Worker that needs one question answered binds a named entrypoint of the other Worker instead (viz-mcp: viz-control's OAuthIntrospection, contracts/oauth.ts). Every deployed Worker declares under `formats`, completely, what its code writes (its components' `FORMATS` maps, contracts/COMPATIBILITY.md §3.1) and reads (`reads`: `{format: [versions]}` maps; `reads_of`: one format's versions, or the one version a reader's constant names; `reads_v1`: formats the code reads with no version of its own, taken to read version 1, with where), or `{}` when it reads none; a format it does not list, it does not read: read into release records and each version's VIZ_FORMATS (D69; review of D69, M-1). test/configure.test.mjs checks each Worker's bundled sources against it for control's KV records and RPC results. `rollback_floors`: a switch on a writer (INGEST_SIGNALS) that, once on, puts a floor under the Workers listed, each judged by its storage schema or by `evidence` (VIZ_FLOORS) (D64, D69). `oauth` (viz-control): the Rate Limiting bindings D70 needs in front of OAuth, named by control's own source; configure.mjs refuses a production viz-control without all of them (a stage only with --oauth-without-rate-limits), replaces their placeholder namespace_ids with the ids deploy/resources.mjs allocated from `resources.ratelimit_ids`, and sets `public_var` on every production viz-control (D70; review of D70, M-2). `no_placement`: configure.mjs refuses a `placement` in that Worker's config, with why (review of D70, m-8).",
   "domain": "vis.bitcru.sh",
   "observability": {
     "enabled": true,
@@ -13,7 +13,12 @@
     "r2": [
       "viz-lake"
     ],
-    "queues_from": "viz-ingest"
+    "queues_from": "viz-ingest",
+    "ratelimit_ids": {
+      "$comment": "The namespace_id range of Rate Limiting bindings that is viz's (D70). A namespace_id is account-wide and the account holds unrelated Workers, so deploy/resources.mjs takes each deployment's ids from this range, never one a script of the account whose name does not start with viz- binds, nor one another viz deployment holds; it records them in resources.json and reuses those the deployment's own viz-control already binds. Nothing is created on Cloudflare: a namespace exists only as bindings name it.",
+      "from": 7000,
+      "to": 7999
+    }
   },
   "shared_vars": {
     "$comment": "Deployment-wide values every Worker must agree on. Applied to each Worker whose own config declares the var; a differing component value is overridden and reported.",
@@ -26,6 +31,55 @@
     "viz-flush": "viz-ingest",
     "viz-stack": "viz-ingest"
   },
+  "rollback_floors": [
+    {
+      "name": "signal-data",
+      "writer": "viz-ingest",
+      "var": "INGEST_SIGNALS",
+      "why": "with it, edge appends span and log batches to shards of their own ({pool}/traces, {pool}/logs), flush writes spans, trace_index and logs files, and the ledger's log names those tables (D57, D63). Turning it off leaves all of that in place",
+      "floors": {
+        "viz-publisher": {
+          "schema": "publisher.Publisher",
+          "at_least": 4,
+          "why": "D64: the first publisher that reads the span and log tables (migration 4 shipped with that reader; D67's migration 5 is additive). An older one stops every tenant whose log names one, metrics included: stuck, not lost"
+        },
+        "viz-query": {
+          "evidence": [
+            "query/src/shards.ts#checkSignal",
+            "query/src/shards.ts#signalOfShard"
+          ],
+          "why": "D62: the first query that asks each signal's shards by name and checks every batch's header. An older one reads every shard a plan names, and the shards hand span and log batches whole to a metrics read with no series filter ({__name__=~\"...\"}, cardinality), which then fails for every tenant that sent spans or logs (review of traces and logs, M-4)"
+        },
+        "viz-ingest": {
+          "evidence": [
+            "janitor/src/janitor.ts#DEFAULT_SIGNAL_DAYS",
+            "contracts/ledger.ts#TRACE_TABLES",
+            "contracts/ledger.ts#LOG_TABLES"
+          ],
+          "why": "D63: the first flush, ledger and janitor that flush, list and expire span and log files. An older one stalls their flush (invalid_unit, or encodeSegment thrown on a span batch) and their retention: stuck, not lost (review of traces and logs, M-4)"
+        }
+      }
+    },
+    {
+      "name": "oauth-public",
+      "writer": "viz-control",
+      "var": "OAUTH_PUBLIC",
+      "why": "with it, anyone reaches control's OAuth endpoints through the gateway, and clients hold codes and tokens control issued (D44, D70). Turning it off leaves those credentials valid until they expire, 30 days for a refresh token",
+      "serving_below_floor": "forward-only",
+      "$comment": "serving_below_floor forward-only: configure sets OAUTH_PUBLIC on every production viz-control, so a release cannot first put a stamped viz-control in place without the switch; over a serving viz-control below the floor (the production deployed 2026-11-19 from fb77292, which already serves OAuth) the release is forward-only for viz-control instead of refused: no automatic rollback and no phase-2 restore puts the old one back (D69, point 6)",
+      "floors": {
+        "viz-control": {
+          "evidence": [
+            "contracts/oauth.ts#CREDENTIAL_LAYOUT",
+            "contracts/oauth.ts#DEAD_INACTIVE_REASONS",
+            "control/src/deadlist.ts#recordDead",
+            "control/src/ratelimit.ts#LISTED"
+          ],
+          "why": "D70 after its two reviews: the first viz-control whose credentials carry their expiry (an older one mints credentials the Worker can never refuse as expired, and keys the token endpoint per presented client_id: B-1), asks a tenant's fuse only after the credential's own limit (R2-M1), and lists credentials found dead (R2-M2: an older one lets a stock of refresh tokens trip the token fuse for 30 days, revocation included), and never lists a rotated refresh token of a live grant (round 3, R3-B1: LISTED exists from round 3 on; a viz-control with round 2 alone would let a thief stop reuse detection)"
+        }
+      }
+    }
+  ],
   "workers": [
     {
       "name": "viz-publisher",
@@ -34,6 +88,11 @@
       "health": "/healthz",
       "schemas": {
         "Publisher": "publisher/src/schema.ts#PUBLISHER_SCHEMA"
+      },
+      "formats": {
+        "writes": [
+          "publisher/src/schema.ts#FORMATS"
+        ]
       }
     },
     {
@@ -47,6 +106,26 @@
       "schemas": {
         "Shard": "shard/src/shard.ts#SHARD_SCHEMA",
         "Ledger": "ledger/src/ledger.ts#LEDGER_SCHEMA"
+      },
+      "formats": {
+        "writes": [
+          "flush/src/formats.ts#FORMATS",
+          "compact/src/formats.ts#FORMATS",
+          "janitor/src/formats.ts#FORMATS",
+          "stack/src/formats.ts#FORMATS"
+        ],
+        "reads": [
+          "flush/src/formats.ts#READS",
+          "janitor/src/formats.ts#READS"
+        ],
+        "reads_of": {
+          "kv.key": "edge/src/auth.ts#KEY_RECORD_VERSION"
+        },
+        "reads_v1": {
+          "credential.api-key": "edge/src/auth.ts: KEY_RE, every request's API key",
+          "kv.pool": "edge/src/route.ts (pool:<tenant>, the routing of every write) and flush/src/sweep.ts",
+          "kv.settings": "edge/src/route.ts (limits:<tenant>) and stack/src/index.ts (retention:<tenant>), besides the janitor's READS"
+        }
       }
     },
     {
@@ -56,7 +135,20 @@
       "health": "/healthz",
       "schemas": {
         "Tenant": "control/src/schema.ts#TENANT_SCHEMA"
-      }
+      },
+      "formats": {
+        "writes": [
+          "control/src/schema.ts#FORMATS"
+        ],
+        "$comment": "control/src/schema.ts FORMATS names every format viz-control writes, among them kv.oauth-dead 1 (D70 round 2: the list of dead OAuth credentials, oauth-dead:<tenant>:<hash> in CONFIG, titled viz-config), which it alone writes and reads"
+      },
+      "oauth": {
+        "$comment": "D70 (review of D70, M-2; control/README.md, Needed changes elsewhere): OAuth is public only behind these bindings. `ratelimits` and `period` are read from control's source; `public_var` is set to \"1\" on every production viz-control (a stage only with --oauth-public), the switch of the oauth-public rollback floor.",
+        "ratelimits": "control/src/ratelimit.ts#LIMITERS",
+        "period": "control/src/ratelimit.ts#RATE_PERIOD_S",
+        "public_var": "OAUTH_PUBLIC"
+      },
+      "no_placement": "D70 counts each OAuth request where it arrives (per-location budgets); Smart Placement would gather viz-control's invocations in a few locations and make the tenant fuses nearly global (review of D70, m-8)"
     },
     {
       "name": "viz-query",
@@ -69,6 +161,17 @@
       },
       "unversioned": {
         "Leaf": "keeps nothing between calls: no storage, no fields, no alarm (query/src/leaf.ts)"
+      },
+      "formats": {
+        "$comment": "writes no recorded format; reads what control writes to KV, through edge's auth and routing and its own limits. Not recorded: shard's tail pages (TAIL_READ_VERSION, shard/src/tail.ts), which no writer declares (deploy/README.md, Not implemented)",
+        "reads_of": {
+          "kv.key": "edge/src/auth.ts#KEY_RECORD_VERSION"
+        },
+        "reads_v1": {
+          "credential.api-key": "edge/src/auth.ts (authenticate, query/src/index.ts): every request's API key",
+          "kv.pool": "edge/src/route.ts: pool:<tenant>, which shards a query asks",
+          "kv.settings": "query/src/config.ts and edge/src/route.ts: limits:<tenant>"
+        }
       }
     },
     {
@@ -83,13 +186,39 @@
         "Ruler": "ruler/src/schema.ts#RULER_SCHEMA",
         "Notifier": "ruler/src/schema.ts#NOTIFIER_SCHEMA",
         "RulerIndex": "ruler/src/schema.ts#INDEX_SCHEMA"
+      },
+      "formats": {
+        "writes": [
+          "ruler/src/schema.ts#FORMATS"
+        ],
+        "reads_of": {
+          "store.anomaly-state": "ruler/src/schema.ts#ANOMALY_STATE_READS",
+          "kv.key": "edge/src/auth.ts#KEY_RECORD_VERSION",
+          "rpc.notification-target": "contracts/control.ts#CONTROL_SERVICE_VERSION",
+          "rpc.service-key": "contracts/control.ts#CONTROL_SERVICE_VERSION"
+        },
+        "reads_v1": {
+          "credential.api-key": "edge/src/auth.ts (authenticate, ruler/src/http.ts): every request's API key"
+        }
       }
     },
     {
       "name": "viz-mcp",
       "component": "mcp",
       "deploy": true,
-      "health": "/healthz"
+      "health": "/healthz",
+      "formats": {
+        "$comment": "writes no recorded format; reads an API key's record and control's OAuth introspection",
+        "reads_of": {
+          "kv.key": "edge/src/auth.ts#KEY_RECORD_VERSION",
+          "rpc.oauth": "contracts/oauth.ts#OAUTH_VERSION"
+        },
+        "reads_v1": {
+          "credential.api-key": "edge/src/auth.ts (authenticate, mcp/src/auth.ts): every request's API key",
+          "credential.oauth": "contracts/oauth.ts parseCredential (mcp/src/auth.ts): a Bearer token's kind and tenant"
+        }
+      },
+      "no_placement": "viz-mcp's OAuth bearers are counted by control's OAuthIntrospection per location (D70); Smart Placement would gather its invocations, and so the introspections it asks for, in a few locations (review of D70, m-8)"
     },
     {
       "name": "viz-gateway",
@@ -99,6 +228,9 @@
       "health": "/healthz",
       "binds_classes": {
         "viz-control:Tenant": "Tenant.provision for POST /api/v1/bootstrap only. Open: to become a named entrypoint of viz-control (control/README.md, Known risks)"
+      },
+      "formats": {
+        "$comment": "reads and writes no recorded format: it forwards each request unchanged (deploy/gateway/src/index.ts); Tenant.provision's answer is in no FORMATS map"
       }
     }
   ]

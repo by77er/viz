@@ -6,14 +6,27 @@
 // Cloudflare API: Workers, their versions (vars, secrets), deployments, and a log of every call
 // (argv, how many bytes came on stdin, whether any environment variable contained them).
 // Models, as wrangler 4.164.0 and Cloudflare do (deploy/README.md cites both):
-//   versions upload            a new version from the config; secrets inherited from the newest version
-//   versions secret put K      a new version = the NEWEST version + K (value from stdin); deploys nothing
-//   versions deploy ID@100%    the deployment becomes ID
-//   deploy                     a new version (secrets inherited), deployed at once; creates the Worker
+//   versions upload            a new version from the config and `--var K:V`; secrets inherited from the newest version
+//   versions secret put K      a new version = the NEWEST version + K (value from stdin), its vars that version's; deploys nothing
+//   versions deploy ID@100%    the deployment becomes ID; refused with 10220 when ID has served before
+//                              (a rollback: "a secret has changed since this version was active") and
+//                              its value of a secret differs from the serving version's. A version that
+//                              lacks the secret is allowed, and so is a new one (a rotation's promotion):
+//                              measured on Cloudflare, 2026-11-19, spike S9
+//   deploy                     a new version (config vars and `--var K:V`; secrets inherited), deployed at once; creates the Worker
 //   deploy --dry-run, triggers deploy: nothing
 // Knobs in the state: `failOn` (an argv prefix that fails, echoing its stdin as a careless tool
 // would), `inherit: "none"` (uploads inherit no secret), `afterUpload: "foreign"` (another
-// version appears right after an upload).
+// version appears right after an upload), `racePut: true` (another run of the same release uploads
+// after the deploy's checks and before the put is applied: review of D53, m-11), `ignoreVar: true`
+// (`--var` is not applied), `readLag: n` (each version created answers 404 to its first n reads)
+// and `secretLag: n` (a version made by a put is shown without the secret put for its first n
+// reads): both seen on Cloudflare in 2 of 16 reads of a just-created version (S9). From the review
+// of D69 (design/reviews/d69-deploy-safety.md): `uploadSecretLag: n` (an upload is shown without the
+// secrets it inherited for its first n reads, as S9 saw a fresh version shown without a secret it
+// carried) and `keep: n` (Cloudflare keeps only the n newest versions of a Worker, 100 in
+// production, and never drops one serving now).
+// Every version keeps its `--message` (the API's `workers/message`), and its config's `ratelimits` (D70).
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 
 const statePath = process.env.VIZ_FAKE_WRANGLER_STATE
@@ -30,7 +43,22 @@ state.calls.push({
   // What decides whether wrangler writes a debug log, and whether it redacts request bodies in it (lib/wrangler.mjs SECRET_RUN_ENV).
   logEnv: { WRANGLER_LOG: process.env.WRANGLER_LOG ?? null, WRANGLER_LOG_SANITIZE: process.env.WRANGLER_LOG_SANITIZE ?? null, WRANGLER_WRITE_LOGS: process.env.WRANGLER_WRITE_LOGS ?? null },
 })
-const save = () => writeFileSync(statePath, JSON.stringify(state, null, 2))
+/** `keep: n`: drop the oldest versions beyond n, never one serving now. */
+const prune = () => {
+  if (!state.keep) return
+  for (const w of Object.values(state.workers)) {
+    const live = new Set((w.deployment ?? []).map((d) => d.version_id))
+    while (w.versions.length > state.keep) {
+      const i = w.versions.findIndex((v) => !live.has(v.id))
+      if (i < 0) break
+      w.versions.splice(i, 1)
+    }
+  }
+}
+const save = () => {
+  prune()
+  writeFileSync(statePath, JSON.stringify(state, null, 2))
+}
 const done = (text) => {
   save()
   process.stdout.write(text + '\n')
@@ -54,6 +82,19 @@ const newId = () => {
   return `00000000-0000-4000-8000-${String(state.counter).padStart(12, '0')}`
 }
 const inherited = (w) => (state.inherit === 'none' ? {} : { ...(w.versions.at(-1)?.secrets ?? {}) })
+/** How a new version is first seen by readers (S9's lag), when the state asks for it. */
+const lagged = (v, put) => ({ ...v, ...(state.readLag ? { lag: state.readLag } : {}), ...(put && state.secretLag ? { secretLag: state.secretLag, lagSecret: put } : {}) })
+/** Every `--var K:V` (wrangler splits at the first colon), unless the state says to ignore them. */
+const cliVars = () => {
+  const out = {}
+  if (state.ignoreVar) return out
+  args.forEach((a, i) => {
+    if (a !== '--var') return
+    const [k, ...v] = String(args[i + 1]).split(':')
+    out[k] = v.join(':')
+  })
+  return out
+}
 
 const line = args.join(' ')
 if (state.failOn && line.startsWith(state.failOn)) {
@@ -66,7 +107,9 @@ if (a === 'versions' && b === 'upload') {
   const cfg = readConfig(opt('config'))
   const w = state.workers[cfg.name]
   if (!w) fail(`This Worker does not exist on your account. [code: 10007]`)
-  const v = { id: newId(), number: (w.versions.at(-1)?.number ?? 0) + 1, tag: opt('tag') ?? null, vars: cfg.vars ?? {}, secrets: inherited(w) }
+  const v = lagged({ id: newId(), number: (w.versions.at(-1)?.number ?? 0) + 1, tag: opt('tag') ?? null, message: opt('message') ?? null, vars: { ...(cfg.vars ?? {}), ...cliVars() }, secrets: inherited(w), ...(cfg.ratelimits ? { ratelimits: cfg.ratelimits } : {}) })
+  // `uploadSecretLag`: the upload is shown without the first secret it inherited for its first n reads.
+  if (state.uploadSecretLag && Object.keys(v.secrets).length) Object.assign(v, { secretLag: state.uploadSecretLag, lagSecret: Object.keys(v.secrets)[0] })
   w.versions.push(v)
   if (state.afterUpload === 'foreign') w.versions.push({ id: newId(), number: v.number + 1, tag: 'someone-else', vars: { VIZ_RELEASE: 'someone-else' }, secrets: { ...v.secrets } })
   output({ type: 'version-upload', version_id: v.id })
@@ -76,8 +119,15 @@ if (a === 'versions' && b === 'upload') {
   const w = state.workers[opt('name')]
   if (!w || w.versions.length === 0) fail('There are currently no uploaded versions of this Worker. Please upload a version before modifying a secret.')
   if (stdin.length === 0) fail('fake wrangler: an empty secret')
+  if (state.racePut) {
+    // Another run of the same release: same code and VIZ_RELEASE, its own VIZ_DEPLOY_RUN, uploaded
+    // after this run's checks; the PATCH below applies to it, as Cloudflare's "latest" would.
+    const last = w.versions.at(-1)
+    w.versions.push({ ...structuredClone(last), id: newId(), number: last.number + 1, vars: { ...last.vars, VIZ_DEPLOY_RUN: 'another-run-of-the-same-release' } })
+  }
   const latest = w.versions.at(-1)
-  const v = { ...structuredClone(latest), id: newId(), number: latest.number + 1, tag: opt('tag') ?? latest.tag, secrets: { ...latest.secrets, [key]: stdin.replace(/\s+$/, '') } }
+  const { lag: _l, secretLag: _s, lagSecret: _k, ...base } = structuredClone(latest)
+  const v = lagged({ ...base, id: newId(), number: latest.number + 1, tag: opt('tag') ?? latest.tag, message: opt('message') ?? null, secrets: { ...latest.secrets, [key]: stdin.replace(/\s+$/, '') } }, key)
   w.versions.push(v)
   done(`🌀 Creating the secret for the Worker "${opt('name')}"\n✨ Success! Created version ${v.id} with secret ${key}.\n➡️  To deploy this version with secret ${key} to production traffic use the command "wrangler versions deploy".`)
 } else if (a === 'versions' && b === 'deploy') {
@@ -85,6 +135,12 @@ if (a === 'versions' && b === 'upload') {
   const name = opt('name') ?? readConfig(opt('config')).name
   const w = state.workers[name]
   if (!w?.versions.some((v) => v.id === id)) fail(`fake wrangler: ${name} has no version ${id}`)
+  const target = w.versions.find((v) => v.id === id)
+  const now = w.versions.find((v) => v.id === w.deployment[0]?.version_id)
+  const wasActive = (w.active ?? []).includes(id)
+  const changed = wasActive ? Object.keys(target.secrets).filter((k) => now && k in now.secrets && now.secrets[k] !== target.secrets[k]) : []
+  if (changed.length) fail(`✘ [ERROR] A request to the Cloudflare API (/accounts/x/workers/scripts/${name}/deployments) failed.\n  A secret has changed since this version was active. If you are sure this is ok, add a ?force=true query parameter to allow the rollback. The following secrets have changed: ${changed.join(', ')} [code: 10220]`)
+  w.active = [...new Set([...(w.active ?? []), ...w.deployment.map((d) => d.version_id), id])]
   w.deployment = [{ version_id: id, percentage: Number.parseFloat(pct) }]
   done(`Deployed ${name} version ${id} at ${pct}`)
 } else if (a === 'triggers' && b === 'deploy') {
@@ -94,8 +150,9 @@ if (a === 'versions' && b === 'upload') {
 } else if (a === 'deploy') {
   const cfg = readConfig(opt('config'))
   const w = (state.workers[cfg.name] ??= { migrationTag: null, versions: [], deployment: [] })
-  const v = { id: newId(), number: (w.versions.at(-1)?.number ?? 0) + 1, tag: opt('tag') ?? null, vars: cfg.vars ?? {}, secrets: inherited(w) }
+  const v = lagged({ id: newId(), number: (w.versions.at(-1)?.number ?? 0) + 1, tag: opt('tag') ?? null, message: opt('message') ?? null, vars: { ...(cfg.vars ?? {}), ...cliVars() }, secrets: inherited(w), ...(cfg.ratelimits ? { ratelimits: cfg.ratelimits } : {}) })
   w.versions.push(v)
+  w.active = [...new Set([...(w.active ?? []), ...w.deployment.map((d) => d.version_id), v.id])]
   w.deployment = [{ version_id: v.id, percentage: 100 }]
   w.migrationTag = cfg.migrations?.at(-1)?.tag ?? w.migrationTag
   output({ type: 'deploy', version_id: v.id })

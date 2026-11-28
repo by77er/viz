@@ -1,0 +1,43 @@
+[
+  {
+    "drop": "Error: /drop: Error: config: 404 {\"error\":{\"message\":\"Warehouse 8dbec6148300483801d721889a2f4749_viz-spike-s8-catalog not found\",\"type\":\"WarehouseNotFound\",\"code\":404,\"stack\":[\"01a1f1c6-2d7c-7a01-9ffd-42ffa9775c4b\"]}}\nError: config: 404 {\"error\":{\"message\":\"Warehouse 8dbec6148300483801d721889a2f4749"
+  },
+  {
+    "wipe": {
+      "deleted": 3815
+    }
+  },
+  {
+    "worker": "deleted"
+  },
+  {
+    "disable": {
+      "result": null,
+      "result_info": null,
+      "success": false,
+      "errors": [
+        {
+          "code": 40306,
+          "message": "Access denied by Cloudflare IAM policy"
+        }
+      ],
+      "messages": []
+    }
+  },
+  {
+    "bucket": {
+      "success": true,
+      "errors": [],
+      "messages": [],
+      "result": {}
+    }
+  },
+  {
+    "after": {
+      "at": "2026-11-19T03:09:26.280Z",
+      "buckets": [],
+      "scripts": [],
+      "catalogs": []
+    }
+  }
+]

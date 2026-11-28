@@ -83,3 +83,97 @@ Deviations: step 15 skipped. Properties failing after the last step: none.
 7. LEDGER STORAGE LOSS -> rebuild from R2 (nothing of this incarnation in R2: incarnation number reused) — **substituted**: LEDGER STORAGE LOSS -> rebuild from R2
 
 Deviations: step 7 substituted. Properties failing after the last step: none.
+
+### `F6b_impl_now` against F6(b) bounds with R1 (registration committed before writes), the registration put first
+
+1. registerStream(s0, inc 1) [prefix: needed by this configuration]
+2. append(b0 -> s0) seq 1
+3. seal(s0, ..1)
+4. flush: pendingSegments(s0) -> inc 1 1..1
+5. flush readSegment(s0 inc 1 1..1)
+6. flush PUT L0(s0 inc1 1..1)
+7. query: plan (no files; wm s0:-) — **substituted**: query: plan (no files; wm s0:inc1@0)
+8. addUnit(s0 inc 1 1..1) admitted (registers the stream) — **substituted**: addUnit(s0 inc 1 1..1) admitted
+9. ledger drain: PUT segment v1..v2
+10. SHARD STORAGE LOSS(s0)
+11. query: tailRead(s0, inc 0, above 0) = ok nothing — **substituted**: query: tailRead(s0, inc 1, above 0) = incarnation_mismatch(0) behind -> re-plan
+12. query: read files, merge -> nothing — **skipped: not allowed here** (allowed instead: query: tailRead(s0, inc 1, above 1) = incarnation_mismatch(0) behind -> re-plan)
+
+Deviations: step 7 substituted, step 8 substituted, step 11 substituted, step 12 skipped. Properties failing after the last step: none.
+
+### `F6b_impl_now` against F6(b) bounds with R2 (registration logged before writes), the registration put first
+
+1. registerStream(s0, inc 1) [prefix: needed by this configuration]
+2. ledger drain: PUT segment v1..v1 [prefix: needed by this configuration]
+3. ledger drain: delete outbox rows v1..v1, advance logged [prefix: needed by this configuration]
+4. registration logged -> s0 accepts writes [prefix: needed by this configuration]
+5. append(b0 -> s0) seq 1
+6. seal(s0, ..1)
+7. flush: pendingSegments(s0) -> inc 1 1..1
+8. flush readSegment(s0 inc 1 1..1)
+9. flush PUT L0(s0 inc1 1..1)
+10. query: plan (no files; wm s0:-) — **substituted**: query: plan (no files; wm s0:inc1@0)
+11. addUnit(s0 inc 1 1..1) admitted (registers the stream) — **substituted**: addUnit(s0 inc 1 1..1) admitted
+12. ledger drain: PUT segment v1..v2 — **substituted**: ledger drain: PUT segment v2..v2
+13. SHARD STORAGE LOSS(s0)
+14. query: tailRead(s0, inc 0, above 0) = ok nothing — **substituted**: query: tailRead(s0, inc 1, above 0) = incarnation_mismatch(0) behind -> re-plan
+15. query: read files, merge -> nothing — **skipped: not allowed here** (allowed instead: query: tailRead(s0, inc 1, above 1) = incarnation_mismatch(0) behind -> re-plan)
+
+Deviations: step 10 substituted, step 11 substituted, step 12 substituted, step 14 substituted, step 15 skipped. Properties failing after the last step: none.
+
+### `F6b_impl_now` against F6(b) bounds with R3 (logged before writes; coordinator settles), the registration put first
+
+1. registerStream(s0, inc 1) [prefix: needed by this configuration]
+2. ledger drain: PUT segment v1..v1 [prefix: needed by this configuration]
+3. ledger drain: delete outbox rows v1..v1, advance logged [prefix: needed by this configuration]
+4. registration logged -> s0 accepts writes [prefix: needed by this configuration]
+5. append(b0 -> s0) seq 1
+6. seal(s0, ..1)
+7. flush: pendingSegments(s0) -> inc 1 1..1
+8. flush readSegment(s0 inc 1 1..1)
+9. flush PUT L0(s0 inc1 1..1)
+10. query: plan (no files; wm s0:-) — **substituted**: query: plan (no files; wm s0:inc1@0)
+11. addUnit(s0 inc 1 1..1) admitted (registers the stream) — **substituted**: addUnit(s0 inc 1 1..1) admitted
+12. ledger drain: PUT segment v1..v2 — **substituted**: ledger drain: PUT segment v2..v2
+13. SHARD STORAGE LOSS(s0)
+14. query: tailRead(s0, inc 0, above 0) = ok nothing — **substituted**: query: tailRead(s0, inc 1, above 0) = incarnation_mismatch(0) behind -> re-plan
+15. query: read files, merge -> nothing — **skipped: not allowed here** (allowed instead: query: tailRead(s0, inc 1, lost before this plan) = ok nothing)
+
+Deviations: step 10 substituted, step 11 substituted, step 12 substituted, step 14 substituted, step 15 skipped. Properties failing after the last step: none.
+
+### `F6b_impl_now` against F6(b) bounds with R4 (committed before writes; coordinator re-checks), the registration put first
+
+1. registerStream(s0, inc 1) [prefix: needed by this configuration]
+2. append(b0 -> s0) seq 1
+3. seal(s0, ..1)
+4. flush: pendingSegments(s0) -> inc 1 1..1
+5. flush readSegment(s0 inc 1 1..1)
+6. flush PUT L0(s0 inc1 1..1)
+7. query: plan (no files; wm s0:-) — **substituted**: query: plan (no files; wm s0:inc1@0)
+8. addUnit(s0 inc 1 1..1) admitted (registers the stream) — **substituted**: addUnit(s0 inc 1 1..1) admitted
+9. ledger drain: PUT segment v1..v2
+10. SHARD STORAGE LOSS(s0)
+11. query: tailRead(s0, inc 0, above 0) = ok nothing — **substituted**: query: tailRead(s0, inc 1, above 0) = incarnation_mismatch(0) behind -> re-plan
+12. query: read files, merge -> nothing — **skipped: not allowed here** (allowed instead: query: tailRead(s0, inc 1, above 1) = incarnation_mismatch(0) behind -> re-plan)
+
+Deviations: step 7 substituted, step 8 substituted, step 11 substituted, step 12 skipped. Properties failing after the last step: none.
+
+### `R1_safety` against R1_safety's bounds with R4 (R1 + the coordinator re-check)
+
+1. registerStream(s0, inc 1)
+2. append(b0 -> s0) seq 1
+3. seal(s0, ..1)
+4. flush: pendingSegments(s0) -> inc 1 1..1
+5. flush readSegment(s0 inc 1 1..1)
+6. flush PUT L0(s0 inc1 1..1)
+7. LEDGER STORAGE LOSS -> rebuild from R2, start incarnation 2
+8. ledger start: PUT base segment of incarnation 2
+9. ledger start: commit incarnation 2, serve
+10. query: plan (no files; wm s0:-)
+11. addUnit(s0 inc 1 1..1) admitted (registers the stream)
+12. ledger drain: PUT segment v1..v2
+13. SHARD STORAGE LOSS(s0)
+14. query: tailRead(s0, inc 0, above 0) = ok nothing
+15. query: read files, merge -> nothing — **skipped: not allowed here** (allowed instead: query: re-read the ledger: s0 registered since the plan -> re-plan)
+
+Deviations: step 15 skipped. Properties failing after the last step: none.

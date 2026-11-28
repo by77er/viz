@@ -3,6 +3,7 @@
 
     python3 tools/mutants.py                 # every mutant (from engine/storage)
     python3 tools/mutants.py pruning         # only mutants whose name contains "pruning"
+    python3 tools/mutants.py sigmerge tokens # compaction of spans and logs, the token filter
     VIZ_MUTANTS_DIR=<dir> python3 …          # where the scratch copy goes
 
 NOTHING IN THE SHARED TREE IS WRITTEN (AGENTS.md, "Tests must have teeth": others commit and
@@ -25,6 +26,8 @@ ROOT = os.path.join(tempfile.mkdtemp(prefix="viz-storage-mutants-", dir=base), "
 shutil.copytree(SHARED, ROOT, ignore=shutil.ignore_patterns("target", "target-*"))
 print(f"scratch copy: {ROOT}", flush=True)
 PRUNING = ["--test", "pruning"]
+OTEL = ["--test", "otel"]
+SIGMERGE = ["--test", "sigmerge"]
 MUTANTS = [
     ("earlier batch wins on duplicates in flush", "src/encode.rs",
      "for (b, map) in decoded.iter().zip(&local) {\n        for i in 0..b.n_rows() {",
@@ -119,6 +122,71 @@ MUTANTS = [
      "        pos = b;\n    }\n    Ok(())", "        pos = b.saturating_sub(1);\n    }\n    Ok(())", PRUNING),
     ("pruning: a sparse container's segment is held one byte longer than it is", "src/sparse.rs",
      "(end <= s.0 + s.1.len() as u64).then_some(s)", "(end <= s.0 + s.1.len() as u64 + 1).then_some(s)", PRUNING),
+    # spans and logs (2026-11-19): signals 2 and 3, the spans / trace_index / logs encoders
+    ("otel: spans sorted by span_name before service_name", "src/spans.rs",
+     "(a.hour, sa.map(str::as_bytes), a.span.name.as_bytes(), a.span.start, a.span.trace_id, a.span.span_id).cmp(&(\n            b.hour,\n            sb.map(str::as_bytes),\n            b.span.name.as_bytes(),",
+     "(a.hour, a.span.name.as_bytes(), sa.map(str::as_bytes), a.span.start, a.span.trace_id, a.span.span_id).cmp(&(\n            b.hour,\n            b.span.name.as_bytes(),\n            sb.map(str::as_bytes),", OTEL),
+    ("otel: logs sorted by stream_id before service_name", "src/logs.rs",
+     "(a.day, sa.service.as_bytes(), sa.stream.stream_id, a.row.ts, a.row.line.as_bytes())\n            .cmp(&(b.day, sb.service.as_bytes(), sb.stream.stream_id,",
+     "(a.day, sa.stream.stream_id, sa.service.as_bytes(), a.row.ts, a.row.line.as_bytes())\n            .cmp(&(b.day, sb.stream.stream_id, sb.service.as_bytes(),", OTEL),
+    ("otel: a residual bool attribute dropped", "src/spans.rs",
+     "Value::Bool(v) => out.b.push((a.key, *v)),", "Value::Bool(_) => {}", OTEL),
+    ("otel: a non-string service.name dropped instead of kept residual", "src/spans.rs",
+     "                if let Value::Str(v) = a.value {\n                    out.service = Some(v);\n                    continue;\n                }",
+     "                if let Value::Str(v) = a.value {\n                    out.service = Some(v);\n                }\n                continue;", OTEL),
+    ("otel: the earlier of duplicate spans wins", "src/spans.rs",
+     "last.insert(key(s), (bi, ri));", "last.entry(key(s)).or_insert((bi, ri));", OTEL),
+    ("otel: duplicate log rows kept", "src/logs.rs",
+     "if it.peek().is_some_and(|next| same(&r, next)) {", "if false && it.peek().is_some_and(|next| same(&r, next)) {", OTEL),
+    ("otel: spans partitioned by two-hour windows", "src/spans.rs",
+     "hour: s.start.div_euclid(NS_PER_HOUR) });", "hour: s.start.div_euclid(2 * NS_PER_HOUR) });", OTEL),
+    ("otel: trace_index takes the latest root, not the earliest", "src/spans.rs",
+     "(s.start, s.span_id) < (x.span.start, x.span.span_id)", "(s.start, s.span_id) > (x.span.start, x.span.span_id)", OTEL),
+    ("otel: trace_index error count counts every span", "src/spans.rs",
+     "let err = (s.status == 2) as i32;", "let err = (s.status != 0) as i32;", OTEL),
+    ("otel: span flags written even when zero", "src/spans.rs",
+     "opt_i32(g.iter().map(|r| (r.span.flags != 0).then_some(r.span.flags as i32))),", "opt_i32(g.iter().map(|r| Some(r.span.flags as i32))),", OTEL),
+    ("otel: span fragment min_dur over starts", "src/spans.rs",
+     "let dmin = g.iter().map(|r| r.span.end - r.span.start).min().unwrap();", "let dmin = g.iter().map(|r| r.span.start).min().unwrap();", OTEL),
+    ("otel: log fragment sid last = first", "src/logs.rs",
+     "            st(&g[0]).stream.stream_id,\n            st(&g[g.len() - 1]).stream.stream_id\n", "            st(&g[0]).stream.stream_id,\n            st(&g[0]).stream.stream_id\n", OTEL),
+    ("otel: log fragment stream's last row group not advanced", "src/logs.rs",
+     "                    s.5 = gi;\n", "", OTEL),
+    ("otel: line pages may exceed 1 MiB (chunks of 1 MiB)", "src/otelpq.rs",
+     "pub const LINE_CHUNK_BYTES: usize = 262_148;", "pub const LINE_CHUNK_BYTES: usize = 1 << 20;", OTEL),
+    ("otel: stream_id hashed differently from series_id (labels reversed)", "src/otel.rs",
+     "    crate::batch::series_id(labels)\n", "    let mut l: Vec<(&str, &str)> = labels.iter().map(|(n, v)| (n.as_ref(), v.as_ref())).collect();\n    l.reverse();\n    crate::batch::series_id(&l)\n", OTEL),
+    ("otel: decode accepts an all-zero trace_id", "src/otel.rs",
+     "if t == [0; 16] || s == [0; 8] {", "if s == [0; 8] {", OTEL),
+    ("otel: decode accepts unsorted attributes", "src/otel.rs",
+     "if prev.key.as_bytes() >= key.as_bytes() {", "if prev.key.as_bytes() == key.as_bytes() {", OTEL),
+    # compaction of spans and logs, and the token filter (2026-11-19)
+    ("sigmerge: a span merged across hours (the merge takes two hours' rows)", "src/sigmerge.rs",
+     "        if *hour.get_or_insert(h) != h {\n            return merr(\"spans inputs hold rows of more than one hour\");", "        if false {\n            return merr(\"spans inputs hold rows of more than one hour\");", SIGMERGE),
+    ("sigmerge: a lost row in a logs merge (rows differing only in metadata taken for one)", "src/sigmerge.rs",
+     "a.stream_id == b.stream_id && a.ts == b.ts && a.line == b.line && a.metadata == b.metadata", "a.stream_id == b.stream_id && a.ts == b.ts && a.line == b.line", SIGMERGE),
+    ("sigmerge: a lost row in a logs merge (the last row never written)", "src/sigmerge.rs",
+     "    let Some(p) = pending else { return merr(\"logs inputs hold no rows\") };\n    emit(p, &mut group, &mut writer)?;", "    let Some(p) = pending else { return merr(\"logs inputs hold no rows\") };\n    if group.is_empty() {\n        emit(p, &mut group, &mut writer)?;\n    }", SIGMERGE),
+    ("sigmerge: the earlier input wins a duplicate span", "src/sigmerge.rs",
+     "    seen.sort_unstable();\n", "    seen.sort_unstable_by(|a, b| a.0.cmp(&b.0).then((b.1, b.2).cmp(&(a.1, a.2))));\n", SIGMERGE),
+    ("sigmerge: the earlier input wins a duplicate log row", "src/sigmerge.rs",
+     "            Some(p) if !same_log(&p, &x) => emit(p, &mut group, &mut writer)?,\n            _ => {}\n        }\n        pending = Some(x);", "            Some(p) if !same_log(&p, &x) => emit(p, &mut group, &mut writer)?,\n            Some(p) => {\n                pending = Some(p);\n                continue;\n            }\n            _ => {}\n        }\n        pending = Some(x);", SIGMERGE),
+    ("sigmerge: trace_index fragments of one trace not merged (the first kept)", "src/sigmerge.rs",
+     "        let mut f = merge_fragments(&run).unwrap();", "        let mut f = run.last().unwrap().clone();", SIGMERGE),
+    ("sigmerge: trace_index keeps more than 64 services", "src/sigmerge.rs",
+     "        if f.services.len() > MAX_INDEX_SERVICES {", "        if f.services.len() > MAX_INDEX_SERVICES + 100 {", SIGMERGE),
+    ("tokens: a token filter that misses 4-byte tokens", "src/tokens.rs",
+     "        if e - s < MIN_TOKEN_BYTES {\n            continue;\n        }\n        let t = cut(&b[s..e]);", "        if e - s <= MIN_TOKEN_BYTES {\n            continue;\n        }\n        let t = cut(&b[s..e]);", SIGMERGE),
+    ("tokens: a token filter that misses the metadata values' tokens", "src/logs.rs",
+     "                for (_, v) in &r.row.metadata {\n                    t.add_text(gi, v);\n                }\n", "", SIGMERGE),
+    ("tokens: a token filter that misses a row group's tokens (the last row of each group)", "src/logs.rs",
+     "        for r in g {\n            let id = streams[r.stream].stream.stream_id;", "        for r in &g[..g.len() - 1] {\n            let id = streams[r.stream].stream.stream_id;", SIGMERGE),
+    ("tokens: a literal implies its edge runs (prunes a group holding a longer run)", "src/tokens.rs",
+     "        if s == 0 || e == b.len() || e - s < MIN_TOKEN_BYTES {", "        if e - s < MIN_TOKEN_BYTES {", SIGMERGE),
+    ("tokens: the filter's bitsets one row group off", "src/tokens.rs",
+     "        self.bits[k * self.stride + rg / 8] |= 1 << (rg % 8);\n        self.slots[i] = k as u32 + 1;", "        self.bits[k * self.stride + (rg + 1) / 8] |= 1 << ((rg + 1) % 8);\n        self.slots[i] = k as u32 + 1;", SIGMERGE),
+    ("tokens: foot starts at the last row group even with a filter", "src/logs.rs",
+     "            Some((o, l)) => foot(o + l, file_len),", "            Some(_) => foot(self.groups_end, file_len),", SIGMERGE),
 ]
 
 def tests_fail(targets=None):

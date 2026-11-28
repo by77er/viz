@@ -741,9 +741,31 @@ checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 name = "viz-engine-wasm-query"
 version = "0.1.0"
 dependencies = [
+ "bytes",
+ "parquet",
+ "regex",
  "serde_json",
+ "viz-goregex",
+ "viz-logql",
  "viz-query",
  "viz-storage",
+ "viz-traceql",
+]
+
+[[package]]
+name = "viz-goregex"
+version = "0.1.0"
+dependencies = [
+ "regex",
+]
+
+[[package]]
+name = "viz-logql"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "viz-goregex",
+ "viz-promql",
 ]
 
 [[package]]
@@ -776,6 +798,14 @@ dependencies = [
  "bytes",
  "parquet",
  "regex",
+]
+
+[[package]]
+name = "viz-traceql"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "viz-goregex",
 ]
 
 [[package]]

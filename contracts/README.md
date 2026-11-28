@@ -5,21 +5,23 @@ change it here first; nothing else may redefine these.
 
 | File | Contract |
 |---|---|
-| `BATCH.md` | The columnar batch: what `edge` produces, a shard stores opaquely, and the engine decodes |
-| `TABLES.md` | Parquet schemas, sort orders, partitioning and object keys for the metrics tables |
-| `TRACES.md` | Proposed: the `spans` table and `trace_index`, the read plan the TraceQL engine (`engine/traceql`) produces, and how missing values read. Storage does not implement it yet |
-| `LOGS.md` | Proposed: the log-records table (stream id, labels, line, structured metadata, OTLP severity and trace ids), its sort and token filter, and the `LogSource` read seam the LogQL engine (`engine/logql`) uses. Storage does not implement it yet |
-| `ledger.ts` | The tenant ledger's RPC surface: file precedence (`LiveFile`, which file wins a duplicate sample), and the proposed tombstone surface used for physical deletion |
+| `BATCH.md` | The columnar batch: what `edge` produces, a shard stores opaquely, and the engine decodes. Signal 1 (metrics) is built; signals 2 (spans) and 3 (log records) are built through shards of their own pools (`{pool}/traces`, `{pool}/logs`), flush and the ledger (stage 2, behind `INGEST_SIGNALS`) |
+| `TABLES.md` | Parquet schemas, sort orders, partitioning and object keys for the metrics tables (and the keys of the span and log tables) |
+| `TRACES.md` | The `spans` table and `trace_index`: layout, sort, promoted attributes and index fragments settled and written by `engine/storage`; the read plan the TraceQL engine (`engine/traceql`) produces, and how missing values read. Flush, the ledger's listing and retention of these tables are built (stage 2); compaction (D68) and Iceberg publication (D67) built; the query reader is built behind `QUERY_SIGNALS`, which stays off until the review's M-1 and M-2 are fixed |
+| `LOGS.md` | The log-records table (stream id, labels, line, structured metadata, OTLP severity and trace ids), the OTLP and Loki push mappings, its sort, index fragment and token-filter format, and the `LogSource` read seam the LogQL engine (`engine/logql`) uses. Layout settled and written by `engine/storage`; flush, the ledger and retention built (stage 2); compaction (D68), the token filter inside the file (D65) and Iceberg publication (D67) built; the query reader is built behind `QUERY_SIGNALS` (off), and no query reads the token filter yet |
+| `ledger.ts` | The tenant ledger's RPC surface: file precedence (`LiveFile`, which file wins a duplicate sample), the tombstone surface used for physical deletion, and (D61, registration before writes) whether a registration is logged (`RegisterResult.logged`) and each stream's logged incarnation (`LoggedWatermark`), both additive. Since stage 2 the ledger's tables are `LedgerTable` (`Table` stays the metric pair) and `dataKeyPrefix` names where a file of each lies |
 | `LEDGER-LOG.md` | The ledger's change log as batched segments written in the background: format, drain, checkpoints, truncation, readers. Built; replaced one object per change (whose keys `ledger.ts` keeps for readers) |
 | `rules.ts` | Rule groups, alert state, notification routing, and the evaluator the ruler calls |
 | `ingest.ts` | The ingest Worker's service surface for other viz Workers: the `RecordedSamples` entrypoint, where the ruler writes recording-rule samples, authenticated by its service binding (D45) |
 | `control.ts` | The control plane's service surface over its Durable Object binding: the tenant's default notification destination and service keys (D39) |
-| `oauth.ts` | OAuth 2.1 for agents (MCP clients): clients, grants, codes, access and refresh tokens as the control plane holds them, their formats (a credential's tag included) and lifetimes, the token, revocation and introspection RPCs on the Tenant object that control's OAuth endpoints use, and `OAuthIntrospection`, the named entrypoint of viz-control the agent surface binds instead (D44; review of D44, M-1 and M-2) |
-| `engine.ts` | The JavaScript face of the Rust/WASM engine |
+| `oauth.ts` | OAuth 2.1 for agents (MCP clients): clients, grants, codes, access and refresh tokens as the control plane holds them, their formats (a credential's tag included) and lifetimes, the token, revocation and introspection RPCs on the Tenant object that control's OAuth endpoints use, and `OAuthIntrospection`, the named entrypoint of viz-control the agent surface binds instead (D44; review of D44, M-1 and M-2); the `rate_limited` status and the per-grant refresh limit (D70); credential layout 2, whose expiry the Worker checks under the tag (review of D70, B-1); which answers mean a credential is dead for good (`DEAD_INACTIVE_REASONS`, revocation's `dead`), on which control lists it, and the grant view's `refreshesLastDay` (second review of D70, R2-M2) |
+| `engine.ts` | The JavaScript face of the Rust/WASM engine. Since 2026-11-19 also the TraceQL and LogQL result shapes (the bodies of Tempo's and Loki's HTTP APIs) and the span and log operations of the read path's module (`SignalEngine`, ABI 6 of `engine/wasm-query`), the flush of spans and logs (`SignalFlushEngine`, ABI 3 of `engine/wasm`) and their compaction (`SignalMergeEngine`, ABI 4 of `engine/wasm`) |
 | `COMPATIBILITY.md` | What every component does so that release N and N±1 can run side by side: versioned storage, versioned formats, readers before writers, expand then contract, rollback rules |
 | `schema.ts` | The migration runner every Durable Object opens its storage with (`openSchema`), and the rollback test (`canOpen`, `schemaRelease`) |
-| `../shard/src/shard.ts` | The shard's RPC surface (already implemented) |
-| `../shard/src/pool.ts` | Pool maps and routing (already implemented) |
+| `../shard/src/shard.ts` | The shard's RPC surface (already implemented). Since D61 also the `registering` backpressure scope, `ensureStream`, and a tail read that names a fresh stream after a loss; since stage 2 a tail filter by signal (`TailFilter.signals`, in `../shard/src/tail.ts`); since D72 the time range of that filter also skips span and log batches by time bounds the shard records at append (`BATCH.md`, "Tail reads of spans and log records by time") |
+| `../shard/src/pool.ts` | Pool maps and routing (already implemented); since stage 2 the derived pools of spans and logs (`signalPool`) |
 
-Scope of this first build: **metrics only** (float samples). Traces and logs follow the
-same shapes later.
+Scope of the first build: **metrics** (float samples). Traces and logs, stage 1
+(2026-11-19): their batches, ingest decoding (behind `INGEST_SIGNALS`) and Parquet layout;
+stage 2 (2026-11-19) wires them through shards, flush and the ledger; compaction (D68),
+publication (D67) and the query reader (D62, behind `QUERY_SIGNALS`, off) followed the same day.

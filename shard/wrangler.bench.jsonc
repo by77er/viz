@@ -8,8 +8,15 @@
     "bindings": [
       { "name": "SHARD", "class_name": "Shard" },
       { "name": "SHARD_ASBUILT", "class_name": "ShardAsBuilt" },
-      { "name": "CLIENT", "class_name": "Client" }
+      { "name": "CLIENT", "class_name": "Client" },
+      // Registration before writes (D61): the release before it, and the tenants' ledgers.
+      { "name": "SHARD_PREREG", "class_name": "ShardPrereg" },
+      { "name": "LEDGER", "class_name": "Ledger" },
+      // Time bounds of span and log batches (D72): the release before them.
+      { "name": "SHARD_PREBOUNDS", "class_name": "ShardPrebounds" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Shard", "ShardAsBuilt", "Client"] }]
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Shard", "ShardAsBuilt", "Client"] }, { "tag": "v2", "new_sqlite_classes": ["ShardPrereg", "Ledger"] }, { "tag": "v3", "new_sqlite_classes": ["ShardPrebounds"] }],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "viz-lake" }],
+  "vars": { "CELL": "cell-0" }
 }

@@ -1,0 +1,850 @@
+{
+ "format": "iceberg.signal-metadata",
+ "version": 1,
+ "tables": {
+  "spans": {
+   "format-version": 2,
+   "table-uuid": "00000000-0000-4000-8000-000000000000",
+   "location": "s3://viz-lake/cell-0/iceberg/spans",
+   "last-sequence-number": 0,
+   "last-updated-ms": 1700000000000,
+   "last-column-id": 70,
+   "current-schema-id": 0,
+   "schemas": [
+    {
+     "type": "struct",
+     "schema-id": 0,
+     "fields": [
+      {
+       "id": 45,
+       "name": "tenant",
+       "required": false,
+       "type": "string",
+       "doc": "Tenant id. Not stored in the data files; read from the partition tuple."
+      },
+      {
+       "id": 1,
+       "name": "trace_id",
+       "required": true,
+       "type": "fixed[16]"
+      },
+      {
+       "id": 2,
+       "name": "span_id",
+       "required": true,
+       "type": "fixed[8]"
+      },
+      {
+       "id": 3,
+       "name": "parent_span_id",
+       "required": false,
+       "type": "fixed[8]"
+      },
+      {
+       "id": 4,
+       "name": "trace_state",
+       "required": false,
+       "type": "string"
+      },
+      {
+       "id": 5,
+       "name": "flags",
+       "required": false,
+       "type": "int"
+      },
+      {
+       "id": 6,
+       "name": "start_unix_nano",
+       "required": true,
+       "type": "long"
+      },
+      {
+       "id": 7,
+       "name": "end_unix_nano",
+       "required": true,
+       "type": "long"
+      },
+      {
+       "id": 8,
+       "name": "duration_nano",
+       "required": true,
+       "type": "long"
+      },
+      {
+       "id": 9,
+       "name": "start_time",
+       "required": true,
+       "type": "timestamptz"
+      },
+      {
+       "id": 10,
+       "name": "service_name",
+       "required": false,
+       "type": "string"
+      },
+      {
+       "id": 11,
+       "name": "span_name",
+       "required": true,
+       "type": "string"
+      },
+      {
+       "id": 12,
+       "name": "span_kind",
+       "required": true,
+       "type": "int"
+      },
+      {
+       "id": 13,
+       "name": "status_code",
+       "required": true,
+       "type": "int"
+      },
+      {
+       "id": 14,
+       "name": "status_message",
+       "required": false,
+       "type": "string"
+      },
+      {
+       "id": 15,
+       "name": "scope_name",
+       "required": false,
+       "type": "string"
+      },
+      {
+       "id": 16,
+       "name": "scope_version",
+       "required": false,
+       "type": "string"
+      },
+      {
+       "id": 17,
+       "name": "resource_fp",
+       "required": true,
+       "type": "long"
+      },
+      {
+       "id": 18,
+       "name": "r_service_namespace",
+       "required": false,
+       "type": "string"
+      },
+      {
+       "id": 19,
+       "name": "r_deployment_environment",
+       "required": false,
+       "type": "string"
+      },
+      {
+       "id": 20,
+       "name": "r_k8s_namespace_name",
+       "required": false,
+       "type": "string"
+      },
+      {
+       "id": 21,
+       "name": "r_k8s_pod_name",
+       "required": false,
+       "type": "string"
+      },
+      {
+       "id": 22,
+       "name": "r_cloud_region",
+       "required": false,
+       "type": "string"
+      },
+      {
+       "id": 23,
+       "name": "s_http_request_method",
+       "required": false,
+       "type": "string"
+      },
+      {
+       "id": 24,
+       "name": "s_http_response_status_code",
+       "required": false,
+       "type": "long"
+      },
+      {
+       "id": 25,
+       "name": "s_http_route",
+       "required": false,
+       "type": "string"
+      },
+      {
+       "id": 26,
+       "name": "s_db_system_name",
+       "required": false,
+       "type": "string"
+      },
+      {
+       "id": 27,
+       "name": "s_rpc_service",
+       "required": false,
+       "type": "string"
+      },
+      {
+       "id": 28,
+       "name": "s_error_type",
+       "required": false,
+       "type": "string"
+      },
+      {
+       "id": 29,
+       "name": "resource_attrs_str",
+       "required": false,
+       "type": {
+        "type": "map",
+        "key-id": 46,
+        "key": "string",
+        "value-id": 47,
+        "value-required": true,
+        "value": "string"
+       }
+      },
+      {
+       "id": 30,
+       "name": "resource_attrs_int",
+       "required": false,
+       "type": {
+        "type": "map",
+        "key-id": 48,
+        "key": "string",
+        "value-id": 49,
+        "value-required": true,
+        "value": "long"
+       }
+      },
+      {
+       "id": 31,
+       "name": "resource_attrs_dbl",
+       "required": false,
+       "type": {
+        "type": "map",
+        "key-id": 50,
+        "key": "string",
+        "value-id": 51,
+        "value-required": true,
+        "value": "double"
+       }
+      },
+      {
+       "id": 32,
+       "name": "resource_attrs_bool",
+       "required": false,
+       "type": {
+        "type": "map",
+        "key-id": 52,
+        "key": "string",
+        "value-id": 53,
+        "value-required": true,
+        "value": "boolean"
+       }
+      },
+      {
+       "id": 33,
+       "name": "resource_attrs_other",
+       "required": false,
+       "type": "string"
+      },
+      {
+       "id": 34,
+       "name": "span_attrs_str",
+       "required": false,
+       "type": {
+        "type": "map",
+        "key-id": 54,
+        "key": "string",
+        "value-id": 55,
+        "value-required": true,
+        "value": "string"
+       }
+      },
+      {
+       "id": 35,
+       "name": "span_attrs_int",
+       "required": false,
+       "type": {
+        "type": "map",
+        "key-id": 56,
+        "key": "string",
+        "value-id": 57,
+        "value-required": true,
+        "value": "long"
+       }
+      },
+      {
+       "id": 36,
+       "name": "span_attrs_dbl",
+       "required": false,
+       "type": {
+        "type": "map",
+        "key-id": 58,
+        "key": "string",
+        "value-id": 59,
+        "value-required": true,
+        "value": "double"
+       }
+      },
+      {
+       "id": 37,
+       "name": "span_attrs_bool",
+       "required": false,
+       "type": {
+        "type": "map",
+        "key-id": 60,
+        "key": "string",
+        "value-id": 61,
+        "value-required": true,
+        "value": "boolean"
+       }
+      },
+      {
+       "id": 38,
+       "name": "span_attrs_other",
+       "required": false,
+       "type": "string"
+      },
+      {
+       "id": 39,
+       "name": "scope_attrs",
+       "required": false,
+       "type": "string"
+      },
+      {
+       "id": 40,
+       "name": "events",
+       "required": false,
+       "type": {
+        "type": "list",
+        "element-id": 62,
+        "element-required": true,
+        "element": {
+         "type": "struct",
+         "fields": [
+          {
+           "id": 63,
+           "name": "time_unix_nano",
+           "required": true,
+           "type": "long"
+          },
+          {
+           "id": 64,
+           "name": "name",
+           "required": true,
+           "type": "string"
+          },
+          {
+           "id": 65,
+           "name": "attrs",
+           "required": true,
+           "type": "string"
+          }
+         ]
+        }
+       }
+      },
+      {
+       "id": 41,
+       "name": "links",
+       "required": false,
+       "type": {
+        "type": "list",
+        "element-id": 66,
+        "element-required": true,
+        "element": {
+         "type": "struct",
+         "fields": [
+          {
+           "id": 67,
+           "name": "trace_id",
+           "required": true,
+           "type": "fixed[16]"
+          },
+          {
+           "id": 68,
+           "name": "span_id",
+           "required": true,
+           "type": "fixed[8]"
+          },
+          {
+           "id": 69,
+           "name": "trace_state",
+           "required": true,
+           "type": "string"
+          },
+          {
+           "id": 70,
+           "name": "attrs",
+           "required": true,
+           "type": "string"
+          }
+         ]
+        }
+       }
+      },
+      {
+       "id": 42,
+       "name": "dropped_attributes_count",
+       "required": false,
+       "type": "int"
+      },
+      {
+       "id": 43,
+       "name": "dropped_events_count",
+       "required": false,
+       "type": "int"
+      },
+      {
+       "id": 44,
+       "name": "dropped_links_count",
+       "required": false,
+       "type": "int"
+      }
+     ]
+    }
+   ],
+   "default-spec-id": 0,
+   "partition-specs": [
+    {
+     "spec-id": 0,
+     "fields": [
+      {
+       "name": "tenant",
+       "transform": "identity",
+       "source-id": 45,
+       "field-id": 1000
+      },
+      {
+       "name": "start_time_hour",
+       "transform": "hour",
+       "source-id": 9,
+       "field-id": 1001
+      }
+     ]
+    }
+   ],
+   "last-partition-id": 1001,
+   "default-sort-order-id": 1,
+   "sort-orders": [
+    {
+     "order-id": 0,
+     "fields": []
+    },
+    {
+     "order-id": 1,
+     "fields": [
+      {
+       "transform": "identity",
+       "source-id": 10,
+       "direction": "asc",
+       "null-order": "nulls-first"
+      },
+      {
+       "transform": "identity",
+       "source-id": 11,
+       "direction": "asc",
+       "null-order": "nulls-first"
+      },
+      {
+       "transform": "identity",
+       "source-id": 6,
+       "direction": "asc",
+       "null-order": "nulls-first"
+      },
+      {
+       "transform": "identity",
+       "source-id": 1,
+       "direction": "asc",
+       "null-order": "nulls-first"
+      },
+      {
+       "transform": "identity",
+       "source-id": 2,
+       "direction": "asc",
+       "null-order": "nulls-first"
+      }
+     ]
+    }
+   ],
+   "properties": {
+    "schema.name-mapping.default": "[{\"field-id\":1,\"names\":[\"trace_id\"]},{\"field-id\":2,\"names\":[\"span_id\"]},{\"field-id\":3,\"names\":[\"parent_span_id\"]},{\"field-id\":4,\"names\":[\"trace_state\"]},{\"field-id\":5,\"names\":[\"flags\"]},{\"field-id\":6,\"names\":[\"start_unix_nano\"]},{\"field-id\":7,\"names\":[\"end_unix_nano\"]},{\"field-id\":8,\"names\":[\"duration_nano\"]},{\"field-id\":9,\"names\":[\"start_time\"]},{\"field-id\":10,\"names\":[\"service_name\"]},{\"field-id\":11,\"names\":[\"span_name\"]},{\"field-id\":12,\"names\":[\"span_kind\"]},{\"field-id\":13,\"names\":[\"status_code\"]},{\"field-id\":14,\"names\":[\"status_message\"]},{\"field-id\":15,\"names\":[\"scope_name\"]},{\"field-id\":16,\"names\":[\"scope_version\"]},{\"field-id\":17,\"names\":[\"resource_fp\"]},{\"field-id\":18,\"names\":[\"r_service_namespace\"]},{\"field-id\":19,\"names\":[\"r_deployment_environment\"]},{\"field-id\":20,\"names\":[\"r_k8s_namespace_name\"]},{\"field-id\":21,\"names\":[\"r_k8s_pod_name\"]},{\"field-id\":22,\"names\":[\"r_cloud_region\"]},{\"field-id\":23,\"names\":[\"s_http_request_method\"]},{\"field-id\":24,\"names\":[\"s_http_response_status_code\"]},{\"field-id\":25,\"names\":[\"s_http_route\"]},{\"field-id\":26,\"names\":[\"s_db_system_name\"]},{\"field-id\":27,\"names\":[\"s_rpc_service\"]},{\"field-id\":28,\"names\":[\"s_error_type\"]},{\"field-id\":29,\"names\":[\"resource_attrs_str\"],\"fields\":[{\"field-id\":46,\"names\":[\"key\"]},{\"field-id\":47,\"names\":[\"value\"]}]},{\"field-id\":30,\"names\":[\"resource_attrs_int\"],\"fields\":[{\"field-id\":48,\"names\":[\"key\"]},{\"field-id\":49,\"names\":[\"value\"]}]},{\"field-id\":31,\"names\":[\"resource_attrs_dbl\"],\"fields\":[{\"field-id\":50,\"names\":[\"key\"]},{\"field-id\":51,\"names\":[\"value\"]}]},{\"field-id\":32,\"names\":[\"resource_attrs_bool\"],\"fields\":[{\"field-id\":52,\"names\":[\"key\"]},{\"field-id\":53,\"names\":[\"value\"]}]},{\"field-id\":33,\"names\":[\"resource_attrs_other\"]},{\"field-id\":34,\"names\":[\"span_attrs_str\"],\"fields\":[{\"field-id\":54,\"names\":[\"key\"]},{\"field-id\":55,\"names\":[\"value\"]}]},{\"field-id\":35,\"names\":[\"span_attrs_int\"],\"fields\":[{\"field-id\":56,\"names\":[\"key\"]},{\"field-id\":57,\"names\":[\"value\"]}]},{\"field-id\":36,\"names\":[\"span_attrs_dbl\"],\"fields\":[{\"field-id\":58,\"names\":[\"key\"]},{\"field-id\":59,\"names\":[\"value\"]}]},{\"field-id\":37,\"names\":[\"span_attrs_bool\"],\"fields\":[{\"field-id\":60,\"names\":[\"key\"]},{\"field-id\":61,\"names\":[\"value\"]}]},{\"field-id\":38,\"names\":[\"span_attrs_other\"]},{\"field-id\":39,\"names\":[\"scope_attrs\"]},{\"field-id\":40,\"names\":[\"events\"],\"fields\":[{\"field-id\":62,\"names\":[\"element\"],\"fields\":[{\"field-id\":63,\"names\":[\"time_unix_nano\"]},{\"field-id\":64,\"names\":[\"name\"]},{\"field-id\":65,\"names\":[\"attrs\"]}]}]},{\"field-id\":41,\"names\":[\"links\"],\"fields\":[{\"field-id\":66,\"names\":[\"element\"],\"fields\":[{\"field-id\":67,\"names\":[\"trace_id\"]},{\"field-id\":68,\"names\":[\"span_id\"]},{\"field-id\":69,\"names\":[\"trace_state\"]},{\"field-id\":70,\"names\":[\"attrs\"]}]}]},{\"field-id\":42,\"names\":[\"dropped_attributes_count\"]},{\"field-id\":43,\"names\":[\"dropped_events_count\"]},{\"field-id\":44,\"names\":[\"dropped_links_count\"]}]",
+    "write.format.default": "parquet",
+    "gc.enabled": "false",
+    "viz.cell": "cell-0",
+    "viz.table": "spans",
+    "viz.format-version": "1"
+   },
+   "refs": {},
+   "snapshots": [],
+   "snapshot-log": [],
+   "metadata-log": []
+  },
+  "trace_index": {
+   "format-version": 2,
+   "table-uuid": "00000000-0000-4000-8000-000000000000",
+   "location": "s3://viz-lake/cell-0/iceberg/trace_index",
+   "last-sequence-number": 0,
+   "last-updated-ms": 1700000000000,
+   "last-column-id": 19,
+   "current-schema-id": 0,
+   "schemas": [
+    {
+     "type": "struct",
+     "schema-id": 0,
+     "fields": [
+      {
+       "id": 13,
+       "name": "tenant",
+       "required": false,
+       "type": "string",
+       "doc": "Tenant id. Not stored in the data files; read from the partition tuple."
+      },
+      {
+       "id": 14,
+       "name": "day",
+       "required": false,
+       "type": "date",
+       "doc": "UTC day of the fragments' first span start (min_start_unix_nano). Not stored in the data files; read from the partition tuple."
+      },
+      {
+       "id": 1,
+       "name": "trace_id",
+       "required": true,
+       "type": "fixed[16]"
+      },
+      {
+       "id": 2,
+       "name": "min_start_unix_nano",
+       "required": true,
+       "type": "long"
+      },
+      {
+       "id": 3,
+       "name": "max_end_unix_nano",
+       "required": true,
+       "type": "long"
+      },
+      {
+       "id": 4,
+       "name": "span_count",
+       "required": true,
+       "type": "int"
+      },
+      {
+       "id": 5,
+       "name": "error_count",
+       "required": true,
+       "type": "int"
+      },
+      {
+       "id": 6,
+       "name": "root_service_name",
+       "required": false,
+       "type": "string"
+      },
+      {
+       "id": 7,
+       "name": "root_span_name",
+       "required": false,
+       "type": "string"
+      },
+      {
+       "id": 8,
+       "name": "root_start_unix_nano",
+       "required": false,
+       "type": "long"
+      },
+      {
+       "id": 9,
+       "name": "root_span_id",
+       "required": false,
+       "type": "fixed[8]"
+      },
+      {
+       "id": 10,
+       "name": "services",
+       "required": true,
+       "type": {
+        "type": "list",
+        "element-id": 15,
+        "element-required": true,
+        "element": {
+         "type": "struct",
+         "fields": [
+          {
+           "id": 16,
+           "name": "name",
+           "required": true,
+           "type": "string"
+          },
+          {
+           "id": 17,
+           "name": "spans",
+           "required": true,
+           "type": "int"
+          },
+          {
+           "id": 18,
+           "name": "errors",
+           "required": true,
+           "type": "int"
+          }
+         ]
+        }
+       }
+      },
+      {
+       "id": 11,
+       "name": "services_truncated",
+       "required": true,
+       "type": "boolean"
+      },
+      {
+       "id": 12,
+       "name": "hours",
+       "required": true,
+       "type": {
+        "type": "list",
+        "element-id": 19,
+        "element-required": true,
+        "element": "int"
+       }
+      }
+     ]
+    }
+   ],
+   "default-spec-id": 0,
+   "partition-specs": [
+    {
+     "spec-id": 0,
+     "fields": [
+      {
+       "name": "tenant",
+       "transform": "identity",
+       "source-id": 13,
+       "field-id": 1000
+      },
+      {
+       "name": "day",
+       "transform": "identity",
+       "source-id": 14,
+       "field-id": 1001
+      }
+     ]
+    }
+   ],
+   "last-partition-id": 1001,
+   "default-sort-order-id": 1,
+   "sort-orders": [
+    {
+     "order-id": 0,
+     "fields": []
+    },
+    {
+     "order-id": 1,
+     "fields": [
+      {
+       "transform": "identity",
+       "source-id": 1,
+       "direction": "asc",
+       "null-order": "nulls-first"
+      }
+     ]
+    }
+   ],
+   "properties": {
+    "schema.name-mapping.default": "[{\"field-id\":1,\"names\":[\"trace_id\"]},{\"field-id\":2,\"names\":[\"min_start_unix_nano\"]},{\"field-id\":3,\"names\":[\"max_end_unix_nano\"]},{\"field-id\":4,\"names\":[\"span_count\"]},{\"field-id\":5,\"names\":[\"error_count\"]},{\"field-id\":6,\"names\":[\"root_service_name\"]},{\"field-id\":7,\"names\":[\"root_span_name\"]},{\"field-id\":8,\"names\":[\"root_start_unix_nano\"]},{\"field-id\":9,\"names\":[\"root_span_id\"]},{\"field-id\":10,\"names\":[\"services\"],\"fields\":[{\"field-id\":15,\"names\":[\"element\"],\"fields\":[{\"field-id\":16,\"names\":[\"name\"]},{\"field-id\":17,\"names\":[\"spans\"]},{\"field-id\":18,\"names\":[\"errors\"]}]}]},{\"field-id\":11,\"names\":[\"services_truncated\"]},{\"field-id\":12,\"names\":[\"hours\"],\"fields\":[{\"field-id\":19,\"names\":[\"element\"]}]}]",
+    "write.format.default": "parquet",
+    "gc.enabled": "false",
+    "viz.cell": "cell-0",
+    "viz.table": "trace_index",
+    "viz.format-version": "1"
+   },
+   "refs": {},
+   "snapshots": [],
+   "snapshot-log": [],
+   "metadata-log": []
+  },
+  "logs": {
+   "format-version": 2,
+   "table-uuid": "00000000-0000-4000-8000-000000000000",
+   "location": "s3://viz-lake/cell-0/iceberg/logs",
+   "last-sequence-number": 0,
+   "last-updated-ms": 1700000000000,
+   "last-column-id": 16,
+   "current-schema-id": 0,
+   "schemas": [
+    {
+     "type": "struct",
+     "schema-id": 0,
+     "fields": [
+      {
+       "id": 13,
+       "name": "tenant",
+       "required": false,
+       "type": "string",
+       "doc": "Tenant id. Not stored in the data files; read from the partition tuple."
+      },
+      {
+       "id": 14,
+       "name": "day",
+       "required": false,
+       "type": "date",
+       "doc": "UTC day of `ts`. Not stored in the data files; read from the partition tuple."
+      },
+      {
+       "id": 1,
+       "name": "service_name",
+       "required": true,
+       "type": "string"
+      },
+      {
+       "id": 2,
+       "name": "stream_id",
+       "required": true,
+       "type": "long"
+      },
+      {
+       "id": 3,
+       "name": "ts",
+       "required": true,
+       "type": "long"
+      },
+      {
+       "id": 4,
+       "name": "labels",
+       "required": true,
+       "type": "string"
+      },
+      {
+       "id": 5,
+       "name": "line",
+       "required": true,
+       "type": "string"
+      },
+      {
+       "id": 6,
+       "name": "metadata",
+       "required": true,
+       "type": {
+        "type": "map",
+        "key-id": 15,
+        "key": "string",
+        "value-id": 16,
+        "value-required": true,
+        "value": "string"
+       }
+      },
+      {
+       "id": 7,
+       "name": "observed_ts",
+       "required": false,
+       "type": "long"
+      },
+      {
+       "id": 8,
+       "name": "severity_number",
+       "required": false,
+       "type": "int"
+      },
+      {
+       "id": 9,
+       "name": "severity_text",
+       "required": false,
+       "type": "string"
+      },
+      {
+       "id": 10,
+       "name": "trace_id",
+       "required": false,
+       "type": "fixed[16]"
+      },
+      {
+       "id": 11,
+       "name": "span_id",
+       "required": false,
+       "type": "fixed[8]"
+      },
+      {
+       "id": 12,
+       "name": "flags",
+       "required": false,
+       "type": "int"
+      }
+     ]
+    }
+   ],
+   "default-spec-id": 0,
+   "partition-specs": [
+    {
+     "spec-id": 0,
+     "fields": [
+      {
+       "name": "tenant",
+       "transform": "identity",
+       "source-id": 13,
+       "field-id": 1000
+      },
+      {
+       "name": "day",
+       "transform": "identity",
+       "source-id": 14,
+       "field-id": 1001
+      }
+     ]
+    }
+   ],
+   "last-partition-id": 1001,
+   "default-sort-order-id": 1,
+   "sort-orders": [
+    {
+     "order-id": 0,
+     "fields": []
+    },
+    {
+     "order-id": 1,
+     "fields": [
+      {
+       "transform": "identity",
+       "source-id": 1,
+       "direction": "asc",
+       "null-order": "nulls-first"
+      },
+      {
+       "transform": "identity",
+       "source-id": 2,
+       "direction": "asc",
+       "null-order": "nulls-first"
+      },
+      {
+       "transform": "identity",
+       "source-id": 3,
+       "direction": "asc",
+       "null-order": "nulls-first"
+      },
+      {
+       "transform": "identity",
+       "source-id": 5,
+       "direction": "asc",
+       "null-order": "nulls-first"
+      }
+     ]
+    }
+   ],
+   "properties": {
+    "schema.name-mapping.default": "[{\"field-id\":1,\"names\":[\"service_name\"]},{\"field-id\":2,\"names\":[\"stream_id\"]},{\"field-id\":3,\"names\":[\"ts\"]},{\"field-id\":4,\"names\":[\"labels\"]},{\"field-id\":5,\"names\":[\"line\"]},{\"field-id\":6,\"names\":[\"metadata\"],\"fields\":[{\"field-id\":15,\"names\":[\"key\"]},{\"field-id\":16,\"names\":[\"value\"]}]},{\"field-id\":7,\"names\":[\"observed_ts\"]},{\"field-id\":8,\"names\":[\"severity_number\"]},{\"field-id\":9,\"names\":[\"severity_text\"]},{\"field-id\":10,\"names\":[\"trace_id\"]},{\"field-id\":11,\"names\":[\"span_id\"]},{\"field-id\":12,\"names\":[\"flags\"]}]",
+    "write.format.default": "parquet",
+    "gc.enabled": "false",
+    "viz.cell": "cell-0",
+    "viz.table": "logs",
+    "viz.format-version": "1"
+   },
+   "refs": {},
+   "snapshots": [],
+   "snapshot-log": [],
+   "metadata-log": []
+  }
+ }
+}

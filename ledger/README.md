@@ -16,6 +16,10 @@ authority on what is visible. It implements `LedgerRpc`, `LedgerAdminRpc` and
 | `test/checkpoint.test.ts` | 13 tests of checkpoints in parts (format 2) and the streaming rebuild: the state at the checkpoint's version whatever commits meanwhile, part boundaries, key order, a crash, lost answer or storage loss at every await of the checkpoint path, superseded checkpoints, tampered checkpoints, streaming, an untracked checkpoint, the release before reading this one's log and back, the format-2 golden |
 | `test/compat.test.ts` | 9 tests of versioned storage and the log formats (`contracts/COMPATIBILITY.md` §8), including that the release before opens this storage |
 | `test/tombstone.test.ts`, `test/precedence.test.ts` | 8 and 5 tests |
+| `test/registration.test.ts` | 5 tests of registration before writes (D61): `logged` and `loggedIncarnation`, and a rollback to the release before and back on the same storage (review B-1) |
+| `test/signals.test.ts` | 4 tests: the span and log tables (stage 2) and the backoff fix of `drain()` |
+| `test/review-inflight.test.ts` | The adversarial review of D47's P-4 test (mutations while a checkpoint part's PUT is in flight), copied from the reviewer |
+| `bench/prereg/` | The release before D61, frozen: run on the ledger's own storage by `test/registration.test.ts` (a rollback), and as the older ledger of `shard/`'s skew tests |
 | `bench/` | In workerd: the admission counterfactual against the frozen as-built ledger (`bench/asbuilt/`, `dc2a1c3`); checkpoints and rebuilds against the frozen release before checkpoints in parts (`bench/before/`, `44649de`; `checkpoint.bench.test.ts`, results in `bench/results/checkpoint.txt`); `rss.mjs` samples the processes' memory |
 
 Bindings: Durable Object `LEDGER`, R2 bucket `BUCKET`, variable `CELL` (default `cell-0`);
@@ -38,8 +42,45 @@ optional `LEDGER_DRAIN_DELAY_MS` (default 200) and `LEDGER_CHECKPOINT_EVERY` (de
 - **`registerStream`.** Idempotent for the same incarnation; a higher one replaces it,
   resets watermark and logged mark to 0 and returns the old one; a lower one is refused
   (an exception: the contract's return type has no refusal). A bad shard name throws.
+  **Answers `logged`** (D61; `RegisterResult`): true iff the committed incarnation is the one
+  asked about and its registration is in the logged prefix. Derived at call time, never
+  stored (review B-1): a logged unit of that incarnation proves it at once; otherwise the
+  outbox is read for a pending `register_stream` change naming it (`pendingRegistrations`:
+  one pass over the outbox, parsing only rows whose body holds `"kind":"register_stream"`).
+  Outbox rows leave only with the segment that holds them or with a new incarnation whose
+  base is in R2 first, and every release writes and drains the same outbox, so no rollback,
+  roll-forward or rebuild by any release can leave the answer stale. A fresh registration
+  answers `false`.
+- **`loggedWatermarks()` and `orphanCheck()` report `loggedIncarnation`** (D61;
+  `LoggedWatermark`): the committed incarnation if its registration is logged; else the one
+  registered before it if that registration is logged; else 0. Derived the same way, in the
+  same synchronous read; the outbox is read only when some stream's logged watermark is 0.
+  It is never above what the log holds, so the orphan sweep can count an older incarnation's
+  files dead on it (spec F16) without bringing F15 back.
+- **`logStatus()`** reports `registrationsPending` (registrations committed, not logged) and
+  `pendingSince` (when the oldest change still in the outbox was committed): the signal for a
+  ledger that cannot log while shards refuse its tenant's new streams (review m-1).
 - **`plan`.** Files of one table overlapping the range, in ascending precedence, with every
   watermark, the ledger incarnation and the version, read with no `await` in between.
+- **The span and log tables** (stage 2 of traces and logs, 2026-11-19; `contracts/ledger.ts`
+  `LedgerTable`). `spans`, `trace_index` and `logs` files are admitted, planned, replaced,
+  expired, tombstoned, logged, checkpointed and rebuilt exactly as metric files: nothing in the
+  storage or the log format changed, only the set of table names `fileProblem`, `plan` and
+  `expire` accept (`TABLES`), and the start-over-data check lists every table's prefix. Their
+  `minTs`/`maxTs` are milliseconds (the floor of the files' nanosecond bounds), so plans and
+  precedence work unchanged. Every key must lie directly under its tenant, table and day; a
+  `spans` key one level deeper, under `hour={HH}/`, where HH is the hour of `day` that the file's
+  `[minTs, maxTs]` lies in (`invalid` otherwise: no hour level, another hour, times across two
+  hours or outside the day). `expire({ tables: ['spans', 'trace_index'] })` removes a flush
+  unit's two tables in one change, each file by its own day. A ledger of the release before
+  replays such changes (its rebuild does not check table names) and answers `unknown table` to
+  a plan or expiry naming them.
+- **`drain()` ends the backoff** (2026-11-19): a drain asked for that succeeds clears the
+  failure count and the retry time, as one by the alarm or a commit always did, so the next
+  commits are logged at the usual delay instead of when the old backoff would have run out.
+  Before, a successful `drain()` left the backoff of earlier failures in place
+  (`stack/README.md`, "Known risks", which relied on it to force its regression test's timing;
+  that test now forces the backoff without an explicit drain).
 - **`replace`.** Swaps iff every input is live; otherwise `conflict` with the missing keys
   (or `blocking` keys, below). A retried swap that already happened is `ok`.
 - **`expire`.** `{ table }` or `{ tables }` (review R-5, a contract change): every named
@@ -86,13 +127,15 @@ optional `LEDGER_DRAIN_DELAY_MS` (default 200) and `LEDGER_CHECKPOINT_EVERY` (de
   base would hold it (each live file's key and index fragment plus 448 bytes, calibrated
   against checkpoints written), kept with every mutation and recomputed exactly at every start
   and every one-object checkpoint. `addUnit` answers `full` (`{ status, stateBytes,
-  limitBytes }`, nothing changed, retryable) once it would pass 300 MiB (`STATE_MAX_BYTES`,
-  `LEDGER_STATE_MAX_BYTES`), about 300,000 S4-shaped files, the largest state measured.
-  Memory no longer sets it (nothing holds the state); a rebuild's duration does (below).
-  **Production sets 16 MiB for this release** (`LEDGER_STATE_MAX_BYTES=16777216` in
-  `stack/wrangler.jsonc`; review of D47, D48 and D55, P-2 and P-3): the release before cannot
-  hold or checkpoint a larger state, so a rollback must not meet one, and a rebuild above
-  16 MiB has not been measured within a Durable Object's CPU limit on Cloudflare (Known risks).
+  limitBytes }`, nothing changed, retryable) once it would pass the cap: **16 MiB by default**
+  (`STATE_MAX_BYTES`, the cap of the releases before D47; `LEDGER_STATE_MAX_BYTES` sets
+  another), pinned there by the review of D47/D48/D55 (P-2: a rollback to the release before
+  cannot hold or checkpoint a larger state; P-3: a rebuild and a first publication above 16 MiB
+  are not measured within a Durable Object's CPU limit on Cloudflare). The code itself handles
+  300 MiB (`STATE_MEASURED_MAX_BYTES`, about 300,000 S4-shaped files, the largest state
+  measured): memory no longer sets the bound (nothing holds the state); a rebuild's duration
+  does (below). A release lifts the default only once its rollback floor has D47 and D55 and
+  those two times are measured on Cloudflare.
   `replace` and `expire` are never refused, so compaction and retention make room.
 - **`loggedWatermarks`.** Per stream, the watermark as of the last change in a written
   segment. Shards may discard only up to it.
@@ -224,24 +267,63 @@ files is modelled at 20–60 s on Cloudflare (20 s here; R2 reads of 272 parts f
 
 ## How it was verified
 
+**Stage 2 and the review items (2026-11-19).** `npx vitest run --maxWorkers=2`: see the last
+run below; `tsc --noEmit` clean, the frozen copies in `bench/` changed by type annotations only
+(`contracts/ledger.ts`'s `Table` is now the metric pair, `LedgerTable` every table).
+`test/signals.test.ts` (4): a unit of a traces stream (two `spans` files of two hours and a
+`trace_index` file) and one of a logs stream beside a metric unit: plans by millisecond ranges
+at the hour's edges, every stream's watermark, the log's `add_unit` changes naming their tables,
+and a rebuild from the log equal to the state before; twelve unacceptable keys `invalid`, the
+stream not registered by them (no hour level, another hour, hour 24, times across two hours or
+on another day, a level below the hour, another tenant's spans, trace_index and logs, a logs file
+under another table's prefix, a trace_index key with an hour, an unknown table); retention of
+spans with trace_index in one change and logs in another, by day, with tombstones of every table
+and `removedFiles` in the log; `drain()` after four failed drains: the next commit's alarm is at
+the usual delay and the background drain logs it within 2 s. `test/segments.test.ts` gained
+"the cap is 16 MiB unless LEDGER_STATE_MAX_BYTES says otherwise". `test/review-inflight.test.ts`
+is the reviewer's P-4 test, copied unchanged. **Last run (2026-11-19): 120 passed, 0 failed**
+(9 files); `tsc --noEmit` clean.
+
 ```
 npm install
-npx vitest run --maxWorkers=2     # 110 tests in workerd, 7 files
+npx vitest run --maxWorkers=2     # 106 tests in workerd, 7 files
 npx tsc --noEmit                  # clean
 node scripts/mutants.mjs          # on a copy outside the git checkout (see the script)
 npm run bench                     # the workerd counterfactuals (bench/)
 BENCH=checkpoint BENCH_SIZES=100000 BENCH_VARIANTS=after node bench/rss.mjs -- npm run bench
 ```
 
-Last run, 2026-11-19, with the review's test for P-4 (`test/review-inflight.test.ts`, 9 tests;
-one type guard rewritten from the reviewer's copy): **110 passed, 0 failed**; `tsc --noEmit`
-clean. The test pauses the first, second or third part PUT of a checkpoint inside the object,
-commits a `replace`, an `addUnit` and an `expire` while it is paused, then lets the PUT fail,
-lose its answer, or succeed; the parts must hold exactly the files at the checkpoint's version,
-and a rebuild from them must equal the live ledger.
+Last run, 2026-11-19 (D61) on the shared machine (load average about 6): **106 passed, 0
+failed**; `tsc --noEmit` clean. `test/registration.test.ts` (5):
 
-Before that, 2026-11-19 on the shared machine (load average 6 to 10): **100 passed, 0 failed**;
-`tsc --noEmit` clean. `publisher/`'s suite, which pins the bytes of every log object a small
+- **spec test 4**: `registerStream` answers `logged: false` at the commit, still false while the
+  segment's PUT fails and while its answer is lost after the write (the segment is in R2, its
+  rows still in the outbox: low is the safe side), true once a drain removes the rows; the same
+  after every eviction; `loggedIncarnation` moves only there (0 for a stream with no earlier
+  incarnation, the previous incarnation while a new one is pending, 0 when two are pending, the
+  new one once logged, without any unit of it); the lazy path (a first unit registers its
+  stream) likewise; after a rebuild every stream left is logged and a registration that was only
+  committed is gone.
+- **review B-1**: release N+1 registers and logs a stream; **rollback** to the release before
+  D61 (`bench/prereg/ledger.ts`, constructed on the SAME storage inside the object) which takes
+  a new stream lazily by its first unit, registers another, re-registers one, and drains;
+  **roll-forward**: each answers `logged: true` and `loggedIncarnation` equals its incarnation.
+  One the old release committed but did not drain is pending, then logged by this release's
+  drain. The old release then rebuilds the ledger from R2 (this release kept from starting):
+  every stream answers `logged: true` afterwards. Mutant "logged from a stored flag" (a flag
+  this release sets in its drain and its rebuild, the plan before the review): killed by this
+  test.
+
+The test count before D61 was 101 (the two answers that gained a field were updated:
+`ledger.test.ts` "performs the storage-loss handshake", `tombstone.test.ts` "orphanCheck …").
+
+**The outbox read's cost, by reading** (not measured): one pass over the outbox per
+`registerStream` of a stream with no logged unit, and per `loggedWatermarks`/`orphanCheck`
+when some stream has none. The outbox holds one drain cycle of rows (about 0.2–1 s of
+changes); only while the drain is stuck does it grow, and then every flush's
+`loggedWatermarks` reads it. A nullable `kind` column that older code leaves NULL would index
+it; not added, because nothing showed the cost and a new column was what the review warned
+about. `publisher/`'s suite, which pins the bytes of every log object a small
 scenario writes through this `Ledger`, passed against it (78 passed); `tsc --noEmit` is clean in
 edge, flush, query, stack, compact, janitor and publisher, which import this code. `stack/`'s
 soak on this code (`SOAK_STEPS=3000 npx vitest run --maxWorkers=1 test/soak.test.ts`, seed
@@ -314,9 +396,32 @@ because the rebuilt ledger lists that file again. `test/tombstone.test.ts` (7 te
 
 ## Mutation checks
 
+**Run of 2026-11-19, stage 2 of traces and logs and the drain fix**, each on a scratch copy of
+the tree (never this checkout), against `test/signals.test.ts`, **3 of 3 killed**:
+
+| Mutant | Killed by |
+|---|---|
+| a new table not tenant-scoped: the key prefix of `spans`, `trace_index` and `logs` files takes the tenant from the key instead of the ledger's own | "a spans key lies under the hour its times lie in; every key under the tenant, table and day; otherwise `invalid`" (another tenant's spans, trace_index and logs files admitted) |
+| a spans key accepted under whatever hour its key names | the same test (another hour, hour 24) |
+| `drain()` does not clear the backoff | "after failed drains and a healed log, an explicit drain lets the next commit be logged at the usual delay" (the commit's alarm stays at the old backoff's end) |
+
 `node scripts/mutants.mjs` on a copy of `contracts/` and `ledger/` in a scratch directory
 (the script refuses to run in the git checkout: AGENTS.md); each mutant against the test files
 named in the script, the source restored after each.
+
+**Run of 2026-11-19, registration before writes (D61)**, on a copy of `contracts/`, `ledger/`,
+`shard/`, `flush/`, `janitor/`, `compact/`, `publisher/` and `engine/wasm/` (the first three
+are also in `scripts/mutants.mjs` as `D61:`), **4 of 4 killed**:
+
+| Mutant | Killed by |
+|---|---|
+| logged from a stored flag (set by this release's drain and rebuild only: the plan before review B-1) | `registration.test.ts` "review B-1" |
+| logged at the commit | `registration.test.ts` spec test 4 (two tests); `shard/` spec test 1, m-1 |
+| `loggedIncarnation` is the committed incarnation | `registration.test.ts` spec test 4; `janitor/` "spec F16", "spec F15, adapted" |
+| the outbox is not read (a pending registration reads as logged) | `registration.test.ts` spec test 4 (two tests) |
+
+Re-checked with them: "loggedWatermarks returns the committed watermark" (its pattern updated
+for the new read), killed.
 
 **Run 1** (2026-11-19, the code before the segment-log review's fixes): **32 of 33 killed.**
 The sixteen contracts-v2 mutants (patterns updated for the code as it now reads), and the
@@ -370,12 +475,6 @@ manifests": a rebuild always reads the newest complete checkpoint first, so the 
 only if that one later becomes unreadable; it is defensive, right by reading, and no test can
 tell.
 
-**The review's mutant** (2026-11-19, review of D47, D48 and D55, P-4; run by the reviewer on a
-scratch copy, not through `scripts/mutants.mjs`): "no pre-images while a part PUT is in flight"
-(an in-memory busy flag that makes `tracking()` false around the PUT) **survived** all 13 tests
-of `checkpoint.test.ts`, which mutate only between parts. `test/review-inflight.test.ts`, now in
-the tree, kills it: 9 of 9 fail on the mutant.
-
 ## Not implemented
 
 - **A state larger than 300 MiB** (about 300,000 files). Nothing in the ledger holds the
@@ -389,12 +488,6 @@ the tree, kills it: 9 of 9 fail on the mutant.
   base in parts is not needed for memory, only, perhaps, for time.
 - **Pruning the log.** No segment or old incarnation is ever deleted from R2; superseded
   checkpoints are (LEDGER-LOG.md, "Truncation").
-- **Sweeping a checkpoint left unfinished by an older incarnation** (review of D47, D48 and D55,
-  P-6). `startIncarnation` deletes the `ckpt` row, and `deleteSuperseded` sweeps only the current
-  incarnation's prefix. A storage loss or a `restartFromSqlite` in the middle of a format-2
-  checkpoint therefore leaves its parts, up to the whole state, in the old incarnation's prefix
-  for good. The fix would sweep `ckpt-*-*/` of older incarnations once a newer incarnation's first
-  checkpoint is complete. LEDGER-LOG.md's "Truncation" does not mention this yet.
 - **Keeping rebuild progress.** A reset during a rebuild starts it again from the newest
   checkpoint (the rows it streamed into SQLite are emptied first).
 - **Faster rebuilds.** Half of a rebuild is writing the new base in two passes; a rebuild could
@@ -403,78 +496,40 @@ the tree, kills it: 9 of 9 fail on the mutant.
   recorded as a `register_stream` change with `previousIncarnation`; nothing is raised).
 - **Paging `plan`**, and plans that reference consolidated partition indexes instead of
   carrying every index fragment (S4: 5.8 MB at 7,000 files).
-- **Registration before the first write** (spec F1); see the F6 risk below.
+- **Registration before writes** is built (D61); see `shard/README.md`. Not built here: the
+  stream retirement change the review asks for (m-3: a ledger never drops a stream; a new
+  `LedgerChange` kind is a log format change, readers first), and the long-poll it suggests
+  (a `registerStream` that answers once logged; the shard's backoff makes it unnecessary).
 
 ## Known risks
 
-- **F6, liveness after a shard's storage loss.** A shard that lost its storage starts a
-  new incarnation, but the ledger hears of it only when flush registers it at that
-  incarnation's first flush. Until then a query names the old incarnation and the shard
-  answers `incarnation_mismatch`; a shard that gets no new writes is never flushed, so the
-  refusal lasts indefinitely. Closing it needs registration before writes (spec F1): the
-  shard registers its new incarnation with each tenant's ledger before acknowledging the
-  first append of the stream, the ledger records it, flush stops being the registrar, and
-  query treats a registered incarnation with watermark 0 as empty. That touches shard,
-  ledger, flush and query; it is described here, not built.
-- **The state limit is set by time measured here, not on Cloudflare.** 300 MiB of estimated
-  state (about 300,000 files) is the largest measured: memory stayed flat, a rebuild took
-  20 s. On Cloudflare a rebuild of that size is modelled at 20–60 s, during which every
+- **F6, liveness after a shard's storage loss: closed by D61** (`shard/README.md`): a read
+  naming the lost incarnation makes the shard start and register a fresh one, which the next
+  plan names. F6(b) is closed only where shards run in mode `logged` (release B).
+- **A ledger that cannot log refuses its tenant's new streams** (D61, shards in mode
+  `logged`): until the drain works again, plus its backoff (up to 60 s). `logStatus` shows
+  `registrationsPending` and `pendingSince`; nothing pages on them yet.
+- **The state limit is set by time measured here, not on Cloudflare.** The default cap is
+  16 MiB (above); 300 MiB of estimated state (about 300,000 files) is the largest measured:
+  memory stayed flat, a rebuild took 20 s. On Cloudflare a rebuild of that size is modelled at 20–60 s, during which every
   request of the tenant is refused (retryably); the CPU a start may use there is not
   measured. A tenant that reaches the limit gets `full` until compaction or retention make
   room; flush treats `full` as an answer it does not know and retries (fail closed), so its
   shards fill and its senders get 429. Nothing alerts on it except the error log and
-  `logStatus`. **Production keeps 16 MiB for this release** (above; review P-2 and P-3) until two
-  experiments are run on Cloudflare: S4's ledger at 300,000 files, a storage loss and a rebuild
-  with CPU time read from the analytics API, and the publisher's first publication of the same
-  tenant (or `limits.cpu_ms` set and then measured). A rebuild keeps no progress, so one that
-  exceeds the CPU limit would be refused for good after a storage loss.
+  `logStatus`.
 - **A publisher re-base at the limit is slow, not large** (since 2026-11-19; until then the
-  publisher read a new incarnation's base whole, which is why production first set
-  `LEDGER_STATE_MAX_BYTES` to 16 MiB). The publisher now re-bases from the newest checkpoint
-  (parts read in order, a few at a time) or the base, streamed into SQLite: at 300,000 files it
-  completed with V8's heap capped below the isolate's 128 MB, measured in workerd
-  (`publisher/README.md`, "Re-base in bounded memory"). Production still keeps 16 MiB for this
-  release, for the rollback and CPU reasons above. What is left is time: a
+  publisher read a new incarnation's base whole and production pinned `LEDGER_STATE_MAX_BYTES`
+  at 16 MiB). The publisher now re-bases from the newest checkpoint (parts read in order, a few
+  at a time) or the base, streamed into SQLite: at 300,000 files it completed with V8's heap
+  capped below the isolate's 128 MB, measured in workerd (`publisher/README.md`, "Re-base in
+  bounded memory"). What is left is time (why the cap is still 16 MiB, in the code and in
+  `stack/wrangler.jsonc`: review P-3): a
   re-base of 300,000 files took 8–17 s here and a first publication of them 27–38 s; on
   Cloudflare neither is measured, and the CPU an invocation may use there is the bound to check.
   `verify` (the scrubber, not on the publish path) still replays a tenant into memory.
-- **A rollback below this release with a state above 16 MiB** (review P-2). Production keeps
-  16 MiB in this release, so a rollback to the release before does not meet such a state. In
-  tests and benchmarks, and in the later release that lifts the limit, a rollback to the release
-  before meets more than the rebuild. It opens the storage (the schema change is additive), and:
-  - every `addUnit` of the tenant answers `full`, against its own 16 MiB default;
-  - its drain builds the whole state in memory at its next checkpoint (about 1.2 GB at 300 MiB,
-    extrapolated), so the log stops; shards keep their rows, so nothing is lost;
-  - its rebuild after a storage loss holds the state in memory, so the tenant is stuck, not lost.
-
-  `contracts/LEDGER-LOG.md` ("Versions") mentions only the rebuild. The release that lifts the
-  limit must have this release as its rollback floor, and its record must say what a rollback
-  below it does (Needed changes elsewhere, deploy).
-- **A format-2 checkpoint's tombstones are as of when each part is built, not at its version**
-  (review P-5). Pre-images cover `file` only. Meanwhile `forget` (the janitor) deletes tombstone
-  rows, and `bury` (`INSERT OR REPLACE`) can move a re-removed key above the version, which needs
-  a caller bug. So a checkpoint can lack tombstones that existed at its version. It is harmless
-  today: a forgotten tombstone's object was already deleted with the publisher's consent. But
-  `contracts/LEDGER-LOG.md` and `checkpoint.test.ts` claim exactly the state at its version, and
-  the test passes only because no janitor runs during it. The fix is either contract text
-  ("tombstones as of when the part was written") or a pre-image in `forget` while a checkpoint
-  runs; neither is made.
-- **A rebuild passes over the newest checkpoint on any error** (review P-7). `replaySegments`
-  catches every exception from `loadCheckpoint`, including a transient failed GET of one part,
-  and falls back to an older checkpoint or the base. At 300 MiB that turns a rebuild from parts
-  into one from a 250 MB base line, the slow path, while the tenant is refused. Only a contract
-  violation (`LogFault`) should pass over; a failed read should retry the start, as the start's
-  5 s retry already does. After such a failure the parts read ahead keep their connections while
-  the base's GET starts, briefly more than six in flight; the runtime queues the excess
-  (training knowledge), so it is not a correctness issue.
-- **Checkpoints come later than the policy says after a format-2 checkpoint** (review N-1).
-  Completing one resets `segs_since_ckpt` and `log_bytes_since_ckpt` to 0, forgetting the
-  segments written after its version while its parts were written. The cost bound still holds.
-- **Part budgets count UTF-16 code units, not bytes** (review N-2). The contract says parts of
-  at most 1 MiB; a part of non-ASCII keys or fragments can be up to three times that.
-- **The `drain()` admin RPC writes a whole checkpoint in one call** (review N-5): it passes
-  unbounded part counts, about 272 PUTs at 300 MiB (46–109 s, modelled). No production caller
-  uses it.
+- **A rollback below this release with a state above 16 MiB** opens (the schema change is
+  additive) but its rebuild holds the state in memory; such a tenant is stuck, not lost, after a
+  storage loss in the rollback window.
 - **Pre-images cost row writes.** While a checkpoint in parts reads files (seconds to minutes),
   each file a mutation adds or removes ahead of its cursor writes a `ckpt_pre` row, deleted
   when the checkpoint completes: about two more row writes per such file. Not measured on
@@ -505,21 +560,19 @@ the tree, kills it: 9 of 9 fail on the mutant.
   flush's engineer (`flush/src/flush.ts` `writeSegment`); the shard side is in `shard/`.
 - **publisher**: read segments and the first layout. Done by the publisher's engineer
   (`publisher/src/log.ts`, `design/UPGRADES.md` §7 item 2).
-- **shard, flush, query**: registration before writes, for F6 (above). F6(b) (a tail read
-  for incarnation 0 answered `ok` and empty under lazy registration) is open, documented.
+- **Registration before writes** (D61): edge's mapping of `registering` to 503 and the release
+  that turns the shards' mode to `logged`: `shard/README.md`, "Needed changes elsewhere".
+  Nothing else in this component needs another release: `logged` and `loggedIncarnation` are
+  additive answers, and the schema did not change (the release before opens this storage and
+  may be rolled back to).
 - **deploy**: put `schemaRelease(LEDGER_SCHEMA)` (now latest 3, compat 2) in the release
   record and refuse a rollback below compat (COMPATIBILITY.md §6; `deploy/` "Needed changes"
-  7). `LEDGER_STATE_MAX_BYTES` on `viz-ingest`'s ledger stays at 16 MiB in this release
-  (`stack/wrangler.jsonc`; review of D47, D48 and D55, P-2 and P-3). The release that lifts it:
-  - must have this release as its rollback floor;
-  - comes once a rebuild and a first publication above 16 MiB are measured within the CPU limit
-    on Cloudflare (Known risks);
-  - needs a release record that says what a rollback below it does to a tenant above 16 MiB.
-    Either the record marks it forward-only for such tenants (COMPATIBILITY.md §6), or it carries
-    the state limit and the rollback check compares it.
-
-  viz-publisher with the streaming re-base must be deployed before, or with, that viz-ingest
-  (the reader first; the deploy order already puts viz-publisher before viz-ingest).
+  7). The state cap stays 16 MiB, both as the code's default (`STATE_MAX_BYTES`) and as
+  `LEDGER_STATE_MAX_BYTES` in viz-ingest's vars (`stack/wrangler.jsonc`, review P-2 and P-3).
+  The release that lifts it (to at most `STATE_MEASURED_MAX_BYTES`, 300 MiB) must have a
+  rollback floor with D47 and D55, deploy viz-publisher with the streaming re-base before or
+  with viz-ingest (the reader first; the deploy order already does), and come after a rebuild
+  and a first publication of such a state are measured within the CPU limit on Cloudflare.
 - **publisher**: re-base from a new incarnation's base without holding it. **Done** (2026-11-19,
   `publisher/src/log.ts`, `publisher/README.md` "Re-base in bounded memory"): the base is read
   with `readLedgerLogStream`, and where the incarnation has a checkpoint the re-base starts

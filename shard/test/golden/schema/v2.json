@@ -1,0 +1,45 @@
+{
+  "version": 2,
+  "schema": [
+    {
+      "type": "index",
+      "name": "batch_fp",
+      "sql": "CREATE UNIQUE INDEX batch_fp ON batch (tenant, fingerprint)"
+    },
+    {
+      "type": "table",
+      "name": "batch",
+      "sql": "CREATE TABLE batch ( tenant TEXT NOT NULL, seq INTEGER NOT NULL, fingerprint TEXT NOT NULL, rows INTEGER NOT NULL, bytes INTEGER NOT NULL, at INTEGER NOT NULL, payload BLOB, PRIMARY KEY (tenant, seq))"
+    },
+    {
+      "type": "table",
+      "name": "config",
+      "sql": "CREATE TABLE config (k TEXT PRIMARY KEY, v TEXT NOT NULL)"
+    },
+    {
+      "type": "table",
+      "name": "notify",
+      "sql": "CREATE TABLE notify (tenant TEXT PRIMARY KEY, due INTEGER NOT NULL)"
+    },
+    {
+      "type": "table",
+      "name": "segment",
+      "sql": "CREATE TABLE segment ( tenant TEXT NOT NULL, seq_lo INTEGER NOT NULL, seq_hi INTEGER NOT NULL, bytes INTEGER NOT NULL, rows INTEGER NOT NULL, recorded_at INTEGER, sealed_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (tenant, seq_lo))"
+    },
+    {
+      "type": "table",
+      "name": "series_window",
+      "sql": "CREATE TABLE series_window ( tenant TEXT NOT NULL, bucket INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (tenant, bucket))"
+    },
+    {
+      "type": "table",
+      "name": "stream",
+      "sql": "CREATE TABLE stream ( tenant TEXT PRIMARY KEY, incarnation INTEGER NOT NULL, epoch INTEGER NOT NULL, sealed_through INTEGER NOT NULL, recorded_through INTEGER NOT NULL, discarded_through INTEGER NOT NULL, registered INTEGER NOT NULL DEFAULT 0)"
+    },
+    {
+      "type": "table",
+      "name": "viz_schema",
+      "sql": "CREATE TABLE viz_schema (one INTEGER PRIMARY KEY CHECK (one = 1), component TEXT NOT NULL, version INTEGER NOT NULL, compat INTEGER NOT NULL, updated_at INTEGER NOT NULL)"
+    }
+  ]
+}

@@ -1,0 +1,164 @@
+{
+  "at": "2026-11-19T02:51:03.576Z",
+  "runs": [
+    {
+      "catalog": "r2-native",
+      "name": "contend_r2native_2_b",
+      "committers": 2,
+      "commits": 20,
+      "succeeded": 20,
+      "gaveUp": 0,
+      "rejected": 0,
+      "conflicts": 19,
+      "unknowns": 0,
+      "attemptsPerCommit": {
+        "n": 20,
+        "p50": 2,
+        "p90": 2,
+        "p99": 2,
+        "max": 2
+      },
+      "msToSuccess": {
+        "n": 20,
+        "p50": 3976,
+        "p90": 4168,
+        "p99": 4245,
+        "max": 4245
+      },
+      "commitRequestMs": {
+        "n": 39,
+        "p50": 484,
+        "p90": 606,
+        "p99": 660,
+        "max": 660
+      },
+      "statuses": {
+        "200": 20,
+        "412": 19
+      },
+      "wallMs": 40187,
+      "commitsPerSecond": 0.5,
+      "startedLateMs": [
+        0,
+        0
+      ],
+      "verify": {
+        "ok": true,
+        "problems": [],
+        "problemCount": 0,
+        "chain": 20,
+        "files": 20,
+        "rows": 2400
+      }
+    },
+    {
+      "catalog": "r2-native",
+      "name": "contend_r2native_4_b",
+      "committers": 4,
+      "commits": 40,
+      "succeeded": 40,
+      "gaveUp": 0,
+      "rejected": 0,
+      "conflicts": 89,
+      "unknowns": 0,
+      "attemptsPerCommit": {
+        "n": 40,
+        "p50": 3,
+        "p90": 3,
+        "p99": 21,
+        "max": 21
+      },
+      "msToSuccess": {
+        "n": 40,
+        "p50": 4927,
+        "p90": 6029,
+        "p99": 37496,
+        "max": 37496
+      },
+      "commitRequestMs": {
+        "n": 129,
+        "p50": 311,
+        "p90": 663,
+        "p99": 780,
+        "max": 887
+      },
+      "statuses": {
+        "200": 40,
+        "412": 89
+      },
+      "wallMs": 82628,
+      "commitsPerSecond": 0.48,
+      "startedLateMs": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "verify": {
+        "ok": true,
+        "problems": [],
+        "problemCount": 0,
+        "chain": 40,
+        "files": 40,
+        "rows": 4800
+      }
+    },
+    {
+      "catalog": "r2-native",
+      "name": "contend_r2native_8_b",
+      "committers": 8,
+      "commits": 80,
+      "succeeded": 78,
+      "gaveUp": 2,
+      "rejected": 0,
+      "conflicts": 388,
+      "unknowns": 32,
+      "attemptsPerCommit": {
+        "n": 80,
+        "p50": 3,
+        "p90": 11,
+        "p99": 50,
+        "max": 50
+      },
+      "msToSuccess": {
+        "n": 80,
+        "p50": 6838,
+        "p90": 19593,
+        "p99": 95425,
+        "max": 95425
+      },
+      "commitRequestMs": {
+        "n": 498,
+        "p50": 601,
+        "p90": 1269,
+        "p99": 1790,
+        "max": 2039
+      },
+      "statuses": {
+        "0": 32,
+        "200": 78,
+        "412": 388
+      },
+      "wallMs": 158222,
+      "commitsPerSecond": 0.49,
+      "startedLateMs": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "verify": {
+        "ok": true,
+        "problems": [],
+        "problemCount": 0,
+        "chain": 78,
+        "files": 78,
+        "rows": 9360
+      }
+    }
+  ]
+}

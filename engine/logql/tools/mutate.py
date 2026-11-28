@@ -87,6 +87,14 @@ MUTANTS = [
     (22, 'equal timestamps in a backward log query tie-broken by descending stream labels', 'src/eval.rs',
      'b.0.cmp(&a.0).then_with(|| keys[a.2].cmp(&keys[b.2])).then(b.1.cmp(&a.1))',
      'b.0.cmp(&a.0).then_with(|| keys[b.2].cmp(&keys[a.2])).then(b.1.cmp(&a.1))'),
+    # Group names Go accepts and the regex crate cannot hold (`(?P<1>…)`, a repeat; engine/goregex).
+    (31, 'regexp stage: a group name the regex crate cannot hold is a parse error, not Unsupported', 'src/parser.rs',
+     'crate::goregex::translate(&re, true)', 'crate::goregex::translate("", true)'),
+    (32, 'label_replace regex checked without names (such a name passes the parser)', 'src/parser.rs',
+     'crate::goregex::compile(&regex, crate::goregex::Wrap::Anchored, true,',
+     'crate::goregex::compile(&regex, crate::goregex::Wrap::Anchored, false,'),
+    (33, 'matchers keep group names (a name Go accepts is refused)', '../goregex/src/lib.rs',
+     'Ok(compile(p, Wrap::Anchored, false, &Limits::default())?)', 'Ok(compile(p, Wrap::Anchored, true, &Limits::default())?)'),
 ]
 
 

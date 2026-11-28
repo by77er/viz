@@ -119,6 +119,8 @@ function originAllowed(req: Request, env: Env): boolean {
 
 function authFailure(e: AuthError, mcp: boolean, cfg: ResourceConfig, presented: boolean): Response {
   const headers: Record<string, string> = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }
+  // A retryable refusal (429 `rate-limited`, D70) says when, in whole seconds (RFC 9110 §10.2.3; RFC 6585 §4).
+  if (e.retryAfterS !== undefined) headers['Retry-After'] = String(e.retryAfterS)
   // MCP "Authorization": a 401 from the MCP endpoint names the protected resource metadata and the scopes to start with.
   if (e.status === 401) headers['WWW-Authenticate'] = mcp ? challenge401(cfg, presented, e.code === 'invalid-token' ? e.message : undefined) : 'Bearer realm="viz", error="invalid_token"'
   const body = mcp

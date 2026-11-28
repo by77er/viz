@@ -222,7 +222,9 @@ export async function readPages(
       out.complete = false
       out.overBytes = typeof r.bytes === 'number' && r.bytes > 0 ? r.bytes : 1
       out.overSeq = typeof r.seq === 'number' ? r.seq : null
-      out.overLast = out.through !== null && r.seq === out.through
+      // The batch that did not fit is the last the read keeps: its bytes complete the read. A shard
+      // before the review of D72 sends no `last`: then only the tail's last batch is known to be.
+      out.overLast = typeof (r as { last?: unknown }).last === 'boolean' ? (r as { last: boolean }).last || r.seq === out.through : out.through !== null && r.seq === out.through
       out.resume = { cursor, page }
       return out
     }

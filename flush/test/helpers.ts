@@ -3,9 +3,8 @@ import { env } from 'cloudflare:workers'
 import type { Ledger } from '../../ledger/src/ledger'
 import type { Shard } from '../../shard/src/shard'
 import { type Row, bitsOf, encodeBatch } from '../../engine/wasm/test/vzb1'
-import type { Engine } from '../../contracts/engine'
-import type { LedgerChange } from '../../contracts/ledger'
-import { type FlushEnv, type FlushOptions, type FlushResult, flushTenant } from '../src/flush'
+import { type LedgerChange, TABLES } from '../../contracts/ledger'
+import { type FlushEngine, type FlushEnv, type FlushOptions, type FlushResult, flushTenant } from '../src/flush'
 import { engine } from '../src/index'
 import { readTenant } from './read'
 
@@ -107,7 +106,7 @@ export const read = (tenant: string, shards: string[], opts: Parameters<typeof r
  */
 export async function flushSettled(
   e: FlushEnv,
-  eng: Engine,
+  eng: FlushEngine,
   tenant: string,
   shardName: string,
   opts: FlushOptions = {},
@@ -199,13 +198,12 @@ export async function loggedChanges(tenant: string): Promise<LedgerChange[]> {
   return out.filter((c) => c.kind !== 'base').sort((a, b) => a.ledgerIncarnation - b.ledgerIncarnation || a.version - b.version)
 }
 
-/** Data objects of one tenant in R2, whatever the ledger says. */
+/** Data objects of one tenant in R2, whatever the ledger says: every table's (spans keys one level deeper). */
 export const dataKeys = async (tenant: string): Promise<string[]> =>
-  [...(await listKeys(`${env.CELL}/data/metric_samples/tenant=${tenant}/`)), ...(await listKeys(`${env.CELL}/data/metric_series/tenant=${tenant}/`))].sort()
+  (await Promise.all(TABLES.map((t) => listKeys(`${env.CELL}/data/${t}/tenant=${tenant}/`)))).flat().sort()
 
-/** Live files of both tables according to the ledger. */
+/** Live files of every table according to the ledger. */
 export async function liveKeys(l: DurableObjectStub<Ledger>): Promise<string[]> {
-  const a = await l.plan({ table: 'metric_samples', minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })
-  const b = await l.plan({ table: 'metric_series', minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })
-  return [...a.files, ...b.files].map((f) => f.key).sort()
+  const plans = await Promise.all(TABLES.map((table) => l.plan({ table, minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })))
+  return plans.flatMap((p) => p.files).map((f) => f.key).sort()
 }

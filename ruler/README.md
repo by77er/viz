@@ -1176,7 +1176,7 @@ npm test                # 419 tests in 24 files, in workerd, at most 2 workers (
 TEST_ANOMALY_STATE_WRITE=2 npx vitest run --maxWorkers=2   # the same 419 with every test Ruler object writing store.anomaly-state v2 (the next release's gate): all pass
 npx tsc --noEmit        # clean
 npm run independent     # capture, then Prometheus' own code (Go, tools/promcheck): 2 Go tests pass (not re-run in the anomaly change)
-npm run mutants         # 193 mutants (50 earlier + 9 for versioning + 22 for anomaly rules + 12 for the production wiring + 22 for SLO rules, warm-ups and backtests + 7 for streaming + 8 for CPU + 15 for the recorded-samples entrypoint + 12 for the anomaly defaults of D33 + 11 for planning what is fetched, ported from PR #3 + 5 for `over_budget` naming its budget + 12 for windowed state as ring blocks and its readers-first gate + 6 for the head's block list, review of D60 + 2 for the move test's wait), on a scratch copy; vitest runs with at most 2 workers
+npm run mutants         # 191 mutants (50 earlier + 9 for versioning + 22 for anomaly rules + 12 for the production wiring + 22 for SLO rules, warm-ups and backtests + 7 for streaming + 8 for CPU + 15 for the recorded-samples entrypoint + 12 for the anomaly defaults of D33 + 11 for planning what is fetched, ported from PR #3 + 5 for `over_budget` naming its budget + 12 for windowed state as ring blocks and its readers-first gate + 6 for the head's block list, review of D60 + 2 for the move test's wait), on a scratch copy; vitest runs with at most 2 workers
 node --experimental-strip-types tools/anomaly-default/nab-window.ts   # held-out NAB at windows 1,000 and 1,500 (about 1 minute; needs anomaly/bench/fetch-nab.sh)
 VIZ_SCRATCH=<scratch> bash tools/anomaly-default/smd-window.sh        # SMD at window 1,500, post hoc, on a scratch copy of anomaly/ (about 5 minutes; needs anomaly/bench/fetch-smd.sh)
 npm run bench           # the measurements below
@@ -1245,22 +1245,15 @@ names were drawn. *Fix (test only):* after the move the test reads each pending 
 its current shard (`health().groups[].nextEvaluationMs`, `intervalMs`), waits until the first tick
 of that grid at or after activeAt + 3m has run for all three, and asserts `firingSince` equals that
 tick, which is stronger than before; the 3m ≤ firingSince − activeAt < 4m bounds are kept.
-*Verified on the development branch (measured here, 2026-11-19):* `npx tsc --noEmit` clean; the
-whole suite with `--maxWorkers=2` 419 of 419; `robust.test.ts` alone 20 runs, 20 passes; the nine
-pinned names (six that fail the old wait) all pass. *Mutants 192–193* (`VIZ_SCRATCH=<scratch> node
+*Verified (measured here, 2026-11-19):* `npx tsc --noEmit` clean; the whole suite with
+`--maxWorkers=2` 419 of 419; `robust.test.ts` alone 20 runs, 20 passes; the nine pinned names (six
+that fail the old wait) all pass. *Mutants 192–193* (`VIZ_SCRATCH=<scratch> node
 scripts/mutants.mjs 40 41 192 193`): 4 of 4 killed, shared tree unchanged; 192 and 193 were also
 run by hand against five pinned tenants covering both grid cases, killed by the final
 `[name, state, activeAt, firingSince]` assertion every time. 1–39, 42–191 were not re-run: no
-source changed.
-
-*Verified on `main`, 2026-11-19* (`main`'s ruler is the development branch's at `2e963fd` but for
-this test, the mutants and this README, which this change brings over): `npx tsc --noEmit`
-clean; the whole suite with `--maxWorkers=2` 419 of 419 (24 files); `robust.test.ts` alone 10 runs
-of 15 tests, 10 passes; `VIZ_SCRATCH=<scratch> node scripts/mutants.mjs 40 41 192 193`: 4 of 4
-killed, scratch copy deleted, shared tree unchanged. The pinned-name runs were not repeated here.
-The development branch's runner also copies `shard/src`, because its `control/src` imports it;
-`main`'s does not, and none of the ruler's tests needs it here (the four mutants above loaded and
-ran without it).
+source changed. The runner's copy list gained `shard/src`: `control/src` imports it now, and
+without it no test file loaded in the copy, so every mutant would have been reported as not
+loaded.
 
 ### Exactly-once (inherited cases, unchanged and passing)
 

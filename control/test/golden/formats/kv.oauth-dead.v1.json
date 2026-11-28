@@ -1,0 +1,7 @@
+{
+  "format": "kv.oauth-dead",
+  "version": 1,
+  "key": "oauth-dead:<tenant>:<SHA-256 of the whole credential, hex>",
+  "value": "{\"v\":1,\"reason\":\"revoked\"}",
+  "expiration": "KV expiration: the credential's encoded expiry plus 60 s, in whole seconds, rounded up"
+}

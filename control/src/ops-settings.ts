@@ -20,6 +20,7 @@ import { fields, int, isRecord, iso } from './util'
  * (`webhookSecretSetAt`).
  */
 import type { NotificationTargetResult, WebhookFormat } from '../../contracts/control'
+import { DERIVED_SIGNALS, dedicatedPool, validBasePool } from '../../shard/src/pool'
 
 export const SECTIONS = ['general', 'retention', 'limits', 'pool', 'notifications'] as const
 export type Section = (typeof SECTIONS)[number]
@@ -93,7 +94,29 @@ function sectionOf(c: Ctx): Section {
 // ---- validation: each returns the value to store ----
 
 const RETENTION_KEYS = ['metric_samples_days', 'metric_5m_days', 'metric_1h_days', 'log_days', 'trace_days'] as const
+type RetentionKey = (typeof RETENTION_KEYS)[number]
 
+/**
+ * Days its reader keeps of a signal or tier whose field the record leaves out (D63). The janitor
+ * keeps spans and logs `DEFAULT_SIGNAL_DAYS` (30, janitor/src/janitor.ts) whatever the metric
+ * days, and a tenant without a record 30 days of metric samples; `metric_samples_days` is never
+ * left out of a value stored here. The rollup tiers have no reader yet, so what an absent one
+ * keeps is not known: null. `test/settings.test.ts` checks these against the janitor's own
+ * `parseRetention`, so the two cannot drift.
+ */
+const KEPT_WHEN_ABSENT: Record<RetentionKey, number | null> = { metric_samples_days: 30, metric_5m_days: null, metric_1h_days: null, log_days: 30, trace_days: 30 }
+
+/** The days each field keeps under a stored value, as its reader applies it: the value, else its default. */
+const keptDays = (v: Record<string, number>, k: RetentionKey): number | null => v[k] ?? KEPT_WHEN_ABSENT[k]
+
+/**
+ * A PUT replaces the whole value (as for every section), so a field left out returns to its
+ * reader's default. Shortening is judged on what the readers keep, before and after, never on the
+ * fields the new value happens to name (review B-1, `design/reviews/signals-end-to-end.md`): a
+ * PUT that names only `metric_samples_days` over a record keeping traces 365 days shortens them
+ * to 30 and needs `confirmShorter` like any other shortening. A tier that was set and is left out
+ * counts as shortened too, since nothing says what its reader will keep.
+ */
 function validateRetention(v: Record<string, unknown>, before: Record<string, number>, confirmShorter: boolean): Record<string, number> {
   const out: Record<string, number> = {}
   for (const k of RETENTION_KEYS) if (v[k] !== undefined) out[k] = int(v[k], k, 1, 3650)
@@ -107,9 +130,21 @@ function validateRetention(v: Record<string, unknown>, before: Record<string, nu
     }
   }
   // Shortening retention deletes data that cannot be brought back, so it has to be said twice.
-  const shorter = Object.keys(before).filter((k) => out[k] !== undefined && out[k]! < before[k]!)
+  const shorter = RETENTION_KEYS.filter((k) => {
+    const was = keptDays(before, k)
+    const now = keptDays(out, k)
+    return was !== null && (now === null || now < was)
+  })
   if (shorter.length && !confirmShorter) {
-    throw new Problem(422, 'confirmation-required', `This shortens retention (${shorter.map((k) => `${k}: ${before[k]} → ${out[k]}`).join(', ')}). Data older than the new period is deleted for good.`, 'Send "confirmShorter": true to go ahead. dryRun shows the change without making it.', { shortened: shorter })
+    const leftOut = shorter.filter((k) => out[k] === undefined)
+    const change = (k: RetentionKey): string => `${k}: ${keptDays(before, k)} → ${out[k] !== undefined ? out[k] : keptDays(out, k) === null ? 'not set' : `${keptDays(out, k)} (left out: the default)`}`
+    throw new Problem(
+      422,
+      'confirmation-required',
+      `This shortens retention (${shorter.map(change).join(', ')}). Data older than the new period is deleted for good.`,
+      `${leftOut.length ? `A PUT replaces the whole value, and a field left out returns to its default: to keep ${leftOut.join(' and ')}, send ${leftOut.length > 1 ? 'them' : 'it'} too (GET /settings/retention shows the stored value). ` : ''}Send "confirmShorter": true to go ahead. dryRun shows the change without making it.`,
+      { shortened: shorter, ...(leftOut.length ? { leftOut } : {}) },
+    )
   }
   return out
 }
@@ -154,13 +189,33 @@ interface PoolValue {
  */
 function validatePool(t: Tenant, v: Record<string, unknown>, before: PoolValue | null): PoolValue {
   if (v.epoch !== undefined) throw invalid('"epoch" is assigned by viz, not by the caller.', 'Send {"pool","slots","spread"} only; the epoch is bumped for you.', { field: 'epoch' })
-  if (typeof v.pool !== 'string') throw invalid('"pool" must be a string.', `Use "tenant/${t.tenant}" for a dedicated pool, or the shared pool's name.`, { field: 'pool' })
+  // The tenant's dedicated pool is D38's `dedicatedPool`: `tenant/<id>`, with `_` written `-`,
+  // since pool names have no `_` (POOL_NAME). Nothing else is ever offered or accepted as one.
+  const own = dedicatedPool(t.tenant, 1, 0).pool
+  if (typeof v.pool !== 'string') throw invalid('"pool" must be a string.', `Use "${own}" for a dedicated pool, or the shared pool's name.`, { field: 'pool' })
   const slots = int(v.slots, 'slots', 1, 1024)
   const spread = int(v.spread, 'spread', 1, 64)
   if (spread > slots) throw invalid('"spread" cannot exceed "slots".', 'A tenant can use at most every slot of its pool.', { field: 'spread' })
   const shared = t.sharedPool
-  if (v.pool !== `tenant/${t.tenant}` && v.pool !== shared.pool) {
-    throw invalid(`A tenant may only use its own pool ("tenant/${t.tenant}")${typeof shared.pool === 'string' ? ` or the shared pool ("${shared.pool}")` : ''}.`, 'Another tenant\'s dedicated pool is not yours to write to.', { field: 'pool' })
+  if (v.pool !== own && v.pool !== shared.pool) {
+    const spelt = v.pool === `tenant/${t.tenant}` ? ` Pool names cannot contain "_", so this tenant's dedicated pool is "${own}".` : ''
+    throw invalid(`A tenant may only use its own pool ("${own}")${typeof shared.pool === 'string' ? ` or the shared pool ("${shared.pool}")` : ''}.${spelt}`, 'Another tenant\'s dedicated pool is not yours to write to.', { field: 'pool' })
+  }
+  // The data path's own rule for a pool map's pool (`validBasePool`, shard/src/pool.ts, the
+  // function edge reads every map with; D66): a valid pool name (POOL_NAME: no `_`, at most 120
+  // characters) that does not end in a derived pool's suffix (contracts/BATCH.md "Streams per
+  // signal"). Edge answers 503 to every write of a tenant whose map breaks it, so it is refused here.
+  const pool = v.pool
+  if (!validBasePool(pool as unknown)) {
+    const derived = DERIVED_SIGNALS.find((s) => pool.endsWith(`/${s}`))
+    if (derived !== undefined) {
+      const fix = pool === shared.pool
+        ? 'The shared pool itself breaks this rule, and the data path refuses it for every tenant: the operator must rename it (DEFAULT_POOL).'
+        : `Use the shared pool${typeof shared.pool === 'string' ? ` ("${shared.pool}")` : ''}. A tenant whose id is "traces" or "logs" cannot have a dedicated pool.`
+      throw invalid(`The pool "${pool}" ends in "/${derived}", the suffix of the derived ${derived} pools; the data path refuses a pool map whose pool ends so.`, fix, { field: 'pool' })
+    }
+    // Only the shared pool can get here (a dedicated pool's name always fits POOL_NAME).
+    throw invalid(`The pool "${pool}" is not a valid pool name (segments of letters, digits and "-" joined by "/", at most 120 characters); the data path refuses a pool map naming it.`, 'The shared pool is misconfigured and the data path refuses it for every tenant: the operator must rename it (DEFAULT_POOL).', { field: 'pool' })
   }
   if (v.pool === shared.pool && slots !== shared.slots) throw invalid(`The shared pool has ${String(shared.slots)} slots.`, 'A tenant can choose its spread within the shared pool, not the pool\'s size.', { field: 'slots' })
   // The first own map starts above the shared map's epoch, so a shard never sees it as older.

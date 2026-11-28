@@ -6,7 +6,8 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "mutants": "cd ../stack && MUTANT_FILES=janitor/ node scripts/mutants.mjs all"
+    "mutants": "cd ../stack && MUTANT_FILES=janitor/ node scripts/mutants.mjs all",
+    "mutants:registration": "node scripts/mutants.mjs"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.8.4",

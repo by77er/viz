@@ -99,6 +99,40 @@ MUTANTS = [
       'if self.frames.len() > 1 {\n            return Err(invalid(format!("missing closing ): `{}`", self.src)));'],
      ["self.out.push(')'); self.i += 1; return Ok(());",
       'if false {\n            return Err(invalid(format!("missing closing ): `{}`", self.src)));']),
+    # Group names (Go accepts `[A-Za-z0-9_]+`, a leading digit and a repeat included).
+    ("a group name that starts with a digit is refused", "../goregex/src/lib.rs",
+     "if k >= self.cs.len() || name.is_empty() || !name.chars()",
+     "if k >= self.cs.len() || name.is_empty() || name.starts_with(|c: char| c.is_ascii_digit()) || !name.chars()"),
+    ("group names may hold any Unicode letter or digit", "../goregex/src/lib.rs",
+     "!name.chars().all(|c| c == '_' || c.is_ascii_alphanumeric())", "!name.chars().all(|c| c == '_' || c.is_alphanumeric())"),
+    ("names kept: a name the regex crate cannot hold goes to it (its refusal, not Unsupported)", "../goregex/src/lib.rs",
+     "        self.names_held()?;\n", ""),
+    ("names kept: a repeated name goes to the regex crate", "../goregex/src/lib.rs",
+     "} else if self.kept.contains(&name) {", "} else if false {"),
+    ("matchers keep names (compile_anchored refuses a name Go accepts)", "../goregex/src/lib.rs",
+     "Ok(compile(p, Wrap::Anchored, false, &Limits::default())?)", "Ok(compile(p, Wrap::Anchored, true, &Limits::default())?)"),
+    ("`(?<=` and `(?<!` read as Perl syntax, not as a named group (Go's wording)", "../goregex/src/lib.rs",
+     "Some('<') if i + 3 < self.cs.len() => self.named(i + 3),",
+     "Some('<') if i + 3 < self.cs.len() && !matches!(self.cs.get(i + 3), Some('=' | '!')) => self.named(i + 3),"),
+    # Re-wrapping an atom (`a*(?i)*`): the `(?:` is recorded in an offset-ordered list and written once.
+    ("recorded re-wraps never written", "../goregex/src/lib.rs",
+     "        if self.opens.len() == 1 {\n            return self.out;", "        if true {\n            return self.out;"),
+    ("a group's re-wrap linked after the last record, not before the records made inside it", "../goregex/src/lib.rs",
+     "next: self.opens[a.after].next });\n                self.opens[a.after].next = id;",
+     "next: self.opens[self.last_open].next });\n                self.opens[self.last_open].next = id;"),
+    ("a second re-wrap of the same atom not counted", "../goregex/src/lib.rs",
+     "                self.opens[a.open].n += 1;\n", ""),
+    ("each re-wrap inserted at the atom's start again (moves the atom's text: quadratic)", "../goregex/src/lib.rs",
+     "            if a.open == NONE {\n                let id = self.opens.len();\n"
+     "                self.opens.push(Open { at: a.start, n: 1, next: self.opens[a.after].next });\n"
+     "                self.opens[a.after].next = id;\n                if self.last_open == a.after {\n"
+     "                    self.last_open = id;\n                }\n                a.open = id;\n            } else {\n"
+     "                self.opens[a.open].n += 1;\n            }\n",
+     '            self.out.insert_str(a.start, "(?:");\n'),
+    ("names kept: a leading digit is Unsupported at once, before Go's refusal of a later error", "../goregex/src/lib.rs",
+     "            if self.unholdable.is_none() {\n                if name.starts_with",
+     "            if name.starts_with(|c: char| c.is_ascii_digit()) {\n                return Err(Error::Unsupported(String::new()));\n"
+     "            }\n            if self.unholdable.is_none() {\n                if name.starts_with"),
 ]
 
 SUITES = [

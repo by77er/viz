@@ -160,4 +160,6 @@ export const FORMATS = {
   'oauth.sealed': 1,
   /** `Tenant.oauthToken`, `oauthRevoke`, `introspectAccessToken` results (contracts/oauth.ts): `v` 1. */
   'rpc.oauth': 1,
+  /** `oauth-dead:<tenant>:<SHA-256 hex of the credential>` → `{ v: 1, reason }`, expiring with the credential: the list of dead OAuth credentials (src/deadlist.ts, D70). Written and read by this Worker only; the key's presence is what it says. */
+  'kv.oauth-dead': 1,
 } as const

@@ -3,7 +3,8 @@
  * OTLP metrics (protobuf, JSON) and the series table Remote Write shares. A data point or
  * resource over 65,536 values is refused before it is built, and stops being built at the
  * limit whatever the body's size: `BUILT` counts what the decoders build, apart from the
- * meters. (The development branch keeps the span and log tests apart, in test/decode.test.ts.)
+ * meters. Kept apart from the span and log tests (test/decode.test.ts) so that it carries over
+ * to a tree with metrics only.
  */
 import { describe, expect, it } from 'vitest'
 import { Collector, buildBatches } from '../src/batch'

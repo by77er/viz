@@ -25,6 +25,11 @@ pub enum AttrValue {
 
 pub type Attrs = Vec<(String, AttrValue)>;
 
+/// A span's resource attributes, shared by every span of one resource: a reader holds each
+/// distinct resource once, however many spans carry it (a resource is often kilobytes, and a
+/// file holds few of them).
+pub type Resource = std::sync::Arc<Attrs>;
+
 /// Look up a key in a typed attribute list. If the key occurs twice, the last value wins
 /// (`contracts/TRACES.md`).
 pub fn attr<'a>(attrs: &'a [(String, AttrValue)], key: &str) -> Option<&'a AttrValue> {
@@ -119,8 +124,8 @@ pub struct Span {
     pub status_message: String,
     pub start_unix_nano: u64,
     pub end_unix_nano: u64,
-    /// Resource attributes, `service.name` included.
-    pub resource: Attrs,
+    /// Resource attributes, `service.name` included; shared between the spans of one resource.
+    pub resource: Resource,
     pub attrs: Attrs,
     pub scope_name: String,
     pub scope_version: String,

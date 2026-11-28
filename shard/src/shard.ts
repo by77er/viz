@@ -1,12 +1,15 @@
 import { DurableObject } from 'cloudflare:workers'
-import { SHARD_NAME } from '../../contracts/ledger'
+import { SHARD_NAME, TENANT_ID } from '../../contracts/ledger'
+import type { Ledger } from '../../ledger/src/ledger'
 import { type SchemaSpec, type SchemaTooNew, SchemaTooNewError, columnsOf, openSchema, refusalOf } from '../../contracts/schema'
 import { SeriesWindow, UnreadableSketch } from './sketch'
 import {
-  TAIL_PAGE_MAX_BYTES, TAIL_READ_VERSION, TAIL_SCAN_MAX_BYTES, type TailPage, type TailReadOptions, UnreadableBatch, compileFilter, decodeCursor, encodeCursor,
-  filterBatch, fnv64,
+  type CompiledFilter, PLAIN_TAIL_SQL, SKIPPED_BY_BOUNDS, TAIL_PAGE_MAX_BYTES, TAIL_READ_VERSION, TAIL_SCAN_MAX_BATCHES, TAIL_SCAN_MAX_BYTES, TIMED_TAIL_SQL, type TailPage, type TailReadOptions,
+  UnreadableBatch, batchTimeBounds, compileFilter, decodeCursor, encodeCursor, filterBatch, fnv64,
 } from './tail'
-export { TAIL_PAGE_MAX_BYTES, TAIL_READ_VERSION, TAIL_SCAN_MAX_BYTES, type TailFilter, type TailPage, type TailReadOptions, splitKeyRange } from './tail'
+export {
+  PLAIN_TAIL_SQL, TAIL_PAGE_MAX_BYTES, TAIL_READ_VERSION, TAIL_SCAN_MAX_BATCHES, TAIL_SCAN_MAX_BYTES, TIMED_TAIL_SQL, type TailFilter, type TailPage, type TailReadOptions, splitKeyRange,
+} from './tail'
 
 /**
  * A pooled shard: the write-ahead log for several tenants in one Durable Object.
@@ -20,9 +23,12 @@ export { TAIL_PAGE_MAX_BYTES, TAIL_READ_VERSION, TAIL_SCAN_MAX_BYTES, type TailF
  * Lifecycle of a batch:  append → (seal) → [flush Worker writes Parquet] → recorded → discard
  *
  *   append    refused at once when the shard is over its in-flight limit (nothing is read or
- *             written for it); otherwise it joins the open GROUP, and is answered after the
- *             group's single SQLite transaction has committed (the runtime holds the answer
- *             until that write is durable)
+ *             written for it), and, in registration mode `logged` (D61), when the stream is
+ *             new and the tenant's ledger has not yet answered its registration as LOGGED
+ *             (`registering`: the registration runs in the background, nothing waits for it);
+ *             otherwise it joins the open GROUP, and is answered after the group's single
+ *             SQLite transaction has committed (the runtime holds the answer until that write
+ *             is durable)
  *   seal      fixes a contiguous range of batches as a segment; the boundary is durable,
  *             and a `{tenant, shard}` message for the flush queue is written with it
  *   recorded  the tenant's ledger has admitted the segment's files AND logged that to R2: the
@@ -79,6 +85,30 @@ export interface ShardConfig {
   maxGroupBytes: number
   /** A filtered tail read examines at most this many stored bytes per call; the rest is its next page (D48). */
   tailScanMaxBytes: number
+  /** A filtered tail read considers at most this many stored batches per call, skipped ones included (review of D72, M-1). */
+  tailScanMaxBatches: number
+  /**
+   * Registration before writes (D61; spec/README.md "Proposed fixes", R2). `logged`: an append
+   * to a stream the tenant's ledger has not yet answered as registered AND logged is refused
+   * at once (`backpressure`, scope `registering`) while the registration runs in the
+   * background; a stream that already holds acknowledged rows (made by a release before D61,
+   * or in `lazy` mode) keeps accepting while it is confirmed. `lazy`: appends as before D61
+   * (the ledger first hears of a stream from its first flush). Tail reads that name a lost
+   * stream, and `ensureStream`, register in either mode. The Worker var `SHARD_REGISTRATION`
+   * (`logged` or `lazy`), when set, overrides this (shard/README.md, "Rollout").
+   */
+  registration: 'lazy' | 'logged'
+  /** `Retry-After` of a `registering` refusal: this, plus up to as much again of jitter. */
+  registerRetryAfterMs: number
+  /** A registration the ledger has not answered as logged is asked again after this, doubling up to `registerBackoffMaxMs`. */
+  registerBackoffMs: number
+  registerBackoffMaxMs: number
+  /** One registration call waits at most this long for the ledger (whose start alone may hold it 2 s). */
+  registerTimeoutMs: number
+  /** Registration calls in flight at once, per shard, over all tenants (review m-5: a shard has six outbound connections). */
+  maxRegistrations: number
+  /** A stream that has waited this long for its registration to be logged is reported (error log, `stats`; review m-1). */
+  registerAlertMs: number
 }
 
 export const DEFAULT_CONFIG: ShardConfig = {
@@ -99,6 +129,79 @@ export const DEFAULT_CONFIG: ShardConfig = {
   groupWindowMs: 0,
   maxGroupBytes: 4 << 20,
   tailScanMaxBytes: TAIL_SCAN_MAX_BYTES,
+  tailScanMaxBatches: TAIL_SCAN_MAX_BATCHES,
+  registration: 'lazy',
+  registerRetryAfterMs: 500,
+  registerBackoffMs: 250,
+  registerBackoffMaxMs: 30_000,
+  registerTimeoutMs: 5_000,
+  maxRegistrations: 4,
+  registerAlertMs: 60_000,
+}
+
+/**
+ * What each field of `ShardConfig` may hold (re-check of D72, r2-m-3). A value outside its rule is
+ * never used: `configure` refuses the whole call and changes nothing, and a stored configuration
+ * is read with the default in place of any such field (`storedConfig`). Before this the object
+ * used whatever it was given, and a `tailScanMaxBatches` that was not a number (`undefined`, `NaN`)
+ * made every filtered read answer a complete, empty `ok` over a tail that held rows.
+ *
+ *   `positive`     a safe integer of at least 1: a size or a count that 0 would make meaningless
+ *   `nonNegative`  a safe integer of at least 0: a duration in milliseconds, or a limit whose 0 has
+ *                  a meaning tests use and that never answers `ok` for rows it did not return:
+ *                  `maxInFlight` and `maxPendingBytes` 0 refuse every append (`overload`,
+ *                  retryable); `tailScanMaxBytes` 0 examines nothing per call, so every page says
+ *                  there is more (`page.next` is never null while batches remain)
+ *   `registration` `lazy` or `logged`
+ */
+const CONFIG_RULES: { [K in keyof ShardConfig]: 'positive' | 'nonNegative' | 'registration' } = {
+  maxBatchBytes: 'positive',
+  sealBytes: 'positive',
+  sealAgeMs: 'nonNegative',
+  tenantMaxBytes: 'positive',
+  shardMaxBytes: 'positive',
+  retainRecordedMs: 'nonNegative',
+  fingerprintTtlMs: 'nonNegative',
+  notifyRetryMs: 'nonNegative',
+  seriesWindowMs: 'positive',
+  seriesExactMax: 'positive',
+  seriesPersistMs: 'nonNegative',
+  maxInFlight: 'nonNegative',
+  maxPendingBytes: 'nonNegative',
+  overloadRetryMs: 'nonNegative',
+  groupWindowMs: 'nonNegative',
+  maxGroupBytes: 'positive',
+  tailScanMaxBytes: 'nonNegative',
+  tailScanMaxBatches: 'positive',
+  registration: 'registration',
+  registerRetryAfterMs: 'nonNegative',
+  registerBackoffMs: 'nonNegative',
+  registerBackoffMaxMs: 'nonNegative',
+  registerTimeoutMs: 'positive',
+  maxRegistrations: 'positive',
+  registerAlertMs: 'nonNegative',
+}
+
+/** Why `value` may not be the configuration field `key`, or null when it may (`CONFIG_RULES`). */
+export function configFault(key: string, value: unknown): string | null {
+  if (!Object.hasOwn(CONFIG_RULES, key)) return `${JSON.stringify(key.slice(0, 64))} is not a configuration field`
+  const rule = CONFIG_RULES[key as keyof ShardConfig]
+  const shown = typeof value === 'number' || value === undefined ? String(value) : (JSON.stringify(value) ?? typeof value).slice(0, 64)
+  if (rule === 'registration') return value === 'lazy' || value === 'logged' ? null : `registration must be 'lazy' or 'logged', not ${shown}`
+  const least = rule === 'positive' ? 1 : 0
+  return Number.isSafeInteger(value) && (value as number) >= least ? null : `${key} must be an integer of at least ${least}, not ${shown}`
+}
+
+/**
+ * The configuration a stored `cfg` row gives: the defaults, then the stored fields, except that a
+ * known field whose stored value breaks its rule keeps the default (a release that stored whatever
+ * it was given may have written one: `NaN` is stored as `null`). Fields this release does not know
+ * are carried as they are, so a rollback does not drop what a later release stored.
+ */
+function storedConfig(stored: unknown): ShardConfig {
+  const cfg: Record<string, unknown> = { ...DEFAULT_CONFIG, ...(typeof stored === 'object' && stored !== null && !Array.isArray(stored) ? stored : {}) }
+  for (const k of Object.keys(CONFIG_RULES) as (keyof ShardConfig)[]) if (configFault(k, cfg[k]) !== null) cfg[k] = DEFAULT_CONFIG[k]
+  return cfg as unknown as ShardConfig
 }
 
 /**
@@ -138,6 +241,49 @@ export const SHARD_SCHEMA: SchemaSpec = {
       for (const s of V1) sql.exec(s)
       if (!columnsOf(sql, 'segment').has('sealed_at')) sql.exec(`ALTER TABLE segment ADD COLUMN sealed_at INTEGER NOT NULL DEFAULT 0`)
     },
+  }, {
+    // ADDITIVE (readableFrom 1): `stream.registered` is the incarnation whose registration the
+    // tenant's ledger answered as logged (D61), 0 before. The release before ignores it, inserts
+    // its streams with 0, and never changes a stream row's incarnation, so a value this release
+    // wrote stays true under it, and its 0 is only conservative: a stream holding acknowledged
+    // rows is accepted whatever the column says, and one holding none is registered first.
+    // Nothing relies on the older release maintaining it (COMPATIBILITY.md §2.3; review B-1).
+    version: 2,
+    name: 'stream.registered: the incarnation whose registration the ledger answered as logged (D61)',
+    readableFrom: 1,
+    up: (sql) => {
+      if (!columnsOf(sql, 'stream').has('registered')) sql.exec(`ALTER TABLE stream ADD COLUMN registered INTEGER NOT NULL DEFAULT 0`)
+    },
+  }, {
+    // ADDITIVE (readableFrom 1): `batch.min_ts` and `batch.max_ts` are a span or log batch's time
+    // bounds in Unix milliseconds (`batchTimeBounds`, D72), written with the row at append; NULL
+    // means unknown, and a NULL batch is kept by every time range. Rows already stored keep NULL
+    // (no backfill), and so do rows the release before writes (it names its columns and never
+    // rewrites a row's other columns): this release relies on nothing it does not write itself,
+    // and its only use of the columns is to skip a batch, never to keep one. Nullable, no default.
+    //
+    // `batch_time` (review of D72, M-1): `ADD COLUMN` puts the two columns after the payload in
+    // each record, so reading them from the row walks every overflow page of the payload. A read
+    // decides from this index instead (`tailPage`, `INDEXED BY`), which holds the bounds without
+    // the payload. PARTIAL: only rows with bounds have an entry, so a span or log append writes one
+    // more row (billed) and a metric append none. SQLite maintains it for every writer, the release
+    // before included (its rows have NULL bounds: no entry, kept by every range), so it can never
+    // disagree with the row it indexes. Built here over rows that all have NULL bounds, it writes
+    // no entry, and reads each row's header, which lies in the table's leaf page. For a batch larger
+    // than a page that is all it reads (the payload's overflow pages are not followed); a batch
+    // under about 4 KB sits whole in the leaf page with its header, so over such batches the build
+    // reads the table (re-check of D72, r2-n-2: 0.15 MB of a 34 MB tail of 0.4 to 1 MB batches, all
+    // of a 40 MB tail of 2 KB ones, in 10 to 85 ms; measured with Python's SQLite, not workerd's:
+    // shard/README.md).
+    version: 3,
+    name: 'batch.min_ts, batch.max_ts: a span or log batch\'s time bounds, NULL when unknown, and their index batch_time (D72)',
+    readableFrom: 1,
+    up: (sql) => {
+      const have = columnsOf(sql, 'batch')
+      if (!have.has('min_ts')) sql.exec(`ALTER TABLE batch ADD COLUMN min_ts INTEGER`)
+      if (!have.has('max_ts')) sql.exec(`ALTER TABLE batch ADD COLUMN max_ts INTEGER`)
+      sql.exec(`CREATE INDEX IF NOT EXISTS batch_time ON batch (tenant, seq, min_ts, max_ts) WHERE min_ts IS NOT NULL AND max_ts IS NOT NULL`)
+    },
   }],
 }
 
@@ -159,11 +305,17 @@ export interface FlushMessage {
 /**
  * Bindings a shard uses if they are there. Without `FLUSH_QUEUE` nobody is told about a
  * seal (tests of the shard alone, and callers that poll `pendingSegments`). Without
- * `CONFIG` no pending marker is kept, so the hourly sweep cannot find this shard.
+ * `CONFIG` no pending marker is kept, so the hourly sweep cannot find this shard. Without
+ * `LEDGER` (the tenants' ledgers, `idFromName(tenant)`) nothing is registered: appends are
+ * lazy whatever the mode, and a tail read naming a lost stream is answered as before D61.
  */
 export interface ShardEnv {
   FLUSH_QUEUE?: Queue<FlushMessage>
   CONFIG?: KVNamespace
+  /** Added with D61. In viz-ingest the ledger is a class of the same script. */
+  LEDGER?: DurableObjectNamespace<Ledger>
+  /** `logged` or `lazy`: the registration mode, overriding `ShardConfig.registration` (shard/README.md, "Rollout"). */
+  SHARD_REGISTRATION?: string
 }
 
 /**
@@ -183,7 +335,7 @@ export interface AppendRequest {
   rows: number
   /**
    * The `series_id` of every entry of the batch's series table, in table order
-   * (contracts/BATCH.md, "Active series"). The shard does not parse batches; it only checks
+   * (contracts/BATCH.md, "Active series"). For this the shard reads only the header: it checks
    * that the length equals the header's `n_series`. Without it the batch is not metered.
    */
   seriesIds?: BigInt64Array
@@ -199,8 +351,16 @@ export type AppendResult =
    * `overload`: the shard has more appends in flight than it may take (refused before
    * anything was read or written), or its storage belongs to a newer release; a caller
    * that does not know this scope treats it like the others (backpressure).
+   * `registering` (added 2026-11-19, D61): the stream is new (first use, or the shard lost its
+   * storage) and the tenant's ledger has not yet answered its registration as logged. The
+   * registration runs in the background; nothing was stored or counted, and nothing waited for
+   * the ledger. Expected for about a second per new stream. Like `overload` it is the system
+   * catching up, not the tenant over a limit: edge answers it 503 with `Retry-After`, never
+   * 429 (Remote Write senders must retry 5xx and may drop 429: review M-2). A shard sends it
+   * only in registration mode `logged`, which a deployment turns on only once every edge that
+   * may run maps it (shard/README.md, "Rollout").
    */
-  | { status: 'backpressure'; scope: 'tenant' | 'shard' | 'overload'; retryAfterMs: number }
+  | { status: 'backpressure'; scope: 'tenant' | 'shard' | 'overload' | 'registering'; retryAfterMs: number }
   | { status: 'stale_epoch'; epoch: number }
   /** The payload is over the batch size cap. Nothing was stored; a retry of the same bytes cannot succeed. */
   | { status: 'too_large'; maxBytes: number }
@@ -240,9 +400,13 @@ export type TailResult =
   /** The shard has discarded rows above the watermark it was asked about (for a paged read: on any page). Re-read the ledger. */
   | { status: 'stale_watermark'; incarnation: number; discardedThrough: number }
   /**
-   * The stream was recreated (storage loss), or the shard holds no stream for this tenant
-   * while the caller names an incarnation (0 when the shard has none). The ledger must
-   * register the new incarnation.
+   * The stream was recreated (storage loss), or the shard held no stream for this tenant while
+   * the caller names an incarnation. In the second case (D61) the shard first starts a fresh
+   * stream, newer than the one named, and registers it with the tenant's ledger (one call,
+   * awaited up to `registerTimeoutMs`; the rest in the background), and names it here, so the
+   * next plan names it and a query can finish after a storage loss (spec F6, `LIVE_impl`). It
+   * holds nothing acknowledged: read from 0 it is empty. 0 only from a shard without a
+   * `LEDGER` binding, or of a release before D61.
    */
   | { status: 'incarnation_mismatch'; incarnation: number }
   /**
@@ -250,8 +414,11 @@ export type TailResult =
    * filter keeps of batch `seq` alone are `bytes`, more than the page may hold: nothing is
    * returned, never a truncated batch. Ask again with a larger `maxBytes` (up to
    * `TAIL_PAGE_MAX_BYTES`, which one stored batch never exceeds) or a narrower filter.
+   * `last` (added with the review of D72, n-1; absent from a shard before it): true when no batch
+   * after `seq`, up to `through`, can hold a row this read keeps by its time bounds, so `bytes`
+   * completes the read; false when one may (or when the shard did not look that far).
    */
-  | { status: 'page_limit'; seq: number; bytes: number; maxBytes: number }
+  | { status: 'page_limit'; seq: number; bytes: number; maxBytes: number; last?: boolean }
   /** Options or a cursor this shard refuses (malformed, or a cursor of another read). Not retryable as is. */
   | { status: 'invalid'; reason: string }
   /** Options or a cursor of a version this shard does not read (COMPATIBILITY.md §3.2). */
@@ -270,8 +437,18 @@ export type RecordedResult =
   | { status: 'not_contiguous'; recordedThrough: number }
   | { status: 'incarnation_mismatch'; incarnation: number }
 
+/** What `ensureStream` answers (added 2026-11-19, D61). */
+export interface EnsureStreamResult {
+  /** The stream's incarnation now: the one the shard holds, or the fresh one it started. 0 only without a `LEDGER` binding and no stream. */
+  incarnation: number
+  /** The tenant's ledger has answered this incarnation's registration as logged. */
+  registered: boolean
+}
+
 interface Stream {
   incarnation: number
+  /** The tenant's ledger has answered this incarnation's registration as logged (`stream.registered`). */
+  registered: boolean
   epoch: number
   nextSeq: number
   sealedThrough: number
@@ -288,6 +465,8 @@ interface Pending {
   req: AppendRequest
   bytes: number
   now: number
+  /** A span or log batch's time bounds (`batchTimeBounds`), stored with its row; null: none (`batch.min_ts` NULL). */
+  bounds: { minTs: number; maxTs: number } | null
   /** Appends of the same tenant and fingerprint in the same group share one row. */
   joined: Pending[]
   resolve(r: AppendResult): void
@@ -304,6 +483,39 @@ export interface ShardStats {
   refusedOverload: number
   inFlight: number
   pendingBytes: number
+  /** Appends refused `registering` (D61). */
+  refusedRegistering: number
+  /** Registration calls this instance made to ledgers. */
+  registerCalls: number
+  /** Streams waiting for their registration to be logged, and how long the longest has waited (ms; 0 if none). A wait over `registerAlertMs` is also an error log line (review m-1). */
+  registering: number
+  registeringForMs: number
+}
+
+/**
+ * A stream's registration while the ledger has not answered it as logged. Memory only, a
+ * schedule: what must be registered is `stream.registered`, rebuilt in `load`.
+ */
+interface Registration {
+  incarnation: number
+  /** When this instance began waiting for it (the alert's clock: an eviction restarts it). */
+  since: number
+  attempts: number
+  /** The next call is not made before this (backoff). While a call is in flight: when the alarm tries again if that call is lost with the instance. */
+  at: number
+  inFlight: Promise<boolean> | null
+  lastError: string | null
+  reported: boolean
+}
+
+/** `p`, or a rejection after `ms`; the timer never outlives the call. */
+async function within<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([p, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} did not answer within ${ms} ms`)), ms) })])
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 /**
@@ -338,10 +550,18 @@ export class Shard extends DurableObject<ShardEnv> {
   private groupTimer: ReturnType<typeof setTimeout> | null = null
   private inFlight = 0
   private pendingBytes = 0
-  private counters = { appends: 0, committed: 0, groups: 0, maxGroup: 0, refusedOverload: 0 }
+  private counters = { appends: 0, committed: 0, groups: 0, maxGroup: 0, refusedOverload: 0, refusedRegistering: 0, registerCalls: 0 }
+  /** The tenants' ledgers (`env.LEDGER`). A field so that a test can put an older release's ledger behind it. */
+  protected ledgerNs: DurableObjectNamespace<Ledger> | undefined
+  /** Registrations not yet answered as logged, by tenant (a schedule, rebuilt in `load`). */
+  private regs = new Map<string, Registration>()
+  /** Registration calls in flight, and calls waiting for one of the `maxRegistrations` slots. */
+  private regSlots = 0
+  private regWaiters: (() => void)[] = []
 
   constructor(ctx: DurableObjectState, env: ShardEnv) {
     super(ctx, env ?? {})
+    this.ledgerNs = env?.LEDGER
     // contracts/TABLES.md: a shard is named `{pool}/{slot}` with `SHARD_NAME`, or its flush
     // files' keys could name another stream. An object addressed otherwise serves nothing.
     if (ctx.id.name !== undefined && !SHARD_NAME.test(ctx.id.name)) throw new Error(`shard: name ${JSON.stringify(ctx.id.name.slice(0, 140))} does not match SHARD_NAME`)
@@ -355,7 +575,7 @@ export class Shard extends DurableObject<ShardEnv> {
     }
     const sql = ctx.storage.sql
     const row = sql.exec(`SELECT v FROM config WHERE k = 'cfg'`).toArray()[0]
-    if (row) this.cfg = { ...DEFAULT_CONFIG, ...JSON.parse(row.v as string) }
+    if (row) this.cfg = storedConfig(JSON.parse(row.v as string))
     this.marked = sql.exec(`SELECT v FROM config WHERE k = 'marker'`).toArray()[0]?.v === '1'
     this.load()
   }
@@ -381,6 +601,7 @@ export class Shard extends DurableObject<ShardEnv> {
         .one()
       const s: Stream = {
         incarnation: r.incarnation as number,
+        registered: r.registered === r.incarnation,
         epoch: r.epoch as number,
         nextSeq: Math.max(agg.max_seq as number, r.sealed_through as number) + 1,
         sealedThrough: r.sealed_through as number,
@@ -393,6 +614,20 @@ export class Shard extends DurableObject<ShardEnv> {
       this.streams.set(tenant, s)
       this.totalBytes += s.bufferedBytes
       if (agg.fp_from !== null) this.fingerprintsFrom.set(tenant, agg.fp_from as number)
+    }
+    // Registrations to finish: every new stream (it holds nothing, so it can take no write
+    // until it is registered) whose registration the ledger has not answered as logged. A call
+    // in flight when the instance went is made again by the alarm. A stream from before D61
+    // (rows, never confirmed) is confirmed when it is next written to or `ensureStream`ed.
+    const at = Date.now()
+    for (const [tenant, r] of this.regs) {
+      const s = this.streams.get(tenant)
+      if (!s || s.registered || s.incarnation !== r.incarnation) this.regs.delete(tenant)
+    }
+    if (this.ledgerNs) {
+      for (const [tenant, s] of this.streams) {
+        if (!s.registered && s.nextSeq === 1 && !this.regs.has(tenant)) this.regs.set(tenant, this.newRegistration(s.incarnation, at))
+      }
     }
     // Series windows as last saved. Ids seen since the last save are not in them: after an
     // eviction the count is low by at most `seriesPersistMs` worth of new series.
@@ -441,20 +676,49 @@ export class Shard extends DurableObject<ShardEnv> {
     return { count: e.w.count(), exact: e.w.exact, windowMs: this.cfg.seriesWindowMs }
   }
 
-  private stream(tenant: string, epoch: number): Stream {
-    let s = this.streams.get(tenant)
-    if (!s) {
-      // A new incarnation is created only when no stream row exists: first use, or after
-      // storage loss. It never repeats, so sequence numbers are never silently reused.
-      const incarnation = newIncarnation(Date.now(), Math.random())
-      this.ctx.storage.sql.exec(
-        `INSERT INTO stream (tenant, incarnation, epoch, sealed_through, recorded_through, discarded_through) VALUES (?, ?, ?, 0, 0, 0)`,
-        tenant, incarnation, epoch,
-      )
-      s = { incarnation, epoch, nextSeq: 1, sealedThrough: 0, recordedThrough: 0, discardedThrough: 0, bufferedBytes: 0, unsealedBytes: 0, oldestUnsealedAt: null }
-      this.streams.set(tenant, s)
-    }
+  /**
+   * A new stream: first use, or after storage loss. A new incarnation is created only when no
+   * stream row exists, and never repeats, so sequence numbers are never silently reused. It is
+   * not registered yet. `above`: an incarnation the ledger is known to have (a tail read names
+   * it), which the new one must exceed even if the clock stepped back (spec S5).
+   */
+  private createStream(tenant: string, epoch: number, above = 0): Stream {
+    const floor = Number.isSafeInteger(above + 1) ? above + 1 : 0
+    const incarnation = Math.max(newIncarnation(Date.now(), Math.random()), floor)
+    this.ctx.storage.sql.exec(
+      `INSERT INTO stream (tenant, incarnation, epoch, sealed_through, recorded_through, discarded_through, registered) VALUES (?, ?, ?, 0, 0, 0, 0)`,
+      tenant, incarnation, epoch,
+    )
+    const s: Stream = { incarnation, registered: false, epoch, nextSeq: 1, sealedThrough: 0, recordedThrough: 0, discardedThrough: 0, bufferedBytes: 0, unsealedBytes: 0, oldestUnsealedAt: null }
+    this.streams.set(tenant, s)
     return s
+  }
+
+  /**
+   * The registration mode in force: the Worker var if set, else the stored configuration; and
+   * `lazy` whatever they say when there is no ledger to register with.
+   */
+  private mode(): 'lazy' | 'logged' {
+    if (!this.ledgerNs) return 'lazy'
+    const v = this.env.SHARD_REGISTRATION
+    return v === 'logged' || v === 'lazy' ? v : this.cfg.registration === 'logged' ? 'logged' : 'lazy'
+  }
+
+  /**
+   * Whether an append to this stream may join a group. `lazy`: always. `logged`: once the
+   * ledger has answered its registration as logged, or if the stream already holds
+   * acknowledged rows (a release before D61, or `lazy` mode, made it: refusing it would remove
+   * no exposure, and it is confirmed in the background). A stream that holds none is never
+   * written to before its registration is logged (D61).
+   */
+  private accepts(s: Stream): boolean {
+    return this.mode() === 'lazy' || s.registered || s.nextSeq > 1
+  }
+
+  private registeringRefusal(): AppendResult {
+    this.counters.refusedRegistering++
+    const ms = this.cfg.registerRetryAfterMs
+    return { status: 'backpressure', scope: 'registering', retryAfterMs: ms + Math.floor(Math.random() * ms) }
   }
 
   /** Streams currently holding bytes; the denominator of the fair share. */
@@ -464,8 +728,19 @@ export class Shard extends DurableObject<ShardEnv> {
     return n
   }
 
+  /**
+   * Changes the given fields of the configuration and stores it. Refused whole, with nothing changed
+   * or stored, when a field is unknown or its value breaks its rule (`CONFIG_RULES`; `undefined`
+   * breaks every rule): a limit is never left holding something the code would have to guess at
+   * (re-check of D72, r2-m-3).
+   */
   async configure(cfg: Partial<ShardConfig>): Promise<ShardConfig> {
     if (this.refusal) this.refused()
+    if (typeof cfg !== 'object' || cfg === null || Array.isArray(cfg)) throw new Error('shard: configure: the configuration must be an object of fields')
+    for (const [k, v] of Object.entries(cfg)) {
+      const fault = configFault(k, v)
+      if (fault !== null) throw new Error(`shard: configure: ${fault}; nothing was changed`)
+    }
     this.cfg = { ...this.cfg, ...cfg }
     this.ctx.storage.sql.exec(`INSERT OR REPLACE INTO config (k, v) VALUES ('cfg', ?)`, JSON.stringify(this.cfg))
     return this.cfg
@@ -473,7 +748,10 @@ export class Shard extends DurableObject<ShardEnv> {
 
   /** In-memory load counters since this instance started, for tests and operators. */
   async stats(): Promise<ShardStats> {
-    return { ...this.counters, inFlight: this.inFlight, pendingBytes: this.pendingBytes }
+    const now = Date.now()
+    let longest = 0
+    for (const r of this.regs.values()) longest = Math.max(longest, now - r.since)
+    return { ...this.counters, inFlight: this.inFlight, pendingBytes: this.pendingBytes, registering: this.regs.size, registeringForMs: longest }
   }
 
   async append(req: AppendRequest): Promise<AppendResult> {
@@ -500,12 +778,24 @@ export class Shard extends DurableObject<ShardEnv> {
     const twin = this.group.find((p) => p.req.tenant === req.tenant && p.req.fingerprint === req.fingerprint)
     if (twin) {
       return new Promise<AppendResult>((resolve, reject) => {
-        twin.joined.push({ req, bytes: 0, now: 0, joined: [], resolve: (r) => resolve(r.status === 'ok' ? { ...r, duplicate: true } : r), reject })
+        twin.joined.push({ req, bytes: 0, now: 0, bounds: null, joined: [], resolve: (r) => resolve(r.status === 'ok' ? { ...r, duplicate: true } : r), reject })
       })
     }
 
     // Checked before anything else about the payload, and before a stream is created for it.
     if (bytes > this.cfg.maxBatchBytes) return { status: 'too_large', maxBytes: this.cfg.maxBatchBytes }
+
+    // Registration before writes (D61). Before any quota, metering or group, and with no await:
+    // a refused append is stored nowhere, counted nowhere, and waits for nothing (D37's bound
+    // stays what it was; review M-1). The registration runs in the background (`kick`), at most
+    // one call per stream at a time and none during its backoff, whatever the senders do.
+    if (this.mode() === 'logged') {
+      const s = known ?? this.createStream(req.tenant, req.epoch)
+      if (!s.registered) {
+        this.kick(req.tenant)
+        if (!this.accepts(s)) return this.registeringRefusal()
+      }
+    }
     // What this tenant holds, including what is waiting in the open group.
     let waiting = 0
     for (const p of this.group) if (p.req.tenant === req.tenant) waiting += p.bytes
@@ -548,10 +838,13 @@ export class Shard extends DurableObject<ShardEnv> {
       if (metered.w.add(req.seriesIds, req.seriesLimit ?? 0)) metered.dirtySince ??= now
     }
 
+    // A span or log batch's time bounds (D72), once, for the tail reads that skip by time: the
+    // entry table's length fields and one column of u32 pairs; a metric batch reads one byte.
+    const bounds = batchTimeBounds(req.payload)
     return new Promise<AppendResult>((resolve, reject) => {
       this.inFlight++
       this.pendingBytes += bytes
-      this.group.push({ req, bytes, now, joined: [], resolve, reject })
+      this.group.push({ req, bytes, now, bounds, joined: [], resolve, reject })
       this.groupBytes += bytes
       if (this.groupBytes >= this.cfg.maxGroupBytes) this.commitSoon(true)
       else this.commitSoon(false)
@@ -592,15 +885,21 @@ export class Shard extends DurableObject<ShardEnv> {
         const touched = new Set<string>()
         for (const p of group) {
           const { req } = p
-          const s = this.stream(req.tenant, req.epoch)
+          // `logged` mode created the stream before the append joined (and only a stream that
+          // accepts joins); `lazy` creates it here, with its first batch, as before D61.
+          const s = this.streams.get(req.tenant) ?? (this.mode() === 'lazy' ? this.createStream(req.tenant, req.epoch) : null)
+          if (!s || !this.accepts(s)) {
+            out.push(this.registeringRefusal())
+            continue
+          }
           if (req.epoch > s.epoch) {
             s.epoch = req.epoch
             sql.exec(`UPDATE stream SET epoch = ? WHERE tenant = ?`, s.epoch, req.tenant)
           }
           const seq = s.nextSeq
           sql.exec(
-            `INSERT INTO batch (tenant, seq, fingerprint, rows, bytes, at, payload) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            req.tenant, seq, req.fingerprint, req.rows, p.bytes, p.now, req.payload,
+            `INSERT INTO batch (tenant, seq, fingerprint, rows, bytes, at, payload, min_ts, max_ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            req.tenant, seq, req.fingerprint, req.rows, p.bytes, p.now, req.payload, p.bounds?.minTs ?? null, p.bounds?.maxTs ?? null,
           )
           s.nextSeq = seq + 1
           s.bufferedBytes += p.bytes
@@ -832,13 +1131,25 @@ export class Shard extends DurableObject<ShardEnv> {
    * the caller would need, it says so instead of returning a result with a hole in it.
    *
    * Without `opts` (the form every caller used before D48): every batch above `aboveSeq`, whole,
-   * in one answer. With `opts`: only the rows the filter keeps (time range, metric names, exact
-   * label values, a range of series keys), in pages of at most `maxBytes`, each with `page`;
+   * in one answer. With `opts`: only the rows the filter keeps (signals, time range, metric names,
+   * exact label values, a range of series keys), in pages of at most `maxBytes`, each with `page`;
    * `page.next` continues the read where it stopped, through the same `through`. A page never
    * holds part of a batch's kept rows: if they alone exceed `maxBytes` the answer is
    * `page_limit`. Every page checks the discard fence against the read's watermark: rows
    * above it discarded since the first page refuse the rest (`stale_watermark`), even rows
    * already returned (stricter than needed, and simple).
+   *
+   * Signals (2026-11-19, `TailFilter.signals`): the shards of `{pool}/traces` and `{pool}/logs`
+   * hold span and log batches (contracts/BATCH.md, "Streams per signal"). A filtered read keeps
+   * only the signals it names; the series fields select metric rows only, and a span or log batch
+   * the read admits is returned whole. The time range selects metric rows, and (D72) span and
+   * log batches whole by the bounds recorded at append: one wholly outside the range is skipped,
+   * decided from the index `batch_time` without reading its payload, and one without bounds is
+   * kept. A read that admits only metric batches (`signals: [1]`) looks at no bounds and reads as
+   * before D72 (re-check of D72, r2-m-2). One call considers at most `tailScanMaxBatches` batches, skipped ones included, and
+   * examines at most `tailScanMaxBytes` of them (review of D72, M-1). A metrics read should pass
+   * `signals: [1]`: a shard of an earlier release ignores the field and refuses (throws) on a
+   * span or log batch, so a caller must also read only its signal's shards by name.
    */
   async tailRead(tenant: string, incarnation: number, aboveSeq: number, opts?: TailReadOptions): Promise<TailResult> {
     if (this.refusal) this.refused()
@@ -848,7 +1159,18 @@ export class Shard extends DurableObject<ShardEnv> {
       // No stream here. A caller that names one (an incarnation the ledger registered) is
       // told the shard does not hold it, so the loss shows instead of an empty tail (review
       // R-10); one that names none (0) and so expects nothing gets nothing.
-      if (incarnation !== 0) return { status: 'incarnation_mismatch', incarnation: 0 }
+      if (incarnation !== 0) {
+        if (!this.ledgerNs) return { status: 'incarnation_mismatch', incarnation: 0 }
+        // D61: the shard lost the stream the plan names. Refusing alone would refuse every
+        // later query for as long as the ledger names the lost stream, which is until the
+        // tenant writes here again (spec F6, `LIVE_impl`). So: start a fresh stream (the row
+        // first, before any await, so concurrent reads are answered with the same one), newer
+        // than the one named, register it, and name it. The next plan names it; read from 0 it
+        // is empty, which is right: it holds nothing acknowledged.
+        const fresh = this.createStream(tenant, 0, incarnation)
+        await this.register(tenant)
+        return { status: 'incarnation_mismatch', incarnation: this.streams.get(tenant)?.incarnation ?? fresh.incarnation }
+      }
       const empty: TailResult = { status: 'ok', incarnation: 0, through: aboveSeq, batches: [] }
       return opts === undefined ? empty : { ...empty, page: { v: TAIL_READ_VERSION, next: null, scannedBatches: 0, scannedBytes: 0 } }
     }
@@ -890,10 +1212,24 @@ export class Shard extends DurableObject<ShardEnv> {
     let scannedBytes = 0
     let next: number | null = null
     // Row by row from SQLite (nothing is awaited here), so the page holds what it returns and
-    // one stored batch, not the tail.
-    for (const r of this.ctx.storage.sql.exec(
-      `SELECT seq, rows, payload FROM batch WHERE tenant = ? AND seq BETWEEN ? AND ? AND payload IS NOT NULL ORDER BY seq`, tenant, from, through,
-    )) {
+    // one stored batch, not the tail. One call considers the batches `from … upto`, at most
+    // `tailScanMaxBatches` of them, and examines at most `tailScanMaxBytes` of those; the rest is
+    // the next page's (D48; review of D72, M-1). With a time range, in a read that admits span or
+    // log batches (`f.byBounds`), a span or log batch whose recorded bounds lie wholly outside the
+    // range (D72) is skipped in SQL, decided from the index `batch_time` (`TIMED_TAIL_SQL`), never
+    // from the row: its payload is not read. A batch without bounds (a metric batch, or one stored
+    // before schema 3 or by the release before) has no entry there and is always read; `filterBatch`
+    // decides as before. A skipped batch is not examined: it counts in neither `scannedBatches` nor
+    // `scannedBytes`. Every other read, a metrics query's ranged read included, runs the statement
+    // it ran before D72 (`PLAIN_TAIL_SQL`): it could skip nothing, and the index lookup is a second
+    // row read (billed) per batch (re-check of D72, r2-m-2).
+    const upto = Math.min(through, from + Math.max(1, this.cfg.tailScanMaxBatches) - 1)
+    const rows = f.byBounds
+      ? this.ctx.storage.sql.exec(TIMED_TAIL_SQL, tenant, from, upto, ...this.skipArgs(tenant, f))
+      : this.ctx.storage.sql.exec(PLAIN_TAIL_SQL, tenant, from, upto)
+    for (const r of rows) {
+      // (Checked here, not in `TIMED_TAIL_SQL`: there it would read every row's record, skipped ones too.)
+      if (r.payload === null) continue
       const seq = r.seq as number
       if (scannedBytes >= this.cfg.tailScanMaxBytes) {
         next = seq
@@ -912,13 +1248,15 @@ export class Shard extends DurableObject<ShardEnv> {
       }
       if (!kept) continue
       if (bytes + kept.bytes.byteLength > limit) {
-        if (batches.length === 0) return { status: 'page_limit', seq, bytes: kept.bytes.byteLength, maxBytes: limit }
+        if (batches.length === 0) return { status: 'page_limit', seq, bytes: kept.bytes.byteLength, maxBytes: limit, last: this.lastKept(tenant, f, seq, through) }
         next = seq
         break
       }
       batches.push({ seq, rows: kept.rows, payload: kept.bytes })
       bytes += kept.bytes.byteLength
     }
+    // The call's batches ended before the tail's: the next page starts after them.
+    if (next === null && upto < through) next = upto + 1
     const page: TailPage = {
       v: TAIL_READ_VERSION,
       next: next === null ? null : encodeCursor({ inc: s.incarnation, above: aboveSeq, through, seq: next, ...binding }),
@@ -926,6 +1264,187 @@ export class Shard extends DurableObject<ShardEnv> {
       scannedBytes,
     }
     return { status: 'ok', incarnation: s.incarnation, through, batches, page }
+  }
+
+  /** The arguments of `SKIPPED_BY_BOUNDS`: the tenant, then the read's range as SQL integers. */
+  private skipArgs(tenant: string, f: CompiledFilter): [string, number, number] {
+    return [tenant, Math.max(f.minTs, Number.MIN_SAFE_INTEGER), Math.min(f.maxTs, Number.MAX_SAFE_INTEGER)]
+  }
+
+  /**
+   * `page_limit`'s `last` (review of D72, n-1): true when no batch after `seq`, up to `through`, can
+   * hold a row this read keeps by its time bounds, so the batch's bytes complete the read. Without
+   * a time range, or in a read that admits no span or log batch (nothing is skipped by bounds), only
+   * `through` itself is last. Otherwise the batches after `seq` the range does not skip are looked
+   * for in the index (no payload is read), at most `tailScanMaxBatches` of them: false when one is
+   * found, or when the look stops before `through`.
+   */
+  private lastKept(tenant: string, f: CompiledFilter, seq: number, through: number): boolean {
+    if (seq >= through) return true
+    if (!f.byBounds) return false
+    const upto = Math.min(through, seq + Math.max(1, this.cfg.tailScanMaxBatches))
+    const kept = this.ctx.storage.sql
+      .exec(`SELECT b.seq AS seq FROM batch AS b WHERE b.tenant = ? AND b.seq > ? AND b.seq <= ? AND NOT ${SKIPPED_BY_BOUNDS} LIMIT 1`, tenant, seq, upto, ...this.skipArgs(tenant, f))
+      .toArray()
+    return kept.length === 0 && upto === through
+  }
+
+  /**
+   * What an append does before it is accepted, without a batch (D61): the tenant's stream in
+   * this shard exists (a fresh incarnation if the shard holds none) and its registration is
+   * asked of the ledger once (awaited, up to `registerTimeoutMs`), unless already confirmed;
+   * the rest goes on in the background. For the janitor, which needs a shard that lost a stream
+   * to start and register a fresh one so the old incarnation's files can be judged dead (spec
+   * F16), and for a map change or a new tenant, which can register every new slot before
+   * senders write to it (review m-4). Holds no payload; not bounded by D37.
+   */
+  async ensureStream(tenant: string): Promise<EnsureStreamResult> {
+    if (this.refusal) this.refused()
+    if (typeof tenant !== 'string' || !TENANT_ID.test(tenant)) throw new Error('shard: tenant id must match [A-Za-z0-9_-]{1,64}')
+    let s = this.streams.get(tenant)
+    if (!this.ledgerNs) return { incarnation: s?.incarnation ?? 0, registered: s?.registered ?? false }
+    s ??= this.createStream(tenant, 0)
+    if (!s.registered) await this.register(tenant)
+    const now = this.streams.get(tenant) ?? s
+    return { incarnation: now.incarnation, registered: now.registered }
+  }
+
+  // ───────────────────────────── registration (D61) ─────────────────────────────
+
+  private newRegistration(incarnation: number, now: number): Registration {
+    return { incarnation, since: now, attempts: 0, at: now, inFlight: null, lastError: null, reported: false }
+  }
+
+  /** The registration schedule of this stream's incarnation. */
+  private registration(tenant: string, s: Stream): Registration {
+    let r = this.regs.get(tenant)
+    if (!r || r.incarnation !== s.incarnation) this.regs.set(tenant, (r = this.newRegistration(s.incarnation, Date.now())))
+    return r
+  }
+
+  /** Start a registration call for this stream if none is in flight and its backoff is over. Never waits. */
+  private kick(tenant: string): void {
+    const s = this.streams.get(tenant)
+    if (!this.ledgerNs || !s || s.registered) return
+    const r = this.registration(tenant, s)
+    if (r.inFlight === null && r.at <= Date.now()) void this.register(tenant)
+  }
+
+  /**
+   * One registration call for this stream (single-flight: a caller during a call gets that
+   * call's answer). Resolves true once the ledger has answered it as logged; never throws.
+   */
+  private register(tenant: string): Promise<boolean> {
+    const s = this.streams.get(tenant)
+    if (!s) return Promise.resolve(false)
+    if (s.registered) return Promise.resolve(true)
+    const ns = this.ledgerNs
+    if (!ns) return Promise.resolve(false)
+    const r = this.registration(tenant, s)
+    if (r.inFlight) return r.inFlight
+    const call = this.callLedger(tenant, r, ns).finally(() => {
+      if (r.inFlight === call) r.inFlight = null
+    })
+    r.inFlight = call
+    this.ctx.waitUntil(call)
+    return call
+  }
+
+  private async callLedger(tenant: string, r: Registration, ns: DurableObjectNamespace<Ledger>): Promise<boolean> {
+    const name = this.ctx.id.name ?? ''
+    // If this call is lost with the instance, the alarm makes it again after this (set before
+    // the call: the runtime sends nothing out until the alarm's write is durable).
+    r.at = Date.now() + this.cfg.registerTimeoutMs + this.cfg.registerBackoffMs
+    await this.arm().catch(() => undefined)
+    let logged = false
+    await this.acquire()
+    try {
+      r.attempts++
+      this.counters.registerCalls++
+      const ledger = ns.get(ns.idFromName(tenant))
+      try {
+        const answer = await within(ledger.registerStream({ shard: name, incarnation: r.incarnation }), this.cfg.registerTimeoutMs, `the ledger of ${tenant}`)
+        // A ledger of a release before D61 sends no `logged`: not logged (contracts/ledger.ts).
+        logged = answer.logged === true
+        r.lastError = logged ? null : 'registered, not yet logged'
+      } catch (e) {
+        r.lastError = (e instanceof Error ? e.message : String(e)).slice(0, 300)
+        await this.lowerThanLedger(tenant, r, ledger)
+      }
+    } finally {
+      this.release()
+    }
+    if (logged) this.confirm(tenant, r.incarnation)
+    else this.backoff(tenant, r)
+    await this.arm().catch(() => undefined)
+    return logged
+  }
+
+  /** The ledger answered this incarnation's registration as logged: remember it (one row write), and stop scheduling it. */
+  private confirm(tenant: string, incarnation: number): void {
+    const s = this.streams.get(tenant)
+    if (!s || s.incarnation !== incarnation) return
+    if (!s.registered) {
+      this.ctx.storage.sql.exec(`UPDATE stream SET registered = ? WHERE tenant = ? AND incarnation = ?`, incarnation, tenant, incarnation)
+      s.registered = true
+    }
+    if (this.regs.get(tenant)?.incarnation === incarnation) this.regs.delete(tenant)
+  }
+
+  private backoff(tenant: string, r: Registration): void {
+    const now = Date.now()
+    r.at = now + Math.min(this.cfg.registerBackoffMaxMs, this.cfg.registerBackoffMs * 2 ** Math.min(20, Math.max(0, r.attempts - 1)))
+    if (!r.reported && now - r.since >= this.cfg.registerAlertMs && this.regs.get(tenant) === r) {
+      r.reported = true
+      const s = this.streams.get(tenant)
+      console.error(
+        `shard ${this.ctx.id.name ?? ''}: the registration of ${tenant}'s stream ${r.incarnation} has not been logged by its ledger after ${Math.round((now - r.since) / 1000)} s ` +
+          `(${r.attempts} calls; last: ${r.lastError ?? 'none'}); ${s && s.nextSeq > 1 ? 'it keeps accepting (it holds rows from before D61)' : 'its writes are refused until it is'}`,
+      )
+    }
+  }
+
+  /**
+   * S5 (spec/README.md): the ledger refuses an incarnation lower than its own for good, which
+   * after a storage loss across a clock step back is this new stream's. A stream that holds
+   * nothing acknowledged (never registered, no batch) can start again above the ledger's
+   * incarnation, read from `loggedWatermarks()`, without losing anything (review m-7). One
+   * that holds rows (made before D61) cannot be renumbered; it stays refused by the ledger and
+   * is reported, as before D61.
+   */
+  private async lowerThanLedger(tenant: string, r: Registration, ledger: DurableObjectStub<Ledger>): Promise<void> {
+    const name = this.ctx.id.name ?? ''
+    const s = this.streams.get(tenant)
+    if (!s || s.registered || s.incarnation !== r.incarnation || s.nextSeq !== 1) return
+    let theirs: number | undefined
+    try {
+      theirs = (await within(ledger.loggedWatermarks(), this.cfg.registerTimeoutMs, `the ledger of ${tenant}`)).find((w) => w.shard === name)?.incarnation
+    } catch {
+      return // the ledger cannot say: try the registration again later
+    }
+    if (theirs === undefined || theirs <= r.incarnation || !Number.isSafeInteger(theirs + 1)) return // some other failure
+    // Judged again after the await: still the same new stream, still holding nothing.
+    if (this.streams.get(tenant) !== s || s.registered || s.incarnation !== r.incarnation || s.nextSeq !== 1 || this.group.some((p) => p.req.tenant === tenant)) return
+    const fresh = theirs + 1
+    this.ctx.storage.sql.exec(`UPDATE stream SET incarnation = ?, registered = 0 WHERE tenant = ? AND incarnation = ?`, fresh, tenant, s.incarnation)
+    console.error(`shard ${name}: ${tenant}'s new stream ${s.incarnation} is below the ledger's ${theirs} (a clock that stepped back across a storage loss: spec S5); it holds nothing acknowledged, so it starts again as ${fresh}`)
+    s.incarnation = fresh
+    this.regs.set(tenant, this.newRegistration(fresh, Date.now()))
+  }
+
+  /** A slot among `maxRegistrations` registration calls in flight (review m-5). */
+  private acquire(): Promise<void> {
+    if (this.regSlots < Math.max(1, this.cfg.maxRegistrations)) {
+      this.regSlots++
+      return Promise.resolve()
+    }
+    return new Promise<void>((resolve) => this.regWaiters.push(resolve))
+  }
+
+  private release(): void {
+    const next = this.regWaiters.shift()
+    if (next) next() // the slot passes to the next call
+    else this.regSlots--
   }
 
   /** Per-stream state, for the ledger, for tests and for operators. */
@@ -956,6 +1475,8 @@ export class Shard extends DurableObject<ShardEnv> {
     }
     if (!this.marked && this.env.CONFIG && this.anyPending()) due = Math.min(due, Date.now() + this.cfg.notifyRetryMs)
     for (const at of this.fingerprintsFrom.values()) due = Math.min(due, at + this.cfg.fingerprintTtlMs)
+    // A registration's next call (or the deadline of one in flight): the same one alarm (D61).
+    for (const r of this.regs.values()) due = Math.min(due, r.at)
     const current = await this.ctx.storage.getAlarm()
     if (due === Infinity) {
       if (current !== null) await this.ctx.storage.deleteAlarm()
@@ -1011,6 +1532,10 @@ export class Shard extends DurableObject<ShardEnv> {
     }
     // 4. Seals made above, and anything a previous attempt could not send.
     await this.deliver()
+    // 5. Registrations whose backoff is over, or whose call was lost with an instance (D61).
+    //    Each call holds a slot of `maxRegistrations` and waits at most `registerTimeoutMs`.
+    const due = [...this.regs].filter(([, r]) => r.inFlight === null && r.at <= now).map(([tenant]) => this.register(tenant))
+    if (due.length > 0) await Promise.allSettled(due)
     await this.arm()
   }
 }

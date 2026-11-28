@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>viz spike s12: reload on a phone</title>
+</head>
+<body>
+<h1>Does a reload come back to the same place?</h1>
+<p>A test of the viz design system v9 pages on a real phone, about two minutes. Every page holds mock data only.</p>
+
+<h2>For each page below, three times</h2>
+<ol>
+<li>Open the page. Scroll to the very bottom with your finger.</li>
+<li>Note what is at the top of the screen: the chart, the heading or the line of text.</li>
+<li>Press the browser's reload button. Wait two seconds without touching the screen.</li>
+<li>Note whether the page comes back at the same place, or somewhere else. If it is somewhere else, note roughly how far: half a screen, one screen, several screens.</li>
+</ol>
+<p>Then send back, per page: the phone, the browser, and for each of the three tries "same place" or "somewhere else" (and how far).</p>
+
+<h2>Pages</h2>
+<ol>
+<li><a href="dist/preview/Chart">Chart preview</a> (the page the review measured most: 22 of 34 reloads landed short in an emulated phone)</li>
+<li><a href="dist/reference">Reference</a> (every component, very long)</li>
+<li><a href="reviews/system-v9/compositions/charts">Charts composition</a></li>
+<li><a href="reviews/system-v9/compositions/dashboard">Dashboard composition</a></li>
+</ol>
+
+<p>If you have time: on the Chart preview, repeat the test about 20 times. If it ever comes back somewhere else, that is enough to know it is real.</p>
+</body>
+</html>

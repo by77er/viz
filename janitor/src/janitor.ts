@@ -1,14 +1,17 @@
-import { TENANT_ID, type Table, type Watermark } from '../../contracts/ledger'
+import { LOG_TABLES, METRIC_TABLES, type SignalTable, TABLES, TENANT_ID, TRACE_TABLES, type LoggedWatermark } from '../../contracts/ledger'
 import { COMPACTION_INPUTS_META, DEFAULT_POLICY, decodeCompactionInputs } from '../../compact/src/compact'
 import type { Ledger } from '../../ledger/src/ledger'
 import type { Publisher } from '../../publisher/src/publisher'
+import type { EnsureStreamResult } from '../../shard/src/shard'
 
 /**
  * Retention and physical deletion for one tenant. Three stateless jobs; the state they
  * need (what was removed, when, and whether that is logged) is in the tenant's ledger.
  *
- *   expireTenant   ledger.expire for days older than the tenant's policy. Removes files
- *                  from the ledger only; no object is touched.
+ *   expireTenant   ledger.expire for days older than the tenant's policy: metrics by
+ *                  `metric_samples_days`, spans with their trace_index by `trace_days`, logs by
+ *                  `log_days` (stage 2 of traces and logs). Removes files from the ledger
+ *                  only; no object is touched.
  *   purgeTenant    deletes the objects of keys the ledger removed (by expire or by
  *                  compaction), but only those the ledger itself calls deletable: removal
  *                  logged, grace passed, not live (contracts/ledger.ts, tombstones); and,
@@ -17,8 +20,12 @@ import type { Publisher } from '../../publisher/src/publisher'
  *                  snapshot references the file, its grace passed.
  *   sweepOrphans   deletes objects under the tenant's data prefix that the ledger has
  *                  never listed and never will (a flush or compaction that failed after
- *                  its PUT): a flush file once its stream's LOGGED watermark covers it, a
- *                  compaction output once one of its inputs is gone for good.
+ *                  its PUT): a flush file once its stream's LOGGED watermark covers it or a
+ *                  newer incarnation's registration is LOGGED, a compaction output once one
+ *                  of its inputs is gone for good. A flush file of the incarnation the ledger
+ *                  names that waits past the grace makes it ask that stream's shard
+ *                  (`ensureStream`): a shard that lost the stream starts and registers a fresh
+ *                  one, after which the file is dead (spec F16; D61).
  *
  * No job writes an object, and deletes go to R2 as one request per thousand keys.
  */
@@ -34,7 +41,27 @@ export interface JanitorEnv {
    * ledger's rules alone, as before the publisher existed.
    */
   PUBLISHER?: PublisherGateNamespace
+  /**
+   * The shards (D61). The orphan sweep asks a shard about a stream whose flush files wait for a
+   * unit that may never come (`ensureStream`). Absent: it does not ask, and those files wait
+   * for the tenant's next write to that shard (spec F16, the leak this closes).
+   */
+  SHARD?: ShardGateNamespace
 }
+
+/** What the janitor asks of a shard (shard/src/shard.ts): `ensureStream`. */
+export interface ShardGate {
+  ensureStream(tenant: string): Promise<EnsureStreamResult>
+}
+
+/** The shards' namespace, as far as the janitor uses it: a shard is `idFromName(its exact name)`. */
+export interface ShardGateNamespace {
+  idFromName(name: string): DurableObjectId
+  get(id: DurableObjectId): ShardGate
+}
+
+/** How long the sweep waits for a shard's `ensureStream` (which may wait up to its own registration timeout, 5 s). */
+export const SHARD_GATE_TIMEOUT_MS = 10_000
 
 /** What the janitor asks of the cell's publisher: its deletion hand-off (publisher/src/publisher.ts). */
 export type PublisherGate = Pick<Publisher, 'safeToDelete' | 'acknowledgeDeleted'>
@@ -65,16 +92,26 @@ async function within<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
 export interface RetentionPolicy {
   /** Keep this many whole UTC days of metric samples (and their series files) besides today. */
   metric_samples_days: number
+  /**
+   * Spans and their `trace_index` files, and log records (added 2026-11-19, stage 2 of traces
+   * and logs), by the fields control writes (`trace_days`, `log_days`, control/src/ops-settings.ts).
+   * A record without one keeps that signal for `DEFAULT_SIGNAL_DAYS`, whatever its metrics say.
+   * Null: the record has the field but it cannot be read; that signal's tables expire nothing
+   * until it is fixed, and the metric tables and the other signal expire as usual (review m-1).
+   */
+  trace_days: number | null
+  log_days: number | null
 }
 
-export const DEFAULT_RETENTION: RetentionPolicy = { metric_samples_days: 30 }
+/** Days of spans and of logs kept for a tenant whose record does not name them: the deployment default, as for metrics. */
+export const DEFAULT_SIGNAL_DAYS = 30
+export const DEFAULT_RETENTION: { metric_samples_days: number; trace_days: number; log_days: number } = { metric_samples_days: 30, trace_days: DEFAULT_SIGNAL_DAYS, log_days: DEFAULT_SIGNAL_DAYS }
 /** Grace between a key leaving the ledger and its object being deleted. Longer than any query may run. */
 export const DEFAULT_DELETE_GRACE_MS = 3_600_000
 /** Age at which an object the ledger does not know is taken for an orphan. */
 export const DEFAULT_ORPHAN_GRACE_MS = 24 * 3_600_000
 
 const DAY_MS = 86_400_000
-const TABLES: readonly Table[] = ['metric_samples', 'metric_series']
 const cellOf = (env: JanitorEnv): string => env.CELL || 'cell-0'
 const ledgerOf = (env: JanitorEnv, tenant: string): DurableObjectStub<Ledger> => {
   if (!TENANT_ID.test(tenant)) throw new Error('janitor: tenant id must match [A-Za-z0-9_-]{1,64}')
@@ -90,9 +127,12 @@ const ledgerOf = (env: JanitorEnv, tenant: string): DurableObjectStub<Ledger> =>
  *     `metric_samples_days` not a positive integer): `unreadable`. Nothing is expired for the
  *     tenant until the record is fixed (review R-1: falling back to the default could be
  *     SHORTER than what the tenant asked for; refuse rather than guess).
+ *   - A record whose `trace_days` or `log_days` is present but not a positive integer: `ok`, with
+ *     that field null and the reason in `unreadable`. Only that signal is refused, for the same
+ *     reason as R-1; the metric expiry never depends on the signal fields (review m-1).
  */
 export type RetentionRead =
-  | { status: 'ok'; policy: RetentionPolicy; source: 'record' | 'default' }
+  | { status: 'ok'; policy: RetentionPolicy; source: 'record' | 'default'; unreadable?: string[] }
   | { status: 'unreadable'; reason: string }
 
 /** Version of the retention record this code reads (contracts/COMPATIBILITY.md §3.1). */
@@ -111,7 +151,18 @@ export function parseRetention(raw: string): RetentionRead {
   if (v !== RETENTION_RECORD_VERSION) return unreadable(`version ${JSON.stringify(v)}; this code reads version ${RETENTION_RECORD_VERSION}`)
   const days = (rec as Partial<RetentionPolicy>).metric_samples_days
   if (typeof days !== 'number' || !Number.isSafeInteger(days) || days < 1) return unreadable(`metric_samples_days is ${JSON.stringify(days)}, not a positive integer`)
-  return { status: 'ok', policy: { metric_samples_days: days }, source: 'record' }
+  // Optional; when present they must be readable too. A bad one refuses its own signal (null), never
+  // a guess, and never the metric tables or the other signal (review m-1).
+  const reasons: string[] = []
+  const signal = (k: 'trace_days' | 'log_days'): number | null => {
+    const x = (rec as Record<string, unknown>)[k]
+    if (x === undefined) return DEFAULT_SIGNAL_DAYS
+    if (typeof x === 'number' && Number.isSafeInteger(x) && x >= 1) return x
+    reasons.push(`${k} is ${JSON.stringify(x)}, not a positive integer`)
+    return null
+  }
+  const policy: RetentionPolicy = { metric_samples_days: days, trace_days: signal('trace_days'), log_days: signal('log_days') }
+  return { status: 'ok', policy, source: 'record', ...(reasons.length ? { unreadable: reasons } : {}) }
 }
 
 export async function readRetention(env: Pick<JanitorEnv, 'CONFIG'>, tenant: string): Promise<RetentionRead> {
@@ -124,9 +175,23 @@ export async function readRetention(env: Pick<JanitorEnv, 'CONFIG'>, tenant: str
  * The first day that is kept: files of days strictly before it expire. A policy longer than
  * the time since 1970 keeps everything (no file has an earlier day: contracts/TABLES.md).
  */
-export const retentionCutoffDay = (now: number, policy: RetentionPolicy): string => {
-  const cutoff = now - policy.metric_samples_days * DAY_MS
+export const retentionCutoffDay = (now: number, policy: Pick<RetentionPolicy, 'metric_samples_days'>): string => cutoffDay(now, policy.metric_samples_days)
+
+/** The first day kept when `days` whole days are kept besides today. */
+export const cutoffDay = (now: number, days: number): string => {
+  const cutoff = now - days * DAY_MS
   return cutoff <= 0 ? '1970-01-01' : new Date(cutoff).toISOString().slice(0, 10)
+}
+
+/** What retention did for the span and log tables, one entry per ledger request (`ExpireResult.signals`). */
+export interface SignalExpiry {
+  tables: SignalTable[]
+  /** The first day kept. */
+  beforeDay: string
+  keepDays: number
+  removed: number
+  /** The ledger refused or failed this request (a ledger of a release before these tables answers `unknown table`): nothing of it expired; the next run tries again. */
+  error?: string
 }
 
 export interface ExpireResult {
@@ -136,8 +201,21 @@ export interface ExpireResult {
   keepDays: number | null
   /** Keys removed from the ledger by this run. */
   removed: string[]
-  /** Set when the tenant's retention record cannot be read: nothing was expired. */
+  /**
+   * Set when the tenant's retention record, or part of it, cannot be read: why. With `beforeDay`
+   * null the whole record (nothing was expired). Otherwise `trace_days` or `log_days` (review m-1):
+   * the metric tables and any readable signal were expired, and the tables of an unreadable
+   * signal were not (they have no entry in `signals`). Either way the run is looked at again
+   * hourly and the reason shown in the maintenance marker (stack/src/maintain.ts).
+   */
   refused?: string
+  /**
+   * The span and log tables (stage 2), after the metric tables and in requests of their own, so
+   * the metric expiry never depends on them: one request when `trace_days` and `log_days` give
+   * the same day, else one per signal; none for a signal whose field cannot be read. Absent when
+   * the run was refused.
+   */
+  signals?: SignalExpiry[]
 }
 
 export async function expireTenant(env: JanitorEnv, tenant: string, now = Date.now()): Promise<ExpireResult> {
@@ -153,8 +231,40 @@ export async function expireTenant(env: JanitorEnv, tenant: string, now = Date.n
   const beforeDay = retentionCutoffDay(now, policy)
   // Both tables in ONE ledger change, so a samples file and its series file leave together
   // (contracts/TABLES.md, "Pairing"; review R-5).
-  const expired = await ledger.expire({ tables: ['metric_samples', 'metric_series'], beforeDay })
-  return { beforeDay, keepDays: policy.metric_samples_days, removed: expired.removed }
+  const expired = await ledger.expire({ tables: [...METRIC_TABLES], beforeDay })
+  const removed = [...expired.removed]
+  // Spans with their trace_index files (one change: a unit's spans and trace_index files leave
+  // together, contracts/TRACES.md), and logs. A ledger with no such files removes nothing and
+  // uses no version, so a tenant without traces or logs sees no change in its log.
+  const groups = new Map<string, { tables: SignalTable[]; keepDays: number }>()
+  for (const [tables, keepDays] of [[TRACE_TABLES, policy.trace_days], [LOG_TABLES, policy.log_days]] as const) {
+    // Its field cannot be read: these tables expire nothing until it is fixed (fail closed per signal).
+    if (keepDays === null) continue
+    const day = cutoffDay(now, keepDays)
+    const g = groups.get(day)
+    if (g) g.tables.push(...tables)
+    else groups.set(day, { tables: [...tables], keepDays })
+  }
+  const signals: SignalExpiry[] = []
+  for (const [day, g] of groups) {
+    const e: SignalExpiry = { tables: g.tables, beforeDay: day, keepDays: g.keepDays, removed: 0 }
+    try {
+      const r = await ledger.expire({ tables: g.tables, beforeDay: day })
+      e.removed = r.removed.length
+      removed.push(...r.removed)
+    } catch (err) {
+      e.error = (err instanceof Error ? err.message : String(err)).slice(0, 300)
+      console.error(`janitor: expiring ${g.tables.join(', ')} of ${tenant} failed (${e.error}); the next run tries again`)
+    }
+    signals.push(e)
+  }
+  if (read.unreadable) {
+    const kept = [...(policy.trace_days === null ? TRACE_TABLES : []), ...(policy.log_days === null ? LOG_TABLES : [])]
+    const refused = `${read.unreadable.join('; ')}: ${kept.join(', ')} not expired`
+    console.error(`janitor: retention:${tenant} is partly unreadable (${refused}); the metric tables and any readable signal were expired, the rest waits until it is fixed`)
+    return { beforeDay, keepDays: policy.metric_samples_days, removed, refused, signals }
+  }
+  return { beforeDay, keepDays: policy.metric_samples_days, removed, signals }
 }
 
 export interface PurgeResult {
@@ -269,6 +379,12 @@ export interface OrphanResult {
    */
   kept: { key: string; why: 'young' | 'pending_unit' | 'unknown_stream' | 'unknown_name' | 'inputs_remain' | 'unknown_inputs'; detail?: string }[]
   /**
+   * Shards asked about a stream whose flush files wait past the grace for a unit (D61; spec F16),
+   * once per stream per run: what each answered, or why it could not (a shard of a release
+   * before D61 has no `ensureStream`: review m-6). Their files are judged again by a later run.
+   */
+  ensured: { shard: string; incarnation?: number; registered?: boolean; error?: string }[]
+  /**
    * When the youngest object kept for something a write or time can still change (`young`,
    * `pending_unit`, `unknown_stream`, `inputs_remain`) was uploaded; absent when there is none.
    * Lets the caller stop sweeping for objects that have waited too long (review S-6).
@@ -281,21 +397,28 @@ export interface OrphanResult {
  * has reached its range (a unit for that range is answered as a replay and adds no file),
  * and not if the ledger has a newer incarnation of the stream whose registration is LOGGED
  * (a lower one is then refused for good). Anything else may be the files of a unit that is
- * about to be reported.
+ * about to be reported. (contracts/ledger.ts `orphanCheck`.)
  *
- * `orphanCheck` reports each stream's COMMITTED incarnation with the logged watermark of that
- * incarnation. A registration that is committed but not logged can be rolled back by a
- * rebuild, after which a late `addUnit` of the older incarnation is admitted again
- * (spec/README.md F15). The log is a prefix of versions and a unit's version is above its
- * stream's registration, so a logged watermark above 0 for the newer incarnation proves the
- * registration is logged; at 0 this keeps the file.
+ * `orphanCheck` reports each stream's COMMITTED incarnation, the logged watermark of that
+ * incarnation and (D61) `loggedIncarnation`, the newest incarnation whose registration is in
+ * the logged prefix. Only the logged one counts: a registration that is committed but not
+ * logged can be rolled back by a rebuild, after which a late `addUnit` of the older
+ * incarnation is admitted again (spec/README.md F15). A ledger before D61 sends no
+ * `loggedIncarnation`; then a newer incarnation counts only once its logged watermark is above
+ * 0 (the log is a prefix of versions and a unit's version is above its stream's registration,
+ * so that proves the registration is logged), as D30 built it.
+ *
+ * `w` is the stream as the ledger reports it, by its exact name (D38 makes `_` stand for `/`
+ * in a key, so the match is one-to-one).
  */
-function flushFileState(m: RegExpExecArray, logged: Watermark[]): 'dead' | 'pending_unit' | 'unknown_stream' {
-  const [, shard, inc, , seqHi] = m
+function flushFileState(m: RegExpExecArray, logged: LoggedWatermark[]): { state: 'dead' | 'pending_unit' | 'unknown_stream'; w?: LoggedWatermark } {
+  const [, shard, incText, , seqHiText] = m
+  const inc = Number(incText)
   const w = logged.find((x) => x.shard.replaceAll('/', '_') === shard)
-  if (!w) return 'unknown_stream'
-  if (w.incarnation > Number(inc)) return w.seq > 0 ? 'dead' : 'pending_unit'
-  return w.incarnation === Number(inc) && w.seq >= Number(seqHi) ? 'dead' : 'pending_unit'
+  if (!w) return { state: 'unknown_stream' }
+  if (w.incarnation === inc && w.seq >= Number(seqHiText)) return { state: 'dead', w }
+  const newer = w.loggedIncarnation !== undefined ? w.loggedIncarnation > inc : w.incarnation > inc && w.seq > 0
+  return { state: newer ? 'dead' : 'pending_unit', w }
 }
 
 /** Fault-injection points (tests). A hook that runs other work stands for a concurrent job at that point. */
@@ -313,11 +436,14 @@ export async function sweepOrphans(env: JanitorEnv, tenant: string, opts: { grac
   // An age floor for compaction outputs. It is NOT what makes deleting one safe (that is the
   // inputs rule below); it only keeps the sweep off objects a step wrote moments ago.
   const compactGraceMs = Math.max(graceMs, 2 * (opts.maxCompactStepMs ?? DEFAULT_POLICY.maxStepMs))
-  const out: OrphanResult = { listed: 0, deleted: [], kept: [] }
+  const out: OrphanResult = { listed: 0, deleted: [], kept: [], ensured: [] }
+  /** Streams to ask their shard about (exact shard names), after the deletions. */
+  const ask = new Set<string>()
 
   // 1. List first, with each object's metadata (a compaction output's inputs). Whatever is
   //    written after this is not a candidate in this run, and an object missing from this
-  //    listing was deleted before it.
+  //    listing was deleted before it. Every table's prefix of THIS tenant (spans keys lie one
+  //    level deeper, under `hour=HH/`, which the listing includes).
   const objects: { key: string; uploaded: number; inputs?: string }[] = []
   for (const table of TABLES) {
     let cursor: string | undefined
@@ -336,14 +462,14 @@ export async function sweepOrphans(env: JanitorEnv, tenant: string, opts: { grac
   for (let i = 0; i < objects.length; i += 1000) {
     const chunk = objects.slice(i, i + 1000)
     const inputsOf = new Map<string, Awaited<ReturnType<typeof decodeCompactionInputs>>>()
-    const ask = new Set(chunk.map((o) => o.key))
+    const keysToCheck = new Set(chunk.map((o) => o.key))
     for (const o of chunk) {
       if (!COMPACTED_FILE.test(o.key)) continue
       const d = await decodeCompactionInputs(o.key, o.inputs)
       inputsOf.set(o.key, d)
-      if ('inputs' in d) for (const k of d.inputs) if (!present.has(k)) ask.add(k)
+      if ('inputs' in d) for (const k of d.inputs) if (!present.has(k)) keysToCheck.add(k)
     }
-    const check = await ledger.orphanCheck([...ask])
+    const check = await ledger.orphanCheck([...keysToCheck])
     const live = new Set(check.live)
     const known = new Set([...check.live, ...check.tombstoned]) // tombstoned keys go through purgeTenant
     const doomed: string[] = []
@@ -352,9 +478,15 @@ export async function sweepOrphans(env: JanitorEnv, tenant: string, opts: { grac
       const age = now - o.uploaded
       const flush = FLUSH_FILE.exec(o.key)
       if (flush) {
-        const state = flushFileState(flush, check.logged)
-        if (state !== 'dead') out.kept.push({ key: o.key, why: state })
-        else if (age < graceMs) out.kept.push({ key: o.key, why: 'young' })
+        const { state, w } = flushFileState(flush, check.logged)
+        if (state !== 'dead') {
+          out.kept.push({ key: o.key, why: state })
+          // A file of the incarnation the ledger names, waiting past the grace for its unit: the
+          // flush that wrote it may have died with the stream (the shard lost its storage), and
+          // then nothing makes the ledger hear of a newer incarnation until the tenant writes to
+          // that shard again. Ask the shard (spec F16).
+          if (state === 'pending_unit' && w && w.incarnation === Number(flush[2]) && age >= graceMs) ask.add(w.shard)
+        } else if (age < graceMs) out.kept.push({ key: o.key, why: 'young' })
         else doomed.push(o.key)
       } else if (COMPACTED_FILE.test(o.key)) {
         // `replace` admits an output only with EVERY input live. An input that is not live
@@ -375,6 +507,22 @@ export async function sweepOrphans(env: JanitorEnv, tenant: string, opts: { grac
     await opts.hooks?.beforeDelete?.(doomed)
     if (doomed.length > 0) await env.BUCKET.delete(doomed)
     out.deleted.push(...doomed)
+  }
+  // 3. Ask each such stream's shard to hold a registered stream: one holding the stream changes
+  //    nothing; one that lost it starts a fresh incarnation and registers it, which makes the
+  //    old incarnation's files dead once that registration is logged, at a later run. Failures
+  //    keep the files and go on (a shard of a release before D61 has no `ensureStream`).
+  if (env.SHARD) {
+    for (const shard of [...ask].sort()) {
+      try {
+        const r = await within(env.SHARD.get(env.SHARD.idFromName(shard)).ensureStream(tenant), SHARD_GATE_TIMEOUT_MS, `shard ${shard}`)
+        out.ensured.push({ shard, incarnation: r.incarnation, registered: r.registered })
+      } catch (e) {
+        const why = (e instanceof Error ? e.message : String(e)).slice(0, 300)
+        console.error(`janitor: could not ask shard ${shard} about ${tenant}'s stream (${why}); its flush files are kept`)
+        out.ensured.push({ shard, error: why })
+      }
+    }
   }
   const uploaded = new Map(objects.map((o) => [o.key, o.uploaded]))
   for (const k of out.kept) {

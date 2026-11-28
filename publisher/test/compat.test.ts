@@ -91,9 +91,10 @@ describe('versioned storage', () => {
     const after = await runInDurableObject(p, (_i, s) => ({ row: schemaRow(s), dump: withoutVersion(ownDump(dumpOf(s))) }))
     // Every migration after 1 is additive (readableFrom 1): `compat` stays 1.
     expect(after.row).toMatchObject({ version: LATEST, compat: 1 })
-    // Version 2 added the `due` table and version 3 `stage` and `live_next`, all empty; every row of the adopted tables is as it was.
-    for (const t of ['due', 'stage', 'live_next']) expect(after.dump.rows[t], t).toEqual([])
-    const { due: _due, stage: _stage, live_next: _next, ...adopted } = after.dump.rows
+    // Version 2 added the `due` table, version 3 `stage` and `live_next`, version 4 `unpublished`, version 5 `signal_due` and `signal_orphan`, version 6 `rebase`, version 7 the re-bases and rebuilds in steps, all empty; every row of the adopted tables is as it was.
+    const added = ['due', 'stage', 'live_next', 'unpublished', 'signal_due', 'signal_orphan', 'rebase', 'rebase_stage', 'rebase_step', 'rebase_manifest', 'rebuild', 'rebuild_manifest']
+    for (const t of added) expect(after.dump.rows[t], t).toEqual([])
+    const adopted = Object.fromEntries(Object.entries(after.dump.rows).filter(([t]) => !added.includes(t)))
     expect(canon(adopted)).toEqual(canon(V0.rows))
   })
 
@@ -152,6 +153,7 @@ describe('versioned storage', () => {
       ['pending', () => p.pending()],
       ['cursors', () => p.cursors('metric_samples')],
       ['status', () => p.status('metric_samples')],
+      ['unpublished', () => p.unpublished()],
       ['maintain', () => p.maintain()],
       ['sweep', () => p.sweep()],
       ['safeToDelete', () => p.safeToDelete(t)],
@@ -212,6 +214,28 @@ describe('Iceberg metadata written by a newer publisher', () => {
     expect(verify.ok).toBe(false)
     expect(verify.problems.join('\n')).toMatch(/newer publisher/)
   })
+
+  it('after a lost storage, a table a newer publisher evolved is not rebuilt from it (rebuilt in steps since storage version 7); publication waits', async () => {
+    const { cell, t } = await published()
+    const table = 'metric_samples'
+    const n = (await metadataVersions(cell, table)).at(-1)!
+    const meta = await readMetadata(cell, table, n)
+    const evolved = { ...structuredClone(meta), properties: { ...meta.properties, 'viz.format-version': '2' } }
+    await env.BUCKET.put(`${metaDir(cell, table)}v${n + 1}.metadata.json`, JSON.stringify(evolved))
+    await env.BUCKET.put(`${metaDir(cell, table)}version-hint.text`, String(n + 1))
+    const before = await listKeys(`${cell}/iceberg/`)
+    // A publisher of the same cell with nothing in its storage: the rebuild from R2 comes first.
+    const lost = publisher(`${cell}~lost`)
+    expect(await lost.publish([t]).then(() => 'published', (e: Error) => e.message)).toMatch(/^metadata_too_new: .*v\d+\.metadata\.json: viz\.format-version 2/)
+    expect(await lost.pending()).toEqual([t])
+    const rows = await runInDurableObject(lost, (_i, s) => ({
+      live: s.storage.sql.exec(`SELECT COUNT(*) AS n FROM live`).one().n,
+      rebuild: s.storage.sql.exec(`SELECT COUNT(*) AS n FROM rebuild`).one().n,
+      tbl: s.storage.sql.exec(`SELECT COUNT(*) AS n FROM tbl`).one().n,
+    }))
+    expect(rows).toEqual({ live: 0, rebuild: 0, tbl: 0 })
+    expect(await listKeys(`${cell}/iceberg/`)).toEqual(before)
+  })
 })
 
 describe('ledger log objects this code does not know (COMPATIBILITY.md §3.2, §8.7)', () => {
@@ -236,7 +260,8 @@ describe('ledger log objects this code does not know (COMPATIBILITY.md §3.2, §
     ['a header of an unknown kind', (h) => void (h.kind = 'viz.ledger.segment-v2'), /unknown log object kind/],
     ['a change of version 2', (_h, c) => void (c.v = 2), /change version 2/],
     ['a change of an unknown kind', (_h, c) => void (c.kind = 'truncate'), /unknown change kind/],
-    ['a file of a table this code does not know', (_h, c) => void (c.added[0]!.table = 'spans'), /table "spans"/],
+    // Not `spans`, `trace_index` or `logs`: this publisher reads those (test/signals.test.ts). A table no release knows.
+    ['a file of a table this code does not know', (_h, c) => void (c.added[0]!.table = 'profiles'), /table "profiles"/],
   ]
   for (const [what, rewrite, reason] of newer) {
     it(`${what} stops the tenant before that segment: the segments before it are published, nothing after, and it is retried until readable`, async () => {

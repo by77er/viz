@@ -30,6 +30,26 @@ export class BenchPublisher extends Publisher {
     this.seed = x || 1
     return out
   }
+  /**
+   * What the D64 release leaves (`bench/upgrade.bench.test.ts`): the span and log tables never
+   * published, so no cursor, file, manifest or snapshot of them here and no object of them in R2.
+   */
+  async forgetSignalTables(cell: string): Promise<void> {
+    const signal = ['spans', 'trace_index', 'logs']
+    const sql = this.ctx.storage.sql
+    for (const t of signal) {
+      for (const tbl of ['cursor', 'live', 'manifest', 'snap', 'removed']) sql.exec(`DELETE FROM ${tbl} WHERE tbl = ?`, t)
+      sql.exec(`DELETE FROM tbl WHERE name = ?`, t)
+      sql.exec(`DELETE FROM signal_due WHERE job = ?`, `expire:${t}`)
+      for (;;) {
+        const page = await this.env.BUCKET.list({ prefix: `${cell}/iceberg/${t}/`, limit: 1000 })
+        if (page.objects.length === 0) break
+        await this.env.BUCKET.delete(page.objects.map((o) => o.key))
+      }
+    }
+    sql.exec(`DELETE FROM signal_orphan`)
+  }
+
   /** Rows in a table of this object's SQLite (for the checks after a run). */
   async rows(table: string): Promise<number> {
     return this.ctx.storage.sql.exec(`SELECT COUNT(*) AS n FROM ${table}`).one().n as number

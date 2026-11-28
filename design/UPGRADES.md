@@ -77,11 +77,11 @@ first, or a rollback put the reader back); "newer reader" the opposite. Status c
 
 | Class (script) | Defined in | Version | Writer = reader | Older code on newer storage | Newer code on older storage |
 |---|---|---|---|---|---|
-| `Shard` (viz-ingest) | `shard/src/shard.ts` constructor: `config`, `stream`, `batch` (payload = `VZB1` BLOB), `segment`, `notify`, `series_window` (sketch BLOB) | none | the shard | ignores new columns; misreads a new sketch kind (byte 0 other than 1 is read as an exact id list), so the series limit would be wrong; no check at all | `segment.sealed_at` already shows the gap: added to `CREATE TABLE IF NOT EXISTS`, so a shard created before it has no such column and every statement naming it fails (`shard/README.md`, "A schema migration") |
+| `Shard` (viz-ingest) | `shard/src/shard.ts` `SHARD_SCHEMA` (opened with `openSchema`): `config`, `stream` (since v2 `registered`, D61), `batch` (payload = `VZB1` BLOB; since v3 `min_ts`, `max_ts` and the partial index `batch_time`, D72), `segment`, `notify`, `series_window` (sketch BLOB) | **versioned** (v3; v2 and v3 additive, `readableFrom` 1) | the shard | refused unless `compat` allows; a sketch of a kind or format the code does not read is refused, not read as an exact id list | migrated: migration 1 adds `segment.sealed_at` to an object created before it (`shard/README.md`) |
 | `Ledger` (viz-ingest) | `ledger/src/ledger.ts` `LEDGER_SCHEMA` (opened with `openSchema`): `meta` (incarnation, version), `file` (incl. `prec`, `prec_lo`), `stream`, `outbox` (body = `LedgerChange` JSON), `tombstone`, and since v3 `ckpt`, `ckpt_pre` (checkpoints in parts, D47) | **versioned** (v3, additive, `readableFrom` 2) | the ledger | **dangerous**: `init()` treats "no `meta.incarnation`" as new or lost storage and rebuilds from R2 into a NEW incarnation; a newer layout of `meta` read by older code would re-base every reader and the publisher | an object created before D22 lacks `prec`/`prec_lo`; `IF NOT EXISTS` never adds them, and `plan` fails |
 | `Tenant` (viz-control) | `control/src/schema.ts` | **versioned** (v3; v2 adds `proposals.spec`, v3 the tables `oauth_clients`, `oauth_grants`, `oauth_codes` and `oauth_tokens` for OAuth (D44), both additive; `readableFrom` 1) | Tenant | refused unless `compat` allows | migrated in the constructor |
-| `Ruler`, `Notifier`, `RulerIndex` (viz-ruler, not deployed) | `ruler/src/schema.ts`; stored JSON: `rule_group.spec`, `alert.body`, `handoff.updates` (`AlertUpdate[]`), `timeline.body`, `meta.v` (config, cursor), notifier bodies, and `anomaly_state.body` (`store.anomaly-state`: versions 1 and 2 read, 1 written; the release after one with this reader is in production writes 2, D60) | **versioned** (Ruler v3, Notifier v1, RulerIndex v1) | the objects | refused unless `compat` allows | migrated |
-| `Publisher` (viz-publisher, deployed first since 2026-11-19) | `publisher/src/schema.ts` | **versioned** (v3; v2 adds the `due` table, v3 the `stage` and `live_next` tables for the streamed re-base (D55), both additive; `readableFrom` 1) | the publisher | refused unless `compat` allows | migrated |
+| `Ruler`, `Notifier`, `RulerIndex` (viz-ruler) | `ruler/src/schema.ts`; stored JSON: `rule_group.spec`, `alert.body`, `handoff.updates` (`AlertUpdate[]`), `timeline.body`, `meta.v` (config, cursor), notifier bodies, and `anomaly_state.body` (`store.anomaly-state`: versions 1 and 2 read, 1 written: the reader is in production since 2026-11-19 and the gate `ANOMALY_STATE_WRITE` is still 1; a later release writes 2, D60) | **versioned** (Ruler v3, Notifier v1, RulerIndex v1) | the objects | refused unless `compat` allows | migrated |
+| `Publisher` (viz-publisher, deployed first since 2026-11-19) | `publisher/src/schema.ts` | **versioned** (v7; v2 adds the `due` table, v3 the `stage` and `live_next` tables for the streamed re-base (D55), v4 `unpublished` (D64), v5 `signal_due` and `signal_orphan` (D67), v6 `rebase`, v7 the tables of re-bases and rebuilds in steps (D55's amendment), all additive; `readableFrom` 1; production is at v3 and takes 3 → 7 in one step) | the publisher | refused unless `compat` allows | migrated |
 | `Leaf` (viz-query) | `query/src/leaf.ts` | stateless: no storage | — | — | — |
 | janitor, compact, flush | functions in viz-ingest | no Durable Object | — | — | — |
 
@@ -118,7 +118,7 @@ first, or a rollback put the reader back); "newer reader" the opposite. Status c
 | Ruler → `Notifier.ingest(AlertUpdate[])`; ruler → `RulerIndex` | `contracts/rules.ts`, `ruler/contracts-proposal/rules.v2.ts` | within viz-ruler | deferral | **versioned** answers now: `Refused` = `wrong_tenant` or `schema_too_new`; pinned by golden `rpc.alert-update` |
 | `Tenant.provision/resolveKey/recordUsage/invoke` | `control/src/tenant.ts` | control Worker; gateway calls `provision` (`script_name` viz-control) | yes | `resolveKey` and `recordUsage` may now answer `schema_too_new`; `provision` throws it |
 | `RecordedSamples.write(tenant, batches)` | `contracts/ingest.ts` | ruler → viz-ingest (`SINK`: entrypoint `RecordedSamples`, `props.caller`) | yes (F1) | an ingest release without the entrypoint fails the call without a refusal word; for one release the ruler then sends the same batches by Remote Write with its service key (D52). A refusal word is never bypassed |
-| `Tenant.oauthToken/oauthRevoke/introspectAccessToken` | `contracts/oauth.ts` | control Worker; mcp asks `introspectAccessToken` on every OAuth request (`script_name` viz-control) | yes | answers carry `v` 1 (golden `rpc.oauth`), and mcp refuses a `v` it does not know (503); a control release without these methods cannot check a token, so OAuth requests to `/mcp` fail and are never served, while API keys are unaffected (D44) |
+| `Tenant.oauthToken/oauthRevoke/introspectAccessToken` | `contracts/oauth.ts` | control Worker; mcp asks `introspectAccessToken` on every OAuth request (`script_name` viz-control) | yes | answers carry `v` 1 (golden `rpc.oauth`), and mcp refuses a `v` it does not know (503); added within version 1 since (D70): the `rate_limited` answer, which mcp turns into 429 with `Retry-After`, and `RevokeResult.dead`, which an older reader ignores; a control release without these methods cannot check a token, so OAuth requests to `/mcp` fail and are never served, while API keys are unaffected (D44) |
 | Engine JS face | `contracts/engine.ts` | compiled into each script | none within a script; across scripts the *data* it reads (Parquet, `VZB1`) crosses releases | see §3.2 |
 | mcp → viz-query, viz-control, viz-ruler; gateway → viz-ingest, viz-query, viz-control | service bindings, `fetch` | yes (F1); overrides work for `fetch` | HTTP contracts below |
 
@@ -190,22 +190,43 @@ COMPATIBILITY §6 states them; here is how they apply today.
   written and the versions read (`FORMATS` in each `src/schema.ts`). Since 2026-11-19 the
   deploy records the first (every class's `{latest, compat}`, also on every Worker version as
   `VIZ_SCHEMAS`), marks a release forward-only by it, and refuses a rollback across it (D46,
-  `deploy/README.md`, "Release record"); format versions are not recorded yet.
+  `deploy/README.md`, "Release record"); and since D69 the second: each Worker's written and read
+  version of every format in its components' `FORMATS` maps and read lists (`VIZ_FORMATS` on every
+  version), a release forward-only when it writes a version some serving Worker does not read, and a
+  rollback refused when a Worker it restores does not read a version written since, or one that a
+  Worker it leaves serving wrote or writes. Since the review of D69 every Worker declares what it
+  reads, completely (where its code has no version for a format it reads, `deploy/workers.json` says
+  version 1 on its behalf); a Worker that declares nothing, and a record from before format
+  versions, are taken to read version 1 of every format.
+- **Rollback floors raised by a switch** (D69; COMPATIBILITY §6, "A floor raised by a switch"): once
+  a viz-ingest version with `INGEST_SIGNALS` on is among the versions Cloudflare keeps, no release or
+  rollback may leave viz-publisher, viz-query or viz-ingest below the release that first reads span
+  and log data (D64, D62, D63); every release with the switch on needs all three at their floors in
+  the release and as they serve. The tooling that enforces it is main's: production deploys only
+  from main, and older code goes out again as a new commit there (review of D69, M-2).
 - **Forward-only** for a class when `canOpen(target.latest, newest)` fails, when a format
   version is written that the target does not read, or across a class lifecycle change (F6).
-- Today every versioned class is at version 1 with `compat` 1, so every release since this
-  one is rollback-safe for them. The first versioned release becomes the floor before any
-  migration 2 ships (bootstrapping, COMPATIBILITY §6).
+- The first versioned release of a class is its floor, set before any migration 2 shipped
+  (bootstrapping, COMPATIBILITY §6); every versioned class was then at version 1 with `compat` 1.
+  Since then classes have gained additive migrations (`readableFrom` 1, except the ledger's
+  version 3, readable from 2, which production's first release already had), and none makes the
+  first release over the 2026-11-19 production forward-only: it takes `publisher.Publisher`
+  3 → 7 and `shard.Shard` 1 → 3, both readable from 1 (`deploy/README.md`, "The first release
+  over the 2026-11-19 production"; checked against fakes, not on Cloudflare). That release is
+  forward-only for another reason, and for viz-control only: the `oauth-public` floor (D69, D70).
+  The other six Workers can each be rolled back alone (`--only`).
 - A rollback across a forward-only release is refused by the tool; a person who forces one
   (or lowers a gradual deployment) gets objects that answer 503 until it is undone. Safe,
   not available.
-- **A limit can make a release forward-only for some tenants, as a schema can.** The ledger
+- **A limit can make a release forward-only for some tenants, as a schema can.** A ledger
   release before checkpoints in parts (D47) cannot hold, checkpoint or rebuild a state above
-  16 MiB. So production keeps `LEDGER_STATE_MAX_BYTES` at 16 MiB in the release that adds them
-  (`stack/wrangler.jsonc`), and lifts it only in a later release whose rollback floor is that
-  one. The lifting release's record must say what a rollback below it does to a tenant above
-  16 MiB: forward-only for such tenants, or the record carries the state limit and the rollback
-  check compares it. Today the record carries neither (`design/reviews/d47-d48-d55.md`, P-2).
+  16 MiB. So production keeps `LEDGER_STATE_MAX_BYTES` at 16 MiB (`stack/wrangler.jsonc`), and
+  lifts it only in a release whose rollback floor has D47 and D55 (production's first release,
+  fb77292, has both; S11 measured a rebuild and a first publication on Cloudflare and recommends
+  64 MiB; not lifted). The lifting release's record must say what a rollback below it does to a
+  tenant above 16 MiB: forward-only for such tenants, or the record carries the state limit and
+  the rollback check compares it. Today the record carries neither
+  (`design/reviews/d47-d48-d55.md`, P-2).
 
 ## 6. The upgrade-under-load trial and the invariants
 
@@ -274,7 +295,8 @@ N under load, with I1, I2 and I4 checked; that exercises `compat` on Cloudflare.
    run (the queue retries it).
 9. **deploy** (the release engineer). Put `schemaRelease` and `FORMATS` of each component in
    the release record and extend the rollback check from migration tags to COMPATIBILITY §6.
-   *Schemas done 2026-11-19 (D46); `FORMATS` not yet.*
+   *Schemas done 2026-11-19 (D46); `FORMATS` done 2026-11-19 (D69), with the floors of
+   `INGEST_SIGNALS`.*
    The gateway's bootstrap should answer 503 (not 500) when `provision` throws
    `schema_too_new`.
 10. **dashboard, app, mcp** (risk: users' edits refused). The closed `viz.dashboard/v1`

@@ -29,7 +29,8 @@ import type { ControlClient } from './clients'
  * token the control plane issued to an MCP client a person approved. `identifyOAuth` asks control's
  * `OAuthIntrospection` entrypoint (service binding `OAUTH`, contracts/oauth.ts) whether it is live
  * and issued for THIS resource (audience), on every request, so a revoked or expired token stops at
- * once. That entrypoint is all this Worker can ask control besides its HTTP API with a caller's own
+ * once. Over control's rate limits (D70) it answers `rate_limited`: a 429 with `Retry-After` here,
+ * retryable, the token untouched. That entrypoint is all this Worker can ask control besides its HTTP API with a caller's own
  * key: it holds no binding to control's Tenant objects (review of D44, M-1). The answer is the same `Identity` (kind `agent`, the grant's scopes) plus the grant's own
  * agent key, which is what the downstream calls carry: the client's token never leaves this
  * Worker (MCP "Token Passthrough"). The token is accepted at /mcp only; the JSON surface refuses it.
@@ -67,10 +68,12 @@ export interface Caller {
 
 export class AuthError extends Error {
   constructor(
-    readonly status: 400 | 401 | 403 | 503,
+    readonly status: 400 | 401 | 403 | 429 | 503,
     readonly code: string,
     message: string,
     readonly fix: string,
+    /** Whole seconds, sent as `Retry-After` (src/index.ts `authFailure`). */
+    readonly retryAfterS?: number,
   ) {
     super(message)
   }
@@ -103,6 +106,13 @@ const INACTIVE: Record<string, string> = {
 }
 
 /**
+ * `Retry-After` in whole seconds (RFC 9110 §10.2.3: a non-negative integer) for control's
+ * `retryAfterMs`. An answer without a usable number gets 60, the period of control's limiters (D70);
+ * no answer asks a client to wait more than an hour.
+ */
+export const retryAfterSeconds = (ms: unknown): number => (typeof ms === 'number' && Number.isFinite(ms) && ms >= 0 ? Math.min(3600, Math.ceil(ms / 1000)) : 60)
+
+/**
  * An OAuth access token, checked by the control plane for `resource`. Throws `AuthError`.
  * Control takes the tenant from the token itself; its object holds only the token's hash, so a
  * token edited to name another tenant matches nothing there.
@@ -118,6 +128,13 @@ export async function identifyOAuth(presented: { token: string; kind: string; te
   // This Worker is not a caller control's entrypoint allows: a deployment fault, not the token's.
   if (r?.status === 'unauthorized') throw new AuthError(503, 'oauth-unavailable', 'OAuth tokens cannot be checked on this deployment (the control plane does not accept this Worker as a caller).', 'Use an API key, or ask the operator to fix the OAUTH binding\'s props.')
   if (r?.status === 'schema_too_new') throw new AuthError(503, 'unavailable', 'A deployment is in progress; the token could not be checked.', `Retry in ${Math.ceil(r.retryAfterMs / 1000)} s.`)
+  // D70: control's limit on this token, or on its tenant's tokens, refused the check before the
+  // tenant's object. Retryable, and nothing was read or spent: 429 with Retry-After, never a 401,
+  // which would send the client to re-authorize. Before the version check, as a refusal.
+  if (r?.status === 'rate_limited') {
+    const s = retryAfterSeconds(r.retryAfterMs)
+    throw new AuthError(429, 'rate-limited', 'Too many requests with this access token, or with its tenant\'s access tokens; nothing was done.', `Retry in ${s} s.`, s)
+  }
   // contracts/COMPATIBILITY.md §3.2: a result version this code does not know is refused, not guessed.
   if (!r || r.v !== OAUTH_VERSION) throw new AuthError(503, 'unavailable', 'The control plane answered in a form this release does not read.', 'Retry in a moment.')
   if (r.status === 'not_provisioned') throw invalidToken(INACTIVE.unknown!)

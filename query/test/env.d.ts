@@ -16,5 +16,7 @@ declare namespace Cloudflare {
     CORS_ORIGINS?: string
     FILE_CACHE_TTL_S?: string
     QUERY_LIMITS?: string
+    QUERY_SIGNALS?: string
+    INGEST_SIGNALS?: string
   }
 }

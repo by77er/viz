@@ -5,10 +5,12 @@
  * an implementation viz did not write reads what viz serves.
  */
 import { runInDurableObject } from 'cloudflare:test'
-import { Client, InsufficientScopeError, StreamableHTTPClientTransport, auth, type OAuthClientMetadata, type OAuthClientProvider } from '@modelcontextprotocol/client'
+import { Client, InsufficientScopeError, SdkHttpError, StreamableHTTPClientTransport, auth, type OAuthClientMetadata, type OAuthClientProvider } from '@modelcontextprotocol/client'
+import { Client as V1Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StreamableHTTPClientTransport as V1Transport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { OAUTH_SCOPES } from '../../contracts/oauth'
-import { hasScopes } from '../src/auth'
+import { hasScopes, retryAfterSeconds } from '../src/auth'
 import { httpControlClient, httpMonitorsClient, httpQueryClient, type Fetcher } from '../src/clients'
 import { STEP_UP_MAX_BYTES, readCapped } from '../src/index'
 import { BASE, type Harness, NOW, controlCall, controlFetcher, env, harness, makeKey, newTenant, rest, rpc, stubOf, telemetry } from './helpers'
@@ -419,5 +421,89 @@ describe('review of D44 (design/reviews/d44-d52-d53-d60.md): what the agent surf
     })
     expect(withLength).not.toBe(403)
     expect(await status(chunked)).toBe(withLength)
+  })
+})
+
+describe('D70: control refuses an introspection over its rate limit', () => {
+  /** Miniflare's limiter counts in windows aligned to the wall clock: start the counted calls well inside one, so no reset falls between them. */
+  const freshWindow = async (periodMs = 60_000, needMs = 10_000): Promise<void> => {
+    const left = periodMs - (Date.now() % periodMs)
+    if (left < needMs) await new Promise((r) => setTimeout(r, left + 100))
+  }
+  /** The agent surface with OAUTH bound to control's real entrypoint whose OAUTH_RL_BEARER allows 2 a minute per token (wrangler.test.jsonc, test/worker.ts). */
+  const limited = (): Harness => harness({ env: { OAUTH: env.OAUTH_LIMITED } })
+  const RL_MESSAGE = 'Too many requests with this access token, or with its tenant\'s access tokens; nothing was done. Retry in 60 s.'
+
+  it('the third request with one token in a minute is 429 with Retry-After, not 401; nothing is spent, another token keeps its budget, and both official SDK clients report the 429 and keep their tokens', async () => {
+    const t = await newTenant('rl')
+    const dana = await personKey(t.admin)
+    const c = await connect(dana)
+    const other = await connect(dana)
+    const on = limited()
+    await freshWindow()
+    expect((await list(c.access, on)).status).toBe(200)
+    expect((await list(c.access, on)).status).toBe(200)
+    const r = await list(c.access, on)
+    expect(r.status).toBe(429)
+    expect(r.headers.get('Retry-After')).toBe('60')
+    expect(r.headers.get('Cache-Control')).toBe('no-store')
+    // Not a 401: no challenge, so a client neither discards its token nor starts a new authorization.
+    expect(r.headers.get('WWW-Authenticate')).toBeNull()
+    expect(r.body).toEqual({ jsonrpc: '2.0', id: null, error: { code: -32001, message: RL_MESSAGE, data: { code: 'rate-limited', status: 429 } } })
+    // Another token of the same person and tenant is counted on its own.
+    expect((await list(other.access, on)).status).toBe(200)
+    // Nothing was spent or revoked: the same token works where no limiter is bound.
+    expect((await list(c.access)).status).toBe(200)
+
+    // Implementations viz did not write. SDK v2 (2.4.0): an HTTP error carrying 429 and the body's text; no refresh, no authorization.
+    const provider = new Provider()
+    provider.saved = { access_token: c.access, token_type: 'Bearer', refresh_token: c.refresh }
+    const v2 = new Client({ name: 'sdk-rl', version: '1' })
+    const e2 = await v2.connect(new StreamableHTTPClientTransport(new URL(SERVER), { authProvider: provider, fetch: (u, i) => on.fetch(new Request(u, i)) })).then(() => null, (e: unknown) => e)
+    expect(e2).toBeInstanceOf(SdkHttpError)
+    expect((e2 as SdkHttpError).status).toBe(429)
+    expect((e2 as Error).message).toContain('Retry in 60 s.')
+    expect(provider.authUrl).toBeNull()
+    expect(provider.saved).toEqual({ access_token: c.access, token_type: 'Bearer', refresh_token: c.refresh })
+    await v2.close().catch(() => {})
+    // SDK v1 (1.32.2): StreamableHTTPError with code 429 and the body's text.
+    const v1 = new V1Client({ name: 'v1-rl', version: '1' })
+    const withToken = (u: any, i: any) => {
+      const q = new Request(u, i)
+      const hd = new Headers(q.headers)
+      hd.set('Authorization', `Bearer ${c.access}`)
+      return on.fetch(new Request(q, { headers: hd }))
+    }
+    const e1 = await v1.connect(new V1Transport(new URL(SERVER), { fetch: withToken })).then(() => null, (e: unknown) => e)
+    expect((e1 as { code?: unknown } | null)?.code).toBe(429)
+    expect((e1 as Error).message).toContain('Retry in 60 s.')
+    await v1.close().catch(() => {})
+  })
+
+  it('the JSON agent API refuses an OAuth token before introspection (401 wrong-audience): it never answers 429 for one, and does not spend the token\'s budget', async () => {
+    const t = await newTenant('rl-json')
+    const c = await connect(await personKey(t.admin))
+    const on = limited()
+    await freshWindow()
+    for (let i = 0; i < 3; i++) {
+      const j = await rest(on, c.access, 'search_telemetry', { q: 'x' })
+      expect([j.status, j.structured.code], `JSON call ${i + 1}`).toEqual([401, 'wrong-audience'])
+    }
+    expect((await list(c.access, on)).status).toBe(200)
+    expect((await list(c.access, on)).status).toBe(200)
+    expect((await list(c.access, on)).status).toBe(429)
+    const after = await rest(on, c.access, 'search_telemetry', { q: 'x' })
+    expect([after.status, after.structured.code]).toEqual([401, 'wrong-audience'])
+  })
+
+  it('Retry-After is control\'s retryAfterMs in whole seconds, rounded up; an answer without a usable number gets 60', async () => {
+    const token = `vza1.rl-fake.${'x'.repeat(43)}`
+    for (const [ms, sec] of [[1500, 2], [60_000, 60], [1, 1]] as const) {
+      const fake = { introspectAccessToken: async () => ({ v: 1, status: 'rate_limited', retryAfterMs: ms }) }
+      const r = await list(token, harness({ env: { OAUTH: fake } }))
+      expect([r.status, r.headers.get('Retry-After'), r.body.error.data.code], String(ms)).toEqual([429, String(sec), 'rate-limited'])
+      expect(r.body.error.message).toContain(`Retry in ${sec} s.`)
+    }
+    expect([0, 999, 1000, 1001, 3_600_000, 1e12, -1, Number.NaN, Infinity, '5', undefined].map(retryAfterSeconds)).toEqual([0, 1, 1, 2, 3600, 3600, 60, 60, 60, 60, 60])
   })
 })

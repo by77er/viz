@@ -434,7 +434,7 @@ const MUTANTS = [
   },
   {
     name: 'Tails that fit one by one but not together are not refused (the budget is not summed over shards)',
-    tests: ['test/limits.test.ts', 'test/tail.test.ts'],
+    tests: ['test/limits.test.ts', 'test/tail.test.ts', 'test/review-d54.test.ts', 'test/signals.test.ts'],
     file: 'src/coordinator.ts',
     find: '  const over = reads.some((r) => !r.complete) || bytes > limit',
     replace: '  const over = reads.some((r) => !r.complete)',
@@ -581,7 +581,58 @@ const MUTANTS = [
     find: "            if (typeof answer.foreign === 'number') stats.foreign += answer.foreign",
     replace: "            if (typeof answer.foreign === 'number') stats.foreign += 0",
   },
-  // ── 2026-11-19, the review of D54, D56 and D59 (design/reviews/d54-d56-d59.md) ──
+  // ── Traces and logs (2026-11-19, ABI 6): mutants 74 to 80 ──
+  {
+    name: 'Wrong signal from the tail: metrics reads ask every shard the ledger names, span and log shards included',
+    tests: ['test/signals.test.ts'],
+    file: 'src/coordinator.ts',
+    find: "for (const w of watermarks) if (names.has(w.shard) || signalOfShard(w.shard) === 'metrics') names.add(w.shard)",
+    replace: 'for (const w of watermarks) names.add(w.shard)',
+  },
+  {
+    name: 'Wrong signal from the tail: every tail read asks the shards for signal 1 (metrics), span and log reads included',
+    tests: ['test/signals.test.ts'],
+    file: 'src/coordinator.ts',
+    find: '  const asked = withSignal(filter, signal)',
+    replace: '  const asked = withSignal(filter, 1)',
+  },
+  {
+    name: 'Wrong signal from the tail: a batch of another signal is read as the one asked for (no header check)',
+    tests: ['test/signals.test.ts'],
+    file: 'src/shards.ts',
+    find: '  if (got !== want) throw new WrongSignal(shard, got, want)',
+    replace: '  void got',
+  },
+  {
+    name: 'Pruning drops a matching hour: trace by ID keeps a span file only if its fragments name the hour after the file\'s',
+    tests: ['test/signals.test.ts'],
+    file: 'src/signals.ts',
+    find: 'const x = hourOf(f); return x === null || hours.has(x)',
+    replace: 'const x = hourOf(f); return x === null || hours.has(x + 1)',
+  },
+  {
+    name: 'A cap not enforced: the rows the fragments say a span or log query decodes are not checked before fetching',
+    tests: ['test/signals.test.ts'],
+    file: 'src/signals.ts',
+    find: '  if (rows > rowsLimit) {',
+    replace: '  if (rows > rowsLimit * 1_000_000) {',
+  },
+  {
+    name: 'The tenant is taken from the query string (Tempo search: `orgId`)',
+    tests: ['test/signals.test.ts'],
+    file: 'src/sigroutes.ts',
+    find: "  const { start, end } = tempoWindow(params)\n  return traceSearch(c,",
+    replace: "  const { start, end } = tempoWindow(params)\n  c.tenant = params.get('orgId') ?? c.tenant\n  return traceSearch(c,",
+  },
+  {
+    name: 'A result shape field renamed: trace by ID answers `resourceSpans` for `batches` (Rust; rebuilds the module)',
+    tests: ['test/signals.test.ts'],
+    file: '../engine/wasm-query/src/traces.rs',
+    rust: true,
+    find: '    let mut out = String::from("{\\"batches\\":[");',
+    replace: '    let mut out = String::from("{\\"resourceSpans\\":[");',
+  },
+  // ── 2026-11-19, the review of D54, D56 and D59 (design/reviews/d54-d56-d59.md): mutants 81 to 96, ported from pull request #7 ──
   {
     name: 'B-1: a reader that answers without `foreign` leaves its split leaf\'s count known (taken as 0)',
     tests: ['test/review-d54.test.ts'],
@@ -607,7 +658,7 @@ const MUTANTS = [
     name: 'M-1: the end of a read that stopped on its first page is not learned from the shard',
     tests: ['test/review-d54.test.ts'],
     file: 'src/coordinator.ts',
-    find: '  const ends = await Promise.all(reads.map((r) => (r.complete || r.through !== null ? null : learnEnd(c, r, known))))',
+    find: '  const ends = await Promise.all(reads.map((r) => (r.complete || r.through !== null || signal !== 1 ? null : learnEnd(c, r, known))))',
     replace: '  const ends = reads.map(() => null as string | null)',
   },
   {
@@ -619,7 +670,7 @@ const MUTANTS = [
   },
   {
     name: 'M-2: each shard\'s read gets the whole budget in the first round (one budget per shard)',
-    tests: ['test/review-d54.test.ts'],
+    tests: ['test/review-d54.test.ts', 'test/signals.test.ts'],
     file: 'src/tail.ts',
     find: '  const share = Math.floor(Math.max(0, cap - used) / Math.max(1, n))',
     replace: '  const share = Math.max(0, cap - used)',
@@ -689,10 +740,165 @@ const MUTANTS = [
   },
   {
     name: 'm-7: a page that does not advance the read is asked for again',
-    tests: ['test/review-d54.test.ts'],
+    tests: ['test/review-d54.test.ts', 'test/signals.test.ts'],
     file: 'src/tail.ts',
     find: '      if (r.page.next === cursor) return unavailable',
     replace: "      if (r.page.next === cursor && cursor === '') return unavailable",
+  },
+  // ── The review's fixes on the span and log reads (D62), which share `readTails`: mutant 97 ──
+  {
+    name: 'A span or log read that goes on in the second round of the shared budget sends the filter without its signal (its cursor is bound to the signal\'s filter)',
+    tests: ['test/signals.test.ts'],
+    file: 'src/coordinator.ts',
+    find: "read.incarnation, read.above, asked, budget, 'coordinator'",
+    replace: "read.incarnation, read.above, filter, budget, 'coordinator'",
+  },
+  // ── 2026-11-19, the review of spans and logs end to end (design/reviews/signals-end-to-end.md): M-1, M-2, m-3, m-4. Mutants 98 to 110 ──
+  {
+    name: 'M-1: the margin is dropped (a trace query reads the window only, as before the fix)',
+    tests: ['test/completeness.test.ts'],
+    file: 'src/signals.ts',
+    find: '  const margin = BigInt(c.limits.traceMarginMs) * NS_PER_MS',
+    replace: '  const margin = 0n',
+  },
+  {
+    name: 'M-1: trace_index is planned over the window, not the bound (the engine still told the bound)',
+    tests: ['test/completeness.test.ts'],
+    file: 'src/signals.ts',
+    find: '    const b = msRange(bound.lo, bound.hi)',
+    replace: '    const b = msRange(window.lo, window.hi)',
+  },
+  {
+    name: 'M-1: the engine is not told the bound (spans outside it are part of the answer)',
+    tests: ['test/completeness.test.ts'],
+    file: 'src/signals.ts',
+    find: '      return finish(spanFiles, tails, bound)',
+    replace: '      return finish(spanFiles, tails, { lo: 0n, hi: MAX_NS })',
+  },
+  {
+    name: 'M-1: trace by ID with a hint reads the hint only (no margin)',
+    tests: ['test/completeness.test.ts'],
+    file: 'src/signals.ts',
+    find: '  const bound = startNs === null && endNs === null ? { lo: 0n, hi: MAX_NS } : traceBound(c, window)',
+    replace: '  const bound = startNs === null && endNs === null ? { lo: 0n, hi: MAX_NS } : window',
+  },
+  {
+    name: 'M-1: the engine keeps spans outside the bound (Rust; rebuilds the module)',
+    tests: ['test/completeness.test.ts'],
+    file: '../engine/wasm-query/src/traces.rs',
+    rust: true,
+    find: '    let keep = move |start: i64| start >= lo && start <= hi;',
+    replace: '    let keep = move |start: i64| start >= lo || start <= hi;',
+  },
+  {
+    name: 'M-2: the tenant\'s maxDecodedBytes does not reach the engine (its default is used)',
+    tests: ['test/memory.test.ts'],
+    file: 'src/signals.ts',
+    find: '(bound ? { maxBytes: c.limits.maxDecodedBytes, bound } : { maxBytes: c.limits.maxDecodedBytes })',
+    replace: '(bound ? { bound } : {})',
+  },
+  {
+    name: 'M-2: a resource is held once per span again (Rust; rebuilds the module)',
+    tests: ['test/memory.test.ts'],
+    file: '../engine/wasm-query/src/sigfiles.rs',
+    rust: true,
+    find: '        if let Some(x) = self.set.get(&v) {',
+    replace: '        if let Some(x) = self.set.get(&v).filter(|_| false) {',
+  },
+  {
+    name: 'M-2: span rows are not charged to the budget (Rust; rebuilds the module)',
+    tests: ['test/memory.test.ts'],
+    file: '../engine/wasm-query/src/traces.rs',
+    rust: true,
+    find: '        *decoded += sigfiles::read_spans(f, res, mem, keep, |r, mem| {\n            take(max_spans, spans)?;\n            mem.charge(sigfiles::span_bytes(&r))?;',
+    replace: '        *decoded += sigfiles::read_spans(f, res, mem, keep, |r, mem| {\n            take(max_spans, spans)?;',
+  },
+  {
+    name: 'M-2: log rows are not charged to the budget (Rust; rebuilds the module)',
+    tests: ['test/memory.test.ts'],
+    file: '../engine/wasm-query/src/logs.rs',
+    rust: true,
+    find: '        mem.charge(sigfiles::log_row_bytes(&r))?;',
+    replace: '',
+  },
+  {
+    name: 'm-3: log rows are counted against max_rows before the selectors drop them (as before)',
+    tests: ['test/signals.test.ts'],
+    file: '../engine/wasm-query/src/logs.rs',
+    rust: true,
+    find: '        *decoded += 1;\n        if let Some(c) = &compiled {',
+    replace: '        *decoded += 1;\n        if *decoded > max_rows {\n            return Err(Fail::Limit("max_rows", max_rows, *decoded, String::from("query exceeded limit max_rows")));\n        }\n        if let Some(c) = &compiled {',
+  },
+  {
+    name: 'm-4: Loki integers of ten or fewer digits are read as nanoseconds again',
+    tests: ['test/sigcompat.test.ts'],
+    file: 'src/sigparams.ts',
+    find: "(v.replace('-', '').length <= 10 ? BigInt(v) * NS_PER_S : BigInt(v))",
+    replace: 'BigInt(v)',
+  },
+  {
+    name: 'm-4: Loki errors in the Prometheus envelope again',
+    tests: ['test/sigcompat.test.ts', 'test/memory.test.ts'],
+    file: 'src/index.ts',
+    find: "  const fail = r.dialect === 'tempo' || r.dialect === 'loki' ? plainFailure : failure",
+    replace: "  const fail = r.dialect === 'tempo' ? plainFailure : failure",
+  },
+  {
+    name: "m-4: Tempo's /api/echo is not routed",
+    tests: ['test/sigcompat.test.ts'],
+    file: 'src/index.ts',
+    find: " || path === '/api/echo') return",
+    replace: ') return',
+  },
+  // ── the re-review of D62 (design/reviews/signals-end-to-end-r2.md) and the review of D72's query side ──
+  {
+    name: 'R2-M1: the Loki label calls get no budget (the engine\'s default is used)',
+    tests: ['test/review-r2.test.ts'],
+    file: 'src/signals.ts',
+    find: 'inPrecedenceOrder(fromFragments).map((f) => f.index), files, tails, budget(c)))',
+    replace: 'inPrecedenceOrder(fromFragments).map((f) => f.index), files, tails))',
+  },
+  {
+    name: 'R2-M3: spans are planned over the hull again (the extent\'s ranges are not passed)',
+    tests: ['test/review-r2.test.ts', 'test/completeness.test.ts'],
+    file: 'src/signals.ts',
+    find: "c.engine.tqFilePlan('spans', candidates.map((f) => f.index), hull.lo, hull.hi, undefined, ranges)",
+    replace: "c.engine.tqFilePlan('spans', candidates.map((f) => f.index), hull.lo, hull.hi)",
+  },
+  {
+    name: 'R2-m5: a search refused for its margin advises narrowing the time range (no attribution)',
+    tests: ['test/review-r2.test.ts'],
+    file: 'src/signals.ts',
+    find: '    if (!id) spanRows(c, window, candidates, r2)\n',
+    replace: '    if (!id && r2.rows > c.limits.maxSpans) throw new ApiError(\'execution\', `query exceeded limit max_spans: the data files in range hold ${r2.rows} rows the query would decode, the limit is ${c.limits.maxSpans}. Narrow the time range.`)\n',
+  },
+  {
+    name: 'R2-M4a: trace by ID is checked by the rows of its row groups before the fetch again',
+    tests: ['test/review-r2.test.ts'],
+    file: 'src/signals.ts',
+    find: "capsBeforeFetch(c, [r1, r2], c.limits.maxSpans, 'max_spans', [], hintless ? HELP.allTime : HELP.bound(c))",
+    replace: "capsBeforeFetch(c, [r1, r2], c.limits.maxSpans, 'max_spans', [r2], hintless ? HELP.allTime : HELP.bound(c))",
+  },
+  {
+    name: 'D72 m-3: an empty range is sent to the shards (minTs > maxTs)',
+    tests: ['test/review-r2.test.ts'],
+    file: 'src/signals.ts',
+    find: '  if (bound.lo > bound.hi) {\n    c.cost.shardsAsked = 0\n    return []\n  }\n',
+    replace: '',
+  },
+  {
+    name: 'D72: a trace query sends the shards its window, not its bound',
+    tests: ['test/completeness.test.ts', 'test/signals.test.ts'],
+    file: 'src/signals.ts',
+    find: "readSignalTail(c, 'traces', first.watermarks, r1.bytes, rf, bound)",
+    replace: "readSignalTail(c, 'traces', first.watermarks, r1.bytes, rf, window)",
+  },
+  {
+    name: 'D72: a span or log read sends no range (the whole tail, as before D72)',
+    tests: ['test/signals.test.ts'],
+    file: 'src/signals.ts',
+    find: 'rf.refused, msRange(bound.lo, bound.hi), c.limits.maxFetchBytes - lakeBytes, signalByte(signal))',
+    replace: 'rf.refused, {}, c.limits.maxFetchBytes - lakeBytes, signalByte(signal))',
   },
 ]
 
@@ -749,7 +955,10 @@ for (const m of chosen) apply(readFileSync(rel(m.file), 'utf8'), m)
 
 // Type errors that are there before any mutant (another component mid-edit) are not the
 // mutant's: a mutant is invalid only if it adds one.
-const tscErrors = () => new Set(run('npx', ['tsc', '--noEmit']).stdout.split('\n').filter((l) => /error TS\d+/.test(l)))
+// Only errors in the copied directories count: other components are links into the shared tree,
+// which other engineers edit while this runs (a type error in flush/ appearing mid-run made every
+// mutant INVALID on 2026-11-19); a mutant can add errors only where it changes something.
+const tscErrors = () => new Set(run('npx', ['tsc', '--noEmit']).stdout.split('\n').filter((l) => /error TS\d+/.test(l) && !/^\.\.\/(?!engine\/(query|wasm-query)\/)/.test(l)))
 const baseline = tscErrors()
 if (baseline.size > 0) console.log(`tsc reports ${baseline.size} error(s) before any mutant (not counted against mutants):\n  ${[...baseline].slice(0, 3).join('\n  ')}`)
 

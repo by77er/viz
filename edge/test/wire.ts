@@ -1,6 +1,6 @@
 /**
- * Request bodies written byte by byte for the decode-limit tests (test/decode-metrics.test.ts):
- * protobuf by hand and JSON as text, sharing nothing with src/.
+ * Request bodies written byte by byte for the decode-limit tests (test/decode.test.ts,
+ * test/decode-metrics.test.ts): protobuf by hand and JSON as text, sharing nothing with src/.
  */
 import { HttpError } from '../src/errors'
 
@@ -50,6 +50,21 @@ export const SVC = ld(0x0a, kvs('service.name', 'svc'))
 /** ExportMetricsServiceRequest: one resource, one scope, one gauge `m` with these points (each at now, value 0). */
 export const metricsReq = (resource: Uint8Array, points: Uint8Array[]): Uint8Array<ArrayBuffer> =>
   ld(0x0a, cat(ld(0x0a, resource), ld(0x12, ld(0x12, cat(str(0x0a, 'm'), ld(0x2a, cat(...points.map((p) => ld(0x0a, cat(fixed64(0x19, NS), fixed64(0x21, 0n), p))))))))))
+/** A valid span (ids, start now) with extra fields. */
+export function span(i: number, extra: Uint8Array = new Uint8Array(0)): Uint8Array<ArrayBuffer> {
+  const tid = new Uint8Array(16)
+  new DataView(tid.buffer).setUint32(12, i + 1)
+  const sid = new Uint8Array(8)
+  new DataView(sid.buffer).setUint32(4, i + 1)
+  return cat(ld(0x0a, tid), ld(0x12, sid), fixed64(0x39, NS), extra)
+}
+/** ExportTraceServiceRequest / ExportLogsServiceRequest: one resource (attribute fields), one scope. */
+export const request = (resource: Uint8Array, scope: Uint8Array): Uint8Array<ArrayBuffer> => ld(0x0a, cat(ld(0x0a, resource), ld(0x12, scope)))
+/** A log record at now, with extra fields. */
+export const record = (extra: Uint8Array = new Uint8Array(0)): Uint8Array<ArrayBuffer> => ld(0x12, cat(fixed64(0x09, NS), extra))
+/** Loki PushRequest: one stream with these entries (each: a timestamp now, then its fields). */
+export const lokiReq = (labels: string, entries: Uint8Array[]): Uint8Array<ArrayBuffer> =>
+  ld(0x0a, cat(str(0x0a, labels), ...entries.map((e) => ld(0x12, cat(ld(0x0a, Uint8Array.from([0x08, ...varint(Math.floor(Date.now() / 1000))])), e)))))
 
 export const json = (s: string): Uint8Array<ArrayBuffer> => te.encode(s)
 export const emptyObjects = (n: number): string => Array(n).fill('{}').join(',')

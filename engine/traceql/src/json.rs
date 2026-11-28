@@ -9,7 +9,36 @@ use crate::metrics::{RangeRequest, Series};
 use crate::value::{go_duration, Val};
 use crate::{SearchResponse, Stats};
 
-pub fn escape(s: &str, out: &mut String) {
+/// Where the writers below put text: a `String`, or a counter of the bytes they would write
+/// (`Len`), so that a caller can charge an answer's exact length before it is written.
+pub trait Sink {
+    fn push_str(&mut self, s: &str);
+    fn push(&mut self, c: char);
+}
+
+impl Sink for String {
+    fn push_str(&mut self, s: &str) {
+        String::push_str(self, s)
+    }
+    fn push(&mut self, c: char) {
+        String::push(self, c)
+    }
+}
+
+/// Counts the bytes a writer would produce, without holding them.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Len(pub u64);
+
+impl Sink for Len {
+    fn push_str(&mut self, s: &str) {
+        self.0 += s.len() as u64;
+    }
+    fn push(&mut self, c: char) {
+        self.0 += c.len_utf8() as u64;
+    }
+}
+
+pub fn escape<S: Sink>(s: &str, out: &mut S) {
     out.push('"');
     for c in s.chars() {
         match c {
@@ -25,7 +54,7 @@ pub fn escape(s: &str, out: &mut String) {
     out.push('"');
 }
 
-fn double(v: f64, out: &mut String) {
+fn double<S: Sink>(v: f64, out: &mut S) {
     if v.is_nan() {
         out.push_str("\"NaN\"");
     } else if v.is_infinite() {
@@ -36,7 +65,7 @@ fn double(v: f64, out: &mut String) {
 }
 
 /// An OTLP `AnyValue` object.
-pub fn any_value(v: &Val, out: &mut String) {
+pub fn any_value<S: Sink>(v: &Val, out: &mut S) {
     match v {
         Val::Nil => out.push_str("{\"stringValue\":\"nil\"}"),
         Val::Bool(b) => out.push_str(if *b { "{\"boolValue\":true}" } else { "{\"boolValue\":false}" }),
@@ -74,7 +103,7 @@ pub fn any_value(v: &Val, out: &mut String) {
             use crate::data::AttrValue;
             out.push_str("{\"arrayValue\":{\"values\":[");
             let mut first = true;
-            let mut sep = |out: &mut String| {
+            let mut sep = |out: &mut S| {
                 if !first {
                     out.push(',');
                 }
@@ -104,7 +133,7 @@ pub fn any_value(v: &Val, out: &mut String) {
     }
 }
 
-fn key_values(kvs: &[(String, Val)], out: &mut String) {
+fn key_values<S: Sink>(kvs: &[(String, Val)], out: &mut S) {
     out.push('[');
     for (i, (k, v)) in kvs.iter().enumerate() {
         if i > 0 {
@@ -119,7 +148,7 @@ fn key_values(kvs: &[(String, Val)], out: &mut String) {
     out.push(']');
 }
 
-fn stats(s: &Stats, out: &mut String) {
+fn stats<S: Sink>(s: &Stats, out: &mut S) {
     out.push_str("\"metrics\":{");
     let mut parts = Vec::new();
     if s.inspected_traces > 0 {
@@ -134,26 +163,38 @@ fn stats(s: &Stats, out: &mut String) {
 
 pub fn search_json(r: &SearchResponse) -> String {
     let mut out = String::with_capacity(256 + r.traces.len() * 512);
+    write_search(r, &mut out);
+    out
+}
+
+/// The length in bytes of [`search_json`]'s text, without writing it.
+pub fn search_json_len(r: &SearchResponse) -> u64 {
+    let mut n = Len::default();
+    write_search(r, &mut n);
+    n.0
+}
+
+fn write_search<S: Sink>(r: &SearchResponse, out: &mut S) {
     out.push_str("{\"traces\":[");
     for (ti, t) in r.traces.iter().enumerate() {
         if ti > 0 {
             out.push(',');
         }
         out.push_str("{\"traceID\":");
-        escape(&t.trace_id, &mut out);
+        escape(&t.trace_id, out);
         if !t.root_service_name.is_empty() {
             out.push_str(",\"rootServiceName\":");
-            escape(&t.root_service_name, &mut out);
+            escape(&t.root_service_name, out);
         }
         if !t.root_trace_name.is_empty() {
             out.push_str(",\"rootTraceName\":");
-            escape(&t.root_trace_name, &mut out);
+            escape(&t.root_trace_name, out);
         }
         out.push_str(&format!(",\"startTimeUnixNano\":\"{}\"", t.start_unix_nano));
         if t.duration_ms > 0 {
             out.push_str(&format!(",\"durationMs\":{}", t.duration_ms));
         }
-        let spanset = |ss: &crate::SpansetResult, out: &mut String| {
+        let spanset = |ss: &crate::SpansetResult, out: &mut S| {
             out.push_str("{\"spans\":[");
             for (si, s) in ss.spans.iter().enumerate() {
                 if si > 0 {
@@ -183,14 +224,14 @@ pub fn search_json(r: &SearchResponse) -> String {
         };
         if let Some(first) = t.spansets.first() {
             out.push_str(",\"spanSet\":");
-            spanset(first, &mut out);
+            spanset(first, out);
         }
         out.push_str(",\"spanSets\":[");
         for (i, ss) in t.spansets.iter().enumerate() {
             if i > 0 {
                 out.push(',');
             }
-            spanset(ss, &mut out);
+            spanset(ss, out);
         }
         out.push(']');
         if !t.service_stats.is_empty() {
@@ -199,7 +240,7 @@ pub fn search_json(r: &SearchResponse) -> String {
                 if i > 0 {
                     out.push(',');
                 }
-                escape(&s.service, &mut out);
+                escape(&s.service, out);
                 out.push_str(&format!(":{{\"spanCount\":{}", s.span_count));
                 if s.error_count > 0 {
                     out.push_str(&format!(",\"errorCount\":{}", s.error_count));
@@ -211,20 +252,31 @@ pub fn search_json(r: &SearchResponse) -> String {
         out.push('}');
     }
     out.push_str("],");
-    stats(&r.stats, &mut out);
+    stats(&r.stats, out);
     out.push('}');
-    out
 }
 
 pub fn metrics_json(series: &[Series], req: &RangeRequest, st: &Stats) -> String {
     let mut out = String::with_capacity(128 + series.len() * 256);
+    write_metrics(series, req, st, &mut out);
+    out
+}
+
+/// The length in bytes of [`metrics_json`]'s text, without writing it.
+pub fn metrics_json_len(series: &[Series], req: &RangeRequest, st: &Stats) -> u64 {
+    let mut n = Len::default();
+    write_metrics(series, req, st, &mut n);
+    n.0
+}
+
+fn write_metrics<S: Sink>(series: &[Series], req: &RangeRequest, st: &Stats, out: &mut S) {
     out.push_str("{\"series\":[");
     for (i, s) in series.iter().enumerate() {
         if i > 0 {
             out.push(',');
         }
         out.push_str("{\"labels\":");
-        key_values(&s.labels, &mut out);
+        key_values(&s.labels, out);
         out.push_str(",\"samples\":[");
         let mut first = true;
         for (k, v) in s.values.iter().enumerate() {
@@ -236,13 +288,12 @@ pub fn metrics_json(series: &[Series], req: &RangeRequest, st: &Stats) -> String
             }
             first = false;
             out.push_str(&format!("{{\"timestampMs\":\"{}\",\"value\":", req.timestamp_ms(k)));
-            double(*v, &mut out);
+            double(*v, out);
             out.push('}');
         }
         out.push_str("]}");
     }
     out.push_str("],");
-    stats(st, &mut out);
+    stats(st, out);
     out.push('}');
-    out
 }

@@ -445,9 +445,10 @@ export class Tenant extends DurableObject<TenantEnv> implements TenantServiceRpc
     if (this.tenant === '' || tenant !== this.tenant) return { v: 1, status: 'not_provisioned' }
     const now = Date.now()
     const before = this.rowsWritten
-    this.transaction(() => revokeToken(this, token, clientId, now))
+    const dead = this.transaction(() => revokeToken(this, token, clientId, now))
     if (this.rowsWritten !== before) await this.settle()
-    return { v: 1, status: 'ok' }
+    // Whether the token is dead now (contracts/oauth.ts RevokeResult): what control's Worker lists (D70).
+    return dead === undefined ? { v: 1, status: 'ok' } : { v: 1, status: 'ok', dead }
   }
 
   /** For the agent surface, through control's `OAuthIntrospection` entrypoint (src/introspection.ts): is this access token live, for `resource`, and who is it. Read only. */

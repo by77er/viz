@@ -6,11 +6,12 @@ when, and whether that removal is durably logged is kept by the tenant's ledger
 
 | File | Contents |
 |---|---|
-| `src/janitor.ts` | `parseRetention`, `readRetention`, `retentionCutoffDay`, `expireTenant`, `purgeTenant`, `sweepOrphans` |
+| `src/janitor.ts` | `parseRetention`, `readRetention`, `retentionCutoffDay`, `cutoffDay`, `expireTenant`, `purgeTenant`, `sweepOrphans` |
 | `src/formats.ts` | `READS`: the formats the janitor reads, by version (it writes none) |
 | `test/janitor.test.ts` | 15 tests in workerd against the real `Shard`, `Ledger`, flush and compaction, and a simulated R2; 3 of them the review's R-1 and the protocol model's F15 |
 | `test/golden.test.ts` | 2 tests: the retention record (control's golden files) and the compaction inputs record (compact's) read as an independent reader |
 | `test/publication.test.ts` | 4 tests of the deletion gate: against the real `Publisher` (with a test clock) and against stand-ins that lie, refuse or hang |
+| `test/signals.test.ts` | 6 tests of the span and log tables (stage 2): the record's `trace_days` and `log_days`, their expiry, a ledger that refuses them, the publisher gate, the orphan sweep |
 | `test/worker.ts` | The test script's main: `src/index.ts` plus the publisher's test class (`TEST_PUBLISHER`) |
 
 Bindings: `LEDGER`, `BUCKET`, `CONFIG` (KV), `CELL`, and optionally `PUBLISHER` (the cell's
@@ -21,13 +22,21 @@ publisher; in production viz-publisher's namespace, bound by viz-ingest).
 ### `expireTenant(env, tenant, now)`: retention
 
 Reads `retention:<tenant>` from KV (format `kv.settings` v1, written by `control/`:
-`{"metric_samples_days": N, …}`; `v` absent means 1; other fields are ignored).
+`{"metric_samples_days": N, "trace_days": N, "log_days": N, …}`; `v` absent means 1; other
+fields are ignored). `trace_days` and `log_days` (stage 2 of traces and logs, the names
+control's settings already write) are optional: absent, each is 30 days (`DEFAULT_SIGNAL_DAYS`,
+the deployment default, whatever the metric days); present, each must be a positive safe
+integer, or that signal alone is refused, as below (review m-1 of
+`design/reviews/signals-end-to-end.md`; before it, a bad signal field refused the whole record,
+metrics included). Control asks for confirmation of any PUT that shortens what this reader keeps,
+a field left out included (D63; its tests run this file's `parseRetention`).
 
 | The record | Result |
 |---|---|
 | absent | the default policy, 30 days. The default IS the policy of a tenant that has none |
 | version 1 with `metric_samples_days` a positive safe integer | that policy |
 | anything else: not JSON, not an object, a `v` other than 1, `metric_samples_days` missing, 0, negative, fractional or a string | **refused**: nothing is expired for this tenant, the result carries `refused: <reason>`, and an error is logged. Never the default, which could be shorter than what the tenant asked for (review R-1) |
+| readable, but `trace_days` or `log_days` present and not a positive safe integer (0, negative, fractional, a string, null) | **that signal refused**: `parseRetention` gives it as null with the reason in `unreadable`; its tables expire nothing (no ledger request is made for them), the metric tables and the other signal expire as usual, the result carries `refused: <reason>: <tables> not expired` with `beforeDay` set, and an error is logged. Never the default, for R-1's reason |
 
 With a policy of N days it calls **one** `ledger.expire({ tables: [samples, series], beforeDay })`,
 `beforeDay` = the UTC day of `now − N days` (`retentionCutoffDay`; a policy reaching before
@@ -36,9 +45,25 @@ series file leave the ledger in the same change (review R-5, `contracts/TABLES.m
 No object is touched. It returns the cutoff and `keepDays`: day D expires at 00:00 UTC on day
 D + keepDays + 1, which is how `stack/` knows when an idle tenant next has anything to expire.
 
+Then the span and log tables (stage 2), in ledger requests of their own **after** the metric
+one, so the metric expiry never depends on them: `spans` with `trace_index` by `trace_days`
+(one change: a flush unit's spans and trace_index files leave together), `logs` by
+`log_days`; one request for all three when the two give the same cutoff (the default). Each
+file goes by its own `day` (a span file's start day, a fragment file's first start). A ledger
+with none of these files removes nothing and uses no version, so a tenant that sends no spans or
+logs sees no change in its log. A ledger that refuses the request (a release before these
+tables answers `unknown table`) costs the metric expiry nothing: the result's `signals` entry
+carries the error, it is logged, and the next run tries again. `ExpireResult.signals` lists
+each request with its cutoff, `keepDays` and how many files it removed; a signal whose field
+cannot be read makes no request and has no entry. (`stack/`'s due time
+still follows the metric `keepDays` only: a tenant whose spans or logs expire before its
+metrics is expired at its next run, not at the exact midnight.)
+
 A refusal is visible in three places: the error log of the run; `stack/`'s maintenance marker
 (`retention: <reason>`), which the hourly cron lists and logs every hour; and the run is due
 again within the hour, so a fixed record is applied within the hour (`stack/src/maintain.ts`).
+A signal refused alone is reported the same way (`refused` is set), so `refused` no longer always
+means that nothing was expired: `beforeDay` is null only when the whole record was refused.
 
 ### `purgeTenant(env, tenant, { graceMs, maxKeys })`: physical deletion of removed files
 
@@ -81,28 +106,52 @@ Acknowledging never deletes anything. A key the publisher releases that the ledg
 offer is never deleted (`test/publication.test.ts`: half the tombstones, a live key and a key
 the ledger never had: only the released half of the tombstones goes).
 
+**Span and log files go through the same gate** (stage 2): the purge does not look at a
+tombstone's table, and the janitor's code and gate are unchanged for them. The publisher used to
+stop a tenant at the first change naming one of those tables (`unsupported`), which held every
+key of that tenant (fail closed). Since publisher/ D64 it reads them and, since D67, publishes
+`spans`, `trace_index` and `logs` as Iceberg tables of their own; their removed files are released
+like metric files, after the publisher's delete grace. Tested against the real publisher in
+`test/signals.test.ts`: span and log files removed before any publish are held through the grace
+and nothing is deleted (the test's assertion on D64's `unpublished` report field was replaced on
+2026-11-19 by one that the D67 report has no such field; 31 of 31 pass, `tsc` clean).
+
 ### `sweepOrphans(env, tenant, { graceMs, maxCompactStepMs, now })`: objects nothing will ever list
 
 Stated precisely, for an independent check (the protocol model's owner models it; D30).
 
-1. **List first.** Every object under `{cell}/data/{table}/tenant={tenant}/` for both tables,
-   with its upload time and custom metadata. Call this set P. An object written after the
+1. **List first.** Every object under `{cell}/data/{table}/tenant={tenant}/` for every table
+   (the metric pair, and since stage 2 `spans`, `trace_index` and `logs`; a `spans` key lies one
+   level deeper, under `hour=HH/`, which the prefix listing includes), with its upload time and
+   custom metadata. Call this set P. An object written after the
    listing is not a candidate in this run.
 2. **Then ask the ledger,** per chunk of 1,000 listed objects, in ONE consistent read
    (`orphanCheck`): which of the chunk's keys, and which inputs of the chunk's compaction
    outputs that are NOT in P, are live; which are tombstoned; and every stream's logged
-   watermark (`logged`: per stream, its committed incarnation and how far THAT incarnation
-   is logged; a newly registered incarnation starts at 0).
+   watermark (`logged`: per stream, its committed incarnation, how far THAT incarnation
+   is logged (a newly registered incarnation starts at 0), and, since D61,
+   `loggedIncarnation`: the newest incarnation whose registration is in the logged prefix).
 3. **Decide,** for each object O of the chunk. If O is live or tombstoned it is kept
    (tombstoned keys are `purgeTenant`'s). Otherwise:
 
 | O | Deleted only when | Kept as |
 |---|---|---|
-| Flush file `L0-{shard}-{inc}-{seqLo}-{seqHi}-{hash8}` | the stream w whose name (with `/` as `_`) is `{shard}` exists in `logged`, **and** either w is incarnation `inc` with `w.seq ≥ seqHi` (a unit for that range is answered as a replay and adds no file), or w is a newer incarnation than `inc` with `w.seq > 0` (that incarnation has a logged unit, so its registration is in the logged prefix of the log, and a rebuild cannot roll it back: spec F15); **and** O is at least `graceMs` old (default 24 h) | `unknown_stream` (no such stream), `pending_unit` (otherwise), `young` |
+| Flush file `L0-{shard}-{inc}-{seqLo}-{seqHi}-{hash8}` | the stream w whose name (with `/` as `_`) is `{shard}` exists in `logged`, **and** either w is incarnation `inc` with `w.seq ≥ seqHi` (a unit for that range is answered as a replay and adds no file), or `w.loggedIncarnation > inc` (D61: a newer registration is in the logged prefix, so no rebuild brings `inc` back and the ledger refuses `inc` for good: spec F15, F16); from a ledger before D61 (no `loggedIncarnation`), w is a newer incarnation than `inc` with `w.seq > 0` (a logged unit of it proves its registration logged: D30's rule); **and** O is at least `graceMs` old (default 24 h) | `unknown_stream` (no such stream), `pending_unit` (otherwise), `young` |
 | Compaction output `L{n≥1}-{h##│d}-{inputs16}-{hash8}` | its inputs record (`viz-inputs`, format `r2.compaction-inputs` v1) is readable, names only keys under O's own tenant and day, and hashes to O's `inputs16`; **and** some input I is **gone for good**: not in P **and** not live in the same read as O; **and** O is at least `max(graceMs, 2 × maxCompactStepMs)` old (an age floor only) | `unknown_inputs` (record missing, of an unknown version, or not matching), `inputs_remain` (every input is live or still in R2), `young` |
 | Anything else under the prefix | never | `unknown_name` |
 
 4. Delete the chunk's doomed objects in one `delete()`.
+5. **Ask the shards** (D61; spec F16), after every chunk: for each stream with a `pending_unit`
+   flush file of the incarnation the ledger names (`w.incarnation === inc`) at least `graceMs`
+   old, once per stream per run, `env.SHARD.get(idFromName(w.shard)).ensureStream(tenant)`,
+   naming the shard by the ledger's exact name (review m-6), each call bounded by 10 s. A shard
+   that holds the stream changes nothing; one that lost it starts a fresh incarnation and
+   registers it, after which, once that registration is logged, the files are dead by rule
+   (b) at a later run and the compaction outputs built on them follow (D30). A call that fails
+   (a shard of the release before D61 has no `ensureStream`, an unanswered call) keeps the
+   files, is reported in `ensured` and the error log, and the sweep goes on. Without
+   `env.SHARD` nothing is asked (the files wait for the tenant's next write to that shard, as
+   before D61).
 
 **Why a deleted object can never be listed.** Every deleter in viz deletes only keys that can
 never be live again: purge (rule 1 above: its removal is logged, so no rebuild brings it back),
@@ -122,11 +171,14 @@ share a key's shard part.
 engineer). `waitingSince` is the upload time of the youngest object kept for something a
 write or time can still change (`young`, `pending_unit`, `unknown_stream`, `inputs_remain`).
 `stack/src/maintain.ts` keeps the daily sweep due only while that is younger than seven days;
-after that only a write makes it due again. The objects are still kept: a flush file of a
-stream incarnation that will never report its unit (its shard lost storage and the tenant
-stopped writing there) and a `unknown_stream` file stay for ever. Deciding that would need
-the shard's word that it no longer holds the incarnation, plus a grace: a new deletion rule,
-for the protocol model and a review first.
+after that only a write makes it due again. Since D61 a flush file of a stream incarnation
+that will never report its unit (its shard lost storage and the tenant stopped writing there)
+is no longer kept for ever: step 5 gets the shard's word, and the next runs delete it (the
+protocol model's `LEAK_P_sl`, `LEAK_P_sl_comp2`, `LEAK_P_llsl2` hold on their whole graphs;
+reviewed in `design/reviews/registration-before-writes.md`). An `unknown_stream` file (a
+stream the ledger has never registered) still stays; under registration before writes no
+acknowledged row can be in one, but nothing deletes it. `ensured` lists what each shard
+answered.
 
 ## R2 operations per maintenance run
 
@@ -158,12 +210,17 @@ Not measured on Cloudflare; the experiment is a deployed purge of 10,000 keys
 - **A remembered policy.** The reviewer's optional second step for R-1 (keep the last policy
   read successfully and never apply a shorter one without an explicit change) is not built:
   see "Known risks" for the one path it would close.
-- **Tiers and signals.** One number per tenant, raw metric samples only.
+- **Tiers.** One number per tenant and signal, raw metric samples only (no rollup tiers).
+- **Compaction of spans and logs** (not built in `compact/`): their files stay level 0 until
+  retention removes them. The orphan sweep's compaction-output rule never meets them.
 - **Partial days.** Retention removes whole UTC days; a file is never rewritten to trim it.
 - **Tombstones of earlier ledger incarnations.** A ledger rebuilt from its log restores the
   tombstones of that log; removals logged only in an older incarnation are found by the
   orphan sweep instead (their flush files are below the logged watermark).
 - **Deleting the ledger's own log objects**, and shard-side data.
+- **`unknown_stream` flush files** are still kept for ever (above).
+- **Streams are never retired** (review m-3): `ensureStream` on a shard of a retired pool
+  creates a stream there. No pool is retired today; see `shard/README.md`, "Not implemented".
 - On Cloudflare only inside staged trials of viz-ingest (`deploy/README.md`). In Trial 3 the
   deletion gate held back 8 objects the ledger offered after its (shortened) grace, with the
   removal published and the snapshot naming them retained; their release was not waited for.
@@ -171,11 +228,67 @@ Not measured on Cloudflare; the experiment is a deployed purge of 10,000 keys
 
 ## How it was verified
 
+**Review m-1 of spans and logs (2026-11-19; `design/reviews/signals-end-to-end.md`).** `npx vitest
+run --maxWorkers=2`: **33 passed, 0 failed** (5 files; `test/signals.test.ts` 8, two of them new);
+`npx tsc --noEmit` clean; `stack/`, `query/` and `flush/`, which import these types, typecheck
+clean. The review's reproduction (`retention-signal-field.mjs`, bundled from copies of the tree
+before and after): `{"metric_samples_days":30,"trace_days":0}` gave `unreadable` for the whole
+record before, and gives `ok` with `trace_days: null` and the reason after. Tests: the parser on
+five bad values of one field (that field null, the other and the metric days read) and on both
+bad at once; a bad `metric_samples_days` still refuses everything. Expiry of a tenant with
+metric, span, trace_index and log files 40 days old under `{metric_samples_days: 30, trace_days:
+0}`: the metric and log files leave the ledger, the span and trace_index files stay, `refused`
+names the field and the tables, `signals` holds the log request only; with the field fixed, the
+next run removes exactly the span and trace_index files. Both fields bad: the metric files leave,
+no span or log request is made. Mutants (`scripts/mutants.mjs "m-1:"`, in a copy of the tree in a
+scratch directory outside git whose unmutated suite passed 33 of 33): **5 of 5 killed, first run**:
+
+| Mutant | Killed by |
+|---|---|
+| an unreadable signal field refuses the whole record, metrics included (the fix undone) | the parser test; "the metric tables and the readable signal expire…" |
+| an unreadable signal field falls back to the default (fails open) | the parser test; "the metric tables and the readable signal expire…" |
+| an unreadable signal is expired as if it kept no days (`null` taken for 0) | both expiry tests |
+| only `trace_days` is checked; a bad `log_days` is taken as a number or the default | the parser test; "both signal fields unreadable…" |
+| a partly unreadable record is not reported (no hourly look, no marker) | both expiry tests |
+
+**Stage 2 of traces and logs (2026-11-19).** `npx vitest run --maxWorkers=2`: **31 passed, 0
+failed** (5 files; 25 before, plus `test/signals.test.ts`, 6); `tsc --noEmit` clean. The three
+existing tests that compared a policy object whole now include `trace_days` and `log_days`.
+`test/signals.test.ts` (span and log batches from `engine/wasm/test/signal.ts`, flushed by the
+real flush into the real ledger): the record's two fields, absent, present and unreadable (four
+bad values, each refusing the record); expiry of a tenant with spans and logs on three days
+under `trace_days` 5 and `log_days` 1 (two ledger changes; the right files of each table
+removed, objects untouched until the purge deletes exactly them after the grace) and under equal
+days (one request for the three tables); a ledger refusing the span and log tables (`unknown
+table`, a release before them, as a stand-in namespace) leaves the metric expiry done and the
+error in `signals`; the real publisher, reading a copy of the tenant's log, stops it
+(`unsupported`) and releases nothing, so nothing is deleted; a stand-in publisher releasing two of
+three keys gets exactly those two deleted; the orphan sweep lists the six objects of the three
+tables (spans under `hour=HH/`), deletes the three leftovers of a dead run and keeps the live
+files and another tenant's.
+
+**Mutants (2026-11-19)**, each on a scratch copy (never this checkout), against
+`test/signals.test.ts`: **3 of 3 killed**. "Retention skipping the logs table" (the `logs`
+group left out of `expireTenant`): killed by "by their own days, spans with trace_index in one
+change, logs on their own…" and two more. "Spans expired without their trace_index" (`TRACE_TABLES`
+without `trace_index`): killed by the same three. "The orphan sweep lists metric tables only":
+killed by "lists every table of the tenant…".
+
 ```
 (cd ../engine/wasm && ./build.sh)
-npm ci && npx vitest run --maxWorkers=2    # 17 tests in workerd, 2 files
+npm ci && npx vitest run --maxWorkers=2    # 25 tests in workerd, 4 files
 npx tsc --noEmit                           # clean
+npm run mutants:registration               # D61's mutants, on a copy (the script refuses the checkout)
 ```
+
+Last run 2026-11-19 (D61): **25 of 25**, `tsc --noEmit` clean. The registration mutants, on a
+copy of the tree in a scratch directory (`scripts/mutants.mjs`), **4 of 4 killed**, all by
+`test/registration.test.ts`: the sweep counting a committed incarnation (killed by "spec F16"
+and "spec F15, adapted"); D30's rule kept (by "spec F16" and the m-6 ledger test); the sweep
+skipping `ensureStream` (by "spec F16" and the m-6 shard test); a shard without
+`ensureStream` stopping the sweep (by the m-6 shard test). The ledger's mutant
+"`loggedIncarnation` is the committed incarnation" is killed by "spec F16" and "spec F15,
+adapted" too.
 
 Last run 2026-11-19 against the real tree (the ledger draining its log asynchronously): 17 of
 17, tsc clean.
@@ -218,6 +331,9 @@ the ledger's alarm happens to run.
 | live, tombstoned, other tenants | untouched with no grace at all |
 | **F15**, the model's trace | worker 1 PUTs and dies; worker 2 adopts the files; a newer incarnation registers, committed, not logged; the sweep runs a day later; the ledger loses its storage and the rebuild rolls the registration back; worker 2's unit is admitted and every listed file has its object. Failed before (the sweep deleted both) |
 | golden: compaction inputs record | compact's golden record decodes; a newer version keeps the object |
+| **spec F16** (D61; `registration.test.ts`), the model's `LEAK_D30_sl_comp2` with the registration first | a logged registration, two units admitted but not logged, a compaction step that plans both, the shard and the ledger lose their storage (both admissions rolled back), the step PUTs its outputs (`conflict`). Sweep 1 keeps all six objects (four flush files `pending_unit`, two outputs `inputs_remain`) and asks the shard, which registers a fresh, newer incarnation; a sweep before the drain still keeps everything (F15); after the drain the next sweep deletes the four flush files and the one after the two outputs; nothing of the tenant is left. Mutants: no `ensureStream`, D30's rule: the objects stay |
+| **spec F15, adapted** (D61), `P_teeth_newer_committed` | a flush Worker PUTs a file of incarnation 1; the shard loses its storage and `ensureStream` registers incarnation 2 (committed, not logged); the sweep keeps the file; the ledger loses its storage, the rebuild rolls incarnation 2 back, and the Worker's late unit of incarnation 1 is admitted: the listed files exist and the tenant reads exactly what was sent. Mutant: count the committed incarnation: the sweep deletes the file |
+| **review m-6** (D61) | a shard without `ensureStream` (the release before): files kept, the failure in `ensured`, the sweep finishes; a ledger without `loggedIncarnation`: D30's rule, files kept; with this release's ledger the same files are deleted |
 
 The interleavings of R-2 and F13/F14 (compaction outputs against this sweep) are in
 `compact/test/compact.test.ts`. Mutants: `MUTANT_FILES=janitor/ node scripts/mutants.mjs all`
@@ -248,6 +364,12 @@ from a copy of `stack/` (never in the checkout); results in `stack/README.md`.
   ("Not implemented") would close it.
 - **A retention shortened by mistake** removes data at the next run; the delete grace is
   the only window in which the ledger's log could still be used to restore the listing.
+  Control asks for confirmation of any change that shortens what this reader keeps, a field left
+  out of a replacing PUT included (D63, review B-1), but a writer other than control is not held
+  to it, and control's copy of `DEFAULT_SIGNAL_DAYS` is tied to this one only by a test in the
+  same tree.
+- **A partly unreadable record keeps one signal for ever** until it is fixed: refusing is the
+  point (review m-1), and it is reported hourly, but nothing else escalates it.
 - **Leftover compaction outputs** stay until an input of theirs is purged (D30): storage, not
   correctness. An output without a readable inputs record is never deleted automatically.
 - **Listing a large prefix** is one request per page; a tenant with millions of files needs

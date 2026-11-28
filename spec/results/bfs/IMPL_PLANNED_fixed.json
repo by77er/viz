@@ -46,7 +46,18 @@
     "fpScope": "stream",
     "tailScope": "stream",
     "noRetryAcrossLoss": true,
-    "retain": false
+    "retain": false,
+    "sweepSteps": false,
+    "sweepAge": true,
+    "purgeSteps": false,
+    "startSteps": false,
+    "goal": "query",
+    "sweepGone": "both",
+    "sweepOrder": "listFirst",
+    "sweepNewerLogged": true,
+    "maxSweeps": 99,
+    "maxRB": 0,
+    "rbFix": "none"
   },
   "props": [
     "I1_AckedIsDurable",
@@ -66,7 +77,7 @@
   "states": 758,
   "transitions": 1819,
   "depth": 7,
-  "seconds": 0.1,
+  "seconds": 0.2,
   "collisionProb": 1.6e-14,
   "violated": "V_IncarnationNotReused",
   "trace": [

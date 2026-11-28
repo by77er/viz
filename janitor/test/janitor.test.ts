@@ -30,10 +30,10 @@ async function tenantWith(prefix: string, n: number, dayBack: (i: number) => num
 
 describe('retention policy', () => {
   it('no record: the default (30 days); a record: its number; anything unreadable: refused, never a default', async () => {
-    expect(DEFAULT_RETENTION).toEqual({ metric_samples_days: 30 })
-    expect(await readRetention(env, 'nobody')).toEqual({ status: 'ok', policy: { metric_samples_days: 30 }, source: 'default' })
+    expect(DEFAULT_RETENTION).toEqual({ metric_samples_days: 30, trace_days: 30, log_days: 30 })
+    expect(await readRetention(env, 'nobody')).toEqual({ status: 'ok', policy: { metric_samples_days: 30, trace_days: 30, log_days: 30 }, source: 'default' })
     await env.CONFIG.put('retention:pol-a', JSON.stringify({ metric_samples_days: 7 }))
-    expect(await readRetention(env, 'pol-a')).toEqual({ status: 'ok', policy: { metric_samples_days: 7 }, source: 'record' })
+    expect(await readRetention(env, 'pol-a')).toEqual({ status: 'ok', policy: { metric_samples_days: 7, trace_days: 30, log_days: 30 }, source: 'record' })
     // Fields this code does not use are ignored; `v: 1` spelt out is version 1.
     expect(parseRetention('{"v":1,"metric_samples_days":400,"metric_5m_days":90,"later":true}')).toMatchObject({ status: 'ok', policy: { metric_samples_days: 400 } })
     // Shorter or longer than the default alike: an unreadable record is never replaced by it.
@@ -52,7 +52,7 @@ describe('retention policy', () => {
   it('reads the retention record control writes (its golden file), as an independent reader', async () => {
     const golden = (await import('../../control/test/golden/formats/kv.settings.v1.json')).default as { version: number; retention: string }
     expect(golden.version).toBe(1)
-    expect(parseRetention(golden.retention)).toEqual({ status: 'ok', policy: { metric_samples_days: JSON.parse(golden.retention).metric_samples_days }, source: 'record' })
+    expect(parseRetention(golden.retention)).toEqual({ status: 'ok', policy: { metric_samples_days: JSON.parse(golden.retention).metric_samples_days, trace_days: 30, log_days: 30 }, source: 'record' })
   })
 
   it('an unreadable record refuses the whole run for that tenant and says why; a fixed one is applied', async () => {
@@ -306,7 +306,7 @@ describe('orphan sweep', () => {
     const objects = await dataKeys(a.tenant)
     expect(objects).toHaveLength(12) // 10 tombstoned inputs + 2 live outputs
     const r = await sweepOrphans(env, a.tenant, { ...NOW, now: Date.now() + 365 * DAY_MS })
-    expect(r).toEqual({ listed: 12, deleted: [], kept: [] })
+    expect(r).toEqual({ listed: 12, deleted: [], kept: [], ensured: [] })
     expect(await dataKeys(a.tenant)).toEqual(objects)
     expect((await dataKeys(b.tenant)).length).toBe(4)
     await expect(sweepOrphans(env, '../x', NOW)).rejects.toThrow(/tenant id/)

@@ -173,7 +173,9 @@ function check(c: LedgerChange): Checked {
     for (const [i, r] of c.removedFiles.entries()) {
       if (typeof r !== 'object' || r === null || r.key !== c.removed[i]) return { corrupt: `change ${c.version}: removedFiles[${i}] is not removed[${i}]` }
       if (!TABLES.has(r.table)) return { unsupported: `change ${c.version} removes a file of table ${JSON.stringify(r.table)}, which this publisher does not know` }
-      removedFiles.push({ key: r.key, table: r.table })
+      // Type-only edit (2026-11-19): the contract widened `removedFiles[].table` to `LedgerTable`; the
+      // check above already refuses any table outside `Table`, so behaviour is unchanged.
+      removedFiles.push({ key: r.key, table: r.table as Table })
     }
   }
   return { ok: { ...c, removedFiles } }

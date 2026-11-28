@@ -10,11 +10,16 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
+// Names built in a loop (`${v}_safety`) do not appear literally in run.ts: they sort after the
+// others, in the order of run.ts's experiment list.
+const { E } = await import('./bfs/run.ts')
+const listed = E.map((e) => e.name)
 const load = (dir, orderFile) => {
   if (!existsSync(dir)) return []
   const rs = readdirSync(dir).filter((f) => f.endsWith('.json')).map((f) => ({ ...JSON.parse(readFileSync(join(dir, f), 'utf8')), mtime: statSync(join(dir, f)).mtimeMs }))
   const order = readFileSync(orderFile, 'utf8')
-  return rs.sort((a, b) => order.indexOf(`'${a.name}'`) - order.indexOf(`'${b.name}'`))
+  const pos = (name) => { const i = order.indexOf(`'${name}'`); return i >= 0 ? i : order.length + listed.indexOf(name) }
+  return rs.sort((a, b) => pos(a.name) - pos(b.name))
 }
 const tlc = load(join(here, 'results'), join(here, 'experiments.mjs'))
 const bfs = load(join(here, 'results', 'bfs'), join(here, 'bfs', 'run.ts'))
@@ -71,6 +76,8 @@ out.TLC_SIM = ['| Run | Bounds | Checked | Runs | Trace length | Result | Wall t
 // ---------------------------------------------------------------- explicit-state (bfs/) tables
 const shortB = (s) => s
   .replace(/^registerStream\((s\d)(?: (t\d))?, inc (\d+)\)$/, (_m, sh, t, i) => `register(${t ? t + ' ' : ''}inc ${i})`)
+  .replace(/^registerStream\((s\d)(?: (t\d))?, inc (\d+)\) \[janitor: ensureStream\]$/, (_m, sh, t, i) => `janitor→shard registers(${t ? t + ' ' : ''}inc ${i})`)
+  .replace(/^query: tailRead\(s\d, inc (\d+), lost before this plan\) = ok nothing$/, 'tail(inc$1 lost earlier)=∅')
   .replace(/^registration logged -> .*$/, 'regLogged')
   .replace(/^reRegister\(.*inc (\d+)\)$/, 'reRegister(inc $1)')
   .replace(/^ledger( t\d)? drain: PUT (change|segment) v(\d+)\.\.v(\d+)$/, (_m, t, k, a, b) => `${k === 'change' ? 'log' : 'drainPUT'}${t ?? ''}(v${a}${a === b ? '' : `-v${b}`})`)
@@ -97,6 +104,7 @@ const shortB = (s) => s
   .replace(/^query: tailRead\(s\d, inc (\d+), above (\d+)\) = (.*) -> re-plan$/, (_m, i, a, w) => `tail(inc${i} >${a})=${w.toUpperCase()} → re-plan`)
   .replace(/^query: read files, merge -> (.*?)( \(.*\))?$/, (_m, g, u) => `done{${g === 'nothing' ? '' : g}}${u ? ' (file unreadable, read as empty)' : ''}`)
   .replace(/^query: .* missing -> re-plan$/, 'file missing → re-plan')
+  .replace(/^query: re-read the ledger: (s\d) registered since the plan -> re-plan$/, 're-read ledger: $1 registered → re-plan')
   .replace(/^compact( t\d)?: read .*$/, 'compRead')
   .replace(/^compact PUT .*$/, 'compPut')
   .replace(/^compact crash .*$/, 'compCrash')
@@ -116,7 +124,7 @@ const shortB = (s) => s
   .replace(/^ledger( t\d)? start: commit incarnation (\d+), serve$/, 'start: commit(inc $2)')
   .replace(/^LEDGER( t\d)? STORAGE LOSS -> rebuild from R2(.*)$/, (_m, t, x) => `LEDGER-LOSS+rebuild${x.includes('REFUSED') ? ' REFUSED' : x.includes('reused') ? ' (incarnation reused)' : ''}${/start incarnation (\d+)/.test(x) ? ` → inc ${/start incarnation (\d+)/.exec(x)[1]}` : ''}`)
   .replace(/^SHARD STORAGE LOSS\(s\d\)$/, 'SHARD-LOSS')
-const bres = (r) => (r.verdict === 'violated' ? `**${r.violated}** violated` : r.verdict === 'holds' ? 'holds (exhaustive)' : `stopped (memory bound): ${r.note}`)
+const bres = (r) => (r.verdict === 'violated' ? `**${r.violated}** violated` : r.verdict === 'holds' ? 'holds (exhaustive)' : `stopped: ${r.note}`)
 const bfsTraceTable = (kind) => ['| Experiment | Checked | Result | Steps | Distinct states | Time | Shortest counterexample |', '|---|---|---|---|---|---|---|',
   ...bfs.filter((r) => r.kind === kind).map((r) => `| \`${r.name}\` ${r.label} | ${r.props.length > 3 ? 'all safety' : r.props.join(', ')} | ${bres(r)} | ${r.trace ? r.trace.length : ''} | ${n(r.states)} | ${r.seconds} s | ${r.trace ? r.trace.map(shortB).join(' → ') : ''} |`)].join('\n')
 out.BFS_TEETH = bfsTraceTable('teeth')
@@ -126,6 +134,9 @@ out.BFS_LOG = bfsTraceTable('log')
 const bounds = (c) => `${c.nt} tenant${c.nt > 1 ? 's' : ''}, ${c.ns} shard${c.ns > 1 ? 's' : ''}, ${c.nb} batches × ≤ ${c.maxSend} sends, ≤ ${c.maxJobs} flush Workers and ≤ ${c.maxCJobs} compaction steps at once, ${c.variants} encoder output${c.variants > 1 ? 's' : ''}, ≤ ${c.maxComp} compaction / ${c.maxExp} retention / ${c.maxLL} ledger loss / ${c.maxSL} shard loss, ${c.maxQ} quer${c.maxQ > 1 ? 'ies' : 'y'}${c.liveness ? ', unbounded refusals' : `, ≤ ${c.maxRestarts} refusals`}`
 out.BFS_AMENDED = ['| Run | Bounds | Checked | Result | Distinct states | Transitions | Depth | Wall time | P(collision) |', '|---|---|---|---|---|---|---|---|---|',
   ...bfs.filter((r) => r.kind === 'amended' || r.kind === 'liveness').map((r) => `| \`${r.name}\` ${r.label} | ${bounds(r.cfg)} | ${r.kind === 'liveness' ? (r.cfg.goal === 'clean' ? 'AG EF no leak' : r.cfg.goal === 'cleanComp' ? 'AG EF no leaked compaction output' : 'AG EF query done') : 'all safety'} | ${bres(r)}${r.trace ? ` in ${r.trace.length} steps${r.cfg.goal && r.cfg.goal !== 'query' && r.note ? `; ${r.note.replace(/^.*unlisted then: /, 'left: ')}` : ''}` : ''} | ${n(r.states)} | ${n(r.transitions)} | ${r.depth} | ${r.seconds} s | ${r.collisionProb} |`)].join('\n')
+const checked = (r) => (r.props.length > 3 ? 'all safety' : r.props.join(', ') || (r.cfg.goal === 'clean' ? 'AG EF no leak' : r.cfg.goal === 'cleanComp' ? 'AG EF no leaked compaction output' : 'AG EF query done'))
+out.BFS_PROPOSED = ['| Experiment | Checked | Result | Steps | Distinct states | Depth | Time | Shortest counterexample |', '|---|---|---|---|---|---|---|---|',
+  ...bfs.filter((r) => r.kind === 'proposed').sort((a, b) => listed.indexOf(a.name) - listed.indexOf(b.name)).map((r) => `| \`${r.name}\` ${r.label} | ${checked(r)} | ${bres(r)}${r.asExpected ? '' : ' (NOT as expected)'}${r.trace && r.cfg.goal && r.cfg.goal !== 'query' && r.note ? `; ${r.note.replace(/^.*unlisted then: /, 'left: ')}` : ''} | ${r.trace ? r.trace.length : ''} | ${n(r.states)} | ${r.depth} | ${r.seconds} s | ${r.trace ? r.trace.map(shortB).join(' → ') : ''} |`)].join('\n')
 const total = [...tlc, ...bfs].reduce((a, r) => a + (r.seconds ?? 0), 0)
 out.TOTAL = `${Math.round(total / 60)} minutes of wall time in total (sum over all runs recorded in results/)`
 

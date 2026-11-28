@@ -26,10 +26,15 @@ const T = {
   tombstone: `npx vitest run ${W} test/tombstone.test.ts`,
   // --bail=1: a killed mutant stops at its first failing test (the crash test alone is minutes under load).
   checkpoint: `npx vitest run ${W} --bail=1 test/checkpoint.test.ts`,
+  registration: `npx vitest run ${W} test/registration.test.ts`,
   all: `npx vitest run ${W}`,
 }
 // [name, file, from, to, tests]
 const mutants = [
+  // ── registration before writes (D61): `logged` and `loggedIncarnation` derived from the outbox ──
+  ['D61: logged at the commit', F, '    return !this.pendingRegistrations().get(shard)?.has(incarnation)', '    return true', T.registration],
+  ['D61: loggedIncarnation is the committed incarnation', F, '      const loggedIncarnation = seq > 0 || !waiting?.has(incarnation) ? incarnation : prev !== null && !waiting.has(prev) ? prev : 0', '      const loggedIncarnation = incarnation', T.registration],
+  ['D61: a registration still in the outbox reads as logged once a later segment is written (the outbox is not read)', F, "    for (const r of this.ctx.storage.sql.exec(`SELECT body FROM outbox WHERE instr(body, '\"kind\":\"register_stream\"') > 0`)) {", '    for (const r of [] as { body: string }[]) {', T.registration],
   // ── contracts v2 behaviour (patterns updated for the code as it now reads) ──
   ['a lower stream incarnation is registered', F, 'if (known && ref.incarnation < known.incarnation) {', 'if (false) {', T.ledger],
   ['an empty unit is admitted', F, "if (unit.files.length === 0) return invalid('a unit must have at least one file')", '', T.ledger],
@@ -45,7 +50,7 @@ const mutants = [
   ['replace admits an output whose key is already live as ok', F, '      if (this.liveFile(f.key)) return invalid(`file key already live: ${f.key}`)', "      if (this.liveFile(f.key)) return { status: 'ok', version: this.version() }", T.ledger],
   ['a retried replace is not recognised', F, "    if (req.add.length > 0 && missing.length === remove.length && req.add.every((f) => this.liveFile(f.key))) {\n      return { status: 'ok', version: this.version() }\n    }\n", '', T.ledger],
   ['drain returns a bare number', F, '      return { written }\n', '      return written as never\n', T.segments],
-  ['loggedWatermarks returns the committed watermark', F, '.exec(`SELECT shard, incarnation, logged FROM stream ORDER BY shard`)', '.exec(`SELECT shard, incarnation, watermark AS logged FROM stream ORDER BY shard`)', T.ledger],
+  ['loggedWatermarks returns the committed watermark', F, '.exec(`SELECT shard, incarnation, logged, prev_incarnation FROM stream ORDER BY shard`)', '.exec(`SELECT shard, incarnation, watermark AS logged, prev_incarnation FROM stream ORDER BY shard`)', T.ledger],
   ['the contiguity check is dropped', F, "if (unit.seqLo !== known.watermark + 1) return { status: 'not_contiguous', watermark: known.watermark }", '', T.ledger],
 
   // ── the segment log (contracts/LEDGER-LOG.md) ──
