@@ -15,7 +15,7 @@ import { httpControlClient, httpMonitorsClient, httpQueryClient, type Fetcher } 
 import { STEP_UP_MAX_BYTES, readCapped } from '../src/index'
 import { BASE, type Harness, NOW, controlCall, controlFetcher, env, harness, makeKey, newTenant, rest, rpc, stubOf, telemetry } from './helpers'
 
-const ORIGIN = 'https://vis.bitcru.sh'
+const ORIGIN = 'https://viz.bitcru.sh'
 const SERVER = `${ORIGIN}/mcp`
 const PRM = `${ORIGIN}/.well-known/oauth-protected-resource/mcp`
 const REDIRECT = 'http://127.0.0.1:33418/callback'

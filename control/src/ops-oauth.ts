@@ -397,6 +397,8 @@ export async function exchangeCode(t: Tenant, req: TokenRequest, now: number): P
     if (!clientMatches(t, g, req.client_id)) return refuse(fail('invalid_grant', 'The code was issued to another client.'))
     if (req.redirect_uri !== row.redirect_uri) return refuse(fail('invalid_grant', 'redirect_uri is not the one the authorization request used.'))
     if (!pkceMatches(req.code_verifier!, row.challenge)) return refuse(fail('invalid_grant', 'code_verifier does not match the code_challenge.'))
+    // D75: a code approved before the public address moved is for the old resource; its tokens would be refused there.
+    if (!sameResource(g.resource, t.oauth.resource)) return refuse(fail('invalid_grant', `The code is for ${g.resource}, which this server no longer serves. Connect again: the resource is ${t.oauth.resource}.`))
     if (req.resource !== undefined && !sameResource(req.resource, g.resource)) return refuse(fail('invalid_target', 'The resource is not the one this code was issued for.'))
     touch(t, g, now)
     return { grant: g, sealed: row.sealed, scopes: JSON.parse(g.scopes) as OAuthScope[] }
@@ -425,6 +427,10 @@ export async function refreshTokens(t: Tenant, req: TokenRequest, now: number): 
       revokeGrant(t, g, SYSTEM, now, 'wrong-client')
       return { error: fail('invalid_grant', gone) }
     }
+    // D75: a grant approved for a resource this server no longer issues tokens for (<old origin>/mcp,
+    // from before the public address moved) gets none: the resource would refuse them (audience), and
+    // the client would refresh again and again. invalid_grant sends it to authorize anew. Nothing is spent.
+    if (!sameResource(g.resource, t.oauth.resource)) return { error: fail('invalid_grant', `This grant is for ${g.resource}, which this server no longer serves. Connect again: the resource is ${t.oauth.resource}.`) }
     if (req.resource !== undefined && !sameResource(req.resource, g.resource)) return { error: fail('invalid_target', 'The resource is not the one this grant is for.') }
     const held = JSON.parse(g.scopes) as OAuthScope[]
     let scopes = held

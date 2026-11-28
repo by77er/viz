@@ -34,7 +34,7 @@ export class Problem extends Error {
 
   body(): ProblemBody {
     return {
-      type: `https://vis.bitcru.sh/problems/${this.code}`,
+      type: `https://viz.bitcru.sh/problems/${this.code}`,
       title: TITLES[this.status] ?? 'Error',
       status: this.status,
       code: this.code,

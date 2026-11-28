@@ -6,7 +6,7 @@ import red from '../../dashboard/examples/service-red.json'
 import ingest from '../../dashboard/examples/viz-ingest-pipeline.json'
 
 export const EXAMPLES = { service_red: red, k8s_node_overview: k8s, viz_ingest_pipeline: ingest } as Record<string, unknown>
-export const BASE = 'https://vis.bitcru.sh/api/v1/control'
+export const BASE = 'https://viz.bitcru.sh/api/v1/control'
 
 let counter = 0
 const run = Math.random().toString(36).slice(2, 8)

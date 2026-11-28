@@ -28,7 +28,7 @@
     // Leaf objects per cell: leaf/<cell>/0 … leaf/<cell>/31.
     "LEAF_POOL_SIZE": "32",
     // Origins allowed to call the API from a browser, comma separated. Never `*`.
-    "CORS_ORIGINS": "https://vis.bitcru.sh",
+    "CORS_ORIGINS": "https://viz.bitcru.sh",
     // Seconds an immutable Parquet file stays in the Cache API.
     "FILE_CACHE_TTL_S": "3600"
   }

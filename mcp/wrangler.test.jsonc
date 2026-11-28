@@ -25,6 +25,6 @@
   "kv_namespaces": [{ "binding": "CONFIG", "id": "viz-mcp-test-config" }],
   "vars": {
     "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":8,\"spread\":2,\"epoch\":1}",
-    "APP_URL": "https://vis.bitcru.sh"
+    "APP_URL": "https://viz.bitcru.sh"
   }
 }

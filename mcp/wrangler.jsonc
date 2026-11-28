@@ -20,9 +20,9 @@
   ],
   "vars": {
     // Base of deep links (the app's Explore view).
-    "APP_URL": "https://vis.bitcru.sh",
+    "APP_URL": "https://viz.bitcru.sh",
     // The public origin: this OAuth resource is <PUBLIC_URL>/mcp, its authorization server is <PUBLIC_URL> (control).
-    "PUBLIC_URL": "https://vis.bitcru.sh",
+    "PUBLIC_URL": "https://viz.bitcru.sh",
     // Comma-separated browser origins allowed to call. Empty: none (agents are not browsers).
     "ALLOWED_ORIGINS": ""
     // Optional: "MCP_LIMITS": "{\"maxSeries\":2000,\"maxPanels\":40,\"maxParallel\":6,\"deadlineMs\":10000}"

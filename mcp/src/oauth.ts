@@ -13,7 +13,7 @@ import { OAUTH_DEFAULT_SCOPES } from '../../contracts/oauth'
  * is 403 with `error="insufficient_scope"` and the scopes it needs, so a client can step up.
  */
 
-export const DEFAULT_PUBLIC_URL = 'https://vis.bitcru.sh'
+export const DEFAULT_PUBLIC_URL = 'https://viz.bitcru.sh'
 export const PRM_PATHS = new Set(['/.well-known/oauth-protected-resource/mcp', '/.well-known/oauth-protected-resource'])
 
 export interface ResourceConfig {

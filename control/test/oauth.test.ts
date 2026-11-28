@@ -166,7 +166,7 @@ describe('the authorization request: exact redirect URIs, PKCE S256 only, and ne
     expect((await oauthFetch(q.pathname + q.search)).text).toContain('unsupported_response_type')
     // no resource: the one resource is assumed; upper-case scheme and host are the same resource
     expect((await authorize(client, challenge, { resource: null })).res.status).toBe(200)
-    expect((await authorize(client, challenge, { resource: 'HTTPS://VIS.BITCRU.SH/mcp' })).res.status).toBe(200)
+    expect((await authorize(client, challenge, { resource: 'HTTPS://VIZ.BITCRU.SH/mcp' })).res.status).toBe(200)
   })
 
   it('no endpoint ever answers with a redirect', async () => {
@@ -508,7 +508,7 @@ describe('introspection, for the resource', () => {
     // the audience is this resource only; scheme and host case do not matter
     expect(await introspect(t.tenant, c.access, `${ORIGIN}/api/v1/agent`)).toEqual({ v: 1, status: 'inactive', reason: 'audience' })
     expect(await introspect(t.tenant, c.access, 'https://other.example/mcp')).toEqual({ v: 1, status: 'inactive', reason: 'audience' })
-    expect(await introspect(t.tenant, c.access, 'HTTPS://VIS.BITCRU.SH/mcp')).toMatchObject({ status: 'active' })
+    expect(await introspect(t.tenant, c.access, 'HTTPS://VIZ.BITCRU.SH/mcp')).toMatchObject({ status: 'active' })
     // a refresh token or a code is not an access token
     expect(await introspect(t.tenant, c.refresh)).toMatchObject({ status: 'inactive', reason: 'unknown' })
   })
