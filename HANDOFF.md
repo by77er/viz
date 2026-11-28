@@ -6,22 +6,16 @@ scratch directory does not survive the pause, so everything needed is in the rep
 
 ## Waiting on the owner
 
-1. **A stage deploy, or an override.** Two things need a first contact with Cloudflare that is not
-   production: pull request #9's six Rate Limiting bindings (`spikes/s13-upgrade-trial/README.md`,
-   prepared, not run) and the gateway serving the web app (D74; `deploy/README.md`, "A stage before
-   production"). The session's permission check refused the `viz-s13-*` stage deploy twice; it needs
-   the owner's explicit word or a Bash permission rule. Without a stage, #9 can be merged on the
-   owner's instruction ("merge #9 without the trial"), and the first release carrying the app needs the
-   workflow input `app_without_stage_evidence` with a reason.
-2. **The GitHub `production` environment**: deployments from `main` only, the two Cloudflare secrets as
-   environment secrets (`deploy/README.md`, "One-time setup"). Nothing in the repository can check it.
-3. **Rotate the Cloudflare API token.** On 2026-11-27 a review experiment printed the real token into
-   one agent's command output (the session transcript) and one scratch file, deleted at once. It was
-   found in no repository file, commit or scratch file. After rotating: the cloud environment's secret
-   and the two GitHub secrets.
+1. ~~A stage deploy, or an override~~: the owner allowed stage deploys, standing (2026-11-28, in
+   `AGENTS.md`). S13 ran and passed; pull request #9 merged (`375e9ba`) and deploys from `main`.
+2. ~~The GitHub `production` environment~~: set up by the owner (2026-11-28).
+3. **Rotate the Cloudflare API token** (printed in one agent's output on 2026-11-27). Not yet confirmed.
 4. ~~Delete `viz-spike-s0-do-billing`~~: done 2026-11-28.
 5. Optional: open the S12 page on a real phone (`spikes/s12-reload-on-a-phone/README.md`); it is the
    one thing that would reopen the waived design-system blocker. Then that Worker is deleted.
+6. Asked 2026-11-28: whether the product should move from `vis.bitcru.sh` to `viz.bitcru.sh`.
+7. Exploring (2026-11-28): people, individual and team workspaces, invite codes
+   (`design/proposals/accounts-and-teams.md`, being written).
 
 ## What is deployed on Cloudflare
 
