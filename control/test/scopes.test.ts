@@ -34,7 +34,7 @@ describe('scopes for other services', () => {
     for (const scope of ['monitors:read', 'monitors:write', 'monitors:ack']) {
       const k = await makeKey(t.admin, [scope], { kind: 'agent', name: `ruler ${scope}` })
       expect((await kvGet(`key:${k.keyId}`)).scopes).toEqual([scope])
-      const req = () => new Request('https://vis.bitcru.sh/api/v1/monitors', { headers: { Authorization: `Bearer ${k.key}` } })
+      const req = () => new Request('https://viz.bitcru.sh/api/v1/monitors', { headers: { Authorization: `Bearer ${k.key}` } })
       clearAuthCache()
       // ruler/src/http.ts: `authenticate(req, env.CONFIG, def.scope as never)`
       expect((await authenticate(req(), env.CONFIG, scope as never)).tenant).toBe(t.tenant)

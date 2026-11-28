@@ -121,6 +121,19 @@ const MUTANTS = [
   ['ids: a Rate Limiting binding whose id cannot be read is skipped', 'resources.mjs', "    if (!(typeof id === 'string' || Number.isInteger(id)) || !/^\\d+$/.test(String(id))) throw", "    if (!(typeof id === 'string' || Number.isInteger(id)) || !/^\\d+$/.test(String(id))) continue\n    if (false) throw"],
   ['ids: the deployment\'s own bound ids are not kept (re-allocated)', 'resources.mjs', '    const bound = inUse.byScript.get(w.worker)?.[w.name]', '    const bound = undefined'],
   ['ids: destroy --stage does not free the stage\'s ids', 'resources.mjs', '  if (keys.length) recordRateLimits(keys, {})\n', ''],
+  // D75: hostnames (configure.mjs, lib/domains.mjs, release.mjs, smoke.mjs)
+  ['D75: vis detached (the production gateway holds only the domain)', 'configure.mjs', 'out.routes = hostsOf(plan).map(', 'out.routes = hostsOf(plan).slice(0, 1).map('],
+  ['D75: vis listed before viz', 'configure.mjs', 'out.routes = hostsOf(plan).map(', 'out.routes = hostsOf(plan).reverse().map('],
+  ['D75: the production gateway gets no aliases (OAuth served on vis)', 'configure.mjs', 'vars.VIZ_HOST_ALIASES = JSON.stringify(stage ? [] : hostsOf(plan).slice(1))', "vars.VIZ_HOST_ALIASES = '[]'"],
+  ['S13-1: a stage\'s PUBLIC_URL is production\'s again (generateWorker)', 'configure.mjs', '    vars[k] = publicUrl\n', '    vars[k] = stage ? `https://${plan.domain}` : publicUrl\n'],
+  ['S13-1: a stage\'s PUBLIC_URL is production\'s again (configure)', 'configure.mjs', '  const publicUrl = publicOrigin(plan, stage, ', '  const publicUrl = stage ? `https://${plan.domain}` : publicOrigin(plan, stage, '],
+  ['S13-1: a stage keeps the component\'s PUBLIC_URL', 'configure.mjs', '  for (const k of ORIGIN_VARS) {\n    if (!(k in vars)) continue\n', '  for (const k of ORIGIN_VARS) {\n    if (!(k in vars) || stage) continue\n'],
+  ['D75: detaching a custom domain the gateway holds is not refused', 'lib/domains.mjs', '      if (d.service === w.name && !hosts.includes(d.hostname)) {', '      if (false) {'],
+  ['D75: taking over another Worker\'s hostname is not refused', 'lib/domains.mjs', '      if (hosts.includes(d.hostname) && d.service !== w.name) {', '      if (false) {'],
+  ['D75: hostnames other than the manifest\'s are not refused', 'lib/domains.mjs', '    if (planned && JSON.stringify(planned) !== JSON.stringify(hosts)) {', '    if (false) {'],
+  ['D75: deploy does not read the account\'s custom domains', 'release.mjs', "  const domains = customDomainProblems(manifest, configOfGenerated, await domainsNow(manifest, listCustomDomains))\n  log(`run ${run}`)", "  const domains = customDomainProblems(manifest, configOfGenerated, null)\n  log(`run ${run}`)"],
+  ['D75: smoke follows the data-path redirect on vis', 'smoke.mjs', "body: new Uint8Array(0), redirect: 'manual' })", 'body: new Uint8Array(0) })'],
+  ['D75: smoke accepts any redirect of OAuth on vis', 'smoke.mjs', "if (r.status !== 308 || r.headers.get('Location')", "if (r.status < 300 || r.status > 399 || r.headers.get('Location')"],
   // The review of D69, round 2: M2-1 (a release from before format records) and m2-1 (what the scan cannot read)
   ['M2-1: a rollback target from before format records does not get its release\'s formats record', 'release.mjs', '  const full = withRecordedFormats(record ?? JSON.parse(readFileSync(recordFile, \'utf8\')), stage)', '  const full = record ?? JSON.parse(readFileSync(recordFile, \'utf8\'))'],
   ['M2-1: a version that declares no formats does not get its release\'s formats record', 'release.mjs', "  const rec = recordedFormats(plainVarOf(info, 'VIZ_RELEASE') ?? annotation(info, 'workers/tag'))", '  const rec = null'],
@@ -143,7 +156,7 @@ try {
 
 const run = () => {
   try {
-    execFileSync('node', ['--test', '--test-concurrency=2', 'test/release.test.mjs', 'test/release-checks.test.mjs', 'test/configure.test.mjs', 'test/review-d69.test.mjs', 'test/workflow.test.mjs', 'test/oauth-gate.test.mjs', 'test/resources.test.mjs', 'test/upgrade-production.test.mjs'], { cwd: DEPLOY_DIR, stdio: 'pipe', timeout: 900_000 })
+    execFileSync('node', ['--test', '--test-concurrency=2', 'test/release.test.mjs', 'test/release-checks.test.mjs', 'test/configure.test.mjs', 'test/review-d69.test.mjs', 'test/workflow.test.mjs', 'test/oauth-gate.test.mjs', 'test/resources.test.mjs', 'test/upgrade-production.test.mjs', 'test/domains.test.mjs', 'test/smoke.test.mjs'], { cwd: DEPLOY_DIR, stdio: 'pipe', timeout: 900_000 })
     return { failed: false, detail: '' }
   } catch (e) {
     const out = String(e.stdout ?? '') + String(e.stderr ?? '')

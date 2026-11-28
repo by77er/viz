@@ -16,6 +16,9 @@
   ],
   "vars": {
     "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":8,\"spread\":2,\"epoch\":1}",
-    "VIZ_RELEASE": "test"
+    "VIZ_RELEASE": "test",
+    // As deploy/configure.mjs sets them in production (D75): viz canonical, vis an alias.
+    "PUBLIC_URL": "https://viz.bitcru.sh",
+    "VIZ_HOST_ALIASES": "[{\"host\":\"vis.bitcru.sh\",\"deprecated\":1795824000}]"
   }
 }

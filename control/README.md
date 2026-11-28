@@ -282,7 +282,7 @@ holds, revocable, and good only at `/mcp`. mcp/README.md describes the resource 
 | `GET /.well-known/oauth-authorization-server` | RFC 8414: issuer `PUBLIC_URL`, the endpoints below, `code_challenge_methods_supported: ["S256"]`, `token_endpoint_auth_methods_supported: ["none"]`, the five grantable scopes, `authorization_response_iss_parameter_supported: true` (RFC 9207). `registration_endpoint` only when the signing key is set |
 | `POST /oauth/register` | RFC 7591, public clients only. **Stores nothing**: the client id is the registration (name, redirect URIs, issue time), signed with HMAC-SHA-256 under the Worker secret `OAUTH_CLIENT_KEY` (format `id.oauth-client`). Redirect URIs: 1 to 5, https or http on `localhost`/`127.0.0.1`/`[::1]`, no fragment, no user info, no spaces or backslashes, **ASCII only** (a bidirectional or invisible character could make the URI read as another on the consent page; percent-encode, and write an IDN host as punycode: review of D44, m-3), at most 512 characters. Confidential auth methods, other grant or response types and unknown scopes are refused. 503 without the key |
 | `GET /oauth/authorize` | Validates the request: the client id's signature, the redirect URI **exactly** equal to a registered one (else 400 and nothing is sent anywhere), `response_type=code`, a 43-character `code_challenge` with method `S256` (plain and none refused), known scopes (default `read dashboards:read monitors:read`), one `resource` equal to `<PUBLIC_URL>/mcp` (scheme and host compared without case). It answers a **plain-text page** (no markup, `no-store`, CSP `default-src 'none'; frame-ancestors 'none'`): what is asked and how a person approves it, with a request handle (format `oauth.request`). Errors the client should hear about are shown with the callback link that would deliver them; **this server never redirects by itself** (every redirect URI is the client's own claim, so an automatic redirect would make it an open redirector) |
-| `POST /oauth/token` | `authorization_code` (with `code_verifier`, `redirect_uri`, `client_id`, `resource`) and `refresh_token`. Form encoding only; a parameter sent twice, an `Authorization` header or a `client_secret` is refused. A code or refresh token without this deployment's tag (below) is `invalid_grant` **without asking any tenant's object**. Answers `{ access_token, token_type: "Bearer", expires_in: 3600, refresh_token, scope }`, `Cache-Control: no-store` |
+| `POST /oauth/token` | `authorization_code` (with `code_verifier`, `redirect_uri`, `client_id`, `resource`) and `refresh_token`. Form encoding only; a parameter sent twice, an `Authorization` header or a `client_secret` is refused. A code or refresh token without this deployment's tag (below) is `invalid_grant` **without asking any tenant's object**. Answers `{ access_token, token_type: "Bearer", expires_in: 3600, refresh_token, scope }`, `Cache-Control: no-store`. A grant or code approved for a resource other than `<PUBLIC_URL>/mcp` (one from before the address moved to viz.bitcru.sh, D75) is `invalid_grant` and nothing is spent, so its client authorizes again |
 | `POST /oauth/revoke` | RFC 7009 with `token` and `client_id`. An access token ends alone; a refresh token ends its grant. Unknown tokens and tokens of another client: 200, nothing changes; one without the tag reaches no object |
 
 Every body here (and the control API's own) is read from the stream with a cap: one sent without
@@ -806,7 +806,7 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
 - **The rate-limit bindings in a deployment** (D70): the Worker reads them, the deploy does not create
   them yet and does not refuse a release without them ("Needed changes elsewhere"), so every
   deployment today would run OAuth without layer 1 (logged once per isolate, `absent` in `/healthz`).
-  A WAF rate-limiting rule on `vis.bitcru.sh` (the only layer that saves the request charge of a
+  A WAF rate-limiting rule on `viz.bitcru.sh` (the only layer that saves the request charge of a
   refused request) is recommended, not built. A per-network limit for OAuth bearers at `/mcp` is the
   agent surface's (the network is known there, not in the entrypoint).
 - **A per-tenant "not before"** (D70 alternative (p), the second review's option (b)): a person's
@@ -832,6 +832,15 @@ on the table. System actions (provisioning, proposal expiry, purge) are entries 
   limits on the OAuth endpoints: D70, above.)
 
 ## Verification
+
+2026-11-28, D75 (the address moves to viz.bitcru.sh): `npx vitest run --maxWorkers=2` 227 of 227
+in 24 + 1 files (`test/moved.test.ts`, 4 new: an old access token `inactive`/`audience` at the new
+resource, an old refresh token `invalid_grant` with nothing spent, a code approved before the move
+`invalid_grant`, an old client id accepted at `/oauth/authorize` and the old resource
+`invalid_target`); `tsc` clean. Mutants, on a scratch copy: a moved grant refreshed, and a moved
+code exchanged, each killed by `test/moved.test.ts`. The tests' host is `viz.bitcru.sh` (the golden
+`oauth.request` file keeps `https://vis.bitcru.sh/mcp` as its fixed input: a format pinned from
+fixed bytes, not a link; changing it would rewrite the pinned bytes with no format change).
 
 ```
 npm install
@@ -2002,7 +2011,7 @@ ratelimit (1).
     spend. They cost this Worker 0.2–0.5 ms of CPU each (measured here) and store nothing.
   - If Cloudflare uses other addresses for this, they are counted as ordinary networks.
 - **OAuth: a refused request is still a billed Worker request** (the gateway's). A Worker-side limit
-  saves CPU and object work, not the request charge. Only a WAF rate-limiting rule on `vis.bitcru.sh`
+  saves CPU and object work, not the request charge. Only a WAF rate-limiting rule on `viz.bitcru.sh`
   in front of the four paths would; not built (outside what the deploy manages; AGENTS.md allows
   rules for that host only).
 - **OAuth: the limits are proposed, not measured against traffic**, and the tests run miniflare's
@@ -2093,7 +2102,8 @@ Things outside this directory that this component needs or exposes. Only the gat
    viz-control when it is missing, with `wrangler versions secret put` from stdin before anything
    is promoted, and never rotates it on its own; rotation is by hand, `deploy/README.md`. Not yet
    run on Cloudflare.) `PUBLIC_URL` (the issuer and the resource are built from it) is set for viz-control and
-   viz-mcp from the deployment's domain by `deploy/configure.mjs`, done. Still open, `app/`: the consent page and the grants screen ("What the UI must later show"), through
+   viz-mcp from the deployment's one origin by `deploy/configure.mjs`, done: `https://viz.bitcru.sh`
+   in production since D75, and a stage's own workers.dev URL (finding S13-1). Still open, `app/`: the consent page and the grants screen ("What the UI must later show"), through
    design review.
 
 ### Needed changes elsewhere (rate limits, D70)
@@ -2220,7 +2230,7 @@ no `OAUTH_RL_SOURCE_48` or `OAUTH_RL_CREDENTIAL`. Nothing was deployed with eith
 Worst-case cost of the deploy change: none on Cloudflare's side that the page names. It gives no
 price for the binding (read 2026-11-19), and no resource is created, only bindings.
 
-Optional, by hand, outside the deploy: a WAF rate-limiting rule on `vis.bitcru.sh` only, for
+Optional, by hand, outside the deploy: a WAF rate-limiting rule on `viz.bitcru.sh` only (on `vis.bitcru.sh` the OAuth paths answer only a 308 since D75), for
 `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke`, counted by IP, above the
 Worker's source limit (for example 300 a minute), so that a flood is refused before any Worker runs.
 Such a rule should leave Cloudflare's Workers address alone, or count it by the field

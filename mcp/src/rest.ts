@@ -22,7 +22,7 @@ const JSON_HEADERS = { 'Content-Type': 'application/json; charset=utf-8', 'Cache
 const json = (status: number, body: unknown, extra: Record<string, string> = {}): Response => new Response(JSON.stringify(body), { status, headers: { ...JSON_HEADERS, ...extra } })
 
 export function problem(status: number, code: string, detail: string, fix: string, extra: Record<string, unknown> = {}): Response {
-  return new Response(JSON.stringify({ type: `https://vis.bitcru.sh/problems/${code}`, title: code, status, code, detail, fix, ...extra }), { status, headers: { ...JSON_HEADERS, 'Content-Type': 'application/problem+json' } })
+  return new Response(JSON.stringify({ type: `https://viz.bitcru.sh/problems/${code}`, title: code, status, code, detail, fix, ...extra }), { status, headers: { ...JSON_HEADERS, 'Content-Type': 'application/problem+json' } })
 }
 
 const MAX_BODY = 1 << 20

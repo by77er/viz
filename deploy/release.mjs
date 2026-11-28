@@ -58,12 +58,17 @@
 //   placeholders); OAUTH_CLIENT_KEY is not created or rotated on a viz-control whose generated config
 //   lacks its rate limits (lib/secrets.mjs keyGateProblems), refused before anything is uploaded; the
 //   record says which bindings and ids viz-control has, and whether a stage left them out as asked.
+// - Custom domains (D75; lib/domains.mjs): before anything is uploaded, a production release is
+//   refused when the public Worker's generated config would detach a custom domain it holds now, or
+//   take over a hostname that is another Worker's custom domain, or differs from the manifest's
+//   hostnames; a stage's config may hold none. Rollback never applies triggers, so it never changes them.
 import { randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { currentDeployment, listScripts, listVersions, versionInfo } from './lib/cf.mjs'
+import { currentDeployment, listCustomDomains, listScripts, listVersions, versionInfo } from './lib/cf.mjs'
 import { DEPLOY_DIR, GENERATED_DIR, REPO_ROOT, checkStage, log, parseArgs, readJsonc, stagedName, targetName } from './lib/common.mjs'
+import { customDomainProblems, domainsNow } from './lib/domains.mjs'
 import { floorDeployProblems, floorRollbackProblems, floorRules, floorsOfVersion } from './lib/floors.mjs'
 import { formatsMap, formatsOfVersion, readersOf, recordReaders } from './lib/formats.mjs'
 import { schemasOfVersion } from './lib/schemas.mjs'
@@ -551,14 +556,15 @@ export async function deploy({ stage, ackText = '', rotateText = '' }) {
   const secretsBefore = await secretsNow(specs, before, SECRET_API)
   const planned = planSecrets(secretsBefore, rotate, plan.steps)
   const gate = keyGateProblems(manifest, configOfGenerated)
+  const domains = customDomainProblems(manifest, configOfGenerated, await domainsNow(manifest, listCustomDomains))
   log(`run ${run}`)
   printPlan(manifest, plan, planned)
   for (const f of forwardOnly) log(`  FORWARD-ONLY: ${f.why}`)
-  const refusals = [...idsOptionalProblems(manifest), ...plan.problems, ...floors.problems, ...rotateProblems(rotate, specs), ...keyGateRefusals(gate, planned)]
+  const refusals = [...idsOptionalProblems(manifest), ...plan.problems, ...floors.problems, ...rotateProblems(rotate, specs), ...keyGateRefusals(gate, planned), ...domains]
   if (refusals.length) {
     log('\nrelease: REFUSED before uploading or promoting anything:')
     for (const p of refusals) log(`  - ${p}`)
-    log('  See deploy/README.md, "Durable Object migrations", "Rollback floors", "Worker secrets the deploy generates" and "Rate limits in front of OAuth".')
+    log('  See deploy/README.md, "Durable Object migrations", "Rollback floors", "Worker secrets the deploy generates", "Rate limits in front of OAuth" and "Hostnames".')
     return { exit: EXIT_REFUSED, plan }
   }
   const secretActions = []
@@ -769,7 +775,8 @@ export async function planOnly({ stage, ackText = '', rotateText = '' }) {
   const secrets = planSecrets(await secretsNow(specs, live, SECRET_API), rotate, plan.steps)
   const floors = await floorDeployProblems(rules, manifest, live, FLOOR_API, varsOfGenerated)
   const forwardOnly = [...forwardOnlyReasons(manifest, live), ...floors.forwardOnly]
-  const problems = [...idsOptionalProblems(manifest), ...plan.problems, ...floors.problems, ...rotateProblems(rotate, specs), ...keyGateRefusals(keyGateProblems(manifest, configOfGenerated), secrets)]
+  const domains = customDomainProblems(manifest, configOfGenerated, await domainsNow(manifest, listCustomDomains))
+  const problems = [...idsOptionalProblems(manifest), ...plan.problems, ...floors.problems, ...rotateProblems(rotate, specs), ...keyGateRefusals(keyGateProblems(manifest, configOfGenerated), secrets), ...domains]
   printPlan(manifest, plan, secrets)
   for (const f of forwardOnly) log(`  FORWARD-ONLY: ${f.why}`)
   for (const p of problems) log(`  - ${p}`)

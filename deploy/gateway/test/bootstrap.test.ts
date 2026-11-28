@@ -6,7 +6,7 @@ import { authenticate } from '../../../edge/src/auth'
 import { describe, expect, it } from 'vitest'
 import { type Env, handle } from '../src/index'
 
-const URL_ = 'https://vis.bitcru.sh/api/v1/bootstrap'
+const URL_ = 'https://viz.bitcru.sh/api/v1/bootstrap'
 const hex = (b: ArrayBuffer) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, '0')).join('')
 const sha256 = async (s: string) => hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)))
 

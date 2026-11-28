@@ -56,7 +56,7 @@ describe('read_dashboard on the examples', () => {
     const byId = Object.fromEntries((r.structured.data.panels as any[]).map((p) => [p.id, p]))
     expect(byId.error_ratio.badge).toBe('CRIT')
     expect(byId.slow_spans.badge).toBe('NOT AVAILABLE')
-    expect(byId.error_ratio.link).toMatch(/^https:\/\/vis\.bitcru\.sh\/explore\?q=/)
+    expect(byId.error_ratio.link).toMatch(/^https:\/\/viz\.bitcru\.sh\/explore\?q=/)
     expect(r.structured.complete).toBe(true)
   })
 

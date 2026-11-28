@@ -22,7 +22,7 @@ import { type PoolMap, shardName, signalPool } from '../../../shard/src/pool'
 import type { E2EEnv } from './worker'
 
 const E = env as unknown as E2EEnv
-const BASE = 'https://vis.bitcru.sh'
+const BASE = 'https://viz.bitcru.sh'
 const OFF_ENV = (): E2EEnv => ({ ...E, INGEST: E.INGEST_OFF, QUERY: E.QUERY_OFF })
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const hex = (b: Uint8Array) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('')

@@ -125,7 +125,7 @@ function authFailure(e: AuthError, mcp: boolean, cfg: ResourceConfig, presented:
   if (e.status === 401) headers['WWW-Authenticate'] = mcp ? challenge401(cfg, presented, e.code === 'invalid-token' ? e.message : undefined) : 'Bearer realm="viz", error="invalid_token"'
   const body = mcp
     ? { jsonrpc: '2.0', id: null, error: { code: -32001, message: `${e.message} ${e.fix}`, data: { code: e.code, status: e.status } } }
-    : { type: `https://vis.bitcru.sh/problems/${e.code}`, title: e.code, status: e.status, code: e.code, detail: e.message, fix: e.fix }
+    : { type: `https://viz.bitcru.sh/problems/${e.code}`, title: e.code, status: e.status, code: e.code, detail: e.message, fix: e.fix }
   return new Response(JSON.stringify(body), { status: e.status, headers })
 }
 
@@ -202,7 +202,7 @@ export function createWorker(deps: Deps = {}): ExportedHandler<Env> {
           control,
           monitors: make.monitors(env, authorization),
           deadline: performance.now() + limits.deadlineMs,
-          appUrl: env.APP_URL ?? 'https://vis.bitcru.sh',
+          appUrl: env.APP_URL ?? 'https://viz.bitcru.sh',
           metricNames: namesLoader(partial),
         }
       } catch (e) {

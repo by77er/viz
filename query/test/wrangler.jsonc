@@ -19,7 +19,7 @@
     "CELL": "cell-0",
     "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":2,\"spread\":2,\"epoch\":1}",
     "LEAF_POOL_SIZE": "8",
-    "CORS_ORIGINS": "https://app.viz.test,https://vis.bitcru.sh",
+    "CORS_ORIGINS": "https://app.viz.test,https://viz.bitcru.sh",
     "FILE_CACHE_TTL_S": "3600",
     // Tempo's and Loki's APIs (off by default in production): test/signals.test.ts.
     "QUERY_SIGNALS": "traces,logs",

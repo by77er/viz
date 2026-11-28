@@ -6,7 +6,7 @@
 import worker from '../src/index'
 import { env, post } from './helpers'
 
-export const ORIGIN = 'https://vis.bitcru.sh'
+export const ORIGIN = 'https://viz.bitcru.sh'
 export const RESOURCE = `${ORIGIN}/mcp`
 export const REDIRECT = 'http://127.0.0.1:33418/callback'
 

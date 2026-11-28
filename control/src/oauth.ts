@@ -27,10 +27,10 @@ import { B62, randomId } from './util'
  * Nothing here logs, and no error message it builds contains a credential.
  */
 
-export const DEFAULT_PUBLIC_URL = 'https://vis.bitcru.sh'
+export const DEFAULT_PUBLIC_URL = 'https://viz.bitcru.sh'
 
 export interface OAuthEnv {
-  /** The public origin (the gateway's), e.g. https://vis.bitcru.sh: the issuer, and the base of the resource `/mcp`. */
+  /** The public origin (the gateway's), e.g. https://viz.bitcru.sh: the issuer, and the base of the resource `/mcp`. */
   PUBLIC_URL?: string
   /** Worker secret (wrangler secret put): signs client registrations. Absent or shorter than 32 characters: registration is off. */
   OAUTH_CLIENT_KEY?: string

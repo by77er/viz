@@ -4307,6 +4307,112 @@ every append); the extra row write shows in the bill (then (c4) at a release tha
 only for shards that are read with ranges); the walk shows on a shard's CPU (then (i)); Cloudflare's
 SQLite reads or bills differently from workerd's here (the experiments above).
 
+## D75. viz.bitcru.sh is the address; vis.bitcru.sh stays on the gateway for a transition, serving the data paths as before with deprecation headers and answering everything else with a 308 to viz; OAuth has one issuer, viz
+
+(Written 2026-11-28. Decided by the lead on the owner's word, "viz pls": the product is served at
+`viz.bitcru.sh` instead of `vis.bitcru.sh`. The entries that name `vis.bitcru.sh` (D44, D53, D69,
+D70 and the reviews of them) describe what was decided and measured then, and are left as they are.)
+
+**Decision.**
+1. **viz.bitcru.sh is canonical.** `deploy/workers.json` `domain` is `viz.bitcru.sh`: viz-gateway's
+   first Workers Custom Domain, and `https://viz.bitcru.sh` is `PUBLIC_URL` of viz-control (the OAuth
+   issuer and its endpoints), of viz-mcp (the resource, `https://viz.bitcru.sh/mcp`) and of the
+   gateway, and `APP_URL` of viz-mcp (its deep links). `configure.mjs` sets `PUBLIC_URL` and `APP_URL`
+   wherever a component declares them, from the deployment's one origin, never from a component.
+   Every link the system builds uses it: OpenAPI `servers` (control, ruler), problem `type` URIs
+   (control, mcp), mcp's links, the components' defaults.
+2. **vis.bitcru.sh stays attached to viz-gateway** as a second custom domain
+   (`domain_aliases`, with the date it was deprecated, 2026-11-28T00:00:00Z), and the gateway decides
+   by host (`deploy/gateway/src/index.ts`; configure gives it `PUBLIC_URL` and `VIZ_HOST_ALIASES`):
+   - the **data paths**, ingest (`/api/v1/write`, `/api/v1/push`, `/v1/metrics`, `/v1/traces`,
+     `/v1/logs`, `/loki/api/v1/push`), the Prometheus, Tempo and Loki reads, and the ruler's
+     Prometheus reads (`/api/v1/rules`, `/api/v1/alerts`, which a Grafana Prometheus data source asks
+     of the URL it queries), are served on vis exactly as on viz, with no redirect, and every answer
+     carries `Deprecation: @1795824000` (RFC 9745 §2.1: a Structured Field Date, the time vis was
+     deprecated; no `Sunset`, since no end date is set) and `Link: <https://viz.bitcru.sh<path>>;
+     rel="successor-version"` (the path without its query);
+   - **everything else** on vis, OAuth and its metadata, `/mcp` and the agent API, control,
+     monitors, `/api/v1/bootstrap`, `/healthz` and any other path, is a **308** to the same path and
+     query on viz, with `Cache-Control: no-store`. `/healthz` is redirected because it is no sender's
+     path: an uptime probe follows a GET redirect, the smoke test checks viz directly, and keeping
+     vis to the data paths makes the traffic left there exactly the senders still to move.
+   - a host that is neither (a test, a stage's workers.dev URL) is served as canonical: production
+     routes only its custom domains to the gateway (no workers.dev, no preview URLs), and what names
+     the issuer is `PUBLIC_URL`, not the Host. Aliases configured but unreadable: a host that may be
+     an alias gets 500, not a guess.
+3. **One issuer.** OAuth is answered on viz only. Control issues tokens for
+   `https://viz.bitcru.sh/mcp` only, and now also refuses, with `invalid_grant`, to refresh a grant
+   or exchange a code approved for another resource (`control/src/ops-oauth.ts`), so a client
+   approved under vis authorizes again instead of refreshing into tokens the resource refuses.
+4. **The tooling holds both hostnames and touches no other.** `configure.mjs` gives the gateway, and
+   only it, one `routes` list, viz first, then vis: wrangler replaces a Worker's whole set of custom
+   domains with the list it deploys (`override_scope: true`) and, run without a terminal, takes over
+   another Worker's hostname or an existing DNS record (`override_existing_origin`,
+   `override_existing_dns_record`; wrangler 4.164.0's `publishCustomDomains`, read here). So before
+   anything is uploaded `release.mjs` reads the account's custom domains (`GET /workers/domains`) and
+   refuses a release whose gateway config would detach a hostname the gateway holds, take one that
+   another Worker holds, or differs from the manifest's hostnames (`lib/domains.mjs`). Rollback
+   restores versions only and never applies triggers, so it changes no hostname.
+5. **Stages** are on workers.dev only, as before; their `PUBLIC_URL` and `APP_URL` are now their
+   gateway's workers.dev URL (finding S13-1: a stage advertised production's issuer). The account's
+   workers.dev subdomain is read from the API at configure time (as `smoke.mjs` reads it) and is
+   never written into the repository.
+6. **The transition ends only on the owner's word.** Removing vis is a change of its own: the entry
+   leaves `domain_aliases`, and `lib/domains.mjs` is changed to allow that one detachment.
+
+**What it means for those who use viz.**
+- **Data senders and data sources on vis keep working**, unchanged, with the two headers telling
+  them where to go. API keys are not bound to a host: the same keys work on viz.
+- **A script that calls control, monitors or the agent API on vis gets a 308.** Most HTTP clients
+  drop `Authorization` when a redirect changes host (Go's `net/http`, curl `-L`, the Fetch
+  standard; training knowledge), so it then gets 401 from viz: it must change its base URL.
+- **OAuth clients registered against vis must reconnect.** Read from the code and its tests
+  (`control/test/moved.test.ts`): their client id still verifies at viz's `/oauth/authorize`
+  (a signed registration names no issuer, and `OAUTH_CLIENT_KEY` is kept), but a request naming
+  `resource=https://vis.bitcru.sh/mcp` is `invalid_target`; an access token issued under vis is
+  `inactive`, reason `audience`, at viz's `/mcp` (401 `invalid_token`, "The access token was issued
+  for another resource"); its refresh token is `invalid_grant` (nothing spent); a code approved before
+  the switch is `invalid_grant` at exchange. A client configured with `https://vis.bitcru.sh/mcp` is
+  redirected there, and its discovery cannot succeed: the metadata it is sent to names viz as
+  resource and issuer, which RFC 9728 §3.3 and RFC 8414 §3.3 tell it to reject. It must be
+  configured with `https://viz.bitcru.sh/mcp`. Old grants stay listed, inert, until they expire
+  (30 days) or an admin revokes them.
+- **Problem `type` URIs** now begin `https://viz.bitcru.sh/problems/`; `code` is unchanged and is
+  what to match.
+- A tenant's notifier `external_url` is the tenant's own value and is not rewritten.
+- **During the first deploy**, viz-control and viz-mcp are promoted before the gateway attaches
+  viz.bitcru.sh, so for a few minutes the issuer is viz while viz may not answer yet: an OAuth
+  connection started then fails and can be retried; the data paths are not affected.
+- **A rollback across this release** (to 375e9ba or earlier) leaves both hostnames attached and
+  restores code that serves everything on both with issuer vis: clients connected under viz must
+  reconnect again. It is not forward-only (nothing stored changes).
+
+**Alternatives.** (a) Move at once and detach vis: every sender breaks at the same moment. (b) 308
+everything on vis, the data paths too: Prometheus remote write and other senders are not known to
+follow a redirect on POST, and those that do drop `Authorization` on a change of host; both fail.
+(c) Serve everything on vis, with two issuers (a `PUBLIC_URL` per host): tokens for two resources,
+the mix-up attacks RFC 9207 exists for, and control built for one issuer (D44). (d) Serve everything
+on vis with viz as issuer: metadata fetched at vis naming viz is rejected by a client that follows
+RFC 8414 §3.3, and OAuth would look served under two hosts. (e) 301 or 302: clients may turn POST
+into GET; 307 says the move is temporary. (f) A zone redirect rule in front of the Worker: zone
+configuration outside the repository's tooling, and it does not know which paths are data. (g) Keep
+old tokens working by accepting both resources at `/mcp` for the transition: two audiences with no
+end, against "control accepts only the new one". (h) Refuse an unknown host (421): no protection
+gained, since only the custom domains reach the gateway, and stages and tests would need special
+cases.
+
+**Why.** Data senders are configured once and break silently; they are the ones that cannot be
+moved quickly, so they keep vis. Everything else is used by people and by agents that can be told,
+and one issuer is what OAuth requires to be safe. The tooling is the only thing that attaches
+hostnames, so it is where detaching vis by accident, or touching another hostname, is made
+impossible.
+
+**Would change if.** The owner says vis can go, or traffic to vis is zero for N days (the owner
+picks N; 14 is suggested), measured from Cloudflare's analytics for the host (the zone's HTTP
+requests filtered on `vis.bitcru.sh`), not estimated: then the separate change that removes it. A
+sender is found that cannot keep working on vis (then that path too is served there); a client is
+found that cannot reconnect (then (g), bounded in time).
+
 ## D77. A 429 stores nothing: a request of more than one batch reserves room on every shard it routes to before it appends; a body refused with 429 is refused before it is decoded while its shards would still refuse it
 
 **Decision.** (Added 2026-11-28, from S10's two findings: `spikes/s10-signals-trial/README.md`,

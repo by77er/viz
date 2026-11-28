@@ -52,6 +52,16 @@
 // export that name, or the release is refused before anything is uploaded (callee first,
 // contracts/COMPATIBILITY.md §3.3).
 //
+// Hostnames (D75): production's public Worker (viz-gateway) gets `domain` and then every host of
+// `domain_aliases` as Workers Custom Domains, in that order, in one `routes` list: wrangler replaces
+// a Worker's whole set of custom domains with the list it is given, so a host left out is detached.
+// No other Worker gets a route. PUBLIC_URL and APP_URL, wherever a component declares them, are
+// the deployment's public origin: production's `https://<domain>`; a stage's gateway's workers.dev
+// URL (spike S13, finding S13-1), for which the account's workers.dev subdomain is needed
+// (`workersSubdomain`, VIZ_WORKERS_SUBDOMAIN, or read from the API by the command line; never
+// written into the repository). The public Worker also gets PUBLIC_URL and VIZ_HOST_ALIASES (the
+// aliases with their deprecation dates; `[]` in a stage), which decide what it serves on which host.
+//
 // Writes deploy/generated/<production|stage-NAME>/<worker>.jsonc and manifest.json there.
 // Anything it does not understand (a binding kind, a resource not named viz-…, a script_name
 // that is no Worker of ours, a placeholder id left behind) is an error, not a guess.
@@ -70,6 +80,47 @@ const KNOWN_KEYS = new Set([
 const PLACEHOLDER_ID = /^0+$/
 const RATELIMIT_KEYS = new Set(['name', 'namespace_id', 'simple'])
 const ALLOCATED_ID = /^[1-9][0-9]*$/
+/** A DNS hostname as a custom domain takes it: lowercase labels, at least two, no wildcard. */
+const HOSTNAME = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
+/** The account's workers.dev subdomain: one DNS label. */
+const WORKERS_SUBDOMAIN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
+/** Vars that hold the deployment's public origin, wherever a component declares them. */
+export const ORIGIN_VARS = ['PUBLIC_URL', 'APP_URL']
+/** Stands in for the workers.dev subdomain in a stage configured with --ids-optional (never deployed: release.mjs refuses it). */
+export const UNKNOWN_SUBDOMAIN = 'workers-subdomain-unknown'
+
+/**
+ * The hostnames production's public Worker holds, checked: `[{ host, deprecated }]`, `domain` first
+ * (deprecated null), then each alias of `domain_aliases` with its deprecation time in unix seconds.
+ */
+export function hostsOf(plan) {
+  const where = 'deploy/workers.json'
+  if (typeof plan.domain !== 'string' || !HOSTNAME.test(plan.domain)) throw new Error(`${where} domain: ${JSON.stringify(plan.domain)} is not a hostname (lowercase, no wildcard)`)
+  const aliases = plan.domain_aliases ?? []
+  if (!Array.isArray(aliases)) throw new Error(`${where} domain_aliases: a list of { host, deprecated }`)
+  const out = [{ host: plan.domain, deprecated: null }]
+  for (const [i, a] of aliases.entries()) {
+    const at = `${where} domain_aliases[${i}]`
+    if (typeof a !== 'object' || a === null || Object.keys(a).some((k) => !['$comment', 'host', 'deprecated'].includes(k))) throw new Error(`${at}: { host, deprecated } only`)
+    if (typeof a.host !== 'string' || !HOSTNAME.test(a.host)) throw new Error(`${at}: host ${JSON.stringify(a.host)} is not a hostname (lowercase, no wildcard)`)
+    if (out.some((h) => h.host === a.host)) throw new Error(`${at}: ${a.host} is listed twice (or is the domain itself)`)
+    const t = typeof a.deprecated === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(a.deprecated) ? Date.parse(a.deprecated) : NaN
+    if (!Number.isFinite(t)) throw new Error(`${at} (${a.host}): deprecated must be a UTC time like 2026-11-28T00:00:00Z (the Deprecation header's date, RFC 9745)`)
+    out.push({ host: a.host, deprecated: t / 1000 })
+  }
+  return out
+}
+
+/** The public origin of a deployment: production's `https://<domain>`; a stage's gateway on workers.dev (S13-1). */
+export function publicOrigin(plan, stage, workersSubdomain) {
+  if (!stage) return `https://${hostsOf(plan)[0].host}`
+  const gw = plan.workers.filter((w) => w.public)
+  if (gw.length !== 1) throw new Error(`deploy/workers.json: exactly one Worker is "public" (the gateway), not ${gw.length}`)
+  if (typeof workersSubdomain !== 'string' || !WORKERS_SUBDOMAIN.test(workersSubdomain)) {
+    throw new Error(`a stage's PUBLIC_URL is its gateway's workers.dev URL, which needs the account's workers.dev subdomain: ${workersSubdomain === undefined || workersSubdomain === null ? 'none given' : `${JSON.stringify(workersSubdomain)} is not one DNS label`} (run with Cloudflare credentials, or set VIZ_WORKERS_SUBDOMAIN)`)
+  }
+  return `https://${stagedName(gw[0].name, stage)}.${workersSubdomain}.workers.dev`
+}
 
 /**
  * The OAuth gate of each Worker that declares `oauth` in workers.json, read from its component's
@@ -234,7 +285,7 @@ export function stageVars(raw, stage) {
  * formats, `floors` the rollback floors its code is stamped at (lib/floors.mjs). Pure: no I/O, so
  * the tests can call it with any component config.
  */
-export function generateWorker({ worker, cfg, componentDir, plan, stage, release, ids, outDir, idsOptional = false, expires = null, schemas = [], formats = [], formatsDeclared = worker.formats !== undefined || formats.length > 0, floors = [], extraVars = {}, gate = null, ratelimitIds = {}, oauthWithoutRateLimits = false, oauthPublic = false }) {
+export function generateWorker({ worker, cfg, componentDir, plan, stage, release, ids, outDir, idsOptional = false, expires = null, schemas = [], formats = [], formatsDeclared = worker.formats !== undefined || formats.length > 0, floors = [], extraVars = {}, gate = null, ratelimitIds = {}, oauthWithoutRateLimits = false, oauthPublic = false, publicUrl = stage ? undefined : publicOrigin(plan, stage) }) {
   const where = `${worker.component}/wrangler.jsonc`
   const warnings = []
   for (const k of Object.keys(cfg)) if (!KNOWN_KEYS.has(k)) throw new Error(`${where}: "${k}" is not something configure.mjs knows how to deploy; extend it rather than drop it`)
@@ -261,7 +312,9 @@ export function generateWorker({ worker, cfg, componentDir, plan, stage, release
   out.preview_urls = false
   delete out.route
   delete out.routes
-  if (!stage && worker.public) out.routes = [{ pattern: plan.domain, custom_domain: true }]
+  // Every hostname the public Worker holds, in one list, domain first: wrangler replaces the
+  // Worker's set of custom domains with this list, so a host left out would be detached (D75).
+  if (!stage && worker.public) out.routes = hostsOf(plan).map((h) => ({ pattern: h.host, custom_domain: true }))
   out.observability = structuredClone(plan.observability)
   out.upload_source_maps = true
 
@@ -327,12 +380,17 @@ export function generateWorker({ worker, cfg, componentDir, plan, stage, release
     vars[k] = v
   }
   // PUBLIC_URL is the OAuth issuer (viz-control) and the resource's origin (viz-mcp): the two must
-  // be equal, so in production it comes from the deployment's one domain, never from a component.
-  // A stage has no custom domain; there the component's value stays (OAuth is not trialled there).
-  if (!stage && 'PUBLIC_URL' in vars) {
-    const pub = `https://${plan.domain}`
-    if (vars.PUBLIC_URL !== pub) warnings.push(`PUBLIC_URL: ${where} has ${vars.PUBLIC_URL}; deployed with https://<domain>, ${pub}`)
-    vars.PUBLIC_URL = pub
+  // be equal, so it is the deployment's public origin, never a component's: production's
+  // https://<domain>, a stage's gateway's workers.dev URL (S13-1: a stage advertised production's
+  // issuer). APP_URL, the base of the links the system builds (mcp's deep links), is the same origin.
+  // Needed by the Workers that declare one of these, and by the public Worker; never a fallback to production's.
+  if ((worker.public || ORIGIN_VARS.some((k) => k in vars)) && (typeof publicUrl !== 'string' || !/^https:\/\/[a-z0-9.-]+$/.test(publicUrl))) {
+    throw new Error(`${worker.name}: the deployment's public origin is needed (publicUrl), not ${JSON.stringify(publicUrl)}`)
+  }
+  for (const k of ORIGIN_VARS) {
+    if (!(k in vars)) continue
+    if (vars[k] !== publicUrl && !stage) warnings.push(`${k}: ${where} has ${vars[k]}; deployed with https://<domain>, ${publicUrl}`)
+    vars[k] = publicUrl
   }
   for (const [k, v] of Object.entries(vars)) {
     if (typeof v !== 'string') continue
@@ -347,6 +405,12 @@ export function generateWorker({ worker, cfg, componentDir, plan, stage, release
   if (formatsDeclared) vars[FORMATS_VAR] = formatsVar(formats)
   if (floors.length > 0) vars[FLOORS_VAR] = floorsVar(floors)
   if (stage) vars.VIZ_STAGE_PREFIX = `viz-${stage}-`
+  // The public Worker decides by Host (D75): its canonical origin, and the hosts it keeps as aliases.
+  if (worker.public) {
+    vars.PUBLIC_URL = publicUrl
+    vars.VIZ_HOST_ALIASES = JSON.stringify(stage ? [] : hostsOf(plan).slice(1))
+  }
+  for (const k of [...ORIGIN_VARS, 'VIZ_HOST_ALIASES']) if (Object.hasOwn(extraVars, k)) throw new Error(`VIZ_STAGE_VARS.${worker.name}.${k}: set by deploy/configure.mjs only (the deployment's public origin and hosts, D75)`)
   for (const [k, v] of Object.entries(extraVars)) vars[k] = v
   if (oauth && (!stage || oauthPublic)) {
     vars[gate.publicVar] = '1'
@@ -428,7 +492,7 @@ export function checkEntrypoints(workerName, entrypoints, mains) {
  * `plan` replaces deploy/workers.json and `resources` deploy/resources.json (the tests' way to
  * configure a plan that must be refused, or a deployment with ids of its own).
  */
-export function configure({ stage, release = releaseId(), idsOptional = false, quiet = false, expires = null, plan: planOverride, resources: resourcesOverride, oauthWithoutRateLimits = false, oauthPublic = false } = {}) {
+export function configure({ stage, release = releaseId(), idsOptional = false, quiet = false, expires = null, plan: planOverride, resources: resourcesOverride, oauthWithoutRateLimits = false, oauthPublic = false, workersSubdomain = process.env.VIZ_WORKERS_SUBDOMAIN || undefined } = {}) {
   checkStage(stage)
   if (expires !== null && !(Number.isFinite(Date.parse(expires)) && /^\d{4}-\d{2}-\d{2}T/.test(expires))) throw new Error(`--expires must be an ISO 8601 time: ${expires}`)
   if ((oauthWithoutRateLimits || oauthPublic) && !stage) throw new Error(`${oauthWithoutRateLimits ? '--oauth-without-rate-limits' : '--oauth-public'} is for a stage only: a production viz-control always has its rate limits and OAUTH_PUBLIC (D70)`)
@@ -440,6 +504,9 @@ export function configure({ stage, release = releaseId(), idsOptional = false, q
   const gates = readOAuthGates(plan)
   if ((oauthWithoutRateLimits || oauthPublic) && gates.size === 0) throw new Error('--oauth-without-rate-limits and --oauth-public need a Worker with an "oauth" gate in deploy/workers.json')
   const extra = stageVars(process.env.VIZ_STAGE_VARS, stage)
+  // A stage without its subdomain is refused, except with --ids-optional (placeholders; never deployed).
+  const publicUrl = publicOrigin(plan, stage, stage && workersSubdomain === undefined && idsOptional ? UNKNOWN_SUBDOMAIN : workersSubdomain)
+  const hosts = stage ? null : hostsOf(plan)
   for (const w of Object.keys(extra)) if (!plan.workers.some((x) => x.name === w)) throw new Error(`VIZ_STAGE_VARS names ${w}, which is not a Worker in deploy/workers.json`)
   const outDir = join(GENERATED_DIR, targetName(stage))
   mkdirSync(outDir, { recursive: true })
@@ -477,6 +544,7 @@ export function configure({ stage, release = releaseId(), idsOptional = false, q
       ratelimitIds,
       oauthWithoutRateLimits,
       oauthPublic,
+      publicUrl,
     })
     // Two bindings of one deployment with one id would share a counter: refused within the Worker
     // (configureRateLimits). Only a Worker with an `oauth` block may carry ratelimits (viz-control
@@ -500,7 +568,9 @@ export function configure({ stage, release = releaseId(), idsOptional = false, q
     idsOptional,
     // --oauth-without-rate-limits (a stage only), carried into the release record.
     oauthWithoutRateLimits,
-    domain: stage ? null : plan.domain,
+    domain: stage ? null : hosts[0].host,
+    // Further hostnames the public Worker holds (D75), each still served for the data paths.
+    domainAliases: stage ? [] : hosts.slice(1).map((h) => h.host),
     durableObjectsCodeUpdate: plan.durable_objects_code_update,
     order: workers.filter((w) => w.deploy).map((w) => w.name),
     // The Worker whose version tag says which release is serving (the write path).
@@ -531,7 +601,13 @@ export function configure({ stage, release = releaseId(), idsOptional = false, q
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     const args = parseArgs(process.argv.slice(2), { flags: ['ids-optional', 'quiet', 'oauth-without-rate-limits', 'oauth-public'], options: ['stage', 'release', 'expires'] })
-    const m = configure({ stage: args.stage, release: args.release, idsOptional: args['ids-optional'], quiet: args.quiet, expires: args.expires ?? null, oauthWithoutRateLimits: Boolean(args['oauth-without-rate-limits']), oauthPublic: Boolean(args['oauth-public']) })
+    // A stage's public origin is its gateway's workers.dev URL: the subdomain is read from the account (as smoke.mjs does), never stored.
+    let workersSubdomain = process.env.VIZ_WORKERS_SUBDOMAIN || undefined
+    if (args.stage && workersSubdomain === undefined && !args['ids-optional']) {
+      const { workersSubdomain: read } = await import('./lib/cf.mjs')
+      workersSubdomain = await read()
+    }
+    const m = configure({ stage: args.stage, release: args.release, idsOptional: args['ids-optional'], quiet: args.quiet, expires: args.expires ?? null, oauthWithoutRateLimits: Boolean(args['oauth-without-rate-limits']), oauthPublic: Boolean(args['oauth-public']), workersSubdomain })
     console.log(join(GENERATED_DIR, m.target, 'manifest.json'))
   } catch (e) {
     log(`configure: ${e.message}`)

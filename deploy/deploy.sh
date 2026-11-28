@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploys viz: production (vis.bitcru.sh) by default, or a stage (viz-<stage>-…, workers.dev).
+# Deploys viz: production (viz.bitcru.sh) by default, or a stage (viz-<stage>-…, workers.dev).
 #
 #   deploy/deploy.sh [--stage <name>] [--skip-smoke]
 #
@@ -152,7 +152,7 @@ step "automatic rollback to the previous release"
 if node deploy/release.mjs rollback ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"} --record "$OUT/previous.json" --reason "smoke test of $VIZ_RELEASE_SHA failed"; then
   note "rollback: previous release restored"
   PREVIOUS=$(node -e 'console.log(require(process.argv[1]).release??"")' "$OUT/previous.json")
-  if SMOKE_KEY="" node deploy/smoke.mjs ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"} --health-timeout 180 ${PREVIOUS:+--expect-release "$PREVIOUS"}; then note "after rollback: healthy"; else note "after rollback: NOT healthy"; fi
+  if SMOKE_KEY="" node deploy/smoke.mjs ${STAGE_ARGS[@]+"${STAGE_ARGS[@]}"} --no-hosts --health-timeout 180 ${PREVIOUS:+--expect-release "$PREVIOUS"}; then note "after rollback: healthy"; else note "after rollback: NOT healthy"; fi
 else
   note "rollback: FAILED or refused (see above)"
 fi

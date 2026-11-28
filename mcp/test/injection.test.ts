@@ -119,7 +119,7 @@ const FORBIDDEN: [string, RegExp][] = [
 function checkString(s: string, where: string, allowAppLinks: boolean): void {
   for (const [what, re] of FORBIDDEN) expect(re.test(s), `${what} in ${where}: ${JSON.stringify(s.slice(Math.max(0, s.search(re) - 40), s.search(re) + 60))}`).toBe(false)
   for (const m of s.matchAll(/https?:\/\/[^\s"]*/g)) {
-    expect(allowAppLinks && (m[0].startsWith('https://vis.bitcru.sh/') || OWN_URLS.has(m[0])), `URL in ${where}: ${m[0].slice(0, 80)}`).toBe(true)
+    expect(allowAppLinks && (m[0].startsWith('https://viz.bitcru.sh/') || OWN_URLS.has(m[0])), `URL in ${where}: ${m[0].slice(0, 80)}`).toBe(true)
   }
 }
 

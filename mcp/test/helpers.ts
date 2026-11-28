@@ -12,7 +12,7 @@ import { type FakeProm, type FakeRuler, type PromOptions, fakeProm, fakeRuler } 
 
 export { env, NOW, NOW_MS }
 export const EXAMPLES: Record<string, any> = { service_red: red, k8s_node_overview: k8s, viz_ingest_pipeline: ingest }
-export const BASE = 'https://agent.vis.bitcru.sh'
+export const BASE = 'https://agent.viz.bitcru.sh'
 const ctx = { waitUntil() {}, passThroughOnException() {}, props: {} } as unknown as ExecutionContext
 
 // ---- the real control plane, in-process ----

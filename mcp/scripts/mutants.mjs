@@ -149,7 +149,7 @@ const MUTANTS = [
   },
   {
     name: 'OAuth: audience not this resource (introspection asked about the token\'s own resource, whatever this server is configured as)',
-    changes: [['src/index.ts', 'caller = await identifyOAuth(oauth, env, cfg.resource)', "caller = await identifyOAuth(oauth, env, 'https://vis.bitcru.sh/mcp')"]],
+    changes: [['src/index.ts', 'caller = await identifyOAuth(oauth, env, cfg.resource)', "caller = await identifyOAuth(oauth, env, 'https://viz.bitcru.sh/mcp')"]],
   },
   {
     name: 'OAuth: the JSON agent API accepts access tokens (audience widened)',

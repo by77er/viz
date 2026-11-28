@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { authenticate } from '../../edge/src/auth'
 import { auditOf, call, clearAuthCache, env, get, kvGet, makeKey, newTenant, post, stubOf } from './helpers'
 
-const edgeReq = (key: string) => new Request('https://vis.bitcru.sh/api/v1/write', { headers: { Authorization: `Bearer ${key}` } })
+const edgeReq = (key: string) => new Request('https://viz.bitcru.sh/api/v1/write', { headers: { Authorization: `Bearer ${key}` } })
 /** Edge's own verifier, against the same KV, with its cache emptied first unless told otherwise. */
 async function edgeAccepts(key: string, scope: 'write' | 'read' = 'write', now?: number, keepCache = false): Promise<string | number> {
   if (!keepCache) clearAuthCache()

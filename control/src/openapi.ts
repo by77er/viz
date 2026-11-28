@@ -441,7 +441,7 @@ export function buildOpenApi(): Json {
       description:
         'Keys, dashboards and their revisions, proposed changes, settings and the audit log of one tenant. The tenant is always the one the credential belongs to: no path, query or body takes a tenant, and a request that names one is refused. Errors are problem details with a "code" and a "fix". Every write accepts "dryRun": true. Lists page with an opaque "next" cursor.',
     },
-    servers: [{ url: 'https://vis.bitcru.sh' }],
+    servers: [{ url: 'https://viz.bitcru.sh' }],
     paths,
     components: {
       securitySchemes: { apiKey: { type: 'http', scheme: 'bearer', description: 'Authorization: Bearer viz_<keyId>_<secret>. The scopes listed per operation are alternatives: any one is enough.' } },

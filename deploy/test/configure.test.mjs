@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { checkEntrypoints, checkFloorSchemas, configure, durableObjectsOf, exportedNames, generateWorker, loadPlan, queuesOf, readOAuthGates, stageVars } from '../configure.mjs'
+import { ORIGIN_VARS, UNKNOWN_SUBDOMAIN, checkEntrypoints, checkFloorSchemas, configure, durableObjectsOf, exportedNames, generateWorker, hostsOf, loadPlan, publicOrigin, queuesOf, readOAuthGates, stageVars } from '../configure.mjs'
 import { GENERATED_DIR, REPO_ROOT, checkStage, parseJsonc, readJsonc, stagedName } from '../lib/common.mjs'
 import { FLOORS_VAR, floorRules, stampedFloors } from '../lib/floors.mjs'
 import { FORMATS_VAR, formatSources, formatsVar, readFormats } from '../lib/formats.mjs'
@@ -18,11 +18,16 @@ const gates = readOAuthGates(plan)
 const RL = gates.get('viz-control').required
 /** Rate Limiting namespace ids as deploy/resources.mjs records them (production 7000…, the trial stage 7100…). */
 const ratelimitIds = Object.fromEntries(RL.flatMap((n, i) => [[`viz-control/${n}`, String(7000 + i)], [`viz-trial-control/${n}`, String(7100 + i)]]))
+/** A made-up workers.dev subdomain: the account's real one is never written into the repository. */
+const SUB = 'example-sub'
+const stageUrl = (stage) => `https://viz-${stage}-gateway.${SUB}.workers.dev`
 const gen = (name, stage, cfg, opts = {}) => {
   const w = worker(name)
   const componentDir = join(REPO_ROOT, w.component)
-  return generateWorker({ worker: w, cfg: cfg ?? readJsonc(join(componentDir, 'wrangler.jsonc')), componentDir, plan, stage, release: 'abc123', ids, outDir: join(GENERATED_DIR, stage ? `stage-${stage}` : 'production'), gate: gates.get(name) ?? null, ratelimitIds, ...opts })
+  return generateWorker({ worker: w, cfg: cfg ?? readJsonc(join(componentDir, 'wrangler.jsonc')), componentDir, plan, stage, release: 'abc123', ids, outDir: join(GENERATED_DIR, stage ? `stage-${stage}` : 'production'), gate: gates.get(name) ?? null, ratelimitIds, publicUrl: stage ? stageUrl(stage) : undefined, ...opts })
 }
+// configure() reads the subdomain from VIZ_WORKERS_SUBDOMAIN when not given (the command line reads it from the account).
+process.env.VIZ_WORKERS_SUBDOMAIN = SUB
 
 test('JSONC: comments and trailing commas go, strings stay', () => {
   const v = parseJsonc('{\n // a comment\n "a": "x // not a comment", /* block */ "b": [1, 2,],\n "c": "\\"/*\\"",\n}')
@@ -68,14 +73,46 @@ test('a stage prefixes every Worker and resource and uses workers.dev for the ga
   assert.equal(i.vars.VIZ_STAGE_PREFIX, 'viz-trial-')
 })
 
-test('production: the gateway, and only it, is on the custom domain; nothing on workers.dev', () => {
+test('production: the gateway, and only it, holds both custom domains, viz first; nothing on workers.dev', () => {
   for (const w of plan.workers.filter((x) => x.deploy)) {
     const c = gen(w.name).config
     assert.equal(c.workers_dev, false, w.name)
-    if (w.public) assert.deepEqual(c.routes, [{ pattern: 'vis.bitcru.sh', custom_domain: true }])
+    // D75: one list, viz canonical first, vis kept: wrangler replaces the Worker's whole set of custom domains with it.
+    if (w.public) assert.deepEqual(c.routes, [{ pattern: 'viz.bitcru.sh', custom_domain: true }, { pattern: 'vis.bitcru.sh', custom_domain: true }])
     else assert.equal(c.routes, undefined, w.name)
   }
   assert.equal(gen('viz-ingest').config.main, '../../../stack/src/index.ts')
+})
+
+test('D75: the gateway decides by host: PUBLIC_URL is viz, vis is an alias with its deprecation date; a stage has none', () => {
+  const g = gen('viz-gateway').config.vars
+  assert.equal(g.PUBLIC_URL, 'https://viz.bitcru.sh')
+  assert.deepEqual(JSON.parse(g.VIZ_HOST_ALIASES), [{ host: 'vis.bitcru.sh', deprecated: Date.parse('2026-11-28T00:00:00Z') / 1000 }])
+  const s = gen('viz-gateway', 'trial').config
+  assert.equal(s.vars.PUBLIC_URL, stageUrl('trial'))
+  assert.equal(s.vars.VIZ_HOST_ALIASES, '[]')
+  assert.equal(s.routes, undefined)
+  // The manifest says which hosts production holds.
+  const m = configure({ release: 'r-hosts', idsOptional: true, quiet: true })
+  assert.equal(m.domain, 'viz.bitcru.sh')
+  assert.deepEqual(m.domainAliases, ['vis.bitcru.sh'])
+  const ms = configure({ stage: 'citest', release: 'r-hosts', idsOptional: true, quiet: true })
+  assert.deepEqual([ms.domain, ms.domainAliases], [null, []])
+})
+
+test('D75: the hostnames of the plan are checked; no wildcard, no duplicate, a deprecation date', () => {
+  assert.deepEqual(hostsOf(plan).map((h) => h.host), ['viz.bitcru.sh', 'vis.bitcru.sh'])
+  const p = (over) => ({ ...plan, ...over })
+  assert.throws(() => hostsOf(p({ domain: '*.bitcru.sh' })), /not a hostname/)
+  assert.throws(() => hostsOf(p({ domain: 'VIZ.bitcru.sh' })), /not a hostname/)
+  assert.throws(() => hostsOf(p({ domain_aliases: [{ host: 'viz.bitcru.sh', deprecated: '2026-11-28T00:00:00Z' }] })), /listed twice/)
+  assert.throws(() => hostsOf(p({ domain_aliases: [{ host: 'vis.bitcru.sh', deprecated: '2026-11-28T00:00:00Z' }, { host: 'vis.bitcru.sh', deprecated: '2026-11-28T00:00:00Z' }] })), /listed twice/)
+  assert.throws(() => hostsOf(p({ domain_aliases: [{ host: 'vis.bitcru.sh' }] })), /deprecated must be/)
+  assert.throws(() => hostsOf(p({ domain_aliases: [{ host: 'vis.bitcru.sh', deprecated: '2026-11-28' }] })), /deprecated must be/)
+  assert.throws(() => hostsOf(p({ domain_aliases: [{ host: 'vis.bitcru.sh', deprecated: '2026-11-28T00:00:00Z', zone: 'x' }] })), /host, deprecated/)
+  // Without aliases the gateway holds only the domain (the change that ends the transition).
+  const g = generateWorker({ worker: worker('viz-gateway'), cfg: readJsonc(join(REPO_ROOT, 'deploy/gateway/wrangler.jsonc')), componentDir: join(REPO_ROOT, 'deploy/gateway'), plan: p({ domain_aliases: [] }), release: 'x', ids, outDir: join(GENERATED_DIR, 'production') })
+  assert.deepEqual([g.config.routes, g.config.vars.VIZ_HOST_ALIASES], [[{ pattern: 'viz.bitcru.sh', custom_domain: true }], '[]'])
 })
 
 test('deployment-wide vars override a disagreeing component, with a note', () => {
@@ -90,19 +127,52 @@ test('deployment-wide vars override a disagreeing component, with a note', () =>
   }
 })
 
-test('PUBLIC_URL: control (OAuth issuer) and mcp (resource) get the same origin, from the domain', () => {
-  const pub = `https://${plan.domain}`
+test('PUBLIC_URL: control (OAuth issuer), mcp (resource) and the gateway get the same origin, from the domain; APP_URL too', () => {
+  const pub = 'https://viz.bitcru.sh'
+  assert.equal(publicOrigin(plan), pub)
   const declaring = plan.workers.filter((w) => w.deploy && 'PUBLIC_URL' in gen(w.name).config.vars)
-  assert.deepEqual(declaring.map((w) => w.name).sort(), ['viz-control', 'viz-mcp'])
+  assert.deepEqual(declaring.map((w) => w.name).sort(), ['viz-control', 'viz-gateway', 'viz-mcp'])
   for (const w of declaring) assert.equal(gen(w.name).config.vars.PUBLIC_URL, pub, w.name)
+  assert.equal(gen('viz-mcp').config.vars.APP_URL, pub)
   // A component that disagrees is overridden, with a note.
   const cfg = readJsonc(join(REPO_ROOT, 'mcp/wrangler.jsonc'))
   cfg.vars.PUBLIC_URL = 'https://elsewhere.example'
+  cfg.vars.APP_URL = 'https://vis.bitcru.sh'
   const g = gen('viz-mcp', undefined, cfg)
-  assert.equal(g.config.vars.PUBLIC_URL, pub)
+  assert.deepEqual([g.config.vars.PUBLIC_URL, g.config.vars.APP_URL], [pub, pub])
   assert.match(g.summary.warnings.join('\n'), /PUBLIC_URL: .*elsewhere\.example/)
-  // A stage has no custom domain: it keeps the component's value, never production's origin.
-  assert.equal(gen('viz-mcp', 'trial', cfg).config.vars.PUBLIC_URL, 'https://elsewhere.example')
+  assert.match(g.summary.warnings.join('\n'), /APP_URL: .*vis\.bitcru\.sh/)
+})
+
+test('S13-1: a stage\'s PUBLIC_URL (issuer, resource) and APP_URL are its gateway\'s workers.dev URL, never production\'s', () => {
+  const url = stageUrl('trial')
+  for (const name of ['viz-control', 'viz-mcp', 'viz-gateway']) {
+    const v = gen(name, 'trial').config.vars
+    assert.equal(v.PUBLIC_URL, url, name)
+    for (const k of ORIGIN_VARS) if (k in v) assert.doesNotMatch(v[k], /bitcru\.sh/, `${name} ${k}`)
+  }
+  assert.equal(gen('viz-mcp', 'trial').config.vars.APP_URL, url)
+  // configure() builds it from the subdomain, and refuses a stage without one (placeholders only with --ids-optional).
+  assert.equal(publicOrigin(plan, 'trial', SUB), url)
+  assert.throws(() => publicOrigin(plan, 'trial', undefined), /workers\.dev subdomain: none given/)
+  assert.throws(() => publicOrigin(plan, 'trial', 'a.b'), /not one DNS label/)
+  assert.throws(() => configure({ stage: 'citest', release: 'r', quiet: true, workersSubdomain: 'bad label' }), /not one DNS label/)
+  const saved = process.env.VIZ_WORKERS_SUBDOMAIN
+  delete process.env.VIZ_WORKERS_SUBDOMAIN
+  try {
+    assert.throws(() => configure({ stage: 'citest', release: 'r', quiet: true, ids: {} }), /workers\.dev subdomain/)
+    configure({ stage: 'citest', release: 'r', quiet: true, idsOptional: true })
+    const c = readJsonc(join(GENERATED_DIR, 'stage-citest', 'viz-control.jsonc'))
+    assert.equal(c.vars.PUBLIC_URL, `https://viz-citest-gateway.${UNKNOWN_SUBDOMAIN}.workers.dev`)
+  } finally {
+    process.env.VIZ_WORKERS_SUBDOMAIN = saved
+  }
+  configure({ stage: 'citest', release: 'r', quiet: true, idsOptional: true })
+  for (const n of ['viz-control', 'viz-mcp', 'viz-gateway']) assert.equal(readJsonc(join(GENERATED_DIR, 'stage-citest', `${n}.jsonc`)).vars.PUBLIC_URL, stageUrl('citest'), n)
+  // generateWorker without an origin for a stage is refused rather than falling back to production's.
+  assert.throws(() => gen('viz-control', 'trial', undefined, { publicUrl: undefined }), /public origin is needed/)
+  // and VIZ_STAGE_VARS may not set them.
+  assert.throws(() => gen('viz-mcp', 'trial', undefined, { extraVars: { PUBLIC_URL: 'https://vis.bitcru.sh' } }), /set by deploy\/configure\.mjs only/)
 })
 
 test('refuses what it does not understand instead of guessing', () => {

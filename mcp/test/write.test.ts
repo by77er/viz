@@ -237,7 +237,7 @@ describe('apply', () => {
   })
 
   it('the agent surface offers no way to apply a proposal', async () => {
-    const tools = await h.fetch(new Request('https://agent.vis.bitcru.sh/api/v1/agent/tools', { headers: { Authorization: `Bearer ${agentApply.key}` } }))
+    const tools = await h.fetch(new Request('https://agent.viz.bitcru.sh/api/v1/agent/tools', { headers: { Authorization: `Bearer ${agentApply.key}` } }))
     const names = ((await tools.json()) as any).tools.map((x: any) => x.name)
     expect(names.filter((n: string) => /apply|approve|accept|revert|delete/.test(n))).toEqual([])
   })
