@@ -48,7 +48,7 @@ Background research, with sources and how far each claim is trusted:
   alike, so it shifts every "first data mark" equally and cancels in comparisons.
 - **Tools beside this file** (`tools/`): `measure.cjs` (section-1 measurements and the
   first-screen and whole-page images), `states.cjs` (opened states, focus, and the timings of
-  section 7), `compose.py` (side-by-side images, reduced to a 128-colour palette to keep this
+  section 8), `compose.py` (side-by-side images, reduced to a 128-colour palette to keep this
   directory small: series colours in them are close to, not exactly, the tokens), `table.py`
   (the tables below from `measurements/*.json`). They name the scratch worktree's path at the top;
   change it to run them elsewhere. Every browser run was made under the shared machine lock, with
@@ -56,7 +56,7 @@ Background research, with sources and how far each claim is trusted:
 
 ## 3. The baseline (v9 as it is)
 
-Measured here, 18 Nov 09:30 to 12:30 on the mock; full table with every view in section 4.
+Measured here, 18 Nov 09:30 to 12:30 on the mock; full table with every view in section 5.
 
 | View | Layout | First data mark | Page height | Panels fully in first screen | Data share of first screen | Control rows above first panel | Tab stops to first panel | Controls in first screen |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
@@ -321,11 +321,11 @@ audits (`tools/audit.mjs`, the hit-area guard, the reload pass) were **not** run
 | **Touch** (44 px, no overlap) | Unchanged by construction: every change is inside `@media (pointer: fine)`; the coarse block is untouched. | New controls: the range button and quiet small buttons get the system's `::after` 44 px area (they are `vz-button`); the head line that holds them is `control-touch` tall with a coarse pointer, so their areas reach neither the panel's rule nor its body. The list legend's rows keep `--legend-row` (45 px coarse). Not measured by the hit-area guard. | As B, with one button per panel instead of two. |
 | **Touch parity** | Unchanged. | Every command is a press; nothing on hover. | Every command is a press; the panel's are one press further away. |
 | **Narrow and zoom** | Unchanged at 400. At 1440 nothing moves out of its box. | The bar wraps (`vz-controls`) at 400 px: range button and Show earlier on one row, Show later, Panels/Text and Refresh on the next; nothing scrolls sideways in the images. The range popover is a bottom sheet with a coarse pointer below 640 px (Menu); with a **fine** pointer below 640 px it is `dialog` wide (480 px) and could overflow a 400 px window: not handled. 200% zoom not checked. | As B. The sticky bar is fine-pointer only, so it never covers a phone's screen; at 200% zoom on a desktop (a 720 px CSS viewport) it would take one or two rows of a short screen: not checked. |
-| **Keyboard** | Unchanged. | Tab stops from the top to the first panel fall (measured; section 4): the range is one stop instead of five presets, two fields and two buttons. The popover takes focus on open and returns it on Escape. | Fewer stops again. The sticky bar has `scroll-padding-top` so a focused control is not hidden under it (WCAG 2.4.11), checked in the focus image only. |
+| **Keyboard** | Unchanged. | Tab stops from the top to the first panel fall (measured; section 5): the range is one stop instead of five presets, two fields and two buttons. The popover takes focus on open and returns it on Escape. | Fewer stops again. The sticky bar has `scroll-padding-top` so a focused control is not hidden under it (WCAG 2.4.11), checked in the focus image only. |
 | **Screen reader** | Unchanged. | The range button's name says the range and "Change the range"; the popover is a labelled non-modal dialog; the list legend keeps the table's roles and its head (visually hidden). Not heard with a screen reader. | The menu is `role="menu"` with `menuitemcheckbox` rows; arrow keys move between rows. Not heard. |
 | **Text form** | Unchanged. | Unchanged: each panel's text form is one press, on its head. | Unchanged in content; one press further. |
 | **Contrast** | Unchanged (no colour changes). | The quiet buttons' words are `ink-secondary` on `ground` (a pairing the system already checks for text). | As B. |
-| **Speed** | A shorter page paints no slower (section 7). | One more press for a preset; opening the popover is a local change (budget 100 ms) and measured in section 7. | As B; opening the panel menu is a local change. |
+| **Speed** | A shorter page paints no slower (section 8). | One more press for a preset; opening the popover is a local change (budget 100 ms) and measured in section 8. | As B; opening the panel menu is a local change. |
 | **Reserved height** | Every reserved height comes from the same variables, which change by pointer together with what is drawn: reservation and drawing stay equal. | The list legend reserves `--legend-lines` lines, counted on the last draw and kept for the tab's session as the table's rows are; before any draw it reserves one line, so a first load with no memory can grow (as the table does today without memory). A stat reserves a figure and one context line (the app's hidden placeholder), which is what B and C draw; the v9 stat drew a second line for its state, so this is closer than before. | As B. The panel meta that disappears in C when a panel agrees with the bar is replaced by nothing, so the head is the button's height in every state. |
 | **Stale data** | Unchanged. | Unchanged: the meta still holds "Showing the previous range" in the same place. | Changed: a panel's meta is shown only when the panel differs from the bar (waiting, showing the previous range, failed); when every panel agrees the bar states the step and the oldest age once. True while a dashboard has one window and one step for all panels (as it does, app README); it would be false the day panels have their own. |
 
@@ -464,8 +464,9 @@ new selectors). Review: one design review round, likely two.
   dashboard-level toggle rather than per panel.
 - The dashboard model gaining per-panel windows: then C's bar-level meta is ruled out for good.
 - A measured cost of the list legend (people needing Min and Max at a glance): keep the table and
-  take only B's other changes (about 13% of the 12-panel page at 1440, estimated from the legend
-  heights above, not measured).
+  take only B's other changes (about 15% of the 12-panel page at 1440 instead of 18%: on this
+  dashboard the list legend shortens one row of panels, "Traffic", by about 100 px; an estimate from
+  the panel heights above, not measured).
 
 ## 11. Build plan: design system v10, as AGENTS.md requires
 
