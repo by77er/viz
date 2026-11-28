@@ -190,6 +190,17 @@ const mutants = [
   ['decode: JSON tokens counted after parsing (same answer, the body built first)', 'src/spans.ts',
     "  checkJsonTokens(body, c.limits.maxJsonTokens)\n  const root = parseJson(body, 'OTLP JSON')\n  const s = newSpanIn()",
     "  const root = parseJson(body, 'OTLP JSON')\n  checkJsonTokens(body, c.limits.maxJsonTokens)\n  const s = newSpanIn()"],
+  // a 429 stores nothing, and a known refusal is refused before decoding (D77, 2026-11-28)
+  ['atomic (D77): E1 no reserve phase', 'src/route.ts', '  if (batches > 1) {\n    const granted', '  if (batches > 1e9) {\n    const granted'],
+  ['atomic (D77): E2 a refusal at reserve still appends', 'src/route.ts', '      return { results: refused as SlotResult[], batches, plan }\n', ''],
+  ['atomic (D77): E3 other grants not released', 'src/route.ts', '          await env.SHARD.get(env.SHARD.idFromName(shardName(map, slots[i]!.slot))).release(tenant, r.token)', '          void r.token'],
+  ['atomic (D77): E4 429 after a stored part', 'src/route.ts', "    if (stored.any) return { status: 'unavailable', reason: 'ingest buffer filled while the request was being appended', retryAfterMs }\n", ''],
+  ['atomic (D77): E5 grants not passed to the appends', 'src/route.ts', 'if (r?.status === \'ok\') tokens[i] = r.token', 'void r'],
+  ['atomic (D77): E6 early refusal outlives the Retry-After', 'src/early.ts', '  if (now < e.until) return', '  if (now < e.until + 60_000) return'],
+  ['atomic (D77): E7 the probe holds room', 'src/route.ts', 'reserveSlot(env, map, tenant, slot, batches, false)', 'reserveSlot(env, map, tenant, slot, batches, true)'],
+  ['atomic (D77): E8 every body of a suspect tenant refused early', 'src/early.ts', '  const e = bodies.get(key)\n  if (!e) return null', "  const e = bodies.get(key) ?? [...bodies.entries()].find(([k]) => k.startsWith(key.slice(0, key.lastIndexOf('\\u0000'))))?.[1] ?? [...bodies.values()][0]\n  if (!e) return null"],
+  ['atomic (D77): E9 no refusal before decoding', 'src/early.ts', '  if (key === null) return null\n  const e', '  if (key === null || true) return null\n  const e'],
+  ['atomic (D77): E10 the probe ignored: refused bodies always refused until forgotten', 'src/early.ts', '  if (full === 0) return null\n', "  if (full === 0) return { status: 'backpressure', retryAfterMs: 1000 }\n"],
 ]
 
 const only = check ? undefined : process.argv[2]
