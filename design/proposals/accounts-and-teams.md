@@ -1,6 +1,10 @@
 # Accounts and teams for people (proposal)
 
 
+> **Deferred (2026-11-28, the owner):** "Let's get the core system working first, then worry about
+> tenantship." Nothing here is to be built until the owner picks it up again; API keys stay the only
+> identity.
+
 > **Note (2026-11-28, after this was written):** the owner moved the product to `viz.bitcru.sh` (D75), so every
 > host in this proposal now reads `viz.bitcru.sh`, and decision 2 (the passkey RP ID) is settled by that choice
 > unless the owner wants a different one.

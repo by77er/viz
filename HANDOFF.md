@@ -14,8 +14,10 @@ scratch directory does not survive the pause, so everything needed is in the rep
 5. Optional: open the S12 page on a real phone (`spikes/s12-reload-on-a-phone/README.md`); it is the
    one thing that would reopen the waived design-system blocker. Then that Worker is deleted.
 6. Asked 2026-11-28: whether the product should move from `vis.bitcru.sh` to `viz.bitcru.sh`.
-7. Exploring (2026-11-28): people, individual and team workspaces, invite codes
-   (`design/proposals/accounts-and-teams.md`, being written).
+7. People, teams and invite codes: explored (`design/proposals/accounts-and-teams.md`), then
+   **deferred by the owner** (2026-11-28): "get the core system working first, then worry about
+   tenantship". Core first: the UI live, ingest correctness and throughput, traces and logs queryable at
+   real volume, compaction within its CPU, per-tenant limits enforced.
 
 ## What is deployed on Cloudflare
 
