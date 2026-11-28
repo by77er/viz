@@ -747,7 +747,7 @@ real phone.
 
 ### Needed from deploy/ (monitors)
 
-`deploy/` was not edited.
+Written before `deploy/` served the app; it now does (D74, "How deploy/ serves the app" below).
 
 - `serve.json` lists a sixth document, `/monitors`; a monitor is `/monitors?id=<id>` (the query
   string must reach the document), and `/monitors/<anything>` stays the JSON 404 (as
@@ -771,17 +771,9 @@ Nothing under `design-system/` was edited (except the review images) and no rule
 | N5 | **A threshold on a chart from an application** (dashboards' D8): the chart's spec takes `threshold`, `spans` and `markers` (its preview's), undocumented for an application | Passed as the preview does; typed in `src/charts/systemChart.ts` |
 | N6 | **Where a page's actions' failure notice goes when the actions are in the page head** | `vz-notice-group` around the head's actions |
 
-### Decisions in the monitors change, for `design/DECISIONS.md`
+### Decisions in the monitors change
 
-Not yet entered there (this change edits `app/` only).
-
-| Decision | Alternatives | Why | Would change if |
-|---|---|---|---|
-| A monitor is `/monitors?id=<id>`; a chunk of its own | `/monitors/<id>`; in the shell | The gateway serves exact paths; the shell had 24 kB of its 200 left | The gateway learns patterns; the shell has room |
-| The actions act on every firing alert | Per alert (`fingerprint`) | The on-call act is "take this monitor"; per alert cut for time | Monitors with many alerts that different people take |
-| The controls follow `whoami`'s scopes; the API's 403 also disables them | Always enabled, the API refuses | The task: say why before the press; never send a write the key cannot make | Scopes can change under a session often |
-| The undo is offered by the API's `undoUntil` on an estimated API clock | A local 60 s timer | The window is the API's; a constant would drift from it | The API answers with the time left |
-| No optimistic change: the write's answer is shown, then the monitor is re-read; older reads are dropped | Optimistic update; TanStack Query's cache | A write someone else will see is said only when the API has said it; one mechanism for superseded reads that the tests can break | Writes become slow enough to need an optimistic state |
+Entered in `design/DECISIONS.md` as part of D80.
 
 ## Dashboards, read-only
 
@@ -1114,19 +1106,9 @@ not have, the closest existing thing is used and the rule that fills the gap is 
 | D10 | **A dashboard's controls**: no pattern for a range and variables together | `RangeControls`, then a `vz-grid` of fields: the range (six columns) and each variable (three) |
 | D11 | **`tools/shots.mjs` captures with `fullPage`**, and `.vz-chart` is `content-visibility: auto`: on a page taller than a few screens the charts far from the viewport are not painted in the capture | `e2e/dashboards-shots.cjs` makes the viewport as tall as the page before it captures |
 
-### Decisions in the dashboards change, for `design/DECISIONS.md`
+### Decisions in the dashboards change
 
-Not yet entered there (this change edits `app/` only).
-
-| Decision | Alternatives | Why | Would change if |
-|---|---|---|---|
-| A dashboard's address is `/dashboards?id=<id>` | `/dashboards/<id>` | The gateway serves only the exact document paths of `serve.json`; a path per dashboard would need a pattern there and in `deploy/` | The gateway learns path patterns |
-| The app fetches the spec (`view=spec`) and resolves it itself with `../dashboard/src` | Ask control for `view=resolved&var.…` on every change | A change of variable or range must not cost a round trip before the panels are asked, and the app needs the model anyway (validation, digests). The same `resolve` runs in control, so the two cannot disagree; the contract test compares `view=resolved` too | The model becomes too large for the shell (it added about 29 kB compressed) |
-| One window and one step for the whole dashboard (the automatic step of a 600 px chart) | A step per panel from its width | Every panel on one grid; a resize does not ask twelve panels again | Panels as wide as the page lose visible detail |
-| One limiter of six for everything the page sends, in the API client | A limiter for the dashboard only | "At most six in flight, in total" is then true for the shell's requests and Explore's too, and cannot be forgotten by the next view | HTTP/2 from the gateway and a backend budget above six |
-| A kind that is not drawn is shown as its digest and says so | Hide the panel; draw the nearest kind | A dashboard that silently lacks a panel, or shows a heatmap as lines, misleads | The kind is drawn |
-| Permission is the API's answer (403), not read from the stored identity | Hide "Dashboards" for keys without the scope | The identity in the tab can be older than the key's scopes; the refusal carries control's own reason | Scopes become part of a session the app can trust |
-| A busy answer is the panel's error, not retried | Retry as Explore does (three times) | Twelve panels retrying together is a load the API asked not to have; kept simple for this slice | The API says how a client should spread retries |
+Entered in `design/DECISIONS.md` as part of D80.
 
 ## What is implemented
 
@@ -1471,17 +1453,17 @@ An earlier draft of this list (in the session before this one) said the isolate-
 refusal "the query service is busy" has no `Retry-After`. That was true when written and is
 no longer: `query/` now sends `Retry-After: 1` with it, and the item was dropped.
 
-## Needed changes in deploy/
+## How deploy/ serves the app (D74, D75)
 
-`deploy/` was not edited. This is what the gateway (`deploy/gateway`, `vis.bitcru.sh`) has to
-do to serve the app. The same statement is in `serve.json`, as data; `e2e/prod.cjs` serves
-`dist/` by exactly these rules from a small static server and drives the app in a browser
-under them (19 checks, "Verification"), and `src/shell/serve.test.ts` fails if the router gains
-a route the list lacks.
-
-**Since 2026-11-27 `serve.json` lists five documents** (`/dashboards` was added; a dashboard
-is `/dashboards?id=<id>`, never a path of its own) and the app's build also needs
-`dashboard/src` beside it: "Needed from deploy/ (dashboards)".
+This section was written as a request to `deploy/` before it served the app; `deploy/` now does
+(D74, merged with D75's hostnames: `deploy/README.md`, "The web app (D74)" and "The app on
+vis.bitcru.sh"). The gateway serves the build at **`viz.bitcru.sh`**; on `vis.bitcru.sh` every
+document is a 308 to viz (the build's hashed files are answered on both, by Cloudflare's asset layer).
+`serve.json` lists **six documents**: `/`, `/explore`, `/dashboards`, `/monitors`, `/help`, `/settings`
+(a dashboard is `/dashboards?id=<id>`, a monitor `/monitors?id=<id>`), and the build also needs
+`dashboard/src` beside `app/`. `e2e/prod.cjs` serves `dist/` by the same rules from a small static
+server and drives the app under them, and `src/shell/serve.test.ts` fails if the router gains a route
+the list lacks. The rules as first specified follow, kept as the statement `serve.json` encodes.
 
 **What is served.** The output of `npm run build` in `app/` (`app/dist/`): `index.html`,
 `favicon.svg`, and `assets/` (six files today, each with a content hash in its name:
@@ -1608,41 +1590,11 @@ listed here so that it can be deleted when the system covers it.
 | 14 | **A chart cannot be removed**: `vzChart(root)` adds listeners to the root, a ResizeObserver and a `document.fonts` listener with no way to take them off | One chart per element for the element's life (`drawChart`); a new result is `setData` |
 | 15 | **The chart's cost on a result of Explore's size.** The fixture's charts have 61 samples a series; Explore's automatic step asks for one per pixel column (721 at 1440 px). After the last byte the chart's model (a copy of every series, its figures, the Other band over every folded series) and its SVG and legend are most of the script the app runs, and the browser then parses, styles, lays out and paints them: response to paint is slower than with the app's canvas chart was ("Speed") | The app prepares its table's rows in idle time after the result is painted, and passes over the values for the unit only for bytes per second. Nothing in the chart |
 
-## Decisions in this change, for `design/DECISIONS.md`
+## Decisions
 
-`design/` is not this component's, so these are recorded here for the lead to enter or
-overrule. Each is a choice between real alternatives.
-
-1. **The app's chart is the design system's reference chart, not a chart of its own.**
-   Alternatives: keep uPlot (canvas) and implement the Chart rules on it; write an SVG chart
-   in the app from the rules' pure functions. Why: the rules (colour map, Other, D73, labels,
-   readout, reserved height, text form) are 500 lines that the system tests as properties and
-   audits as rendered; a second implementation is a second set of findings, and the first
-   review's chart findings (M1, M2, M4, M5, M7) were all of that kind. Cost: the fifteen
-   needs above, the slower first paint of a result among them ("Speed"). Would change if the chart must draw what the reference does not (stacked
-   charts, heatmaps), if a typed step's 11,000 points a series prove too slow in SVG, or if
-   the system ships a chart package with a zone and events.
-2. **The key is kept in `sessionStorage`**, with the identity the API gave it. Alternatives:
-   memory only (a reload signs out, and a reload is how a link is opened); `localStorage`
-   (survives the tab; the app before did this). Why: a link and a reload are Explore's main
-   path, and a tab is the smallest lifetime that keeps them. Would change when control's
-   `identify` gains its second branch (a person signing in): then a session cookie the page
-   cannot read.
-3. **The content security policy allows inline styles.** Alternatives: a nonce (the document
-   would have to be rewritten per request and could not be revalidated to a 304); the editor
-   in a shadow root, where CodeMirror uses constructed stylesheets, plus a chart that sets
-   widths through the CSSOM. Why: scripts are what the policy is for, and they are strict.
-   Would change if either dependency stops writing inline styles.
-4. **Times are shown in the device's zone**, as before, by moving the chart's clock (need 1).
-   Alternative: UTC everywhere, stated. Would change if the lead prefers UTC for an
-   operations tool, or when the chart takes a zone.
-5. **A zoom on the chart stays inside the result**, as the Chart rules say, and a separate
-   control asks the API for that range. Before, a drag asked the API at once. Would change if
-   people expect the drag to refetch (the evidence: how often "Query the chart's range" is
-   pressed right after a zoom).
-6. **The gateway serves the document at a fixed list of paths**, not for every unknown path.
-   Why: the gateway's JSON 404 for an unknown API path is part of the API's behaviour, and a
-   mistyped API path must not answer 200 with HTML.
+The app's own choices are D79 in `design/DECISIONS.md`; the dashboards' and monitors' are D80; the
+release with dashboards and monitors unlisted is D78; the chart's typed input is D76; how the gateway
+serves the build is D74 (with D75 for the hostnames).
 
 ## Not implemented
 
@@ -1651,11 +1603,10 @@ overrule. Each is a choice between real alternatives.
   editing monitors** (what those views leave out is under "Not implemented (dashboards)" and
   "Not implemented (monitors)"). The design system's flow screens for
   monitors, investigations, proposed changes and keys (`../design-system/flows/`) are not built.
-- **Deployment.** The build is ready and the gateway's part is specified ("Needed changes in
-  deploy/"); nothing was deployed and no Cloudflare call was made. The eight things
-  `deploy/README.md` asks of the app (a failed chunk load as "viz was updated", noticing a
-  new build, versioned storage, a browser for CI and the rest) are not done; their state is
-  listed under "Needed changes in deploy/".
+- **Parts of deployment.** The gateway serves the build (D74; see "How deploy/ serves the app"). The
+  eight things `deploy/README.md` asks of the app (a failed chunk load as "viz was updated", noticing a
+  new build, versioned storage, a browser for CI and the rest) are not done; their state is listed
+  under "How deploy/ serves the app".
 - **Speed is not measured on the final build** except at the desktop layout for 36 and 200
   series in one tuning run; the phone layout of the final build is unmeasured ("Speed").
 - **Sign-in by a person.** There is only the API key; control has no user identity yet. No key
