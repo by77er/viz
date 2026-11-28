@@ -190,7 +190,11 @@ until then. No key is ever accepted by two shards.
 2. The shard appends the batch to its WAL. Batches arriving within a commit window share
    one transaction. The response is sent only after that transaction is durable.
 3. A request that spans shards succeeds only if every shard commits. Otherwise the sender
-   gets a retryable status for the whole request (429 or 503) and retries all of it.
+   gets a retryable status for the whole request (429 or 503) and retries all of it. A 429
+   stores nothing of the request (D77): a request of more than one batch first reserves room
+   on every shard it routes to, all at once, and appends only when every shard granted it (a
+   grant holds the bytes until they are appended under its token, released, or 5 s pass;
+   memory only); a refusal after any batch of the request was stored is a 503.
    `partial_success` is used only for rows rejected by validation, which a retry would not
    fix. Retries are safe in two layers: a batch fingerprint stops a shard storing an
    identical batch twice, and every reader and writer de-duplicates on the row key, so a
@@ -200,7 +204,9 @@ until then. No key is ever accepted by two shards.
    full buffer (the tenant's or the shard's) is 429; too much in flight is refused before
    anything is read or written and answered 503, which every sender retries, and `edge`
    then refuses that tenant's requests before decoding them until the wait has passed
-   (D37). A new stream whose registration is not yet logged (§4.3) is refused the same
+   (D37). A body `edge` refused with 429 is remembered by its hash in that isolate; sent again,
+   it is refused before it is decoded while its `Retry-After` lasts, and after that if the
+   shards, asked without holding anything, would still refuse exactly its batches (D77). A new stream whose registration is not yet logged (§4.3) is refused the same
    way, at once and holding nothing, and answered 503 (D61).
 5. Timestamps outside the **accept window** (per signal, configurable; for example one hour
    back and five minutes ahead for metrics) are rejected with a reason.
