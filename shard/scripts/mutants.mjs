@@ -47,9 +47,9 @@ const BY_BOUNDS = '  const byBounds = timed && (!signals || signals.has(2) || si
 // [name, file, from, to, tests]
 const mutants = [
   // ── early refusal ──
-  ['early refusal: no in-flight limit', F, '    if (this.inFlight >= this.cfg.maxInFlight || this.pendingBytes + bytes > this.cfg.maxPendingBytes) {', '    if (false) {', T.group],
-  ['early refusal: no Retry-After (0 ms)', F, '      return { status: \'backpressure\', scope: \'overload\', retryAfterMs: this.cfg.overloadRetryMs + Math.floor(Math.random() * this.cfg.overloadRetryMs) }', '      return { status: \'backpressure\', scope: \'overload\', retryAfterMs: 0 }', T.group],
-  ['early refusal: the check reads the fingerprint first', F, '    if (this.inFlight >= this.cfg.maxInFlight || this.pendingBytes + bytes > this.cfg.maxPendingBytes) {', '    if (this.ctx.storage.sql.exec(`SELECT 1 AS x FROM batch WHERE tenant = ? AND fingerprint = ?`, req.tenant, req.fingerprint).toArray().length === 0 && (this.inFlight >= this.cfg.maxInFlight || this.pendingBytes + bytes > this.cfg.maxPendingBytes)) {', T.group],
+  ['early refusal: no in-flight limit', F, '    if (!granted && this.overloaded(bytes)) {', '    if (false) {', T.group],
+  ['early refusal: no Retry-After (0 ms)', F, '    return { status: \'backpressure\', scope: \'overload\', retryAfterMs: this.cfg.overloadRetryMs + Math.floor(Math.random() * this.cfg.overloadRetryMs) }', '    return { status: \'backpressure\', scope: \'overload\', retryAfterMs: 0 }', T.group],
+  ['early refusal: the check reads the fingerprint first', F, '    if (!granted && this.overloaded(bytes)) {', '    if (!granted && this.ctx.storage.sql.exec(`SELECT 1 AS x FROM batch WHERE tenant = ? AND fingerprint = ?`, req.tenant, req.fingerprint).toArray().length === 0 && this.overloaded(bytes)) {', T.group],
   ['early refusal: in-flight appends are never released', F, '    this.inFlight -= group.length\n', '', T.group],
   // ── group commit ──
   ['group commit: a failed group answers ok', F, '        p.reject(e)\n        for (const j of p.joined) j.reject(e)', "        p.resolve({ status: 'ok', incarnation: 0, seq: 0, duplicate: false })\n        for (const j of p.joined) j.reject(e)", T.group],
@@ -156,9 +156,19 @@ const mutants = [
   ['reserve (D77): S6 grants never expire', F, '      if (g.expires > now) continue', '      continue', T.reserve],
   ['reserve (D77): S7 a probe (hold: false) holds', F, "    if (req.hold === false) return { status: 'ok', token: null, expiresInMs: 0 }\n", '', T.reserve],
   ['reserve (D77): S8 duplicates need room at reserve', F, "      if (known && sql.exec(`SELECT 1 FROM batch WHERE tenant = ? AND fingerprint = ?`, req.tenant, b.fingerprint).toArray().length > 0) continue\n", '', T.reserve],
-  ['reserve (D77): S9 grants not counted in the in-flight limit', F, 'return this.inFlight + this.grantedBatches + batches > this.cfg.maxInFlight || this.pendingBytes + this.grantedBytes + bytes', 'return this.inFlight + batches > this.cfg.maxInFlight || this.pendingBytes + bytes', T.reserve],
-  ['reserve (D77): S10 a granted append refused for load', F, 'if (!granted && this.overloaded(1, bytes)) {', 'if (this.overloaded(1, bytes)) {', T.reserve],
+  ['reserve (D77): S9 grants not counted in the in-flight limit', F, 'return this.inFlight + this.grants.size + 1 > this.cfg.maxInFlight || this.pendingBytes + this.grantedLoad + bytes', 'return this.inFlight + 1 > this.cfg.maxInFlight || this.pendingBytes + bytes', T.reserve],
+  ['reserve (D77): S10 a granted append refused for load', F, 'if (!granted && this.overloaded(bytes)) {', 'if (this.overloaded(bytes)) {', T.reserve],
   ['reserve (D77): S11 release ignored', F, '    if (g && g.tenant === tenant) this.dropGrant(token, g)', '    void g', T.reserve],
+  // the review of D77 (design/reviews/d77-ingest-reservations.md), 2026-11-28
+  ['reserve (D77 review): S13 a grant loads its sum of bytes, not its largest batch (M-1)', F, '    if (this.overloaded(load)) {', '    if (this.overloaded(bytes)) {', T.reserve],
+  ['reserve (D77 review): S14 a grant counts every batch against maxInFlight (M-1)', F, '    if (this.overloaded(load)) {', '    if (this.overloaded(load) || this.inFlight + this.grants.size + need.size > this.cfg.maxInFlight) {', T.reserve],
+  ['reserve (D77 review): S15 a refusal under a grant keeps the rest of it (M-2)', F, "      if (r.status !== 'ok') this.releaseGrant(req.tenant, token)\n", '', T.reserve],
+  ['reserve (D77 review): S16 a throw under a grant keeps the rest of it (M-2)', F, '    } catch (e) {\n      this.releaseGrant(req.tenant, token)\n      throw e', '    } catch (e) {\n      throw e', T.reserve],
+  ['reserve (D77 review): S17 a grant expires from reserve, not from its last use (m-3)', F, '    else g.expires = now + this.cfg.reservationTtlMs\n', '', T.reserve],
+  ['reserve (D77 review): S18 a tenant holding nothing is held to its share at reserve (m-1)', F, ' && !(whole && held === 0)) return', ') return', T.reserve],
+  ['reserve (D77 review): S19 the fair share checked against the whole request, not its first batch (m-1)', F, 'this.roomRefusal(req.tenant, known, bytes, first, true)', 'this.roomRefusal(req.tenant, known, bytes, bytes, true)', T.reserve],
+  ['reserve (D77 review): S20 a tenant holding only a grant is not a sharer (m-2)', F, '    for (const g of this.grants.values()) holding.add(g.tenant)\n', '', T.reserve],
+  ['reserve (D77 review): S21 a probe of an unknown tenant creates its stream (n-1)', F, "(known !== undefined || req.hold !== false)", 'true', T.reserve],
   ['reserve (D77): S12 a granted append skips room checks without a grant (room never checked)', F, '    if (!granted) {\n      const room = this.roomRefusal(req.tenant, known, bytes)', '    if (false) {\n      const room = this.roomRefusal(req.tenant, known, bytes)', T.reserve],
 ]
 

@@ -128,7 +128,8 @@ describe('reserve', () => {
 
   it('a granted append is not refused for load; the grant counts in the in-flight limit for everyone else', async () => {
     const s = fresh()
-    await s.configure({ maxInFlight: 2 })
+    // A grant is one append in flight, whatever its batch count (review of D77, M-1).
+    await s.configure({ maxInFlight: 1 })
     const token = tokenOf(await s.reserve({ tenant: 'a', epoch: 1, batches: [{ fingerprint: 'f1', bytes: 10 }, { fingerprint: 'f2', bytes: 10 }] }))
     expect(await append(s, 'b', 'x', 10)).toMatchObject({ status: 'backpressure', scope: 'overload' })
     expect(await s.reserve({ tenant: 'b', epoch: 1, batches: [{ fingerprint: 'x', bytes: 10 }] })).toMatchObject({ status: 'backpressure', scope: 'overload' })
@@ -173,5 +174,171 @@ describe('reserve', () => {
     await s.configure({ tenantMaxBytes: 800 })
     expect(await append(s, 'a', 'f2', 400, token)).toMatchObject({ status: 'backpressure', scope: 'tenant' })
     expect(await rows(s, 'a')).toBe(2)
+  })
+
+  describe('review of D77 (design/reviews/d77-ingest-reservations.md)', () => {
+    it('M-1: a grant counts against the in-flight limits as one append of its largest batch, not its sum: more batches than maxInFlight, more bytes than maxPendingBytes, are granted on an idle shard', async () => {
+      const s = fresh()
+      const many = Array.from({ length: 100 }, (_, i) => ({ fingerprint: `m${i}`, bytes: 10 }))
+      const t1 = tokenOf(await s.reserve({ tenant: 'a', epoch: 1, batches: many }))
+      expect(await s.stats()).toMatchObject({ reservations: 1, reservedBytes: 1000 })
+      for (const b of many) expect(await append(s, 'a', b.fingerprint, 10, t1)).toMatchObject({ status: 'ok', duplicate: false })
+      expect(await s.stats()).toMatchObject({ reservations: 0, reservedBytes: 0 })
+      const u = fresh()
+      await u.configure({ maxPendingBytes: 1000 })
+      const big = Array.from({ length: 5 }, (_, i) => ({ fingerprint: `b${i}`, bytes: 400 }))
+      const t2 = tokenOf(await u.reserve({ tenant: 'a', epoch: 1, batches: big }))
+      // Another request fits beside it: 400 of the grant + 400 <= 1000.
+      const t3 = tokenOf(await u.reserve({ tenant: 'b', epoch: 1, batches: [{ fingerprint: 'c0', bytes: 400 }, { fingerprint: 'c1', bytes: 100 }] }))
+      // A third does not: 400 + 400 + 400 > 1000.
+      expect(await u.reserve({ tenant: 'c', epoch: 1, batches: [{ fingerprint: 'd0', bytes: 400 }, { fingerprint: 'd1', bytes: 10 }] })).toMatchObject({ status: 'backpressure', scope: 'overload' })
+      for (const b of big) expect(await append(u, 'a', b.fingerprint, 400, t2)).toMatchObject({ status: 'ok' })
+      expect(await append(u, 'b', 'c0', 400, t3)).toMatchObject({ status: 'ok' })
+      expect(await append(u, 'b', 'c1', 100, t3)).toMatchObject({ status: 'ok' })
+      expect(await rows(u, 'a')).toBe(5)
+      expect(await u.stats()).toMatchObject({ reservations: 0, reservedBytes: 0 })
+    })
+
+    it('M-1: the in-flight bound still holds: maxInFlight grants refuse a further reserve and an unreserved append', async () => {
+      const s = fresh()
+      await s.configure({ maxInFlight: 3 })
+      for (const t of ['a', 'b', 'c']) tokenOf(await s.reserve({ tenant: t, epoch: 1, batches: [{ fingerprint: 'x', bytes: 10 }, { fingerprint: 'y', bytes: 10 }] }))
+      expect(await s.reserve({ tenant: 'd', epoch: 1, batches: [{ fingerprint: 'x', bytes: 10 }, { fingerprint: 'y', bytes: 10 }] })).toMatchObject({ status: 'backpressure', scope: 'overload' })
+      expect(await append(s, 'd', 'x', 10)).toMatchObject({ status: 'backpressure', scope: 'overload' })
+    })
+
+    it('M-2: a refusal under a grant drops what is left of it at once (stale_epoch, too_large, invalid, series_limit); a duplicate keeps it', async () => {
+      const s = fresh()
+      const three = [{ fingerprint: 'f1', bytes: 20 }, { fingerprint: 'f2', bytes: 20 }, { fingerprint: 'f3', bytes: 20 }]
+      expect(await append(s, 'a', 'seed', 20)).toMatchObject({ status: 'ok' })
+      // stale_epoch: the stream moved to epoch 2 between reserve and append.
+      let t = tokenOf(await s.reserve({ tenant: 'a', epoch: 1, batches: three }))
+      await s.append({ tenant: 'a', epoch: 2, fingerprint: 'e2', payload: payload(20), rows: 1 })
+      expect(await append(s, 'a', 'f1', 20, t)).toMatchObject({ status: 'stale_epoch' })
+      expect(await s.stats()).toMatchObject({ reservations: 0, reservedBytes: 0 })
+      // too_large: the shard's cap lowered after the grant.
+      const at2 = (fp: string, size: number, reservation: string) => s.append({ tenant: 'a', epoch: 2, fingerprint: fp, payload: payload(size), rows: 1, reservation })
+      t = tokenOf(await s.reserve({ tenant: 'a', epoch: 2, batches: three }))
+      await s.configure({ maxBatchBytes: 10 })
+      expect(await at2('f1', 20, t)).toMatchObject({ status: 'too_large' })
+      expect(await s.stats()).toMatchObject({ reservations: 0, reservedBytes: 0 })
+      await s.configure({ maxBatchBytes: 1 << 20 })
+      // invalid: series ids that do not match the batch's header.
+      t = tokenOf(await s.reserve({ tenant: 'a', epoch: 2, batches: three }))
+      expect(await s.append({ tenant: 'a', epoch: 2, fingerprint: 'f1', payload: payload(20), rows: 1, seriesIds: BigInt64Array.of(1n, 2n), reservation: t })).toMatchObject({ status: 'invalid' })
+      expect(await s.stats()).toMatchObject({ reservations: 0, reservedBytes: 0 })
+      // series_limit: a batch of 2 new series against a share of 1.
+      const metered = (fp: string, ids: bigint[]) => {
+        const p = payload(20)
+        new DataView(p.buffer).setUint32(12, ids.length, true)
+        return { tenant: 'a', epoch: 2, fingerprint: fp, payload: p, rows: 1, seriesIds: BigInt64Array.from(ids), seriesLimit: 1 }
+      }
+      t = tokenOf(await s.reserve({ tenant: 'a', epoch: 2, batches: three }))
+      expect(await s.append({ ...metered('f1', [11n, 12n]), reservation: t })).toMatchObject({ status: 'series_limit' })
+      expect(await s.stats()).toMatchObject({ reservations: 0, reservedBytes: 0 })
+      // ok and a duplicate (a twin waiting in the group) keep the rest of the grant.
+      t = tokenOf(await s.reserve({ tenant: 'a', epoch: 2, batches: three }))
+      const first = at2('f1', 20, t)
+      const twin = s.append({ tenant: 'a', epoch: 2, fingerprint: 'f1', payload: payload(20), rows: 1 })
+      expect((await first).status).toBe('ok')
+      expect(await twin).toMatchObject({ status: 'ok', duplicate: true })
+      expect(await s.stats()).toMatchObject({ reservations: 1, reservedBytes: 40 })
+      expect(await at2('f2', 20, t)).toMatchObject({ status: 'ok' })
+      expect(await at2('f3', 20, t)).toMatchObject({ status: 'ok' })
+      expect(await s.stats()).toMatchObject({ reservations: 0, reservedBytes: 0 })
+    })
+
+    it('M-2: an append under a grant that throws (its group\'s transaction failed) drops what is left of the grant', async () => {
+      const s = fresh()
+      expect(await append(s, 'a', 'seed', 20)).toMatchObject({ status: 'ok' })
+      const t = tokenOf(await s.reserve({ tenant: 'a', epoch: 1, batches: [{ fingerprint: 'f1', bytes: 20 }, { fingerprint: 'f2', bytes: 20 }] }))
+      await runInDurableObject(s, (_i, state) => {
+        const storage = state.storage as unknown as { transactionSync: unknown }
+        const real = storage.transactionSync
+        storage.transactionSync = () => {
+          storage.transactionSync = real
+          throw new Error('injected: the transaction failed')
+        }
+      })
+      let thrown = ''
+      try {
+        await append(s, 'a', 'f1', 20, t)
+      } catch (e) {
+        thrown = String(e)
+      }
+      expect(thrown).toMatch(/injected/)
+      expect(await s.stats()).toMatchObject({ reservations: 0, reservedBytes: 0 })
+      expect(await rows(s, 'a')).toBe(1)
+    })
+
+    it('m-1: a request larger than its fair share is admitted when the tenant holds nothing (or its first batch fits), bounded by its cap and the hard ceiling', async () => {
+      const s = fresh()
+      await s.configure({ shardMaxBytes: 1000, tenantMaxBytes: 10_000 })
+      expect(await append(s, 'b', 'x', 330)).toMatchObject({ status: 'ok' })
+      expect(await append(s, 'c', 'x', 330)).toMatchObject({ status: 'ok' })
+      // a holds nothing; its share is 333; two batches of 200 (400) go over the budget: granted.
+      tokenOf(await s.reserve({ tenant: 'a', epoch: 1, batches: [{ fingerprint: 'f1', bytes: 200 }, { fingerprint: 'f2', bytes: 200 }] }))
+      // a now holds 400 granted: a further request is refused its share.
+      expect(await s.reserve({ tenant: 'a', epoch: 1, batches: [{ fingerprint: 'g1', bytes: 10 }, { fingerprint: 'g2', bytes: 10 }] })).toMatchObject({ status: 'backpressure', scope: 'shard' })
+      // A tenant holding nothing whose first batch is over its share (1000 / 4 = 250) is admitted too.
+      tokenOf(await s.reserve({ tenant: 'e', epoch: 1, batches: [{ fingerprint: 'k1', bytes: 400 }, { fingerprint: 'k2', bytes: 400 }] }))
+      // The ceiling (twice the budget) holds whatever the tenant holds.
+      expect(await s.reserve({ tenant: 'd', epoch: 1, batches: [{ fingerprint: 'h1', bytes: 500 }, { fingerprint: 'h2', bytes: 500 }] })).toMatchObject({ status: 'backpressure', scope: 'shard' })
+      // A tenant holding something is admitted when its first batch fits its share, though the whole does not.
+      const u = fresh()
+      await u.configure({ shardMaxBytes: 1000, tenantMaxBytes: 10_000 })
+      expect(await append(u, 'b', 'x', 600)).toMatchObject({ status: 'ok' })
+      expect(await append(u, 'c', 'x', 300)).toMatchObject({ status: 'ok' })
+      // Share 500: 300 + 50 fits, 300 + 350 does not.
+      tokenOf(await u.reserve({ tenant: 'c', epoch: 1, batches: [{ fingerprint: 'f1', bytes: 50 }, { fingerprint: 'f2', bytes: 300 }] }))
+      expect(await u.reserve({ tenant: 'c', epoch: 1, batches: [{ fingerprint: 'g1', bytes: 200 }, { fingerprint: 'g2', bytes: 10 }] })).toMatchObject({ status: 'backpressure', scope: 'shard' })
+    })
+
+    it('m-2: a tenant that holds only a grant is counted among the sharers of the fair share', async () => {
+      const s = fresh()
+      await s.configure({ shardMaxBytes: 1000, tenantMaxBytes: 10_000 })
+      expect(await append(s, 'b', 'x', 330)).toMatchObject({ status: 'ok' })
+      expect(await append(s, 'c', 'x', 330)).toMatchObject({ status: 'ok' })
+      tokenOf(await s.reserve({ tenant: 'a', epoch: 1, batches: [{ fingerprint: 'f1', bytes: 150 }, { fingerprint: 'f2', bytes: 150 }] }))
+      // Share 1000 / 3 = 333: 300 granted + 100 is over it (a share of 500 would have admitted it).
+      expect(await s.reserve({ tenant: 'a', epoch: 1, batches: [{ fingerprint: 'g', bytes: 100 }] })).toMatchObject({ status: 'backpressure', scope: 'shard' })
+      // A grant on an empty shard keeps its room against another tenant's fair-share admission.
+      const u = fresh()
+      await u.configure({ shardMaxBytes: 1000, tenantMaxBytes: 10_000 })
+      tokenOf(await u.reserve({ tenant: 'a', epoch: 1, batches: [{ fingerprint: 'f1', bytes: 450 }, { fingerprint: 'f2', bytes: 450 }] }))
+      expect(await append(u, 'b', 'x', 900)).toMatchObject({ status: 'backpressure', scope: 'shard' })
+      expect(await append(u, 'b', 'x', 100)).toMatchObject({ status: 'ok' })
+    })
+
+    it('m-3: a grant lives reservationTtlMs from its last use, not from reserve', async () => {
+      const s = fresh()
+      await s.configure({ tenantMaxBytes: 1000, reservationTtlMs: 300 })
+      const batches = [{ fingerprint: 'f1', bytes: 300 }, { fingerprint: 'f2', bytes: 300 }, { fingerprint: 'f3', bytes: 300 }]
+      const t = tokenOf(await s.reserve({ tenant: 'a', epoch: 1, batches }))
+      await s.configure({ tenantMaxBytes: 100 }) // without the grant, none of these fits
+      expect(await append(s, 'a', 'f1', 300, t)).toMatchObject({ status: 'ok' })
+      await new Promise((r) => setTimeout(r, 200))
+      expect(await append(s, 'a', 'f2', 300, t)).toMatchObject({ status: 'ok' })
+      await new Promise((r) => setTimeout(r, 200)) // 400 ms after reserve, 200 after the last use
+      expect(await append(s, 'a', 'f3', 300, t)).toMatchObject({ status: 'ok' })
+      expect(await rows(s, 'a')).toBe(3)
+      // And unused, it still expires.
+      const u = tokenOf(await s.reserve({ tenant: 'b', epoch: 1, batches: [{ fingerprint: 'g1', bytes: 50 }, { fingerprint: 'g2', bytes: 50 }] }))
+      await new Promise((r) => setTimeout(r, 400))
+      expect(await s.stats()).toMatchObject({ reservations: 0, reservedBytes: 0 })
+      await s.configure({ tenantMaxBytes: 10 })
+      expect(await append(s, 'b', 'g1', 50, u)).toMatchObject({ status: 'backpressure', scope: 'tenant' })
+    })
+
+    it('n-1: a probe (hold: false) of a tenant the shard does not know creates no stream and starts no registration', async () => {
+      const s = fresh()
+      await s.configure({ registration: 'logged' })
+      expect(await s.reserve({ tenant: 'p', epoch: 1, batches: [{ fingerprint: 'f', bytes: 10 }, { fingerprint: 'g', bytes: 10 }], hold: false })).toEqual({ status: 'ok', token: null, expiresInMs: 0 })
+      const streams = await runInDurableObject(s, (_i, state) => state.storage.sql.exec(`SELECT COUNT(*) AS n FROM stream WHERE tenant = ?`, 'p').one().n as number)
+      expect(streams).toBe(0)
+      expect(await s.stats()).toMatchObject({ registerCalls: 0, registering: 0 })
+      // A reserve that holds does start it, as an append does.
+      expect(await s.reserve({ tenant: 'p', epoch: 1, batches: [{ fingerprint: 'f', bytes: 10 }, { fingerprint: 'g', bytes: 10 }] })).toMatchObject({ status: 'backpressure', scope: 'registering' })
+    })
   })
 })
