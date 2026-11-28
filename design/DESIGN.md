@@ -4,9 +4,12 @@ Status: draft 3.1, 2026-11-18. Draft 2 was reviewed by two independent reviewers
 findings) and rewritten as draft 3; draft 3 was re-reviewed (12 findings) and amended here.
 `REVIEW.md` lists what changed and what is still open.
 
-Status (2026-11-26, `main` after pull request #9): the backend described here is built and on
-`main`. Production has been live at `vis.bitcru.sh` since 2026-11-19, deployed by the owner from
-`main` at fb77292 (pull request #8). Spikes S0–S5, the S3/S4 re-runs and S9–S11 were measured on
+Status (2026-11-28, `main` after pull request #9): the backend described here is built and on
+`main`. Production has been live at `vis.bitcru.sh` since 2026-11-19: it ran fb77292 (pull request
+#8, deployed by the owner) from 2026-11-19 to 2026-11-28, and 375e9ba (pull request #9) from
+2026-11-28, deployed by the Deploy workflow (run 46125868615, 08:27–08:36 UTC; `/healthz` then
+reported 375e9ba with every backend healthy, OAuth metadata answered 200 and `/oauth/register` 201:
+measured on Cloudflare); every push to `main` deploys since. Spikes S0–S5, the S3/S4 re-runs and S9–S11 were measured on
 Cloudflare, and staged copies of the deployment were trialled and destroyed (`VERIFICATION.md`,
 `deploy/README.md`). Figures not marked as measured are models, printed as ranges, and
 `VERIFICATION.md` names the experiment that would confirm or kill each.
@@ -21,10 +24,10 @@ here, not on Cloudflare). `QUERY_SIGNALS` stays off until spike S10's realistic 
 run again on Cloudflare with this build, Grafana has run against a staged gateway, and the owner
 accepts the stated ceilings for the tenants in question (§6.4).
 
-Not verified on Cloudflare: the release this tree makes over production puts six Rate Limiting
-bindings on viz-control (D70), and nobody has yet seen Cloudflare accept them at upload or read
-them back from its version API (review of D69, round 2, M2-2). The stage trial that settles it,
-`spikes/s13-upgrade-trial/`, is prepared and not run: it waits for the owner (§11b, §13).
+The first release over fb77292, which put six Rate Limiting bindings on viz-control (D70), was run
+on a stage before #9 merged (`spikes/s13-upgrade-trial/`, 2026-11-28, measured on Cloudflare):
+Cloudflare accepted the bindings at upload and its version API lists them as `type: ratelimit`
+with `namespace_id`, as the deploy reads them (review of D69, round 2, M2-2, settled; §11b, §13).
 
 The interface (`app/`, `design-system/`, §8) is on the development branch only. Self-monitoring is
 proposed, not built.
@@ -892,7 +895,9 @@ version newer than the serving one (left by a rollback) but missing from the upl
 release rather than being made anew; wrangler runs that get a secret on
 stdin write no debug log and redact request bodies whatever the environment says.
 
-**Where production stands (2026-11-26).** Production was first deployed on 2026-11-19 from `main`
+**Where production stands (2026-11-28).** The release described next was deployed on 2026-11-28
+(375e9ba, pull request #9, Deploy run 46125868615), after spike S13 ran it on a stage and settled
+the Rate Limiting bindings on Cloudflare; what follows is the analysis made before it. Production was first deployed on 2026-11-19 from `main`
 at fb77292 with that commit's own tooling, which predates D69 and D70: its versions carry no
 format versions, floors or run marks, and its viz-control has the OAuth key and no rate limits.
 The first release of this tree over it is forward-only for viz-control (the `oauth-public` floor)
@@ -906,8 +911,8 @@ Cloudflare:** whether Cloudflare accepts viz-control's six Rate Limiting binding
 under which field names its version API lists them (the deploy reads `type: ratelimit` and
 `namespace_id`, from training knowledge). If the names differ, every deploy after the first stops
 when it allocates ids (review of D69, round 2, M2-2). The stage trial that settles both,
-`spikes/s13-upgrade-trial/`, is prepared and has not run: the session's permission check refused
-the stage deploy twice, and it waits for the owner.
+`spikes/s13-upgrade-trial/`, ran on 2026-11-28 and settled both: Cloudflare accepted the bindings,
+and its version API lists them as `type: ratelimit` with `namespace_id`.
 
 ## 12. Launch scope
 
@@ -931,7 +936,7 @@ the stage deploy twice, and it waits for the owner.
 | A shard that lost its storage and gets no new writes is never registered in its new incarnation, so queries naming the old one are refused indefinitely (spec F6); a stream registered lazily can hide acknowledged rows from a query after a storage loss (F6(b)) | **Built** (D61): a read naming a lost incarnation registers a fresh one; registration logged before a new stream's first write, which production turns on in the release after edge maps the refusal to 503. Cost: about a second before a new stream's first acknowledgement; a tenant whose ledger cannot log takes no writes on new streams |
 | Plans grow with file count: 276 ms and 5.8 MB at 7,000 files | Not yet fixed. Index fragments inline only for small plans; consolidated partition indexes; paging |
 | A tenant's ledger holds at most 300 MiB of state, about 300,000 live files: memory no longer bounds it (checkpoints in parts, a rebuild that streams; D47), the time a rebuild takes does (20 s here at that size, modelled 20–60 s on Cloudflare, the tenant refused meanwhile) | `addUnit` answers `full`, retryably, above it; compaction and retention make room. The publisher re-bases such a tenant streaming, from its newest checkpoint or its base, in bounded memory (measured at 300,000 files under a capped heap, `publisher/README.md`), but production keeps 16 MiB: a rollback to a release before D47 must not meet a larger state, and the time is the bound. Measured on Cloudflare since (S11, `spikes/s11-large-ledger/`, 2026-11-19): a rebuild used 14.2 s of CPU at 64 MiB and 16.4–18.6 s at 150 MiB, a first publication 5.6 s and 14.0 s, against the 30 s default; 300 MiB was not run and extrapolates over it. S11 recommends 64 MiB; not lifted yet (D47; `design/reviews/d47-d48-d55.md`, P-2, P-3) |
-| The first release over production carries viz-control's six Rate Limiting bindings, which have never been uploaded to Cloudflare or read back from its version API (review of D69, round 2, M2-2); that release is forward-only for viz-control | **Open.** `spikes/s13-upgrade-trial/` runs the release on a stage first; it is prepared and not run, waiting for the owner. Everything else about the release was checked against fakes only. The other six Workers can be rolled back alone (`--only`) |
+| The first release over production carries viz-control's six Rate Limiting bindings, which have never been uploaded to Cloudflare or read back from its version API (review of D69, round 2, M2-2); that release is forward-only for viz-control | **Closed** (2026-11-28). `spikes/s13-upgrade-trial/` ran the release on a stage: Cloudflare accepted the six bindings and lists them as `type: ratelimit`, `namespace_id` (measured on Cloudflare). The release was deployed to production the same day (375e9ba, Deploy run 46125868615). The other six Workers can be rolled back alone (`--only`) |
 | Spans and logs on Cloudflare (S10, `spikes/s10-signals-trial/`, measured 2026-11-19): a compaction run was killed at the 30 s CPU limit (8 merges at 2.6–3.6 s each; retried successfully); every trace query is refused above about 240,000 spans in an hour (`maxFetchBytes` against one hour's files); a 4 KB body of empty spans costs 1.4–3.4 s of edge CPU to decode; flush throughput bounds span ingest at about 2.5 requests a second of 8,200 spans; a stage's cron and maintenance timers run on after its expiry | **Open**, none fixed. Both flags are off in production. Compaction: bound merges per run by CPU spent, or raise `limits.cpu_ms` (D68). Trace queries: bloom filters on `spans.trace_id`, `trace_index` read in waves, smaller row groups (D62, not built). Decode CPU: not bounded by D71. D62's second review fixes were re-checked and approved on 2026-11-26 (measured here); `QUERY_SIGNALS` still waits for a rerun of S10 on this build, a Grafana run and the owner's acceptance of the stated ceilings |
 | Cloudflare ships an overlapping product | Open formats, PromQL/TraceQL, external sources, agent surface |
 | Platform-wide outage | Accepted for a Cloudflare-only product; data remains plain Parquet and Iceberg |

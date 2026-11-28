@@ -794,8 +794,17 @@ minutes regardless.
 
 ## The first release over the 2026-11-19 production
 
+**Status (2026-11-28): done.** Production ran fb77292 from 2026-11-19 to 2026-11-28 and runs 375e9ba
+(pull request #9) since: the Deploy workflow run 46125868615 on main (push of 375e9ba, 2026-11-28
+08:27–08:36 UTC) succeeded, and afterwards `https://vis.bitcru.sh/healthz` reported release
+375e9baecb137732ff188e49aab8985f479162f6 with every backend healthy, OAuth metadata answered 200 and
+`/oauth/register` 201 (measured on Cloudflare, from outside). Before the merge, spike S13 ran the
+same upgrade on a stage (`spikes/s13-upgrade-trial/`): Cloudflare accepted the six Rate Limiting
+bindings and its version API lists them as `type: ratelimit` with `namespace_id`. What follows is
+the analysis made before that deploy, kept as it was.
+
 The owner deployed production on 2026-11-19 from main at fb77292 (PR #8) with that commit's own
-tooling, which predates D69: `vis.bitcru.sh/healthz` reports that release, viz-control has
+tooling, which predates D69: `vis.bitcru.sh/healthz` reported that release, viz-control has
 `OAUTH_CLIENT_KEY` and advertises `/oauth/register`, with no Rate Limiting bindings. Its versions carry
 `VIZ_SCHEMAS` but no `VIZ_FORMATS`, `VIZ_FLOORS` or `VIZ_DEPLOY_RUN`, its record has schemas and no
 formats, and viz-control has no `OAUTH_PUBLIC`. The first release of this tree goes over that.
@@ -862,7 +871,8 @@ viz-ingest, and every rollback to fb77292, `--only` any Worker included, was ref
    unseen ("Known risks").
 4. **Not yet run on Cloudflare** (review of D69, round 2, M2-2): whether Cloudflare accepts the six
    bindings at upload, and the field names its version API lists them under. The stage trial that
-   settles both, `spikes/s13-upgrade-trial/`, is prepared and not run.
+   settles both, `spikes/s13-upgrade-trial/`, is prepared and not run. (Since run, 2026-11-28: both
+   settled, see the status above.)
 5. After it, every production release carries the six bindings and `OAUTH_PUBLIC`, and viz-control
    cannot go back below D70's third round.
 
@@ -1825,9 +1835,11 @@ deployment and nothing here needs it: the gateway has no page and no static asse
   versions of the write path's objects in service at once; the tooling refuses nothing about
   it but never does it.
 - **Alerting** on a failed deploy beyond the failed job and its summary.
-- **How the workflows ran on GitHub is not recorded here.** The owner ran Deploy on main on
-  2026-11-19 (production serves fb77292, the release of pull request #8). Its run log was not read
-  into this README; the upgrade test models what that run left from fb77292's own tooling.
+- **How the workflows ran on GitHub is mostly not recorded here.** The owner ran Deploy on main on
+  2026-11-19 (production served fb77292, the release of pull request #8, until 2026-11-28); its run
+  log was not read into this README, and the upgrade test models what that run left from fb77292's
+  own tooling. Deploy run 46125868615 (2026-11-28, 375e9ba, pull request #9) succeeded; what was
+  read of it is in "The first release over the 2026-11-19 production".
 - **Generated secrets on Cloudflare** were measured by spike S9 (2026-11-19: created case twice,
   rotated case once, first deploy once) on viz-control alone. Not run there: the up-front refusals
   and the read retries added since (modelled by the fakes, which now follow S9), m-11's run marks,

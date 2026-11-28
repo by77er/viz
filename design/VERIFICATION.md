@@ -103,10 +103,10 @@ Spikes run since under numbers this table does not use, each with its README:
   a public address, to see whether a phone loses its scroll position on reload as the emulator
   did in the v9 review. For the interface, which is on the development branch, not on `main`.
 - **S13** (`spikes/s13-upgrade-trial/`): the first release over production, on a stage.
-  **Prepared, not run**: the session's permission check refused the stage deploy twice, and it
-  waits for the owner. Until it runs, nobody has seen Cloudflare accept viz-control's six Rate
-  Limiting bindings at upload, or read them back from its version API (review of D69, round 2,
-  M2-2).
+  **Measured 2026-11-28** (on Cloudflare, a `viz-s13-*` stage, destroyed afterwards): Cloudflare
+  accepted viz-control's six Rate Limiting bindings at upload, and its version API lists them as
+  `type: ratelimit` with `namespace_id` (review of D69, round 2, M2-2, settled). #9's release was
+  deployed to production the same day.
 
 ## 5. Evidence required per milestone
 
