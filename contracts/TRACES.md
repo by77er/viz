@@ -195,6 +195,10 @@ Partitioned by tenant and **day** of `min_start_unix_nano` (so a unit spanning m
 two `trace_index` files); sorted by `trace_id` (bytes) with the page index on, so
 trace-by-id is a binary search (DESIGN §6.4, research 04 §6.3). Statistics and page index on
 `trace_id`, `min_start_unix_nano`, `max_end_unix_nano`; row groups and pages as for `spans`.
+**Bloom filter** on `trace_id` per row group, as for `spans` (1% false positives, sized for the
+row group's distinct ids; added 2026-11-28, design/DECISIONS.md D81): a flush unit's fragments
+cover the whole id range, so a row group's `min_tid`/`max_tid` cannot rule out an id, and its
+filter can. A file written before D81 has none; a reader reads its row groups as before.
 
 | Column | Parquet type | Null | Notes |
 |---|---|---|---|
@@ -275,9 +279,20 @@ compact JSON, one `rg` entry per row group in file order, and `foot` as for metr
 last row group):
 
 ```
-spans:       {"v":1,"rg":[{"rows":N,"off":N,"len":N,"min_name":S,"max_name":S,"min_ts":N,"max_ts":N,"min_dur":N,"max_dur":N},…],"foot":[N,N]}
-trace_index: {"v":1,"rg":[{"rows":N,"off":N,"len":N,"min_tid":H,"max_tid":H,"min_ts":N,"max_ts":N},…],"foot":[N,N]}
+spans:       {"v":1,"rg":[{"rows":N,"off":N,"len":N,"min_name":S,"max_name":S,"min_ts":N,"max_ts":N,"min_dur":N,"max_dur":N,"bf":[N,N]},…],"foot":[N,N]}
+trace_index: {"v":1,"rg":[{"rows":N,"off":N,"len":N,"min_tid":H,"max_tid":H,"min_ts":N,"max_ts":N,"bf":[N,N]},…],"foot":[N,N]}
 ```
+
+- `bf` (added 2026-11-28, additively within version 1, COMPATIBILITY.md §3.2: unknown fields
+  are ignored; design/DECISIONS.md D81): `[offset, length]` of the row group's `trace_id`
+  Parquet bloom filter (header and bitset, exactly the column chunk's `bloom_filter_offset` and
+  `bloom_filter_length`). The writer places each row group's filter right after its column
+  chunks, so it lies between `off + len` and the next row group's `off` (for the last row group,
+  at the start of `foot`). It is the only filter in those bytes. Absent when the row group has
+  no filter (every file written before D81): a reader then reads the row group. A reader that
+  fetches these bytes alone can tell, without the footer, that the row group cannot hold a trace
+  id (`viz_q_tq_probe`), and must treat a filter it cannot parse, or did not fetch, as "may
+  hold". Compaction writes `bf` exactly as flush does (the same writers).
 
 - `spans`: `min_name`/`max_name` are the row group's smallest and largest `service_name` in
   byte order, a null counting as `""` (so the range is conservative); `min_ts`/`max_ts`
@@ -285,6 +300,11 @@ trace_index: {"v":1,"rg":[{"rows":N,"off":N,"len":N,"min_tid":H,"max_tid":H,"min
 - `trace_index`: `min_tid`/`max_tid` are the first and last row's `trace_id` as 32 lowercase
   hex digits; `min_ts` is the smallest `min_start_unix_nano`, `max_ts` the largest
   `max_end_unix_nano`.
+- How trace by ID reads both tables (D81): the row groups whose id range (`trace_index`) and
+  time hold the id are chosen from the fragments; their filters (`bf`) are fetched, one range
+  each, and only the row groups whose filter may hold the id are fetched with the footer. A
+  filter never makes an answer differ: it has no false negatives, and every row group without
+  one is read.
 - Integers are 64-bit; a JavaScript reader must not read them as numbers.
 
 ## Object keys (built, stage 2)

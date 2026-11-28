@@ -331,13 +331,29 @@ export type LokiLabels = string[]
 /** The `data` of `/loki/api/v1/series`: the label sets of the matching streams, sorted. */
 export type LokiSeries = Record<string, string>[]
 
-// ─────────────────── the engine's span and log operations (ABI 6; 7 and 8 additive) ───────────────────
+// ─────────────────── the engine's span and log operations (ABI 6; 7, 8 and 9 additive) ───────────────────
 
 /** How to read one file, from its index fragment: skip it, whole, or these `[offset, length]` byte ranges (footer and row groups). */
 export interface SignalFilePlan {
   /** Rows of the row groups chosen; null when the fragment does not parse (read whole). */
   rows: number | null
   read: 'skip' | 'whole' | [number, number][]
+  /**
+   * ABI 9 (D81), `tqFilePlan` with a trace id only: the `[offset, length]` of the chosen row
+   * groups' `trace_id` bloom filters that the file's fragment names (`contracts/TRACES.md`, "Index
+   * fragments", `bf`). Fetch them and pass them to `tqProbe` to drop the groups that cannot hold
+   * the id; absent or empty, nothing is to be probed and `read` stands.
+   */
+  bloom?: [number, number][]
+  /** ABI 9 (D81), `tqProbe` only: the row groups its bloom filters ruled out. */
+  skipped?: number
+  /**
+   * ABI 9 (D81), `tqFilePlan('spans', …)` and `lqFilePlan`: of `rows`, those a call cut to the
+   * same range is sure to hold (the row groups wholly inside it; logs: holding only streams a
+   * selector admits). A lower bound of what the engine counts against `maxSpans`/`maxRows`, so a
+   * check before any fetch refuses on it only what the engine would refuse.
+   */
+  certain?: number
 }
 
 /** What a TraceQL query reads (`tqPlan`). Nanosecond times as decimal strings. */
@@ -382,6 +398,14 @@ export interface LogReadPlan {
 export interface SignalBudget {
   maxBytes?: number
   bound?: { lo: bigint; hi: bigint }
+  /**
+   * ABI 9 (D81), `tqSearch`, `tqMetrics` and `tqTrace`: when given, a span is part of the call's
+   * data only if it also starts inside one of these (inclusive nanoseconds): the `ranges` a
+   * `tqExtent` gave. Every span of a trace it found that starts inside `bound` starts inside one
+   * of them, so the answer is the same; spans of other traces in the same row groups are passed
+   * over, not held, and not counted against `maxSpans`.
+   */
+  ranges?: { lo: bigint; hi: bigint }[]
 }
 
 /**
@@ -404,6 +428,14 @@ export interface SignalEngine {
    * also overlap one of them: the `ranges` a `tqExtent` gave (inclusive nanoseconds).
    */
   tqFilePlan(table: 'spans' | 'trace_index', indexes: string[], lo: bigint, hi: bigint, traceId?: Uint8Array, ranges?: { lo: bigint; hi: bigint }[]): SignalFilePlan[]
+  /**
+   * ABI 9 (D81): `tqFilePlan`'s plans for the same arguments, without the row groups whose
+   * `trace_id` bloom filter says `traceId` is not there. `blooms[i]` is file i's bytes at the
+   * ranges its plan's `bloom` listed, as a sparse file container (empty: none read). A group whose
+   * fragment names no filter, whose filter was not handed over or does not parse, stays: the
+   * filter only saves reads (no false negatives), and the answer is the same with or without it.
+   */
+  tqProbe(table: 'spans' | 'trace_index', indexes: string[], lo: bigint, hi: bigint, traceId: Uint8Array, ranges: { lo: bigint; hi: bigint }[] | undefined, blooms: Uint8Array[]): SignalFilePlan[]
   /**
    * The traces overlapping `[lo, hi]` (or `traceId`) from `trace_index` files and the tail: how
    * many, their hull, the `spans` hours holding them, and (ABI 8) `ranges`: their fragments'
