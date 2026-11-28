@@ -21,7 +21,7 @@ scratch directory does not survive the pause, so everything needed is in the rep
 
 | Name | What | Until |
 |---|---|---|
-| production (`viz-gateway` and six more, `vis.bitcru.sh`) | release fb77292 (pull request #8): the API only, OAuth without rate limits | replaced when #9 merges and deploys |
+| production (`viz-gateway` and six more, `vis.bitcru.sh`) | release 375e9ba (pull request #9) since 2026-11-28 08:36 UTC: the API only, OAuth with D70's rate limits; healthy after the deploy | moves to `viz.bitcru.sh` with D75 (its pull request is being built) |
 | `viz-preview-app` (workers.dev) | spike S14: the web app's build (Explore, dashboards read-only, Help, Settings) on the app's **mock** API | answers 410 after 2026-12-04; delete when the gateway serves the app |
 | `viz-spike-s12-reload` (workers.dev) | static pages for the phone test | until the owner has tested or declined |
 | `viz-spike-s0-do-billing` | deleted 2026-11-28 | |
