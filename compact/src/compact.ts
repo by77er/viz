@@ -92,6 +92,11 @@ export interface CompactPolicy {
   smallL2Bytes: number
   /** A step that has run this long gives up before `replace`. */
   maxStepMs: number
+  /**
+   * D82: a merge's inputs are chosen so that its modelled CPU (`modelledCpuMs`) is at most this.
+   * A unit that alone is over it is left as it is, as one over `maxInputBytes` is.
+   */
+  maxStepCpuMs: number
 }
 
 export const DEFAULT_POLICY: CompactPolicy = {
@@ -102,7 +107,25 @@ export const DEFAULT_POLICY: CompactPolicy = {
   maxInputPairs: 8,
   smallL2Bytes: 4 << 20,
   maxStepMs: 5 * 60_000,
+  maxStepCpuMs: 8_000,
 }
+
+/**
+ * D82: the CPU a merge costs on Cloudflare, MODELLED, in milliseconds per MiB of input, by what
+ * is merged; a step costs `STEP_CPU_MS` more (plans, hashing, the ledger's answer). Workers
+ * cannot measure their own CPU (the clock stands still while JavaScript or WASM runs), so a
+ * merge is priced before it runs, as the ruler prices a warm-up (D51). The figures are the
+ * largest of: this machine's WASM merge in workerd (flush/test/profile.prof.ts: spans 204–264,
+ * trace_index 105–112, logs 62–83 ms per MiB; metrics 60–80, compact/README.md) times 2.5 (the
+ * warm factor S10 measured for edge's decode, Cloudflare over this machine), and S10's own
+ * worst merge (realistic logs, 10.2 s for at most 16 MiB: 640 ms per MiB) rounded up. Measured
+ * on Cloudflare since: see spikes/s18-signals-write/README.md.
+ */
+export const CPU_MS_PER_MIB: Readonly<Record<'metric' | SignalTable, number>> = { metric: 200, spans: 700, trace_index: 350, logs: 700 }
+export const STEP_CPU_MS = 100
+
+/** Modelled CPU of one merge of `bytes` of input (D82). */
+export const modelledCpuMs = (kind: 'metric' | SignalTable, bytes: number): number => Math.ceil(STEP_CPU_MS + (bytes / 1048576) * CPU_MS_PER_MIB[kind])
 
 const DAY_MS = 86_400_000
 const HOUR_MS = 3_600_000
@@ -213,14 +236,15 @@ export const signalUnit = (f: LiveFile): Unit => ({ files: [f], key: f.key, day:
  * live file that overlaps it in time (`jumpsOver`). Empty if the first pair alone is over
  * the budget.
  */
-function grow<T extends Unit>(candidates: T[], start: number, universe: Span[], policy: CompactPolicy): T[] {
+function grow<T extends Unit>(candidates: T[], start: number, universe: Span[], policy: CompactPolicy, kind: 'metric' | SignalTable): T[] {
   const first = candidates[start]!
-  if (first.bytes > policy.maxInputBytes) return []
+  const fits = (b: number) => b <= policy.maxInputBytes && modelledCpuMs(kind, b) <= policy.maxStepCpuMs
+  if (!fits(first.bytes)) return []
   const group = [first]
   let bytes = first.bytes
   for (let j = start + 1; j < candidates.length && group.length < policy.maxInputPairs; j++) {
     const p = candidates[j]!
-    if (bytes + p.bytes > policy.maxInputBytes) continue
+    if (!fits(bytes + p.bytes)) continue
     if (jumpsOver([...group, p], universe).length > 0) continue
     group.push(p)
     bytes += p.bytes
@@ -234,7 +258,7 @@ function grow<T extends Unit>(candidates: T[], start: number, universe: Span[], 
  * make a job). `strays` are live files that are not in a pair: a merge must not jump over
  * them either.
  */
-export function chooseJob<T extends Unit = Pair>(pairs: T[], now: number, policy: CompactPolicy = DEFAULT_POLICY, strays: Span[] = []): { job: Job<T> | null; nextDueAt: number | null } {
+export function chooseJob<T extends Unit = Pair>(pairs: T[], now: number, policy: CompactPolicy = DEFAULT_POLICY, strays: Span[] = [], kind: 'metric' | SignalTable = 'metric'): { job: Job<T> | null; nextDueAt: number | null } {
   const days = new Map<string, T[]>()
   for (const p of pairs) days.set(p.day, [...(days.get(p.day) ?? []), p])
   let nextDueAt: number | null = null
@@ -254,7 +278,7 @@ export function chooseJob<T extends Unit = Pair>(pairs: T[], now: number, policy
       for (const hour of [...partitions.keys()].sort((a, b) => (a ?? -1) - (b ?? -1))) {
         const candidates = partitions.get(hour)!
         for (let i = 0; i < candidates.length; i++) {
-          const group = grow(candidates, i, universe, policy)
+          const group = grow(candidates, i, universe, policy, kind)
           // Worth doing if it merges something, or lifts a lower-level pair to level 2.
           if (group.length >= 2 || (group.length === 1 && group[0]!.level < 2)) return { job: { day, level: 2, ...(hour !== undefined ? { hour } : {}), inputs: group, why: 'closed_day' }, nextDueAt: null }
         }
@@ -283,7 +307,7 @@ export function chooseJob<T extends Unit = Pair>(pairs: T[], now: number, policy
       }
       // The hour's pairs in precedence order; a group must merge at least one level-0 pair.
       for (let i = 0; i < bucket.length; i++) {
-        const inputs = grow(bucket, i, universe, policy)
+        const inputs = grow(bucket, i, universe, policy, kind)
         if (inputs.length >= 2 && inputs.some((p) => p.level === 0)) return { job: { day, level: 1, hour, inputs, why }, nextDueAt: null }
       }
     }
@@ -306,6 +330,12 @@ export type StepResult =
    * the input names do not fit in the outputs' metadata (`too_many_inputs`). Nothing changed.
    */
   | { status: 'error'; job: JobSummary; reason: 'invalid' | 'row_count' | 'too_slow' | 'too_many_inputs'; detail: string }
+  /**
+   * D82: a merge is due, but its modelled CPU (`job.modelledCpuMs`) is more than the run has left
+   * (`StepOptions.cpuBudgetMs`). Nothing was read or written; a later run, with its own budget,
+   * does it.
+   */
+  | { status: 'budget'; job: JobSummary; cpuBudgetMs: number }
 
 export interface JobSummary {
   /** For a merge of a span or log table: which (a metric merge names both metric tables in `inputs`). */
@@ -317,12 +347,16 @@ export interface JobSummary {
   inputs: string[]
   inputBytes: number
   inputRows: number
+  /** D82: what the merge is modelled to cost in CPU on Cloudflare (`modelledCpuMs`). */
+  modelledCpuMs: number
 }
 
 export interface StepOptions {
   policy?: Partial<CompactPolicy>
   /** Injected clock for the policy (tests). The step deadline always uses the real clock. */
   now?: number
+  /** D82: the modelled CPU this step may spend; a merge that costs more is not started (`budget`). Default: no limit. */
+  cpuBudgetMs?: number
   /** Fault-injection points. A hook that throws stands for a crash there. */
   hooks?: {
     afterPlan?(job: Job<Unit>): void | Promise<void>
@@ -469,7 +503,9 @@ export async function compactStep(env: CompactEnv, engine: Engine, tenant: strin
     inputs: [...inSamples.map((f) => f.key).sort(byKey), ...inSeries.map((f) => f.key).sort(byKey)],
     inputBytes: job.inputs.reduce((a, p) => a + p.bytes, 0),
     inputRows: inSamples.reduce((a, f) => a + f.rows, 0),
+    modelledCpuMs: modelledCpuMs('metric', job.inputs.reduce((a, p) => a + p.bytes, 0)),
   }
+  if (opts.cpuBudgetMs !== undefined && summary.modelledCpuMs > opts.cpuBudgetMs) return { status: 'budget', job: summary, cpuBudgetMs: opts.cpuBudgetMs }
   // The outputs must carry their inputs (R2 metadata); a merge too wide for that is refused
   // before any work, never written without them (the sweep could then never judge it).
   const record = encodeCompactionInputs(summary.inputs)
@@ -549,7 +585,7 @@ async function signalStep(
   opts: StepOptions,
 ): Promise<StepResult> {
   const plan = await ledger.plan({ table, minTs: 0, maxTs: Number.MAX_SAFE_INTEGER })
-  const { job, nextDueAt } = chooseJob(plan.files.map(signalUnit), opts.now ?? started, policy)
+  const { job, nextDueAt } = chooseJob(plan.files.map(signalUnit), opts.now ?? started, policy, [], table)
   if (!job) return { status: 'idle', nextDueAt, unpaired: [] }
   await opts.hooks?.afterPlan?.(job)
   const ordered = [...job.inputs].sort(byPrecedence).map((u) => u.files[0]!)
@@ -563,7 +599,9 @@ async function signalStep(
     inputs: ordered.map((f) => f.key).sort(byKey),
     inputBytes: ordered.reduce((a, f) => a + f.bytes, 0),
     inputRows: ordered.reduce((a, f) => a + f.rows, 0),
+    modelledCpuMs: modelledCpuMs(table, ordered.reduce((a, f) => a + f.bytes, 0)),
   }
+  if (opts.cpuBudgetMs !== undefined && summary.modelledCpuMs > opts.cpuBudgetMs) return { status: 'budget', job: summary, cpuBudgetMs: opts.cpuBudgetMs }
   const record = encodeCompactionInputs(summary.inputs)
   if (new TextEncoder().encode(record).byteLength > COMPACTION_INPUTS_MAX_BYTES) {
     return { status: 'error', job: summary, reason: 'too_many_inputs', detail: `the names of ${summary.inputs.length} inputs do not fit in ${COMPACTION_INPUTS_MAX_BYTES} bytes of object metadata; lower maxInputPairs` }
@@ -595,22 +633,35 @@ async function signalStep(
 export interface CompactRun {
   steps: StepResult[]
   merged: number
-  /** True if the run stopped because of `maxSteps` while there was still work. */
+  /** True if the run stopped because of `maxSteps`, or of its CPU budget (D82), while there was still work. */
   more: boolean
   nextDueAt: number | null
+  /** D82: modelled CPU of the merges this run started (`JobSummary.modelledCpuMs`), whatever their outcome. */
+  modelledCpuMs: number
 }
 
-/** Run steps until there is nothing to merge, an error, or `maxSteps`. */
+/**
+ * Run steps until there is nothing to merge, an error, `maxSteps`, or (D82) a merge whose modelled
+ * CPU is more than what is left of `cpuBudgetMs`: each step is priced before it starts and
+ * started only if it fits, so a run never starts the merge that would take it past its budget.
+ */
 export async function compactTenant(env: CompactEnv, engine: Engine, tenant: string, opts: StepOptions & { maxSteps?: number } = {}): Promise<CompactRun> {
   const maxSteps = opts.maxSteps ?? 8
-  const run: CompactRun = { steps: [], merged: 0, more: false, nextDueAt: null }
+  const run: CompactRun = { steps: [], merged: 0, more: false, nextDueAt: null, modelledCpuMs: 0 }
   for (let i = 0; i < maxSteps; i++) {
-    const r = await compactStep(env, engine, tenant, opts)
+    const left = opts.cpuBudgetMs === undefined ? undefined : Math.max(0, opts.cpuBudgetMs - run.modelledCpuMs)
+    const r = await compactStep(env, engine, tenant, { ...opts, ...(left !== undefined ? { cpuBudgetMs: left } : {}) })
     run.steps.push(r)
     if (r.status === 'idle') {
       run.nextDueAt = r.nextDueAt
       return run
     }
+    if (r.status === 'budget') {
+      run.more = true
+      return run
+    }
+    // Spent whatever came of it: a conflict or an error after the merge has done the work too.
+    run.modelledCpuMs += r.job.modelledCpuMs
     if (r.status === 'merged') run.merged++
     if (r.status === 'error') return run
   }

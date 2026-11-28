@@ -81,6 +81,12 @@ export interface MaintOptions {
   compaction?: Partial<CompactPolicy>
   /** Merges per run; more work is left for a follow-up message. */
   maxCompactSteps?: number
+  /**
+   * D82: the modelled CPU (compact/ `modelledCpuMs`) this run's merges may spend; a merge that
+   * would take it past this is left for a follow-up message. `consumeMaintBatch` shares one budget,
+   * `MAINT_CPU_BUDGET_MS`, among the runs of a batch: they run in one invocation, under one CPU limit.
+   */
+  cpuBudgetMs?: number
   deleteGraceMs?: number
   orphanGraceMs?: number
   /** For the orphan sweep's rule about compaction outputs; default is the compaction policy's `maxStepMs`. */
@@ -221,7 +227,7 @@ export async function maintainTenant(env: MaintEnv, engine: Engine, tenant: stri
   const expired = await expireTenant(env, tenant, now)
   let compaction: CompactRun
   try {
-    compaction = await compactTenant(env, engine, tenant, { now, policy: opts.compaction, maxSteps: opts.maxCompactSteps ?? 8 })
+    compaction = await compactTenant(env, engine, tenant, { now, policy: opts.compaction, maxSteps: opts.maxCompactSteps ?? 8, ...(opts.cpuBudgetMs !== undefined ? { cpuBudgetMs: opts.cpuBudgetMs } : {}) })
   } catch (e) {
     // A step that crashed may have left its outputs behind, which only the orphan sweep removes.
     if (!marker.sweep) await writeMarker(env, tenant, { ...marker, sweep: true }).catch(() => undefined)
@@ -233,7 +239,7 @@ export async function maintainTenant(env: MaintEnv, engine: Engine, tenant: stri
   // The orphan sweep lists the tenant's whole prefix. It is needed only if objects may have
   // been written since the last sweep that found nothing to wait for: by a flush (the
   // message says so), or by this run's compaction (a merge, a conflict, a refused swap).
-  let sweep = marker.sweep || opts.wrote === true || compaction.steps.some((s) => s.status !== 'idle')
+  let sweep = marker.sweep || opts.wrote === true || compaction.steps.some((s) => s.status !== 'idle' && s.status !== 'budget')
   let orphans: OrphanResult | null = null
   if (sweep && Date.now() - marker.orphansAt >= orphanEveryMs) {
     orphans = await sweepOrphans(env, tenant, { graceMs: opts.orphanGraceMs ?? DEFAULT_ORPHAN_GRACE_MS, maxCompactStepMs: opts.maxCompactStepMs })
@@ -348,13 +354,20 @@ export async function enqueueDue(env: MaintEnv, now = Date.now()): Promise<DueRe
 export function summary(r: Partial<MaintReport>): string {
   const p = r.purged
   return (
-    `maintenance ${r.tenant ?? '?'}: merged ${r.compaction?.merged ?? 0}, expired ${r.expired?.removed.length ?? 0}, deleted ${p?.deleted.length ?? 0}, waiting ${p?.waiting ?? 0}` +
+    `maintenance ${r.tenant ?? '?'}: merged ${r.compaction?.merged ?? 0} (modelled CPU ${r.compaction?.modelledCpuMs ?? 0} ms, input ${r.compaction?.steps.reduce((a, x) => a + (x.status === 'merged' ? x.job.inputBytes : 0), 0) ?? 0} bytes), expired ${r.expired?.removed.length ?? 0}, deleted ${p?.deleted.length ?? 0}, waiting ${p?.waiting ?? 0}` +
     (p?.unpublished !== undefined ? ` (for publication ${p.unpublished})` : '') +
     (p?.publisher !== undefined ? `, publisher not asked: ${p.publisher}` : '') +
     `, orphans deleted ${r.orphans?.deleted.length ?? 0}, nudged ${r.nudged === null || r.nudged === undefined ? 'n/a' : r.nudged}` +
     `, next ${typeof r.nextDueAt === 'number' ? new Date(r.nextDueAt).toISOString() : 'none'}${r.more ? ', more' : ''}`
   )
 }
+
+/**
+ * D82: the modelled CPU (compact/ `modelledCpuMs`) the merges of ONE maintenance invocation may
+ * spend, over all its tenants: half of a Worker's default 30 s CPU limit. S10 measured runs of 8
+ * merges at 21 and 28 s, and one killed at the limit; the model is set to over-price (compact/).
+ */
+export const MAINT_CPU_BUDGET_MS = 15_000
 
 export interface MaintOutcome {
   tenant: string
@@ -402,12 +415,16 @@ export async function consumeMaintBatch(
     }
   }
   const out: MaintOutcome[] = []
+  // One CPU budget for the whole batch (D82): its runs share the invocation's CPU limit. A run
+  // that finds it spent still expires and deletes; its merges wait for the follow-up message.
+  let budget = opts.cpuBudgetMs ?? MAINT_CPU_BUDGET_MS
   for (const [tenant, messages] of groups) {
     const outcome: MaintOutcome = { tenant, action: 'done' }
     // One run for the group; it knows a flush wrote objects if any message says so.
     const wrote = opts.wrote === true || messages.some((m) => (m.body as MaintMessage).wrote === true)
     try {
-      outcome.report = await (opts.run ?? maintainTenant)(env, engine, tenant, { ...opts, wrote })
+      outcome.report = await (opts.run ?? maintainTenant)(env, engine, tenant, { ...opts, wrote, cpuBudgetMs: budget })
+      budget = Math.max(0, budget - (outcome.report.compaction?.modelledCpuMs ?? 0))
       if (outcome.report.more) await env.MAINT_QUEUE.send({ v: MAINT_MESSAGE_VERSION, tenant })
     } catch (e) {
       // Anything thrown is retried with a delay, including a ledger that refuses with
