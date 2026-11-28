@@ -20,7 +20,6 @@ scratch directory does not survive the pause, so everything needed is in the rep
    found in no repository file, commit or scratch file. After rotating: the cloud environment's secret
    and the two GitHub secrets.
 4. ~~Delete `viz-spike-s0-do-billing`~~: done 2026-11-28.
-   owner's word (`npx wrangler delete --name viz-spike-s0-do-billing` from `spikes/s0-do-billing/`).
 5. Optional: open the S12 page on a real phone (`spikes/s12-reload-on-a-phone/README.md`); it is the
    one thing that would reopen the waived design-system blocker. Then that Worker is deleted.
 
