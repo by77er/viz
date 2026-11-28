@@ -827,6 +827,22 @@ async function main() {
       await ready(page)
       check('review 2, m12: when the API answers again (asked every 10 s) the banner goes and the query is asked again by itself', Date.now() - t0 < 14000 && sentWhileDown >= 2 && sentWhileDown <= 4 && (await page.locator('[data-testid=error-state]').count()) === 0, `${Date.now() - t0} ms; ${sentWhileDown} requests while the API was away`)
       await ctx.close()
+      // m12, the other side: a query that fails alone while the API answers its connection check is not asked again by itself.
+      // The page is opened with the query's address cut and the check answered 1 s late, so the check's answer comes after the
+      // query has failed (added 2026-11-28: the mutant that asks again whenever the check answers survived the two checks above).
+      {
+        const { ctx, page } = await newPage()
+        let asked = 0
+        await page.route('**/api/v1/query_range**', (route) => { asked++; return route.abort('connectionrefused') })
+        await page.route('**/api/v1/status/buildinfo**', async (route) => { await sleep(1000); return route.continue() })
+        await page.goto(url(Q_RATE))
+        await page.waitForSelector('[data-testid=error-state][data-kind=network]', { timeout: 10000 }).catch(() => {})
+        const first = asked
+        await sleep(4000)
+        const banner = await page.locator('[data-testid=offline-banner]').count()
+        check('review 2, m12: a query that fails alone, while the API answers its connection check, is not asked again by itself (no banner)', first >= 1 && asked === first && banner === 0, JSON.stringify({ first, after4s: asked, banner }))
+        await ctx.close()
+      }
       // m10: the sign-in form's checkbox is labelled with what it does.
       const anon = await newPage()
       await anon.page.goto(KEYED + '/explore'); await anon.page.waitForSelector('[data-testid=sign-in]')
