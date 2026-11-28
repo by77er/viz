@@ -1,0 +1,106 @@
+{
+ "label": "baseline",
+ "cores": 4,
+ "runs": [
+  {
+   "layout": "1440-fine",
+   "run": 0,
+   "load": 3.4,
+   "firstStatMs": 1434,
+   "allPanelsMs": 1455,
+   "openPanelCommandsMs": 52,
+   "reloadShift": 0.0002,
+   "reloadLandedOffPx": -198
+  },
+  {
+   "layout": "1440-fine",
+   "run": 1,
+   "load": 3.21,
+   "firstStatMs": 1492,
+   "allPanelsMs": 1515,
+   "openPanelCommandsMs": 28,
+   "reloadShift": 0.0002,
+   "reloadLandedOffPx": -198
+  },
+  {
+   "layout": "1440-fine",
+   "run": 2,
+   "load": 3.11,
+   "firstStatMs": 1236,
+   "allPanelsMs": 1244,
+   "openPanelCommandsMs": 44,
+   "reloadShift": 0.0002,
+   "reloadLandedOffPx": -198
+  },
+  {
+   "layout": "1440-fine",
+   "run": 3,
+   "load": 2.94,
+   "firstStatMs": 1045,
+   "allPanelsMs": 1176,
+   "openPanelCommandsMs": 45,
+   "reloadShift": 0.0002,
+   "reloadLandedOffPx": -198
+  },
+  {
+   "layout": "1440-fine",
+   "run": 4,
+   "load": 2.94,
+   "firstStatMs": 1355,
+   "allPanelsMs": 1375,
+   "openPanelCommandsMs": 32,
+   "reloadShift": 0.0002,
+   "reloadLandedOffPx": -198
+  },
+  {
+   "layout": "400-coarse",
+   "run": 0,
+   "load": 2.93,
+   "firstStatMs": 1149,
+   "allPanelsMs": 1155,
+   "openPanelCommandsMs": 56,
+   "reloadShift": 0.0023,
+   "reloadLandedOffPx": -216
+  },
+  {
+   "layout": "400-coarse",
+   "run": 1,
+   "load": 2.78,
+   "firstStatMs": 1536,
+   "allPanelsMs": 1570,
+   "openPanelCommandsMs": 27,
+   "reloadShift": 0.0023,
+   "reloadLandedOffPx": -216
+  },
+  {
+   "layout": "400-coarse",
+   "run": 2,
+   "load": 2.78,
+   "firstStatMs": 1563,
+   "allPanelsMs": 1570,
+   "openPanelCommandsMs": 28,
+   "reloadShift": 0.0023,
+   "reloadLandedOffPx": -216
+  },
+  {
+   "layout": "400-coarse",
+   "run": 3,
+   "load": 2.63,
+   "firstStatMs": 1354,
+   "allPanelsMs": 1364,
+   "openPanelCommandsMs": 24,
+   "reloadShift": 0.0023,
+   "reloadLandedOffPx": -216
+  },
+  {
+   "layout": "400-coarse",
+   "run": 4,
+   "load": 2.58,
+   "firstStatMs": 1374,
+   "allPanelsMs": 1385,
+   "openPanelCommandsMs": 26,
+   "reloadShift": 0.0023,
+   "reloadLandedOffPx": -216
+  }
+ ]
+}

@@ -1,0 +1,224 @@
+Teeth for counting every layout-shift entry in the audit's reload pass. Measured here, 26 Nov, on a scratch copy of design-system/ (never the tree).
+The mutant, added to project/components/Chart/preview.html of the copy and built into its dist/ (now T8.audit of tools/mutants-corpus.mjs): on a reload only,
+a quarter of the window added at the top of the page 300 ms after the script runs and taken away 150 ms later, scroll anchoring off. The page ends where it
+began, so nothing but the layout shift can show it. tools/audit-shipped.mjs is tools/audit.mjs as committed before this change (touch emulation; unmarked
+entries only); tools/audit.mjs is the changed pass. Each run: --reload-only dist/preview/Chart.html, every chart, both layouts.
+
+Summary (from each run's --json):
+  teeth-audit-shipped-run1, 1500: 10 reloads; findings: reserve 0, reload-shift 10, other 0; largest reload shift 0.1922 unmarked, not read marked; landed elsewhere 0 of 10
+  teeth-audit-shipped-run1, 400 coarse: 10 reloads; findings: reserve 0, reload-shift 0, other 0; largest reload shift 0.0000 unmarked, not read marked; landed elsewhere 0 of 10
+  teeth-audit-shipped-run2, 1500: 10 reloads; findings: reserve 0, reload-shift 10, other 0; largest reload shift 0.1922 unmarked, not read marked; landed elsewhere 0 of 10
+  teeth-audit-shipped-run2, 400 coarse: 10 reloads; findings: reserve 0, reload-shift 0, other 0; largest reload shift 0.0000 unmarked, not read marked; landed elsewhere 0 of 10
+  teeth-audit-run1, 1500: 10 reloads; findings: reserve 0, reload-shift 10, other 0; largest reload shift 0.1922 unmarked, 0.0000 marked; landed elsewhere 0 of 10
+  teeth-audit-run1, 400 coarse: 10 reloads; findings: reserve 0, reload-shift 10, other 0; largest reload shift 0.0000 unmarked, 0.4400 marked; landed elsewhere 0 of 10
+  teeth-audit-run2, 1500: 10 reloads; findings: reserve 0, reload-shift 10, other 0; largest reload shift 0.1922 unmarked, 0.0000 marked; landed elsewhere 0 of 10
+  teeth-audit-run2, 400 coarse: 10 reloads; findings: reserve 0, reload-shift 10, other 0; largest reload shift 0.0000 unmarked, 0.4400 marked; landed elsewhere 0 of 10
+
+The runs as printed:
+
+=== late-shift mutant, tools/audit-shipped.mjs --reload-only dist/preview/Chart.html, run 1, load 2.50 1.89 1.71
+
+
+Reload while scrolled to a chart, and a jump to it after load (20 loads; fails at a layout shift of 0.05 or more, or a chart that moves or lands more than 1 px away):
+
+| Page | Layout | Chart | Jump: shift | Jump: moved, px | Reload: shift | Reload: landed, px |
+|---|---|---|---|---|---|---|
+| dist/preview/Chart.html | 1500 | 1 of 10, Latency by route, p99 | 0.0000 | 0 | 0.1922 | 0 |
+| dist/preview/Chart.html | 1500 | 2 of 10, Request rate by service | 0.0000 | 0 | 0.1922 | 0 |
+| dist/preview/Chart.html | 1500 | 3 of 10, CPU by pod | 0.0000 | 0 | 0.1922 | 0 |
+| dist/preview/Chart.html | 1500 | 4 of 10, CPU by pod, against the limit | 0.0000 | 0 | 0.1922 | 0 |
+| dist/preview/Chart.html | 1500 | 5 of 10, CPU by pod, three of Other picked out | 0.0000 | 0 | 0.1922 | 0 |
+| dist/preview/Chart.html | 1500 | 6 of 10, CPU by pod, the query narrowed to node-b | 0.0000 | 0 | 0.1922 | 0 |
+| dist/preview/Chart.html | 1500 | 7 of 10, Request rate, change on last week | 0.0000 | 0 | 0.1922 | 0 |
+| dist/preview/Chart.html | 1500 | 8 of 10, Memory by service | 0.0000 | 0 | 0.1922 | 0 |
+| dist/preview/Chart.html | 1500 | 9 of 10, Error ratio, if this rule had existed | 0.0000 | 0 | 0.1922 | 0 |
+| dist/preview/Chart.html | 1500 | 10 of 10, Request rate by service | 0.0000 | 0 | 0.1922 | 0 |
+| dist/preview/Chart.html | 400 coarse | 1 of 10, Latency by route, p99 | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 2 of 10, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 3 of 10, CPU by pod | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 4 of 10, CPU by pod, against the limit | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 5 of 10, CPU by pod, three of Other picked out | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 6 of 10, CPU by pod, the query narrowed to node-b | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 7 of 10, Request rate, change on last week | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 8 of 10, Memory by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 9 of 10, Error ratio, if this rule had existed | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 10 of 10, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+
+
+1 pages x 14 configurations (320; 400; 560; 640; 800; 1024; 1280; 1500; 320 coarse; 400 coarse; 768 coarse; 640 at 200%; 720 at 200%; 750 at 200%)
+
+System pages: 10 finding(s)
+  dist/preview/Chart.html
+    reload-shift  1500            reloaded while scrolled to chart 1 of 10 ("Latency by route, p99"): layout shift 0.1922, and the chart lands 0 px from where it was (ms/scroll/height by frame: 121/127/6597 340/127/6822 490/127/6597)
+    reload-shift  1500            reloaded while scrolled to chart 2 of 10 ("Request rate by service"): layout shift 0.1922, and the chart lands 0 px from where it was (ms/scroll/height by frame: 143/700/6597 341/700/6822 491/700/6597)  (and at 1500)
+    reload-shift  1500            reloaded while scrolled to chart 3 of 10 ("CPU by pod"): layout shift 0.1922, and the chart lands 0 px from where it was (ms/scroll/height by frame: 99/1419/6597 335/1419/6822 485/1419/6597)
+    reload-shift  1500            reloaded while scrolled to chart 4 of 10 ("CPU by pod, against the limit"): layout shift 0.1922, and the chart lands 0 px from where it was (ms/scroll/height by frame: 122/2145/6597 323/2145/6822 474/2145/6597)
+    reload-shift  1500            reloaded while scrolled to chart 5 of 10 ("CPU by pod, three of Other picked out"): layout shift 0.1922, and the chart lands 0 px from where it was (ms/scroll/height by frame: 34/2895/6597 341/2895/6822 491/2895/6597)
+    reload-shift  1500            reloaded while scrolled to chart 6 of 10 ("CPU by pod, the query narrowed to node-b"): layout shift 0.1922, and the chart lands 0 px from where it was (ms/scroll/height by frame: 86/4107/6597 338/4107/6822 489/4107/6597)
+    reload-shift  1500            reloaded while scrolled to chart 7 of 10 ("Request rate, change on last week"): layout shift 0.1922, and the chart lands 0 px from where it was (ms/scroll/height by frame: 131/4800/6597 337/4800/6822 486/4800/6597)
+    reload-shift  1500            reloaded while scrolled to chart 8 of 10 ("Memory by service"): layout shift 0.1922, and the chart lands 0 px from where it was (ms/scroll/height by frame: 123/5264/6597 340/5264/6822 491/5264/6597)
+    reload-shift  1500            reloaded while scrolled to chart 9 of 10 ("Error ratio, if this rule had existed"): layout shift 0.1922, and the chart lands 0 px from where it was (ms/scroll/height by frame: 107/5697/6597 342/5697/6822 492/5697/6597)
+
+Flow screens (read only, reported): 0 finding(s)
+exit status 1
+=== late-shift mutant, tools/audit.mjs --reload-only dist/preview/Chart.html, run 1, load 1.67 1.78 1.68
+
+
+Reload while scrolled to a chart, and a jump to it after load (20 loads; fails at a layout shift of 0.05 or more, every entry counted, or a chart that moves or lands more than 1 px away). "Marked" is the sum of the entries the browser marks hadRecentInput; the pass gives no input, so they count:
+
+| Page | Layout | Chart | Jump: shift | Jump: marked | Jump: moved, px | Reload: shift | Reload: marked | Reload: landed, px |
+|---|---|---|---|---|---|---|---|---|
+| dist/preview/Chart.html | 1500 | 1 of 10, Latency by route, p99 | 0.0000 | 0.0000 | 0 | 0.1922 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 2 of 10, Request rate by service | 0.0000 | 0.0000 | 0 | 0.1922 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 3 of 10, CPU by pod | 0.0000 | 0.0000 | 0 | 0.1922 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 4 of 10, CPU by pod, against the limit | 0.0000 | 0.0000 | 0 | 0.1922 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 5 of 10, CPU by pod, three of Other picked out | 0.0000 | 0.0000 | 0 | 0.1922 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 6 of 10, CPU by pod, the query narrowed to node-b | 0.0000 | 0.0000 | 0 | 0.1922 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 7 of 10, Request rate, change on last week | 0.0000 | 0.0000 | 0 | 0.1922 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 8 of 10, Memory by service | 0.0000 | 0.0000 | 0 | 0.1922 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 9 of 10, Error ratio, if this rule had existed | 0.0000 | 0.0000 | 0 | 0.1922 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 10 of 10, Request rate by service | 0.0000 | 0.0000 | 0 | 0.1922 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 1 of 10, Latency by route, p99 | 0.0000 | 0.0000 | 0 | 0.0000 | 0.4400 | 0 |
+| dist/preview/Chart.html | 400 coarse | 2 of 10, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.4400 | 0 |
+| dist/preview/Chart.html | 400 coarse | 3 of 10, CPU by pod | 0.0000 | 0.0000 | 0 | 0.0000 | 0.4400 | 0 |
+| dist/preview/Chart.html | 400 coarse | 4 of 10, CPU by pod, against the limit | 0.0000 | 0.0000 | 0 | 0.0000 | 0.4400 | 0 |
+| dist/preview/Chart.html | 400 coarse | 5 of 10, CPU by pod, three of Other picked out | 0.0000 | 0.0000 | 0 | 0.0000 | 0.4400 | 0 |
+| dist/preview/Chart.html | 400 coarse | 6 of 10, CPU by pod, the query narrowed to node-b | 0.0000 | 0.0000 | 0 | 0.0000 | 0.4400 | 0 |
+| dist/preview/Chart.html | 400 coarse | 7 of 10, Request rate, change on last week | 0.0000 | 0.0000 | 0 | 0.0000 | 0.4400 | 0 |
+| dist/preview/Chart.html | 400 coarse | 8 of 10, Memory by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.4400 | 0 |
+| dist/preview/Chart.html | 400 coarse | 9 of 10, Error ratio, if this rule had existed | 0.0000 | 0.0000 | 0 | 0.0000 | 0.4400 | 0 |
+| dist/preview/Chart.html | 400 coarse | 10 of 10, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.4400 | 0 |
+
+1500: 10 reloads on 1 page(s); 0 of 10 landed elsewhere (more than 1 px); 0 moved after the jump; largest reload shift 0.1922 unmarked and 0.0000 marked; largest jump shift 0.0000 unmarked and 0.0000 marked
+400 coarse: 10 reloads on 1 page(s); 0 of 10 landed elsewhere (more than 1 px); 0 moved after the jump; largest reload shift 0.0000 unmarked and 0.4400 marked; largest jump shift 0.0000 unmarked and 0.0000 marked
+Browsers: 1500: Chromium 157.0.8103.78; 400 coarse (coarse in Blink, isMobile, no touch emulation): Chromium 157.0.8103.78
+
+
+1 pages x 14 configurations (320; 400; 560; 640; 800; 1024; 1280; 1500; 320 coarse; 400 coarse; 768 coarse; 640 at 200%; 720 at 200%; 750 at 200%)
+
+System pages: 20 finding(s)
+  dist/preview/Chart.html
+    reload-shift  1500            reloaded while scrolled to chart 1 of 10 ("Latency by route, p99"): layout shift 0.1922, and the chart lands 0 px from where it was (layout-shift entries: 340 ms 0.0961; 490 ms 0.0961; ms/scroll/height by frame: 94/127/6597 340/127/6822 490/127/6597)
+    reload-shift  1500            reloaded while scrolled to chart 2 of 10 ("Request rate by service"): layout shift 0.1922, and the chart lands 0 px from where it was (layout-shift entries: 343 ms 0.0961; 493 ms 0.0961; ms/scroll/height by frame: 90/700/6597 342/700/6822 493/700/6597)  (and at 1500)
+    reload-shift  1500            reloaded while scrolled to chart 3 of 10 ("CPU by pod"): layout shift 0.1922, and the chart lands 0 px from where it was (layout-shift entries: 326 ms 0.0961; 476 ms 0.0961; ms/scroll/height by frame: 139/1419/6597 326/1419/6822 476/1419/6597)
+    reload-shift  1500            reloaded while scrolled to chart 4 of 10 ("CPU by pod, against the limit"): layout shift 0.1922, and the chart lands 0 px from where it was (layout-shift entries: 326 ms 0.0961; 476 ms 0.0961; ms/scroll/height by frame: 137/2145/6597 325/2145/6822 475/2145/6597)
+    reload-shift  1500            reloaded while scrolled to chart 5 of 10 ("CPU by pod, three of Other picked out"): layout shift 0.1922, and the chart lands 0 px from where it was (layout-shift entries: 340 ms 0.0961; 490 ms 0.0961; ms/scroll/height by frame: 107/2895/6597 339/2895/6822 489/2895/6597)
+    reload-shift  1500            reloaded while scrolled to chart 6 of 10 ("CPU by pod, the query narrowed to node-b"): layout shift 0.1922, and the chart lands 0 px from where it was (layout-shift entries: 342 ms 0.0961; 492 ms 0.0961; ms/scroll/height by frame: 128/4107/6597 342/4107/6822 492/4107/6597)
+    reload-shift  1500            reloaded while scrolled to chart 7 of 10 ("Request rate, change on last week"): layout shift 0.1922, and the chart lands 0 px from where it was (layout-shift entries: 341 ms 0.0961; 491 ms 0.0961; ms/scroll/height by frame: 101/4800/6597 341/4800/6822 491/4800/6597)
+    reload-shift  1500            reloaded while scrolled to chart 8 of 10 ("Memory by service"): layout shift 0.1922, and the chart lands 0 px from where it was (layout-shift entries: 342 ms 0.0961; 492 ms 0.0961; ms/scroll/height by frame: 28/5264/6597 342/5264/6822 492/5264/6597)
+    reload-shift  1500            reloaded while scrolled to chart 9 of 10 ("Error ratio, if this rule had existed"): layout shift 0.1922, and the chart lands 0 px from where it was (layout-shift entries: 325 ms 0.0961; 475 ms 0.0961; ms/scroll/height by frame: 112/5697/6597 325/5697/6822 475/5697/6597)
+    reload-shift  400 coarse      reloaded while scrolled to chart 1 of 10 ("Latency by route, p99"): layout shift 0.0000, and 0.4400 more in entries the browser marks as following input (this pass gives none: they count), and the chart lands 0 px from where it was (layout-shift entries: 325 ms 0.2200 marked; 475 ms 0.2200 marked; ms/scroll/height by frame: 111/175/9659 324/175/9884 475/175/9659)
+    reload-shift  400 coarse      reloaded while scrolled to chart 2 of 10 ("Request rate by service"): layout shift 0.0000, and 0.4400 more in entries the browser marks as following input (this pass gives none: they count), and the chart lands 0 px from where it was (layout-shift entries: 326 ms 0.2200 marked; 476 ms 0.2200 marked; ms/scroll/height by frame: 102/963/9659 326/963/9884 475/963/9659)  (and at 400 coarse)
+    reload-shift  400 coarse      reloaded while scrolled to chart 3 of 10 ("CPU by pod"): layout shift 0.0000, and 0.4400 more in entries the browser marks as following input (this pass gives none: they count), and the chart lands 0 px from where it was (layout-shift entries: 341 ms 0.2200 marked; 491 ms 0.2200 marked; ms/scroll/height by frame: 25/2109/9659 340/2109/9884 490/2109/9659)
+    reload-shift  400 coarse      reloaded while scrolled to chart 4 of 10 ("CPU by pod, against the limit"): layout shift 0.0000, and 0.4400 more in entries the browser marks as following input (this pass gives none: they count), and the chart lands 0 px from where it was (layout-shift entries: 326 ms 0.2200 marked; 475 ms 0.2200 marked; ms/scroll/height by frame: 127/3164/9659 325/3164/9884 475/3164/9659)
+    reload-shift  400 coarse      reloaded while scrolled to chart 5 of 10 ("CPU by pod, three of Other picked out"): layout shift 0.0000, and 0.4400 more in entries the browser marks as following input (this pass gives none: they count), and the chart lands 0 px from where it was (layout-shift entries: 327 ms 0.2200 marked; 475 ms 0.2200 marked; ms/scroll/height by frame: 75/4263/9659 327/4263/9884 475/4263/9659)
+    reload-shift  400 coarse      reloaded while scrolled to chart 6 of 10 ("CPU by pod, the query narrowed to node-b"): layout shift 0.0000, and 0.4400 more in entries the browser marks as following input (this pass gives none: they count), and the chart lands 0 px from where it was (layout-shift entries: 327 ms 0.2200 marked; 477 ms 0.2200 marked; ms/scroll/height by frame: 21/6184/9659 326/6184/9884 476/6184/9659)
+    reload-shift  400 coarse      reloaded while scrolled to chart 7 of 10 ("Request rate, change on last week"): layout shift 0.0000, and 0.4400 more in entries the browser marks as following input (this pass gives none: they count), and the chart lands 0 px from where it was (layout-shift entries: 343 ms 0.2200 marked; 493 ms 0.2200 marked; ms/scroll/height by frame: 26/7186/9659 343/7186/9884 493/7186/9659)
+    reload-shift  400 coarse      reloaded while scrolled to chart 8 of 10 ("Memory by service"): layout shift 0.0000, and 0.4400 more in entries the browser marks as following input (this pass gives none: they count), and the chart lands 0 px from where it was (layout-shift entries: 327 ms 0.2200 marked; 477 ms 0.2200 marked; ms/scroll/height by frame: 76/7789/9659 327/7789/9884 477/7789/9659)
+    reload-shift  400 coarse      reloaded while scrolled to chart 9 of 10 ("Error ratio, if this rule had existed"): layout shift 0.0000, and 0.4400 more in entries the browser marks as following input (this pass gives none: they count), and the chart lands 0 px from where it was (layout-shift entries: 326 ms 0.2200 marked; 476 ms 0.2200 marked; ms/scroll/height by frame: 71/8414/9659 325/8414/9884 475/8414/9659)
+
+Flow screens (read only, reported): 0 finding(s)
+exit status 1
+=== late-shift mutant, tools/audit-shipped.mjs --reload-only dist/preview/Chart.html, run 2, load 1.71 1.75 1.68
+
+
+Reload while scrolled to a chart, and a jump to it after load (20 loads; fails at a layout shift of 0.05 or more, or a chart that moves or lands more than 1 px away):
+
+| Page | Layout | Chart | Jump: shift | Jump: moved, px | Reload: shift | Reload: landed, px |
+|---|---|---|---|---|---|---|
+| dist/preview/Chart.html | 1500 | 1 of 10, Latency by route, p99 | 0.0000 | 0 | 0.1922 | 0 |
+| dist/preview/Chart.html | 1500 | 2 of 10, Request rate by service | 0.0000 | 0 | 0.1922 | 0 |
+| dist/preview/Chart.html | 1500 | 3 of 10, CPU by pod | 0.0000 | 0 | 0.1922 | 0 |
+| dist/preview/Chart.html | 1500 | 4 of 10, CPU by pod, against the limit | 0.0000 | 0 | 0.1922 | 0 |
+| dist/preview/Chart.html | 1500 | 5 of 10, CPU by pod, three of Other picked out | 0.0000 | 0 | 0.1922 | 0 |
+| dist/preview/Chart.html | 1500 | 6 of 10, CPU by pod, the query narrowed to node-b | 0.0000 | 0 | 0.1922 | 0 |
+| dist/preview/Chart.html | 1500 | 7 of 10, Request rate, change on last week | 0.0000 | 0 | 0.1922 | 0 |
+| dist/preview/Chart.html | 1500 | 8 of 10, Memory by service | 0.0000 | 0 | 0.1922 | 0 |
+| dist/preview/Chart.html | 1500 | 9 of 10, Error ratio, if this rule had existed | 0.0000 | 0 | 0.1922 | 0 |
+| dist/preview/Chart.html | 1500 | 10 of 10, Request rate by service | 0.0000 | 0 | 0.1922 | 0 |
+| dist/preview/Chart.html | 400 coarse | 1 of 10, Latency by route, p99 | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 2 of 10, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 3 of 10, CPU by pod | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 4 of 10, CPU by pod, against the limit | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 5 of 10, CPU by pod, three of Other picked out | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 6 of 10, CPU by pod, the query narrowed to node-b | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 7 of 10, Request rate, change on last week | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 8 of 10, Memory by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 9 of 10, Error ratio, if this rule had existed | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 10 of 10, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+
+
+1 pages x 14 configurations (320; 400; 560; 640; 800; 1024; 1280; 1500; 320 coarse; 400 coarse; 768 coarse; 640 at 200%; 720 at 200%; 750 at 200%)
+
+System pages: 10 finding(s)
+  dist/preview/Chart.html
+    reload-shift  1500            reloaded while scrolled to chart 1 of 10 ("Latency by route, p99"): layout shift 0.1922, and the chart lands 0 px from where it was (ms/scroll/height by frame: 130/127/6597 340/127/6822 490/127/6597)
+    reload-shift  1500            reloaded while scrolled to chart 2 of 10 ("Request rate by service"): layout shift 0.1922, and the chart lands 0 px from where it was (ms/scroll/height by frame: 108/700/6597 341/700/6822 491/700/6597)  (and at 1500)
+    reload-shift  1500            reloaded while scrolled to chart 3 of 10 ("CPU by pod"): layout shift 0.1922, and the chart lands 0 px from where it was (ms/scroll/height by frame: 141/1419/6597 323/1419/6822 473/1419/6597)
+    reload-shift  1500            reloaded while scrolled to chart 4 of 10 ("CPU by pod, against the limit"): layout shift 0.1922, and the chart lands 0 px from where it was (ms/scroll/height by frame: 112/2145/6597 341/2145/6822 491/2145/6597)
+    reload-shift  1500            reloaded while scrolled to chart 5 of 10 ("CPU by pod, three of Other picked out"): layout shift 0.1922, and the chart lands 0 px from where it was (ms/scroll/height by frame: 190/2895/6597 341/2895/6822 492/2895/6597)
+    reload-shift  1500            reloaded while scrolled to chart 6 of 10 ("CPU by pod, the query narrowed to node-b"): layout shift 0.1922, and the chart lands 0 px from where it was (ms/scroll/height by frame: 152/4107/6597 342/4107/6822 492/4107/6597)
+    reload-shift  1500            reloaded while scrolled to chart 7 of 10 ("Request rate, change on last week"): layout shift 0.1922, and the chart lands 0 px from where it was (ms/scroll/height by frame: 30/4800/6597 342/4800/6822 492/4800/6597)
+    reload-shift  1500            reloaded while scrolled to chart 8 of 10 ("Memory by service"): layout shift 0.1922, and the chart lands 0 px from where it was (ms/scroll/height by frame: 97/5264/6597 343/5264/6822 495/5264/6597)
+    reload-shift  1500            reloaded while scrolled to chart 9 of 10 ("Error ratio, if this rule had existed"): layout shift 0.1922, and the chart lands 0 px from where it was (ms/scroll/height by frame: 22/5697/6597 339/5697/6822 489/5697/6597)
+
+Flow screens (read only, reported): 0 finding(s)
+exit status 1
+=== late-shift mutant, tools/audit.mjs --reload-only dist/preview/Chart.html, run 2, load 2.24 1.88 1.73
+
+
+Reload while scrolled to a chart, and a jump to it after load (20 loads; fails at a layout shift of 0.05 or more, every entry counted, or a chart that moves or lands more than 1 px away). "Marked" is the sum of the entries the browser marks hadRecentInput; the pass gives no input, so they count:
+
+| Page | Layout | Chart | Jump: shift | Jump: marked | Jump: moved, px | Reload: shift | Reload: marked | Reload: landed, px |
+|---|---|---|---|---|---|---|---|---|
+| dist/preview/Chart.html | 1500 | 1 of 10, Latency by route, p99 | 0.0000 | 0.0000 | 0 | 0.1922 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 2 of 10, Request rate by service | 0.0000 | 0.0000 | 0 | 0.1922 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 3 of 10, CPU by pod | 0.0000 | 0.0000 | 0 | 0.1922 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 4 of 10, CPU by pod, against the limit | 0.0000 | 0.0000 | 0 | 0.1922 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 5 of 10, CPU by pod, three of Other picked out | 0.0000 | 0.0000 | 0 | 0.1922 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 6 of 10, CPU by pod, the query narrowed to node-b | 0.0000 | 0.0000 | 0 | 0.1922 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 7 of 10, Request rate, change on last week | 0.0000 | 0.0000 | 0 | 0.1922 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 8 of 10, Memory by service | 0.0000 | 0.0000 | 0 | 0.1922 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 9 of 10, Error ratio, if this rule had existed | 0.0000 | 0.0000 | 0 | 0.1922 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 10 of 10, Request rate by service | 0.0000 | 0.0000 | 0 | 0.1922 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 1 of 10, Latency by route, p99 | 0.0000 | 0.0000 | 0 | 0.0000 | 0.4400 | 0 |
+| dist/preview/Chart.html | 400 coarse | 2 of 10, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.4400 | 0 |
+| dist/preview/Chart.html | 400 coarse | 3 of 10, CPU by pod | 0.0000 | 0.0000 | 0 | 0.0000 | 0.4400 | 0 |
+| dist/preview/Chart.html | 400 coarse | 4 of 10, CPU by pod, against the limit | 0.0000 | 0.0000 | 0 | 0.0000 | 0.4400 | 0 |
+| dist/preview/Chart.html | 400 coarse | 5 of 10, CPU by pod, three of Other picked out | 0.0000 | 0.0000 | 0 | 0.0000 | 0.4400 | 0 |
+| dist/preview/Chart.html | 400 coarse | 6 of 10, CPU by pod, the query narrowed to node-b | 0.0000 | 0.0000 | 0 | 0.0000 | 0.4400 | 0 |
+| dist/preview/Chart.html | 400 coarse | 7 of 10, Request rate, change on last week | 0.0000 | 0.0000 | 0 | 0.0000 | 0.4400 | 0 |
+| dist/preview/Chart.html | 400 coarse | 8 of 10, Memory by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.4400 | 0 |
+| dist/preview/Chart.html | 400 coarse | 9 of 10, Error ratio, if this rule had existed | 0.0000 | 0.0000 | 0 | 0.0000 | 0.4400 | 0 |
+| dist/preview/Chart.html | 400 coarse | 10 of 10, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.4400 | 0 |
+
+1500: 10 reloads on 1 page(s); 0 of 10 landed elsewhere (more than 1 px); 0 moved after the jump; largest reload shift 0.1922 unmarked and 0.0000 marked; largest jump shift 0.0000 unmarked and 0.0000 marked
+400 coarse: 10 reloads on 1 page(s); 0 of 10 landed elsewhere (more than 1 px); 0 moved after the jump; largest reload shift 0.0000 unmarked and 0.4400 marked; largest jump shift 0.0000 unmarked and 0.0000 marked
+Browsers: 1500: Chromium 157.0.8103.78; 400 coarse (coarse in Blink, isMobile, no touch emulation): Chromium 157.0.8103.78
+
+
+1 pages x 14 configurations (320; 400; 560; 640; 800; 1024; 1280; 1500; 320 coarse; 400 coarse; 768 coarse; 640 at 200%; 720 at 200%; 750 at 200%)
+
+System pages: 20 finding(s)
+  dist/preview/Chart.html
+    reload-shift  1500            reloaded while scrolled to chart 1 of 10 ("Latency by route, p99"): layout shift 0.1922, and the chart lands 0 px from where it was (layout-shift entries: 337 ms 0.0961; 488 ms 0.0961; ms/scroll/height by frame: 93/127/6597 337/127/6822 487/127/6597)
+    reload-shift  1500            reloaded while scrolled to chart 2 of 10 ("Request rate by service"): layout shift 0.1922, and the chart lands 0 px from where it was (layout-shift entries: 338 ms 0.0961; 488 ms 0.0961; ms/scroll/height by frame: 106/700/6597 338/700/6822 488/700/6597)  (and at 1500)
+    reload-shift  1500            reloaded while scrolled to chart 3 of 10 ("CPU by pod"): layout shift 0.1922, and the chart lands 0 px from where it was (layout-shift entries: 341 ms 0.0961; 490 ms 0.0961; ms/scroll/height by frame: 146/1419/6597 340/1419/6822 490/1419/6597)
+    reload-shift  1500            reloaded while scrolled to chart 4 of 10 ("CPU by pod, against the limit"): layout shift 0.1922, and the chart lands 0 px from where it was (layout-shift entries: 326 ms 0.0961; 475 ms 0.0961; ms/scroll/height by frame: 137/2145/6597 325/2145/6822 475/2145/6597)
+    reload-shift  1500            reloaded while scrolled to chart 5 of 10 ("CPU by pod, three of Other picked out"): layout shift 0.1922, and the chart lands 0 px from where it was (layout-shift entries: 325 ms 0.0961; 475 ms 0.0961; ms/scroll/height by frame: 78/2895/6597 325/2895/6822 475/2895/6597)
+    reload-shift  1500            reloaded while scrolled to chart 6 of 10 ("CPU by pod, the query narrowed to node-b"): layout shift 0.1922, and the chart lands 0 px from where it was (layout-shift entries: 326 ms 0.0961; 476 ms 0.0961; ms/scroll/height by frame: 121/4107/6597 325/4107/6822 476/4107/6597)
+    reload-shift  1500            reloaded while scrolled to chart 7 of 10 ("Request rate, change on last week"): layout shift 0.1922, and the chart lands 0 px from where it was (layout-shift entries: 324 ms 0.0961; 474 ms 0.0961; ms/scroll/height by frame: 87/4800/6597 324/4800/6822 474/4800/6597)
+    reload-shift  1500            reloaded while scrolled to chart 8 of 10 ("Memory by service"): layout shift 0.1922, and the chart lands 0 px from where it was (layout-shift entries: 326 ms 0.0961; 476 ms 0.0961; ms/scroll/height by frame: 119/5264/6597 326/5264/6822 476/5264/6597)
+    reload-shift  1500            reloaded while scrolled to chart 9 of 10 ("Error ratio, if this rule had existed"): layout shift 0.1922, and the chart lands 0 px from where it was (layout-shift entries: 326 ms 0.0961; 475 ms 0.0961; ms/scroll/height by frame: 86/5697/6597 325/5697/6822 475/5697/6597)
+    reload-shift  400 coarse      reloaded while scrolled to chart 1 of 10 ("Latency by route, p99"): layout shift 0.0000, and 0.4400 more in entries the browser marks as following input (this pass gives none: they count), and the chart lands 0 px from where it was (layout-shift entries: 341 ms 0.2200 marked; 491 ms 0.2200 marked; ms/scroll/height by frame: 146/175/9659 341/175/9884 491/175/9659)
+    reload-shift  400 coarse      reloaded while scrolled to chart 2 of 10 ("Request rate by service"): layout shift 0.0000, and 0.4400 more in entries the browser marks as following input (this pass gives none: they count), and the chart lands 0 px from where it was (layout-shift entries: 340 ms 0.2200 marked; 490 ms 0.2200 marked; ms/scroll/height by frame: 110/963/9659 340/963/9884 490/963/9659)  (and at 400 coarse)
+    reload-shift  400 coarse      reloaded while scrolled to chart 3 of 10 ("CPU by pod"): layout shift 0.0000, and 0.4400 more in entries the browser marks as following input (this pass gives none: they count), and the chart lands 0 px from where it was (layout-shift entries: 343 ms 0.2200 marked; 493 ms 0.2200 marked; ms/scroll/height by frame: 81/2109/9659 343/2109/9884 493/2109/9659)
+    reload-shift  400 coarse      reloaded while scrolled to chart 4 of 10 ("CPU by pod, against the limit"): layout shift 0.0000, and 0.4400 more in entries the browser marks as following input (this pass gives none: they count), and the chart lands 0 px from where it was (layout-shift entries: 341 ms 0.2200 marked; 491 ms 0.2200 marked; ms/scroll/height by frame: 122/3164/9659 341/3164/9884 490/3164/9659)
+    reload-shift  400 coarse      reloaded while scrolled to chart 5 of 10 ("CPU by pod, three of Other picked out"): layout shift 0.0000, and 0.4400 more in entries the browser marks as following input (this pass gives none: they count), and the chart lands 0 px from where it was (layout-shift entries: 326 ms 0.2200 marked; 476 ms 0.2200 marked; ms/scroll/height by frame: 75/4263/9659 326/4263/9884 476/4263/9659)
+    reload-shift  400 coarse      reloaded while scrolled to chart 6 of 10 ("CPU by pod, the query narrowed to node-b"): layout shift 0.0000, and 0.4400 more in entries the browser marks as following input (this pass gives none: they count), and the chart lands 0 px from where it was (layout-shift entries: 337 ms 0.2200 marked; 487 ms 0.2200 marked; ms/scroll/height by frame: 140/6184/9659 337/6184/9884 486/6184/9659)
+    reload-shift  400 coarse      reloaded while scrolled to chart 7 of 10 ("Request rate, change on last week"): layout shift 0.0000, and 0.4400 more in entries the browser marks as following input (this pass gives none: they count), and the chart lands 0 px from where it was (layout-shift entries: 341 ms 0.2200 marked; 491 ms 0.2200 marked; ms/scroll/height by frame: 32/7186/9659 341/7186/9884 491/7186/9659)
+    reload-shift  400 coarse      reloaded while scrolled to chart 8 of 10 ("Memory by service"): layout shift 0.0000, and 0.4400 more in entries the browser marks as following input (this pass gives none: they count), and the chart lands 0 px from where it was (layout-shift entries: 340 ms 0.2200 marked; 490 ms 0.2200 marked; ms/scroll/height by frame: 146/7789/9659 339/7789/9884 489/7789/9659)
+    reload-shift  400 coarse      reloaded while scrolled to chart 9 of 10 ("Error ratio, if this rule had existed"): layout shift 0.0000, and 0.4400 more in entries the browser marks as following input (this pass gives none: they count), and the chart lands 0 px from where it was (layout-shift entries: 326 ms 0.2200 marked; 475 ms 0.2200 marked; ms/scroll/height by frame: 103/8414/9659 325/8414/9884 475/8414/9659)
+
+Flow screens (read only, reported): 0 finding(s)
+exit status 1

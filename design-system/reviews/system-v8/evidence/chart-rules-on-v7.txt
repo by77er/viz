@@ -1,0 +1,55 @@
+# the v8 chart tests against the v7 copy (VIZ_DS_ROOT), rerun at the end of the session
+ok 1 - B2, sequence D: a pod comes back while its slot is held only by a hidden series: it takes its slot back
+not ok 2 - B2, sequence D as the reviewer ran it (36 pods): hiding the newcomer gives its slot to the largest grey pod at once; the returning pod finds it held on screen
+not ok 3 - B2, sequence E: "Without the three largest", a larger pod arrives, "Colour the eight largest", clear: each step follows what is on screen
+ok 4 - Rubric blocker: a readout naming a smaller series as highest
+not ok 5 - Rubric blocker: a series on screen changing colour while it stays on screen (deploy churn, a filter, a query edit)
+not ok 6 - Rubric blocker: the largest series on screen grey while a slot is open (here held only by a hidden series)
+ok 7 - Rubric blocker: a series coming back grey or in another colour while no series on screen holds its slot
+not ok 8 - v8: a pod that misses one result while pods are grey: its slot goes to the largest grey pod; it comes back in Other, offered the recolour
+not ok 9 - Rubric blocker: a query edited to series it does not share and edited back not returning every colour (v5 review, image 02)
+not ok 10 - v5 image 01 under v7: filter out the three largest, a larger pod arrives, clear: the three take colours back only where nothing on screen holds them
+ok 11 - A filter round trip with nothing grey on screen returns every colour (eight services, filter in the query)
+ok 12 - Flow screen 5: one series, a query that returns 36 pods, and back: the one series returns in slot 1
+not ok 13 - M1 (v7 review), image 03: a query narrowed to node-b colours the eight largest on screen, as the same dashboard filter does
+not ok 14 - v8 twins: 300 random sequences of 30 steps narrowing and widening by query edit and by dashboard filter, with legend toggles: the same colours, every property held
+not ok 15 - Random sequences of arrivals, departures, filters, query edits, Other opened and picked, recolouring (400 of 30 steps)
+ok 16 - M2: values below zero: the axis extends below zero and every value lies on the plot
+ok 17 - M2: a threshold is on the axis and does not inflate it
+ok 18 - M2: precision is one decimal place finer than the place of the step's leading digit
+ok 19 - M2: negative values keep their sign, and a small one says which side of zero it is
+ok 20 - M1 (v5), image 06: a member of Other above the threshold is in the text form
+# pass 10
+# fail 10
+
+# again with VIZ_NO_OFFER=1 (colour failures apart from the missing offer)
+ok 1 - B2, sequence D: a pod comes back while its slot is held only by a hidden series: it takes its slot back
+ok 2 - B2, sequence D as the reviewer ran it (36 pods): hiding the newcomer gives its slot to the largest grey pod at once; the returning pod finds it held on screen
+ok 3 - B2, sequence E: "Without the three largest", a larger pod arrives, "Colour the eight largest", clear: each step follows what is on screen
+ok 4 - Rubric blocker: a readout naming a smaller series as highest
+ok 5 - Rubric blocker: a series on screen changing colour while it stays on screen (deploy churn, a filter, a query edit)
+ok 6 - Rubric blocker: the largest series on screen grey while a slot is open (here held only by a hidden series)
+ok 7 - Rubric blocker: a series coming back grey or in another colour while no series on screen holds its slot
+not ok 8 - v8: a pod that misses one result while pods are grey: its slot goes to the largest grey pod; it comes back in Other, offered the recolour
+    P3 36 pods > a pod restarts: missing from one result: 28 on screen in Other (the largest catalog-7d9f8c6b5-403cb) while only 7 slots are held on screen
+ok 9 - Rubric blocker: a query edited to series it does not share and edited back not returning every colour (v5 review, image 02)
+ok 10 - v5 image 01 under v7: filter out the three largest, a larger pod arrives, clear: the three take colours back only where nothing on screen holds them
+ok 11 - A filter round trip with nothing grey on screen returns every colour (eight services, filter in the query)
+ok 12 - Flow screen 5: one series, a query that returns 36 pods, and back: the one series returns in slot 1
+not ok 13 - M1 (v7 review), image 03: a query narrowed to node-b colours the eight largest on screen, as the same dashboard filter does
+    P3 36 pods > the query narrowed to node="node-b": 11 on screen in Other (the largest catalog-7d9f8c6b5-2cf3f) while only 1 slots are held on screen
+not ok 14 - v8 twins: 300 random sequences of 30 steps narrowing and widening by query edit and by dashboard filter, with legend toggles: the same colours, every property held
+    P3 query: first result > toggle a legend row > colour the eight largest > narrow (4 of 14): 2 on screen in Other (the largest pod-005) while only 2 slots are held on screen
+not ok 15 - Random sequences of arrivals, departures, filters, query edits, Other opened and picked, recolouring (400 of 30 steps)
+    P3 first result > narrow the query (4): 2 on screen in Other (the largest pod-005) while only 2 slots are held on screen
+ok 16 - M2: values below zero: the axis extends below zero and every value lies on the plot
+ok 17 - M2: a threshold is on the axis and does not inflate it
+ok 18 - M2: precision is one decimal place finer than the place of the step's leading digit
+ok 19 - M2: negative values keep their sign, and a small one says which side of zero it is
+ok 20 - M1 (v5), image 06: a member of Other above the threshold is in the text form
+# pass 16
+# fail 4
+
+# and on v8
+# pass 20
+# fail 0

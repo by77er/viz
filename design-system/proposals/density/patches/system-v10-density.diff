@@ -1,0 +1,118 @@
+diff --git a/design-system/src/components.css b/design-system/src/components.css
+index e02dde0..402d215 100644
+--- a/design-system/src/components.css
++++ b/design-system/src/components.css
+@@ -9,7 +9,12 @@
+   -webkit-tap-highlight-color: transparent; /* a touch shows the control's own pressed fill, not the browser's tint */
+   --strip: var(--space-6); /* the strip of words above a chart's plot or a table: where a waiting line lies */
+   --mark-size: var(--mark); /* a status mark's size: the mark token, larger on the page's state line (PageHeader); the token itself is never redefined */
++  /* Density (v10 proposal): the space between panels, sections and stacked controls, and the height of a table row, by pointer. A fine
++     pointer takes one step down the spacing scale; a coarse pointer keeps v9's values, and every 44 px rule below is unchanged. Tokens are
++     not redefined: these are the component's own variables, as --strip is. */
++  --gap-panel: var(--space-6); --gap-section: var(--space-8); --gap-stack: var(--space-4); --gap-page: var(--space-6); --panel-rule-gap: var(--space-3); --row-h: var(--row);
+ }
++@media (pointer: fine) { .vz { --gap-panel: var(--space-4); --gap-section: var(--space-6); --gap-stack: var(--space-3); --gap-page: var(--space-4); --panel-rule-gap: var(--space-2); --row-h: calc(var(--row) - var(--space-1)); } }
+ .vz *, .vz *::before, .vz *::after { box-sizing: border-box; }
+ .vz [hidden] { display: none !important; } /* the hidden attribute hides, whatever display a component gives its element (v9: the fixture's hidden "Pods" chart and its hidden view were drawn, because .vz-chart and .vz-page set display; the audit's reservation check found the empty chart) */
+ .vz :focus-visible { outline: var(--stroke) solid var(--focus); outline-offset: var(--stroke); }
+@@ -41,7 +46,7 @@
+ /* Rows of controls that may wrap, and stacks of form controls. The row gap keeps 44px hit areas apart; use these instead of hand-laid flex rows. */
+ .vz-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3) var(--space-2); min-width: 0; }
+ .vz-controls:has(> .vz-button[data-tone] ~ .vz-button[data-tone]) { column-gap: var(--space-6); } /* two toned actions are never close enough to hit the wrong one */
+-.vz-stack { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; }
++.vz-stack { display: flex; flex-direction: column; gap: var(--gap-stack); min-width: 0; }
+ 
+ /* Button */
+ .vz-button {
+@@ -149,7 +154,7 @@ textarea.vz-input { height: auto; min-height: calc(3 * var(--text-ui-lh) + 2 * v
+ @keyframes vz-scroll-edge { from { border-right-color: var(--rule-control); } to { border-right-color: transparent; } }
+ .vz-table { width: 100%; border-collapse: collapse; }
+ .vz-table th { text-align: left; padding: var(--space-2); background: var(--sunken); border-bottom: var(--hairline) solid var(--rule); white-space: nowrap; }
+-.vz-table td { padding: 0 var(--space-2); height: var(--row); border-bottom: var(--hairline) solid var(--rule); white-space: nowrap; background: var(--ground); }
++.vz-table td { padding: 0 var(--space-2); height: var(--row-h); border-bottom: var(--hairline) solid var(--rule); white-space: nowrap; background: var(--ground); }
+ .vz-table tbody tr:hover td { background: var(--hover); }
+ .vz-table tbody tr[aria-selected="true"] td, .vz-table tbody tr[aria-current] td { background: var(--rule); } /* the row whose detail is shown: chosen, like a segment */
+ .vz-table tbody tr[aria-selected="true"] td[data-key], .vz-table tbody tr[aria-current] td[data-key] { box-shadow: inset var(--stroke) 0 0 var(--ink); }
+@@ -276,7 +281,7 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width:
+ 
+ /* Dashboard grid: twelve, six or one column by the width the dashboard has, not the device. */
+ .vz-dashboard { container-type: inline-size; }
+-.vz-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: var(--space-6); }
++.vz-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: var(--gap-panel); }
+ .vz-grid > * { grid-column: span 6; min-width: 0; }
+ .vz-grid > [data-span="3"] { grid-column: span 3; }
+ .vz-grid > [data-span="4"] { grid-column: span 4; }
+@@ -285,7 +290,7 @@ th[aria-sort="descending"] .vz-sort::after { visibility: visible; border-width:
+ @container (max-width: 639px) { .vz-grid { gap: var(--space-4); } .vz-grid > * , .vz-grid > [data-span] { grid-column: span 12; } }
+ 
+ /* Panel */
+-.vz-panel { border-top: var(--hairline) solid var(--ink); padding-top: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
++.vz-panel { border-top: var(--hairline) solid var(--ink); padding-top: var(--panel-rule-gap); display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+ .vz-panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; }
+ .vz-panel-title { font: var(--text-ui-strong); margin: 0; }
+ .vz-panel-meta { font: var(--text-small); color: var(--ink-muted); display: flex; flex-wrap: wrap; gap: 0 var(--space-2); }
+@@ -470,7 +475,7 @@ dialog.vz-dialog { max-width: calc(100% - 2 * var(--space-4)); max-height: calc(
+ @media (max-width: 639px) { .vz-nav { padding-inline: var(--space-4); gap: var(--space-4); } }
+ 
+ /* Page: gutter, header, sections, the two-column split. */
+-.vz-page { display: flex; flex-direction: column; gap: var(--space-6); padding: var(--space-6); min-width: 0; container-type: inline-size; }
++.vz-page { display: flex; flex-direction: column; gap: var(--gap-page); padding: var(--space-6); min-width: 0; container-type: inline-size; }
+ @media (max-width: 639px) { .vz-page { padding: var(--space-4); } }
+ .vz-page-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: var(--space-3) var(--space-6); min-width: 0; }
+ .vz-page-head > :first-child { flex: 1 1 var(--overlay-min); min-width: 0; } /* the actions stay beside the title while it keeps this much room, then drop below it, left-aligned */
+@@ -482,7 +487,7 @@ dialog.vz-dialog { max-width: calc(100% - 2 * var(--space-4)); max-height: calc(
+ .vz-section-title { font: var(--text-heading); letter-spacing: var(--text-heading-track); margin: 0; }
+ /* A section: its heading and its content, space-3 apart; sections are space-8 apart, so a heading belongs to what is under it. */
+ .vz-section { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
+-.vz-sections, .vz-split > * { display: flex; flex-direction: column; gap: var(--space-8); min-width: 0; }
++.vz-sections, .vz-split > * { display: flex; flex-direction: column; gap: var(--gap-section); min-width: 0; }
+ .vz-split { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: var(--space-8); }
+ @container (max-width: 639px) { .vz-split { grid-template-columns: minmax(0, 1fr); gap: var(--space-8); } }
+ 
+@@ -633,6 +638,38 @@ textarea.vz-query { display: block; width: 100%; resize: none; color: var(--ink)
+ .vz-progress-text > :first-child { flex: 1; min-width: 0; }
+ .vz-progress-action { font: inherit; color: var(--ink); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; text-underline-offset: var(--space-half); position: relative; }
+ 
++/* Density (v10 proposal, prototypes B and C; design-system/proposals/density). */
++/* A view's controls in one row: the range as one control, the variables as inline fields, the form and Refresh at the right end. */
++.vz-bar { align-items: center; }
++.vz-bar > .vz-bar-end { flex: 1 0 0; min-width: 0; } /* what follows it stands at the row's right end while the row has room */
++.vz-field[data-inline] { flex-direction: row; align-items: center; gap: var(--space-2); }
++.vz-field[data-inline] > .vz-input { width: calc(var(--overlay-min) / 2); } /* a short value (a step) in a row of controls */
++@media (pointer: fine) {
++  /* Prototype C: the bar stays at the top of the viewport while the panels scroll; focus moved by Tab is never under it (WCAG 2.4.11). */
++  .vz-bar[data-sticky] { position: sticky; top: 0; z-index: 5; background: var(--ground); padding-block: var(--space-2); border-bottom: var(--hairline) solid var(--rule); }
++  html:has(.vz-bar[data-sticky]) { scroll-padding-top: calc(var(--control-md) + 2 * var(--space-2) + var(--hairline) + var(--space-2)); }
++}
++/* What opens from a button and holds controls rather than commands (the time range): a menu's surface, padded like a dialog. */
++.vz-popover { width: var(--dialog); padding: var(--space-3); }
++.vz-menu a[role^="menuitem"] { text-decoration: none; }
++/* A panel's own commands on its head line: quiet small buttons (B) or one "Actions…" menu (C); never revealed by hover. */
++.vz-panel-head:has(> .vz-panel-tools) { justify-content: flex-start; }
++.vz-panel-head:has(> .vz-panel-tools) > .vz-panel-title { flex: 1 1 auto; min-width: 0; }
++.vz-panel-tools { display: flex; align-items: center; gap: var(--space-1); align-self: center; }
++.vz-panel-tools .vz-button[data-quiet] { color: var(--ink-secondary); }
++/* A stat's figure with its state beside it, and one short line of context. */
++.vz-stat-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--space-3); }
++.vz-stat-line > .vz-status { font: var(--text-small); }
++/* A legend for a few series: a wrapped list of the same toggles (swatch, name, last value), the table's head kept for screen readers.
++   Min and Max are in the text form and in Explore. It reserves the lines it drew last (--legend-lines), as the table reserves rows. */
++.vz-chart[data-legend="list"] { min-height: calc(var(--chart-plot) - var(--space-6) + var(--strip) + var(--space-2) + var(--chart-foot) + var(--space-2) + var(--legend-lines, 1) * var(--legend-row) + min(var(--legend-notes, 0), 1) * var(--space-2) + var(--legend-notes, 0) * var(--text-small-lh)); }
++.vz-chart[data-legend="list"] .vz-legend-table, .vz-chart[data-legend="list"] .vz-legend-table tbody { display: flex; flex-wrap: wrap; column-gap: var(--space-4); }
++.vz-chart[data-legend="list"] .vz-legend-table colgroup, .vz-chart[data-legend="list"] .vz-legend-table [data-priority="2"] { display: none; }
++.vz-chart[data-legend="list"] .vz-legend-table thead { position: absolute; width: var(--hairline); height: var(--hairline); overflow: hidden; clip-path: inset(50%); }
++.vz-chart[data-legend="list"] .vz-legend-table tr { display: flex; align-items: center; }
++.vz-chart[data-legend="list"] .vz-legend-table td { display: flex; align-items: center; width: auto; border-bottom: 0; }
++.vz-chart[data-legend="list"] .vz-legend-table td.vz-num { padding-left: 0; color: var(--ink-secondary); }
++
+ /* Touch: a 44px hit area on every control without changing how it is drawn, except where a hit area cannot reach past its own box. */
+ @media (pointer: coarse) {
+   .vz { --strip: var(--control-touch); }
+@@ -666,3 +703,7 @@ textarea.vz-query { display: block; width: 100%; resize: none; color: var(--ink)
+   .vz-query { display: flex; align-items: center; min-height: var(--control-touch); font-size: var(--text-body-size); } /* an editor inside it inherits the size */
+   .vz-query > * { flex: 1; min-width: 0; font-size: inherit; }
+ }
++@media (pointer: coarse) {
++  .vz-panel-tools { min-height: var(--control-touch); } /* the head line is as tall as a finger's target, so a small button's 44 px reaches neither the rule above nor the body below */
++}
++@media (pointer: coarse) and (max-width: 639px) { .vz-menu-anchor > .vz-popover { width: auto; } } /* a sheet across the bottom of the screen, as a menu is */

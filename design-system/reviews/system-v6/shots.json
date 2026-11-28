@@ -1,0 +1,132 @@
+{
+ "name": "v6",
+ "themes": [
+  "light",
+  "dark"
+ ],
+ "states": [
+  {
+   "name": "dashboard-1500",
+   "url": "reviews/system-v6/compositions/dashboard.html",
+   "width": 1500,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "dashboard-400-coarse",
+   "url": "reviews/system-v6/compositions/dashboard.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "dialog-1500",
+   "url": "reviews/system-v6/compositions/dialog.html",
+   "width": 1500,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "dialog-400-coarse",
+   "url": "reviews/system-v6/compositions/dialog.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "states-1500",
+   "url": "reviews/system-v6/compositions/states.html",
+   "width": 1500,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "states-400-coarse",
+   "url": "reviews/system-v6/compositions/states.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "long-table-1500",
+   "url": "reviews/system-v6/compositions/long-table.html",
+   "width": 1500,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "long-table-400-coarse",
+   "url": "reviews/system-v6/compositions/long-table.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "monitor-1500",
+   "url": "reviews/system-v6/compositions/monitor.html",
+   "width": 1500,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "monitor-400-coarse",
+   "url": "reviews/system-v6/compositions/monitor.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "monitor-400-coarse-hit-areas",
+   "url": "reviews/system-v6/compositions/monitor.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true,
+   "outline": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "dashboard-1500-grey",
+   "url": "reviews/system-v6/compositions/dashboard.html",
+   "width": 1500,
+   "scale": 1,
+   "greyscale": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "dialog-zoom-200",
+   "url": "reviews/system-v6/compositions/dialog.html",
+   "width": 1440,
+   "zoom": 2,
+   "scale": 1,
+   "measure": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "limit-text-form",
+   "url": "dist/preview/Chart.html",
+   "scale": 1,
+   "steps": [
+    {
+     "eval": "document.querySelectorAll('details').forEach((d) => d.open = true); document.getElementById('demo-limit-text').closest('section').scrollIntoView()"
+    },
+    {
+     "wait": 200
+    }
+   ],
+   "clip": "section:has(#demo-limit-text)",
+   "pad": 8
+  }
+ ]
+}

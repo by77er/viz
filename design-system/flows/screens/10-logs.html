@@ -1,0 +1,39 @@
+<!-- nav: Logs -->
+<!-- title: Logs -->
+<main class="vz-page" id="main">
+  <header class="vz-page-head">
+    <div><h1 class="vz-page-title">Logs</h1>
+      <p class="vz-page-sub">Errors from checkout-api, 09:16 to 15:16: 138,582 lines. Updated <span class="vz-qty">12 s</span> ago.</p></div>
+    <div class="vz-controls"><a class="vz-link" href="#">Open in Explore</a></div>
+  </header>
+  <div class="vz-query" aria-label="Query" data-unless="error">{service=&quot;checkout-api&quot;} | level = error</div>
+  <div class="vz-query" aria-label="Query" data-when="error">{namespace=&quot;prod&quot;} | level = error</div>
+  <div class="vz-banner" data-when="error"><span class="vz-mark" data-state="critical"></span><p>The new query stopped after <span class="vz-qty">10 s</span>: it matched more than 2 million lines in <span class="vz-qty">6 h</span>. Add a label, such as a service, or shorten the range. The previous result is still shown.</p><button class="vz-button" data-size="sm">Last 1 h only</button></div>
+
+  <section class="vz-panel"><div class="vz-panel-head"><h2 class="vz-panel-title">Error lines per minute</h2>
+      <span class="vz-panel-meta" data-unless="error"><span data-range>09:16 to 15:16</span><span>· 6 min mean</span><span>· updated <span class="vz-qty">12 s</span> ago</span></span>
+      <span class="vz-panel-meta" data-when="error"><span class="vz-panel-note">Showing the previous query</span><span>· <span data-range>09:16 to 15:16</span></span><span>· 6 min mean</span><span>· updated <span class="vz-qty">12 s</span> ago</span></span></div>
+    <p class="vz-panel-desc">Error lines rose from 13:05, when checkout-api began failing orders. Most say payments-db's connection pool is full.</p>
+    <div class="vz-panel-body"><div class="vz-chart" id="rate" data-view="logs-rate" style="--legend-rows:1;--legend-notes:0"></div></div></section>
+
+  <section class="vz-panel"><div class="vz-panel-head"><h2 class="vz-panel-title">Lines</h2>
+      <span class="vz-panel-meta" data-unless="error"><span>newest first</span><span>· paused at 15:16:02</span></span>
+      <span class="vz-panel-meta" data-when="error"><span class="vz-panel-note">Showing the previous query</span><span>· newest first</span><span>· paused at 15:16:02</span></span></div>
+    <div class="vz-panel-body"><div class="vz-log-tail"><p class="vz-table-caption">8 newest of 138,582, all at error. Paused while you read.</p><button class="vz-button" data-size="sm">Show 214 newer lines</button></div>
+    <div class="vz-table-wrap"><table class="vz-table vz-log" data-fold role="table" aria-label="Error lines from checkout-api, newest first">
+      <thead><tr role="row"><th role="columnheader" class="vz-label">Time</th><th role="columnheader" class="vz-label">Message</th><th role="columnheader" class="vz-label">Pod</th><th role="columnheader" class="vz-label">Trace</th></tr></thead>
+      <tbody>
+        <tr role="row"><td role="cell" data-key><time datetime="2026-11-18T15:16:01.884">15:16:01.884</time></td><td role="cell" class="vz-log-msg"><span class="vz-log-text">POST /v2/orders failed, 503: payments-db pool exhausted, 50 of 50 connections busy, waited 250 ms</span></td><td role="cell" data-label="Pod"><span class="vz-qty">checkout-api-7d9f…x2k4p</span></td><td role="cell" data-label="Trace"><a class="vz-link" href="9-traces.html">9d2e…71aa</a></td></tr>
+        <tr role="row"><td role="cell" data-key><time datetime="2026-11-18T15:16:01.402">15:16:01.402</time></td><td role="cell" class="vz-log-msg"><span class="vz-log-text">POST /v2/orders failed, 503: payments-db pool exhausted, 50 of 50 connections busy, waited 250 ms</span></td><td role="cell" data-label="Pod"><span class="vz-qty">checkout-api-7d9f…q8m1z</span></td><td role="cell" data-label="Trace"><a class="vz-link" href="9-traces.html">0b7c…e9f3</a></td></tr>
+        <tr role="row"><td role="cell" data-key><time datetime="2026-11-18T15:16:00.977">15:16:00.977</time></td><td role="cell" class="vz-log-msg"><span class="vz-log-text">POST /v2/orders failed, 503: payments-db pool exhausted, 50 of 50 connections busy, waited 250 ms</span></td><td role="cell" data-label="Pod"><span class="vz-qty">checkout-api-7d9f…x2k4p</span></td><td role="cell" data-label="Trace"><a class="vz-link" href="9-traces.html">51aa…0c42</a></td></tr>
+        <tr role="row"><td role="cell" data-key><time datetime="2026-11-18T15:15:59.630">15:15:59.630</time></td><td role="cell" class="vz-log-msg"><span class="vz-log-text">GET /v2/cart/{id} failed, 503: cart did not answer in 2 s</span></td><td role="cell" data-label="Pod"><span class="vz-qty">checkout-api-7d9f…r4t6w</span></td><td role="cell" data-label="Trace"><a class="vz-link" href="9-traces.html">e81f…3b09</a></td></tr>
+        <tr role="row"><td role="cell" data-key><time datetime="2026-11-18T15:15:59.211">15:15:59.211</time></td><td role="cell" class="vz-log-msg"><span class="vz-log-text">POST /v2/orders failed, 503: payments-db pool exhausted, 50 of 50 connections busy, waited 250 ms</span></td><td role="cell" data-label="Pod"><span class="vz-qty">checkout-api-7d9f…q8m1z</span></td><td role="cell" data-label="Trace"><a class="vz-link" href="9-traces.html">c4d2…a817</a></td></tr>
+        <tr role="row"><td role="cell" data-key><time datetime="2026-11-18T15:15:58.804">15:15:58.804</time></td><td role="cell" class="vz-log-msg"><span class="vz-log-text">POST /v2/orders failed, 503: payments-db pool exhausted, 50 of 50 connections busy, waited 250 ms</span></td><td role="cell" data-label="Pod"><span class="vz-qty">checkout-api-7d9f…r4t6w</span></td><td role="cell" data-label="Trace"><a class="vz-link" href="9-traces.html">7a90…d15e</a></td></tr>
+        <tr role="row"><td role="cell" data-key><time datetime="2026-11-18T15:15:58.316">15:15:58.316</time></td><td role="cell" class="vz-log-msg"><span class="vz-log-text">payment authorisation for order ord_8f2kq abandoned after 3 attempts: payments-db pool exhausted</span></td><td role="cell" data-label="Pod"><span class="vz-qty">checkout-api-7d9f…x2k4p</span></td><td role="cell" data-label="Trace"><a class="vz-link" href="9-traces.html">2f6b…94c0</a></td></tr>
+        <tr role="row"><td role="cell" data-key><time datetime="2026-11-18T15:15:57.958">15:15:57.958</time></td><td role="cell" class="vz-log-msg"><span class="vz-log-text">POST /v2/orders failed, 503: payments-db pool exhausted, 50 of 50 connections busy, waited 250 ms</span></td><td role="cell" data-label="Pod"><span class="vz-qty">checkout-api-7d9f…q8m1z</span></td><td role="cell" data-label="Trace"><a class="vz-link" href="9-traces.html">d03e…5f7a</a></td></tr>
+      </tbody></table></div></div>
+    <ul class="vz-links"><li><a class="vz-link" href="#">Show the next 50 lines</a></li></ul></section>
+</main>
+<script>
+(function () { const el = document.getElementById('rate'); el.vz = vzChart(el, { ...flows.logs(), spans: [flows.firing('Monitor firing since 13:07')], markers: [flows.markers.deploy] }) })()
+</script>

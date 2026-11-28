@@ -1,0 +1,12 @@
+v6
+{"run":1,"load":"7.68","tapToFrameMs":196,"styleMs":82.5,"styledElements":1682,"layoutMs":3.9,"prePaintMs":16.8,"paintMs":22.9,"elementsOnPage":1381}
+v7
+{"run":1,"load":"7.68","tapToFrameMs":142,"styleMs":77.5,"styledElements":1738,"layoutMs":0.9,"prePaintMs":7,"paintMs":30.3,"elementsOnPage":1381}
+v6
+{"run":1,"load":"8.10","tapToFrameMs":196,"styleMs":64.3,"styledElements":1726,"layoutMs":4,"prePaintMs":6.8,"paintMs":24.5,"elementsOnPage":1381}
+v7
+{"run":1,"load":"8.34","tapToFrameMs":80,"styleMs":39.4,"styledElements":1648,"layoutMs":3.2,"prePaintMs":5,"paintMs":10.8,"elementsOnPage":1381}
+v6
+{"run":1,"load":"8.15","tapToFrameMs":178,"styleMs":75.3,"styledElements":1726,"layoutMs":3.5,"prePaintMs":9.6,"paintMs":18.3,"elementsOnPage":1381}
+v7
+{"run":1,"load":"8.06","tapToFrameMs":133,"styleMs":59.8,"styledElements":1738,"layoutMs":5.7,"prePaintMs":8.2,"paintMs":39.9,"elementsOnPage":1381}

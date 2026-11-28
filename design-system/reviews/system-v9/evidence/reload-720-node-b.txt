@@ -1,0 +1,28 @@
+== v8
+chart top after jump -0.5
+scrolled to [ 4118, 6608 ]
+reload shifts:
+  {"t":162,"v":0.9001,"input":false,"y":4118,"src":["<section.vz-panel> Request rate, change on last w 0->296 h0->400","<div.vz-panel-body> Request rate by service 0->0 h349->0","<div.vz-panel-body> CPU by pod, the query narrowed 0->0 h0->264"]}
+  {"t":174,"v":0.2394,"input":false,"y":4118,"src":["<section.vz-panel> Request rate, change on last w 296->590 h400->310","<section.vz-panel> Memory by service 728->0 h173->0","<details.vz-details> Request rate, change on last w 672->0 h24->0"]}
+scrollY / height over time: [[31,0,4491],[160,4118,6164],[228,4118,6608]]
+chart top after reload -0.5
+== v8
+chart top after jump -0.5
+scrolled to [ 4118, 6608 ]
+reload shifts:
+  {"t":119,"v":0.9001,"input":false,"y":4118,"src":["<section.vz-panel> Request rate, change on last w 0->296 h0->400","<div.vz-panel-body> Request rate by service 0->0 h349->0","<div.vz-panel-body> CPU by pod, the query narrowed 0->0 h0->264"]}
+  {"t":137,"v":0.2394,"input":false,"y":4118,"src":["<section.vz-panel> Request rate, change on last w 296->590 h400->310","<section.vz-panel> Memory by service 728->0 h173->0","<details.vz-details> Request rate, change on last w 672->0 h24->0"]}
+scrollY / height over time: [[19,0,4491],[117,4118,6164],[237,4118,6608]]
+chart top after reload -0.5
+== /home/user/viz/design-system
+chart top after jump -0.5
+scrolled to [ 4143, 6633 ]
+reload shifts:
+scrollY / height over time: [[94,4143,6633]]
+chart top after reload -0.5
+== /home/user/viz/design-system
+chart top after jump -0.5
+scrolled to [ 4143, 6633 ]
+reload shifts:
+scrollY / height over time: [[100,4143,6633]]
+chart top after reload -0.5

@@ -1,0 +1,92 @@
+<!-- nav: Monitors -->
+<!-- title: checkout p99 latency -->
+<main class="vz-page" id="main">
+  <header class="vz-page-head">
+    <div><h1 class="vz-page-title">checkout p99 latency</h1>
+      <p class="vz-page-state" data-unless="ack silenced"><span class="vz-mark" data-state="critical"></span>Firing since <time class="vz-qty" datetime="2026-11-18T13:07">13:07</time> (<span class="vz-qty">2 h 9 min</span>)</p>
+      <p class="vz-page-state" data-when="ack"><span class="vz-mark" data-state="ack"></span>Acknowledged by you at <time class="vz-qty" datetime="2026-11-18T15:16">15:16</time>, firing since <time class="vz-qty" datetime="2026-11-18T13:07">13:07</time> (<span class="vz-qty">2 h 9 min</span>)</p>
+      <p class="vz-page-state" data-when="silenced"><span class="vz-mark" data-state="silenced"></span>Silenced until <time class="vz-qty" datetime="2026-11-18T16:16">16:16</time>, firing since <time class="vz-qty" datetime="2026-11-18T13:07">13:07</time> (<span class="vz-qty">2 h 9 min</span>)</p>
+      <p class="vz-page-sub" data-unless="ack silenced">POST /v2/orders is at <span class="vz-qty">912 ms</span>, above <span class="vz-qty">500 ms</span> since 13:02. Nobody has acknowledged: Dana was paged at 13:07 and Kim at 13:37 (payments on-call); next page at 17:07.</p>
+      <p class="vz-page-sub" data-when="ack">POST /v2/orders is at <span class="vz-qty">912 ms</span>, above <span class="vz-qty">500 ms</span> since 13:02. You have it: pages have stopped, and Kim and #payments-alerts were told at 15:16.</p>
+      <p class="vz-page-sub" data-when="silenced">POST /v2/orders is at <span class="vz-qty">912 ms</span>, above <span class="vz-qty">500 ms</span> since 13:02. Nobody has acknowledged; no pages or messages until 16:16, and the rule keeps evaluating.</p></div>
+    <div class="vz-notice-group">
+      <div class="vz-controls">
+        <button class="vz-button" data-tone="green" data-go="ack" data-unless="ack">Acknowledge</button>
+        <span class="vz-done" data-when="ack"><span class="vz-status" data-state="ack">Acknowledged by you at 15:16</span><button class="vz-button" data-size="sm" data-go="" data-autofocus>Undo</button></span>
+        <span class="vz-menu-anchor" data-unless="silenced">
+          <button class="vz-button" aria-haspopup="menu" aria-expanded="false" aria-controls="silence-menu" data-go="silence-menu" data-unless="silence-menu">Silence…</button>
+          <button class="vz-button" aria-haspopup="menu" aria-expanded="true" aria-controls="silence-menu" data-go="" data-when="silence-menu">Silence…</button>
+          <div class="vz-menu" role="menu" id="silence-menu" aria-label="Silence for how long" data-align="end" data-open data-when="silence-menu">
+            <button role="menuitemradio" tabindex="-1" aria-checked="false" data-confirm="Silence until 15:31">15 min, until 15:31</button>
+            <button role="menuitemradio" tabindex="0" aria-checked="true" data-confirm="Silence until 16:16" data-autofocus>1 h, until 16:16</button>
+            <button role="menuitemradio" tabindex="-1" aria-checked="false" data-confirm="Silence until 19:16">4 h, until 19:16</button>
+            <button role="menuitemradio" tabindex="-1" aria-checked="false" data-confirm="Silence until it resolves">Until it resolves</button>
+            <div role="separator"></div>
+            <p class="vz-menu-note">Stops pages and #payments-alerts messages. The rule keeps evaluating, and the history records it.</p>
+            <div class="vz-controls"><button class="vz-button" data-tone="yellow" data-go="silenced" data-names-choice>Silence until 16:16</button></div>
+          </div>
+        </span>
+        <span class="vz-done" data-when="silenced"><span class="vz-status" data-state="silenced">Silenced until 16:16 by you</span><button class="vz-button" data-size="sm" data-go="" data-autofocus>End silence</button></span>
+      </div>
+      <div class="vz-notice" role="alert" data-when="notice"><span class="vz-mark" data-state="critical"></span><p>Could not acknowledge at 15:16: the server did not answer. Pages continue, and nobody was told.</p><div class="vz-controls"><button class="vz-button" data-size="sm" data-go="ack">Try again</button><button class="vz-button" data-size="sm" data-quiet data-go="">Dismiss</button></div></div>
+    </div>
+  </header>
+
+  <div class="vz-banner" data-when="error"><span class="vz-mark" data-state="critical"></span><p>The rule's query has failed at every check since 15:11: it timed out after <span class="vz-qty">10 s</span>. The monitor keeps its last state, firing, and pages continue.</p><a class="vz-link" href="#">Open the query in Explore</a></div>
+  <div class="vz-banner" data-when="nodata"><span class="vz-mark" data-state="warn"></span><p>The query has returned no series since 15:11. This rule keeps its last state when there is no data, so it is still firing and still paging.</p><a class="vz-link" href="#">Open the query in Explore</a></div>
+  <div class="vz-banner" data-unless="error nodata"><p class="vz-agent">Agent: payments-db has been slow since 12:58. Not verified.</p><a class="vz-link" href="6-investigation.html">Read the report</a></div>
+
+  <div class="vz-split">
+    <div>
+      <section class="vz-panel"><div class="vz-panel-head"><h2 class="vz-panel-title">p99 by route, checkout-api</h2>
+          <span class="vz-panel-meta" data-unless="error nodata"><span data-range>09:16 to 15:16</span><span>· 6 min max</span><span>· updated <span class="vz-qty">12 s</span> ago</span></span>
+          <span class="vz-panel-meta" data-when="error"><span class="vz-panel-note">Not updating: the query times out</span><span>· <span data-range>09:16 to 15:10</span></span><span>· 6 min max</span><span>· updated <span class="vz-qty">6 min</span> ago</span></span>
+          <span class="vz-panel-meta" data-when="nodata"><span data-range>09:16 to 15:16</span><span>· 6 min max</span><span>· no samples after 15:10</span><span>· updated <span class="vz-qty">12 s</span> ago</span></span></div>
+        <p class="vz-panel-desc">The rule fires when any line stays above the dashed line for <span class="vz-qty">5 min</span>.</p>
+        <div class="vz-panel-body"><div class="vz-chart" id="chart" data-view="monitor-routes" style="--legend-rows:3;--legend-notes:1"></div></div></section>
+
+      <section class="vz-section"><h2 class="vz-section-title">History, newest first</h2>
+        <ol class="vz-timeline">
+          <li data-when="ack"><time class="vz-qty" datetime="2026-11-18T15:16">15:16</time><span class="vz-mark" data-state="ack"></span><p>Acknowledged by you. Pages stopped; Kim and #payments-alerts were told.</p></li>
+          <li data-when="silenced"><time class="vz-qty" datetime="2026-11-18T15:16">15:16</time><span class="vz-mark" data-state="silenced"></span><p>Silenced by you until 16:16. Not acknowledged.</p></li>
+          <li><time class="vz-qty" datetime="2026-11-18T13:37">13:37</time><span class="vz-mark" data-state="info"></span><p>Nobody had acknowledged in <span class="vz-qty">30 min</span>: paged Kim (payments secondary).</p></li>
+          <li><time class="vz-qty" datetime="2026-11-18T13:09">13:09</time><span class="vz-mark" data-state="agent"></span><p>Agent: investigation finished; payments-db suspected. Not verified.</p><a class="vz-link" href="6-investigation.html">Read the report</a></li>
+          <li><time class="vz-qty" datetime="2026-11-18T13:07">13:07</time><span class="vz-mark" data-state="critical"></span><p>Fired at <span class="vz-qty">548 ms</span>. Paged Dana (payments on-call), posted in #payments-alerts, and an agent started investigating.</p></li>
+          <li><time class="vz-qty" datetime="2026-11-18T13:02">13:02</time><span class="vz-mark" data-state="warn"></span><p>POST /v2/orders went above <span class="vz-qty">500 ms</span>, at <span class="vz-qty">531 ms</span>. Pending for <span class="vz-qty">5 min</span>.</p></li>
+          <li><time class="vz-qty" datetime="2026-11-18T09:41">09:41</time><span class="vz-mark" data-state="info"></span><p>Deploy of checkout-api, revision 4f2a91c.</p></li>
+        </ol></section>
+    </div>
+    <div>
+      <section class="vz-section"><h2 class="vz-section-title">Rule</h2>
+        <dl class="vz-kv">
+          <dt>Fires when</dt><dd>p99 of any checkout-api route is above <span class="vz-qty">500 ms</span> for <span class="vz-qty">5 min</span></dd>
+          <dt>Resolves when</dt><dd>every route is below <span class="vz-qty">500 ms</span> for <span class="vz-qty">5 min</span></dd>
+          <dt>With no data</dt><dd>keeps its last state</dd>
+          <dt>Checked every</dt><dd><span class="vz-qty">1 min</span></dd>
+          <dt>Notifies</dt><dd>a page to payments on-call, a message in #payments‑alerts</dd>
+          <dt>Escalation</dt><dd>pages the secondary after <span class="vz-qty">30 min</span> without an acknowledgement, and pages again every <span class="vz-qty">4 h</span> while firing</dd>
+          <dt>Message</dt><dd>"Checkout is slower than its objective. Start with the slowest route's traces."</dd>
+          <dt>Runbook</dt><dd><a class="vz-link" href="#">Checkout latency</a></dd>
+          <dt>Owner</dt><dd>payments</dd>
+        </dl>
+        <div class="vz-field"><span class="vz-label">Query, in seconds: 0.5 is <span class="vz-qty">500 ms</span></span><div class="vz-query">histogram_quantile(0.99,
+  sum by (le, route) (rate(http_request_duration_seconds_bucket{service="checkout-api"}[5m])))
+&gt; 0.5</div></div>
+        <ul class="vz-links"><li><a class="vz-link" href="12-routes.html">Who is notified, and who is on call</a></li><li><a class="vz-link" href="5-new-monitor.html">Edit rule</a></li></ul></section>
+      <section class="vz-section"><h2 class="vz-section-title">Related</h2>
+        <ul class="vz-links">
+          <li><a class="vz-link" href="9-traces.html">Traces slower than 500 ms on POST /v2/orders</a></li>
+          <li><a class="vz-link" href="10-logs.html">Error logs from checkout-api, last 6 h</a></li>
+          <li><a class="vz-link" href="6-investigation.html">The agent's report, not verified</a></li>
+          <li><a class="vz-link" href="2-dashboard.html">checkout-api dashboard</a></li>
+          <li><a class="vz-link" href="11-notification.html">Notifications sent for this alert</a></li>
+        </ul></section>
+    </div>
+  </div>
+</main>
+<script>
+(function () { const st = flowState(), spec = { ...flows.latency(), threshold: { value: 500, label: '500 ms threshold' }, spans: [flows.firing()], markers: [flows.markers.deploy, flows.markers.above] }
+  if (st === 'error') { for (const s of spec.series) s.values = s.values.slice(0, -1); spec.spans = [flows.firing()].map((x) => ({ ...x, to: flows.T(15, 10) })) }
+  if (st === 'nodata') for (const s of spec.series) s.values = s.values.map((v, i, a) => (i === a.length - 1 ? null : v))
+  const el = document.getElementById('chart'); el.vz = vzChart(el, spec) })()
+</script>

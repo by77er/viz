@@ -1,0 +1,12 @@
+== project/components
+contrast and structure: 765/765 checks pass
+literal values: 0 in 32 file(s)
+== reviews/system-v6/compositions
+contrast and structure: 765/765 checks pass
+literal values: 0 in 11 file(s)
+== fixtures
+contrast and structure: 765/765 checks pass
+literal values: 0 in 3 file(s)
+== flows
+contrast and structure: 765/765 checks pass
+literal values: 0 in 15 file(s)

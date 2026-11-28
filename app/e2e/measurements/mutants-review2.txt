@@ -1,0 +1,64 @@
+Mutants of the fixes for the second design review (SET=review2 e2e/mutants.cjs), applied to a copy in the session's scratch area.
+2026-11-28T10:51:52Z (last run)
+
+First run (2026-11-28, 08:10 to 10:05 UTC): 23 of 24 killed, 1 survived:
+SURVIVED  m12: a query that fails alone is asked again for ever
+            checks run: review2; none failed
+(and, in a probe at 08:00 before the run, "B3: the position is put back once and not held" survived; a check was added and it was
+killed in the run). The m12 survivor was answered with a new check in section review2 and run again at 10:51 UTC (below, last).
+"m4: the palette's "Copy a link" copies without a word" was first killed only by the run stopping on a 30 s wait; the check was
+changed to fail by name and the mutant run again (below). Each mutant was run alone (ONLY=<its name>) by a driver in the scratch
+area so that the machine lock could be held per mutant; the lines are the harness's own output.
+
+Final state, on the final checks:
+
+KILLED    B2: "Show 50 more" stands straight under the table again (no stack)
+            checks run: touch; caught by 2: e2e: review 2, B2: "Show 50 more of 200" takes a tap 16 px above and 16 px below its centre (its whole 44 px), at 400, 320 an | e2e: touch: every control has a 44 px hit area that is its own, in thirteen states (189 measured)
+KILLED    B3: nothing puts a reload back where the page was
+            checks run: reload, dash:reload; caught by 8: e2e: review 2, B3: a reload lands where the page was scrolled to, with nothing shifting (1500 px, fine pointer; 4 pages, scro | e2e: review 2, B3: a reload lands where the page was scrolled to, with nothing shifting (400 px, fine pointer; 4 pages, scrol | e2e: review 2, B3: a reload lands where the page was scrolled to, with nothing shifting (400 px, coarse pointer (coarse in Bl | e2e: review 2, B3: the reloaded page is in place before its answer arrives (the chart's reserved height), and a wheel turned
+KILLED    B3: the position is put back once and not held (the router's reset, the browser's late attempt)
+            checks run: reload, dash:reload; caught by 1: e2e: review 2, B3: the reloaded position is held for its second: a scroll to the top that the person did not make, just after
+KILLED    B3: a link opened afresh is scrolled to the position kept for that page
+            checks run: unit, reload; caught by 2: unit: a return through the history to the same address only | unit: never a link opened afresh, another page, the top of the page, or nothing kept
+KILLED    B3: the position is held against the person's own scrolling
+            checks run: reload; caught by 1: e2e: review 2, B3: the reloaded page is in place before its answer arrives (the chart's reserved height), and a wheel turned
+KILLED    B3: the position waits for the answer instead of the reserved layout
+            checks run: reload; caught by 4: e2e: review 2, B3: a reload lands where the page was scrolled to, with nothing shifting (1500 px, fine pointer; 4 pages, scro | e2e: review 2, B3: a reload lands where the page was scrolled to, with nothing shifting (400 px, fine pointer; 4 pages, scrol | e2e: review 2, B3: a reload lands where the page was scrolled to, with nothing shifting (400 px, coarse pointer (coarse in Bl | e2e: review 2, B3: the reloaded page is in place before its answer arrives (the chart's reserved height), and a wheel turned
+KILLED    M1: Explore has no "Copy link" button
+            checks run: review2; caught by 1: e2e: review 2, M1: every command the palette lists on Explore (19) is also a control on the page, so none needs a keyboard
+KILLED    M1: the copied link is the address bar's, which has not caught up with the form shown
+            checks run: review2; caught by 2: e2e: review 2, M1: "Copy link" in Explore's head copies this view's address, with the form shown, and says "Copied" | e2e: review 2, m4: the palette's "Copy a link to this view" presses that button: the focus is on it and it says "Copied"
+KILLED    m4: the palette's field has the placeholder "last 24 h" again
+            checks run: review2; caught by 1: e2e: review 2, m4: the palette's field has no placeholder that names a command some pages lack
+KILLED    M1: Help does not say where the palette's commands are
+            checks run: review2; caught by 1: e2e: review 2, M1: Help says the palette lists the commands of the page it is opened on, and that each is also a control
+KILLED    m4: the palette's "Copy a link" copies without a word, and swallows a refusal
+            checks run: review2; caught by 1: e2e: review 2, m4: the palette's "Copy a link to this view" presses that button: the focus is on it and it says "Copied"
+KILLED    M2: the chart's name and the text form leave out the day
+            checks run: unit, review2; caught by 6: unit: puts the day before the range, once, in the name and in the text form; nothing when the head states no day | e2e: review 2, M2: the head, the chart's accessible name and the text form's first line all say the day and the range ("18 No | e2e: review 2, M2: zoomed in, the name and the text form keep the day before the range the chart now shows | e2e: review 2, M2: when the API sends a warning the head's banner says the result may be incomplete, and the text form says i
+KILLED    M2: the day is put before the range again on every draw
+            checks run: unit, review2; caught by 2: unit: puts the day before the range, once, in the name and in the text form; nothing when the head states no day | e2e: the run stopped (page.waitForSelector: Timeout 30000ms exceeded.)
+KILLED    M2: the text form says nothing of a warning
+            checks run: review2; caught by 2: e2e: review 2, M2: when the API sends a warning the head's banner says the result may be incomplete, and the text form says i | e2e: review 2, M2: the copied text form carries the day and the warning
+KILLED    M2: the chart's name says nothing of a warning
+            checks run: unit, review2; caught by 2: unit: ends the name with the warning, once | e2e: review 2, M2: and the chart's accessible name says the result may be incomplete
+KILLED    M2: a warning stays in the name and the text form of the next, whole answer
+            checks run: review2; caught by 1: e2e: the run stopped (page.waitForSelector: Timeout 30000ms exceeded.)
+KILLED    m1: the head of an empty result leaves its range to a chart that is not there
+            checks run: review2; caught by 1: e2e: review 2, m1: the head of a result with no series states its range ("18 Nov, 09:30 to 12:30 · every 15 s")
+KILLED    m2: the empty Step field shows "30 s"
+            checks run: review2; caught by 1: e2e: review 2, m2: the empty Step field shows nothing beside "Empty: automatic, now 15 s."
+KILLED    m3: the palette's list is a tab stop
+            checks run: review2; caught by 1: e2e: review 2, m3: in the palette Tab does not stop on the list of commands
+KILLED    m10: the sign-in checkbox is labelled with a statement
+            checks run: review2; caught by 1: e2e: review 2, m10: the sign-in checkbox says what it does ("Show the key"), unchecked while the key is dots
+KILLED    m12: a query that finds the API unreachable raises no banner
+            checks run: review2; caught by 1: e2e: the run stopped (page.waitForSelector: Timeout 5000ms exceeded.)
+KILLED    m12: nothing asks the query again when the API answers
+            checks run: review2; caught by 1: e2e: the run stopped (page.waitForSelector: Timeout 5000ms exceeded.)
+KILLED    B2, dashboards: a panel's links stand in a plain list, under 44 px with a finger (the check that passes over "Min" must still fail)
+            checks run: dash:narrow; caught by 6: dashboards: at 1500 px with a finger every control of services_overview has a 44 px area that nothing covers, but for the chart lege | dashboards: at 400 px with a finger every control of services_overview has a 44 px area that nothing covers | dashboards: at 1500 px with a finger every control of pod_capacity has a 44 px area that nothing covers, but for the chart legend's  | dashboards: at 400 px with a finger every control of pod_capacity has a 44 px area that nothing covers
+KILLED    m12: a query that fails alone is asked again for ever
+            checks run: review2; caught by 1: e2e: review 2, m12: a query that fails alone, while the API answers its connection check, is not asked again by itself (no ba
+
+24 of 24 killed, 0 survived, 0 not applied

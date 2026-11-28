@@ -42,6 +42,9 @@ and `design/DECISIONS.md` (each decision, its alternatives and what would change
 | `anomaly/` | Anomaly detectors for monitors |
 | `dashboard/` | The `viz.dashboard/v1` model, read by the renderer, agents and screen readers |
 | `mcp/` | MCP server and JSON agent API over query, ruler and control |
+| **Interface** | |
+| `app/` | The web app, served at `viz.bitcru.sh` by the gateway (D74) |
+| `design-system/` | Tokens, rules, method, review rubric, components and tooling for the interface |
 | **Evidence and operations** | |
 | `spec/` | Protocol models of the write and read path, checked against the invariants |
 | `bench/` | Rust/WASM versus JavaScript engine benchmark, with results |
@@ -51,8 +54,9 @@ and `design/DECISIONS.md` (each decision, its alternatives and what would change
 Each component has a README with what is implemented, what is not, how it was verified
 and its known risks.
 
-Not on `main` yet, all on the development branch: the web app and its design system (`app/`,
-`design-system/`), which merge after their design reviews approve.
+The web app is at `https://viz.bitcru.sh/`: Explore, dashboards (read-only), monitors (acknowledge
+and silence), Help and Settings, signed in with an API key. Changes to it and to its design system
+merge after a design review approves them (`AGENTS.md`, "Design changes").
 
 ## Licence
 

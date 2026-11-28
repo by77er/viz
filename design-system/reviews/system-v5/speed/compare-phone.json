@@ -1,0 +1,112 @@
+{
+ "url": "dist/fixture/index.html",
+ "ready": "body[data-loaded]",
+ "runs": 20,
+ "viewport": [
+  400,
+  800
+ ],
+ "measure": [
+  {
+   "name": "Press: Run query",
+   "type": "press",
+   "selector": "#run",
+   "budget": 50
+  },
+  {
+   "name": "Typing in the query editor",
+   "type": "type",
+   "selector": "#query",
+   "text": " > 0.5",
+   "budget": 50
+  },
+  {
+   "name": "Crosshair by touch drag, 36 series",
+   "type": "drag",
+   "selector": "#panel-pods .vz-plot",
+   "budget": 50
+  },
+  {
+   "name": "Legend row toggle, 36 series",
+   "type": "toggle",
+   "selector": "#panel-pods tbody tr:nth-child(2) .vz-series",
+   "expect": "#panel-pods tbody tr:nth-child(2)[aria-selected=\"true\"]",
+   "undo": true,
+   "budget": 100,
+   "input": "tap"
+  },
+  {
+   "name": "Legend row toggle, 200 series",
+   "type": "toggle",
+   "selector": "#panel-pods-all tbody tr:nth-child(2) .vz-series",
+   "expect": "#panel-pods-all tbody tr:nth-child(2)[aria-selected=\"true\"]",
+   "undo": true,
+   "budget": 100,
+   "input": "tap"
+  },
+  {
+   "name": "Response to paint, 36 series",
+   "type": "response",
+   "before": "document.querySelector('#panel-pods').removeAttribute('data-drawn')",
+   "selector": "#run",
+   "url": "data/pods.json",
+   "expect": "#panel-pods[data-drawn]",
+   "budget": 100
+  },
+  {
+   "name": "Response to paint, 200 series",
+   "type": "response",
+   "before": "document.querySelector('#panel-pods-all').removeAttribute('data-drawn')",
+   "selector": "#run",
+   "url": "data/pods-all.json",
+   "expect": "#panel-pods-all[data-drawn]",
+   "budget": 100
+  },
+  {
+   "name": "Layout shift, load and run",
+   "type": "shift",
+   "budget": 0.05
+  },
+  {
+   "name": "Layout shift, loaded scrolled to CPU by pod",
+   "type": "load-shift",
+   "hash": "panel-pods",
+   "budget": 0.05,
+   "delay": 800
+  },
+  {
+   "name": "Layout shift, loaded scrolled to Latency by route",
+   "type": "load-shift",
+   "hash": "panel-routes",
+   "budget": 0.05,
+   "delay": 800
+  },
+  {
+   "name": "Layout shift, loaded scrolled to Request rate",
+   "type": "load-shift",
+   "hash": "panel-services",
+   "budget": 0.05,
+   "delay": 800
+  },
+  {
+   "name": "Layout shift, loaded scrolled to CPU by pod, every namespace",
+   "type": "load-shift",
+   "hash": "panel-pods-all",
+   "budget": 0.05,
+   "delay": 800
+  },
+  {
+   "name": "Layout shift, loaded scrolled to the backtest",
+   "type": "load-shift",
+   "hash": "panel-backtest",
+   "budget": 0.05,
+   "delay": 800
+  },
+  {
+   "name": "Worst interaction (Event Timing)",
+   "type": "inp",
+   "budget": 200
+  }
+ ],
+ "coarse": true
+}

@@ -1,0 +1,8 @@
+Layout for controls, so that hit areas never overlap. Two utilities; use them instead of hand-laid flex rows.
+
+- `vz-controls`: a row of controls that may wrap (page actions, a toolbar, the buttons under a form). `space-2` between controls, `space-3` between wrapped rows. With a coarse pointer the row gap grows to `control-touch` minus `control-sm`, so even two wrapped rows of small buttons keep 44px between centres.
+- `vz-stack`: a column of form controls, `space-4` apart. With a coarse pointer checkboxes are `control-touch` tall for real, so a checkbox above a button row cannot overlap it.
+- Two toned buttons in one row (green beside yellow or red) are `space-6` apart: the row detects it. A wrong tap on a destructive or cautionary action must take more than a slip.
+- A yellow button has a `yellow-edge` border so its edge is visible on light surfaces. **A cautionary action that needs a choice ("for how long?") is a default button ending in "…"** (`aria-haspopup="menu"`) inside a `vz-menu-anchor`; it opens a menu whose rows are the choices, a sentence saying what will happen, and the yellow button that confirms it (Menu). In the dark theme yellow is the brightest thing on the screen: never give it to an action that sits unconfirmed beside the action most people need.
+- With a coarse pointer no button is narrower than `control-touch`.
+- A link that stands alone (not inside a sentence) is a control: with a coarse pointer it is `control-touch` tall. A link inside a `p` is text: it keeps its line and is exempt from the touch height, **so the main path of a flow is never a link inside a sentence**. `vz-links` lists standalone links.

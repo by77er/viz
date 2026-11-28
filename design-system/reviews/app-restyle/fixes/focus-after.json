@@ -1,0 +1,11 @@
+{
+  "after Cancel by keyboard": "retry",
+  "after Retry by keyboard": "run",
+  "after choosing a time preset by keyboard": "time-range",
+  "after \"Run the query again\" by keyboard": "run",
+  "after closing the command palette with Escape": "open-commands",
+  "after closing settings with Escape": "open-settings",
+  "after T (table to text) with focus on a table column head": "view-text",
+  "after isolating a series by keyboard": "auth",
+  "after \"Show all series\" by keyboard (the button goes away)": "auth"
+}

@@ -1,0 +1,1855 @@
+{
+ "at": "2026-11-19T13:26:40.651Z",
+ "root": "/tmp/claude-0/-home-user-viz/3c79101e-93fd-5a8e-90a7-fca4d8b40aab/scratchpad/v9work/v8",
+ "pages": [
+  "dist/preview/Banner.html",
+  "dist/preview/Button.html",
+  "dist/preview/Changes.html",
+  "dist/preview/Chart.html",
+  "dist/preview/Claim.html",
+  "dist/preview/Controls.html",
+  "dist/preview/Cover.html",
+  "dist/preview/Dialog.html",
+  "dist/preview/Empty.html",
+  "dist/preview/Field.html",
+  "dist/preview/FirstRun.html",
+  "dist/preview/KeyValue.html",
+  "dist/preview/Log.html",
+  "dist/preview/Menu.html",
+  "dist/preview/Nav.html",
+  "dist/preview/Notice.html",
+  "dist/preview/Number.html",
+  "dist/preview/PageHeader.html",
+  "dist/preview/Panel.html",
+  "dist/preview/Progress.html",
+  "dist/preview/Query.html",
+  "dist/preview/Secret.html",
+  "dist/preview/Section.html",
+  "dist/preview/Segmented.html",
+  "dist/preview/Stat.html",
+  "dist/preview/Status.html",
+  "dist/preview/Table.html",
+  "dist/preview/Tabs.html",
+  "dist/preview/Timeline.html",
+  "dist/preview/Tooltip.html",
+  "dist/preview/Waterfall.html",
+  "dist/reference.html",
+  "dist/fixture/index.html",
+  "reviews/system-v8/compositions/charts.html",
+  "reviews/system-v8/compositions/claims.html",
+  "reviews/system-v8/compositions/dashboard.html",
+  "reviews/system-v8/compositions/dialog.html",
+  "reviews/system-v8/compositions/folded-list.html",
+  "reviews/system-v8/compositions/logs.html",
+  "reviews/system-v8/compositions/long-table.html",
+  "reviews/system-v8/compositions/monitor.html",
+  "reviews/system-v8/compositions/secret.html",
+  "reviews/system-v8/compositions/states.html",
+  "reviews/system-v8/compositions/traces.html"
+ ],
+ "configs": [],
+ "results": [
+  {
+   "page": "dist/preview/Chart.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 1 of 10 (\"Latency by route, p99\"): layout shift 0.0963, and the chart lands 0 px from where it was"
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 2 of 10 (\"Request rate by service\"): layout shift 0.2500, and the chart lands 0 px from where it was"
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 3 of 10 (\"CPU by pod\"): layout shift 0.6407, and the chart lands 0 px from where it was"
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 4 of 10 (\"CPU by pod, against the limit\"): layout shift 0.6199, and the chart lands -101 px from where it was"
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 5 of 10 (\"CPU by pod, three of Other picked out\"): layout shift 0.1898, and the chart lands -915 px from where it was"
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 6 of 10 (\"CPU by pod, the query narrowed to node-b\") shifts the page 0.0985 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 6 of 10 (\"CPU by pod, the query narrowed to node-b\"): layout shift 0.7157, and the chart lands 0 px from where it was"
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 7 of 10 (\"Request rate, change on last week\") shifts the page 0.1827 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 7 of 10 (\"Request rate, change on last week\"): layout shift 0.7772, and the chart lands 0 px from where it was"
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 8 of 10 (\"Memory by service\") shifts the page 0.1828 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 8 of 10 (\"Memory by service\"): layout shift 0.7903, and the chart lands -408 px from where it was"
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 9 of 10 (\"Error ratio, if this rule had existed\") shifts the page 0.1896 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 9 of 10 (\"Error ratio, if this rule had existed\"): layout shift 0.7903, and the chart lands 0 px from where it was"
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 10 of 10 (\"Request rate by service\") shifts the page 0.1896 and the chart moves 25 px after the jump"
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 10 of 10 (\"Request rate by service\"): layout shift 0.7932, and the chart lands 0 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 1 of 22 (\"Request rate by service\") shifts the page 0.0894 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 1 of 22 (\"Request rate by service\"): layout shift 0.0901, and the chart lands 0 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 2 of 22 (\"Latency by route, p99\") shifts the page 0.3069 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 2 of 22 (\"Latency by route, p99\"): layout shift 0.2969, and the chart lands 0 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 3 of 22 (\"Request rate by service\") shifts the page 0.5172 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 3 of 22 (\"Request rate by service\"): layout shift 0.4960, and the chart lands 0 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 4 of 22 (\"CPU by pod\") shifts the page 0.5350 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 4 of 22 (\"CPU by pod\"): layout shift 0.8835, and the chart lands 0 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 5 of 22 (\"CPU by pod, against the limit\") shifts the page 0.5579 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 5 of 22 (\"CPU by pod, against the limit\"): layout shift 0.5591, and the chart lands 0 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 6 of 22 (\"CPU by pod, three of Other picked out\") shifts the page 0.1486 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 6 of 22 (\"CPU by pod, three of Other picked out\"): layout shift 0.8523, and the chart lands 0 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 7 of 22 (\"CPU by pod, the query narrowed to node-b\") shifts the page 0.1405 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 7 of 22 (\"CPU by pod, the query narrowed to node-b\"): layout shift 0.8825, and the chart lands 0 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 8 of 22 (\"Request rate, change on last week\") shifts the page 0.2612 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 9 of 22 (\"Memory by service\") shifts the page 0.2614 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 9 of 22 (\"Memory by service\"): layout shift 0.2618, and the chart lands 0 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 10 of 22 (\"Error ratio, if this rule had existed\") shifts the page 0.2711 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 10 of 22 (\"Error ratio, if this rule had existed\"): layout shift 0.0000, and the chart lands -444 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 12 of 22 (\"Request rate by service\") shifts the page 0.0894 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 12 of 22 (\"Request rate by service\"): layout shift 0.0894, and the chart lands 0 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 13 of 22 (\"Latency by route, p99\") shifts the page 0.3069 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 13 of 22 (\"Latency by route, p99\"): layout shift 0.5214, and the chart lands 0 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 14 of 22 (\"Request rate by service\") shifts the page 0.5172 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 14 of 22 (\"Request rate by service\"): layout shift 0.5235, and the chart lands 0 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 15 of 22 (\"CPU by pod\") shifts the page 0.5350 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 15 of 22 (\"CPU by pod\"): layout shift 0.5744, and the chart lands 0 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 16 of 22 (\"CPU by pod, against the limit\") shifts the page 0.5579 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 16 of 22 (\"CPU by pod, against the limit\"): layout shift 0.5591, and the chart lands 0 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 17 of 22 (\"CPU by pod, three of Other picked out\") shifts the page 0.1486 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 17 of 22 (\"CPU by pod, three of Other picked out\"): layout shift 0.2723, and the chart lands 0 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 18 of 22 (\"CPU by pod, the query narrowed to node-b\") shifts the page 0.1405 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 18 of 22 (\"CPU by pod, the query narrowed to node-b\"): layout shift 0.8825, and the chart lands 0 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 19 of 22 (\"Request rate, change on last week\") shifts the page 0.2612 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 20 of 22 (\"Memory by service\") shifts the page 0.2614 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 20 of 22 (\"Memory by service\"): layout shift 0.2618, and the chart lands 0 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 21 of 22 (\"Error ratio, if this rule had existed\") shifts the page 0.2711 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 21 of 22 (\"Error ratio, if this rule had existed\"): layout shift 0.0191, and the chart lands -344 px from where it was"
+  },
+  {
+   "page": "reviews/system-v8/compositions/charts.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 1 of 4 (\"CPU by pod\"): layout shift 0.1229, and the chart lands 0 px from where it was"
+  },
+  {
+   "page": "reviews/system-v8/compositions/charts.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 2 of 4 (\"CPU by pod\"): layout shift 0.1269, and the chart lands 0 px from where it was"
+  },
+  {
+   "page": "reviews/system-v8/compositions/charts.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 3 of 4 (\"Request rate by service\"): layout shift 0.1764, and the chart lands 0 px from where it was"
+  },
+  {
+   "page": "reviews/system-v8/compositions/charts.html",
+   "config": "1500",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 4 of 4 (\"Latency by route, p99\"): layout shift 0.1764, and the chart lands 0 px from where it was"
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 3 of 10 (\"CPU by pod\"): layout shift 0.0000, and the chart lands 273 px from where it was"
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 4 of 10 (\"CPU by pod, against the limit\"): layout shift 0.0000, and the chart lands -547 px from where it was"
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 5 of 10 (\"CPU by pod, three of Other picked out\"): layout shift 0.0000, and the chart lands -1535 px from where it was"
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 8 of 10 (\"Memory by service\"): layout shift 0.0000, and the chart lands -595 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 1 of 22 (\"Request rate by service\") shifts the page 0.2042 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 1 of 22 (\"Request rate by service\"): layout shift 0.0000, and the chart lands 759 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 2 of 22 (\"Latency by route, p99\") shifts the page 0.8148 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 3 of 22 (\"Request rate by service\") shifts the page 0.8400 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 3 of 22 (\"Request rate by service\"): layout shift 0.0000, and the chart lands 1149 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 4 of 22 (\"CPU by pod\") shifts the page 0.8101 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 4 of 22 (\"CPU by pod\"): layout shift 0.0000, and the chart lands -161 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 5 of 22 (\"CPU by pod, against the limit\") shifts the page 0.8400 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 6 of 22 (\"CPU by pod, three of Other picked out\"): layout shift 0.0000, and the chart lands -1076 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 7 of 22 (\"CPU by pod, the query narrowed to node-b\") shifts the page 0.3283 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 7 of 22 (\"CPU by pod, the query narrowed to node-b\"): layout shift 0.0000, and the chart lands 1837 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 8 of 22 (\"Request rate, change on last week\") shifts the page 0.6877 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 8 of 22 (\"Request rate, change on last week\"): layout shift 0.0000, and the chart lands -584 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 9 of 22 (\"Memory by service\") shifts the page 0.6877 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 10 of 22 (\"Error ratio, if this rule had existed\") shifts the page 0.7131 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 10 of 22 (\"Error ratio, if this rule had existed\"): layout shift 0.0000, and the chart lands -764 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 12 of 22 (\"Request rate by service\") shifts the page 0.2046 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 13 of 22 (\"Latency by route, p99\") shifts the page 0.8139 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 13 of 22 (\"Latency by route, p99\"): layout shift 0.0000, and the chart lands 3476 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 14 of 22 (\"Request rate by service\") shifts the page 0.8400 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 14 of 22 (\"Request rate by service\"): layout shift 0.0000, and the chart lands -933 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 15 of 22 (\"CPU by pod\"): layout shift 0.0000, and the chart lands 3975 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 16 of 22 (\"CPU by pod, against the limit\") shifts the page 0.8400 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 16 of 22 (\"CPU by pod, against the limit\"): layout shift 0.0000, and the chart lands -1462 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 18 of 22 (\"CPU by pod, the query narrowed to node-b\") shifts the page 0.3289 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 19 of 22 (\"Request rate, change on last week\") shifts the page 0.6877 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 20 of 22 (\"Memory by service\") shifts the page 0.6877 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 20 of 22 (\"Memory by service\"): layout shift 0.0000, and the chart lands -719 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "jumping to chart 21 of 22 (\"Error ratio, if this rule had existed\") shifts the page 0.7131 and the chart moves 0 px after the jump"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 21 of 22 (\"Error ratio, if this rule had existed\"): layout shift 0.0000, and the chart lands 3894 px from where it was"
+  },
+  {
+   "page": "dist/reference.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 22 of 22 (\"Request rate by service\"): layout shift 0.0000, and the chart lands -270 px from where it was"
+  },
+  {
+   "page": "dist/fixture/index.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 2 of 7 (\"Request rate by service\"): layout shift 0.0000, and the chart lands 18 px from where it was"
+  },
+  {
+   "page": "dist/fixture/index.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 4 of 7 (\"CPU by pod, every namespace\"): layout shift 0.0000, and the chart lands 494 px from where it was"
+  },
+  {
+   "page": "dist/fixture/index.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 6 of 7 (\"Error ratio of cart, 7 d\"): layout shift 0.0000, and the chart lands 755 px from where it was"
+  },
+  {
+   "page": "reviews/system-v8/compositions/charts.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 2 of 4 (\"CPU by pod\"): layout shift 0.0000, and the chart lands 18 px from where it was"
+  },
+  {
+   "page": "reviews/system-v8/compositions/charts.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 4 of 4 (\"Latency by route, p99\"): layout shift 0.0000, and the chart lands 383 px from where it was"
+  },
+  {
+   "page": "reviews/system-v8/compositions/claims.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 1 of 1 (\"Latency by route, p99\"): layout shift 0.0000, and the chart lands 139 px from where it was"
+  },
+  {
+   "page": "reviews/system-v8/compositions/dashboard.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 2 of 7 (\"Request rate by service\"): layout shift 0.0000, and the chart lands 18 px from where it was"
+  },
+  {
+   "page": "reviews/system-v8/compositions/dashboard.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 6 of 7 (\"Request rate by service, being edited\"): layout shift 0.0000, and the chart lands 382 px from where it was"
+  },
+  {
+   "page": "reviews/system-v8/compositions/dashboard.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 7 of 7 (\"Error ratio of cart, if the new rule had existed\"): layout shift 0.0000, and the chart lands 782 px from where it was"
+  },
+  {
+   "page": "reviews/system-v8/compositions/states.html",
+   "config": "400 coarse",
+   "kind": "reload-shift",
+   "msg": "reloaded while scrolled to chart 1 of 1 (\"Request rate by service\"): layout shift 0.0000, and the chart lands 145 px from where it was"
+  }
+ ],
+ "reloads": [
+  {
+   "page": "dist/preview/Chart.html",
+   "layout": "1500",
+   "chart": 1,
+   "of": 10,
+   "title": "Latency by route, p99",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0.09625346814814814,
+   "landed": 0
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "layout": "1500",
+   "chart": 2,
+   "of": 10,
+   "title": "Request rate by service",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0.2499986666666667,
+   "landed": 0
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "layout": "1500",
+   "chart": 3,
+   "of": 10,
+   "title": "CPU by pod",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0.6406703703703703,
+   "landed": 0
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "layout": "1500",
+   "chart": 4,
+   "of": 10,
+   "title": "CPU by pod, against the limit",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0.6198814814814815,
+   "landed": -101
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "layout": "1500",
+   "chart": 5,
+   "of": 10,
+   "title": "CPU by pod, three of Other picked out",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0.18980077037037035,
+   "landed": -915
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "layout": "1500",
+   "chart": 6,
+   "of": 10,
+   "title": "CPU by pod, the query narrowed to node-b",
+   "jumpShift": 0.09850121481481482,
+   "jumpMoved": 0,
+   "reloadShift": 0.7157456592592593,
+   "landed": 0
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "layout": "1500",
+   "chart": 7,
+   "of": 10,
+   "title": "Request rate, change on last week",
+   "jumpShift": 0.18274426074074074,
+   "jumpMoved": 0,
+   "reloadShift": 0.7772331496296296,
+   "landed": 0
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "layout": "1500",
+   "chart": 8,
+   "of": 10,
+   "title": "Memory by service",
+   "jumpShift": 0.18284599703703702,
+   "jumpMoved": 0,
+   "reloadShift": 0.7902677037037037,
+   "landed": -408
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "layout": "1500",
+   "chart": 9,
+   "of": 10,
+   "title": "Error ratio, if this rule had existed",
+   "jumpShift": 0.18963733333333335,
+   "jumpMoved": 0,
+   "reloadShift": 0.7902677037037037,
+   "landed": 0
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "layout": "1500",
+   "chart": 10,
+   "of": 10,
+   "title": "Request rate by service",
+   "jumpShift": 0.18963733333333335,
+   "jumpMoved": 25,
+   "reloadShift": 0.7931503081481481,
+   "landed": 0
+  },
+  {
+   "page": "dist/preview/Panel.html",
+   "layout": "1500",
+   "chart": 1,
+   "of": 1,
+   "title": "Request rate by service",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0.0008808583024691358,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "1500",
+   "chart": 1,
+   "of": 22,
+   "title": "Request rate by service",
+   "jumpShift": 0.08940024296296296,
+   "jumpMoved": 0,
+   "reloadShift": 0.09005203691358024,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "1500",
+   "chart": 2,
+   "of": 22,
+   "title": "Latency by route, p99",
+   "jumpShift": 0.30691745777777774,
+   "jumpMoved": 0,
+   "reloadShift": 0.2969257925925926,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "1500",
+   "chart": 3,
+   "of": 22,
+   "title": "Request rate by service",
+   "jumpShift": 0.5172346666666666,
+   "jumpMoved": 0,
+   "reloadShift": 0.4959715555555555,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "1500",
+   "chart": 4,
+   "of": 22,
+   "title": "CPU by pod",
+   "jumpShift": 0.5350088592592592,
+   "jumpMoved": 0,
+   "reloadShift": 0.8834562962962963,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "1500",
+   "chart": 5,
+   "of": 22,
+   "title": "CPU by pod, against the limit",
+   "jumpShift": 0.5579466666666666,
+   "jumpMoved": 0,
+   "reloadShift": 0.55910176,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "1500",
+   "chart": 6,
+   "of": 22,
+   "title": "CPU by pod, three of Other picked out",
+   "jumpShift": 0.1486394311111111,
+   "jumpMoved": 0,
+   "reloadShift": 0.8523445175308642,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "1500",
+   "chart": 7,
+   "of": 22,
+   "title": "CPU by pod, the query narrowed to node-b",
+   "jumpShift": 0.1405415822222222,
+   "jumpMoved": 0,
+   "reloadShift": 0.8824651851851851,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "1500",
+   "chart": 8,
+   "of": 22,
+   "title": "Request rate, change on last week",
+   "jumpShift": 0.2611864533333333,
+   "jumpMoved": 0,
+   "reloadShift": 0.0003796266666666667,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "1500",
+   "chart": 9,
+   "of": 22,
+   "title": "Memory by service",
+   "jumpShift": 0.2613947496296296,
+   "jumpMoved": 0,
+   "reloadShift": 0.2617738666666667,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "1500",
+   "chart": 10,
+   "of": 22,
+   "title": "Error ratio, if this rule had existed",
+   "jumpShift": 0.271136,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": -444
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "1500",
+   "chart": 11,
+   "of": 22,
+   "title": "Request rate by service",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0.03515182222222222,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "1500",
+   "chart": 12,
+   "of": 22,
+   "title": "Request rate by service",
+   "jumpShift": 0.08940024296296296,
+   "jumpMoved": 0,
+   "reloadShift": 0.0894397511111111,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "1500",
+   "chart": 13,
+   "of": 22,
+   "title": "Latency by route, p99",
+   "jumpShift": 0.30691745777777774,
+   "jumpMoved": 0,
+   "reloadShift": 0.5213769343209876,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "1500",
+   "chart": 14,
+   "of": 22,
+   "title": "Request rate by service",
+   "jumpShift": 0.5172346666666666,
+   "jumpMoved": 0,
+   "reloadShift": 0.5235490488888889,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "1500",
+   "chart": 15,
+   "of": 22,
+   "title": "CPU by pod",
+   "jumpShift": 0.5350088592592592,
+   "jumpMoved": 0,
+   "reloadShift": 0.5743815733333333,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "1500",
+   "chart": 16,
+   "of": 22,
+   "title": "CPU by pod, against the limit",
+   "jumpShift": 0.5579466666666666,
+   "jumpMoved": 0,
+   "reloadShift": 0.55910176,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "1500",
+   "chart": 17,
+   "of": 22,
+   "title": "CPU by pod, three of Other picked out",
+   "jumpShift": 0.1486394311111111,
+   "jumpMoved": 0,
+   "reloadShift": 0.2723092266666666,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "1500",
+   "chart": 18,
+   "of": 22,
+   "title": "CPU by pod, the query narrowed to node-b",
+   "jumpShift": 0.1405415822222222,
+   "jumpMoved": 0,
+   "reloadShift": 0.8824651851851851,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "1500",
+   "chart": 19,
+   "of": 22,
+   "title": "Request rate, change on last week",
+   "jumpShift": 0.2611864533333333,
+   "jumpMoved": 0,
+   "reloadShift": 0.0003796266666666667,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "1500",
+   "chart": 20,
+   "of": 22,
+   "title": "Memory by service",
+   "jumpShift": 0.2613947496296296,
+   "jumpMoved": 0,
+   "reloadShift": 0.2617738666666667,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "1500",
+   "chart": 21,
+   "of": 22,
+   "title": "Error ratio, if this rule had existed",
+   "jumpShift": 0.271136,
+   "jumpMoved": 0,
+   "reloadShift": 0.01909717333333333,
+   "landed": -344
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "1500",
+   "chart": 22,
+   "of": 22,
+   "title": "Request rate by service",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0.03515182222222222,
+   "landed": 0
+  },
+  {
+   "page": "dist/fixture/index.html",
+   "layout": "1500",
+   "chart": 1,
+   "of": 7,
+   "title": "Latency by route, p99",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "dist/fixture/index.html",
+   "layout": "1500",
+   "chart": 2,
+   "of": 7,
+   "title": "Request rate by service",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "dist/fixture/index.html",
+   "layout": "1500",
+   "chart": 3,
+   "of": 7,
+   "title": "CPU by pod",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "dist/fixture/index.html",
+   "layout": "1500",
+   "chart": 4,
+   "of": 7,
+   "title": "CPU by pod, every namespace",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "dist/fixture/index.html",
+   "layout": "1500",
+   "chart": 5,
+   "of": 7,
+   "title": "Error ratio by service",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "dist/fixture/index.html",
+   "layout": "1500",
+   "chart": 6,
+   "of": 7,
+   "title": "Error ratio of cart, 7 d",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "dist/fixture/index.html",
+   "layout": "1500",
+   "chart": 7,
+   "of": 7,
+   "title": "Pods",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "reviews/system-v8/compositions/charts.html",
+   "layout": "1500",
+   "chart": 1,
+   "of": 4,
+   "title": "CPU by pod",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0.12294339555555557,
+   "landed": 0
+  },
+  {
+   "page": "reviews/system-v8/compositions/charts.html",
+   "layout": "1500",
+   "chart": 2,
+   "of": 4,
+   "title": "CPU by pod",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0.12688256,
+   "landed": 0
+  },
+  {
+   "page": "reviews/system-v8/compositions/charts.html",
+   "layout": "1500",
+   "chart": 3,
+   "of": 4,
+   "title": "Request rate by service",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0.17643310222222222,
+   "landed": 0
+  },
+  {
+   "page": "reviews/system-v8/compositions/charts.html",
+   "layout": "1500",
+   "chart": 4,
+   "of": 4,
+   "title": "Latency by route, p99",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0.17643310222222222,
+   "landed": 0
+  },
+  {
+   "page": "reviews/system-v8/compositions/claims.html",
+   "layout": "1500",
+   "chart": 1,
+   "of": 1,
+   "title": "Latency by route, p99",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 1
+  },
+  {
+   "page": "reviews/system-v8/compositions/dashboard.html",
+   "layout": "1500",
+   "chart": 1,
+   "of": 7,
+   "title": "Latency by route, p99",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "reviews/system-v8/compositions/dashboard.html",
+   "layout": "1500",
+   "chart": 2,
+   "of": 7,
+   "title": "Request rate by service",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "reviews/system-v8/compositions/dashboard.html",
+   "layout": "1500",
+   "chart": 3,
+   "of": 7,
+   "title": "CPU by pod",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "reviews/system-v8/compositions/dashboard.html",
+   "layout": "1500",
+   "chart": 4,
+   "of": 7,
+   "title": "CPU by pod, every service",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "reviews/system-v8/compositions/dashboard.html",
+   "layout": "1500",
+   "chart": 5,
+   "of": 7,
+   "title": "Memory by service",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "reviews/system-v8/compositions/dashboard.html",
+   "layout": "1500",
+   "chart": 6,
+   "of": 7,
+   "title": "Request rate by service, being edited",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "reviews/system-v8/compositions/dashboard.html",
+   "layout": "1500",
+   "chart": 7,
+   "of": 7,
+   "title": "Error ratio of cart, if the new rule had existed",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "reviews/system-v8/compositions/monitor.html",
+   "layout": "1500",
+   "chart": 1,
+   "of": 1,
+   "title": "p99 of checkout-api, by route",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "reviews/system-v8/compositions/states.html",
+   "layout": "1500",
+   "chart": 1,
+   "of": 1,
+   "title": "Request rate by service",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "layout": "400 coarse",
+   "chart": 1,
+   "of": 10,
+   "title": "Latency by route, p99",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "layout": "400 coarse",
+   "chart": 2,
+   "of": 10,
+   "title": "Request rate by service",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "layout": "400 coarse",
+   "chart": 3,
+   "of": 10,
+   "title": "CPU by pod",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 273
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "layout": "400 coarse",
+   "chart": 4,
+   "of": 10,
+   "title": "CPU by pod, against the limit",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": -547
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "layout": "400 coarse",
+   "chart": 5,
+   "of": 10,
+   "title": "CPU by pod, three of Other picked out",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": -1535
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "layout": "400 coarse",
+   "chart": 6,
+   "of": 10,
+   "title": "CPU by pod, the query narrowed to node-b",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "layout": "400 coarse",
+   "chart": 7,
+   "of": 10,
+   "title": "Request rate, change on last week",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "layout": "400 coarse",
+   "chart": 8,
+   "of": 10,
+   "title": "Memory by service",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": -595
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "layout": "400 coarse",
+   "chart": 9,
+   "of": 10,
+   "title": "Error ratio, if this rule had existed",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "dist/preview/Chart.html",
+   "layout": "400 coarse",
+   "chart": 10,
+   "of": 10,
+   "title": "Request rate by service",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "dist/preview/Panel.html",
+   "layout": "400 coarse",
+   "chart": 1,
+   "of": 1,
+   "title": "Request rate by service",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "400 coarse",
+   "chart": 1,
+   "of": 22,
+   "title": "Request rate by service",
+   "jumpShift": 0.20419400000000001,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 759
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "400 coarse",
+   "chart": 2,
+   "of": 22,
+   "title": "Latency by route, p99",
+   "jumpShift": 0.8148,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "400 coarse",
+   "chart": 3,
+   "of": 22,
+   "title": "Request rate by service",
+   "jumpShift": 0.84,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 1149
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "400 coarse",
+   "chart": 4,
+   "of": 22,
+   "title": "CPU by pod",
+   "jumpShift": 0.8101333333333334,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": -161
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "400 coarse",
+   "chart": 5,
+   "of": 22,
+   "title": "CPU by pod, against the limit",
+   "jumpShift": 0.84,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "400 coarse",
+   "chart": 6,
+   "of": 22,
+   "title": "CPU by pod, three of Other picked out",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": -1076
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "400 coarse",
+   "chart": 7,
+   "of": 22,
+   "title": "CPU by pod, the query narrowed to node-b",
+   "jumpShift": 0.32825125925925924,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 1837
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "400 coarse",
+   "chart": 8,
+   "of": 22,
+   "title": "Request rate, change on last week",
+   "jumpShift": 0.6877131851851852,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": -584
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "400 coarse",
+   "chart": 9,
+   "of": 22,
+   "title": "Memory by service",
+   "jumpShift": 0.6877131851851852,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "400 coarse",
+   "chart": 10,
+   "of": 22,
+   "title": "Error ratio, if this rule had existed",
+   "jumpShift": 0.7130666666666666,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": -764
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "400 coarse",
+   "chart": 11,
+   "of": 22,
+   "title": "Request rate by service",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "400 coarse",
+   "chart": 12,
+   "of": 22,
+   "title": "Request rate by service",
+   "jumpShift": 0.20459429629629627,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "400 coarse",
+   "chart": 13,
+   "of": 22,
+   "title": "Latency by route, p99",
+   "jumpShift": 0.8138666666666666,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 3476
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "400 coarse",
+   "chart": 14,
+   "of": 22,
+   "title": "Request rate by service",
+   "jumpShift": 0.84,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": -933
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "400 coarse",
+   "chart": 15,
+   "of": 22,
+   "title": "CPU by pod",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 3975
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "400 coarse",
+   "chart": 16,
+   "of": 22,
+   "title": "CPU by pod, against the limit",
+   "jumpShift": 0.84,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": -1462
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "400 coarse",
+   "chart": 17,
+   "of": 22,
+   "title": "CPU by pod, three of Other picked out",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "400 coarse",
+   "chart": 18,
+   "of": 22,
+   "title": "CPU by pod, the query narrowed to node-b",
+   "jumpShift": 0.32885688888888887,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "400 coarse",
+   "chart": 19,
+   "of": 22,
+   "title": "Request rate, change on last week",
+   "jumpShift": 0.6877131851851852,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "400 coarse",
+   "chart": 20,
+   "of": 22,
+   "title": "Memory by service",
+   "jumpShift": 0.6877131851851852,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": -719
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "400 coarse",
+   "chart": 21,
+   "of": 22,
+   "title": "Error ratio, if this rule had existed",
+   "jumpShift": 0.7130666666666666,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 3894
+  },
+  {
+   "page": "dist/reference.html",
+   "layout": "400 coarse",
+   "chart": 22,
+   "of": 22,
+   "title": "Request rate by service",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": -270
+  },
+  {
+   "page": "dist/fixture/index.html",
+   "layout": "400 coarse",
+   "chart": 1,
+   "of": 7,
+   "title": "Latency by route, p99",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "dist/fixture/index.html",
+   "layout": "400 coarse",
+   "chart": 2,
+   "of": 7,
+   "title": "Request rate by service",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 18
+  },
+  {
+   "page": "dist/fixture/index.html",
+   "layout": "400 coarse",
+   "chart": 3,
+   "of": 7,
+   "title": "CPU by pod",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "dist/fixture/index.html",
+   "layout": "400 coarse",
+   "chart": 4,
+   "of": 7,
+   "title": "CPU by pod, every namespace",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 494
+  },
+  {
+   "page": "dist/fixture/index.html",
+   "layout": "400 coarse",
+   "chart": 5,
+   "of": 7,
+   "title": "Error ratio by service",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "dist/fixture/index.html",
+   "layout": "400 coarse",
+   "chart": 6,
+   "of": 7,
+   "title": "Error ratio of cart, 7 d",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 755
+  },
+  {
+   "page": "dist/fixture/index.html",
+   "layout": "400 coarse",
+   "chart": 7,
+   "of": 7,
+   "title": "Pods",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "reviews/system-v8/compositions/charts.html",
+   "layout": "400 coarse",
+   "chart": 1,
+   "of": 4,
+   "title": "CPU by pod",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "reviews/system-v8/compositions/charts.html",
+   "layout": "400 coarse",
+   "chart": 2,
+   "of": 4,
+   "title": "CPU by pod",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 18
+  },
+  {
+   "page": "reviews/system-v8/compositions/charts.html",
+   "layout": "400 coarse",
+   "chart": 3,
+   "of": 4,
+   "title": "Request rate by service",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "reviews/system-v8/compositions/charts.html",
+   "layout": "400 coarse",
+   "chart": 4,
+   "of": 4,
+   "title": "Latency by route, p99",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 383
+  },
+  {
+   "page": "reviews/system-v8/compositions/claims.html",
+   "layout": "400 coarse",
+   "chart": 1,
+   "of": 1,
+   "title": "Latency by route, p99",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 139
+  },
+  {
+   "page": "reviews/system-v8/compositions/dashboard.html",
+   "layout": "400 coarse",
+   "chart": 1,
+   "of": 7,
+   "title": "Latency by route, p99",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "reviews/system-v8/compositions/dashboard.html",
+   "layout": "400 coarse",
+   "chart": 2,
+   "of": 7,
+   "title": "Request rate by service",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 18
+  },
+  {
+   "page": "reviews/system-v8/compositions/dashboard.html",
+   "layout": "400 coarse",
+   "chart": 3,
+   "of": 7,
+   "title": "CPU by pod",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "reviews/system-v8/compositions/dashboard.html",
+   "layout": "400 coarse",
+   "chart": 4,
+   "of": 7,
+   "title": "CPU by pod, every service",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "reviews/system-v8/compositions/dashboard.html",
+   "layout": "400 coarse",
+   "chart": 5,
+   "of": 7,
+   "title": "Memory by service",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "reviews/system-v8/compositions/dashboard.html",
+   "layout": "400 coarse",
+   "chart": 6,
+   "of": 7,
+   "title": "Request rate by service, being edited",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 382
+  },
+  {
+   "page": "reviews/system-v8/compositions/dashboard.html",
+   "layout": "400 coarse",
+   "chart": 7,
+   "of": 7,
+   "title": "Error ratio of cart, if the new rule had existed",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 782
+  },
+  {
+   "page": "reviews/system-v8/compositions/monitor.html",
+   "layout": "400 coarse",
+   "chart": 1,
+   "of": 1,
+   "title": "p99 of checkout-api, by route",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 0
+  },
+  {
+   "page": "reviews/system-v8/compositions/states.html",
+   "layout": "400 coarse",
+   "chart": 1,
+   "of": 1,
+   "title": "Request rate by service",
+   "jumpShift": 0,
+   "jumpMoved": 0,
+   "reloadShift": 0,
+   "landed": 145
+  }
+ ]
+}

@@ -1,0 +1,36 @@
+| Mutant | What | v5 check.mjs | First line |
+|---|---|---|---|
+| X1 | a named colour | **survived** |  |
+| X2 | RGB(255,0,0), upper case | **survived** |  |
+| X3 | a tinted table head from color-mix of tokens at 50% | **survived** |  |
+| X4 | 3PX, upper case | **survived** |  |
+| X5 | 1ex, 2vmin, 0.5lh, 3cqi | **survived** |  |
+| X6 | font-weight: bold | **survived** |  |
+| X7 | a breakpoint in em | **survived** |  |
+| X8 | border-radius: 50% (fully rounded) | **survived** |  |
+| X9 | a gradient built from tokens | **survived** |  |
+| X10 | a second shadow built from tokens | **survived** |  |
+| X11 | capitals and tracking on labels | **survived** |  |
+| X12 | an off-scale calc(var(--space-1) * 1.5) | **survived** |  |
+| X13 | filter: opacity(0.5) and filter: brightness(0.9) | **survived** |  |
+| X14 | linear and ease-in-out | **survived** |  |
+| X15 | a press that eases | **survived** |  |
+| X16 | selection in blue | **survived** |  |
+| X17 | a series colour on a panel rule | **survived** |  |
+| X18 | the reduced-motion block removed | **survived** |  |
+| X19 | the focus ring removed everywhere | **survived** |  |
+| X20 | every coarse-pointer hit area removed | **survived** |  |
+| X21 | dashed swatches drawn solid | **survived** |  |
+| X22 | emphasis removed | **survived** |  |
+| X23 | touch-action removed | **survived** |  |
+| X24 | series-5 a copy of series-1 (light) | caught | FAIL  series-5 and series-7 [light]  colour-vision ΔE 3.7 < 8 (same dash group) |
+| X25 | ink-disabled equal to ink-muted (light) | **survived** |  |
+| X26 | series-4 near grey (light) | caught | FAIL  series-4 [light] chroma 0.029 < 0.10: it reads as grey |
+| X27 | the chart reservation ignoring the coarse legend row (v4's B2 back) | **survived** |  |
+| X28 | a main path moved into a sentence | **survived** |  |
+| X29 | a single-quoted style='font-weight:600;width:37%' in a preview | **survived** |  |
+| X30 | opacity and weight set from script | **survived** |  |
+| X31 | row actions revealed only on hover | **survived** |  |
+| X32 | text below micro | **survived** |  |
+
+v5's check.mjs caught 2 of 32 (without the rendered audit, which the reviewer found caught none of X1-X18).

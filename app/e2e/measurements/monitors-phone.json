@@ -1,0 +1,366 @@
+{
+ "cores": 4,
+ "calibrationMs": 333.846732,
+ "runs": [
+  {
+   "at": "2026-11-28T10:22:18.247Z",
+   "load1": 1.25,
+   "coarse": true,
+   "viewChange": 147.59999999962747,
+   "firstPaint": 111.80000000074506,
+   "viewInp": 120,
+   "cls": {
+    "all": 0,
+    "unmarked": 0
+   },
+   "ackPressed": 38,
+   "ackShown": 243.09999999962747,
+   "ackReread": 412.09999999962747,
+   "ackInp": 32,
+   "void": false,
+   "load1End": 1.23
+  },
+  {
+   "at": "2026-11-28T10:22:22.353Z",
+   "load1": 1.23,
+   "coarse": true,
+   "viewChange": 146.2000000011176,
+   "firstPaint": 171,
+   "viewInp": 112,
+   "cls": {
+    "all": 0,
+    "unmarked": 0
+   },
+   "ackPressed": 52.40000000037253,
+   "ackShown": 249.7999999988824,
+   "ackReread": 438.7999999988824,
+   "ackInp": 48,
+   "void": false,
+   "load1End": 1.21
+  },
+  {
+   "at": "2026-11-28T10:22:26.595Z",
+   "load1": 1.21,
+   "coarse": true,
+   "viewChange": 162,
+   "firstPaint": 109.29999999888241,
+   "viewInp": 112,
+   "cls": {
+    "all": 0,
+    "unmarked": 0
+   },
+   "ackPressed": 58.09999999962747,
+   "ackShown": 248.40000000037253,
+   "ackReread": 460.59999999962747,
+   "ackInp": 48,
+   "void": false,
+   "load1End": 1.19
+  },
+  {
+   "at": "2026-11-28T10:22:30.836Z",
+   "load1": 1.19,
+   "coarse": true,
+   "viewChange": 144.5,
+   "firstPaint": 114.89999999850988,
+   "viewInp": 112,
+   "cls": {
+    "all": 0,
+    "unmarked": 0
+   },
+   "ackPressed": 51.59999999962747,
+   "ackShown": 238.19999999925494,
+   "ackReread": 430.69999999925494,
+   "ackInp": 40,
+   "void": false,
+   "load1End": 1.19
+  },
+  {
+   "at": "2026-11-28T10:22:35.029Z",
+   "load1": 1.19,
+   "coarse": true,
+   "viewChange": 131.5,
+   "firstPaint": 111.20000000111759,
+   "viewInp": 88,
+   "cls": {
+    "all": 0,
+    "unmarked": 0
+   },
+   "ackPressed": 72.09999999962747,
+   "ackShown": 237.69999999925494,
+   "ackReread": 457.5,
+   "ackInp": 64,
+   "void": false,
+   "load1End": 1.18
+  },
+  {
+   "at": "2026-11-28T10:22:39.216Z",
+   "load1": 1.18,
+   "coarse": true,
+   "viewChange": 107.40000000037253,
+   "firstPaint": 123.70000000111759,
+   "viewInp": 80,
+   "cls": {
+    "all": 0,
+    "unmarked": 0
+   },
+   "ackPressed": 43.600000001490116,
+   "ackShown": 232.60000000149012,
+   "ackReread": 419.1000000014901,
+   "ackInp": 40,
+   "void": false,
+   "load1End": 1.16
+  },
+  {
+   "at": "2026-11-28T10:22:43.343Z",
+   "load1": 1.16,
+   "coarse": true,
+   "viewChange": 133.5,
+   "firstPaint": 117.5,
+   "viewInp": 88,
+   "cls": {
+    "all": 0,
+    "unmarked": 0
+   },
+   "ackPressed": 46.90000000037253,
+   "ackShown": 250.80000000074506,
+   "ackReread": 418.40000000037253,
+   "ackInp": 40,
+   "void": false,
+   "load1End": 1.15
+  },
+  {
+   "at": "2026-11-28T10:22:47.466Z",
+   "load1": 1.15,
+   "coarse": true,
+   "viewChange": 117,
+   "firstPaint": 119.69999999925494,
+   "viewInp": 88,
+   "cls": {
+    "all": 0,
+    "unmarked": 0
+   },
+   "ackPressed": 54,
+   "ackShown": 244.19999999925494,
+   "ackReread": 430.59999999962747,
+   "ackInp": 48,
+   "void": false,
+   "load1End": 1.14
+  },
+  {
+   "at": "2026-11-28T10:22:51.593Z",
+   "load1": 1.14,
+   "coarse": true,
+   "viewChange": 110.39999999850988,
+   "firstPaint": 121.20000000111759,
+   "viewInp": 80,
+   "cls": {
+    "all": 0,
+    "unmarked": 0
+   },
+   "ackPressed": 47.600000001490116,
+   "ackShown": 252.80000000074506,
+   "ackReread": 424.30000000074506,
+   "ackInp": 40,
+   "void": false,
+   "load1End": 1.05
+  },
+  {
+   "at": "2026-11-28T10:22:55.721Z",
+   "load1": 1.05,
+   "coarse": true,
+   "viewChange": 106.20000000111759,
+   "firstPaint": 114.79999999888241,
+   "viewInp": 80,
+   "cls": {
+    "all": 0,
+    "unmarked": 0
+   },
+   "ackPressed": 67.59999999962747,
+   "ackShown": 248.09999999962747,
+   "ackReread": 456.80000000074506,
+   "ackInp": 56,
+   "void": false,
+   "load1End": 1.05
+  },
+  {
+   "at": "2026-11-28T10:22:59.901Z",
+   "load1": 1.05,
+   "coarse": true,
+   "viewChange": 196,
+   "firstPaint": 135.40000000037253,
+   "viewInp": 120,
+   "cls": {
+    "all": 0,
+    "unmarked": 0
+   },
+   "ackPressed": 56.79999999888241,
+   "ackShown": 252.69999999925494,
+   "ackReread": 440.5,
+   "ackInp": 48,
+   "void": false,
+   "load1End": 1.04
+  },
+  {
+   "at": "2026-11-28T10:23:04.185Z",
+   "load1": 1.04,
+   "coarse": true,
+   "viewChange": 116.60000000149012,
+   "firstPaint": 153,
+   "viewInp": 88,
+   "cls": {
+    "all": 0,
+    "unmarked": 0
+   },
+   "ackPressed": 55.90000000037253,
+   "ackShown": 234.59999999962747,
+   "ackReread": 424.40000000037253,
+   "ackInp": 48,
+   "void": false,
+   "load1End": 1.04
+  },
+  {
+   "at": "2026-11-28T10:23:08.294Z",
+   "load1": 1.04,
+   "coarse": true,
+   "viewChange": 146.09999999962747,
+   "firstPaint": 115.10000000149012,
+   "viewInp": 96,
+   "cls": {
+    "all": 0,
+    "unmarked": 0
+   },
+   "ackPressed": 53.29999999888241,
+   "ackShown": 236.19999999925494,
+   "ackReread": 415.19999999925494,
+   "ackInp": 48,
+   "void": false,
+   "load1End": 1.04
+  },
+  {
+   "at": "2026-11-28T10:23:12.459Z",
+   "load1": 1.04,
+   "coarse": true,
+   "viewChange": 136,
+   "firstPaint": 127.89999999850988,
+   "viewInp": 80,
+   "cls": {
+    "all": 0,
+    "unmarked": 0
+   },
+   "ackPressed": 47.80000000074506,
+   "ackShown": 241.90000000037253,
+   "ackReread": 421.59999999962747,
+   "ackInp": 40,
+   "void": false,
+   "load1End": 1.11
+  },
+  {
+   "at": "2026-11-28T10:23:16.615Z",
+   "load1": 1.11,
+   "coarse": true,
+   "viewChange": 208.30000000074506,
+   "firstPaint": 121,
+   "viewInp": 128,
+   "cls": {
+    "all": 0,
+    "unmarked": 0
+   },
+   "ackPressed": 46.30000000074506,
+   "ackShown": 235.5,
+   "ackReread": 416.1000000014901,
+   "ackInp": 40,
+   "void": false,
+   "load1End": 1.1
+  },
+  {
+   "at": "2026-11-28T10:23:20.798Z",
+   "load1": 1.1,
+   "coarse": true,
+   "viewChange": 136.89999999850988,
+   "firstPaint": 107.09999999962747,
+   "viewInp": 80,
+   "cls": {
+    "all": 0,
+    "unmarked": 0
+   },
+   "ackPressed": 43.20000000111759,
+   "ackShown": 238.7000000011176,
+   "ackReread": 423,
+   "ackInp": 40,
+   "void": false,
+   "load1End": 1.1
+  },
+  {
+   "at": "2026-11-28T10:23:24.887Z",
+   "load1": 1.1,
+   "coarse": true,
+   "viewChange": 109.09999999962747,
+   "firstPaint": 104.40000000037253,
+   "viewInp": 80,
+   "cls": {
+    "all": 0,
+    "unmarked": 0
+   },
+   "ackPressed": 43.09999999962747,
+   "ackShown": 258.59999999962747,
+   "ackReread": 436.7999999988824,
+   "ackInp": 40,
+   "void": false,
+   "load1End": 1.1
+  },
+  {
+   "at": "2026-11-28T10:23:29.013Z",
+   "load1": 1.1,
+   "coarse": true,
+   "viewChange": 141.40000000037253,
+   "firstPaint": 109.90000000037253,
+   "viewInp": 88,
+   "cls": {
+    "all": 0,
+    "unmarked": 0
+   },
+   "ackPressed": 35.5,
+   "ackShown": 238.59999999962747,
+   "ackReread": 414.5,
+   "ackInp": 32,
+   "void": false,
+   "load1End": 1.17
+  },
+  {
+   "at": "2026-11-28T10:23:33.102Z",
+   "load1": 1.17,
+   "coarse": true,
+   "viewChange": 111.40000000037253,
+   "firstPaint": 122,
+   "viewInp": 80,
+   "cls": {
+    "all": 0,
+    "unmarked": 0
+   },
+   "ackPressed": 35.29999999888241,
+   "ackShown": 223.2999999988824,
+   "ackReread": 433.09999999962747,
+   "ackInp": 32,
+   "void": false,
+   "load1End": 1.31
+  },
+  {
+   "at": "2026-11-28T10:23:37.150Z",
+   "load1": 1.31,
+   "coarse": true,
+   "viewChange": 127.09999999962747,
+   "firstPaint": 111.70000000111759,
+   "viewInp": 80,
+   "cls": {
+    "all": 0,
+    "unmarked": 0
+   },
+   "ackPressed": 44.90000000037253,
+   "ackShown": 223.80000000074506,
+   "ackReread": 415.2000000011176,
+   "ackInp": 40,
+   "void": false,
+   "load1End": 1.29
+  }
+ ]
+}

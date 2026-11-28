@@ -1,0 +1,138 @@
+load average 6.87 7.31 7.84 on 4 cores
+| Mutant | What was broken | Run | Expected | Result | First line the check printed |
+|---|---|---|---|---|---|
+| R1 | swatch ring removed | check | caught | caught | FAIL  .vz-swatch has lost its ground ring |
+| R2 | pressed equal to hover (light) | check | caught | caught | FAIL  pressed beside hover [light]  1.00 < 1.1  (a press must differ from hover) |
+| R3 | series-4 back to v3 #eda100 (light) | check | caught | caught | FAIL  series-4 on ground [light]  2.17 < 3  (chart series and its swatch) |
+| R4 | crosshair dot edge to rule | check | caught | caught | FAIL  .vz-plot .vz-dot[data-series] has lost its ground edge |
+| R5 | status-info equal to blue (light) | check | caught | caught | FAIL  status-info too close to blue [light]: a status must not look like the primary action |
+| R6 | two near-identical neighbours (series-3 a copy of series-2, light) | check | caught | caught | FAIL  series-2 beside series-3 [light]  lightness step 1.01 < 1.3 (neighbours alternate darker and lighter) |
+| R7 | a literal 3px | check | caught | caught | LITERAL length  src/components.css:647  margin-top: 3px |
+| R8 | series-other near white (light) | check | caught | caught | FAIL  series-other on ground [light]  1.23 < 3  (edge of the Other band, a switched-off swatch on any row, a line stepped back) |
+| R9 | swatch ring overridden on hover | check | caught | caught | LITERAL hover  src/components.css:647  box-shadow: box-shadow under :hover in ".vz-table.vz-legend-table tr:hover .vz-swatch": hover may change colour |
+| R10 | ink-muted on pressed in the legend (the pressed override removed) | check | caught | caught | FAIL  rendered press, as opened: text "28 series" #6b6b6b on #d6d6d6 3.67:1 < 4.5  light Chart <span.vz-series-rest> |
+| R11 | ink-muted on rule in the legend (the chosen override removed) | check | caught | caught | FAIL  rendered at rest: text "28 series" #6b6b6b on #e4e4e4 4.19:1 < 4.5  light Chart <span.vz-series-rest> |
+| R12 | the plot filled with hover on hover | check | caught | caught | FAIL  .vz-plot:hover sets background (line 647): a chart has no fill of its own |
+| R13 | series-8 set to status-critical (light) | check | caught | caught | FAIL  series-8 [light] is 0.0 from status-critical (< 8): a series must not look like a state or an action |
+| R14 | a literal angle (deg) | check | caught | caught | LITERAL angle  src/components.css:647  transform: 45deg |
+| R15 | a literal percentage | check | caught | caught | LITERAL percentage  src/components.css:647  left: 37% |
+| R16 | a literal unitless weight | check | caught | caught | LITERAL weight  src/components.css:647  font-weight: 600 |
+| R17 | an opaque scrim (light) | check | caught | caught | FAIL  scrim [light] alpha 1 outside 0.30–0.75: the page must stay recognisable and the dialog must stand off it |
+| R18 | harmless: the swatch rule reformatted onto two lines | check | passes | passes |  |
+| N1 | swatch ring removed on a pressed row only | check | caught | caught | FAIL  .vz-table.vz-legend-tabletbodytr[data-key]:active.vz-swatch (line 647) has no [data-pressed] twin with the same declarations: a finger's press w |
+| N2 | neighbours at one lightness (series-2 as dark as series-1, light) | check | caught | caught | FAIL  series-1 beside series-2 [light]  lightness step 1.18 < 1.3 (neighbours alternate darker and lighter) |
+| N3 | slot 7 drawn solid (its dash removed) | check | caught | caught | FAIL  [data-series="7"] has no --pattern: slots 5 to 8 must be dashed, the second channel beside colour |
+| N4 | lines that step back drawn in rule | check | caught | caught | FAIL  emphasis from the legend is gone: the lines that step back must be series-other hairlines |
+| N5 | a breakpoint that is not a token (800px) | check | caught | caught | LITERAL breakpoint  src/components.css:647  @container (max-width:799px): 799px is not a breakpoint token (or one less) |
+| N6 | token-lint-ignore without a reason | check | caught | caught | LITERAL ignore-without-reason  src/components.css:647  token-lint-ignore |
+| N7 | a series in the dark theme below 3:1 on rule | check | caught | caught | FAIL  series-1 on ground [dark]  2.19 < 3  (chart series and its swatch) |
+| N8 | chosen legend row text in ink-muted | check | caught | caught | FAIL  rendered at rest: text "POST /v2/orders" #6b6b6b on #e4e4e4 4.19:1 < 4.5  light Chart <span.vz-series-name> |
+| N9 | a waterfall bar drawn in rule | check | caught | caught | FAIL  rendered press, as opened: waterfall bar #e4e4e4 on #d6d6d6 1.14:1 < 3  light Waterfall <span.vz-waterfall-bar> |
+| N10 | the legend row's ring back to an outline on the row | check | caught | caught | FAIL  .vz-legend-unusedtd:first-child uses --focus (box-shadow, line 368): the focus colour belongs to the focus ring only |
+| N11 | a matched search term in ink-muted | check | caught | caught | FAIL  rendered press, as opened: text "pool" #6b6b6b on #e4e4e4 4.19:1 < 4.5  light Log <mark.vz-match> |
+| N12 | "3 spans inside" in ink-muted | check | caught | caught | FAIL  rendered press, as opened: text "3 spans inside, 1 failed" #6b6b6b on #d6d6d6 3.67:1 < 4.5  light Waterfall <span.vz-waterfall-inside> |
+| N13 | a literal line count for a cut log message | check | caught | caught | LITERAL line clamp  src/components.css:647  -webkit-line-clamp: 4 |
+| X1 | a named colour | check | caught | caught | LITERAL colour  src/components.css:647  border-color: red |
+| X2 | RGB(255,0,0), upper case | check | caught | caught | LITERAL colour  src/components.css:647  background: RGB(255,0,0) |
+| X3 | a tinted table head from color-mix of tokens at 50% | check | caught | caught | LITERAL colour  src/components.css:647  background: color-mix(in srgb,var(--blue) 50%,var(--ground)) |
+| X4 | 3PX, upper case | check | caught | caught | LITERAL length  src/components.css:647  margin-top: 3PX |
+| X5 | 1ex, 2vmin, 0.5lh, 3cqi | check | caught | caught | LITERAL length  src/components.css:647  margin-top: 1ex |
+| X6 | font-weight: bold | check | caught | caught | LITERAL weight  src/components.css:647  font-weight: bold |
+| X7 | a breakpoint in em | check | caught | caught | LITERAL breakpoint  src/components.css:647  @media (max-width:50em): 50em is not a breakpoint token (or one less) |
+| X8 | border-radius: 50% (fully rounded) | check | caught | caught | LITERAL percentage  src/components.css:647  border-radius: 50% |
+| X9 | a gradient built from tokens | check | caught | caught | LITERAL gradient  src/components.css:647  background: linear-gradient(var(--sunken),var(--ground)) |
+| X10 | a second shadow built from tokens | check | caught | caught | LITERAL shadow  src/components.css:647  box-shadow: box-shadow layer "0 var(--space-1) var(--space-4) var(--rule)": blurred, and not shadow-overlay, t |
+| X11 | capitals and tracking on labels | check | caught | caught | LITERAL capitals  src/components.css:647  text-transform: uppercase |
+| X12 | an off-scale calc(var(--space-1) * 1.5) | check | caught | caught | LITERAL number  src/components.css:647  gap: 1.5 |
+| X13 | filter: opacity(0.5) and filter: brightness(0.9) | check | caught | caught | LITERAL number  src/components.css:647  filter: 0.5 |
+| X14 | linear and ease-in-out | check | caught | caught | LITERAL easing  src/components.css:647  transition: linear |
+| X15 | a press that eases | check | caught | caught | FAIL  .vz-button:active (line 53) changes a control that has a transition, and no press rule for it sets transition-duration: 0s: the press would ease |
+| X16 | selection in blue | check | caught | caught | FAIL  .vz-segmentedbutton[aria-pressed="true"] uses --blue (background, line 647): an action colour belongs to its own toned button only ([data-tone=" |
+| X17 | a series colour on a panel rule | check | caught | caught | FAIL  .vz-panel uses --series-1 (border-top-color, line 647): a series colour belongs to a chart and its legend only |
+| X18 | the reduced-motion block removed | check | caught | caught | FAIL  the reduced-motion block is gone: .vz * { transition: none !important } under prefers-reduced-motion: reduce |
+| X19 | the focus ring removed everywhere | check | caught | caught | FAIL  the focus ring is gone: .vz :focus-visible must draw outline: var(--stroke) solid var(--focus), offset by var(--stroke), on every focusable elem |
+| X20 | every coarse-pointer hit area removed | check | caught | caught | FAIL  with a coarse pointer, .vz-button::after has no height of control-touch: its hit area is under 44 px |
+| X21 | dashed swatches drawn solid | check | caught | caught | FAIL  .vz-swatch[data-series="5"] is not drawn dashed (two dashes and a gap: transparent fill, border-inline in the series colour) |
+| X22 | emphasis removed | check | caught | caught | FAIL  emphasis from the legend is gone: the lines that step back must be series-other hairlines |
+| X23 | touch-action removed | check | caught | caught | FAIL  the plot lost touch-action: pan-y: a finger dragging for the crosshair would scroll the page |
+| X24 | series-5 a copy of series-1 (light) | check | caught | caught | FAIL  series-5 and series-7 [light]  colour-vision ΔE 3.7 < 8 (same dash group) |
+| X25 | ink-disabled equal to ink-muted (light) | check | caught | caught | FAIL  ink-disabled is 1.00:1 from ink-muted [light] (< 1.5): a disabled control would read as enabled |
+| X26 | series-4 near grey (light) | check | caught | caught | FAIL  series-4 [light] chroma 0.029 < 0.10: it reads as grey |
+| X27 | the chart reservation ignoring the coarse legend row (v4's B2 back) | check | caught | caught | FAIL  the chart reserves its height without reading --chart-plot, --strip, --chart-foot, --legend-head, --legend-row, --legend-rows and --legend-notes |
+| X28 | a main path moved into a sentence | check | caught | caught | LITERAL main-path  project/components/Timeline/preview.html:5  a link in a timeline is inside <p>: it must stand alone, the line's own child |
+| X29 | a single-quoted style='font-weight:600;width:37%' in a preview | check | caught | caught | LITERAL weight  project/components/Button/preview.html:3  font-weight: 600 |
+| X30 | opacity and weight set from script | check | caught | caught | LITERAL opacity  project/components/Chart/preview.html:272  opacity: 0.5 |
+| X31 | row actions revealed only on hover | check | caught | caught | LITERAL hover  src/components.css:648  visibility: visibility under :hover in ".vz-table tbody tr:hover td.vz-row-actions>*": hover may change colour  |
+| X32 | text below micro | check | caught | caught | LITERAL size  src/components.css:647  font-size: font-size: calc(var(--text-micro-size) - var(--hairline)) (a type style's size, nothing computed: mic |
+| V1 | the table wrap unpositioned (B2.1) | check | caught | caught | FAIL  .vz-table-wrap is not positioned: something absolutely placed inside a table (a visually hidden head) escapes its scroll and widens the page (v5 |
+| V2 | a state in a kept column no longer wraps (B2.2) | check | caught | caught | FAIL  in a folded table ([data-fold]) a state in a kept column does not wrap: "Burning budget" is cut (v5 review, B2.2) |
+| V3 | "Actions…" without its place in the folded row (B2.2) | check | caught | caught | FAIL  in a folded table ([data-fold]) "Actions…" does not end the line after the key's, at the row's right edge: on the key's line it takes the key's  |
+| V4 | the two fold forms drift apart | check | caught | caught | FAIL  the folding rule ".vz-table[data-fold] td" (line 195) has no twin for data-fold="wide": the two fold forms have drifted |
+| V5 | a finger's press: the blue button's [data-pressed] twin removed (M3) | check | caught | caught | FAIL  .vz-button[data-tone="blue"]:active (line 58) has no [data-pressed] twin with the same declarations: a finger's press would not paint until the  |
+| V6 | the caption a flex row again (flows G17) | check | caught | caught | FAIL  the table caption is a flex or grid row: the spaces round a vz-qty in it collapse (flows G17) |
+| V7 | links in list items and help lines drawn as controls again (m1) | check | caught | caught | FAIL  with a coarse pointer, a link inside running text (p, li, a help line, prose) must keep its line and a standalone link (a list of links, a timel |
+| V8 | a cut key link's underline removed (m2) | check | caught | caught | FAIL  a link holding a vz-cut loses its underline (v5 review, m2) |
+| V9 | the reservation keyed on an inline style attribute again (m7) | check | caught | caught | FAIL  a rule is keyed on an inline style attribute ([style*=…]): the reservation must hold when the custom properties come from a stylesheet (v5 revie |
+| V10 | legend rows reserved a hairline taller than drawn (v5) | check | caught | caught | FAIL  rendered fine pointer: Chart chart reserves 490.5 px and draws 482.5 px: it would move what is under it when its data arrives |
+| V11 | after an error, swatches keep their colour (m3) | check | caught | caught | FAIL  after an error the legend's swatches claim colours for lines that are not drawn (v5 review, m3) |
+| V12 | series-other back to v5 (light #767676, 1.02:1 from series-4) | check | caught | caught | FAIL  series-other beside series-2 [light]  lightness 1.15:1 < 1.3: in greyscale Other's edge reads as that slot |
+| V13 | the scroll edge back to an inset shadow under the cells (m14) | check | caught | caught | FAIL  the table wrap's scroll edge is not its own border on a scroll timeline: the cells' fill would cover it (v5 review, m14) |
+| V14 | status marks centred across lines, not on the first | check | caught | caught | FAIL  a status mark is not centred on its first line: a status that wraps leaves its mark between lines |
+| V15 | a kept column narrower than its phrase | check | caught | caught | FAIL  in a folded table ([data-fold]) a kept column can be narrower than its longest phrase |
+| V17 | a status's words and its time side by side, not one run (the time leaves the line) | check | caught | caught | LITERAL status-run  project/components/Table/preview.html:27  a vz-status holds words and an element side by side: wrap its words in one span |
+| V16 | a shadow-overlay on a panel (the one shadow off an overlay) | check | caught | caught | FAIL  .vz-panel has shadow-overlay (line 647): the one shadow means "this floats", for overlays only |
+| Y1 | red written with a CSS escape (\72 ed) | check | caught | caught | LITERAL colour  src/components.css:647  border-color: \72 ed (red) |
+| Y2 | a system colour (AccentColor) | check | caught | caught | LITERAL colour  src/components.css:647  background: AccentColor |
+| Y3 | a keyword width (thick) | check | caught | caught | LITERAL length  src/components.css:647  border-top: thick (a keyword width) |
+| Y4 | small capitals by font-variant | check | caught | caught | LITERAL capitals  src/components.css:647  font-variant: all-small-caps |
+| Y5 | a looping animation on the progress bar (a spinner) | check | caught | caught | LITERAL loop  src/components.css:647  animation: animation: infinite: nothing loops, and a spinner never covers a wait (Motion; owner's direction) |
+| Y6 | @property with a literal initial value | check | caught | caught | LITERAL colour  src/components.css:647  initial-value: red |
+| Y7 | a literal inside a nested rule | check | caught | caught | LITERAL length  src/components.css:647  margin-top: 3px |
+| Y8 | SVG presentation attributes in a preview (fill="red", stroke-width="3") | check | caught | caught | LITERAL colour  project/components/Button/preview.html:3  fill="red" (an SVG attribute) fill: red |
+| Y9 | style from script: Object.assign(el.style, …), el.animate(…, { iterations: Infinity }), setAttribute("style", …) | check | caught | caught | LITERAL opacity  project/components/Chart/preview.html:272  opacity: 0.5 |
+| Y10 | the focus ring made transparent by a later rule | audit | caught | caught | focus         1500            <button.vz-button> "Run query" focused draws outline solid 2px rgba(0, 0, 0, 0) offset 2px, not the ring (2px solid rgb( |
+| Y11 | coarse hit areas removed by a later rule | audit | caught | caught | hit-area      320 coarse      <button.vz-button> "Run query": hit area under 44 px tall with a coarse pointer (drawn 95 x 32 px)  (and at 400 coarse) |
+| Y12 | the table wrap unpositioned by a later rule (v5 B2.1 back) | audit | caught | caught | overflow      320 coarse      page scrolls sideways by 249 px: nothing unclipped found past the edge  (and at 400 coarse) |
+| Y13 | a dashed swatch filled solid by a later rule | audit | caught | caught | guard         1500            <span.vz-swatch> is not drawn dashed as rendered (borders solid 0px rgb(14, 126, 239) / solid, fill rgb(14, 126, 239); t |
+| Y14 | a transition put back under reduced motion | audit | caught | caught | motion        1500 reduced motion <div.vz-progress-bar> transitions transform over 0.18s with reduced motion requested  (and at 1500 reduced motion) |
+| Y15 | emphasis undone by a later rule of the same weight | audit | caught | caught | guard         1500            emphasis in <h3.vz-panel-title> "Latency by route, p99": a line that steps back is rgb(164, 2, 85) 2px, not a series-oth |
+| Y16 | the chart's reservation overridden (min-height: 0) | check | caught | caught | FAIL  rendered fine pointer: Chart chart reserves 0 px and draws 490.5 px: it would move what is under it when its data arrives |
+| Y17 | a kept state made nowrap again by a later !important rule (v5 B2.2 back) | audit | caught | caught | guard         320 coarse      <span.vz-status> "Lagging" in a kept column of a folded table does not wrap (white-space: nowrap): a long state is cut o |
+| Y18 | a finger's press painted as rest by a later rule | audit | caught | caught | press         400 coarse      a finger held on button.vz-button "Add panel" paints rgb(255, 255, 255) (at rest rgb(255, 255, 255)); its press is rgb(2 |
+| Y19 | a breakpoint in a style element's media attribute | check | caught | caught | LITERAL breakpoint  project/components/Button/preview.html:2  <style media="(max-width: 800px)">: 800px is not a breakpoint token (or one less) |
+| Y20 | an emoji in generated content | check | caught | caught | LITERAL emoji  src/components.css:647  content: "🔥": no emoji (Words) |
+| Z1 | the folded key without its minimum (key-min) (v6 review, B1) | check | caught | caught | FAIL  in a folded table ([data-fold]) the key has no minimum (key-min): the kept columns and the actions squeeze it (v6 review, B1) |
+| Z2 | v6's arrangement of a list with one kept column: "Actions…" on the key's line and no key minimum (v6 review, B1) | audit | caught | caught | key-width     320 coarse      <td> "Ingest pipeline" is 116 px of a 286 px row, under key-min (50%): the name is squeezed by the kept columns or the a |
+| Z3 | a cut name capped at half the measure but not at its cell, and the key link unable to shrink (v6 B1, image 01) | audit | caught | caught | cut           320 coarse      "c6b5-73b1d" in <span> "c6b5-73b1d" is outside its cell, over its neighbour (93 to 170, visible 16 to 159) |
+| Z4 | two kept columns beside the key below breakpoint-narrow (the key's own line removed) | check | caught | caught | FAIL  below breakpoint-narrow a folded table with two kept columns does not give the key its own line (v6 review, B1) |
+| Z5 | the chosen segment's fill outranks a press again (rule order) | audit | caught | caught | press         400 coarse      a finger held on button. "6 h" paints rgb(228, 228, 228) (at rest rgb(228, 228, 228)); its press is rgb(214, 214, 214) |
+| Z6 | the legend's action row without its touch padding: wrapped buttons' hit areas reach the row above | audit | caught | caught | hit-area      320 coarse      <button.vz-button> "Show 20 more of Other": hit area under 44 px tall with a coarse pointer (drawn 159 x 24 px)  (and at |
+| Z7 | the CSS changed after the build: dist/ stale (v6 review, m6) | audit | caught | caught | stale         build           dist/reference.html inlines CSS older than the tree: run npm run build |
+| Z8 | v6's fold, whole: the key squeezed, the cut uncapped, the actions on the key's line (v6 review, B1, images 01 and 02) | audit | caught | caught | cut           320 coarse      "checkout-api" in <a.vz-link> "checkout-api p99 latency, POST /" is outside its cell, over its neighbour (24 to 92, visi |
+| C1 | v5's order: the view's filter applied before colours are assigned (v5 image 01) | chart | caught | caught | not ok 2 - B2, sequence D as the reviewer ran it (36 pods): hiding the newcomer gives its slot to the largest grey pod at once; the returning pod find |
+| C2 | a returning series that was in Other is placed as if new (the query round trip is not the identity) | chart | caught | caught | not ok 12 - Random sequences of arrivals, departures, filters, query edits, Other opened and picked, recolouring (400 of 30 steps) |
+| C3 | a returning series never gets its slot back (v5 image 02) | chart | caught | caught | not ok 7 - Rubric blocker: a series coming back grey or in another colour while no series on screen holds its slot |
+| C4 | new series never take a reserved slot (deploy churn leaves the new pods grey) | chart | caught | caught | not ok 1 - B2, sequence D: a pod comes back while its slot is held only by a hidden series: it takes its slot back |
+| C5 | "highest" over the coloured lines only (v4 B1) | chart | caught | caught | not ok 1 - B2, sequence D: a pod comes back while its slot is held only by a hidden series: it takes its slot back |
+| C6 | the threshold's series over coloured lines only (M1, image 06) | chart | caught | caught | not ok 12 - Random sequences of arrivals, departures, filters, query edits, Other opened and picked, recolouring (400 of 30 steps) |
+| C7 | the note counted over the whole result, not the legend (Other counted with the series the filter hides) | chart | caught | caught | not ok 2 - B2, sequence D as the reviewer ran it (36 pods): hiding the newcomer gives its slot to the largest grey pod at once; the returning pod find |
+| C8 | a negative value loses its sign | chart | caught | caught | not ok 16 - M2: negative values keep their sign, and a small one says which side of zero it is |
+| C9 | the axis starts at zero whatever the data (image 07) | chart | caught | caught | not ok 13 - M2: values below zero: the axis extends below zero and every value lies on the plot |
+| C10 | v6's rule: a slot held only by a hidden series is never reclaimed (the v6 review's sequences D and E, B2) | chart | caught | caught | not ok 2 - B2, sequence D as the reviewer ran it (36 pods): hiding the newcomer gives its slot to the largest grey pod at once; the returning pod find |
+| C11 | reclaimed slots go to the smallest grey series on screen first | chart | caught | caught | not ok 2 - B2, sequence D as the reviewer ran it (36 pods): hiding the newcomer gives its slot to the largest grey pod at once; the returning pod find |
+| C12 | a hidden series is placed as if on screen (it takes a slot nobody sees) | chart | caught | caught | not ok 12 - Random sequences of arrivals, departures, filters, query edits, Other opened and picked, recolouring (400 of 30 steps) |
+| C13 | "Colour the eight largest" ranks the whole result, hidden series included (the v6 review's other fix for E, not taken) | chart | caught | caught | not ok 3 - B2, sequence E: "Without the three largest", a larger pod arrives, "Colour the eight largest", clear: each step follows what is on screen |
+| C14 | a returning series takes its slot back from a series on screen (a colour on screen changes) | chart | caught | caught | not ok 1 - B2, sequence D: a pod comes back while its slot is held only by a hidden series: it takes its slot back |
+| A1 | the hidden "Actions" head escapes the table (B2.1, image 03) | audit | caught | caught | overflow      320 coarse      page scrolls sideways by 249 px: nothing unclipped found past the edge  (and at 400 coarse) |
+| A2 | "Burning budget" over "Actions…" in a kept column (B2.2, image 04): the status nowrap again, and the wrap and the minimum width removed from both fold | audit | caught | caught | fold-scroll   320 coarse      <table.vz-table> "DashboardStateWhat it answersCha" folds (data-fold="wide") but scrolls 51 px sideways at this width  ( |
+| A3 | "Actions…" off screen in a folded row (B2.2, image 04) | audit | caught | caught | fold-scroll   320 coarse      <table.vz-table> "DashboardStateWhat it answersCha" folds (data-fold="wide") but scrolls 41 px sideways at this width  ( |
+| A4 | a link in a help line drawn as a control (m1, image 08) | audit | caught | caught | sentence-link 320 coarse      <a.vz-link> "notification settings" is inside a sentence in <span.vz-help> "Pages go to the rota set in noti" but drawn  |
+| H1 | harmless: a rule reformatted across lines | check | passes | passes |  |
+| H2 | harmless: a comment added | check | passes | passes |  |
+| H3 | harmless: a new rule written in tokens only | check | passes | passes |  |
+| H4 | harmless: a data custom property in a style attribute | check | passes | passes |  |
+R: 18 of 18 as expected; N: 13 of 13 as expected; X: 32 of 32 as expected; V: 17 of 17 as expected; Y: 20 of 20 as expected; Z: 8 of 8 as expected; C: 14 of 14 as expected; A: 4 of 4 as expected; H: 4 of 4 as expected
+Every mutant caught; every harmless edit passes.
+real	12m43.536s
+user	1m14.391s
+sys	0m14.858s

@@ -1,0 +1,33 @@
+# The theme row alone (and the phone's crosshair), v8 as handed off (before) against the final tree (after), 8 runs, alternating
+
+## desktop
+BEFORE: http://127.0.0.1:8901/fixture/index.html
+8 runs, CPU 4x, Fast 4G, 1440x900. p75 is the budgeted figure.
+Load: 1-minute load average at the start of each run 3.0 to 3.8 (median 3.3) on 4 cores; at the end 3.2 6.1 7.7. Calibration task 284 ms (about 100 ms on an idle core). A timing row is judged only when most of its samples were taken at a load of 4 or less.
+| What | Budget | p75 | Median | Worst | Samples | Load when taken (median, range) | |
+|---|---|---|---|---|---|---|---|
+| Change theme (to dark) | 100 ms | 90 ms | 90 ms | 117 ms | 8 | 3.3 (3.0 to 3.8) | within |
+AFTER: http://127.0.0.1:8900/fixture/index.html
+8 runs, CPU 4x, Fast 4G, 1440x900. p75 is the budgeted figure.
+Load: 1-minute load average at the start of each run 3.0 to 3.8 (median 3.3) on 4 cores; at the end 3.2 6.1 7.7. Calibration task 284 ms (about 100 ms on an idle core). A timing row is judged only when most of its samples were taken at a load of 4 or less.
+| What | Budget | p75 | Median | Worst | Samples | Load when taken (median, range) | |
+|---|---|---|---|---|---|---|---|
+| Change theme (to dark) | 100 ms | 82 ms | 75 ms | 190 ms | 8 | 3.3 (3.0 to 3.8) | within |
+Every judged 75th percentile is within its budget (rows not judged are neither passed nor failed).
+
+## phone
+BEFORE: http://127.0.0.1:8901/fixture/index.html
+8 runs, CPU 4x, Fast 4G, 400x800, coarse pointer and touch (presses and taps by CDP touch events). p75 is the budgeted figure.
+Load: 1-minute load average at the start of each run 2.3 to 3.1 (median 2.7) on 4 cores; at the end 2.2 5.4 7.3. Calibration task 282 ms (about 100 ms on an idle core). A timing row is judged only when most of its samples were taken at a load of 4 or less.
+| What | Budget | p75 | Median | Worst | Samples | Load when taken (median, range) | |
+|---|---|---|---|---|---|---|---|
+| Crosshair by touch drag, 36 series | 50 ms | 45 ms | 42 ms | 50 ms | 8 | 2.7 (2.3 to 3.1) | within |
+| Change theme (to dark) | 100 ms | 110 ms | 107 ms | 152 ms | 8 | 2.7 (2.3 to 3.1) | **OVER** |
+AFTER: http://127.0.0.1:8900/fixture/index.html
+8 runs, CPU 4x, Fast 4G, 400x800, coarse pointer and touch (presses and taps by CDP touch events). p75 is the budgeted figure.
+Load: 1-minute load average at the start of each run 2.3 to 3.1 (median 2.7) on 4 cores; at the end 2.2 5.4 7.3. Calibration task 282 ms (about 100 ms on an idle core). A timing row is judged only when most of its samples were taken at a load of 4 or less.
+| What | Budget | p75 | Median | Worst | Samples | Load when taken (median, range) | |
+|---|---|---|---|---|---|---|---|
+| Crosshair by touch drag, 36 series | 50 ms | 52 ms | 42 ms | 59 ms | 8 | 2.6 (2.2 to 3.1) | **OVER** |
+| Change theme (to dark) | 100 ms | 69 ms | 66 ms | 77 ms | 8 | 2.6 (2.2 to 3.1) | within |
+1 judged measurement(s) over budget or without data.

@@ -1,0 +1,29 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>viz · Monitor</title><link rel="stylesheet" href="../../../dist/viz.css"><style>body{margin:0}</style></head><body class="vz"><a class="vz-button vz-skip" href="#main">Skip to content</a><nav class="vz-nav" aria-label="Sections"><span class="vz-nav-name">viz</span><a href="#">Explore</a><a href="#">Dashboards</a><a href="#" aria-current="page">Monitors</a><a href="#">Traces</a><a href="#">Logs</a><span style="flex:1"></span><a href="#">Settings</a></nav>
+<main class="vz-page" id="main">
+  <header class="vz-page-head">
+    <div><h1 class="vz-page-title">checkout p99 latency</h1>
+      <p class="vz-page-state"><span class="vz-mark" data-state="critical"></span>Firing since 13:07 (2 h 9 min)</p>
+      <p class="vz-page-sub">Above <span class="vz-qty">500 ms</span> since 13:02. Not acknowledged. Paged Dana (payments on-call) at 13:07; repeats at 17:07.</p></div>
+    <div class="vz-controls"><button class="vz-button" data-tone="green">Acknowledge</button><button class="vz-button">Silence…</button></div>
+  </header>
+  <div class="vz-notice" role="alert"><span class="vz-mark" data-state="critical"></span><p>Could not silence the monitor: the server did not answer. It is still paging.</p><div class="vz-controls"><button class="vz-button" data-size="sm">Try again</button><button class="vz-button" data-size="sm" data-quiet>Dismiss</button></div></div>
+  <div class="vz-banner"><span class="vz-mark" data-state="info"></span><p class="vz-agent">Agent: payments-db has been slow since 12:58. Not verified.</p><a class="vz-link" href="#">Read the report</a></div>
+  <div class="vz-split">
+    <div>
+      <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">p99 of checkout-api</h3><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min max</span><span>· updated <span class="vz-qty">12 s</span> ago</span></span></div>
+        <div class="vz-panel-body"><div class="vz-chart" data-demo="s3" data-view="m-routes"></div></div></section>
+    </div>
+    <div>
+      <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">History</h3></div>
+        <ol class="vz-timeline">
+          <li><time class="vz-qty">13:09</time><span class="vz-mark"></span><p class="vz-agent">Agent: investigation finished, payments-db suspected. Not verified. <a class="vz-link" href="#">Read the report</a></p></li>
+          <li><time class="vz-qty">13:07</time><span class="vz-mark" data-state="critical"></span><p>Fired at <span class="vz-qty">548 ms</span>. Paged Dana (payments on-call).</p></li>
+          <li><time class="vz-qty">13:02</time><span class="vz-mark" data-state="warn"></span><p>Went above <span class="vz-qty">500 ms</span>. Pending for <span class="vz-qty">5 min</span>.</p></li>
+          <li><time class="vz-qty">09:41</time><span class="vz-mark" data-state="info"></span><p>Deploy of checkout-api, revision 4f2a91c.</p></li>
+        </ol></section>
+      <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">Related</h3></div>
+        <ul class="vz-links"><li><a class="vz-link" href="#">Checkout latency dashboard</a></li><li><a class="vz-link" href="#">Traces slower than 500 ms, in Explore</a></li><li><a class="vz-link" href="#">Error logs, in Explore</a></li></ul></section>
+    </div>
+  </div>
+</main>
+<script src="../../../dist/viz-chart.js"></script></body></html>

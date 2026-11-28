@@ -1,0 +1,287 @@
+TAP version 13
+# Subtest: B2, sequence D: a pod comes back while its slot is held only by a hidden series: it takes its slot back
+not ok 1 - B2, sequence D: a pod comes back while its slot is held only by a hidden series: it takes its slot back
+  ---
+  duration_ms: 65.411509
+  type: 'test'
+  location: '/home/user/viz/design-system/tools/test/chart-rules.test.mjs:185:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    P3 eight services > catalog missing from one result, catalog-canary arrives > catalog-canary filtered out > catalog comes back: 1 on screen in Other (the largest catalog) while slot 1 is held only by the hidden catalog-canary
+    
+    1 !== 0
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 0
+  actual: 1
+  operator: 'strictEqual'
+  stack: |-
+    checkStep (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:88:34)
+    step (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:142:82)
+    TestContext.<anonymous> (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:192:3)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.start (node:internal/test_runner/test:944:17)
+    startSubtestAfterBootstrap (node:internal/test_runner/harness:296:17)
+  ...
+# Subtest: B2, sequence D as the reviewer ran it (36 pods): hiding the newcomer gives its slot to the largest grey pod at once; the returning pod finds it held on screen
+not ok 2 - B2, sequence D as the reviewer ran it (36 pods): hiding the newcomer gives its slot to the largest grey pod at once; the returning pod finds it held on screen
+  ---
+  duration_ms: 12.055353
+  type: 'test'
+  location: '/home/user/viz/design-system/tools/test/chart-rules.test.mjs:198:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    P3 36 pods > the largest pod missing from one result while new01 arrives > new01 filtered out: 28 on screen in Other (the largest catalog-7d9f8c6b5-403cb) while slot 1 is held only by the hidden checkout-api-7d9f8c6b5-new01
+    
+    28 !== 0
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 0
+  actual: 28
+  operator: 'strictEqual'
+  stack: |-
+    checkStep (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:88:34)
+    step (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:142:82)
+    TestContext.<anonymous> (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:203:3)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+# Subtest: B2, sequence E: "Without the three largest", a larger pod arrives, "Colour the eight largest", clear: each step follows what is on screen
+not ok 3 - B2, sequence E: "Without the three largest", a larger pod arrives, "Colour the eight largest", clear: each step follows what is on screen
+  ---
+  duration_ms: 15.216277
+  type: 'test'
+  location: '/home/user/viz/design-system/tools/test/chart-rules.test.mjs:208:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    P3 36 pods > without the three largest: 28 on screen in Other (the largest catalog-7d9f8c6b5-403cb) while slot 1 is held only by the hidden checkout-api-7d9f8c6b5-3742c
+    
+    28 !== 0
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 0
+  actual: 28
+  operator: 'strictEqual'
+  stack: |-
+    checkStep (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:88:34)
+    step (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:142:82)
+    TestContext.<anonymous> (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:211:3)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: Rubric blocker: a readout naming a smaller series as highest
+ok 4 - Rubric blocker: a readout naming a smaller series as highest
+  ---
+  duration_ms: 2.367259
+  type: 'test'
+  ...
+# Subtest: Rubric blocker: a series on screen changing colour while it stays on screen (deploy churn, a filter, a query edit)
+not ok 5 - Rubric blocker: a series on screen changing colour while it stays on screen (deploy churn, a filter, a query edit)
+  ---
+  duration_ms: 7.762605
+  type: 'test'
+  location: '/home/user/viz/design-system/tools/test/chart-rules.test.mjs:229:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    P3 36 pods > a deploy replaces the three largest > a filter hides a new pod: 28 on screen in Other (the largest catalog-7d9f8c6b5-403cb) while slot 3 is held only by the hidden a-3
+    
+    28 !== 0
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 0
+  actual: 28
+  operator: 'strictEqual'
+  stack: |-
+    checkStep (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:88:34)
+    step (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:142:82)
+    TestContext.<anonymous> (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:233:70)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: Rubric blocker: the largest series on screen grey while a slot is held only by a hidden series
+not ok 6 - Rubric blocker: the largest series on screen grey while a slot is held only by a hidden series
+  ---
+  duration_ms: 2.911089
+  type: 'test'
+  location: '/home/user/viz/design-system/tools/test/chart-rules.test.mjs:236:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    P3 36 pods > filter out slot 2: 28 on screen in Other (the largest catalog-7d9f8c6b5-403cb) while slot 2 is held only by the hidden checkout-api-7d9f8c6b5-6ff93
+    
+    28 !== 0
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 0
+  actual: 28
+  operator: 'strictEqual'
+  stack: |-
+    checkStep (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:88:34)
+    step (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:142:82)
+    TestContext.<anonymous> (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:238:40)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: Rubric blocker: a series coming back grey or in another colour while no series on screen holds its slot
+ok 7 - Rubric blocker: a series coming back grey or in another colour while no series on screen holds its slot
+  ---
+  duration_ms: 4.300936
+  type: 'test'
+  ...
+# Subtest: Rubric blocker: a query edited and edited back not returning every colour (v5 review, image 02)
+not ok 8 - Rubric blocker: a query edited and edited back not returning every colour (v5 review, image 02)
+  ---
+  duration_ms: 8.19508
+  type: 'test'
+  location: '/home/user/viz/design-system/tools/test/chart-rules.test.mjs:246:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    + actual - expected
+    
+    + '8 coloured by size when first seen; 28 in Other'
+    - '8 coloured by size; 28 in Other'
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: '8 coloured by size; 28 in Other'
+  actual: '8 coloured by size when first seen; 28 in Other'
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:252:51)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: v5 image 01 under v7: filter out the three largest, a larger pod arrives, clear: the three take colours back only where nothing on screen holds them
+not ok 9 - v5 image 01 under v7: filter out the three largest, a larger pod arrives, clear: the three take colours back only where nothing on screen holds them
+  ---
+  duration_ms: 3.748537
+  type: 'test'
+  location: '/home/user/viz/design-system/tools/test/chart-rules.test.mjs:256:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    P3 36 pods > without the three largest: 28 on screen in Other (the largest catalog-7d9f8c6b5-403cb) while slot 1 is held only by the hidden checkout-api-7d9f8c6b5-3742c
+    
+    28 !== 0
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 0
+  actual: 28
+  operator: 'strictEqual'
+  stack: |-
+    checkStep (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:88:34)
+    step (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:142:82)
+    TestContext.<anonymous> (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:258:41)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: A filter round trip with nothing grey on screen returns every colour (eight services, filter in the query)
+ok 10 - A filter round trip with nothing grey on screen returns every colour (eight services, filter in the query)
+  ---
+  duration_ms: 2.537083
+  type: 'test'
+  ...
+# Subtest: Flow screen 5: one series, a query that returns 36 pods, and back: the one series returns in slot 1
+ok 11 - Flow screen 5: one series, a query that returns 36 pods, and back: the one series returns in slot 1
+  ---
+  duration_ms: 1.534972
+  type: 'test'
+  ...
+# Subtest: Random sequences of arrivals, departures, filters, query edits, Other opened and picked, recolouring (400 of 30 steps)
+not ok 12 - Random sequences of arrivals, departures, filters, query edits, Other opened and picked, recolouring (400 of 30 steps)
+  ---
+  duration_ms: 15.605721
+  type: 'test'
+  location: '/home/user/viz/design-system/tools/test/chart-rules.test.mjs:276:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    P3 first result > arrive pod-035 > leave pod-007 > pick a member of Other > values move > leave pod-035 > edit the query > edit it back > values move > values move > colour the eight largest > colour the eight largest > leave pod-001 > arrive pod-039 > edit the query > edit it back > values move > leave pod-003 > filter in the chart (3): 1 on screen in Other (the largest pod-005) while slot 4 is held only by the hidden pod-006
+    
+    1 !== 0
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 0
+  actual: 1
+  operator: 'strictEqual'
+  stack: |-
+    checkStep (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:88:34)
+    show (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:152:123)
+    runSequence (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:159:140)
+    TestContext.<anonymous> (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:277:43)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: M2: values below zero: the axis extends below zero and every value lies on the plot
+ok 13 - M2: values below zero: the axis extends below zero and every value lies on the plot
+  ---
+  duration_ms: 0.512753
+  type: 'test'
+  ...
+# Subtest: M2: a threshold is on the axis and does not inflate it
+ok 14 - M2: a threshold is on the axis and does not inflate it
+  ---
+  duration_ms: 0.142192
+  type: 'test'
+  ...
+# Subtest: M2: precision is one decimal place finer than the place of the step's leading digit
+ok 15 - M2: precision is one decimal place finer than the place of the step's leading digit
+  ---
+  duration_ms: 2.332238
+  type: 'test'
+  ...
+# Subtest: M2: negative values keep their sign, and a small one says which side of zero it is
+ok 16 - M2: negative values keep their sign, and a small one says which side of zero it is
+  ---
+  duration_ms: 0.341153
+  type: 'test'
+  ...
+# Subtest: M1 (v5), image 06: a member of Other above the threshold is in the text form
+ok 17 - M1 (v5), image 06: a member of Other above the threshold is in the text form
+  ---
+  duration_ms: 7.666962
+  type: 'test'
+  ...
+1..17
+# tests 17
+# suites 0
+# pass 9
+# fail 8
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 265.144702

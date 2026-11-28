@@ -1,0 +1,116 @@
+{
+ "label": "B",
+ "cores": 4,
+ "runs": [
+  {
+   "layout": "1440-fine",
+   "run": 0,
+   "load": 1.75,
+   "firstStatMs": 1501,
+   "allPanelsMs": 1507,
+   "openRangeMs": 43,
+   "openPanelCommandsMs": 57,
+   "reloadShift": 0,
+   "reloadLandedOffPx": -198
+  },
+  {
+   "layout": "1440-fine",
+   "run": 1,
+   "load": 1.77,
+   "firstStatMs": 1270,
+   "allPanelsMs": 1294,
+   "openRangeMs": 58,
+   "openPanelCommandsMs": 61,
+   "reloadShift": 0,
+   "reloadLandedOffPx": -198
+  },
+  {
+   "layout": "1440-fine",
+   "run": 2,
+   "load": 2.19,
+   "firstStatMs": 1585,
+   "allPanelsMs": 1618,
+   "openRangeMs": 43,
+   "openPanelCommandsMs": 39,
+   "reloadShift": 0,
+   "reloadLandedOffPx": -198
+  },
+  {
+   "layout": "1440-fine",
+   "run": 3,
+   "load": 2.42,
+   "firstStatMs": 1350,
+   "allPanelsMs": 1374,
+   "openRangeMs": 33,
+   "openPanelCommandsMs": 43,
+   "reloadShift": 0,
+   "reloadLandedOffPx": -198
+  },
+  {
+   "layout": "1440-fine",
+   "run": 4,
+   "load": 2.3,
+   "firstStatMs": 1363,
+   "allPanelsMs": 1369,
+   "openRangeMs": 64,
+   "openPanelCommandsMs": 40,
+   "reloadShift": 0,
+   "reloadLandedOffPx": -198
+  },
+  {
+   "layout": "400-coarse",
+   "run": 0,
+   "load": 2.1,
+   "firstStatMs": 1230,
+   "allPanelsMs": 1243,
+   "openRangeMs": 34,
+   "openPanelCommandsMs": 33,
+   "reloadShift": 0.0002,
+   "reloadLandedOffPx": -306
+  },
+  {
+   "layout": "400-coarse",
+   "run": 1,
+   "load": 2.1,
+   "firstStatMs": 1455,
+   "allPanelsMs": 1472,
+   "openRangeMs": 33,
+   "openPanelCommandsMs": 92,
+   "reloadShift": 0.0002,
+   "reloadLandedOffPx": -351
+  },
+  {
+   "layout": "400-coarse",
+   "run": 2,
+   "load": 2.01,
+   "firstStatMs": 1320,
+   "allPanelsMs": 1335,
+   "openRangeMs": 57,
+   "openPanelCommandsMs": 33,
+   "reloadShift": 0.0002,
+   "reloadLandedOffPx": -306
+  },
+  {
+   "layout": "400-coarse",
+   "run": 3,
+   "load": 2.01,
+   "firstStatMs": 1455,
+   "allPanelsMs": 1476,
+   "openRangeMs": 36,
+   "openPanelCommandsMs": 73,
+   "reloadShift": 0.0002,
+   "reloadLandedOffPx": -306
+  },
+  {
+   "layout": "400-coarse",
+   "run": 4,
+   "load": 2.01,
+   "firstStatMs": 1430,
+   "allPanelsMs": 1442,
+   "openRangeMs": 71,
+   "openPanelCommandsMs": 66,
+   "reloadShift": 0.0002,
+   "reloadLandedOffPx": -306
+  }
+ ]
+}

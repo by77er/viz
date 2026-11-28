@@ -1,0 +1,17 @@
+<!-- @dsCard group="Overlays" height=400 -->
+<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0}body{padding:var(--space-6)}.demo-frame{position:relative;min-height:calc(var(--dialog) - var(--space-12))}.demo-frame .vz-scrim{position:absolute}</style></head><body class="vz">
+<div class="demo-frame">
+  <div class="vz-controls"><button class="vz-button" data-tone="blue">New dashboard</button><p class="vz-secondary">The page behind the dialog, under the scrim.</p></div>
+  <div class="vz-scrim">
+    <div class="vz-dialog" role="dialog" aria-modal="true" aria-labelledby="dlg-t">
+      <h2 class="vz-dialog-title" id="dlg-t">Delete "Checkout latency"?</h2>
+      <p class="vz-dialog-text">The dashboard and its 14 revisions are removed for everyone in <span class="vz-qty">acme-prod</span>. Monitors that link to it keep working.</p>
+      <label class="vz-field"><span class="vz-label">Type the dashboard name, Checkout latency, to confirm</span><input class="vz-input" data-confirm="Checkout latency" autocomplete="off"></label>
+      <div class="vz-dialog-actions"><button class="vz-button" data-quiet>Cancel</button><button class="vz-button" data-tone="red" disabled data-confirmed-by>Delete dashboard</button></div>
+    </div>
+  </div>
+</div>
+<script>
+document.querySelectorAll("[data-confirm]:not([data-ready])").forEach((i) => { i.dataset.ready = "1"; const b = i.closest(".vz-dialog").querySelector("[data-confirmed-by]"); i.addEventListener("input", () => { b.disabled = i.value.trim() !== i.dataset.confirm }) })
+</script>
+</body></html>

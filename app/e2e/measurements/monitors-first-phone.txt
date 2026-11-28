@@ -1,0 +1,13 @@
+monitors, phone 400 x 800, touch, coarse pointer, 20 runs (20 counted), measured here 2026-11-28T09:51:45.877Z to 2026-11-28T09:53:05.164Z
+cores 4, calibration 335 ms, 1-minute load 0.83 to 1.06 (median 0.96), 0 of 40 samples above 4: judged
+
+| What | Limit | p75 (median, worst) |
+|---|---|---|
+| List -> monitor: its page (name, state line, waiting region) painted (`viewChange`) | 100 ms | 180 (151, 248) |
+| That press, Interaction to Next Paint (`viewInp`) | 200 ms | 160 (144, 224) |
+| The chart: query body arrived -> painted (`firstPaint`) | 100 ms | 160 (132, 235) |
+| Acknowledge pressed -> busy painted (`ackPressed`) | 100 ms | 53 (47, 72) |
+| That press, Interaction to Next Paint (`ackInp`) | 200 ms | 48 (40, 56) |
+| Acknowledge pressed -> "Acknowledged by you at …" painted (`ackShown`; one round trip at 165 ms) | context | 250 (241, 263) |
+| Acknowledge pressed -> the re-read painted (history says so) (`ackReread`; two round trips) | context | 440 (431, 480) |
+| Layout shift, press on the list until the monitor has drawn, every entry (`cls.all`) | 0.05 | 0.2262 (0.2262, 0.2264) |

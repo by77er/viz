@@ -1,0 +1,25 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>viz · Inline number candidates</title><link rel="stylesheet" href="../../../dist/viz.css">
+<!-- Review page, not product: the candidates are written as inline styles on purpose, so each can be compared with what the system ships. -->
+<style>body{margin:0}.grid{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:var(--space-3) var(--space-6);align-items:baseline;max-width:1100px}
+.a{font:var(--text-data)} .b{font-variant-numeric:tabular-nums} .m{font-family:var(--font-mono);font-size:var(--text-data-size)} .d{font-family:var(--font-mono);font-size:var(--text-data-size);white-space:nowrap}
+.gap{font:var(--text-micro);color:var(--ink-muted)}</style></head><body class="vz"><main class="vz-page">
+<h1 class="vz-section-title">A number with its unit inside a sentence: five candidates</h1>
+<div class="grid" id="grid">
+  <span class="vz-label">A. vz-num inline (v3)</span><p data-c="a" style="margin:0">Evaluated <span class="a">20 s</span> ago, every <span class="a">4 h</span> while firing; above <span class="a">500 ms</span> for <span class="a">5 min</span>. Errors <span class="a">2.41%</span> of <span class="a">1,284 req/s</span> since <span class="a">13:07</span>. <span class="gap"></span></p>
+  <span class="vz-label">B. Sans, tabular figures</span><p data-c="b" style="margin:0">Evaluated <span class="b">20 s</span> ago, every <span class="b">4 h</span> while firing; above <span class="b">500 ms</span> for <span class="b">5 min</span>. Errors <span class="b">2.41%</span> of <span class="b">1,284 req/s</span> since <span class="b">13:07</span>. <span class="gap"></span></p>
+  <span class="vz-label">C. Mono digits, sans unit</span><p data-c="c" style="margin:0">Evaluated <span class="m">20</span> s ago, every <span class="m">4</span> h while firing; above <span class="m">500</span> ms for <span class="m">5</span> min. Errors <span class="m">2.41</span>% of <span class="m">1,284</span> req/s since <span class="m">13:07</span>. <span class="gap"></span></p>
+  <span class="vz-label">D. Mono, U+202F before the unit</span><p data-c="d" style="margin:0">Evaluated <span class="d">20&#8239;s</span> ago, every <span class="d">4&#8239;h</span> while firing; above <span class="d">500&#8239;ms</span> for <span class="d">5&#8239;min</span>. Errors <span class="d">2.41%</span> of <span class="d">1,284&#8239;req/s</span> since <span class="d">13:07</span>. <span class="gap"></span></p>
+  <span class="vz-label">E. vz-qty (chosen)</span><p data-c="e" style="margin:0">Evaluated <span class="vz-qty">20 s</span> ago, every <span class="vz-qty">4 h</span> while firing; above <span class="vz-qty">500 ms</span> for <span class="vz-qty">5 min</span>. Errors <span class="vz-qty">2.41%</span> of <span class="vz-qty">1,284 req/s</span> since <span class="vz-qty">13:07</span>. <span class="gap"></span></p>
+  <span class="vz-label">A at small size</span><p data-c="a2" style="margin:0;font:var(--text-small);color:var(--ink-secondary)">Firing since <span class="a">13:07</span> (<span class="a">2 h 9 min</span>). Errors <span class="a">2.41%</span> of <span class="a">1,284 req/s</span>, updated <span class="a">12 s</span> ago. <span class="gap"></span></p>
+  <span class="vz-label">E at small size</span><p data-c="e2" style="margin:0;font:var(--text-small);color:var(--ink-secondary)">Firing since <span class="vz-qty">13:07</span> (<span class="vz-qty">2 h 9 min</span>). Errors <span class="vz-qty">2.41%</span> of <span class="vz-qty">1,284 req/s</span>, updated <span class="vz-qty">12 s</span> ago. <span class="gap"></span></p>
+</div>
+<p class="vz-panel-desc">Grey figures: width of the space between number and unit, and the height of the one-line sentence (its own line is 20 px at ui, 18 px at small).</p>
+</main>
+<script>
+// Measure, once the fonts are in, each sentence's gap between number and unit and its height.
+document.fonts.ready.then(() => { for (const p of document.querySelectorAll('[data-c]')) { const w = document.createTreeWalker(p, NodeFilter.SHOW_TEXT); let gap = null, n
+  while ((n = w.nextNode())) { const i = n.textContent.search(/[0-9][  ]+[a-z%]/); if (i >= 0 && gap == null) { const r = document.createRange(); r.setStart(n, i + 1); r.setEnd(n, i + 2); gap = r.getBoundingClientRect().width }
+    if (gap == null && /^\s*s ago/.test(n.textContent) && n.previousSibling) { const r = document.createRange(); r.setStart(n, 0); r.setEnd(n, 1); gap = r.getBoundingClientRect().width } }
+  const h = p.getBoundingClientRect().height
+  p.querySelector('.gap').textContent = `gap ${gap?.toFixed(1)} px · line ${h.toFixed(0)} px` } })
+</script></body></html>

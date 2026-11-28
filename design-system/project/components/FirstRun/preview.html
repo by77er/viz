@@ -1,0 +1,14 @@
+<!-- @dsCard group="Feedback" height=420 -->
+<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0}body{padding:var(--space-6)}</style></head><body class="vz">
+<div class="vz-start">
+  <h2 class="vz-section-title">No data yet</h2>
+  <p>Nothing has been sent to acme-prod. Send the first samples and they appear here within <span class="vz-qty">10 s</span>.</p>
+  <ol class="vz-steps">
+    <li><p>Create a write key. It is shown once.</p><div class="vz-controls"><button class="vz-button" data-tone="blue">New key</button></div></li>
+    <li><p>Point a collector at viz. Put the key in <span class="vz-qty">/etc/viz/key</span>.</p><div class="vz-query">remote_write:
+  - url: https://vis.bitcru.sh/api/v1/write
+    authorization: { credentials_file: /etc/viz/key }</div><div class="vz-controls"><button class="vz-button" data-size="sm">Copy</button></div></li>
+    <li><p>Wait for the first sample.</p><div class="vz-progress" data-unmeasured><div class="vz-progress-text"><span role="status">No samples received yet. Checked <span class="vz-qty">3 s</span> ago.</span></div></div></li>
+  </ol>
+</div>
+</body></html>

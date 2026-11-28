@@ -1,0 +1,387 @@
+{
+ "name": "st",
+ "url": "reviews/system-v4/compositions/states.html",
+ "states": [
+  {
+   "name": "default-button-rest",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [],
+   "clip": "#b-default",
+   "pad": 12
+  },
+  {
+   "name": "default-button-hover",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [
+    {
+     "hover": "#b-default"
+    }
+   ],
+   "clip": "#b-default",
+   "pad": 12
+  },
+  {
+   "name": "default-button-pressed",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [
+    {
+     "press": "#b-default"
+    }
+   ],
+   "clip": "#b-default",
+   "pad": 12
+  },
+  {
+   "name": "default-button-focus",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [
+    {
+     "focus": "#b-default"
+    }
+   ],
+   "clip": "#b-default",
+   "pad": 12
+  },
+  {
+   "name": "quiet-button-rest",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [],
+   "clip": "#b-quiet",
+   "pad": 12
+  },
+  {
+   "name": "quiet-button-hover",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [
+    {
+     "hover": "#b-quiet"
+    }
+   ],
+   "clip": "#b-quiet",
+   "pad": 12
+  },
+  {
+   "name": "quiet-button-pressed",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [
+    {
+     "press": "#b-quiet"
+    }
+   ],
+   "clip": "#b-quiet",
+   "pad": 12
+  },
+  {
+   "name": "quiet-button-focus",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [
+    {
+     "focus": "#b-quiet"
+    }
+   ],
+   "clip": "#b-quiet",
+   "pad": 12
+  },
+  {
+   "name": "blue-button-rest",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [],
+   "clip": "#b-blue",
+   "pad": 12
+  },
+  {
+   "name": "blue-button-hover",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [
+    {
+     "hover": "#b-blue"
+    }
+   ],
+   "clip": "#b-blue",
+   "pad": 12
+  },
+  {
+   "name": "blue-button-pressed",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [
+    {
+     "press": "#b-blue"
+    }
+   ],
+   "clip": "#b-blue",
+   "pad": 12
+  },
+  {
+   "name": "blue-button-focus",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [
+    {
+     "focus": "#b-blue"
+    }
+   ],
+   "clip": "#b-blue",
+   "pad": 12
+  },
+  {
+   "name": "link-rest",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [],
+   "clip": "#b-link",
+   "pad": 12
+  },
+  {
+   "name": "link-hover",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [
+    {
+     "hover": "#b-link"
+    }
+   ],
+   "clip": "#b-link",
+   "pad": 12
+  },
+  {
+   "name": "link-pressed",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [
+    {
+     "press": "#b-link"
+    }
+   ],
+   "clip": "#b-link",
+   "pad": 12
+  },
+  {
+   "name": "link-focus",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [
+    {
+     "focus": "#b-link"
+    }
+   ],
+   "clip": "#b-link",
+   "pad": 12
+  },
+  {
+   "name": "segment-rest",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [],
+   "clip": "#seg",
+   "pad": 8
+  },
+  {
+   "name": "segment-hover",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [
+    {
+     "hover": "#seg-table"
+    }
+   ],
+   "clip": "#seg",
+   "pad": 8
+  },
+  {
+   "name": "segment-pressed",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [
+    {
+     "press": "#seg-table"
+    }
+   ],
+   "clip": "#seg",
+   "pad": 8
+  },
+  {
+   "name": "segment-focus",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [
+    {
+     "focus": "#seg-table"
+    }
+   ],
+   "clip": "#seg",
+   "pad": 8
+  },
+  {
+   "name": "menu-row-rest",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [],
+   "clip": "#menu",
+   "pad": 8
+  },
+  {
+   "name": "menu-row-hover",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [
+    {
+     "hover": "#menu-4h"
+    }
+   ],
+   "clip": "#menu",
+   "pad": 8
+  },
+  {
+   "name": "menu-row-pressed",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [
+    {
+     "press": "#menu-4h"
+    }
+   ],
+   "clip": "#menu",
+   "pad": 8
+  },
+  {
+   "name": "menu-row-focus",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [
+    {
+     "focus": "#menu-4h"
+    }
+   ],
+   "clip": "#menu",
+   "pad": 8
+  },
+  {
+   "name": "sort-head-rest",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [],
+   "clip": "#sortable thead th:first-child",
+   "pad": 4
+  },
+  {
+   "name": "sort-head-hover",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [
+    {
+     "hover": "#sort-name"
+    }
+   ],
+   "clip": "#sortable thead th:first-child",
+   "pad": 4
+  },
+  {
+   "name": "sort-head-pressed",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [
+    {
+     "press": "#sort-name"
+    }
+   ],
+   "clip": "#sortable thead th:first-child",
+   "pad": 4
+  },
+  {
+   "name": "sort-head-focus",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [
+    {
+     "focus": "#sort-name"
+    }
+   ],
+   "clip": "#sortable thead th:first-child",
+   "pad": 4
+  },
+  {
+   "name": "row-key-link-rest",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [],
+   "clip": "#sortable tbody tr:first-child td:first-child",
+   "pad": 4
+  },
+  {
+   "name": "row-key-link-hover",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [
+    {
+     "hover": "#row-link"
+    }
+   ],
+   "clip": "#sortable tbody tr:first-child td:first-child",
+   "pad": 4
+  },
+  {
+   "name": "row-key-link-pressed",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [
+    {
+     "press": "#row-link"
+    }
+   ],
+   "clip": "#sortable tbody tr:first-child td:first-child",
+   "pad": 4
+  },
+  {
+   "name": "row-key-link-focus",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [
+    {
+     "focus": "#row-link"
+    }
+   ],
+   "clip": "#sortable tbody tr:first-child td:first-child",
+   "pad": 4
+  },
+  {
+   "name": "legend-row-rest",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [],
+   "clip": "#legend tbody tr:nth-child(3)",
+   "pad": 4
+  },
+  {
+   "name": "legend-row-hover",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [
+    {
+     "hover": "#legend tbody tr:nth-child(3) .vz-series"
+    }
+   ],
+   "clip": "#legend tbody tr:nth-child(3)",
+   "pad": 4
+  },
+  {
+   "name": "legend-row-pressed",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [
+    {
+     "press": "#legend tbody tr:nth-child(3) .vz-series"
+    }
+   ],
+   "clip": "#legend tbody tr:nth-child(3)",
+   "pad": 4
+  },
+  {
+   "name": "legend-row-focus",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [
+    {
+     "focus": "#legend tbody tr:nth-child(3) .vz-series"
+    }
+   ],
+   "clip": "#legend tbody tr:nth-child(3)",
+   "pad": 4
+  },
+  {
+   "name": "legend-row-chosen",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [
+    {
+     "click": "#legend tbody tr:nth-child(3) .vz-series"
+    },
+    {
+     "eval": "document.activeElement.blur()"
+    }
+   ],
+   "clip": "#legend tbody tr:nth-child(3)",
+   "pad": 4
+  },
+  {
+   "name": "busy-button-rest",
+   "url": "reviews/system-v4/compositions/states.html",
+   "steps": [],
+   "clip": "#b-busy",
+   "pad": 12
+  }
+ ]
+}

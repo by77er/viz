@@ -1,0 +1,112 @@
+ok 1 - B1, image 01: filter out the three largest, a larger pod arrives, clear: the largest returns in its own colour
+ok 2 - B1, image 02: edit the query to another service and back: every colour returns, and the note stays true
+ok 3 - B1, flow screen 5: one series, a query that returns 36 pods, and back: the one series returns in slot 1
+ok 4 - B1: a filter in the query (not the chart) applied and cleared, with pods arriving meanwhile
+ok 5 - B1: random sequences of arrivals, departures, filters, query edits, Other opened and picked, recolouring
+ok 6 - M2: values below zero: the axis extends below zero and every value lies on the plot
+ok 7 - M2: a threshold is on the axis and does not inflate it
+ok 8 - M2: precision is one decimal place finer than the place of the step's leading digit
+ok 9 - M2: negative values keep their sign, and a small one says which side of zero it is
+ok 10 - M1, image 06: a member of Other above the threshold is in the text form
+ok 11 - R1: swatch ring removed
+ok 12 - R2: pressed equal to hover (light)
+ok 13 - R3: series-4 back to v3 \#eda100 (light)
+ok 14 - R4: crosshair dot edge to rule
+ok 15 - R5: status-info equal to blue (light)
+ok 16 - R6: two near-identical neighbours (series-3 a copy of series-2, light)
+ok 17 - R7: a literal 3px
+ok 18 - R8: series-other near white (light)
+ok 19 - R9: swatch ring overridden on hover
+ok 20 - R10: ink-muted on pressed in the legend (the pressed override removed) # SKIP needs a browser: VIZ_SLOW=1
+ok 21 - R11: ink-muted on rule in the legend (the chosen override removed) # SKIP needs a browser: VIZ_SLOW=1
+ok 22 - R12: the plot filled with hover on hover
+ok 23 - R13: series-8 set to status-critical (light)
+ok 24 - R14: a literal angle (deg)
+ok 25 - R15: a literal percentage
+ok 26 - R16: a literal unitless weight
+ok 27 - R17: an opaque scrim (light)
+ok 28 - R18: harmless: the swatch rule reformatted onto two lines
+ok 29 - N1: swatch ring removed on a pressed row only
+ok 30 - N2: neighbours at one lightness (series-2 as dark as series-1, light)
+ok 31 - N3: slot 7 drawn solid (its dash removed)
+ok 32 - N4: lines that step back drawn in rule
+ok 33 - N5: a breakpoint that is not a token (800px)
+ok 34 - N6: token-lint-ignore without a reason
+ok 35 - N7: a series in the dark theme below 3:1 on rule
+ok 36 - N8: chosen legend row text in ink-muted # SKIP needs a browser: VIZ_SLOW=1
+ok 37 - N9: a waterfall bar drawn in rule # SKIP needs a browser: VIZ_SLOW=1
+ok 38 - N10: the legend row's ring back to an outline on the row
+ok 39 - N11: a matched search term in ink-muted # SKIP needs a browser: VIZ_SLOW=1
+ok 40 - N12: "3 spans inside" in ink-muted # SKIP needs a browser: VIZ_SLOW=1
+ok 41 - N13: a literal line count for a cut log message
+ok 42 - X1: a named colour
+ok 43 - X2: RGB(255,0,0), upper case
+ok 44 - X3: a tinted table head from color-mix of tokens at 50%
+ok 45 - X4: 3PX, upper case
+ok 46 - X5: 1ex, 2vmin, 0.5lh, 3cqi
+ok 47 - X6: font-weight: bold
+ok 48 - X7: a breakpoint in em
+ok 49 - X8: border-radius: 50% (fully rounded)
+ok 50 - X9: a gradient built from tokens
+ok 51 - X10: a second shadow built from tokens
+ok 52 - X11: capitals and tracking on labels
+ok 53 - X12: an off-scale calc(var(--space-1) * 1.5)
+ok 54 - X13: filter: opacity(0.5) and filter: brightness(0.9)
+ok 55 - X14: linear and ease-in-out
+ok 56 - X15: a press that eases
+ok 57 - X16: selection in blue
+ok 58 - X17: a series colour on a panel rule
+ok 59 - X18: the reduced-motion block removed
+ok 60 - X19: the focus ring removed everywhere
+ok 61 - X20: every coarse-pointer hit area removed
+ok 62 - X21: dashed swatches drawn solid
+ok 63 - X22: emphasis removed
+ok 64 - X23: touch-action removed
+ok 65 - X24: series-5 a copy of series-1 (light)
+ok 66 - X25: ink-disabled equal to ink-muted (light)
+ok 67 - X26: series-4 near grey (light)
+ok 68 - X27: the chart reservation ignoring the coarse legend row (v4's B2 back)
+ok 69 - X28: a main path moved into a sentence
+ok 70 - X29: a single-quoted style='font-weight:600;width:37%' in a preview
+ok 71 - X30: opacity and weight set from script
+ok 72 - X31: row actions revealed only on hover
+ok 73 - X32: text below micro
+ok 74 - V1: the table wrap unpositioned (B2.1)
+ok 75 - V2: a state in a kept column no longer wraps (B2.2)
+ok 76 - V3: "Actions…" without its place in the folded row (B2.2)
+ok 77 - V4: the two fold forms drift apart
+ok 78 - V5: a finger's press: the blue button's [data-pressed] twin removed (M3)
+ok 79 - V6: the caption a flex row again (flows G17)
+ok 80 - V7: links in list items and help lines drawn as controls again (m1)
+ok 81 - V8: a cut key link's underline removed (m2)
+ok 82 - V9: the reservation keyed on an inline style attribute again (m7)
+ok 83 - V10: legend rows reserved a hairline taller than drawn (v5) # SKIP needs a browser: VIZ_SLOW=1
+ok 84 - V11: after an error, swatches keep their colour (m3)
+ok 85 - V12: series-other back to v5 (light \#767676, 1.02:1 from series-4)
+ok 86 - V13: the scroll edge back to an inset shadow under the cells (m14)
+ok 87 - V14: status marks centred across lines, not on the first
+ok 88 - V15: a kept column narrower than its phrase
+ok 89 - V17: a status's words and its time side by side, not one run (the time leaves the line)
+ok 90 - V16: a shadow-overlay on a panel (the one shadow off an overlay)
+ok 91 - C1: v5's order: the view's filter applied before colours are assigned (image 01)
+ok 92 - C2: a returning series that was in Other takes a free slot (the round trip is not the identity)
+ok 93 - C3: a returning series never gets its slot back (image 02)
+ok 94 - C4: new series never take a reserved slot (the largest grey while a slot is free)
+ok 95 - C5: "highest" over the coloured lines only (v4 B1)
+ok 96 - C6: the threshold's series over coloured lines only (M1, image 06)
+ok 97 - C7: the note counted over the whole result, not the legend
+ok 98 - C8: a negative value loses its sign
+ok 99 - C9: the axis starts at zero whatever the data (image 07)
+ok 100 - A1: the hidden "Actions" head escapes the table (B2.1, image 03) # SKIP needs a browser: VIZ_SLOW=1
+ok 101 - A2: "Burning budget" over "Actions…" in a kept column (B2.2, image 04): the status nowrap again, and the wrap and the minimum width removed from both fold forms, as in v5 # SKIP needs a browser: VIZ_SLOW=1
+ok 102 - A3: "Actions…" off screen in a folded row (B2.2, image 04) # SKIP needs a browser: VIZ_SLOW=1
+ok 103 - A4: a link in a help line drawn as a control (m1, image 08) # SKIP needs a browser: VIZ_SLOW=1
+ok 104 - H1: harmless: a rule reformatted across lines
+ok 105 - H2: harmless: a comment added
+ok 106 - H3: harmless: a new rule written in tokens only
+ok 107 - H4: harmless: a data custom property in a style attribute
+# tests 107
+# pass 96
+# fail 0
+# skipped 11
+# duration_ms 74692.534027

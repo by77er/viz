@@ -1,0 +1,606 @@
+<!-- @dsCard group="Data" height=5000 -->
+<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0}body{padding:var(--space-6)}.chartdemo{display:flex;flex-direction:column;gap:var(--space-8);max-width:calc(2 * var(--dialog))}</style></head><body class="vz">
+<div class="chartdemo">
+  <section class="vz-panel">
+    <div class="vz-panel-head"><h3 class="vz-panel-title">Latency by route, p99</h3><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min max</span><span>· updated <span class="vz-qty">12 s</span> ago</span></span></div>
+    <p class="vz-panel-desc">Three series: direct labels in the right gutter, a labelled threshold, a firing interval, two markers and a gap. Arrow keys move the crosshair; a marker under the crosshair is named in the readout.</p>
+    <div class="vz-panel-body"><div class="vz-chart" data-demo="s3" data-view="demo-routes" data-text-form="demo-routes-text" style="--legend-rows:3;--legend-notes:1"></div></div>
+    <details class="vz-details"><summary>Text form</summary><div class="vz-text-form" id="demo-routes-text"></div></details>
+  </section>
+  <section class="vz-panel">
+    <div class="vz-panel-head"><h3 class="vz-panel-title">Request rate by service</h3><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min mean</span><span>· updated <span class="vz-qty">12 s</span> ago</span></span></div>
+    <p class="vz-panel-desc">Eight series. Slots 1 to 4 are solid, 5 to 8 dashed; neighbours alternate darker and lighter. Point at a legend row to bring its line forward. Filter out the three largest and clear the filter: nothing on screen is grey, so nothing takes their slots, and every colour returns.</p>
+    <div class="vz-controls"><div class="vz-segmented" role="group" aria-label="Services shown" data-filter-for="demo-services"><button aria-pressed="true" data-filter="">All services</button><button aria-pressed="false" data-filter="top3">Without the three largest</button></div></div>
+    <div class="vz-panel-body"><div class="vz-chart" data-demo="s8" data-view="demo-services" style="--legend-rows:8;--legend-notes:1"></div></div>
+  </section>
+  <section class="vz-panel">
+    <div class="vz-panel-head"><h3 class="vz-panel-title">CPU by pod</h3><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min max</span><span>· updated <span class="vz-qty">12 s</span> ago</span></span></div>
+    <p class="vz-panel-desc">Thirty-six series: the eight largest are coloured, the other 28 are one band and one legend row. What a person sees wins: filter out the three largest and the three largest pods left in Other take their colours at once; add a pod larger than all of them and it joins Other; clear the filter and the three come back in Other too, which the note says beside "Colour the eight largest". Show another service's pods and come back: every colour returns. Narrow the query to node-b: the eight largest pods left take the colours, as a filter would.</p>
+    <div class="vz-controls"><div class="vz-segmented" role="group" aria-label="Pods shown" data-filter-for="demo-pods"><button aria-pressed="true" data-filter="">All pods</button><button aria-pressed="false" data-filter="top3">Without the three largest</button></div><div class="vz-segmented" role="group" aria-label="Query" data-query-for="demo-pods"><button aria-pressed="true" data-query="">Three services</button><button aria-pressed="false" data-query="search">Search only</button><button aria-pressed="false" data-query="node-b">node-b only</button></div><button class="vz-button" data-size="sm" data-add-pod="demo-pods">Add a pod larger than the rest</button></div>
+    <div class="vz-panel-body"><div class="vz-chart" data-demo="s36" data-view="demo-pods" data-text-form="demo-pods-text" style="--legend-rows:10;--legend-notes:2"></div></div>
+    <details class="vz-details"><summary>Text form</summary><div class="vz-text-form" id="demo-pods-text"></div></details>
+  </section>
+  <section class="vz-panel">
+    <div class="vz-panel-head"><h3 class="vz-panel-title">CPU by pod, against the limit</h3><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min max</span></span></div>
+    <p class="vz-panel-desc">A member of Other above a threshold: the band crosses the line, the readout's "highest" names it, and the text form lists it among the series above the limit, at the end of the range and earlier.</p>
+    <div class="vz-panel-body"><div class="vz-chart" data-demo="s36limit" data-then="limit" data-view="demo-limit" data-text-form="demo-limit-text" style="--legend-rows:11;--legend-notes:2"></div></div>
+    <details class="vz-details"><summary>Text form</summary><div class="vz-text-form" id="demo-limit-text"></div></details>
+  </section>
+  <section class="vz-panel">
+    <div class="vz-panel-head"><h3 class="vz-panel-title">CPU by pod, three of Other picked out</h3><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min max</span></span></div>
+    <p class="vz-panel-desc">Other opened and its three largest members chosen: each is drawn in ink, solid, dashed and dotted in the order chosen, and its swatch shows the same pattern. The other rows are off until one is chosen.</p>
+    <div class="vz-panel-body"><div class="vz-chart" data-demo="s36" data-view="demo-picked" data-pick="3" style="--legend-rows:30;--legend-notes:2"></div></div>
+  </section>
+  <section class="vz-panel">
+    <div class="vz-panel-head"><h3 class="vz-panel-title">CPU by pod, the query narrowed to node-b</h3><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min max</span></span></div>
+    <p class="vz-panel-desc">The 36 pods, then the query edited to node-b: the pods that left are not on screen, so the eight largest pods left take the colours at once, as the same dashboard filter would. The four others are Other, where every figure is below 0.1, and "Colour the eight largest" is offered.</p>
+    <div class="vz-panel-body"><div class="vz-chart" data-demo="s36" data-then="nodeb" data-view="demo-nodeb" style="--legend-rows:10;--legend-notes:2"></div></div>
+  </section>
+  <section class="vz-panel">
+    <div class="vz-panel-head"><h3 class="vz-panel-title">Request rate, change on last week</h3><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min mean</span></span></div>
+    <p class="vz-panel-desc">Values below zero: the axis runs from a round step below the lowest value to one above the highest, zero is always a tick and drawn in the stronger rule, and figures carry a minus sign.</p>
+    <div class="vz-panel-body"><div class="vz-chart" data-demo="delta" data-view="demo-delta" data-text-form="demo-delta-text" style="--legend-rows:2;--legend-notes:0"></div></div>
+    <details class="vz-details"><summary>Text form</summary><div class="vz-text-form" id="demo-delta-text"></div></details>
+  </section>
+  <section class="vz-panel">
+    <div class="vz-panel-head"><h3 class="vz-panel-title">Memory by service</h3><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min max</span></span></div>
+    <p class="vz-panel-desc">The data arrives in bytes. The chart picks one unit from the largest value (MiB) and steps the ticks in binary-round values.</p>
+    <div class="vz-panel-body"><div class="vz-chart" data-demo="bytes" data-view="demo-bytes" style="--legend-rows:3;--legend-notes:0"></div></div>
+  </section>
+  <section class="vz-panel">
+    <div class="vz-panel-head"><h3 class="vz-panel-title">Error ratio, if this rule had existed</h3><span class="vz-panel-meta"><span data-range>11 Nov 15:16 to 18 Nov 15:16</span><span>· 5 min max</span></span></div>
+    <p class="vz-panel-desc">A backtest: one series (no direct label; the title names it), each interval in which the rule would have fired shaded and labelled with its length.</p>
+    <div class="vz-panel-body"><div class="vz-chart" data-demo="backtest" data-view="demo-backtest" data-size="sm" style="--legend-rows:1;--legend-notes:0"></div></div>
+  </section>
+  <section class="vz-panel">
+    <div class="vz-panel-head"><h3 class="vz-panel-title">Request rate by service</h3><span class="vz-panel-meta"><span class="vz-panel-note">Showing the previous query</span><span>· <span data-range>09:16 to 15:16</span></span><span>· updated <span class="vz-qty">48 s</span> ago</span></span></div>
+    <p class="vz-panel-desc">An error after the chart was drawn: the message lies over the plot at its height, and the legend keeps the previous result's names and figures, which is what the head's "Showing the previous query" and age describe. Its swatches are hollow, because no line is drawn for them.</p>
+    <div class="vz-panel-body"><div class="vz-chart" data-demo="s8" data-view="demo-error" data-error-title="The query could not run" data-error-text="Unexpected ) at character 41. A range such as [5m] is missing after the selector." data-error-action="Go to character 41" style="--legend-rows:8;--legend-notes:1"></div></div>
+  </section>
+</div>
+<script>
+/* viz reference chart. Plain SVG, no library. Every colour, stroke and type size comes from classes in components.css;
+   the script computes geometry only, at the pixel size of its region, and redraws when that size changes. The functions under
+   "rules as functions" are the Chart README's rules as code, pure (no page), and tools/test/chart-rules.test.mjs checks them as properties. */
+if (!window.vzChart) (function () {
+  const NOW = Date.UTC(2026, 10, 18, 15, 16), MIN = 60000, H = 60 * MIN, D = 24 * H
+  const lcg = (seed) => { let s = seed >>> 0; return () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296 }
+  const key = (labels) => Object.keys(labels).sort().map((k) => k + '=' + labels[k]).join(',')
+  const walk = (rnd, n, base, noise, shape) => { const out = []; let v = base; for (let i = 0; i < n; i++) { v += (rnd() - 0.5) * noise; v = Math.max(base * 0.6, Math.min(base * 1.4, v)); out.push(Math.max(0, shape ? shape(i, v) : v)) } return out }
+  const newPod = () => ({ labels: { __name__: 'pod_cpu_usage_cores', namespace: 'prod', service: 'checkout-api', pod: 'checkout-api-7d9f8c6b5-new01', node: 'node-b' }, values: walk(lcg(99), 61, 3.4, 0.3) })
+  // ---- deterministic demo data (fixtures/generate.mjs runs this script and calls these recipes) ----
+  const demos = {
+    s3() { const n = 61, r = lcg(7), t0 = NOW - 6 * H, step = 6 * MIN, at = (h, m) => Math.round((Date.UTC(2026, 10, 18, h, m) - t0) / step)
+      const rise = (i, v) => (i < at(12, 52) ? v : i < at(13, 2) ? v + (500 - 330) * (i - at(12, 52)) / (at(13, 2) - at(12, 52)) : 520 + 392 * (1 - Math.exp(-(i - at(13, 2)) / 7)) / (1 - Math.exp(-22 / 7)) + (i === n - 1 ? 0 : (v - 330) * 0.3))
+      const products = walk(r, n, 120, 14); for (let i = at(11, 10); i < at(11, 40); i++) products[i] = null
+      return { unit: 'ms', agg: 'max', t0, step, threshold: { value: 500, label: '500 ms objective' }, spans: [{ from: Date.UTC(2026, 10, 18, 13, 7), to: NOW, label: 'Firing since 13:07' }], markers: [{ t: Date.UTC(2026, 10, 18, 9, 41), label: 'Deploy 09:41' }, { t: Date.UTC(2026, 10, 18, 13, 2), label: 'Above 13:02' }],
+        series: [{ labels: { service: 'checkout-api', route: 'POST /v2/orders' }, values: walk(r, n, 330, 30, rise) }, { labels: { service: 'checkout-api', route: 'GET /v2/cart/{id}' }, values: walk(r, n, 360, 40) }, { labels: { service: 'checkout-api', route: 'GET /v2/products' }, values: products }] } },
+    s8() { const n = 61, r = lcg(11), names = ['catalog', 'checkout-api', 'cart', 'search', 'auth', 'inventory', 'payments', 'recommendations'], base = [3900, 1284, 843, 656, 512, 318, 207, 96]
+      return { unit: 'req/s', agg: 'mean', t0: NOW - 6 * H, step: 6 * MIN, series: names.map((s, i) => ({ labels: { namespace: 'prod', service: s }, values: walk(r, n, base[i], base[i] * 0.08) })) } },
+    many(count, seed, svcs = ['checkout-api', 'cart', 'catalog', 'search', 'auth', 'inventory', 'payments', 'recommendations', 'gateway', 'notifications']) { const n = 61, r = lcg(seed), nodes = ['node-a', 'node-b', 'node-c', 'node-d'], hex = '0123456789abcdef', series = []
+      for (let i = 0; i < count; i++) { const svc = svcs[i % (count > 40 ? Math.min(10, svcs.length) : Math.min(3, svcs.length))]; let id = ''; for (let k = 0; k < 5; k++) id += hex[Math.floor(r() * 16)]
+        const base = 2.9 * Math.pow(r(), 5) + 0.03 // heavy-tailed: a few large, most near zero
+        series.push({ labels: { __name__: 'pod_cpu_usage_cores', namespace: 'prod', service: svc, pod: svc + '-7d9f8c6b5-' + id, node: nodes[Math.floor(r() * 4)] }, values: walk(r, n, base, base * 0.1) }) }
+      return { unit: 'cores', agg: 'max', t0: NOW - 6 * H, step: 6 * MIN, series } },
+    s36() { return demos.many(36, 36) }, s200() { return demos.many(200, 200) },
+    search() { return demos.many(36, 37, ['search']) }, // the same panel's query edited to another service's pods
+    s36limit() { return { ...demos.s36(), threshold: { value: 3.5, label: '3.5 cores limit' } } },
+    limit() { const s = demos.s36limit(); s.series.push(newPod()); return s },
+    nodeb() { const s = demos.s36(); s.series = s.series.filter((x) => x.labels.node === 'node-b'); return s }, // the query narrowed to node="node-b": a second result (v7 review, M1) // a second result in which a new pod, larger than every coloured one, crosses the limit
+    delta() { const n = 61, w = (i) => (2 * Math.PI * i) / 36
+      return { unit: 'req/s', agg: 'mean', t0: NOW - 6 * H, step: 6 * MIN, series: [{ labels: { service: 'checkout-api' }, values: Array.from({ length: n }, (_, i) => +(120 * Math.sin(w(i))).toFixed(2)) }, { labels: { service: 'cart' }, values: Array.from({ length: n }, (_, i) => +(60 * Math.cos(w(i))).toFixed(2)) }] } },
+    bytes() { const n = 61, r = lcg(23), MiB = 1048576
+      return { unit: 'B', agg: 'max', t0: NOW - 6 * H, step: 6 * MIN, series: [['checkout-api', 690], ['catalog', 512], ['cart', 300]].map(([s, b]) => ({ labels: { service: s }, values: walk(r, n, b * MiB, b * MiB * 0.06) })) } },
+    backtest() { const step = 5 * MIN, n = 7 * D / step + 1, r = lcg(5), t0 = NOW - 7 * D, a = Math.round(2.6 * D / step), b = Math.round(5.2 * D / step)
+      const v = walk(r, n, 0.4, 0.05, (i, x) => (i >= a && i < a + 3 ? 1.25 + (x - 0.4) : i >= b && i < b + 6 ? 1.6 + (x - 0.4) : x))
+      return { unit: '%', agg: 'max', t0, step, threshold: { value: 1, label: '1% threshold' }, spans: [{ from: t0 + a * step, to: t0 + (a + 3) * step - MIN, label: '14 min' }, { from: t0 + b * step, to: t0 + (b + 6) * step + MIN, label: '31 min' }], series: [{ labels: { service: 'cart' }, values: v }] } },
+  }
+
+  // ---- rules as functions ----
+  /* Series colour (Chart README, "Series colour", the algorithm: what a person sees wins). A series is on screen when it is in the
+     result and the view's filter does not hide it; hidden when the view's own filter hides it (a filter in the chart, or a label matcher
+     a dashboard filter adds to the query); away when it is in neither (a query edited or narrowed, a pod gone). Hidden and away are the
+     same to the colours: neither is on screen. The view's map records, for every series it has had on screen:
+       slot   the slot it had the last time it was on screen (1 to 8), or 0 for Other;
+       held   the number of the last step at which it was on screen holding that slot;
+       was    where it was at the last step: 'screen', 'hidden' or 'away';
+     and owner[1..8], the series each slot belongs to (null while no series ever had it: the slot is free). A slot is held when its owner
+     is on screen; otherwise it is open. Each step (a result, or a change of the filter), numbered n:
+       1. Series on screen now and at the last step keep their slot, or Other.
+       2. Series that come on screen take back the slot they had if no series on screen owns it; when two want one slot, the one that
+          held it more recently.
+       3. Then every series on screen in Other (new, back without its slot, or there already), largest first (ties by key), takes an open
+          slot while one is left: a free one first, else the one whose owner left the screen longest ago (ties: the lowest).
+       4. Series on screen record n with their slot, or record Other.
+     So the largest series on screen is never grey while a slot is open, whichever way the screen changed. Hidden and away series are
+     never given a slot. Choosing legend rows changes what is drawn, not what is on screen. "Colour the eight largest" starts the map
+     again from what is on screen. */
+  const newMap = () => ({ v: 8, n: 0, owner: [null, null, null, null, null, null, null, null, null], s: {} })
+  const slotOf = (map, k) => { const e = map.s[k]; return e && e.slot && map.owner[e.slot] === k ? e.slot : 0 }
+  const byRank = (a, b) => b.rank - a.rank || (a.key < b.key ? -1 : 1)
+  const SLOTS = [1, 2, 3, 4, 5, 6, 7, 8]
+  function assignSeries(map, series, opts = {}) {
+    const n = ++map.n, S = map.s, O = map.owner, inResult = new Map(series.map((s) => [s.key, s]))
+    const shown = opts.visible || (() => true), out = opts.filteredOut || (() => false)
+    const where = (k) => (inResult.has(k) ? (shown(inResult.get(k)) ? 'screen' : 'hidden') : out(k) ? 'hidden' : 'away')
+    const screen = series.filter((s) => where(s.key) === 'screen'), held = (i) => !!O[i] && where(O[i]) === 'screen'
+    const take = (s, i) => { const e = S[s.key] || (S[s.key] = { slot: 0, held: 0, was: 'away' }); e.slot = i; O[i] = s.key }
+    // 2. coming on screen: back into the slot it had, unless a series on screen owns it
+    for (const s of screen.filter((x) => S[x.key] && S[x.key].was !== 'screen' && S[x.key].slot).sort((a, b) => S[b.key].held - S[a.key].held || (a.key < b.key ? -1 : 1))) {
+      const i = S[s.key].slot; if (O[i] === s.key || !held(i)) take(s, i) }
+    // 3. what a person sees wins: every series on screen in Other, largest first, takes an open slot while one is left
+    const open = () => SLOTS.filter((i) => !held(i)).sort((a, b) => (O[a] ? S[O[a]].held : -1) - (O[b] ? S[O[b]].held : -1) || a - b)
+    for (const s of screen.filter((x) => !slotOf(map, x.key)).sort(byRank)) { const slot = open()[0]; if (!slot) break; take(s, slot) }
+    // 4.
+    for (const [k, e] of Object.entries(S)) { e.was = where(k); if (e.was === 'screen') { if (e.slot && O[e.slot] === k) e.held = n; else e.slot = 0 } }
+    return map
+  }
+  /* "Colour the eight largest": the map starts again from what is on screen: the eight largest take slots 1 to 8, the rest are in Other.
+     Series hidden or away have no slot afterwards; they are placed by rule 3 when they come on screen. */
+  function recolour(map, m) { Object.assign(map, newMap()); assignSeries(map, [...m.listed].sort(byRank)); return map }
+  /* Legend names: labels every series shares are dropped (and stated once); the rest are ordered by how many distinct values they
+     take, most first, so the part that tells series apart is read first. */
+  function distinguish(series) {
+    const keys = [...new Set(series.flatMap((s) => Object.keys(s.labels)))], common = {}, counts = {}
+    for (const k of keys) { const vals = new Set(series.map((s) => s.labels[k] ?? '')); counts[k] = vals.size; if (vals.size === 1 && series.length > 1) common[k] = series[0].labels[k] }
+    const order = keys.filter((k) => !(k in common)).sort((a, b) => counts[b] - counts[a] || (a < b ? -1 : 1))
+    return { common, order: order.length ? order : keys.filter((k) => k !== '__name__').slice(0, 1) }
+  }
+  /* Fitting a name: values arrive most distinguishing first. While too wide, drop the last value; with one left, cut it in the middle,
+     keeping its start and end, never below 2…2. */
+  function fit(values, width, measure) {
+    const v = values.map((x) => ({ full: String(x), keep: String(x).length })), text = () => v.map((x) => (x.keep >= x.full.length ? x.full : x.full.slice(0, Math.ceil(x.keep / 2)) + '…' + x.full.slice(x.full.length - Math.floor(x.keep / 2)))).join(' · ')
+    for (let guard = 0; measure(text()) > width && guard < 400; guard++) { const long = v.reduce((a, b) => (b.keep > a.keep ? b : a)); if (v.length > 1) v.pop(); else if (long.keep <= 4) break; else long.keep-- }
+    return text()
+  }
+  /* One unit per chart, chosen from the largest value drawn, by size (a value below zero counts by its size): bytes in binary units with
+     binary-round ticks; seconds and milliseconds moved to the unit in which that value is at least 1; any other unit keeps its name and,
+     from 10,000, every number carries the same k or M. */
+  function scaleUnit(unit, max) {
+    const DEC = [1, 2, 2.5, 5]
+    if (unit === 'B') { const names = ['B', 'KiB', 'MiB', 'GiB', 'TiB']; let i = 0; while (i < 4 && max >= 1024 ** (i + 1)) i++; return { div: 1024 ** i, unit: names[i], suffix: '', binary: true } }
+    if (unit === 's' || unit === 'ms') { const base = unit === 's' ? 1 : 1e-3, v = max * base, [div, name] = v >= 1 ? [1, 's'] : v >= 1e-3 ? [1e-3, 'ms'] : [1e-6, 'µs']; return { div: div / base, unit: name, suffix: '', steps: DEC } }
+    if (max >= 1e7) return { div: 1e6, unit, suffix: 'M', steps: DEC }
+    if (max >= 1e4) return { div: 1e3, unit, suffix: 'k', steps: DEC }
+    return { div: 1, unit, suffix: '', steps: DEC }
+  }
+  /* Value axis. It always holds zero, every drawn value and the threshold: from `from` (zero unless the panel starts it higher, never above
+     the lowest value) or the lowest value if lower, to the highest value or the threshold. At most one interval per two `micro` lines of plot
+     height and at most four. The step is the smallest round step (1, 2, 2.5 or 5 times a power of ten; powers of two for bytes) whose ticks
+     cover that span in that many intervals; with a threshold, the smallest such step that puts a tick on it, if one does. The ends are the
+     ticks at or beyond the span; nothing is added for the threshold's label. Values are in the chart's display unit. */
+  function valueTicks({ lo = 0, hi = 0, threshold = null, plotH, lineH, binary = false, from = 0 }) {
+    const most = Math.max(1, Math.min(4, Math.floor(plotH / (2 * lineH)))), th = threshold ?? null
+    let a = Math.min(from, lo, th ?? Infinity), b = Math.max(from, hi, th ?? -Infinity); if (from <= 0) { a = Math.min(a, 0); b = Math.max(b, 0) }
+    if (b - a < 1e-12) b = a + 1
+    const steps = []
+    if (binary) for (let p = -10; p <= 40; p++) steps.push(2 ** p)
+    else { const p0 = Math.floor(Math.log10((b - a) / most)) - 1; for (let p = p0; p <= p0 + 3; p++) for (const k of [1, 2, 2.5, 5]) steps.push(k * 10 ** p) }
+    const span = (s) => Math.ceil(b / s - 1e-9) - Math.floor(a / s + 1e-9), fits = steps.filter((s) => span(s) <= most).sort((x, y) => x - y)
+    let step = fits[0]
+    if (th != null) { const on = fits.find((s) => Math.abs(th / s - Math.round(th / s)) < 1e-9); if (on) step = on }
+    const bottom = Math.floor(a / step + 1e-9) * step, top = Math.max(bottom + step, Math.ceil(b / step - 1e-9) * step), ticks = []
+    for (let v = bottom; v <= top + step / 2; v += step) ticks.push(+v.toPrecision(12) || 0)
+    return { bottom: +bottom.toPrecision(12) || 0, top: +top.toPrecision(12), step, ticks }
+  }
+  /* One number format per chart. Ticks carry exactly the decimals their step needs (a 2.5 step prints 2.5 and 7.5). Legend, readout and text
+     form carry one decimal place more than the place of the step's leading digit (step 250 or 200: whole numbers; step 2.5, 2 or 1: tenths;
+     step 0.25: hundredths), never fewer than the ticks and at most three. A value below zero has a minus sign (U+2212). A value that is not zero
+     but would print as zero says which side of zero it is at that precision: "< 0.1" or "> −0.1", never "0.0". */
+  const MINUS = '−'
+  // a range of Other's figures, lowest to highest; one figure when both ends read the same ("< 0.1", not "< 0.1 to < 0.1")
+const span = (f, lo, hi) => { const a = f(lo), b = f(hi); return a === b ? a : a + ' to ' + b }
+function numberFormat(step, suffix = '', div = 1) {
+    let tickDec = 0; while (tickDec < 3 && Math.abs(step * 10 ** tickDec - Math.round(step * 10 ** tickDec)) > 1e-9) tickDec++
+    const dec = Math.min(3, Math.max(tickDec, 1 - Math.floor(Math.log10(step) + 1e-9)))
+    // one formatter per number of decimals, made once: toLocaleString makes a new one on every call (v9: 3 ms a crosshair move at 4x CPU)
+    const nf = [], abs = (v, d) => (nf[d] ??= new Intl.NumberFormat('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })).format(Math.abs(v)), f = (v, d) => (v < 0 && abs(v, d) !== abs(0, d) ? MINUS : '') + abs(v, d) + suffix
+    // tick: a value already in the display unit; value: a raw value from the data (divided here), empty when there is none
+    return { dec, tick: (v) => f(v, tickDec), value: (raw) => { if (raw == null) return ''; const v = raw / div; return v !== 0 && Math.abs(v) < 0.5 * 10 ** -dec ? (v > 0 ? '< ' : '> ' + MINUS) + abs(10 ** -dec, dec) + suffix : f(v, dec) } }
+  }
+  /* A series' values over the window [from, to). The chart takes either form of a series' values (design/DECISIONS.md D76): an array in which
+     null is a gap, or a Float64Array in which a value that is not finite is a gap. A typed series with no gap in the window is held as a view
+     of it, without a copy; one with a gap becomes an array with null for each gap, the first form. So everything after this reads one form,
+     in which a gap is null, and draws the same for both. The chart never writes to what it is given. */
+  function windowOf(src, from, to) {
+    if (!ArrayBuffer.isView(src)) return src.slice(from, to)
+    const v = src.subarray(from, to)
+    for (let i = 0, len = v.length; i < len; i++) { const x = v[i]; if (x - x !== 0) { const a = new Array(len); for (let k = 0; k < len; k++) { const y = v[k]; a[k] = y - y === 0 ? y : null } return a } }
+    return v
+  }
+  /* The model of a result as drawn: every series in it with its figures over the window, the slots, what the legend lists (the result less
+     what the view's filter hides), the Other band, and the unit. Pure: the page and the tests both call it. */
+  function chartModel(spec, map, view) {
+    const i0 = Math.round((view.t0 - spec.t0) / spec.step), i1 = Math.round((view.t1 - spec.t0) / spec.step), n = i1 - i0 + 1
+    // The loops over every value are plain indexed loops: a result of 200 series is 144,000 values, read here once for each series' figures
+    // and once for the band, and as for-of and step by step these two passes were over a quarter of a 200-series draw (reviews/chart-speed).
+    const result = spec.series.map((s) => { const v = windowOf(s.values, i0, i1 + 1); let last = null, min = Infinity, max = -Infinity; for (let i = 0, len = v.length; i < len; i++) { const x = v[i]; if (x != null) { last = x; if (x < min) min = x; if (x > max) max = x } } return { labels: s.labels, key: key(s.labels), v, last, min: last == null ? null : min, max: last == null ? null : max, rank: last == null ? -Infinity : max } })
+    assignSeries(map, result, { visible: view.filter, filteredOut: view.filteredOut })
+    for (const s of result) s.slot = slotOf(map, s.key)
+    const listed = view.filter ? result.filter(view.filter) : result
+    const coloured = listed.filter((s) => s.slot).sort((a, b) => a.slot - b.slot), other = listed.filter((s) => !s.slot).sort(byRank)
+    // the band: the lowest and highest folded value at each step, gathered series by series (each series' values lie together in memory)
+    const bn = Math.max(0, n), bl = new Float64Array(bn).fill(Infinity), bh = new Float64Array(bn).fill(-Infinity)
+    for (let k = 0; k < other.length; k++) { const v = other[k].v; for (let i = 0, len = Math.min(bn, v.length); i < len; i++) { const p = v[i]; if (p != null) { if (p < bl[i]) bl[i] = p; if (p > bh[i]) bh[i] = p } } }
+    const lo = [], hi = []; for (let i = 0; i < n; i++) { lo.push(bl[i] === Infinity ? null : bl[i]); hi.push(bh[i] === -Infinity ? null : bh[i]) }
+    const smallest = coloured.length ? Math.min(...coloured.map((s) => s.max ?? -Infinity)) : null, larger = smallest == null ? [] : other.filter((s) => (s.max ?? -Infinity) > smallest)
+    // where the slots not drawn are: owned by a series the filter hides, or by one not in this result
+    const onScreen = new Set(listed.map((s) => s.key)), inResult = new Set(result.map((s) => s.key)), out = view.filteredOut || (() => false)
+    let hidden = 0, absent = 0; for (const k of map.owner) if (k && !onScreen.has(k)) { if (inResult.has(k) || out(k)) hidden++; else absent++ }
+    const big = Math.max(0, ...listed.map((s) => Math.max(Math.abs(s.max ?? 0), Math.abs(s.min ?? 0))), spec.threshold ? Math.abs(spec.threshold.value) : 0)
+    return { i0, n, t0: view.t0, t1: view.t1, result, listed, series: listed, coloured, other, band: { lo, hi }, larger, hiddenColoured: hidden, absentColoured: absent, names: distinguish(listed), unit: scaleUnit(spec.unit, big), byKey: new Map(result.map((s) => [s.key, s])) }
+  }
+  /* What is drawn: the coloured series not switched off in the legend, the members of Other picked out (at most three, in ink), and the band. */
+  function drawnSet(m, st) {
+    const shown = (s) => !st.picked?.size || st.picked.has(s.key)
+    return { lines: m.coloured.filter(shown), picked: (st.pickOrder || []).map((k) => m.byKey.get(k)).filter((s) => s && m.other.includes(s)), band: m.other.length > 0 && (!st.picked?.size || st.picked.has('other')) }
+  }
+  /* The legend note about Other: one sentence, counted over the series the legend lists, so it never names a colour that is not drawn. */
+  function otherNote(m) {
+    if (!m.other.length) return null
+    // Nothing coloured on screen while Other has members cannot happen (rule 3 gives every open slot to the screen); said if it ever does
+    if (!m.coloured.length) { const a = m.absentColoured
+      return { kind: 'none-coloured', text: `No series is coloured: ${a ? `the ${a === 1 ? 'one' : a} coloured ${a === 1 ? 'is' : 'are'} not in this result` : 'none has a slot'}` } }
+    if (m.larger.length) { const k = m.larger.length; return { kind: 'larger', count: k, text: `${k} in Other ${k === 1 ? 'is' : 'are'} now larger than a coloured series` } }
+    return { kind: 'by-size', coloured: m.coloured.length, other: m.other.length, text: `${m.coloured.length} coloured by size; ${m.other.length} in Other` }
+  }
+  /* What the action rows under Other offer: more of Other (or fewer), and "Colour the eight largest" only when pressing it would change a
+     colour, that is, when one of the eight largest series on screen is not coloured (v9: the lead's decision on the v8 review's m3; every
+     response is meaningful, and at load the eight largest are already coloured). The eight largest are ranked as the recolour ranks them. */
+  function legendActions(m) { if (!m.other.length) return []; return [...m.listed].sort(byRank).slice(0, 8).some((s) => !s.slot) ? ['more', 'recolour'] : ['more'] }
+  /* Facts over every drawn series, members of Other included: the highest at a point (the readout), the series above the threshold at the
+     end of the range and earlier in it (the text form), the highest member of Other, and the note. One computation for the readout, the
+     legend and the text form, so they cannot disagree. */
+  function chartFacts(m, vis, spec) {
+    const seen = new Set(), drawn = [...vis.lines, ...vis.picked, ...(vis.band ? m.other : [])].filter((s) => !seen.has(s.key) && seen.add(s.key))
+    const th = spec.threshold?.value, endAbove = (s) => s.last != null && s.last > th
+    return { drawn, highestAt: (i) => drawn.filter((s) => s.v[i] != null).reduce((a, s) => (!a || s.v[i] > a.v[i] ? s : a), null),
+      threshold: th == null ? null : { aboveAtEnd: drawn.filter(endAbove).sort((a, b) => b.last - a.last), aboveEarlier: drawn.filter((s) => s.max != null && s.max > th && !endAbove(s)).sort((a, b) => b.max - a.max) },
+      otherHighest: vis.band && m.other.length ? m.other.reduce((a, s) => ((s.max ?? -Infinity) > (a.max ?? -Infinity) ? s : a)) : null, note: otherNote(m) }
+  }
+  const seriesName = (m, s) => (s.slot ? '' : 'Other, ') + m.names.order.map((k) => s.labels[k]).filter((x) => x != null && x !== '').join(' · ')
+  const TSTEPS = [MIN, 5 * MIN, 10 * MIN, 15 * MIN, 30 * MIN, H, 2 * H, 3 * H, 6 * H, 12 * H, D, 2 * D, 7 * D]
+  const two = (n) => String(n).padStart(2, '0'), DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+  const clock = (t) => { const d = new Date(t); return two(d.getUTCHours()) + ':' + two(d.getUTCMinutes()) }
+  const day = (t) => { const d = new Date(t); return DAYS[d.getUTCDay()] + ' ' + d.getUTCDate() }
+  const stamp = (t, long) => (long ? new Date(t).getUTCDate() + ' ' + MONTHS[new Date(t).getUTCMonth()] + ' ' : '') + clock(t)
+  /* The text form: the same facts in sentences, from the same model and facts as the picture (Chart README, "Text form"). */
+  function textLines(m, vis, facts, spec, o) {
+    const fmt = o.fmt.value, unit = m.unit.unit, long = m.t1 - m.t0 > D, when = (t) => stamp(t, long), end = when(m.t1), list = (a, v) => (a.length ? a.map((s) => `${seriesName(m, s)} (${fmt(v(s))})`).join('; ') : 'none')
+    const drawnN = facts.drawn.length, chosen = vis.lines.length < m.coloured.length || !vis.band && m.other.length
+    const lines = [`${o.title}, ${unit}, ${when(m.t0)} to ${end}, every ${spec.step / MIN} min, ${spec.agg}. ${m.listed.length} series${m.other.length ? `, ${m.coloured.length} drawn separately and ${m.other.length} as one band` : ''}${chosen ? `; ${drawnN} drawn, as chosen in the legend` : ''}.`]
+    if (o.error) lines.unshift(`The latest query failed: ${o.error}. What follows is the previous query's result, which is not drawn.`)
+    const common = Object.entries(m.names.common).filter(([k]) => k !== '__name__').map(([k, v]) => k + '="' + v + '"').join(', ')
+    if (common && m.listed.length > 1) lines.push(`All series: ${common}.`)
+    for (const s of vis.lines) lines.push(`${seriesName(m, s)}: last ${fmt(s.last)}, lowest ${fmt(s.min)}, highest ${fmt(s.max)}${s.v.some((p) => p == null) ? '; no data for part of the range' : ''}.`)
+    vis.picked.forEach((s, i) => lines.push(`${seriesName(m, s)}, picked out in ink, ${['solid', 'dashed', 'dotted'][i]}: last ${fmt(s.last)}, lowest ${fmt(s.min)}, highest ${fmt(s.max)}.`))
+    if (vis.band && m.other.length) { const lasts = m.other.map((s) => s.last).filter((p) => p != null), top = facts.otherHighest
+      lines.push(`Other, ${m.other.length} series as one band: last ${lasts.length ? span(fmt, Math.min(...lasts), Math.max(...lasts)) : 'no data'}; the highest, ${seriesName({ ...m, names: m.names }, { ...top, slot: 1 })}, reached ${fmt(top.max)}.`) }
+    if (facts.note) lines.push(facts.note.text + '.')
+    if (facts.threshold) lines.push(`${spec.threshold.label}. Above it at ${end}: ${list(facts.threshold.aboveAtEnd, (s) => s.last)}. Above it earlier in the range but not at ${end}: ${list(facts.threshold.aboveEarlier, (s) => s.max)}.`)
+    for (const s of spec.spans || []) lines.push(`${s.label}: ${when(s.from)} to ${when(s.to)}.`)
+    for (const k of spec.markers || []) lines.push(`${k.agent && !/^Agent:/.test(k.label) ? 'Agent: ' : ''}${k.label}.`)
+    return lines
+  }
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+  const PATTERNS = ['solid', 'dash', 'dot'] // a member of Other picked out: ink, in this pattern, in the order picked; at most three at once
+  const maps = {} // the colour map of each view; kept in sessionStorage, so a reload in the same tab keeps colours
+  const loadMap = (id) => { if (!maps[id]) { try { const m = JSON.parse(sessionStorage.getItem('vz-series8:' + id)); maps[id] = m && m.v === 8 ? m : newMap() } catch { maps[id] = newMap() } } return maps[id] }
+  const saveMap = (id) => { try { sessionStorage.setItem('vz-series8:' + id, JSON.stringify(maps[id])) } catch {} }
+  const SVGNS = 'http://www.w3.org/2000/svg'
+
+  function vzChart(root, spec) {
+    const view = root.dataset.view || 'view', small = root.dataset.size === 'sm'
+    root.innerHTML = '<svg class="vz-plot" tabindex="0" role="group" aria-roledescription="chart"></svg><div class="vz-chart-foot"><div class="vz-readout" aria-hidden="true"></div><span class="vz-sr" role="status"></span><div class="vz-controls" data-size="sm"><button class="vz-button" data-size="sm" data-zoom="in">Zoom in</button><button class="vz-button" data-size="sm" data-zoom="out">Zoom out</button></div></div><div class="vz-table-wrap"><table class="vz-table vz-legend-table" role="table"><thead></thead><tbody></tbody></table></div><div class="vz-legend-note"></div>'
+    const svg = root.querySelector('svg'), readout = root.querySelector('.vz-readout'), live = root.querySelector('.vz-sr'), thead = root.querySelector('thead'), tbody = root.querySelector('tbody'), note = root.querySelector('.vz-legend-note'), legendWrap = root.querySelector('.vz-table-wrap')
+    let full = null, version = 0
+    const st = { t0: 0, t1: 0, filter: null, filterId: 0, picked: new Set(), pickOrder: [], cursor: null, py: null, sort: { col: 'rank', dir: -1 }, open: 0, brush: null, focusRow: 0, emph: null, error: null }
+    const ctx = document.createElement('canvas').getContext('2d')
+    // text widths, kept per font: one map for each font, so a look-up builds no key (the legend asks for every series' name on every draw)
+    const widths = new Map(), measure = (text, font) => { let byFont = widths.get(font); if (!byFont) widths.set(font, (byFont = new Map())); let w = byFont.get(text); if (w == null) { ctx.font = font; w = ctx.measureText(text).width; byFont.set(text, w) } return w }
+    let g = null, cache = null, lastW = 0, lastH = 0, tok = null, liveTimer = 0, cursorWas = null; const sizes = { legendW: 0, readW: 0 }
+    /* Every token the drawing reads, read once per draw. The spaces are read here too, not on each use: a read of a computed style in the
+       crosshair's handler, after it has written the readout, made the browser restyle the page on every move (v9: 7 ms a move at 4x CPU,
+       the v8 review's m2). */
+    const tokens = () => { if (tok) return tok; const cs = getComputedStyle(root), n = (p) => parseFloat(cs.getPropertyValue(p)) || 0, s = (p) => cs.getPropertyValue(p).trim()
+      const space = Object.fromEntries(['half', 1, 2, 3, 4, 6, 8, 12].map((k) => [k, n('--space-' + k)]))
+      return (tok = { axis: n('--axis'), gutter: n('--label-gutter'), stroke: n('--stroke'), sp: (k) => space[k], micro: s('--text-micro'), small: s('--text-small'), data: s('--text-data'), label: s('--text-label'), microLh: n('--text-micro-lh'), smallLh: n('--text-small-lh'), strip: n('--strip') }) }
+    function setSpec(next) { spec = next; const n = spec.series.length ? spec.series[0].values.length : 1; full = { t0: spec.t0, t1: spec.t0 + (n - 1) * spec.step }; st.t0 = full.t0; st.t1 = full.t1; st.cursor = null; version++ }
+    setSpec(spec)
+
+    /* The model of what is drawn. It depends on the data, the range and the filter only; a toggle, a sort, the crosshair and emphasis reuse it. */
+    function model() {
+      const k = version + '|' + st.t0 + '|' + st.t1 + '|' + st.filterId; if (cache && cache.k === k) return cache.m
+      const m = chartModel(spec, loadMap(view), { t0: st.t0, t1: st.t1, filter: st.filter }); saveMap(view)
+      cache = { k, m }; return m
+    }
+    const visibleSet = (m) => drawnSet(m, st)
+    const pickedOther = (m) => drawnSet(m, st).picked
+    /* The values the axis must hold: every drawn line, picked member and the band, and the threshold. */
+    function dataRange(m, vis) { let lo = 0, hi = 0; const take = (p) => { if (p != null) { if (p < lo) lo = p; if (p > hi) hi = p } }
+      for (const s of [...vis.lines, ...vis.picked]) { take(s.min); take(s.max) } if (vis.band) { m.band.lo.forEach(take); m.band.hi.forEach(take) } return { lo, hi } }
+
+    /* Layout of the plot for a set of visible series: axis, direct labels, x and y. */
+    function layout(m, vis) {
+      const t = tokens(), W = lastW, HT = lastH, L = t.axis, T = t.strip, B = t.sp(4) + t.sp(1), plotH = HT - T - B, div = m.unit.div, r = dataRange(m, vis)
+      const ax = valueTicks({ lo: r.lo / div, hi: r.hi / div, threshold: spec.threshold ? spec.threshold.value / div : null, plotH, lineH: t.microLh, binary: m.unit.binary }), y = (v) => T + plotH * (ax.top - v / div) / (ax.top - ax.bottom)
+      // Direct labels: two or more series, 640px of chart or more, not a small chart, every coloured line reaching the right edge, every label within two label heights of its own line end.
+      let labels = null; const lineH = t.smallLh
+      if (W >= 640 && !small && vis.lines.length >= 2 && !vis.picked.length) {
+        const ends = vis.lines.filter((s) => s.v[m.n - 1] != null).map((s) => ({ s, want: y(s.v[m.n - 1]), at: 0 })).sort((a, b) => a.want - b.want)
+        if (ends.length === vis.lines.length && ends.length * lineH <= plotH) {
+          const lo = T + lineH / 2 - t.sp('half'), hi = T + plotH
+          ends.forEach((e, i) => { e.at = Math.max(e.want, i ? ends[i - 1].at + lineH : lo) })
+          for (let i = ends.length - 1; i >= 0; i--) ends[i].at = Math.min(ends[i].at, i === ends.length - 1 ? hi : ends[i + 1].at - lineH)
+          if (ends.every((e) => Math.abs(e.at - e.want) <= 2 * lineH)) labels = ends
+        }
+      }
+      const R = labels ? t.gutter : t.sp(2), plotW = W - L - R, x = (i) => L + plotW * i / Math.max(1, m.n - 1), xt = (tm) => L + plotW * (tm - st.t0) / (st.t1 - st.t0)
+      return { m, vis, L, T, B, R, plotW, plotH, x, xt, y, ax, labels, fmt: numberFormat(ax.step, m.unit.suffix, div), long: st.t1 - st.t0 > D, sig: ax.top + '|' + ax.bottom + '|' + ax.step + '|' + !!labels }
+    }
+    /* Path data. Every series of a draw shares its x positions, so each is written as text once per draw (`xs`), not once per series; a y
+       is written once per value (`ys`, when the caller has them already: the band's edges are also its area's outline). The text is the
+       same as before, character for character: `x(i).toFixed(1) + ' ' + y(p).toFixed(1)`. A step with no element at all (a sparse array)
+       is skipped without lifting the pen, as `forEach` skipped it. */
+    const xText = (gg) => { if (!gg.xs) { const n = gg.m.n, xs = (gg.xs = new Array(n)); for (let i = 0; i < n; i++) xs[i] = gg.x(i).toFixed(1) } return gg.xs }
+    const path = (v, xs, y, ys) => { let d = '', pen = false, dots = ''
+      for (let i = 0, len = v.length; i < len; i++) { const p = v[i]; if (p == null) { if (p === undefined && !(i in v)) continue; pen = false; continue }
+        const px = xs[i], py = ys ? ys[i] : y(p).toFixed(1)
+        if (v[i - 1] == null && v[i + 1] == null) dots += `<circle cx="${px}" cy="${py}" r="2"/>`; d += (pen ? 'L' : 'M') + px + ' ' + py; pen = true }
+      return { d, dots } }
+    const lineMarkup = (s, ds, pattern, xs, y, hidden) => { const p = path(s.v, xs, y); return `<g class="vz-series-g" data-key="${esc(s.key)}"${hidden ? ' display="none"' : ''}><path class="vz-line" data-series="${ds}"${pattern ? ` data-pattern="${pattern}"` : ''} d="${p.d}"/>${p.dots ? `<g class="vz-dot" data-series="${ds}">${p.dots}</g>` : ''}</g>` }
+    const patternOf = (k) => PATTERNS[pickedOther(cache.m).map((s) => s.key).indexOf(k)]
+
+    /* The plot: every layer rebuilt. Called when the geometry, the range, the data or the value axis changes; a toggle that keeps the axis does not call it. */
+    function drawPlot(gg) {
+      const t = tokens(), { m, vis, L, T, plotW, plotH, xt, y, ax, labels, fmt, long } = gg, xs = xText(gg); let o = ''
+      for (const v of ax.ticks) o += `<line class="${v === 0 ? 'vz-baseline' : 'vz-gridline'}" x1="${L}" x2="${L + plotW}" y1="${y(v * m.unit.div)}" y2="${y(v * m.unit.div)}"/><text x="${L - t.sp(2)}" y="${y(v * m.unit.div) + 4}" text-anchor="end">${fmt.tick(v)}</text>`
+      // the unit: over the tick numbers when it fits the axis gutter, else from the chart's left edge into the strip, never off the page
+      const uw = measure(m.unit.unit, t.micro), ufits = uw <= L - t.sp(2)
+      o += `<text class="vz-axis-unit" x="${ufits ? L - t.sp(2) : 0}" y="${T - t.sp(2) - 2}" text-anchor="${ufits ? 'end' : 'start'}">${esc(m.unit.unit)}</text>`
+      const range = st.t1 - st.t0, tstep = TSTEPS.find((s) => plotW / (range / s) >= (long ? 56 : 64)) || 7 * D, tl = (tm) => (long ? (new Date(tm).getUTCHours() === 0 && new Date(tm).getUTCMinutes() === 0 ? day(tm) : clock(tm)) : clock(tm)), ty = T + plotH + t.sp(4)
+      const endW = measure(stamp(st.t1, long), t.micro) + t.sp(4), startW = measure(stamp(st.t0, long), t.micro) + t.sp(4)
+      o += `<text x="${L}" y="${ty}">${stamp(st.t0, long)}</text><text x="${L + plotW}" y="${ty}" text-anchor="end">${stamp(st.t1, long)}</text>`
+      for (let tm = Math.ceil(st.t0 / tstep) * tstep; tm < st.t1; tm += tstep) { const px = xt(tm); if (px - L < startW + t.sp(4) || L + plotW - px < endW + t.sp(4)) continue; o += `<line class="vz-gridline" x1="${px}" x2="${px}" y1="${T + plotH}" y2="${T + plotH + t.sp(1)}"/><text x="${px}" y="${ty}" text-anchor="middle">${tl(tm)}</text>` }
+      for (const s of spec.spans || []) { const a = Math.max(L, xt(s.from)), b = Math.min(L + plotW, xt(s.to)); if (b < L || a > L + plotW) continue; const w = Math.max(t.stroke, b - a)
+        o += `<rect class="vz-span" x="${a}" y="${T}" width="${w}" height="${plotH}"/><line class="vz-span-edge" x1="${a}" x2="${a}" y1="${T}" y2="${T + plotH}"/><line class="vz-span-edge" x1="${a + w}" x2="${a + w}" y1="${T}" y2="${T + plotH}"/>` }
+      if (st.brush) o += `<rect class="vz-brush" x="${Math.min(st.brush.a, st.brush.b)}" y="${T}" width="${Math.abs(st.brush.b - st.brush.a)}" height="${plotH}"/>`
+      // Other: one band from the lowest to the highest folded series at each step, under the lines
+      o += `<g data-layer="band"${vis.band ? '' : ' display="none"'}>` + bandMarkup(gg) + '</g>'
+      // lines: every coloured series (hidden ones with display none, so a toggle only flips it), last slot first so slot 1 is on top; picked members of Other in ink with their pattern
+      o += '<g data-layer="lines">' + [...m.coloured].reverse().map((s) => lineMarkup(s, s.slot, null, xs, y, !vis.lines.includes(s))).join('') + vis.picked.map((s) => lineMarkup(s, 'picked', patternOf(s.key), xs, y, false)).join('') + '</g>'
+      // markers: a hairline with its word above the plot; words that would collide are dropped (the readout names a marker under the crosshair)
+      // a marker an agent placed says "Agent:" and carries the agent's rule before its word
+      let lastEnd = -1e9, words = ''; for (const k of [...(spec.markers || [])].sort((a, b) => a.t - b.t)) { const px = xt(k.t); if (px < L || px > L + plotW) continue; const label = k.agent && !/^Agent:/.test(k.label) ? 'Agent: ' + k.label : k.label, pad = k.agent ? t.sp(2) : 0, w = measure(label, t.micro) + pad, left = px + 3 + w <= L + plotW ? px + 3 : Math.max(L, px - 3 - w), ty = T - t.sp(2) - 2
+        o += `<line class="vz-marker" x1="${px}" x2="${px}" y1="${T - t.sp(1)}" y2="${T + plotH}"/>`; if (left > lastEnd + t.sp(2)) { words += (k.agent ? `<line class="vz-agent-rule" x1="${left + 1}" x2="${left + 1}" y1="${ty - t.microLh + 4}" y2="${ty + 3}"/>` : '') + `<text x="${left + pad}" y="${ty}">${esc(label)}</text>`; lastEnd = left + w } }
+      // the threshold's words sit on its line, above it; when that would put them in the strip (a threshold at the top tick), under it
+      if (spec.threshold) { const ty2 = y(spec.threshold.value), above = ty2 - t.sp(1) - t.microLh + 4 >= T; o += `<line class="vz-threshold" x1="${L}" x2="${L + plotW}" y1="${ty2}" y2="${ty2}"/>`; words += `<text class="vz-on-plot" x="${L + t.sp(1)}" y="${above ? ty2 - t.sp(1) : ty2 + t.sp(1) + t.microLh - 4}">${esc(spec.threshold.label)}</text>` }
+      // an interval's word starts at its span; one too long for the room ends at the plot's edge, and if that would put it over time before the span, it is cut to its first word
+      for (const s of spec.spans || []) { const a = Math.max(L, xt(s.from)); if (a > L + plotW || xt(s.to) < L) continue; let label = s.label, w = measure(label, t.micro); if (a + t.sp(1) + w > L + plotW && L + plotW - t.sp(1) - w < a) { label = s.label.split(' ')[0]; w = measure(label, t.micro) } const right = a + t.sp(1) + w > L + plotW; words += `<text class="vz-on-plot" x="${right ? L + plotW - t.sp(1) : a + t.sp(1)}" y="${T + t.sp(3)}" text-anchor="${right ? 'end' : 'start'}">${esc(label)}</text>` }
+      o += words + '<g data-layer="labels">' + labelMarkup(gg) + '</g><g class="vz-cursor"></g>'
+      svg.setAttribute('viewBox', `0 0 ${lastW} ${lastH}`); svg.innerHTML = o
+      if (st.emph) emphasise(st.emph)
+    }
+    function bandMarkup(gg) { const { m, y } = gg, { lo, hi } = m.band; if (!m.other.length) return ''; let area = ''
+      const xs = xText(gg), yh = new Array(m.n), yl = new Array(m.n); for (let i = 0; i < m.n; i++) { yh[i] = hi[i] == null ? null : y(hi[i]).toFixed(1); yl[i] = lo[i] == null ? null : y(lo[i]).toFixed(1) }
+      for (let i = 0, start = -1; i <= m.n; i++) { if (i < m.n && hi[i] != null) { if (start < 0) start = i } else if (start >= 0) { let d = ''; for (let k = start; k < i; k++) d += (k === start ? 'M' : 'L') + xs[k] + ' ' + yh[k]; for (let k = i - 1; k >= start; k--) d += 'L' + xs[k] + ' ' + yl[k]; area += d + 'Z'; start = -1 } }
+      return `<path class="vz-other-band" d="${area}"/><path class="vz-other-edge" d="${path(hi, xs, y, yh).d}"/><path class="vz-other-edge" d="${path(lo, xs, y, yl).d}"/>` }
+    function labelMarkup(gg) { if (!gg.labels) return ''; const t = tokens(), x1 = gg.L + gg.plotW, room = gg.R - t.sp(4) - t.sp(1); let o = ''
+      for (const e of gg.labels) { const text = fit([gg.m.names.order.map((k) => e.s.labels[k] ?? '')[0]], room, (s) => measure(s, t.small))
+        o += `<polyline class="vz-leader" points="${x1 + 2},${e.want.toFixed(1)} ${x1 + t.sp(2)},${e.at.toFixed(1)} ${x1 + t.sp(3)},${e.at.toFixed(1)}"/><text class="vz-direct" x="${x1 + t.sp(4)}" y="${(e.at + 4).toFixed(1)}">${esc(text)}</text>` }
+      return o }
+
+    /* Full draw: geometry, data, range or filter changed. */
+    function draw() {
+      const W = svg.clientWidth, HT = svg.clientHeight; if (!W) return; lastW = W; lastH = HT; tok = null; sizes.legendW = tbody.parentElement.clientWidth || W; sizes.readW = readout.clientWidth || W // every size is read before anything is written
+      root.querySelector(':scope > .vz-empty')?.remove(); root.removeAttribute('data-error'); legendWrap.inert = false
+      if (st.error) st.cursor = null
+      const m = model(); g = layout(m, visibleSet(m)); drawPlot(g); legend(); legendState(); cursor(); describe()
+      if (st.error) showError()
+      const r = root.closest('.vz-panel')?.querySelector('[data-range]'); if (r) r.textContent = stamp(st.t0, g.long) + ' to ' + stamp(st.t1, g.long)
+      root.querySelector('[data-zoom="out"]').disabled = st.t0 <= full.t0 && st.t1 >= full.t1; root.querySelector('[data-zoom="in"]').disabled = m.n <= 4
+      textForm()
+    }
+
+    /* A toggle changes only what it changes: the rows' attributes and which paths are displayed. The value axis and the direct labels are
+       recomputed from numbers already held; the plot is redrawn only if either changed. Names are never re-fitted, the model and the Other
+       band are never rebuilt. */
+    function toggle(k) {
+      const m = model()
+      if (st.picked.has(k)) { st.picked.delete(k); st.pickOrder = st.pickOrder.filter((q) => q !== k) }
+      else { const s = m.byKey.get(k); if (s && !s.slot && pickedOther(m).length >= 3) return false; st.picked.add(k); st.pickOrder.push(k) }
+      const vis = visibleSet(m), next = layout(m, vis); next.nameKeys = g.nameKeys; next.nameW = g.nameW // the legend is not rebuilt: its fitted names carry over
+      if (next.sig !== g.sig || vis.picked.length || g.vis.picked.length) { g = next; drawPlot(g) }
+      else { g = next
+        const show = (el, on) => (on ? el.removeAttribute('display') : el.setAttribute('display', 'none'))
+        for (const el of svg.querySelectorAll('[data-layer="lines"] > g')) { const s = m.byKey.get(el.dataset.key); if (s && s.slot) show(el, vis.lines.includes(s)) }
+        show(svg.querySelector('[data-layer="band"]'), vis.band)
+        svg.querySelector('[data-layer="labels"]').innerHTML = labelMarkup(g) }
+      legendState(); cursor(); describe(); textForm(); return true
+    }
+
+    /* Emphasis: a legend row under the pointer, focused, or held by a finger brings its line forward; every other line drops to a
+       series-other hairline until it is let go. Nothing is laid out again. */
+    function emphasise(k) {
+      st.emph = k; const lines = svg.querySelector('[data-layer="lines"]'); if (!lines) return
+      svg.querySelectorAll('[data-emph-on]').forEach((e) => e.removeAttribute('data-emph-on'))
+      if (k == null) { svg.removeAttribute('data-emph'); for (const s of [...g.m.coloured].reverse()) { const el = lines.querySelector(`:scope > g[data-key="${CSS.escape(s.key)}"]`); if (el) lines.appendChild(el) } for (const el of [...lines.querySelectorAll(':scope > g')].filter((e) => !g.m.byKey.get(e.dataset.key)?.slot)) lines.appendChild(el); return }
+      svg.setAttribute('data-emph', k === 'other' ? 'other' : 'series')
+      const el = k === 'other' ? null : lines.querySelector(`:scope > g[data-key="${CSS.escape(k)}"]`); if (el) { el.setAttribute('data-emph-on', ''); lines.appendChild(el) }
+    }
+
+    function legend() {
+      const t = tokens(), m = g.m, fmt = g.fmt, unit = m.unit.unit
+      const legendW = sizes.legendW, narrow = legendW < 640
+      const cols = [['name', 'Series', 0], ['last', 'Last', 1], ['min', 'Min', 2], ['max', 'Max', 2]].filter((c) => !(narrow && c[2] === 2))
+      // Column widths are fixed from the widest value each column can show (either end of the axis), so moving the crosshair never moves a column.
+      const tiny = 0.25 * 10 ** -fmt.dec * m.unit.div, ends = [g.ax.top * m.unit.div, g.ax.bottom * m.unit.div, ...(g.ax.top > 0 ? [tiny] : []), ...(g.ax.bottom < 0 ? [-tiny] : [])], endW = Math.max(...ends.map((v) => measure(fmt.value(v), t.data))) // the axis ends, and "< 0.1" beside zero
+      // Other's cells: Min and Max hold one range each; Last moves with the crosshair, between the lowest and highest of Other's figures, so it is
+      // as wide as two of the widest figures it can show (one when every figure of Other reads the same: "< 0.1")
+      const oLo = m.other.length ? Math.min(...m.other.map((s) => s.min ?? Infinity)) : null, oHi = m.other.length ? Math.max(...m.other.map((s) => s.max ?? -Infinity)) : null, oTh = 0.5 * 10 ** -fmt.dec * m.unit.div
+      const otherW = (c) => { if (!m.other.length || !isFinite(oLo)) return 0
+        if (c !== 'last') { const v = m.other.map((s) => s[c]).filter((p) => p != null); return v.length ? measure(span(fmt.value, Math.min(...v), Math.max(...v)), t.data) : 0 }
+        const a = fmt.value(oLo), b = fmt.value(oHi); if (a === b) return measure(a, t.data)
+        const fs = [a, b, ...(oLo < oTh && oHi > 0 ? [fmt.value(oTh / 2)] : []), ...(oLo < 0 && oHi > -oTh ? [fmt.value(-oTh / 2)] : [])]
+        return 2 * Math.max(...fs.map((x) => measure(x, t.data))) + measure(' to ', t.data) }
+      const widest = (c) => Math.max(...m.coloured.map((s) => measure(fmt.value(c === 'last' ? s.max : s[c]), t.data)), otherW(c), endW)
+      const headW = (c, label) => measure(c === 'last' ? 'At ' + stamp(st.t1, g.long) + ', ' + unit : label, t.label) + t.sp(4)
+      tbody.parentElement.querySelector('colgroup')?.remove()
+      thead.insertAdjacentHTML('beforebegin', '<colgroup>' + cols.map(([c, label]) => (c === 'name' ? '<col>' : `<col style="width:${Math.ceil(Math.max(widest(c), headW(c, label)) + t.sp(4))}px">`)).join('') + '</colgroup>')
+      thead.innerHTML = '<tr role="row">' + cols.map(([c, label, pr]) => `<th role="columnheader" class="vz-label${c === 'name' ? '' : ' vz-right'}"${pr === 2 ? ' data-priority="2"' : ''} data-col="${c}"><button class="vz-sort" data-col="${c}">${esc(c === 'last' ? 'Last, ' + unit : label)}</button></th>`).join('') + '</tr>'
+      const numW = cols.slice(1).reduce((w, [c, label]) => w + Math.ceil(Math.max(widest(c), headW(c, label)) + t.sp(4)), 0), nameW = Math.max(t.sp(12), legendW - numW - t.sp(12))
+      // every row shows the same labels: the most that fit on all of them
+      let shownKeys = m.names.order.length; const fitsAll = (k) => m.series.every((s) => measure(m.names.order.slice(0, k).map((q) => s.labels[q] ?? '').join(' · '), t.small) <= nameW); while (shownKeys > 1 && !fitsAll(shownKeys)) shownKeys--
+      g.nameKeys = m.names.order.slice(0, shownKeys); g.nameW = nameW
+      const name = (s) => `<span class="vz-series-name">${esc(fit(g.nameKeys.map((k) => s.labels[k] ?? ''), nameW, (q) => measure(q, t.small)))}</span>`
+      const title = (s) => esc(Object.entries(s.labels).map(([k, v]) => k + '="' + v + '"').join(', '))
+      const cells = (s) => `<td role="cell" class="vz-num vz-right" data-c="last">${fmt.value(s.last)}</td>${narrow ? '' : `<td role="cell" class="vz-num vz-right" data-priority="2">${fmt.value(s.min)}</td><td role="cell" class="vz-num vz-right" data-priority="2">${fmt.value(s.max)}</td>`}`
+      const row = (s, ds) => `<tr role="row" data-key="${esc(s.key)}" title="${title(s)}"><td role="cell"><button class="vz-series" tabindex="-1" aria-pressed="false" aria-label="${title(s)}"><span class="vz-swatch" data-series="${ds}"></span>${name(s)}</button></td>${cells(s)}</tr>`
+      const by = st.sort.col, cmp = (a, b) => (by === 'name' ? (a.key < b.key ? -1 : 1) * st.sort.dir : by === 'rank' ? a.slot - b.slot : ((a[by] ?? -Infinity) - (b[by] ?? -Infinity)) * st.sort.dir)
+      let h = [...m.coloured].sort(cmp).map((s) => row(s, s.slot)).join('')
+      if (m.other.length) { const rng = (c) => { const v = m.other.map((s) => s[c]).filter((p) => p != null); return v.length ? span(fmt.value, Math.min(...v), Math.max(...v)) : '' }
+        h += `<tr role="row" data-key="other" title="${m.other.length} series drawn as one band, lowest to highest"><td role="cell"><button class="vz-series" tabindex="-1" aria-pressed="false" aria-label="Other: ${m.other.length} series as one band"><span class="vz-swatch" data-series="other"></span><span class="vz-series-name">Other</span><span class="vz-series-rest">${m.other.length} series</span></button></td><td role="cell" class="vz-num vz-right" data-c="last">${rng('last')}</td>${narrow ? '' : `<td role="cell" class="vz-num vz-right" data-priority="2">${rng('min')}</td><td role="cell" class="vz-num vz-right" data-priority="2">${rng('max')}</td>`}</tr>`
+        h += [...m.other].sort(by === 'rank' ? byRank : cmp).slice(0, st.open).map((s) => row(s, 'other')).join('')
+        // the legend's last rows: what can be done with Other, one action to a row, each a legend row tall, so nothing wraps and the rows
+        // the legend draws are the rows it reserves, at every width (v9: two actions in one row wrapped at 320 px, 44 px past the reservation)
+        const more = st.open < m.other.length ? `<button class="vz-button" data-size="sm" data-more>Show ${Math.min(20, m.other.length - st.open)} more of Other</button>` : `<button class="vz-button" data-size="sm" data-less>Hide the ${m.other.length} in Other</button>`
+        h += [more, ...(legendActions(m).includes('recolour') ? ['<button class="vz-button" data-size="sm" data-recolour>Colour the eight largest</button>'] : [])].map((b) => `<tr role="row" class="vz-legend-actions"><td role="cell" colspan="${cols.length}"><div class="vz-controls" data-size="sm">${b}</div></td></tr>`).join('') }
+      tbody.innerHTML = h
+      // the note: one line per fact, each cut to fit, so the reserved height holds at any width
+      const common = Object.entries(m.names.common).filter(([k]) => k !== '__name__').map(([k, v]) => k + '="' + v + '"').join(', ')
+      const lines = [], other = otherNote(m)
+      if (common && m.series.length > 1) lines.push(['All series: ', common])
+      if (other) lines.push([other.text, ''])
+      note.innerHTML = lines.map(([a, b]) => `<p title="${esc(a + b)}">${esc(a)}${b ? `<span class="vz-qty">${esc(fit([b], Math.max(t.sp(12), legendW - measure(a, t.small)), (q) => measure(q, t.data)))}</span>` : ''}</p>`).join('')
+      note.hidden = !lines.length
+      // The reservation is what the legend draws: its rows (every series row, Other's row, the members shown and one row per action) and its
+      // note lines, set on the chart whenever the legend is drawn. So a chart this script draws reserves exactly what it draws, at every width
+      // and pointer, before and after it is skipped off screen (content-visibility: auto), and keeps the last result's height while the next
+      // one waits. Set only when it changes: the property is inherited, and a change restyles the chart (v9; the v8 review's B1).
+      for (const [p, v] of [['--legend-rows', tbody.rows.length], ['--legend-notes', lines.length]]) if (root.style.getPropertyValue(p) !== String(v)) root.style.setProperty(p, v)
+    }
+    /* Row state only: chosen, off, pressed, the order statement in the head, the sort triangle. Cheap; a toggle calls this. */
+    function legendState() {
+      const m = g.m, picked = st.picked.size, full3 = pickedOther(m).length >= 3
+      for (const tr of tbody.rows) { const k = tr.dataset.key; if (!k) continue; const on = st.picked.has(k), b = tr.querySelector('.vz-series')
+        on ? tr.setAttribute('aria-selected', 'true') : tr.removeAttribute('aria-selected'); picked && !on ? tr.setAttribute('data-off', '') : tr.removeAttribute('data-off'); b.setAttribute('aria-pressed', on)
+        const s = m.byKey.get(k), sw = tr.querySelector('.vz-swatch')
+        if (s && !s.slot) { sw.dataset.series = on ? 'picked' : 'other'; on ? sw.setAttribute('data-pattern', patternOf(k)) : sw.removeAttribute('data-pattern'); b.setAttribute('aria-disabled', String(!on && full3)) } }
+      const rows = [...tbody.querySelectorAll('.vz-series')]; rows.forEach((r, i) => (r.tabIndex = i === Math.min(st.focusRow, rows.length - 1) ? 0 : -1))
+      for (const th of thead.querySelectorAll('th')) { const c = th.dataset.col, sorted = st.sort.col === c && !(c === 'last' && st.cursor != null); sorted ? th.setAttribute('aria-sort', st.sort.dir > 0 ? 'ascending' : 'descending') : th.removeAttribute('aria-sort') }
+      const nameHead = thead.querySelector('[data-col="name"] .vz-sort'); if (nameHead) nameHead.textContent = (g.nameKeys.length && m.names.order.length > 1 ? 'Series (' + g.nameKeys.join(' · ') + ')' : 'Series') + (st.cursor != null && st.sort.col === 'last' ? ', by last value' : '')
+    }
+    function describe() { const m = g.m; svg.setAttribute('aria-label', `${root.closest('.vz-panel')?.querySelector('.vz-panel-title')?.textContent ?? 'Chart'}, ${m.unit.unit}, ${stamp(st.t0, g.long)} to ${stamp(st.t1, g.long)}. ${m.series.length} series${m.other.length ? ', ' + m.coloured.length + ' drawn separately and ' + m.other.length + ' as one band' : ''}${st.picked.size ? ', ' + st.picked.size + ' chosen' : ''}. Left and right arrows read values; plus and minus zoom.`) }
+
+    /* The crosshair moves without redrawing the chart: one SVG group, the readout and the legend's figure column change; nothing is laid out again.
+       The readout names the series nearest the pointer (pointer or finger) and the highest drawn series (chartFacts: every drawn series, the
+       members of Other included); with the keyboard, the highest. A marker under the crosshair is named. */
+    function cursor(fromKey) {
+      const c = svg.querySelector('.vz-cursor'); if (!c || !g) return
+      const m = g.m, fmt = g.fmt, t = tokens(), unit = m.unit.unit
+      const th = thead.querySelector('[data-col="last"] .vz-sort'); if (th) th.textContent = (st.cursor == null ? 'Last' : 'At ' + stamp(spec.t0 + (m.i0 + st.cursor) * spec.step, g.long)) + ', ' + unit
+      for (const tr of tbody.rows) { const s = m.byKey.get(tr.dataset.key), td = tr.querySelector('[data-c="last"]'); if (s && td) td.textContent = fmt.value(st.cursor == null ? s.last : s.v[st.cursor])
+        else if (tr.dataset.key === 'other' && td) { const v = m.other.map((q) => (st.cursor == null ? q.last : q.v[st.cursor])).filter((p) => p != null); td.textContent = v.length ? span(fmt.value, Math.min(...v), Math.max(...v)) : '' } }
+      if ((st.cursor == null) !== cursorWas) { cursorWas = st.cursor == null; legendState() }
+      if (st.cursor == null) { c.innerHTML = ''; readout.innerHTML = ''; return }
+      const i = st.cursor, px = g.x(i), facts = chartFacts(m, g.vis, spec), drawn = facts.drawn.filter((s) => s.v[i] != null), top = facts.highestAt(i)
+      const near = st.py == null || fromKey ? null : drawn.reduce((a, s) => (!a || Math.abs(g.y(s.v[i]) - st.py) < Math.abs(g.y(a.v[i]) - st.py) ? s : a), null)
+      let o = `<line class="vz-crosshair" x1="${px}" x2="${px}" y1="${g.T}" y2="${g.T + g.plotH}"/>`
+      for (const s of [...g.vis.lines, ...g.vis.picked]) if (s.v[i] != null) o += `<circle class="vz-dot" data-series="${s.slot || 'picked'}" cx="${px}" cy="${g.y(s.v[i])}" r="3"/>`
+      const named = near || top; if (named) o += `<circle class="vz-dot-named" cx="${px}" cy="${g.y(named.v[i])}" r="5"/>`
+      c.innerHTML = o
+      const when = stamp(spec.t0 + (m.i0 + i) * spec.step, g.long), mk = (spec.markers || []).find((k) => Math.abs(k.t - (spec.t0 + (m.i0 + i) * spec.step)) <= spec.step / 2)
+      const who = (s) => (s.slot || g.vis.picked.includes(s) ? '' : 'Other, ') + (s.labels[g.m.names.order[0]] ?? '')
+      const parts = []; if (near) parts.push(['nearest', near]); if (top && (!near || top !== near) && (lastW >= 640 || !near)) parts.push(['highest', top])
+      const fixed = measure(when + (mk ? '  ' + mk.label : '') + parts.map(([w, s]) => '  ' + w + ': ' + fmt.value(s.v[i]) + ' ' + unit).join(''), t.small), room = Math.max(t.sp(12), sizes.readW - fixed - t.sp(3) * (parts.length + 1)) / Math.max(1, parts.length)
+      readout.innerHTML = `<b class="vz-qty">${when}</b>` + (mk ? `<span>${esc(mk.label)}</span>` : '') + parts.map(([w, s]) => `<span>${w}: ${esc(fit([who(s)], room, (q) => measure(q, t.small)))} <span class="vz-qty">${esc(fmt.value(s.v[i]) + ' ' + unit)}</span></span>`).join('')
+      // announced from the keyboard at once, from a pointer only after it rests 500 ms
+      const say = () => { live.textContent = when + (mk ? ', ' + mk.label : '') + parts.map(([w, s]) => `, ${w} ${who(s)} ${fmt.value(s.v[i])} ${unit}`).join('') }
+      clearTimeout(liveTimer); if (fromKey) say(); else liveTimer = setTimeout(say, 500)
+    }
+    function textForm() {
+      const id = root.dataset.textForm, el = id && document.getElementById(id); if (!el) return
+      const title = root.closest('.vz-panel')?.querySelector('.vz-panel-title')?.textContent ?? 'Chart'
+      const lines = textLines(g.m, g.vis, chartFacts(g.m, g.vis, spec), spec, { title, fmt: g.fmt, error: st.error && st.error.title })
+      el.innerHTML = '<ul>' + lines.map((l) => `<li>${esc(l)}</li>`).join('') + '</ul>'
+    }
+    /* An error after a result was drawn. The message lies over the plot, at its height (the plot stays laid out under it, hidden, so nothing
+       moves and the next result draws at once). The legend keeps the previous result's names and figures, which is what "Showing the previous
+       query" and the age in the head describe; it is inert, because there is no plot for its rows to change, and its swatches are hollow,
+       because no line is drawn for them. */
+    function showError() {
+      root.setAttribute('data-error', ''); legendWrap.inert = true; readout.innerHTML = ''; live.textContent = ''
+      const e = document.createElement('div'); e.className = 'vz-empty'; e.setAttribute('role', 'alert'); root.prepend(e)
+      e.innerHTML = `<p class="vz-empty-title"><span class="vz-mark" data-state="critical"></span>${esc(st.error.title)}</p><p>${esc(st.error.text)}</p>` + (st.error.action ? `<div class="vz-controls"><button class="vz-button" data-size="sm">${esc(st.error.action)}</button></div>` : '')
+    }
+
+    const indexAt = (e) => { const r = svg.getBoundingClientRect(); return Math.max(0, Math.min(g.m.n - 1, Math.round((e.clientX - r.left - g.L) / g.plotW * (g.m.n - 1)))) }
+    /* Zoom in halves the range, zoom out doubles it. Centred on the crosshair when it is set; without one, the end of the range stays where
+       it is, so a range that ends now still ends now. Never past the data. */
+    const zoom = (dir) => { const range = st.t1 - st.t0, len = dir > 0 ? range / 2 : range * 2, snap = (tm) => Math.round((tm - spec.t0) / spec.step) * spec.step + spec.t0
+      let a, b; if (st.cursor != null) { const mid = spec.t0 + (g.m.i0 + st.cursor) * spec.step; a = snap(mid - len / 2); b = snap(mid + len / 2) } else { b = st.t1; a = snap(b - len) }
+      if (a < full.t0) { b += full.t0 - a; a = full.t0 } if (b > full.t1) { a -= b - full.t1; b = full.t1 } st.t0 = Math.max(full.t0, a); st.t1 = Math.min(full.t1, b); if (st.t1 - st.t0 < 3 * spec.step) return; st.cursor = null; draw() }
+    // pointer: a mouse moves the crosshair and drags a range; a finger drags the crosshair (zoom is the two buttons)
+    const pointerY = (e) => e.clientY - svg.getBoundingClientRect().top
+    svg.addEventListener('pointermove', (e) => { if (!g) return; if (st.brush) { st.brush.b = Math.max(g.L, Math.min(g.L + g.plotW, e.clientX - svg.getBoundingClientRect().left)); const b = svg.querySelector('.vz-brush'); if (b) { b.setAttribute('x', Math.min(st.brush.a, st.brush.b)); b.setAttribute('width', Math.abs(st.brush.b - st.brush.a)) } else drawPlot(g); return } const i = indexAt(e), py = pointerY(e); if (i !== st.cursor || Math.abs((st.py ?? -99) - py) > 2) { st.cursor = i; st.py = py; cursor() } })
+    svg.addEventListener('pointerdown', (e) => { if (!g) return; svg.setPointerCapture?.(e.pointerId); st.cursor = indexAt(e); st.py = pointerY(e); cursor(); if (e.pointerType === 'mouse') { const px = e.clientX - svg.getBoundingClientRect().left; st.brush = { a: px, b: px } } })
+    svg.addEventListener('pointerup', () => { if (!st.brush) return; const { a, b } = st.brush; st.brush = null; svg.querySelector('.vz-brush')?.remove(); if (Math.abs(b - a) > 8) { const tm = (px) => Math.round((px - g.L) / g.plotW * (g.m.n - 1)) * spec.step + st.t0, lo = tm(Math.min(a, b)), hi = tm(Math.max(a, b)); if (hi - lo >= 3 * spec.step) { st.t0 = lo; st.t1 = hi; st.cursor = null; draw() } } })
+    svg.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse' && !st.brush) { st.cursor = null; st.py = null; cursor() } })
+    svg.addEventListener('keydown', (e) => { if (!g) return; const n = g.m.n - 1, k = e.key; let c = st.cursor
+      if (k === 'ArrowLeft') c = c == null ? n : Math.max(0, c - (e.shiftKey ? 10 : 1)); else if (k === 'ArrowRight') c = c == null ? n : Math.min(n, c + (e.shiftKey ? 10 : 1)); else if (k === 'Home') c = 0; else if (k === 'End') c = n; else if (k === 'Escape') c = null; else if (k === '+' || k === '=') return zoom(1); else if (k === '-') return zoom(-1); else return
+      e.preventDefault(); st.cursor = c; st.py = null; cursor(true) })
+    root.addEventListener('click', (e) => { const z = e.target.closest('[data-zoom]'); if (z) return zoom(z.dataset.zoom === 'in' ? 1 : -1)
+      const sortBtn = e.target.closest('.vz-sort'); if (sortBtn) { const c = sortBtn.dataset.col; if (c === 'last' && st.cursor != null) { st.cursor = null; st.py = null } st.sort = st.sort.col === c ? { col: c, dir: -st.sort.dir } : { col: c, dir: c === 'name' ? 1 : -1 }; legend(); cursor(); thead.querySelector(`[data-col="${c}"] .vz-sort`)?.focus(); return }
+      if (e.target.closest('[data-more]')) { st.open = Math.min(g.m.other.length, st.open + 20); legend(); legendState(); cursor(); return } if (e.target.closest('[data-less]')) { st.open = 0; legend(); legendState(); cursor(); return }
+      if (e.target.closest('[data-recolour]')) { st.picked.clear(); st.pickOrder = []; recolour(loadMap(view), model()); saveMap(view); cache = null; draw(); return }
+      const tr = e.target.closest('tbody tr[data-key]'); if (tr) { const had = document.activeElement?.closest?.('.vz-series'); st.focusRow = [...tbody.querySelectorAll('.vz-series')].indexOf(tr.querySelector('.vz-series')); toggle(tr.dataset.key); if (had) tbody.querySelectorAll('.vz-series')[st.focusRow]?.focus() } })
+    // emphasis from the legend: pointer over a row, keyboard focus on a row, or a finger held on it
+    const rowKey = (e) => e.target.closest?.('tbody tr[data-key]')?.dataset.key
+    tbody.addEventListener('pointerover', (e) => { if (e.pointerType === 'mouse') { const k = rowKey(e); if (k && k !== st.emph) emphasise(k) } })
+    tbody.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') emphasise(null) })
+    tbody.addEventListener('pointerdown', (e) => { if (e.pointerType !== 'mouse') { const k = rowKey(e); if (k) emphasise(k) } })
+    for (const ev of ['pointerup', 'pointercancel']) tbody.addEventListener(ev, (e) => { if (e.pointerType !== 'mouse') emphasise(null) })
+    tbody.addEventListener('focusin', (e) => { const k = rowKey(e); if (k) emphasise(k) })
+    tbody.addEventListener('focusout', (e) => { if (!tbody.contains(e.relatedTarget)) emphasise(null) })
+    // the legend is one tab stop; up and down move between rows, space or enter toggles the row
+    tbody.addEventListener('keydown', (e) => { const rows = [...tbody.querySelectorAll('.vz-series')], i = rows.indexOf(document.activeElement); if (i < 0) return; const to = e.key === 'ArrowDown' ? Math.min(rows.length - 1, i + 1) : e.key === 'ArrowUp' ? Math.max(0, i - 1) : -1; if (to < 0) return; e.preventDefault(); rows[i].tabIndex = -1; rows[to].tabIndex = 0; rows[to].focus(); st.focusRow = to })
+    new ResizeObserver(() => { const w = svg.clientWidth; if (w && (w !== lastW || svg.clientHeight !== lastH)) draw() }).observe(svg) // a hidden chart is not redrawn, and showing it again at the same size costs nothing
+    if (root.dataset.errorTitle) st.error = { title: root.dataset.errorTitle, text: root.dataset.errorText, action: root.dataset.errorAction }
+    draw(); document.fonts?.addEventListener?.('loadingdone', () => { widths.clear(); draw() }) // text is fitted by measuring it; a font that arrives later changes every width
+    return { draw, state: st, toggle,
+      setFilter(f) { st.filter = f; st.filterId++; draw() },
+      /* A new result for the same view: the chart is kept, its data replaced. Colours (the view's map), chosen rows and sort order survive. */
+      setData(next) { setSpec(next); st.error = null; cache = null; draw() },
+      /* An error after a result was drawn: the message lies over the plot at its height; the legend keeps the previous result's figures. */
+      setError(err) { st.error = err; draw() },
+      text() { const id = root.dataset.textForm; return id ? document.getElementById(id)?.textContent : '' },
+      slot(k) { return slotOf(loadMap(view), k) },
+      /* The members of Other, largest first: what "Show 20 more of Other" lists, and what can be picked out. */
+      otherKeys() { return g.m.other.map((s) => s.key) },
+      /* The figures the legend shows for each series it lists, in the chart's number format: what a composition's stats and tables must agree with. */
+      figures() { const m = g.m, f = g.fmt; return m.listed.map((s) => ({ key: s.key, names: Object.values(s.labels), slot: s.slot, last: f.value(s.last), min: f.value(s.min), max: f.value(s.max) })) } }
+  }
+  window.vzChart = vzChart; window.vzChartDemos = demos
+  window.vzChartRules = { assignSeries, newMap, slotOf, recolour, legendActions, distinguish, fit, valueTicks, scaleUnit, numberFormat, chartModel, drawnSet, otherNote, chartFacts, textLines, seriesName }
+  const init = () => { document.querySelectorAll('.vz-chart[data-demo]:not([data-ready])').forEach((el) => { el.dataset.ready = '1'; el.vz = vzChart(el, demos[el.dataset.demo]()); if (el.dataset.then) el.vz.setData(demos[el.dataset.then]())
+      // data-pick="3": the largest members of Other picked out, as a person would (open Other, choose them): solid, dashed, dotted
+      if (el.dataset.pick) { el.querySelector('[data-more]')?.click(); for (const k of el.vz.otherKeys().slice(0, +el.dataset.pick)) el.vz.toggle(k) } })
+    // "Without the three largest": the three series with the highest maximum in the chart's data, whatever the chart
+    document.querySelectorAll('[data-filter-for]:not([data-ready])').forEach((seg) => { seg.dataset.ready = '1'; seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; seg.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', x === b))
+      const el = document.querySelector(`.vz-chart[data-view="${seg.dataset.filterFor}"]`); if (!el?.vz) return
+      const keyOf = (s) => key(s.labels), top3 = new Set(demos[el.dataset.demo]().series.map((s) => [keyOf(s), Math.max(...s.values.filter((v) => v != null))]).sort((a, c) => c[1] - a[1]).slice(0, 3).map((x) => x[0]))
+      el.vz.setFilter(b.dataset.filter === 'top3' ? (s) => !top3.has(s.key) : null) }) })
+    // the panel's query: its own pods, or another service's, and back. A new result each time, in the same view, so the map holds the colours
+    const current = (el) => { const spec = el.dataset.query === 'search' ? demos.search() : demos[el.dataset.demo](); if (el.dataset.query !== 'search' && el.dataset.added) spec.series.push(newPod())
+      if (el.dataset.query === 'node-b') spec.series = spec.series.filter((s) => s.labels.node === 'node-b') // the query narrowed: node="node-b"
+      return spec }
+    document.querySelectorAll('[data-query-for]:not([data-ready])').forEach((seg) => { seg.dataset.ready = '1'; seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; seg.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', x === b))
+      const el = document.querySelector(`.vz-chart[data-view="${seg.dataset.queryFor}"]`); if (!el?.vz) return; el.dataset.query = b.dataset.query; el.vz.setData(current(el)) }) })
+    // a new pod, larger than every pod in the view: a series new to the view when all eight slots are held joins Other, and the legend says it is larger
+    document.querySelectorAll('[data-add-pod]:not([data-ready])').forEach((btn) => { btn.dataset.ready = '1'; btn.addEventListener('click', () => { const el = document.querySelector(`.vz-chart[data-view="${btn.dataset.addPod}"]`); if (!el?.vz || btn.disabled) return
+      el.dataset.added = '1'; el.vz.setData(current(el)); btn.disabled = true }) }) }
+  window.vzChartInit = init
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init()
+})()
+</script>
+</body></html>

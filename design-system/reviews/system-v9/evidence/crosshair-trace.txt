@@ -1,0 +1,18 @@
+Touch crosshair on the fixture's 36-pod plot, phone layout (400 x 800, coarse pointer, touch), CPU 4x, 40 touch moves, each waited to the
+end of its frame. Per move: Chromium's Performance.getMetrics deltas (script, layout, style, the whole task) and a CPU profile's self time.
+Scratch probe (not shipped); measured on this machine, on the system's fixture page (a floor).
+
+v8, as handed off; load 7.0 (first run, before any change):
+  per move script 8.25 ms, layout 5.44 ms, style 2.51 ms, task 36.79 ms
+  move to end of frame: median 51.7, p75 62.5, worst 99.4 ms (n=40)
+  self time per move: getPropertyValue 6.74 ms (called by tokens().sp() <- cursor(): every t.sp(k) read the computed style again, after
+  cursor() had written the readout, so each read restyled the page); abs 2.84 ms (numberFormat: toLocaleString makes a formatter per call)
+v8 again, load 6.8: script 10.38, layout 6.14, style 3.13, task 40.41 ms; getPropertyValue 7.55 ms, abs 2.66 + 0.55 + 0.38 + 0.14 ms
+
+v8 and v9 one after the other, load 6.7:
+  v8: script 6.75 ms, layout 4.79, style 2.15, task 31.04 ms; move to end of frame median 48.8, p75 55.1, worst 77.3
+      self time: getPropertyValue 5.93 ms, cursor 2.02, abs 1.98
+  v9: script 4.01 ms, layout 4.01, style 2.77, task 27.04 ms; move to end of frame median 47.1, p75 52.4, worst 82.2
+      self time: cursor 1.77, abs 0.10; getPropertyValue no longer in the profile
+  What is left of the task is mostly the browser's own work ("(program)" 21 ms of samples): painting the plot's SVG again for the
+  crosshair group and laying out the legend's figure column and the readout. Not changed (see response.md, m2).

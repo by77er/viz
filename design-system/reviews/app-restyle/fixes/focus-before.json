@@ -1,0 +1,11 @@
+{
+  "after Cancel by keyboard": "body",
+  "after Retry by keyboard": "body",
+  "after choosing a time preset by keyboard": "body",
+  "after \"Run the query again\" by keyboard": "body",
+  "after closing the command palette with Escape": "open-commands",
+  "after closing settings with Escape": "open-settings",
+  "after T (table to text) with focus on a table column head": "body",
+  "after isolating a series by keyboard": "{service=\"auth\"}",
+  "after \"Show all series\" by keyboard (the button goes away)": "body"
+}

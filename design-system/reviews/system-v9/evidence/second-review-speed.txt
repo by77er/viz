@@ -1,0 +1,258 @@
+tools/speed.mjs and the layout-shift entries the browser marks hadRecentInput. Measured here, 26 Nov; Playwright 1.63.0, chromium_headless_shell 157.0.8103.78;
+CPU 4x, Fast 4G; the system's fixture page (a floor, not the application); 4 cores shared with another session's browser jobs. speed-shipped: tools/speed.mjs as
+committed before this change (it summed unmarked entries, kept the marked ones in a variable it never printed or judged); speed: the changed harness.
+
+1. TEETH, on a scratch copy whose fixture page adds a quarter of the window at its top 300 ms after its last script runs (scroll anchoring off).
+   Scenarios: the shipped ones with only their layout-shift rows kept. 3 runs each.
+   Phone layout (hasTouch, isMobile): the shipped harness reads 0.0000 on all six rows and exits 0; the changed one reads 0.25 to 0.27 on all six and exits 1.
+   Desktop layout: both read 0.1566 and exit 1 (the entry is not marked there).
+
+
+=== late-shift fixture, tools/speed-shipped.mjs fixtures/speed-phone-shift-only.json --runs 3, load 0.49 1.05 1.43
+
+
+http://127.0.0.1:8900/fixture/index.html
+3 runs, CPU 4x, Fast 4G, 400x800, coarse pointer and touch (presses and taps by CDP touch events). p75 is the budgeted figure.
+Load: 1-minute load average at the start of each run 0.5 to 0.6 (median 0.5) on 4 cores; at the end 0.7 1.0 1.4. Calibration task 348 ms (about 100 ms on an idle core). A timing row is judged only when most of its samples were taken at a load of 4 or less.
+
+| What | Budget | p75 | Median | Worst | Samples | Load when taken (median, range) | |
+|---|---|---|---|---|---|---|---|
+| Layout shift, load and run | 0.05 | 0.0000 | 0.0000 | 0.0000 | 3 | 0.6 (0.5 to 0.7) | within |
+| Layout shift, loaded scrolled to CPU by pod | 0.05 | 0.0000 | 0.0000 | 0.0000 | 3 | 0.5 (0.5 to 0.6) | within |
+| Layout shift, loaded scrolled to Latency by route | 0.05 | 0.0000 | 0.0000 | 0.0000 | 3 | 0.5 (0.5 to 0.6) | within |
+| Layout shift, loaded scrolled to Request rate | 0.05 | 0.0000 | 0.0000 | 0.0000 | 3 | 0.5 (0.5 to 0.6) | within |
+| Layout shift, loaded scrolled to CPU by pod, every namespace | 0.05 | 0.0000 | 0.0000 | 0.0000 | 3 | 0.5 (0.5 to 0.6) | within |
+| Layout shift, loaded scrolled to the backtest | 0.05 | 0.0000 | 0.0000 | 0.0000 | 3 | 0.5 (0.5 to 0.6) | within |
+
+Every judged 75th percentile is within its budget (rows not judged are neither passed nor failed).
+exit status 0
+
+=== late-shift fixture, tools/speed.mjs fixtures/speed-phone-shift-only.json --runs 3, load 0.71 1.03 1.41
+
+
+http://127.0.0.1:8900/fixture/index.html
+3 runs, CPU 4x, Fast 4G, 400x800, coarse pointer and touch (presses and taps by CDP touch events). p75 is the budgeted figure.
+Load: 1-minute load average at the start of each run 0.7 to 1.4 (median 1.1) on 4 cores; at the end 1.5 1.2 1.4. Calibration task 331 ms (about 100 ms on an idle core). A timing row is judged only when most of its samples were taken at a load of 4 or less.
+
+| What | Budget | p75 | Median | Worst | Samples | Load when taken (median, range) | |
+|---|---|---|---|---|---|---|---|
+| Layout shift, load and run | 0.05 | 0.2515 | 0.2515 | 0.2515 | 3 | 1.4 (1.1 to 1.5) | **OVER** |
+| Layout shift, loaded scrolled to CPU by pod | 0.05 | 0.2500 | 0.2500 | 0.2500 | 3 | 1.1 (0.7 to 1.4) | **OVER** |
+| Layout shift, loaded scrolled to Latency by route | 0.05 | 0.2501 | 0.2501 | 0.2501 | 3 | 1.1 (0.7 to 1.4) | **OVER** |
+| Layout shift, loaded scrolled to Request rate | 0.05 | 0.2500 | 0.2500 | 0.2500 | 3 | 1.1 (0.7 to 1.4) | **OVER** |
+| Layout shift, loaded scrolled to CPU by pod, every namespace | 0.05 | 0.2500 | 0.2500 | 0.2500 | 3 | 1.1 (0.7 to 1.4) | **OVER** |
+| Layout shift, loaded scrolled to the backtest | 0.05 | 0.2688 | 0.2688 | 0.2688 | 3 | 1.1 (0.7 to 1.4) | **OVER** |
+Layout shift, load and run: of the layout shift judged above, at most 0.2515 in a run came from entries the browser marks as following input although none had been given (counted); at most 0.0000 in a run was marked after the harness's first input (left out: within 500 ms of input).
+Layout shift, loaded scrolled to CPU by pod: of the layout shift judged above, at most 0.2500 in a run came from entries the browser marks as following input although none had been given (counted); at most 0.0000 in a run was marked after the harness's first input (left out: within 500 ms of input).
+Layout shift, loaded scrolled to Latency by route: of the layout shift judged above, at most 0.2501 in a run came from entries the browser marks as following input although none had been given (counted); at most 0.0000 in a run was marked after the harness's first input (left out: within 500 ms of input).
+Layout shift, loaded scrolled to Request rate: of the layout shift judged above, at most 0.2500 in a run came from entries the browser marks as following input although none had been given (counted); at most 0.0000 in a run was marked after the harness's first input (left out: within 500 ms of input).
+Layout shift, loaded scrolled to CPU by pod, every namespace: of the layout shift judged above, at most 0.2500 in a run came from entries the browser marks as following input although none had been given (counted); at most 0.0000 in a run was marked after the harness's first input (left out: within 500 ms of input).
+Layout shift, loaded scrolled to the backtest: of the layout shift judged above, at most 0.2688 in a run came from entries the browser marks as following input although none had been given (counted); at most 0.0000 in a run was marked after the harness's first input (left out: within 500 ms of input).
+
+6 judged measurement(s) over budget or without data.
+exit status 1
+
+=== late-shift fixture, tools/speed-shipped.mjs fixtures/speed-shift-only.json --runs 3, load 1.46 1.18 1.44
+
+
+http://127.0.0.1:8900/fixture/index.html
+3 runs, CPU 4x, Fast 4G, 1440x900. p75 is the budgeted figure.
+Load: 1-minute load average at the start of each run 1.4 to 1.5 (median 1.5) on 4 cores; at the end 1.5 1.2 1.4. Calibration task 366 ms (about 100 ms on an idle core). A timing row is judged only when most of its samples were taken at a load of 4 or less.
+
+| What | Budget | p75 | Median | Worst | Samples | Load when taken (median, range) | |
+|---|---|---|---|---|---|---|---|
+| Layout shift, load and run | 0.05 | 0.1566 | 0.1566 | 0.1566 | 3 | 1.5 (1.4 to 1.5) | **OVER** |
+| Layout shift, loaded scrolled to CPU by pod | 0.05 | 0.1565 | 0.1565 | 0.1565 | 3 | 1.5 (1.4 to 1.5) | **OVER** |
+
+2 judged measurement(s) over budget or without data.
+exit status 1
+
+=== late-shift fixture, tools/speed.mjs fixtures/speed-shift-only.json --runs 3, load 1.47 1.19 1.44
+
+
+http://127.0.0.1:8900/fixture/index.html
+3 runs, CPU 4x, Fast 4G, 1440x900. p75 is the budgeted figure.
+Load: 1-minute load average at the start of each run 1.6 to 1.6 (median 1.6) on 4 cores; at the end 1.8 1.3 1.5. Calibration task 341 ms (about 100 ms on an idle core). A timing row is judged only when most of its samples were taken at a load of 4 or less.
+
+| What | Budget | p75 | Median | Worst | Samples | Load when taken (median, range) | |
+|---|---|---|---|---|---|---|---|
+| Layout shift, load and run | 0.05 | 0.1566 | 0.1566 | 0.1566 | 3 | 1.6 (1.6 to 1.8) | **OVER** |
+| Layout shift, loaded scrolled to CPU by pod | 0.05 | 0.1565 | 0.1565 | 0.1565 | 3 | 1.6 (1.6 to 1.6) | **OVER** |
+Layout shift, load and run: of the layout shift judged above, at most 0.0000 in a run came from entries the browser marks as following input although none had been given (counted); at most 0.0000 in a run was marked after the harness's first input (left out: within 500 ms of input).
+Layout shift, loaded scrolled to CPU by pod: of the layout shift judged above, at most 0.0000 in a run came from entries the browser marks as following input although none had been given (counted); at most 0.0000 in a run was marked after the harness's first input (left out: within 500 ms of input).
+
+2 judged measurement(s) over budget or without data.
+exit status 1
+
+   The changed harness again, as it now prints (the phone layout):
+
+=== late-shift fixture, tools/speed.mjs (as it now is) fixtures/speed-phone-shift-only.json --runs 3, load 1.19 1.18 1.43
+
+
+http://127.0.0.1:8900/fixture/index.html
+3 runs, CPU 4x, Fast 4G, 400x800, coarse pointer and touch (presses and taps by CDP touch events). p75 is the budgeted figure.
+Load: 1-minute load average at the start of each run 1.3 to 1.4 (median 1.3) on 4 cores; at the end 1.6 1.3 1.4. Calibration task 372 ms (about 100 ms on an idle core). A timing row is judged only when most of its samples were taken at a load of 4 or less.
+
+| What | Budget | p75 | Median | Worst | Samples | Load when taken (median, range) | |
+|---|---|---|---|---|---|---|---|
+| Layout shift, load and run | 0.05 | 0.2515 | 0.2515 | 0.2515 | 3 | 1.4 (1.3 to 1.6) | **OVER** |
+| Layout shift, loaded scrolled to CPU by pod | 0.05 | 0.2500 | 0.2500 | 0.2500 | 3 | 1.3 (1.3 to 1.4) | **OVER** |
+| Layout shift, loaded scrolled to Latency by route | 0.05 | 0.2501 | 0.2501 | 0.2501 | 3 | 1.3 (1.3 to 1.4) | **OVER** |
+| Layout shift, loaded scrolled to Request rate | 0.05 | 0.2500 | 0.2500 | 0.2500 | 3 | 1.3 (1.3 to 1.4) | **OVER** |
+| Layout shift, loaded scrolled to CPU by pod, every namespace | 0.05 | 0.2500 | 0.2500 | 0.2500 | 3 | 1.3 (1.3 to 1.4) | **OVER** |
+| Layout shift, loaded scrolled to the backtest | 0.05 | 0.2688 | 0.2688 | 0.2688 | 3 | 1.3 (1.3 to 1.4) | **OVER** |
+
+Layout shift in entries the browser marks as following input, the largest in a run. Counted above when no input had been given yet; left out within 500 ms of the harness's own input:
+  Layout shift, load and run: 0.2515 counted, 0.0000 left out
+  Layout shift, loaded scrolled to CPU by pod: 0.2500 counted, 0.0000 left out
+  Layout shift, loaded scrolled to Latency by route: 0.2501 counted, 0.0000 left out
+  Layout shift, loaded scrolled to Request rate: 0.2500 counted, 0.0000 left out
+  Layout shift, loaded scrolled to CPU by pod, every namespace: 0.2500 counted, 0.0000 left out
+  Layout shift, loaded scrolled to the backtest: 0.2688 counted, 0.0000 left out
+
+6 judged measurement(s) over budget or without data.
+exit status 1
+
+2. THE TREE (v9 as it is), the changed harness, the shipped scenarios whole: 5 runs on the phone, 3 on the desktop. Only the layout-shift rows are the point
+   (judged at any load); the timing rows are printed as they came and are NOT the 20 runs the budgets ask for. The desktop run exited 1: Change theme, 101 ms
+   as the p75 of 3 samples (the largest of the three).
+
+=== the tree, node tools/speed.mjs fixtures/speed-phone.json --runs 5, load 1.57 1.28 1.45
+
+
+http://127.0.0.1:8900/fixture/index.html
+5 runs, CPU 4x, Fast 4G, 400x800, coarse pointer and touch (presses and taps by CDP touch events). p75 is the budgeted figure.
+Load: 1-minute load average at the start of each run 1.4 to 2.8 (median 2.0) on 4 cores; at the end 1.2 1.4 1.5. Calibration task 373 ms (about 100 ms on an idle core). A timing row is judged only when most of its samples were taken at a load of 4 or less.
+
+| What | Budget | p75 | Median | Worst | Samples | Load when taken (median, range) | |
+|---|---|---|---|---|---|---|---|
+| Press: Run query | 50 ms | 22 ms | 21 ms | 25 ms | 5 | 1.9 (1.3 to 2.7) | within |
+| Typing in the query editor | 50 ms | 22 ms | 19 ms | 25 ms | 5 | 1.9 (1.3 to 2.5) | within |
+| Crosshair by touch drag, 36 series | 50 ms | 46 ms | 43 ms | 62 ms | 5 | 1.9 (1.3 to 2.5) | within |
+| Legend row toggle, 36 series | 100 ms | 92 ms | 68 ms | 105 ms | 5 | 1.9 (1.3 to 2.5) | within |
+| Legend row toggle, 200 series | 100 ms | 85 ms | 58 ms | 91 ms | 5 | 1.7 (1.3 to 2.5) | within |
+| One panel to table, 36 series | 100 ms | 77 ms | 74 ms | 86 ms | 5 | 1.7 (1.2 to 2.5) | within |
+| One panel to chart, 36 series | 100 ms | 63 ms | 57 ms | 83 ms | 5 | 1.7 (1.2 to 2.5) | within |
+| One panel to table, 200 series | 100 ms | 59 ms | 59 ms | 64 ms | 5 | 1.7 (1.2 to 2.5) | within |
+| Open a menu (Share…) | 100 ms | 47 ms | 44 ms | 55 ms | 5 | 1.7 (1.2 to 2.5) | within |
+| Change theme (to dark) | 100 ms | 88 ms | 70 ms | 103 ms | 5 | 1.7 (1.2 to 2.3) | within |
+| Change theme: transitions still running when it is drawn | 0 | 0 | 0 | 0 | 5 | 1.7 (1.2 to 2.3) | within |
+| Run a query: request sent and waiting state shown | 100 ms | 41 ms | 37 ms | 44 ms | 5 | 1.7 (1.2 to 2.3) | within |
+| Move to a view whose data is not loaded: its shell and waiting state | 100 ms | 48 ms | 46 ms | 53 ms | 5 | 1.7 (1.2 to 2.8) | within |
+| Response to paint, 36 series | 100 ms | 15 ms | 13 ms | 17 ms | 5 | 1.7 (1.2 to 2.8) | within |
+| Response to paint, 200 series | 100 ms | 30 ms | 29 ms | 31 ms | 5 | 1.7 (1.2 to 2.8) | within |
+| Layout shift, load and run | 0.05 | 0.0015 | 0.0015 | 0.0015 | 5 | 1.7 (1.2 to 2.8) | within |
+| Layout shift, loaded scrolled to CPU by pod | 0.05 | 0.0000 | 0.0000 | 0.0000 | 5 | 2.0 (1.4 to 2.8) | within |
+| Layout shift, loaded scrolled to Latency by route | 0.05 | 0.0001 | 0.0001 | 0.0001 | 5 | 2.0 (1.4 to 2.8) | within |
+| Layout shift, loaded scrolled to Request rate | 0.05 | 0.0000 | 0.0000 | 0.0000 | 5 | 2.0 (1.4 to 2.8) | within |
+| Layout shift, loaded scrolled to CPU by pod, every namespace | 0.05 | 0.0000 | 0.0000 | 0.0000 | 5 | 2.0 (1.4 to 2.8) | within |
+| Layout shift, loaded scrolled to the backtest | 0.05 | 0.0188 | 0.0188 | 0.0188 | 5 | 2.0 (1.4 to 2.8) | within |
+| Worst interaction (Event Timing) | 200 ms | 112 ms | 104 ms | 120 ms | 5 | 1.7 (1.2 to 2.8) | within |
+
+Layout shift in entries the browser marks as following input, the largest in a run. Counted above when no input had been given yet; left out within 500 ms of the harness's own input:
+  Layout shift, load and run: 0.0015 counted, 0.0008 left out
+  Layout shift, loaded scrolled to CPU by pod: 0.0000 counted, 0.0000 left out
+  Layout shift, loaded scrolled to Latency by route: 0.0001 counted, 0.0000 left out
+  Layout shift, loaded scrolled to Request rate: 0.0000 counted, 0.0000 left out
+  Layout shift, loaded scrolled to CPU by pod, every namespace: 0.0000 counted, 0.0000 left out
+  Layout shift, loaded scrolled to the backtest: 0.0188 counted, 0.0000 left out
+
+Every judged 75th percentile is within its budget (rows not judged are neither passed nor failed).
+exit status 0
+=== the tree, node tools/speed.mjs fixtures/speed.json --runs 3, load 1.21 1.40 1.48
+
+
+http://127.0.0.1:8900/fixture/index.html
+3 runs, CPU 4x, Fast 4G, 1440x900. p75 is the budgeted figure.
+Load: 1-minute load average at the start of each run 1.2 to 2.0 (median 1.6) on 4 cores; at the end 1.6 1.5 1.5. Calibration task 344 ms (about 100 ms on an idle core). A timing row is judged only when most of its samples were taken at a load of 4 or less.
+
+| What | Budget | p75 | Median | Worst | Samples | Load when taken (median, range) | |
+|---|---|---|---|---|---|---|---|
+| Press: Run query | 50 ms | 21 ms | 14 ms | 21 ms | 3 | 1.6 (1.2 to 1.9) | within |
+| Typing in the query editor | 50 ms | 13 ms | 13 ms | 13 ms | 3 | 1.7 (1.3 to 1.9) | within |
+| Crosshair, 3 series | 50 ms | 22 ms | 21 ms | 22 ms | 3 | 1.7 (1.3 to 1.9) | within |
+| Crosshair, 36 series | 50 ms | 26 ms | 25 ms | 26 ms | 3 | 1.7 (1.3 to 1.9) | within |
+| Crosshair, 200 series | 50 ms | 26 ms | 23 ms | 26 ms | 3 | 1.7 (1.3 to 1.9) | within |
+| Legend row toggle, 36 series | 100 ms | 56 ms | 49 ms | 56 ms | 3 | 1.7 (1.3 to 1.9) | within |
+| Legend row toggle, 200 series | 100 ms | 39 ms | 38 ms | 39 ms | 3 | 1.7 (1.3 to 1.9) | within |
+| One panel to table, 36 series | 100 ms | 54 ms | 53 ms | 54 ms | 3 | 1.7 (1.3 to 1.9) | within |
+| One panel to chart, 36 series | 100 ms | 62 ms | 58 ms | 62 ms | 3 | 1.6 (1.3 to 1.9) | within |
+| One panel to table, 200 series | 100 ms | 45 ms | 39 ms | 45 ms | 3 | 1.6 (1.1 to 1.9) | within |
+| Open a menu (Share…) | 100 ms | 26 ms | 21 ms | 26 ms | 3 | 1.6 (1.1 to 1.9) | within |
+| Change theme (to dark) | 100 ms | 101 ms | 96 ms | 101 ms | 3 | 1.6 (1.1 to 1.9) | **OVER** |
+| Change theme: transitions still running when it is drawn | 0 | 0 | 0 | 0 | 3 | 1.6 (1.1 to 1.9) | within |
+| Run a query: request sent and waiting state shown | 100 ms | 23 ms | 18 ms | 23 ms | 3 | 1.6 (1.1 to 1.8) | within |
+| Move to a view whose data is not loaded: its shell and waiting state | 100 ms | 30 ms | 24 ms | 30 ms | 3 | 1.6 (1.1 to 1.8) | within |
+| Response to paint, 36 series | 100 ms | 47 ms | 37 ms | 47 ms | 3 | 1.8 (1.6 to 2.0) | within |
+| Response to paint, 200 series | 100 ms | 24 ms | 23 ms | 24 ms | 3 | 1.8 (1.6 to 2.0) | within |
+| Layout shift, load and run | 0.05 | 0.0004 | 0.0004 | 0.0004 | 3 | 1.8 (1.6 to 2.0) | within |
+| Layout shift, loaded scrolled to CPU by pod | 0.05 | 0.0002 | 0.0002 | 0.0002 | 3 | 1.6 (1.2 to 2.0) | within |
+| Worst interaction (Event Timing) | 200 ms | 144 ms | 144 ms | 144 ms | 3 | 1.6 (1.6 to 2.0) | within |
+
+Layout shift in entries the browser marks as following input, the largest in a run. Counted above when no input had been given yet; left out within 500 ms of the harness's own input:
+  Layout shift, load and run: 0.0000 counted, 0.0001 left out
+
+1 judged measurement(s) over budget or without data.
+exit status 1
+
+3. CHANGE THEME ON THE DESKTOP, the row that was over in the 3-run sample: that row alone, 20 samples with each harness, in alternating blocks of 10
+   (shipped, changed, shipped, changed), on a clean scratch copy whose dist/ is byte for byte the tree's. Pooled:
+   speed-shipped: 20 samples; p75 97 ms, median 87, worst 129; budget 100; load median 1.9 (1.1 to 2.4) on 4 cores: judged; samples over 100 ms: 5; transitions running when drawn, largest: 0; samples: 84 77 109 73 71 96 70 73 109 69 129 96 87 70 96 105 88 115 80 97
+   speed: 20 samples; p75 89 ms, median 82, worst 169; budget 100; load median 1.8 (1.6 to 2.0) on 4 cores: judged; samples over 100 ms: 5; transitions running when drawn, largest: 0; samples: 103 82 87 89 76 83 112 107 169 82 85 79 74 77 78 89 126 76 80 73
+
+=== clean copy of the tree (dist identical), tools/speed-shipped.mjs fixtures/speed-theme-only.json --runs 10, block 1, load 1.08 1.38 1.47
+
+
+http://127.0.0.1:8900/fixture/index.html
+10 runs, CPU 4x, Fast 4G, 1440x900. p75 is the budgeted figure.
+Load: 1-minute load average at the start of each run 1.1 to 2.2 (median 1.4) on 4 cores; at the end 2.1 1.6 1.5. Calibration task 340 ms (about 100 ms on an idle core). A timing row is judged only when most of its samples were taken at a load of 4 or less.
+
+| What | Budget | p75 | Median | Worst | Samples | Load when taken (median, range) | |
+|---|---|---|---|---|---|---|---|
+| Change theme (to dark) | 100 ms | 96 ms | 73 ms | 109 ms | 10 | 1.8 (1.1 to 2.2) | within |
+| Change theme: transitions still running when it is drawn | 0 | 0 | 0 | 0 | 10 | 1.8 (1.1 to 2.2) | within |
+
+Every judged 75th percentile is within its budget (rows not judged are neither passed nor failed).
+exit status 0
+=== clean copy of the tree (dist identical), tools/speed.mjs fixtures/speed-theme-only.json --runs 10, block 1, load 2.08 1.60 1.54
+
+
+http://127.0.0.1:8900/fixture/index.html
+10 runs, CPU 4x, Fast 4G, 1440x900. p75 is the budgeted figure.
+Load: 1-minute load average at the start of each run 1.7 to 2.0 (median 1.8) on 4 cores; at the end 1.7 1.6 1.5. Calibration task 342 ms (about 100 ms on an idle core). A timing row is judged only when most of its samples were taken at a load of 4 or less.
+
+| What | Budget | p75 | Median | Worst | Samples | Load when taken (median, range) | |
+|---|---|---|---|---|---|---|---|
+| Change theme (to dark) | 100 ms | 107 ms | 87 ms | 169 ms | 10 | 1.8 (1.7 to 2.0) | **OVER** |
+| Change theme: transitions still running when it is drawn | 0 | 0 | 0 | 0 | 10 | 1.8 (1.7 to 2.0) | within |
+
+1 judged measurement(s) over budget or without data.
+exit status 0
+=== clean copy of the tree (dist identical), tools/speed-shipped.mjs fixtures/speed-theme-only.json --runs 10, block 2, load 1.73 1.56 1.53
+
+
+http://127.0.0.1:8900/fixture/index.html
+10 runs, CPU 4x, Fast 4G, 1440x900. p75 is the budgeted figure.
+Load: 1-minute load average at the start of each run 1.8 to 2.4 (median 1.9) on 4 cores; at the end 2.1 1.7 1.6. Calibration task 358 ms (about 100 ms on an idle core). A timing row is judged only when most of its samples were taken at a load of 4 or less.
+
+| What | Budget | p75 | Median | Worst | Samples | Load when taken (median, range) | |
+|---|---|---|---|---|---|---|---|
+| Change theme (to dark) | 100 ms | 105 ms | 96 ms | 129 ms | 10 | 2.0 (1.8 to 2.4) | **OVER** |
+| Change theme: transitions still running when it is drawn | 0 | 0 | 0 | 0 | 10 | 2.0 (1.8 to 2.4) | within |
+
+1 judged measurement(s) over budget or without data.
+exit status 0
+=== clean copy of the tree (dist identical), tools/speed.mjs fixtures/speed-theme-only.json --runs 10, block 2, load 2.14 1.69 1.58
+
+
+http://127.0.0.1:8900/fixture/index.html
+10 runs, CPU 4x, Fast 4G, 1440x900. p75 is the budgeted figure.
+Load: 1-minute load average at the start of each run 1.6 to 2.0 (median 1.8) on 4 cores; at the end 1.6 1.6 1.6. Calibration task 356 ms (about 100 ms on an idle core). A timing row is judged only when most of its samples were taken at a load of 4 or less.
+
+| What | Budget | p75 | Median | Worst | Samples | Load when taken (median, range) | |
+|---|---|---|---|---|---|---|---|
+| Change theme (to dark) | 100 ms | 85 ms | 78 ms | 126 ms | 10 | 1.8 (1.6 to 2.0) | within |
+| Change theme: transitions still running when it is drawn | 0 | 0 | 0 | 0 | 10 | 1.8 (1.6 to 2.0) | within |
+
+Every judged 75th percentile is within its budget (rows not judged are neither passed nor failed).
+exit status 0

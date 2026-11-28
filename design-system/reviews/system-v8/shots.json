@@ -1,0 +1,255 @@
+{
+ "name": "v8",
+ "themes": [
+  "light",
+  "dark"
+ ],
+ "states": [
+  {
+   "name": "dashboard-1500",
+   "url": "reviews/system-v8/compositions/dashboard.html",
+   "width": 1500,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "dashboard-400-coarse",
+   "url": "reviews/system-v8/compositions/dashboard.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "dialog-1500",
+   "url": "reviews/system-v8/compositions/dialog.html",
+   "width": 1500,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "dialog-400-coarse",
+   "url": "reviews/system-v8/compositions/dialog.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "states-1500",
+   "url": "reviews/system-v8/compositions/states.html",
+   "width": 1500,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "states-400-coarse",
+   "url": "reviews/system-v8/compositions/states.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "long-table-1500",
+   "url": "reviews/system-v8/compositions/long-table.html",
+   "width": 1500,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "long-table-400-coarse",
+   "url": "reviews/system-v8/compositions/long-table.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "folded-list-1500",
+   "url": "reviews/system-v8/compositions/folded-list.html",
+   "width": 1500,
+   "scale": 1,
+   "measure": true,
+   "height": 2200
+  },
+  {
+   "name": "folded-list-400-coarse",
+   "url": "reviews/system-v8/compositions/folded-list.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true,
+   "height": 2600
+  },
+  {
+   "name": "monitor-1500",
+   "url": "reviews/system-v8/compositions/monitor.html",
+   "width": 1500,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "monitor-400-coarse",
+   "url": "reviews/system-v8/compositions/monitor.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "charts-1500",
+   "url": "reviews/system-v8/compositions/charts.html",
+   "width": 1500,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "charts-400-coarse",
+   "url": "reviews/system-v8/compositions/charts.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "folded-list-320-coarse",
+   "url": "reviews/system-v8/compositions/folded-list.html",
+   "width": 320,
+   "coarse": true,
+   "scale": 1,
+   "measure": true,
+   "height": 2400
+  },
+  {
+   "name": "folded-list-400-coarse-hit-areas",
+   "url": "reviews/system-v8/compositions/folded-list.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true,
+   "outline": true,
+   "height": 1800,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "folded-list-zoom-200",
+   "url": "reviews/system-v8/compositions/folded-list.html",
+   "width": 1440,
+   "zoom": 2,
+   "scale": 1,
+   "measure": true,
+   "height": 1100,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "dialog-list-closed-400-coarse",
+   "url": "reviews/system-v8/compositions/dialog.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true,
+   "steps": [
+    {
+     "eval": "document.getElementById('dlg').close()"
+    }
+   ]
+  },
+  {
+   "name": "dashboard-1500-grey",
+   "url": "reviews/system-v8/compositions/dashboard.html",
+   "width": 1500,
+   "scale": 1,
+   "greyscale": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "chart-query-node-b-1500",
+   "url": "dist/preview/Chart.html",
+   "width": 1500,
+   "scale": 1,
+   "steps": [
+    {
+     "click": "[data-query-for=\"demo-pods\"] [data-query=\"node-b\"]"
+    },
+    {
+     "wait": 300
+    }
+   ],
+   "clip": ".vz-panel:has([data-view=\"demo-pods\"])",
+   "pad": 8
+  },
+  {
+   "name": "chart-query-node-b-400-coarse",
+   "url": "dist/preview/Chart.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "steps": [
+    {
+     "click": "[data-query-for=\"demo-pods\"] [data-query=\"node-b\"]"
+    },
+    {
+     "wait": 300
+    }
+   ],
+   "clip": ".vz-panel:has([data-view=\"demo-pods\"])",
+   "pad": 8
+  },
+  {
+   "name": "chart-picked-1500",
+   "url": "dist/preview/Chart.html",
+   "width": 1500,
+   "scale": 1,
+   "clip": ".vz-panel:has([data-view=\"demo-picked\"])",
+   "pad": 8
+  },
+  {
+   "name": "chart-picked-400-coarse",
+   "url": "dist/preview/Chart.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "clip": ".vz-panel:has([data-view=\"demo-picked\"])",
+   "pad": 8
+  },
+  {
+   "name": "chart-controls-320-coarse",
+   "url": "dist/preview/Chart.html",
+   "width": 320,
+   "coarse": true,
+   "scale": 1,
+   "measure": true,
+   "outline": true,
+   "themes": [
+    "light"
+   ],
+   "clip": ".vz-panel:has([data-view=\"demo-pods\"]) .vz-controls",
+   "pad": 16
+  },
+  {
+   "name": "chart-query-node-b-panel-1500",
+   "url": "dist/preview/Chart.html",
+   "width": 1500,
+   "scale": 1,
+   "clip": ".vz-panel:has([data-view=\"demo-nodeb\"])",
+   "pad": 8
+  },
+  {
+   "name": "chart-query-node-b-panel-320-coarse",
+   "url": "dist/preview/Chart.html",
+   "width": 320,
+   "coarse": true,
+   "scale": 1,
+   "measure": true,
+   "clip": ".vz-panel:has([data-view=\"demo-nodeb\"])",
+   "pad": 8
+  }
+ ]
+}

@@ -1,0 +1,10 @@
+# node tools/check.mjs on the final tree (exit 0; load before 3.63 4.51 5.22 4/161 7254, after 3.45 4.41 5.16 3/130 8686)
+reserved height: 1 chart(s) with a fine pointer, reserved against drawn: 490.5/490.5
+reserved height: 1 chart(s) with a coarse pointer, reserved against drawn: 711.5/711.5
+rendered audit: 30 previews, both themes, at rest, hover, press and a finger's press, and reserved heights: 0 failure(s)
+contrast and structure: 763/763 checks pass
+literal values: 0 in 1 file(s)
+
+# node tools/check.mjs --no-render project/components reviews/system-v8/compositions fixtures
+contrast and structure: 758/758 checks pass
+literal values: 0 in 45 file(s)

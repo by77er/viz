@@ -1,0 +1,57 @@
+Mutants of the move to design system v9 (e2e/mutants.cjs), applied to a copy in the session's scratch area.
+2026-11-27T00:19:29.737Z
+
+KILLED    session: a 401 for a tab with no key is reported as a refused key
+            checks run: unit; caught by 1: unit: a 401 is the sign-in form: "no key" without one, "refused" with one
+KILLED    session: when the API does not answer, a tab without a key is let in
+            checks run: unit; caught by 1: unit: when the API does not answer, a tab with a key carries on and a tab without one is asked for one
+KILLED    session: an API without a control plane (404) shows the sign-in form
+            checks run: unit; caught by 1: unit: an API with no control plane (404) has nothing to sign in to
+KILLED    sign-in: a key without the read scope is accepted
+            checks run: unit; caught by 1: unit: a valid key without the read scope is refused at the field, with its scopes, and never stored
+KILLED    sign-in: the admin scope counts as read
+            checks run: unit; caught by 1: unit: a valid key without the read scope is refused at the field, with its scopes, and never stored
+KILLED    sign-in: a refused key is reported as "could not be checked"
+            checks run: unit; caught by 1: unit: a key the API refuses is a problem with the key; an API that does not answer is not
+KILLED    sign-in: the key's whole text is shown as its label
+            checks run: unit; caught by 1: unit: shows a key by its public part only
+KILLED    whoami: the key is sent in the address
+            checks run: unit; caught by 1: unit: asks /api/v1/control/whoami with the key in the Authorization header and nowhere else
+KILLED    whoami: any 200 is trusted as an identity
+            checks run: unit; caught by 1: unit: an answer that is not an identity is refused, not trusted
+KILLED    mock whoami: a key without the read scope is not told who it is
+            checks run: unit; caught by 1: unit: a key without the read scope is still told who it is
+KILLED    time: "now - 6 h" loses its unit (hours read as minutes)
+            checks run: unit; caught by 3: unit: reads every form people type | unit: reads the system's forms | unit: property: a relative time is shown and read back as itself
+KILLED    time: a day without a year is always this year
+            checks run: unit; caught by 1: unit: takes a day without a year as this year, or last year when this year's is more than a day ahead
+KILLED    time: a field shows a day without its year even when it is not this year's
+            checks run: unit; caught by 2: unit: shows a spec in a form it reads back | unit: property: what a field shows is read back as the same instant, in any zone
+KILLED    time: a clock time is read in UTC whatever the zone
+            checks run: unit; caught by 2: unit: reads a clock time in the zone it is given, not the machine's | unit: property: what a field shows is read back as the same instant, in any zone
+KILLED    time: 24:30 is read as a time
+            checks run: unit; caught by 1: unit: refuses what is not a time
+KILLED    time: 31 Feb is read as a day
+            checks run: unit; caught by 1: unit: refuses what is not a time
+KILLED    time: the zone is not stated
+            checks run: unit; caught by 1: unit: says the day once, the length, and the zone once
+KILLED    time: a preset is chosen only when spelt the same ("24 h" is not "1 d")
+            checks run: unit; caught by 1: unit: a preset stays chosen however its length is spelt
+KILLED    chart: times are not moved to the zone
+            checks run: unit; caught by 1: unit: times are milliseconds, moved by the zone's offset so that the chart's UTC clock reads local time
+KILLED    chart: a ratio is drawn as a fraction under a % sign
+            checks run: unit; caught by 3: unit: hands the chart a unit it knows, and scales what it does not | unit: values are multiplied into the chart's unit | unit: a ratio is a percentage in the table as in the chart
+KILLED    chart: bytes per second in decimal steps
+            checks run: unit; caught by 1: unit: hands the chart a unit it knows, and scales what it does not
+KILLED    table: figures in the raw unit, not the chart's
+            checks run: unit; caught by 2: unit: bytes: one binary unit from the largest value | unit: seconds are moved to the unit the largest value reads in
+KILLED    the table's caption says "highest value first" whatever the order
+            checks run: unit; caught by 1: unit: highest value first is the order it opens in; a series with no value comes last either way
+KILLED    the table puts series with no value first
+            checks run: unit; caught by 1: unit: highest value first is the order it opens in; a series with no value comes last either way
+KILLED    serve.json: /settings is not a document (a reload there would be a 404)
+            checks run: unit; caught by 1: unit: lists every route of the router as a document
+KILLED    serve.json: the policy allows inline scripts
+            checks run: unit; caught by 1: unit: the policy allows scripts, styles, fonts and requests from the page's own origin only, and no inline script
+
+26 of 26 killed, 0 survived, 0 not applied

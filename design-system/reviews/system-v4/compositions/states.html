@@ -1,0 +1,11 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>viz · Control states</title><link rel="stylesheet" href="../../../dist/viz.css"><style>body{margin:0}</style></head><body class="vz">
+<main class="vz-page" id="main">
+  <div class="vz-controls" id="buttons"><button class="vz-button" id="b-default">Add panel</button><button class="vz-button" data-quiet id="b-quiet">Cancel</button><button class="vz-button" data-tone="blue" id="b-blue">Run query</button><button class="vz-button" data-size="sm" id="b-busy" aria-busy="true">Test connection</button><a class="vz-link" href="#" id="b-link">Open in Explore</a></div>
+  <div class="vz-controls"><div class="vz-segmented" role="group" aria-label="Form" id="seg"><button aria-pressed="true">Chart</button><button aria-pressed="false" id="seg-table">Table</button><button aria-pressed="false">Text</button></div></div>
+  <div class="vz-menu" role="menu" aria-label="Silence for" id="menu" style="width:var(--overlay-min)"><div role="menuitemradio" tabindex="-1" aria-checked="false">15 min</div><div role="menuitemradio" tabindex="-1" aria-checked="true">1 h</div><div role="menuitemradio" tabindex="-1" aria-checked="false" id="menu-4h">4 h</div><div role="menuitemradio" tabindex="-1" aria-checked="false">Until resolved</div></div>
+  <div class="vz-table-wrap" id="sortable" style="max-width:var(--measure)"><table class="vz-table"><thead><tr><th class="vz-label" aria-sort="none"><button class="vz-sort" id="sort-name">Monitor</button></th><th class="vz-label vz-right" aria-sort="descending"><button class="vz-sort" id="sort-now">Now, ms</button></th></tr></thead><tbody>
+    <tr><td data-key><a class="vz-link" href="#" id="row-link">checkout p99 latency</a></td><td class="vz-num vz-right">912</td></tr>
+    <tr><td data-key><a class="vz-link" href="#">catalog p99 latency</a></td><td class="vz-num vz-right">640</td></tr></tbody></table></div>
+  <div class="vz-chart" data-demo="s8" data-view="states-legend" id="legend" style="max-width:var(--dialog)"></div>
+</main>
+<script src="../../../dist/viz-chart.js"></script></body></html>
