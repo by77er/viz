@@ -173,8 +173,9 @@ without the compact-sizing figures.
 
 1. Density should come from **structure** (fewer lines of chrome per panel, one row of controls,
    legends that fit the number of series) before it comes from **scale** (smaller rows and gaps).
-   The proposal measures this: a one-step-smaller spacing scale alone shortens the 12-panel page by
-   about 3%; restructuring the chrome shortens it by about a fifth (`proposals/density/`).
+   The proposal measures this on the 12-panel dashboard at 1440: a one-step-smaller spacing scale
+   alone shortens the page by 3%; restructuring the chrome with every command still visible, by
+   18%; putting the commands and descriptions behind menus, by 24% (`proposals/density/`).
 2. **Pointer-adaptive** scale, never a smaller touch layout: a fine pointer may go to 24 px
    targets and one step down the spacing scale; a coarse pointer keeps 44 px (WCAG 2.5.8 and 2.5.5;
    Material disables touch targets when dense).
@@ -194,8 +195,9 @@ without the compact-sizing figures.
 
 - Whether on-call readers find a panel's "Actions…" menu on a first visit: the proposal's
   evaluation is by task walk-through and an independent design judgement, not a usability test.
-- Whether a 168 px plot loses anything a 200 px plot shows at 1440; Heer et al. suggest not for
-  value reading; crossing lines and direct labels were not studied.
+- Whether a lower plot (for example 168 px instead of 200 px at 1440) loses anything; Heer et al.
+  suggest not for value reading; crossing lines and direct labels were not studied. The proposal
+  did not prototype a lower plot: the chrome around the plot was the larger cost.
 
 ## Sources
 
