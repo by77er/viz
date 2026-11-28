@@ -8,10 +8,10 @@
  * series identity (the label set without `__name__`, so `pod_cpu_usage_cores{pod="a"}` and
  * `pod_memory_working_set_bytes{pod="a"}` are one pod), in groups of the same label names (a
  * service, a pod and a route are different things and never compete for a slot). The first time
- * a panel is drawn in this tab, the dashboard's map gives each of its series the slot that
- * identity already has on the dashboard; a series the dashboard has not seen takes the group's
- * next free slot, largest first, while one of the eight is free; the rest are Other, as the
- * chart's own rules have them. The panel's chart is then handed that map as its view's map
+ * a panel is drawn in this tab, its eight largest series are coloured, each in the slot its
+ * identity has on the dashboard when no larger series of the panel has that slot, else in the
+ * next free one; the rest are Other, so a panel never starts with a series in Other that is larger
+ * than a coloured one (D-M3 of the fourth review; `seed`). The panel's chart is then handed that map as its view's map
  * before it draws, and from there on follows its own rules: a series on screen never changes
  * colour, a viewer's "Colour the eight largest" changes that panel's copy only.
  *
@@ -79,36 +79,56 @@ export class DashboardColours {
 
   /**
    * Called before a panel's chart first draws `data` under `view`, with the query that names a
-   * series without labels (as `toSpec` names it). Gives the series the dashboard's slots, and the
-   * ones it has not seen the next free slots of their group, largest first; then hands the
-   * panel's chart that map. Does nothing for a view already handed over in this tab: its chart
-   * keeps its own map from then on.
+   * series without labels (as `toSpec` names it). Hands the panel's chart its starting map, by the
+   * rule the lead set for D-M3 (review round 4; an amendment to D80): **the panel's eight largest
+   * series, by the chart's own rank, are coloured; a series keeps the colour the dashboard's map
+   * gives its identity when that colour is free in this panel, else takes the next free one; the
+   * rest are Other, so nothing larger than a coloured series is in Other.** "The next free one" is
+   * the lowest slot no series of this panel holds, preferring a slot the dashboard has given no
+   * identity of the series' group, then one whose identity is not in this panel. A series coloured
+   * here whose identity has no slot on the dashboard yet is given the slot it took, if no other
+   * identity of its group has it. Does nothing for a view already handed over in this tab: its
+   * chart keeps its own map from then on.
    */
   seed(view: string, data: AlignedData, query: string): void {
     if (this.state.seeded.includes(view)) return
     const series = data.series.map((s) => {
       const labels = chartLabels(s.labels, query)
+      // The chart's rank (viz-chart.js `chartModel`): the highest value in the window; a series with no value in it ranks last.
       let max = -Infinity
       const v = s.values
       for (let i = 0; i < v.length; i++) if (v[i]! > max) max = v[i]! // NaN (a gap) compares false
       return { key: chartKey(labels), ...identityOf(labels), max }
     })
-    // New identities take free slots of their group, largest first (the chart's rank: the highest value in the window).
-    for (const s of [...series].sort((a, b) => b.max - a.max || (a.key < b.key ? -1 : 1))) {
-      const g = (this.state.groups[s.group] ??= { owner: new Array<string | null>(SLOTS + 1).fill(null) })
-      if (g.owner.includes(s.id)) continue
-      const free = g.owner.indexOf(null, 1)
-      if (free > 0) g.owner[free] = s.id
+    // The chart's order (`byRank`): highest first, ties by key.
+    const ranked = [...series].sort((a, b) => b.max - a.max || (a.key < b.key ? -1 : 1))
+    const top = ranked.slice(0, SLOTS)
+    const group = (g: string) => (this.state.groups[g] ??= { owner: new Array<string | null>(SLOTS + 1).fill(null) })
+    const slot = new Map<string, number>()
+    const taken = new Set<number>()
+    // 1. The dashboard's colour for the identity, when no larger series of this panel has taken it.
+    for (const s of top) {
+      const d = group(s.group).owner.indexOf(s.id)
+      if (d > 0 && !taken.has(d)) {
+        slot.set(s.key, d)
+        taken.add(d)
+      }
+    }
+    // 2. The rest of the eight, largest first: the next free slot.
+    const here = new Set(series.map((s) => `${s.group}\u0000${s.id}`))
+    for (const s of top) {
+      if (slot.has(s.key)) continue
+      const owner = group(s.group).owner
+      const free = [1, 2, 3, 4, 5, 6, 7, 8].filter((i) => !taken.has(i))
+      const pick = free.find((i) => owner[i] === null) ?? free.find((i) => !here.has(`${s.group}\u0000${owner[i]}`)) ?? free[0]!
+      slot.set(s.key, pick)
+      taken.add(pick)
+      if (!owner.includes(s.id) && owner[pick] === null) owner[pick] = s.id
     }
     const map = (window.vzChartRules as unknown as { newMap(): unknown }).newMap() as { owner: (string | null)[]; s: Record<string, { slot: number; held: number; was: string }> }
-    const taken = new Set<number>()
-    for (const s of series) {
-      const slot = this.state.groups[s.group]!.owner.indexOf(s.id)
-      // Two series of one panel with one identity (never, unless a panel repeats a label set): the first keeps the slot.
-      if (slot < 1 || taken.has(slot)) continue
-      taken.add(slot)
-      map.owner[slot] = s.key
-      map.s[s.key] = { slot, held: 0, was: 'away' }
+    for (const [key, i] of slot) {
+      map.owner[i] = key
+      map.s[key] = { slot: i, held: 0, was: 'away' }
     }
     this.state.seeded.push(view)
     try {

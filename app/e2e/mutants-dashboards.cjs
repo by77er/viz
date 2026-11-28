@@ -88,11 +88,19 @@ const LIST = [
   ['[text] a note\'s strong words are printed with their asterisks', ['panels'], 'src/dashboards/Note.tsx', '<b key={i}>{p.text}</b>', '<span key={i}>**{p.text}**</span>', 'rereview'],
   ['[colour] the dashboard\'s map is not handed to the chart', ['unit', 'dashboard'], 'src/dashboards/colours.ts', '      sessionStorage.setItem(CHART_STORE + view, JSON.stringify(map))\n', '', 'rereview'],
   ['[colour] a series\' identity keeps its metric name (CPU and memory of one pod are two)', ['unit', 'dashboard'], 'src/dashboards/colours.ts', "const own = Object.fromEntries(Object.entries(labels).filter(([k]) => k !== '__name__'))", 'const own = { ...labels }', 'rereview'],
-  ['[speed] a chart off screen is drawn in the task its answer arrives', ['dashboard'], 'src/dashboards/PanelView.tsx', "const show = place === 'on' || idle || drawnOnce", "const show = true || place === 'on' || idle || drawnOnce", 'rereview'],
+  ['[speed] a chart off screen is drawn in the task its answer arrives', ['dashboard'], 'src/dashboards/PanelView.tsx', 'const [show, setShow] = useState(() => inViewNow(place.current))', 'const [show, setShow] = useState(() => true || inViewNow(place.current))', 'rereview'],
   ['[speed] the press on a range leaves the panels as they were until the address changes', ['requests'], 'src/dashboards/DashboardsPage.tsx', '      store.expect()\n      afterFrame(() => {\n        askFor(f, t, variables)', '      afterFrame(() => {\n        askFor(f, t, variables)', 'rereview'],
   ['[d1] a stat\'s thresholds are not named', ['dashboard'], 'src/dashboards/PanelView.tsx', 'const limits = useMemo(() => thresholdWords(panel), [panel])', 'const limits = null as string | null', 'rereview'],
   ['[d3] the stale head says "the previous range" without which', ['requests'], 'src/dashboards/PanelView.tsx', 'Showing {rangeWords(result.window.start, result.window.end, now)}, the previous range\n', 'Showing the previous range\n', 'rereview'],
   ['[d8] a table\'s cut rows have no "Show more"', ['dashboard'], 'src/dashboards/PanelView.tsx', '{more > 0 && (', '{false && more > 0 && (', 'rereview'],
+  // ---- the fourth design review (SET=r4): D-B3, D-M3 and the minors
+  ['[D-B3] a chart coming into view waits for the viewport\'s observer (no draw in the frame\'s scroll steps)', ['jump'], 'src/dashboards/drawSoon.ts', "  addEventListener('scroll', onScroll, { capture: true, passive: true })\n", '', 'r4'],
+  ['[D-B3] a chart on screen at its answer is not drawn in its answer\'s render (only by the effect after it)', ['dashboard'], 'src/dashboards/PanelView.tsx', 'const [show, setShow] = useState(() => inViewNow(place.current))', 'const [show, setShow] = useState(false)', 'r4'],
+  ['[D-M3] the series the dashboard already coloured are coloured first, the panel\'s largest after them (the round-3 rule)', ['unit', 'dashboard'], 'src/dashboards/colours.ts', 'const top = ranked.slice(0, SLOTS)', 'const top = [...ranked].sort((a, b) => Number(group(b.group).owner.includes(b.id)) - Number(group(a.group).owner.includes(a.id))).slice(0, SLOTS)', 'r4'],
+  ['[D-M3] a series does not keep the colour the dashboard gave its identity', ['unit', 'dashboard'], 'src/dashboards/colours.ts', '      if (d > 0 && !taken.has(d)) {', '      if (d < 0 && !taken.has(d)) {', 'r4'],
+  ['[n-d3] the dashboard\'s text says "changed by" without when', ['dashboard'], 'src/dashboards/DashboardsPage.tsx', '`Revision ${doc.data.number}, changed ${changedWords(doc.data.dashboard.lastChangedAt, now)} by ', '`Revision ${doc.data.number}, changed by ', 'r4'],
+  ['[n-d3] an empty panel\'s text form says "in" a range', ['panels'], 'src/dashboards/textForm.ts', "out.push(`No series matched. Nothing matched this panel's query from ${range}.`)", 'out.push(`No series matched in ${range}.`)', 'r4'],
+  ['[n-d2] a heatmap\'s text form counts series in its bounds\' unit', ['panels'], 'src/dashboards/textForm.ts', "panel.kind === 'heatmap' && digest.series.length > 0", "panel.kind === 'never' && digest.series.length > 0", 'r4'],
   // ---- what the gateway serves
   ['serve.json: /dashboards is not a document (a reload there would be a 404)', ['unit', 'prod'], 'serve.json', '"documents": ["/", "/explore", "/dashboards", "/help", "/settings"]', '"documents": ["/", "/explore", "/help", "/settings"]'],
 ]
@@ -100,7 +108,7 @@ const LIST = [
 const only = process.env.ONLY
 const part = process.env.PART
 // PART=unit: only the mutants a unit test is asked to catch.
-// SET=rereview: only the mutants of the third design review's fixes, recorded in their own file.
+// SET=rereview: only the mutants of the third design review's fixes, recorded in their own file; SET=r4 the fourth's.
 const set = process.env.SET
 const list = (only ? LIST.filter(([name]) => name.includes(only)) : LIST).filter(([, checks]) => part !== 'unit' || checks.includes('unit')).filter((m) => !set || m[5] === set)
 const run = (cmd, args, env = {}) => spawnSync(cmd, args, { cwd: ROOT, encoding: 'utf8', env: { ...process.env, ...env }, maxBuffer: 64 * 1024 * 1024 })

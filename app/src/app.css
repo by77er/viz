@@ -49,7 +49,7 @@ dialog.palette::backdrop { background: var(--scrim); }
 /* A text note's digest is sentences, not a table: it wraps instead of scrolling sideways. */
 .vz-query.is-prose { white-space: pre-wrap; overflow-wrap: anywhere; }
 /* A panel head's meta: what it says with an answer and what it says while a new range waits lie in one place, sized by the longer. */
-.meta-hold { display: inline-grid; justify-items: end; min-width: 0; }
+.meta-hold { display: inline-grid; justify-items: end; min-width: 0; margin-left: auto; } /* wrapped under the title, it keeps to the panel's right edge (review round 4, n-d1) */
 .meta-hold > * { grid-area: 1 / 1; }
 
 /* A text note's headings sit under the panel's title: ui-strong, the size of the panel's own title, never a section heading (D-M1). */

@@ -314,7 +314,7 @@ function DashboardPage({ id, search }: { id: string; search: DashboardsSearch })
           )}
 
           {form === 'text' ? (
-            <DashboardText resolved={resolved} store={store} summaryKey={`${summary.answered}/${summary.failed}/${summary.waiting}`} agent={agent} facts={doc.data ? `Revision ${doc.data.number}, changed by ${actorWords(doc.data.dashboard.lastChangedBy)}.` : null} />
+            <DashboardText resolved={resolved} store={store} summaryKey={`${summary.answered}/${summary.failed}/${summary.waiting}`} agent={agent} facts={doc.data ? `Revision ${doc.data.number}, changed ${changedWords(doc.data.dashboard.lastChangedAt, now)} by ${actorWords(doc.data.dashboard.lastChangedBy)}.` : null} />
           ) : (
             <div className="vz-dashboard" data-testid="dashboard-panels">
               <div className="vz-sections">
@@ -339,6 +339,12 @@ function DashboardPage({ id, search }: { id: string; search: DashboardsSearch })
       )}
     </div>
   )
+}
+
+/** When the dashboard was last changed, in the page's words (the text form says what the head says: review round 4, n-d3). */
+function changedWords(iso: string, now: number): string {
+  const at = Date.parse(iso)
+  return Number.isFinite(at) ? momentText(Math.floor(at / 60_000) * 60, now) : 'at an unknown time'
 }
 
 function ChangedAt({ iso, now }: { iso: string; now: number }) {

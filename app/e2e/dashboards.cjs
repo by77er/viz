@@ -6,7 +6,7 @@
 // one with `write` only) with its own preview (app port + 20), and stops them.
 //
 //   node e2e/dashboards.cjs
-//   VIZ_ONLY=list,states node e2e/dashboards.cjs    only the named sections
+//   VIZ_ONLY=list,states node e2e/dashboards.cjs    only the named sections (jump: D-B3, review round 4)
 //
 // Each check is named for what a person would see. The safety properties (README, "Mutants of
 // the dashboards change") are marked [key], [six], [superseded], [isolated], [kind].
@@ -223,6 +223,48 @@ async function main() {
       await keyed.close()
     }
 
+    // ------------------------------------------------ D-B3: a chart that comes into view is drawn in the frame that shows it
+    if (want('jump')) {
+      // A narrow window, so that the lowest chart is further than "near" (three screens) and waits; the moment it is answered the page
+      // jumps to it, and an animation-frame callback (it runs after the frame's scroll steps, before its paint) reads whether it is drawn.
+      // A window 200 px tall: "near" is ten screens (2,000 px), and the lowest chart lies beyond it.
+      const { ctx, page } = await newPage({ viewport: { width: 400, height: 200 } })
+      await page.addInitScript(() => {
+        // Armed on the second load only: the first draws every chart once, so that each reserves the height it draws.
+        if (sessionStorage.getItem('viz.e2e.jump') !== '1') return
+        window.__answered = []
+        new MutationObserver((records) => {
+          for (const r of records) {
+            const p = r.target
+            if (r.attributeName !== 'data-state' || p.dataset?.testid !== 'panel' || p.dataset.kind !== 'timeseries' || p.dataset.state !== 'answered' || window.__jumped) continue
+            const box = p.getBoundingClientRect()
+            window.__answered.push({ id: p.dataset.panel, near: box.top < 11 * innerHeight && box.bottom > -10 * innerHeight, drawn: !!p.querySelector('svg.vz-plot, [data-testid=panel-empty]'), h: Math.round(box.height) })
+          }
+        }).observe(document, { subtree: true, attributes: true, attributeFilter: ['data-state'] })
+        window.__jump = null
+        document.addEventListener('DOMContentLoaded', () => new MutationObserver(() => {
+          const charts = [...document.querySelectorAll('[data-testid=panel][data-kind=timeseries]')]
+          const t = charts[charts.length - 1]
+          if (!t || window.__jumped || t.dataset.state !== 'answered' || !location.search.includes('id=')) return
+          window.__jumped = true
+          const deferred = !!t.querySelector('[data-testid=panel-deferred]')
+          t.scrollIntoView({ block: 'center' })
+          requestAnimationFrame(() => { window.__jump = { panel: t.dataset.panel, deferred, inFrame: !!t.querySelector('svg.vz-plot') } })
+        }).observe(document.documentElement, { subtree: true, attributes: true, attributeFilter: ['data-state'] }))
+      })
+      await page.goto(dash('services_overview'))
+      await page.waitForFunction(() => document.querySelectorAll('[data-testid=panel][data-kind=timeseries] svg.vz-plot').length === 6, null, { timeout: 30000 })
+      await page.evaluate(() => sessionStorage.setItem('viz.e2e.jump', '1'))
+      await page.reload()
+      await page.waitForFunction(() => window.__jump != null, null, { timeout: 30000 })
+      const j = await page.evaluate(() => window.__jump)
+      check('[D-B3] a chart answered while off screen and still waiting to be drawn is drawn in the frame a jump brings it into view (before that frame\'s animation callbacks)', j.deferred && j.inFrame, JSON.stringify(j))
+      await page.waitForFunction(() => document.querySelectorAll('[data-testid=panel-deferred]').length === 0, null, { timeout: 30000 })
+      const answered = await page.evaluate(() => window.__answered.map((a) => ({ ...a, after: Math.round(document.querySelector(`[data-testid=panel][data-panel=${a.id}]`).getBoundingClientRect().height) })))
+      check('[speed] a chart further than ten screens from the window is not drawn in the task its answer arrives, and is drawn later in its reserved place, at the height it draws', answered.some((a) => !a.near) && answered.filter((a) => !a.near).every((a) => !a.drawn && Math.abs(a.after - a.h) <= 1) && answered.filter((a) => a.near).every((a) => a.drawn), JSON.stringify(answered))
+      await ctx.close()
+    }
+
     // ------------------------------------------------ one dashboard
     if (want('dashboard')) {
       const { ctx, page, errors } = await newPage()
@@ -245,14 +287,14 @@ async function main() {
             const p = r.target
             if (r.attributeName !== 'data-state' || p.dataset?.testid !== 'panel' || p.dataset.kind !== 'timeseries' || p.dataset.state !== 'answered') continue
             const box = p.getBoundingClientRect()
-            window.__answered.push({ id: p.dataset.panel, on: box.top < innerHeight && box.bottom > 0, drawn: !!p.querySelector('svg.vz-plot, [data-testid=panel-empty]'), h: Math.round(box.height) })
+            window.__answered.push({ id: p.dataset.panel, on: box.top < innerHeight && box.bottom > 0, near: box.top < 11 * innerHeight && box.bottom > -10 * innerHeight, drawn: !!p.querySelector('svg.vz-plot, [data-testid=panel-empty]'), h: Math.round(box.height) })
           }
         }).observe(document, { subtree: true, attributes: true, attributeFilter: ['data-state'] })
       })
       await page.reload()
       await settled(page, 12)
       const answered = await page.evaluate(() => window.__answered.map((a) => ({ ...a, after: Math.round(document.querySelector(`[data-testid=panel][data-panel=${a.id}]`).getBoundingClientRect().height) })))
-      check('[speed] a chart on screen is drawn in the task its answer arrives; a chart off screen is not, and is drawn later in its reserved place at the height it draws', answered.length === 6 && answered.filter((a) => a.on).length >= 1 && answered.filter((a) => a.on).every((a) => a.drawn) && answered.filter((a) => !a.on).length >= 1 && answered.filter((a) => !a.on).every((a) => !a.drawn && Math.abs(a.after - a.h) <= 1), JSON.stringify(answered))
+      check('[speed] a chart on screen or within ten screens of it is drawn in the task its answer arrives (D-B3: so a jump finds it drawn); at 1440 x 900 that is every chart of this dashboard', answered.length === 6 && answered.filter((a) => a.on).length >= 1 && answered.every((a) => !a.near || a.drawn) && answered.filter((a) => !a.on && a.near).length >= 1, JSON.stringify(answered))
       const ps = await panels(page)
       const head = await page.evaluate(() => ({ title: document.querySelector('[data-testid=dashboard-title]').textContent, intent: document.querySelector('[data-testid=dashboard-intent]').textContent, facts: document.querySelector('[data-testid=dashboard-facts]').textContent.replace(/\s+/g, ' ').trim(), doc: document.title, sections: [...document.querySelectorAll('.vz-section-title')].map((h) => h.textContent), read: document.querySelector('[data-testid=time-read]').textContent }))
       check('the dashboard shows its title and its intent, and who changed it last', head.title === 'Services overview' && head.intent.startsWith('On-call view of the four API services.') && head.facts.startsWith('Revision 1, changed 24 Nov 16:12 by Dana.') && head.doc === 'Services overview · Dashboards · viz', JSON.stringify(head))
@@ -272,6 +314,11 @@ async function main() {
       const slots = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('[data-testid=panel][data-kind=timeseries]')].map((p) => [p.dataset.panel, Object.fromEntries([...p.querySelectorAll('tbody tr[data-key]')].filter((tr) => tr.dataset.key !== 'other').map((tr) => [tr.dataset.key.split(',').filter((kv) => !kv.startsWith('__name__=')).join(','), tr.querySelector('.vz-swatch').dataset.series]))])))
       const same = (a, b) => Object.keys(slots[a]).filter((k) => k in slots[b]).every((k) => slots[a][k] === slots[b][k]) && Object.keys(slots[a]).some((k) => k in slots[b])
       check('[colour] a service has one colour in every panel of the dashboard, and a pod one in CPU and memory', same('rate_by_service', 'errors_by_service') && same('rate_by_service', 'latency_by_service') && same('cpu', 'memory') && new Set(Object.values(slots.rate_by_service)).size === Object.keys(slots.rate_by_service).length, JSON.stringify({ r: slots.rate_by_service, e: slots.errors_by_service, l: slots.latency_by_service }))
+
+      // D-M3: a panel's eight largest are coloured, whatever the panel drawn before it coloured; so the chart's note never says that a
+      // series in Other is larger than a coloured one on a first load (Memory by pod after CPU by pod, review round 4).
+      const larger = await page.evaluate(() => [...document.querySelectorAll('[data-testid=panel][data-kind=timeseries]')].filter((p) => /larger than a coloured series/.test(p.textContent)).map((p) => p.dataset.panel))
+      check('[D-M3] no panel starts with a series in Other larger than a coloured one: the chart\'s note says it of none (Memory by pod included)', larger.length === 0 && Object.keys(slots.memory).length === 8, JSON.stringify({ larger, memory: slots.memory }))
 
       // stats
       const stats = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('[data-testid=panel][data-kind=stat]')].map((p) => [p.dataset.panel, { value: p.querySelector('[data-testid=stat-value]').textContent, context: p.querySelector('[data-testid=stat-context]').textContent.replace(/\s+/g, ' ').trim(), state: p.querySelector('[data-testid=stat-state]')?.dataset.state ?? null }])))
@@ -305,7 +352,7 @@ async function main() {
       await page.click('[data-testid=form-text]')
       await page.waitForSelector('[data-testid=dashboard-text-panel]')
       const whole = await page.evaluate(() => ({ text: document.querySelector('[data-testid=dashboard-text]').textContent, panels: [...document.querySelectorAll('[data-testid=dashboard-text-panel] h2')].map((h) => h.textContent), pre: document.querySelectorAll('[data-testid=dashboard-text] pre').length }))
-      check('[text] the whole dashboard\'s text form is every panel\'s text form in page order, with the page\'s dates and revision words; the model\'s digest is only copied, and says so', whole.panels.length === 12 && whole.panels[0] === 'Requests' && whole.text.includes('18 Nov, 09:30 to 12:30') && whole.text.includes('Revision 1, changed by Dana.') && !/\d{4}-\d\d-\d\dT|rev [0-9a-f]{12}|more series not shown|##|\[[A-Z]+\]/.test(whole.text) && whole.pre === 0 && whole.text.includes('Copy the digest for an agent'), whole.text.slice(0, 300))
+      check('[text] the whole dashboard\'s text form is every panel\'s text form in page order, with the page\'s dates and revision words; the model\'s digest is only copied, and says so', whole.panels.length === 12 && whole.panels[0] === 'Requests' && whole.text.includes('18 Nov, 09:30 to 12:30') && /Revision 1, changed \d+ Nov \d\d:\d\d by Dana\./.test(whole.text) && whole.text.includes(await page.evaluate(() => document.querySelector('[data-testid=dashboard-facts] time')?.textContent ?? 'no head time')) && !/\d{4}-\d\d-\d\dT|rev [0-9a-f]{12}|more series not shown|##|\[[A-Z]+\]/.test(whole.text) && whole.pre === 0 && whole.text.includes('Copy the digest for an agent'), whole.text.slice(0, 300))
       await page.click('[data-testid=form-panels]')
       await page.waitForSelector('[data-testid=panel]')
 
@@ -364,6 +411,15 @@ async function main() {
       const note = await page.evaluate(() => { const p = document.querySelector('[data-panel=notes] [data-testid=panel-note]'); return { text: p?.textContent ?? '', strong: [...(p?.querySelectorAll('b') ?? [])].map((b) => b.textContent), pre: document.querySelectorAll('[data-panel=notes] pre').length } })
       check('[text] a text note is its Markdown as text: the strong words in weight, no asterisks or hashes, not in a code well', ps.notes.kind === 'text' && ps.notes.plots === 0 && note.text.includes('CPU is in cores, memory in bytes.') && note.strong.join('|') === '1.2 cores' && !/[*#]/.test(note.text) && note.pre === 0 && ps.notes.links.length === 0, JSON.stringify(note))
       check('a query that matches nothing is an empty state, not an error: what was asked, over which range, and what to check', ps.restarts.state === 'answered' && ps.restarts.empty.startsWith('No series matched') && ps.restarts.empty === 'No series matchedNothing matched this panel\'s query from 18 Nov, 09:30 to 12:30.' && ps.restarts.plots === 0 && !(await page.$('[data-panel=restarts] .vz-mark')), ps.restarts.empty)
+      await page.click('[data-testid=panel][data-panel=restarts] [data-testid=panel-text] summary')
+      await page.waitForSelector('[data-testid=panel][data-panel=restarts] [data-testid=panel-sentences]')
+      const saidEmpty = await page.evaluate(() => [...document.querySelectorAll('[data-testid=panel][data-panel=restarts] [data-testid=panel-sentences] li')].map((l) => l.textContent))
+      await page.click('[data-testid=form-text]')
+      await page.waitForSelector('[data-testid=dashboard-text-panel]')
+      const saidAll = await page.evaluate(() => document.querySelector('[data-testid=dashboard-text]').textContent)
+      check('[n-d3] an empty panel\'s text form says what the panel says ("from … to"); [n-d2] the dashboard\'s text counts a heatmap\'s buckets, not "series in s"', saidEmpty.includes('No series matched. Nothing matched this panel\'s query from 18 Nov, 09:30 to 12:30.') && /Request duration distribution\.? ?A heatmap, \d+ buckets, 18 Nov, 09:30 to 12:30, every /.test(saidAll) && !/series in s\b/.test(saidAll), JSON.stringify([saidEmpty.slice(-1), saidAll.match(/Request duration distribution[^.]*\.[^.]*\./)?.[0]]))
+      await page.click('[data-testid=form-panels]')
+      await page.waitForSelector('[data-testid=panel]')
       check('an explicit grid is laid out in its reading order, each panel as wide as its share', Object.keys(ps).join(',') === 'cpu,durations,memory,sample,notes,restarts' && ps.cpu.top === ps.durations.top && ps.memory.top === ps.sample.top && ps.sample.top === ps.notes.top && ps.sample.width > ps.memory.width * 1.9, JSON.stringify(Object.values(ps).map((p) => [p.id, p.top, p.width])))
       await axe(page, 'dashboard with a failed, an empty and two undrawn panels', check)
 

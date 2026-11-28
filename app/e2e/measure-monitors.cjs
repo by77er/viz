@@ -19,7 +19,12 @@
 //                its name and state line (from the list) and its waiting region. Budget row
 //                "Moves to a view whose data is not loaded": 100 ms.
 //   viewInp      that press as the browser reports it (Event Timing). Budget: 200 ms.
-//   firstPaint   the chart's query_range body arrived -> the frame that shows the chart. Budget
+//   firstPaintNet the chart's query_range response ended (Resource Timing responseEnd: the browser has its last byte) -> the
+//                frame that shows the chart. Budget row "Receives a result": 100 ms after it arrives (review round 4: the row
+//                that decides; firstPaint below is printed beside it).
+//   firstPaintRead the page's own read of the chart's query_range body resolved -> the frame that shows the chart: the round-3
+//                definition's meaning ("the body arrived"), read from the page's read and not from a copy's.
+//   firstPaint   the chart's query_range body arrived (this harness's read of a copy resolved) -> the frame that shows the chart. Budget
 //                row "Receives a result": 100 ms after it arrives.
 //   ackShown     the press on Acknowledge -> the frame that shows "Acknowledged by you at …"
 //                (after the write's answer: one round trip; the press itself is painted by the
@@ -59,6 +64,11 @@ function instrument() {
     new PerformanceObserver((l) => { for (const e of l.getEntries()) if (e.interactionId) m.events.push({ name: e.name, duration: e.duration, t: e.startTime }) }).observe({ type: 'event', durationThreshold: 16, buffered: true })
   } catch {}
   const afterFrame = (fn) => requestAnimationFrame(() => { const ch = new MessageChannel(); ch.port1.onmessage = () => fn(performance.now()); ch.port2.postMessage(0) })
+  // When the page's own read of a query_range body resolves (its text() promise; this callback is attached before the page's own
+  // continuation, so it runs first): the body has reached the page. firstPaintRead is timed from it.
+  m.read = []
+  const realText = Response.prototype.text
+  Response.prototype.text = function () { const p = realText.call(this); if (/query_range$/.test(this.url)) p.then(() => m.read.push(performance.now()), () => {}); return p }
   const realFetch = window.fetch
   window.fetch = async (...a) => {
     const url = String(a[0] && a[0].url ? a[0].url : a[0])
@@ -134,6 +144,12 @@ async function run(browser, id, APP) {
     r.viewInPress = v.shellFrames === 0 || v.shellClickFrames === 0
     r.viewChange = r.viewInPress && Number.isFinite(pressPaint) ? pressPaint - v.press.t : r.viewChangeTask
     r.firstPaint = v.marks['view:chart'] - Math.max(...v.arrived)
+    // The same from the moment the browser had the answer's last byte (Resource Timing's responseEnd), not from when this harness's own
+    // read of a copy of the body resolved: that read is a task like the page's own, and resolves before or after the page's draw by how
+    // the page schedules its work (review round 4, M-B1: with the page drawing in the task its body resolves, the copy's read could
+    // come after the draw and shorten firstPaint by it). Both are printed; firstPaintNet decides.
+    r.firstPaintRead = v.read.length ? v.marks['view:chart'] - Math.max(...v.read.filter((t) => t <= v.marks['view:chart'])) : null
+    r.firstPaintNet = await page.evaluate((mark) => { const e = performance.getEntriesByType('resource').filter((x) => /query_range$/.test(x.name) && x.responseEnd > 0 && x.responseEnd <= mark); return e.length ? mark - Math.max(...e.map((x) => x.responseEnd)) : null }, v.marks['view:chart'])
     r.viewInp = Math.max(0, ...v.events.filter((e) => e.t >= v.press.t - 50 && e.t <= v.press.t + 500).map((e) => e.duration))
     const within = v.shifts.filter((s) => s.t >= shiftsFrom)
     r.cls = { all: within.reduce((a, s) => a + s.value, 0), unmarked: within.filter((s) => !s.marked).reduce((a, s) => a + s.value, 0) }
@@ -177,7 +193,7 @@ async function main() {
       r.build = build
       r.pair = Math.floor(i / builds.length)
       runs.push(r)
-      console.log(`run ${i + 1} ${build}: view ${r.viewChange?.toFixed(0)} chart ${r.firstPaint?.toFixed(0)} ackBusy ${r.ackPressed?.toFixed(0)} ackShown ${r.ackShown?.toFixed(0)} cls ${r.cls?.all?.toFixed(4)} load ${r.load1.toFixed(2)}${r.void ? ` VOID ${r.error ?? 'pointer not coarse'}` : ''}`)
+      console.log(`run ${i + 1} ${build}: view ${r.viewChange?.toFixed(0)} chart ${r.firstPaint?.toFixed(0)} (read ${r.firstPaintRead?.toFixed(0)}, net ${r.firstPaintNet?.toFixed(0)}) ackBusy ${r.ackPressed?.toFixed(0)} ackShown ${r.ackShown?.toFixed(0)} cls ${r.cls?.all?.toFixed(4)} load ${r.load1.toFixed(2)}${r.void ? ` VOID ${r.error ?? 'pointer not coarse'}` : ''}`)
     }
   } finally {
     await browser.close()
@@ -188,7 +204,7 @@ async function main() {
     const f0 = (v, k) => (v == null || !Number.isFinite(v) ? 'n/a' : k === 'cls' ? v.toFixed(4) : v.toFixed(0))
     const by = (b) => runs.filter((r) => r.build === b && !r.void)
     const lines = ['| What | before p75 (median, worst) | after p75 (median, worst) | paired difference, after - before: median (p25 to p75), n |', '|---|---|---|---|']
-    for (const k of ['viewChange', 'viewChangeTask', 'viewInp', 'firstPaint', 'ackPressed', 'ackInp', 'ackShown', 'ackReread', 'cls']) {
+    for (const k of ['viewChange', 'viewChangeTask', 'viewInp', 'firstPaint', 'firstPaintRead', 'firstPaintNet', 'ackPressed', 'ackInp', 'ackShown', 'ackReread', 'cls']) {
       const get = (r) => (k === 'cls' ? r.cls?.all : r[k])
       const cell = (xs) => { const s = sorted(xs); return s.length ? `${f0(p75(xs), k)} (${f0(median(xs), k)}, ${f0(s.at(-1), k)})` : 'n/a' }
       const diffs = []

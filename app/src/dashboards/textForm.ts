@@ -167,13 +167,15 @@ export function panelSentences(resolved: ResolvedDashboard, id: string, digest: 
   }
   const all = [...digest.series].sort((a, b) => (b.value ?? -Infinity) - (a.value ?? -Infinity))
   const f = formatFor(unit, all.flatMap((s) => [s.value, s.last, s.min, s.max]))
-  const counted = panel.kind === 'table' ? '' : n === 1 ? ', one series' : `, ${n} series`
-  out.push(`${panel.title}. A ${KIND[panel.kind] ?? panel.kind}${counted}${f.unit ? ` in ${f.unit}` : ''}, ${range}, every ${stepWords(w.step)}.`)
+  // A heatmap counts buckets, and its unit is its bounds', not its values' (review round 4, n-d2).
+  const counted = panel.kind === 'table' ? '' : panel.kind === 'heatmap' && digest.series.length > 0 && digest.series.every((s) => s.labels.le !== undefined) ? `, ${n} buckets` : n === 1 ? ', one series' : `, ${n} series`
+  out.push(`${panel.title}. A ${KIND[panel.kind] ?? panel.kind}${counted}${f.unit && !counted.endsWith('buckets') ? ` in ${f.unit}` : ''}, ${range}, every ${stepWords(w.step)}.`)
   if (panel.description) out.push(agent ? `Agent: ${panel.description} Not verified.` : panel.description)
   const th = thresholdWords(panel)
   if (th) out.push(agent ? `Agent's thresholds: ${th}. Not verified.` : `Thresholds: ${th}.`)
   if (digest.noData) {
-    out.push(`No series matched in ${range}.`)
+    // The panel's own words (review round 4, n-d3).
+    out.push(`No series matched. Nothing matched this panel's query from ${range}.`)
     return out
   }
   const state = (s: SeriesDigest) => (s.state && s.state !== 'ok' ? `; past its ${LEVEL_WORDS[s.state as Level]} threshold` : '')

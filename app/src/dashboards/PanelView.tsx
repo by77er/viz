@@ -1,4 +1,5 @@
-import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react'
+import { memo, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react'
+import { flushSync } from 'react-dom'
 import { Link } from '@tanstack/react-router'
 import { PromApiError } from '../api/client'
 import { answerLine, errorKind } from '../api/errors'
@@ -10,6 +11,7 @@ import { stepWords, type TimeSpec } from '../lib/time'
 import { LOCAL, zoneShiftMs } from '../lib/timeInput'
 import type { DashboardColours } from './colours'
 import { chartUnitOf, digestOf, exploreSearch, isDrawn, queryWords, rangeWords, type PanelDigest, type ResolvedDashboard, type ResolvedPanel, type Span } from './model'
+import { drawSoon, nearNow } from './drawSoon'
 import { Note } from './Note'
 import { NotSent, type DashboardStore, type PanelResult, type PanelState } from './store'
 import { bucketsOf, formatFor, panelSentences, tableOf, thresholdWords, withUnit, type AgentName } from './textForm'
@@ -21,71 +23,11 @@ const TABLE_ROWS = 5
 const KIND_WORDS: Record<string, string> = { heatmap: 'heatmap', text: 'text note' }
 
 /**
- * A chart is drawn in the task its answer arrives only when its panel is on screen; the others
- * are drawn when the page is idle, one per idle period, those within a screen of the window first
- * (D-B2 of the third design review). Until then a panel holds its reserved place, which is the
- * height its chart draws, so nothing a person sees changes; a panel that comes on screen (a
- * scroll) is drawn at once. The answers of a dashboard arrive six at a time and each chart is
- * built in the task that draws it, so the last chart on screen of a burst no longer waits for the
- * ones nobody can see.
+ * A chart is drawn in the task its answer arrives when its panel is within ten screens of the
+ * window; the others wait in their reserved place (the height their chart draws) and are drawn as
+ * they come near, when the page is idle, or at once in the frame that brings them into view,
+ * whichever comes first (`drawSoon.ts`: D-B2 of the third design review, D-B3 of the fourth).
  */
-type Place = 'on' | 'near' | 'far'
-const observers: { on: IntersectionObserver | null; near: IntersectionObserver | null } = { on: null, near: null }
-const placeCallbacks = new WeakMap<Element, { on: boolean; near: boolean; fn: (p: Place) => void }>()
-function observePlace(el: Element, fn: (p: Place) => void): () => void {
-  if (typeof IntersectionObserver === 'undefined') {
-    fn('on')
-    return () => {}
-  }
-  const report = (which: 'on' | 'near') => (entries: IntersectionObserverEntry[]) => {
-    for (const e of entries) {
-      const c = placeCallbacks.get(e.target)
-      if (!c) continue
-      c[which] = e.isIntersecting
-      c.fn(c.on ? 'on' : c.near ? 'near' : 'far')
-    }
-  }
-  observers.on ??= new IntersectionObserver(report('on'))
-  observers.near ??= new IntersectionObserver(report('near'), { rootMargin: '100%' })
-  placeCallbacks.set(el, { on: false, near: false, fn })
-  observers.on.observe(el)
-  observers.near.observe(el)
-  return () => {
-    observers.on?.unobserve(el)
-    observers.near?.unobserve(el)
-    placeCallbacks.delete(el)
-  }
-}
-/** Where the element is, as the observers last said: on screen, within a screen of it, or further; "far" until they have said. */
-function usePlace(ref: RefObject<Element | null>, watch: boolean): Place {
-  const [place, setPlace] = useState<Place>('far')
-  useEffect(() => (watch && ref.current ? observePlace(ref.current, setPlace) : undefined), [ref, watch])
-  return place
-}
-/** Work for when the page is idle, one piece per idle period: `first` jumps the queue. */
-const idleQueue: (() => void)[] = []
-let idleScheduled = false
-function whenIdle(fn: () => void, first: boolean): () => void {
-  if (first) idleQueue.unshift(fn)
-  else idleQueue.push(fn)
-  if (!idleScheduled) {
-    idleScheduled = true
-    const ric = (window as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }).requestIdleCallback
-    const next = () => {
-      const job = idleQueue.shift()
-      job?.()
-      if (idleQueue.length) schedule()
-      else idleScheduled = false
-    }
-    const schedule = () => (ric ? ric(next, { timeout: 1000 }) : setTimeout(next, 50))
-    schedule()
-  }
-  return () => {
-    const i = idleQueue.indexOf(fn)
-    if (i >= 0) idleQueue.splice(i, 1)
-  }
-}
-
 interface Props {
   id: string
   span: Span
@@ -131,8 +73,6 @@ export const PanelView = memo(function PanelView({ id, span, resolved, store, fr
   const digest = useMemo(() => (result && (textOpen || !drawn || panel.kind !== 'timeseries') ? digestOf(result.resolved, id, result.data, result.window, 100_000) : null), [result, textOpen, drawn, panel.kind, id])
   const sentences = useMemo(() => (result && digest && textOpen ? panelSentences(result.resolved, id, digest, result.window, Date.now(), agent) : null), [result, digest, textOpen, id, agent])
   const sectionRef = useRef<HTMLElement>(null)
-  // Observed from the panel's first render, so that the answer of a panel on screen finds it known to be on screen and is drawn in its own task.
-  const place = usePlace(sectionRef, panel.kind === 'timeseries')
   const seriesCount = useMemo(() => (result ? Object.values(result.data).reduce((n, s) => n + s.length, 0) : 0), [result])
   const hasQueries = current.kind !== 'text' && current.queries.length > 0
   const empty = !!result && hasQueries && seriesCount === 0
@@ -163,7 +103,7 @@ export const PanelView = memo(function PanelView({ id, span, resolved, store, fr
   else if (!result) body = <Reserved panel={current} view={viewName(resolved, id)} agent={agent} />
   else if (!drawn) body = <NotDrawn panel={panel} digest={digest} result={result} now={now} level={level} agent={agent} />
   else if (empty) body = <Empty result={result} now={now} chart={panel.kind === 'timeseries'} />
-  else if (panel.kind === 'timeseries') body = <DeferredChart id={id} result={result} panel={panel} colours={colours} place={place} />
+  else if (panel.kind === 'timeseries') body = <DeferredChart id={id} result={result} panel={panel} colours={colours} place={sectionRef} />
   else if (panel.kind === 'stat' && digest) body = <StatBody digest={digest} panel={panel} result={result} now={now} agent={agent} />
   else if (panel.kind === 'table' && digest) body = <TableBody digest={digest} panel={panel} />
   else body = null
@@ -297,20 +237,20 @@ function alignedOf(result: PanelResult, panel: ResolvedPanel): AlignedData {
   return out ?? { xs: [], series: [] }
 }
 
-/** A chart drawn when its panel is near the screen, or when the page is idle; until then its reserved place, at the height it draws. */
-function DeferredChart({ id, result, panel, colours, place }: { id: string; result: PanelResult; panel: ResolvedPanel; colours: DashboardColours; place: Place }) {
-  const [idle, setIdle] = useState(false)
-  const [drawnOnce, setDrawnOnce] = useState(false)
-  const show = place === 'on' || idle || drawnOnce
-  const soon = place === 'near'
-  useEffect(() => {
-    if (show) {
-      setDrawnOnce(true)
-      return
-    }
-    return whenIdle(() => setIdle(true), soon)
-  }, [show, soon])
-  if (!show) return <div className="vz-chart" style={reservedStyle(viewName(result.resolved, id))} data-testid="panel-deferred" />
+/** A chart drawn at once when its panel is on screen; else in its reserved place, at the height it draws, until `drawSoon` draws it. */
+function DeferredChart({ id, result, panel, colours, place }: { id: string; result: PanelResult; panel: ResolvedPanel; colours: DashboardColours; place: RefObject<Element | null> }) {
+  // Where the panel is now, read in the render of its answer, not where an observer last said: a jump in this task (a key, a
+  // link) is not known to one yet. Near the window (`drawSoon.ts`): the chart is drawn in this render, in the answer's task.
+  const [show, setShow] = useState(() => nearNow(place.current))
+  const ref = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    if (show) return
+    const withdraw = drawSoon(ref.current!, () => flushSync(() => setShow(true)))
+    // Near after all (it came near between the render and this effect): drawn in this task, before the frame.
+    if (withdraw === null) setShow(true)
+    return withdraw ?? undefined
+  }, [show])
+  if (!show) return <div ref={ref} className="vz-chart" style={reservedStyle(viewName(result.resolved, id))} data-testid="panel-deferred" />
   return <ChartBody id={id} result={result} panel={panel} colours={colours} />
 }
 

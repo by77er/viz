@@ -244,6 +244,9 @@ export function thresholdWords(m: Pick<Monitor, 'condition' | 'message' | 'query
   return `${m.condition.op} ${valueWords(m.condition.threshold, m)}${withFor && m.forMs > 0 ? ` for ${lasted(m.forMs)}` : ''}`
 }
 
+/** A condition's comparison after "Went". */
+const OP_WORDS: Record<string, string> = { '>': 'above', '>=': 'to or above', '<': 'below', '<=': 'to or below', '==': 'to', '!=': 'away from' }
+
 export interface HistoryLine {
   at: number
   mark: 'critical' | 'warn' | 'ok' | 'info' | 'ack' | 'silenced' | ''
@@ -266,7 +269,8 @@ export function historyLines(doc: MonitorDocument, me: string | null): HistoryLi
         line('info', `Changed by ${by}.`)
         break
       case 'pending':
-        line('warn', e.noData ? 'No data. Pending.' : `Went ${m.condition ? thresholdWords(m, false) : 'past the condition'} at ${valueWords(e.value, m)}. Pending${m.forMs ? ` for ${lasted(m.forMs)}` : ''}.`)
+        // "Went above 2% (8.4%)": the comparison as a word where the sentence's verb takes it (review round 4, n-o5).
+        line('warn', e.noData ? 'No data. Pending.' : `Went ${m.condition ? `${OP_WORDS[m.condition.op] ?? m.condition.op} ${valueWords(m.condition.threshold, m)}` : 'past the condition'} (${valueWords(e.value, m)}). Pending${m.forMs ? ` for ${lasted(m.forMs)}` : ''}.`)
         break
       case 'firing':
         line('critical', e.noData ? 'Fired: no data.' : `Fired at ${valueWords(e.value, m)}.`)

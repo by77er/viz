@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { answerLine, errorKind } from '../api/errors'
@@ -300,7 +300,12 @@ export function MonitorPage({ id, search }: { id: string; search: MonitorsSearch
                       <>
                         ; repeats at <time className="vz-qty">{when(Math.min(...repeats), now)}</time>
                       </>
-                    ) : monitor.acknowledged || monitor.silencedUntil ? '; no repeats while someone has it' : ''}
+                    ) : monitor.silencedUntil && !monitor.acknowledged ? (
+                      // Silenced, not acknowledged: nobody has it (review round 4, n-o1).
+                      <>
+                        ; no repeats while it is silenced (until <time className="vz-qty">{when(monitor.silencedUntil, now)}</time>)
+                      </>
+                    ) : monitor.acknowledged ? '; no repeats while someone has it' : ''}
                     .{' '}
                   </>
                 ) : (
@@ -370,7 +375,8 @@ export function MonitorPage({ id, search }: { id: string; search: MonitorsSearch
                 ) : (
                   <p>
                     Could not {ACTION_WORDS[failure.action]}. The API said: <span data-testid="action-failure-words">{failure.error.message}</span> ({answerLine(failure.error).replace(/^The API answered /, '').replace(/\.$/, '')}).{' '}
-                    {failure.action === 'acknowledge' ? 'Nothing changed: it is still not acknowledged.' : failure.action === 'silence' ? 'Nothing changed: it is not silenced and still notifies.' : 'Nothing changed.'}
+                    {/* The API's words often say "nothing was changed" already (review round 4, n-o4): then only what that means here. */}
+                    {failureAfter(failure.action, /nothing (was )?changed/i.test(failure.error.message))}
                   </p>
                 )}
                 {!(failure.error instanceof RulerApiError && (failure.error.status === 403 || failure.error.status === 410)) && (
@@ -553,7 +559,7 @@ export function MonitorPage({ id, search }: { id: string; search: MonitorsSearch
                   </>
                 )}
                 <dt>Changed</dt>
-                <dd>{changed ? `${changed.kind === 'created' ? 'Created' : 'Last changed'} by ${who(changed.by ?? 'someone', me)} at ${when(changed.at, now)}` : doc ? 'Not in its history' : 'Asking the API'}</dd>
+                <dd>{changed ? `${changed.kind === 'created' ? 'Created by' : 'By'} ${who(changed.by ?? 'someone', me)}, ${when(changed.at, now)}` : doc ? 'Not in its history' : 'Asking the API'}</dd>
               </dl>
             </section>
           </div>
@@ -600,6 +606,13 @@ export function MonitorPage({ id, search }: { id: string; search: MonitorsSearch
   )
 }
 
+/** What a refused write leaves, after the API's words; "Nothing changed" only when the API has not said it (review round 4, n-o4). */
+function failureAfter(action: string, apiSaid: boolean): string {
+  const left = action === 'acknowledge' ? 'it is still not acknowledged.' : action === 'silence' ? 'it is not silenced and still notifies.' : ''
+  if (apiSaid) return left ? left[0]!.toUpperCase() + left.slice(1) : ''
+  return left ? `Nothing changed: ${left}` : 'Nothing changed.'
+}
+
 /** "Silence…": a menu that confirms a cautionary choice (Menu): the durations, what will happen, and the yellow button that does it. */
 function SilenceMenu({ disabled, busy, now, onSilence }: { disabled: boolean; busy: boolean; now: number; onSilence: (duration: string) => void }) {
   const [open, setOpen] = useState(false)
@@ -625,6 +638,30 @@ function SilenceMenu({ disabled, busy, now, onSilence }: { disabled: boolean; bu
       document.removeEventListener('keydown', onKey)
     }
   }, [open])
+  // Where it opens (Menu): under the button, left edges aligned; right edges aligned when there is no room to the right; above
+  // when there is no room below and there is above. Measured before the frame that shows it, and again when the window changes
+  // (a zoom), so it never runs past the window's edge (review round 4, M-B2). The sheet (a coarse pointer below 640 px) is the
+  // screen's width whatever these say.
+  const [place, setPlace] = useState<{ end: boolean; flip: boolean }>({ end: false, flip: false })
+  useLayoutEffect(() => {
+    if (!open) return
+    const measure = () => {
+      const a = anchor.current
+      const menu = a?.querySelector<HTMLElement>('.vz-menu')
+      if (!a || !menu) return
+      const box = a.getBoundingClientRect()
+      const w = menu.offsetWidth
+      const h = menu.offsetHeight
+      const width = document.documentElement.clientWidth
+      const height = document.documentElement.clientHeight
+      const end = box.left + w > width && box.right - w >= 0
+      const flip = box.bottom + h > height && box.top - h >= 0
+      setPlace((p) => (p.end === end && p.flip === flip ? p : { end, flip }))
+    }
+    measure()
+    addEventListener('resize', measure)
+    return () => removeEventListener('resize', measure)
+  }, [open])
   return (
     <div className="vz-menu-anchor" ref={anchor}>
       <button
@@ -642,7 +679,7 @@ function SilenceMenu({ disabled, busy, now, onSilence }: { disabled: boolean; bu
       >
         Silence…
       </button>
-      <div className="vz-menu" role="menu" aria-label="Silence for" data-open={open ? '' : undefined} data-testid="silence-menu">
+      <div className="vz-menu" role="menu" aria-label="Silence for" data-open={open ? '' : undefined} data-align={open && place.end ? 'end' : undefined} data-flip={open && place.flip ? '' : undefined} data-testid="silence-menu">
         {DURATIONS.map((d) => (
           <button key={d.spec} role="menuitemradio" aria-checked={choice.spec === d.spec} onClick={() => setChoice(d)} data-duration={d.spec}>
             {d.words}

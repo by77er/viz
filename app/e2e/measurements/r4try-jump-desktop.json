@@ -1,0 +1,169 @@
+{
+ "label": "r4try-jump",
+ "layout": "desktop",
+ "dashboard": "services_overview",
+ "when": "2026-11-28T17:49:55.648Z",
+ "runs": 8,
+ "voided": [],
+ "cores": 4,
+ "calibrationMs": 322.206553,
+ "setup": "CPU 4x slowdown, Fast 4G (165 ms latency, 9 Mbit/s down, 1.5 up), the built app on the mock",
+ "load": {
+  "min": 0.86,
+  "max": 0.98,
+  "median": 0.9,
+  "samplesAboveCores": 0
+ },
+ "judged": true,
+ "scrollKept": 0,
+ "firstPanels": [
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null
+ ],
+ "summary": {
+  "jumpGap": {
+   "p75": 400,
+   "median": 313.1000000014901,
+   "max": 409.09999999403954,
+   "min": 250.60000000149012,
+   "n": 8
+  },
+  "jumpAnsweredAfterPress": {
+   "p75": 1090.7000000029802,
+   "median": 1021.1000000014901,
+   "max": 1239.3000000044703,
+   "min": 985.6999999955297,
+   "n": 8
+  },
+  "jumpDeferred.before": {
+   "p75": 4,
+   "median": 4,
+   "max": 4
+  },
+  "jumpDeferred.after": {
+   "p75": 4,
+   "median": 4,
+   "max": 4
+  }
+ },
+ "samples": [
+  {
+   "at": "2026-11-28T17:49:20.158Z",
+   "load1": 0.86,
+   "uptime": "17:49:20 up 10:03,  0 user,  load average: 0.86, 1.11, 1.04",
+   "jumpGap": 250.60000000149012,
+   "jumpDeferred": true,
+   "jumpOffScreen": true,
+   "jumpPanel": "memory",
+   "jumpAnsweredAfterPress": 987.3999999985099,
+   "jumpOthersDeferred": 4,
+   "loadEnd": 0.95,
+   "build": "before",
+   "pair": 0
+  },
+  {
+   "at": "2026-11-28T17:49:24.517Z",
+   "load1": 0.95,
+   "uptime": "17:49:24 up 10:03,  0 user,  load average: 0.95, 1.12, 1.05",
+   "jumpGap": 400.3999999985099,
+   "jumpDeferred": true,
+   "jumpOffScreen": true,
+   "jumpPanel": "memory",
+   "jumpAnsweredAfterPress": 1239.3000000044703,
+   "jumpOthersDeferred": 4,
+   "loadEnd": 0.87,
+   "build": "after",
+   "pair": 0
+  },
+  {
+   "at": "2026-11-28T17:49:29.245Z",
+   "load1": 0.87,
+   "uptime": "17:49:29 up 10:03,  0 user,  load average: 0.87, 1.10, 1.04",
+   "jumpGap": 260.5,
+   "jumpDeferred": true,
+   "jumpOffScreen": true,
+   "jumpPanel": "memory",
+   "jumpAnsweredAfterPress": 985.6999999955297,
+   "jumpOthersDeferred": 2,
+   "loadEnd": 0.88,
+   "build": "before",
+   "pair": 1
+  },
+  {
+   "at": "2026-11-28T17:49:33.214Z",
+   "load1": 0.88,
+   "uptime": "17:49:33 up 10:03,  0 user,  load average: 0.88, 1.10, 1.04",
+   "jumpGap": 264.79999999701977,
+   "jumpDeferred": true,
+   "jumpOffScreen": true,
+   "jumpPanel": "memory",
+   "jumpAnsweredAfterPress": 1021.1000000014901,
+   "jumpOthersDeferred": 4,
+   "loadEnd": 0.97,
+   "build": "after",
+   "pair": 1
+  },
+  {
+   "at": "2026-11-28T17:49:37.742Z",
+   "load1": 0.97,
+   "uptime": "17:49:37 up 10:03,  0 user,  load average: 0.97, 1.12, 1.05",
+   "jumpGap": 409.09999999403954,
+   "jumpDeferred": true,
+   "jumpOffScreen": true,
+   "jumpPanel": "memory",
+   "jumpAnsweredAfterPress": 1051.7999999970198,
+   "jumpOthersDeferred": 4,
+   "loadEnd": 0.97,
+   "build": "before",
+   "pair": 2
+  },
+  {
+   "at": "2026-11-28T17:49:41.992Z",
+   "load1": 0.98,
+   "uptime": "17:49:41 up 10:03,  0 user,  load average: 0.98, 1.12, 1.05",
+   "jumpGap": 355.5,
+   "jumpDeferred": true,
+   "jumpOffScreen": true,
+   "jumpPanel": "memory",
+   "jumpAnsweredAfterPress": 1007.3999999985099,
+   "jumpOthersDeferred": 4,
+   "loadEnd": 0.98,
+   "build": "after",
+   "pair": 2
+  },
+  {
+   "at": "2026-11-28T17:49:46.591Z",
+   "load1": 0.98,
+   "uptime": "17:49:46 up 10:03,  0 user,  load average: 0.98, 1.12, 1.05",
+   "jumpGap": 400,
+   "jumpDeferred": true,
+   "jumpOffScreen": true,
+   "jumpPanel": "memory",
+   "jumpAnsweredAfterPress": 1090.7000000029802,
+   "jumpOthersDeferred": 4,
+   "loadEnd": 0.9,
+   "build": "before",
+   "pair": 3
+  },
+  {
+   "at": "2026-11-28T17:49:50.854Z",
+   "load1": 0.9,
+   "uptime": "17:49:50 up 10:03,  0 user,  load average: 0.90, 1.10, 1.04",
+   "jumpGap": 313.1000000014901,
+   "jumpDeferred": true,
+   "jumpOffScreen": true,
+   "jumpPanel": "memory",
+   "jumpAnsweredAfterPress": 1144.5,
+   "jumpOthersDeferred": 4,
+   "loadEnd": 0.91,
+   "build": "after",
+   "pair": 3
+  }
+ ]
+}

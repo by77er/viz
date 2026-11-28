@@ -1,6 +1,8 @@
+// First, before any module makes a number format (lib/numberFormats.ts).
+import './lib/shareNumberFormats'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { notifyManager, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider } from '@tanstack/react-router'
 import { installScrollKeeper } from './lib/scrollKeeper'
 import { router } from './router'
@@ -10,6 +12,12 @@ import { ThemeProvider } from './shell/theme'
 // The design system first (tokens, components, fonts), then the app's own layout.
 import '../../design-system/dist/viz.css'
 import './app.css'
+
+// A query's answer reaches the components that read it at the end of the task that resolved it, not in a task of its own after
+// it (react-query's default, `setTimeout(0)`): a task posted after the answer could run after a frame, and the chart it draws would
+// wait for the frame after that (review round 4, M-B1: a monitor's chart painted after its answer). Updates are still batched
+// within the task.
+notifyManager.setScheduler(queueMicrotask)
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },

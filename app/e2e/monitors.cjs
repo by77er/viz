@@ -6,7 +6,7 @@
 // `monitors:read`, and `monitors:read` + `monitors:ack`) with its own preview (app port + 20).
 //
 //   node e2e/monitors.cjs
-//   VIZ_ONLY=list,states,monitor,ack,silence,failure,noack,superseded,key,touch node e2e/monitors.cjs
+//   VIZ_ONLY=list,states,monitor,ack,menuplace,silence,failure,noack,superseded,key,touch node e2e/monitors.cjs
 //
 // The safety properties (README, "Monitors": mutants) are marked [key], [scope], [undo],
 // [failed], [colour], [superseded], [touch].
@@ -170,7 +170,7 @@ async function main() {
       const sub = await text(page, '[data-testid=monitor-sub]')
       check('the sub-line: nobody has it, who was told and when, when it repeats, how fresh the page is', /^Not acknowledged\. Notified checkout-oncall \(Slack #checkout-oncall\) at \d\d:\d\d; repeats at (\d+ [A-Z][a-z]{2} )?\d\d:\d\d\. Read (just now|\d+ s ago)\.$/.test(sub), sub)
       const def = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('[data-testid=monitor-definition] dt')].map((dt) => [dt.textContent, dt.nextElementSibling.textContent.replace(/\s+/g, ' ').trim()])))
-      check('what it watches: message, description, runbook link, threshold as written, for, receiver, owner, last change', /^Checkout is failing \d+(\.\d)?% of requests$/.test(def[Object.keys(def).find((k) => k.startsWith('Message, as sent at'))] ?? '') && def['Message template'] === 'Checkout is failing {{ $value | humanizePercentage }} of requests' && def.Threshold === '> 2%' && def.For === '5 min' && def.Receiver === 'checkout-oncall (Slack #checkout-oncall)' && def.Owner === 'checkout' && /^Last changed by key:lee at \d+ Nov \d\d:\d\d$/.test(def.Changed) && (await page.getAttribute('[data-testid=runbook]', 'href')) === 'https://runbooks.example.com/checkout/5xx', JSON.stringify(def))
+      check('what it watches: message, description, runbook link, threshold as written, for, receiver, owner, last change', /^Checkout is failing \d+(\.\d)?% of requests$/.test(def[Object.keys(def).find((k) => k.startsWith('Message, as sent at'))] ?? '') && def['Message template'] === 'Checkout is failing {{ $value | humanizePercentage }} of requests' && def.Threshold === '> 2%' && def.For === '5 min' && def.Receiver === 'checkout-oncall (Slack #checkout-oncall)' && def.Owner === 'checkout' && /^By key:lee, \d+ Nov \d\d:\d\d$/.test(def.Changed) && (await page.getAttribute('[data-testid=runbook]', 'href')) === 'https://runbooks.example.com/checkout/5xx', JSON.stringify(def))
       const chart = await page.evaluate(() => { const svg = document.querySelector('[data-testid=monitor-chart] svg.vz-plot'); return { lines: svg?.querySelectorAll('.vz-line').length ?? 0, threshold: !!svg?.querySelector('.vz-threshold'), markers: svg?.querySelectorAll('.vz-marker').length ?? 0, words: svg?.textContent ?? '' } })
       check('the query is drawn with the system\'s chart, the threshold as a labelled line, the two markers (above, fired: the chart drops the later word where they collide) and the firing span', chart.lines >= 1 && chart.threshold && chart.markers === 2 && chart.words.includes('> 2% threshold') && /Above \d\d:\d\d/.test(chart.words) && /Firing since \d\d:\d\d/.test(chart.words), JSON.stringify(chart))
       const units = await page.evaluate(() => ({ ticks: [...document.querySelectorAll('[data-testid=monitor-chart] svg.vz-plot text')].map((t) => t.textContent), head: document.querySelector('[data-testid=monitor-chart] thead')?.textContent ?? '', last: document.querySelector('[data-testid=monitor-chart] tbody td[data-c=last]')?.textContent ?? '' }))
@@ -187,6 +187,7 @@ async function main() {
       check('its alerts: labels, state with since, value, acknowledged', alerts[0].includes('service=checkout') && /^Firing since \d\d:\d\d$/.test(alerts[1]) && alerts[3] === 'Nobody yet' && /^\d+(\.\d)?%$/.test(alerts[2]), JSON.stringify(alerts))
       const hist = await page.evaluate(() => [...document.querySelectorAll('[data-testid=history-line]')].map((l) => l.textContent.replace(/\s+/g, ' ').trim()))
       check('its history: transitions and notifications merged, newest first', hist.length === 10 && /^\d\d:\d\dNotified checkout-oncall in #checkout-oncall\.$/.test(hist[0]) && /Fired at \d+(\.\d)?%\./.test(hist[1]) && /Created by key:dana\.$/.test(hist.at(-1)), JSON.stringify(hist.slice(0, 3)))
+      check('[n-o5] the history says the comparison in words: "Went above 2% (8.4%)", no symbol where the verb\'s object goes', hist.some((h) => /Went above 2% \(\d+(\.\d)?%\)\. Pending for 5 min\./.test(h)) && !hist.some((h) => /Went [<>]/.test(h)), JSON.stringify(hist.filter((h) => /Went/.test(h))))
       await page.click('[data-testid=monitor-text] summary')
       const digest = await page.waitForSelector('[data-testid=monitor-digest]').then((e) => e.textContent())
       check('the text form carries the head\'s facts, the definition, the alerts and the history', digest.split('\n')[0] === `Checkout 5xx ratio. ${state}.` && digest.includes('Threshold: > 2% for 5 min.') && digest.includes('Message template: Checkout is failing {{') && digest.includes('Not acknowledged.') && digest.includes('History, newest first:'), digest.slice(0, 200))
@@ -246,6 +247,27 @@ async function main() {
       await ctx.close()
     }
 
+    // ------------------------------------------------ where the silence menu opens (review round 4, M-B2)
+    if (want('menuplace')) {
+      await hook('reset=1')
+      // 640, 1024 and 1500 px with a mouse, and 200% zoom (a 1500 x 900 window at device scale 2: 750 x 450 CSS px).
+      const sizes = [['640 px', { viewport: { width: 640, height: 900 } }], ['1024 px', { viewport: { width: 1024, height: 900 } }], ['1500 px', { viewport: { width: 1500, height: 900 } }], ['200% zoom', { viewport: { width: 750, height: 450 }, deviceScaleFactor: 2 }]]
+      for (const [name, opts] of sizes) {
+        const { ctx, page } = await newPage(opts)
+        await page.goto(`${APP}/monitors?id=${FIRING.id}`)
+        await settled(page)
+        await page.click('[data-testid=silence]')
+        await page.waitForSelector('[data-testid=silence-menu][data-open]')
+        await sleep(150)
+        const m = await page.evaluate(() => { const r = document.querySelector('[data-testid=silence-menu]').getBoundingClientRect(); const d = document.documentElement; return { left: Math.round(r.left), right: Math.round(r.right), cw: d.clientWidth, sw: d.scrollWidth, iw: innerWidth, sx: scrollX } })
+        // A press at the window's right edge scrolls nothing sideways either (the page has no width to scroll into).
+        await page.evaluate(() => scrollTo(10000, scrollY))
+        const sx = await page.evaluate(() => scrollX)
+        check(`[menu] at ${name} the silence menu opens inside the window: no sideways scroll with it open, its right edge at or inside the window's`, m.right <= m.cw && m.left >= 0 && m.sw <= m.cw && sx === 0, JSON.stringify({ ...m, sx }))
+        await ctx.close()
+      }
+    }
+
     // ------------------------------------------------ silence and undo
     if (want('silence')) {
       await hook('reset=1')
@@ -266,6 +288,8 @@ async function main() {
       check('it is replaced in place by "Silenced by you until HH:MM"', /^Silenced by you until \d\d:\d\d$/.test(await text(page, '[data-testid=silence-done-words]')) || /^Silenced until \d\d:\d\d$/.test(await text(page, '[data-testid=silence-done-words]')), await text(page, '[data-testid=silence-done-words]'))
       await page.waitForFunction(() => /Silenced by you/.test(document.querySelector('[data-testid=history-line]')?.textContent ?? ''))
       check('after the re-read the state line takes the silenced mark and the history says who', (await facts(page)).mark === 'silenced' && /^Silenced by you until \d\d:\d\d$/.test(await text(page, '[data-testid=silence-done-words]')))
+      const sub = await text(page, '[data-testid=monitor-sub]')
+      check('[n-o1] silenced, not acknowledged: the line under the state says no repeats while it is silenced, and until when; not that someone has it', /no repeats while it is silenced \(until \d\d:\d\d\)\./.test(sub) && !/someone has it/.test(sub), sub)
       await page.click('[data-testid=undo]')
       await page.waitForSelector('[data-testid=silence]')
       const undoReq = writes(w).at(-1)
@@ -314,7 +338,7 @@ async function main() {
       await sleep(600)
       const after = await facts(page)
       const f = await text(page, '[data-testid=action-failure]')
-      check('[failed] a refused acknowledge: the API\'s words under the button, and nothing else on screen changed', /^Could not acknowledge the monitor\. The API said: the ruler did not answer in time; nothing was changed \(unavailable with HTTP 503\)\. Nothing changed: it is still not acknowledged\./.test(f) && JSON.stringify(after) === JSON.stringify(before) && after.ack && !after.done, `${f} ${JSON.stringify(after) === JSON.stringify(before)}`)
+      check('[failed] a refused acknowledge: the API\'s words under the button, and nothing else on screen changed', /^Could not acknowledge the monitor\. The API said: the ruler did not answer in time; nothing was changed \(unavailable with HTTP 503\)\. It is still not acknowledged\./.test(f) && (f.match(/nothing (was )?changed/gi) || []).length === 1 && JSON.stringify(after) === JSON.stringify(before) && after.ack && !after.done, `${f} ${JSON.stringify(after) === JSON.stringify(before)}`)
       await page.click('[data-testid=action-retry]')
       await page.waitForSelector('[data-testid=ack-done]')
       check('Try again acknowledges, and the notice goes with no success message', !(await page.$('[data-testid=action-failure]')))

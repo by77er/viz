@@ -42,6 +42,12 @@ const MUTANTS = [
   { name: 'query-cut', property: 'o6: the query is shown whole', file: 'src/monitors/MonitorPage.tsx', from: '<pre className="vz-query is-prose" aria-label="The monitor\'s query"', to: '<pre className="vz-query" style={{ maxWidth: \'20ch\' }} aria-label="The monitor\'s query"', checks: ['e2e:monitor'] },
   { name: 'mock-fixed-value', property: 'o8: the mock\'s values from its own series', file: 'mock/monitors.ts', from: 'value: a.noData ? null : f.query && !a.noData ? (valueAt(f.query, evaluatedAt(t)) ?? a.value) : a.value,', to: 'value: a.value,', checks: ['e2e:monitor'] },
   { name: 'open-after-route', property: 'M-B1: the monitor is shown in the press\'s task', file: 'src/monitors/MonitorsListPage.tsx', from: '            e.preventDefault()\n            onOpen(m.id)', to: '            void e', checks: ['e2e:monitor'] },
+  // ---- the fourth design review: M-B2 and the minors (node e2e/mutants-monitors.cjs <names>, OUT=mutants-monitors-r4.txt)
+  { name: 'menu-never-end', property: 'M-B2: the silence menu never runs past the window', file: 'src/monitors/MonitorPage.tsx', from: "data-align={open && place.end ? 'end' : undefined}", to: 'data-align={undefined}', checks: ['e2e:menuplace'] },
+  { name: 'menu-measured-wrong', property: 'M-B2: the menu is measured against the window it opens in', file: 'src/monitors/MonitorPage.tsx', from: 'const end = box.left + w > width && box.right - w >= 0', to: 'const end = box.left + w > width + w && box.right - w >= 0', checks: ['e2e:menuplace'] },
+  { name: 'silenced-someone-has-it', property: 'n-o1: silenced is not "someone has it"', file: 'src/monitors/MonitorPage.tsx', from: ') : monitor.silencedUntil && !monitor.acknowledged ? (', to: ') : false ? (', checks: ['e2e:silence'] },
+  { name: 'nothing-changed-twice', property: 'n-o4: "nothing changed" said once', file: 'src/monitors/MonitorPage.tsx', from: "{failureAfter(failure.action, /nothing (was )?changed/i.test(failure.error.message))}", to: '{failureAfter(failure.action, false)}', checks: ['e2e:failure'] },
+  { name: 'went-symbol', property: 'n-o5: the comparison in words in the history', file: 'src/monitors/model.ts', from: '${OP_WORDS[m.condition.op] ?? m.condition.op}', to: '${m.condition.op}', checks: ['e2e:monitor'] },
   { name: 'not-served', property: '/monitors is a document', file: 'serve.json', from: '"/dashboards", "/monitors",', to: '"/dashboards",', checks: ['unit:src/shell/serve.test.ts'] },
 ]
 

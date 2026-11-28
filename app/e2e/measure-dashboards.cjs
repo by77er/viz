@@ -37,6 +37,10 @@
 //                 says "Showing the previous range" (the region's waiting state). Same row.
 //   rangeInp      that press as the browser reports it. Budget: 200 ms.
 //   rangePaintWorst / rangePaintMedian   as paintWorst / paintMedian, for the new range.
+//   jumpGap       (--jump, review round 4, D-B3) a fresh tab: the press on the dashboard in the list, and the moment its lowest
+//                 chart is answered (in that task) a jump to it (scrollIntoView, centred) -> the frame after its plot is in the
+//                 page. jumpGapWorst: the same for the last of the charts the jump brought into view without a plot (jumpInView
+//                 of them). Rule: a chart off screen may wait, but is painted within 100 ms of coming into view.
 //   cls*          layout-shift entries summed over the phase, twice: `unmarked` (what the
 //                 browser counts: entries not following input) and `all` (every entry, those
 //                 the browser marks as following input included). Budget: 0.05.
@@ -54,6 +58,8 @@ const arg = (name, fallback) => { const i = process.argv.indexOf(`--${name}`); r
 const PHONE = process.argv.includes('--phone')
 const RUNS = Number(arg('runs', '20'))
 const LABEL = arg('label', 'dashboards')
+// --jump: the D-B3 runs instead (runJump): a jump to the lowest chart the moment it is answered.
+const JUMP = process.argv.includes('--jump')
 const LAYOUT = PHONE ? { viewport: { width: 400, height: 800 }, hasTouch: true, isMobile: true } : { viewport: { width: 1440, height: 900 } }
 const FAST_4G = { offline: false, latency: 165, downloadThroughput: (9e6 / 8) * 0.9, uploadThroughput: (1.5e6 / 8) * 0.9 }
 const CORES = os.cpus().length
@@ -116,6 +122,21 @@ function instrument() {
         m.panels[key] = { t: null, queries: [...p.querySelectorAll('[data-testid=open-in-explore]')].map((a) => new URL(a.href).searchParams.get('q')), top: p.getBoundingClientRect().top, on: m.seen[key]?.on ?? true }
         afterFrame((t) => (m.panels[key].t = t))
       }
+    }
+    // D-B3: the lowest chart, the moment it is answered, is jumped to; timed from the jump to the frame after its plot is in the page.
+    if (m.phase === 'jump' && m.armed && panels.length) {
+      const charts = [...panels].filter((p) => p.dataset.kind === 'timeseries')
+      const target = charts[charts.length - 1]
+      if (target && m.jump === undefined && target.dataset.state === 'answered') {
+        const box = target.getBoundingClientRect()
+        m.jump = { panel: target.dataset.panel, deferred: !!target.querySelector('[data-testid=panel-deferred]'), drawnAtJump: !!target.querySelector('svg.vz-plot'), offScreen: box.top >= innerHeight || box.bottom <= 0, answeredAt: performance.now(), t: performance.now(), painted: null, othersDeferred: document.querySelectorAll('[data-testid=panel-deferred]').length }
+        target.scrollIntoView({ block: 'center' })
+        m.jump.t = performance.now()
+        // Every chart the jump brought into view without its plot: each is timed the same way (the worst is jumpGapWorst).
+        m.jump.others = charts.filter((p) => { const r = p.getBoundingClientRect(); return r.bottom > 0 && r.top < innerHeight && !p.querySelector('svg.vz-plot') }).map((p) => ({ panel: p.dataset.panel, painted: null, marked: false }))
+      }
+      if (m.jump && m.jump.painted === null && !m.jump.marked && target && target.querySelector('svg.vz-plot')) { m.jump.marked = true; afterFrame((t) => (m.jump.painted = t)) }
+      if (m.jump) for (const o of m.jump.others) { const p = document.querySelector(`[data-testid=panel][data-panel=${o.panel}]`); if (!o.marked && p && p.querySelector('svg.vz-plot')) { o.marked = true; afterFrame((t) => (o.painted = t)) } }
     }
     if (m.phase === 'range' && panels.length && waiting === panels.length && document.querySelectorAll('[data-testid=panel-stale]').length === panels.length) { if (m.busyFrames === undefined) m.busyFrames = m.frames; once('range:busy', () => true) }
   }
@@ -213,6 +234,45 @@ async function run(browser, APP) {
   return r
 }
 
+// D-B3: a fresh tab; the list, the press on the dashboard, and the moment its lowest chart is answered a jump to it (scrollIntoView,
+// in the task that marked it answered); the jump -> the frame after its plot is in the page. `jumpDeferred` says whether the chart was
+// still waiting to be drawn at the jump (a chart already drawn is timed the same way: the frame that shows it).
+async function runJump(browser, APP) {
+  const ctx = await browser.newContext({ ...LAYOUT, colorScheme: 'light' })
+  const page = await ctx.newPage()
+  await page.addInitScript(instrument)
+  const cdp = await ctx.newCDPSession(page)
+  await cdp.send('Network.enable')
+  await cdp.send('Network.emulateNetworkConditions', FAST_4G)
+  await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 })
+  const r = { at: new Date().toISOString(), load1: os.loadavg()[0], uptime: require('node:child_process').execSync('uptime').toString().trim() }
+  try {
+    await page.goto(`${APP}/dashboards`)
+    await page.waitForSelector(`[data-testid=open-${DASHBOARD}]`)
+    await page.waitForTimeout(1200)
+    if (PHONE && !(await page.evaluate(() => matchMedia('(pointer: coarse)').matches))) throw new Error('the phone layout does not have a coarse pointer: the run is void')
+    const selector = `[data-testid=open-${DASHBOARD}]`
+    await page.evaluate((selector) => { const d = window.__d; d.phase = 'jump'; d.press = { selector, t: 0 }; d.armed = true }, selector)
+    if (PHONE) await page.tap(selector)
+    else await page.click(selector)
+    await page.waitForFunction(() => window.__d.jump && window.__d.jump.painted != null && window.__d.jump.others.every((o) => o.painted != null), null, { timeout: 60000 })
+    const j = await page.evaluate(() => ({ ...window.__d.jump, press: window.__d.press.t, coarse: matchMedia('(pointer: coarse)').matches }))
+    if (PHONE && !j.coarse) throw new Error('the pointer is no longer coarse: the run is void')
+    r.jumpGap = j.painted - j.t
+    r.jumpGapWorst = Math.max(r.jumpGap, ...j.others.map((o) => o.painted - j.t))
+    r.jumpInView = j.others.length
+    r.jumpDeferred = j.deferred
+    r.jumpOffScreen = j.offScreen
+    r.jumpPanel = j.panel
+    r.jumpAnsweredAfterPress = j.answeredAt - j.press
+    r.jumpOthersDeferred = j.othersDeferred
+  } finally {
+    r.loadEnd = os.loadavg()[0]
+    await ctx.close()
+  }
+  return r
+}
+
 async function main() {
   const calibrationMs = [calibrate()[0], calibrate()[0], calibrate()[0]].sort((a, b) => a - b)[1]
   console.log(`${PHONE ? 'phone (400 x 800, touch)' : 'desktop (1440 x 900)'}; calibration ${calibrationMs.toFixed(0)} ms, ${CORES} cores, load ${os.loadavg().map((x) => x.toFixed(2)).join(' ')}`)
@@ -227,10 +287,11 @@ async function main() {
     for (let i = 0; i < RUNS * builds.length; i++) {
       const [build, base] = builds[i % builds.length]
       try {
-        const r = await run(browser, base)
+        const r = JUMP ? await runJump(browser, base) : await run(browser, base)
         r.build = build
         r.pair = Math.floor(i / builds.length)
         runs.push(r)
+        if (JUMP) { console.log(`run ${String(i + 1).padStart(2)} ${build}: load ${r.load1.toFixed(2)}  jumpGap ${r.jumpGap.toFixed(0)} worst in view ${r.jumpGapWorst.toFixed(0)} of ${r.jumpInView} (${r.jumpPanel}, ${r.jumpDeferred ? 'deferred' : 'drawn'} at the jump, ${r.jumpOffScreen ? 'off screen' : 'on screen'}, answered ${r.jumpAnsweredAfterPress.toFixed(0)} ms after the press, ${r.jumpOthersDeferred} waiting)  ${r.uptime}`); continue }
         console.log(`run ${String(i + 1).padStart(2)} ${build}: load ${r.load1.toFixed(2)}  viewChange ${r.viewChange.toFixed(0)}  viewInp ${r.viewInp.toFixed(0)}  firstPaint ${r.firstPaint?.toFixed(0)} (${r.firstPanel})  paintWorst ${r.paintWorst.toFixed(0)} (${r.paintWorstPanel}) on screen ${r.paintWorstOn.toFixed(0)}  rangeSend ${r.rangeSend?.toFixed(0)}  rangeBusy ${r.rangeBusy?.toFixed(0)}  rangeInp ${r.rangeInp.toFixed(0)}  rangePaintWorst ${r.rangePaintWorst.toFixed(0)} (${r.rangePaintWorstPanel})  cls ${r.clsView.all.toFixed(4)}/${r.clsRange.all.toFixed(4)}`)
       } catch (e) {
         voided.push(String(e.message).slice(0, 200))
@@ -242,13 +303,13 @@ async function main() {
     stopBefore()
     stop()
   }
-  const keys = ['viewChange', 'viewInp', 'panelsShown', 'firstPaint', 'paintMedian', 'paintWorstOn', 'paintWorst', 'paintWorstOff', 'firstVisible', 'allPainted', 'rangeSend', 'rangeBusy', 'rangeBusyTask', 'rangeInp', 'rangeFirstPaint', 'rangePaintMedian', 'rangePaintWorstOn', 'rangePaintWorst', 'rangeAllPainted']
+  const keys = JUMP ? ['jumpGap', 'jumpGapWorst', 'jumpInView', 'jumpAnsweredAfterPress'] : ['viewChange', 'viewInp', 'panelsShown', 'firstPaint', 'paintMedian', 'paintWorstOn', 'paintWorst', 'paintWorstOff', 'firstVisible', 'allPainted', 'rangeSend', 'rangeBusy', 'rangeBusyTask', 'rangeInp', 'rangeFirstPaint', 'rangePaintMedian', 'rangePaintWorstOn', 'rangePaintWorst', 'rangeAllPainted']
   if (BEFORE) {
     // Each build's figures, and the paired differences (after minus before, pair by pair).
     const f0 = (v) => (v == null || !Number.isFinite(v) ? 'n/a' : v.toFixed(0))
     const by = (b) => runs.filter((r) => r.build === b)
     const lines = [`| What | before p75 (median, worst) | after p75 (median, worst) | paired difference, after - before: median (p25 to p75), n |`, '|---|---|---|---|']
-    for (const k of [...keys, 'clsView.all', 'clsRange.all']) {
+    for (const k of JUMP ? keys : [...keys, 'clsView.all', 'clsRange.all']) {
       const get = (r) => k.includes('.') ? r[k.split('.')[0]][k.split('.')[1]] : r[k]
       const cell = (xs) => { const s = sorted(xs); return s.length ? `${k.startsWith('cls') ? p75(xs).toFixed(4) : f0(p75(xs))} (${k.startsWith('cls') ? median(xs).toFixed(4) : f0(median(xs))}, ${k.startsWith('cls') ? s.at(-1).toFixed(4) : f0(s.at(-1))})` : 'n/a' }
       const diffs = []
@@ -265,8 +326,9 @@ async function main() {
   }
   const summary = {}
   for (const k of keys) { const xs = runs.map((r) => r[k]); summary[k] = { p75: p75(xs), median: median(xs), max: Math.max(...sorted(xs)), min: Math.min(...sorted(xs)), n: sorted(xs).length } }
-  for (const k of ['clsList']) { const xs = runs.map((r) => r[k]); summary[k] = { p75: p75(xs), median: median(xs), max: Math.max(...xs) } }
-  for (const k of ['clsView', 'clsRange']) for (const kind of ['unmarked', 'all']) { const xs = runs.map((r) => r[k][kind]); summary[`${k}.${kind}`] = { p75: p75(xs), median: median(xs), max: Math.max(...xs) } }
+  if (JUMP) for (const b of builds.map((x) => x[0])) { const xs = runs.filter((r) => r.build === b); summary[`jumpDeferred.${b}`] = { p75: xs.filter((r) => r.jumpDeferred).length, median: xs.length, max: xs.filter((r) => r.jumpOffScreen).length } }
+  if (!JUMP) for (const k of ['clsList']) { const xs = runs.map((r) => r[k]); summary[k] = { p75: p75(xs), median: median(xs), max: Math.max(...xs) } }
+  if (!JUMP) for (const k of ['clsView', 'clsRange']) for (const kind of ['unmarked', 'all']) { const xs = runs.map((r) => r[k][kind]); summary[`${k}.${kind}`] = { p75: p75(xs), median: median(xs), max: Math.max(...xs) } }
   const loaded = runs.filter((r) => Math.max(r.load1, r.loadEnd) > CORES).length
   const judged = loaded <= runs.length / 2
   const out = { label: LABEL, layout: PHONE ? 'phone' : 'desktop', dashboard: DASHBOARD, when: new Date().toISOString(), runs: runs.length, voided, cores: CORES, calibrationMs, setup: 'CPU 4x slowdown, Fast 4G (165 ms latency, 9 Mbit/s down, 1.5 up), the built app on the mock', load: { min: Math.min(...runs.map((r) => r.load1)), max: Math.max(...runs.map((r) => Math.max(r.load1, r.loadEnd))), median: median(runs.map((r) => r.load1)), samplesAboveCores: loaded }, judged, scrollKept: runs.filter((r) => r.rangeScrollKept).length, firstPanels: runs.map((r) => r.firstPanel), summary, samples: runs }
