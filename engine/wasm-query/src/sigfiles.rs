@@ -173,6 +173,9 @@ pub(crate) struct Rg {
     pub max_name: Option<String>,
     pub min_tid: Option<[u8; 16]>,
     pub max_tid: Option<[u8; 16]>,
+    /// The row group's `trace_id` bloom filter, `[offset, length]` (`spans`, `trace_index`; D81).
+    /// None when the fragment does not name one: the group is then never skipped by id.
+    pub bf: Option<(u64, u64)>,
 }
 
 /// A stream of a log file's fragment (`contracts/LOGS.md` §5).
@@ -237,6 +240,8 @@ impl Frag {
                 max_name: g.get("max_name").and_then(J::as_str).map(str::to_string),
                 min_tid: tid("min_tid"),
                 max_tid: tid("max_tid"),
+                // A `bf` that is not a pair of integers with a non-zero length names no filter.
+                bf: g.get("bf").and_then(J::as_array).and_then(|b| Some((b.first()?.as_u64()?, b.get(1)?.as_u64()?))).filter(|b| b.1 > 0 && b.0.checked_add(b.1).is_some()),
             });
         }
         let foot = v.get("foot").and_then(J::as_array).and_then(|f| Some((f.first()?.as_u64()?, f.get(1)?.as_u64()?)));

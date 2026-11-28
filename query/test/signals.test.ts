@@ -80,6 +80,7 @@ async function runAll(t: Tenant, fx: Fixture, extra: Record<string, string> = {}
 
 afterEach(() => {
   delete hooks.signalPruning
+  delete hooks.signalBlooms
   delete hooks.afterPlan
   delete hooks.alterTail
   delete hooks.tailCap
@@ -175,6 +176,44 @@ describe('tenancy', () => {
 /** A case of each kind, for the cap tests. */
 const pick = (fx: Fixture, prefix: string): Case => fx.cases.find((c) => c.id.startsWith(prefix) && c.status === 200)!
 
+describe('trace by ID by membership (D81)', () => {
+  it('the bloom filters change no answer, rule out the flush units that do not hold the trace, and are not used where a file names none', async () => {
+    for (const fx of SEEDS) {
+      const w = await world()
+      await load(w, w.a, fx)
+      const named = fx.spans.units.flatMap((u) => u.files).filter((f) => f.table !== 'logs').every((f) => f.index.includes('"bf":['))
+      const unnamed = fx.spans.units.flatMap((u) => u.files).every((f) => !f.index.includes('"bf":'))
+      // Either the fixtures were written by this release's writer (every row group names its
+      // filter) or before D81 (none does): both are read.
+      expect(named || unnamed).toBe(true)
+      let probedFiles = 0
+      let ruledOut = 0
+      let withBlooms = 0
+      let without = 0
+      for (const c of fx.cases.filter((x) => x.id.startsWith('trace/'))) {
+        const res = await call(w.a.key, c)
+        expect(await check(res, c)).toBeNull()
+        probedFiles += cost(res, 'Bloom-Files')
+        ruledOut += cost(res, 'Bloom-Skipped')
+        withBlooms += cost(res, 'Bytes-Read')
+        hooks.signalBlooms = false
+        const off = await call(w.a.key, c)
+        expect(await check(off, c)).toBeNull()
+        expect(cost(off, 'Bloom-Files')).toBe(0)
+        without += cost(off, 'Bytes-Read')
+        delete hooks.signalBlooms
+      }
+      if (unnamed) {
+        expect([fx.seed, probedFiles, withBlooms]).toEqual([fx.seed, 0, without])
+      } else {
+        expect(probedFiles).toBeGreaterThan(0)
+        expect(ruledOut).toBeGreaterThan(0)
+        expect(withBlooms).toBeLessThan(without)
+      }
+    }
+  })
+})
+
 describe('caps: refused before anything is fetched, or by the engine as it decodes', () => {
   async function capped(limits: Record<string, number>): Promise<{ w: World; fx: Fixture }> {
     const fx = SEEDS[0]!
@@ -191,8 +230,11 @@ describe('caps: refused before anything is fetched, or by the engine as it decod
       const res = await call(w.a.key, pick(fx, prefix))
       const text = await res.text()
       expect([prefix, res.status, /max_fetch_bytes/.test(text)]).toEqual([prefix, 422, true])
-      // Refused from the ledger's sizes: nothing was read from R2.
-      expect(cost(res, 'R2-Gets') + cost(res, 'Cache-Hits')).toBe(0)
+      // Refused from the ledger's sizes: nothing was read from R2, but for trace by ID its
+      // bloom filters (D81: they decide which row groups are read, so they come first; their
+      // bytes are checked against the cap before they are fetched).
+      if (prefix === 'trace/0') expect(cost(res, 'Bytes-Read')).toBe(cost(res, 'Bloom-Bytes'))
+      else expect(cost(res, 'R2-Gets') + cost(res, 'Cache-Hits')).toBe(0)
     }
   })
 
@@ -204,18 +246,25 @@ describe('caps: refused before anything is fetched, or by the engine as it decod
     }
   })
 
-  it('max_spans and max_log_rows from the fragments, before any span or log file is fetched', async () => {
+  it('max_spans and max_log_rows: from the fragments before any fetch when rows certain to be held pass the cap, else by the engine (D81)', async () => {
     const { w, fx } = await capped({ maxSpans: 10, maxLogRows: 10 })
-    // A search reads its trace_index files first (a fragment is not a span: they are held under
-    // the byte budget, not counted against max_spans); no spans file is fetched.
+    // A log query whose row groups lie wholly inside its range holds their rows for certain and is
+    // refused before any log file is fetched (max_log_rows); one whose groups straddle the range is
+    // refused by the engine as it holds the 11th row (max_rows). Which one depends on where the
+    // corpus's times fall against the case's range; both are 422 and name the cap.
+    const logs = await call(w.a.key, pick(fx, 'loki/0/'))
+    const text = await logs.text()
+    const before = /max_log_rows/.test(text)
+    expect([logs.status, before || /max_rows/.test(text)]).toEqual([422, true])
+    if (before) expect(cost(logs, 'R2-Gets') + cost(logs, 'Cache-Hits')).toBe(0)
+    // A search's span row groups reach outside the found traces' pieces (D81: only the spans that
+    // start inside those are held), so the fragments cannot say; the engine refuses it as it holds
+    // the 11th span, having read no more than the plan's bytes.
+    const search = await call(w.a.key, pick(fx, 'search/0/'))
+    expect([search.status, (await search.text()).includes('max_spans')]).toEqual([422, true])
+    // The span files were fetched: the pre-check did not refuse it on rows it would not hold.
     const indexBytes = fx.spans.units.flatMap((u) => u.files).filter((f) => f.table === 'trace_index').reduce((a, f) => a + unb64(f.bytes).byteLength, 0)
-    for (const [prefix, name, most] of [['search/0/', 'max_spans', indexBytes], ['loki/0/', 'max_log_rows', 0]] as const) {
-      const res = await call(w.a.key, pick(fx, prefix))
-      const text = await res.text()
-      expect([res.status, text.includes(name)]).toEqual([422, true])
-      expect([prefix, cost(res, 'Bytes-Read') <= most]).toEqual([prefix, true])
-      if (most === 0) expect(cost(res, 'R2-Gets') + cost(res, 'Cache-Hits')).toBe(0)
-    }
+    expect(cost(search, 'Bytes-Read')).toBeGreaterThan(indexBytes)
   })
 
   it('max_spans and max_rows as the engine decodes: the rows it holds from the tail count, the ones outside the query do not', async () => {

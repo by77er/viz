@@ -3,7 +3,7 @@
 //! `contracts/TRACES.md` states.
 use crate::otel::{self, Attr, Span, SpanEntry, Value};
 use crate::otelpq::{
-    ba, col, cut_groups, fba, foot, hex, json_str, perr, props, schema, write_group, Leaf, Sink, Levels, SResult, SignalError, SignalFile, SignalTable,
+    ba, col, cut_groups, fba, foot, hex, json_str, last_bloom, perr, props, schema, write_group, Leaf, Sink, Levels, SResult, SignalError, SignalFile, SignalTable,
     SignalWriteOptions, NS_PER_HOUR,
 };
 use crate::util::IdHasher;
@@ -176,7 +176,7 @@ fn spans_props(opts: &SignalWriteOptions) -> std::sync::Arc<parquet::file::prope
 fn trace_index_props(opts: &SignalWriteOptions) -> std::sync::Arc<parquet::file::properties::WriterProperties> {
     use EnabledStatistics::Page;
     let cols = vec![
-        col(&["trace_id"]).plain().stats(Page),
+        col(&["trace_id"]).plain().stats(Page).bloom(),
         col(&["min_start_unix_nano"]).delta().stats(Page),
         col(&["max_end_unix_nano"]).delta().stats(Page),
         col(&["root_service_name"]).dict(),
@@ -551,7 +551,9 @@ impl SpansFileWriter {
         json_str(&mut self.index, info(&g[0]).split.service.unwrap_or(""));
         self.index.push_str(",\"max_name\":");
         json_str(&mut self.index, info(&g[g.len() - 1]).split.service.unwrap_or(""));
-        self.index.push_str(&format!(",\"min_ts\":{gmin},\"max_ts\":{gmax},\"min_dur\":{dmin},\"max_dur\":{dmax}}}"));
+        self.index.push_str(&format!(",\"min_ts\":{gmin},\"max_ts\":{gmax},\"min_dur\":{dmin},\"max_dur\":{dmax}"));
+        push_bf(&mut self.index, last_bloom(&self.w, 0));
+        self.index.push('}');
         self.groups += 1;
         Ok(())
     }
@@ -585,6 +587,14 @@ impl SpansFileWriter {
             max_ts: self.max_ts,
             index,
         }, sink))
+    }
+}
+
+/// The row group's `trace_id` bloom filter, `"bf":[offset,length]` (D81; absent when the writer
+/// wrote none, so a reader reads the group).
+fn push_bf(index: &mut String, bf: Option<(u64, u64)>) {
+    if let Some((o, l)) = bf {
+        index.push_str(&format!(",\"bf\":[{o},{l}]"));
     }
 }
 
@@ -770,11 +780,13 @@ impl IndexFileWriter {
             self.index.push(',');
         }
         self.index.push_str(&format!(
-            "{{\"rows\":{},\"off\":{off},\"len\":{len},\"min_tid\":\"{}\",\"max_tid\":\"{}\",\"min_ts\":{gmin},\"max_ts\":{gmax}}}",
+            "{{\"rows\":{},\"off\":{off},\"len\":{len},\"min_tid\":\"{}\",\"max_tid\":\"{}\",\"min_ts\":{gmin},\"max_ts\":{gmax}",
             g.len(),
             hex(&g[0].trace_id),
             hex(&g[g.len() - 1].trace_id)
         ));
+        push_bf(&mut self.index, last_bloom(&self.w, 0));
+        self.index.push('}');
         self.groups += 1;
         Ok(())
     }

@@ -584,7 +584,54 @@ dealt with below, each with the review's inputs as tests ("Completeness", "Memor
 "Grafana"); D62 is rewritten. **`QUERY_SIGNALS` may not be turned on yet**: see "What remains
 before the flag".
 
+### Realistic volume (D81, 2026-11-28)
+
+S10 found every trace query refused at about 690,000 spans in an hour. What changed (D81; contract
+first: `contracts/TRACES.md` "Index fragments" `bf`, `contracts/engine.ts`, ABI 9):
+
+- **Trace by ID reads by membership** (`probed` in `src/signals.ts`). For `trace_index` and then
+  for `spans`, the row groups the fragments choose list their `trace_id` bloom filters (`bloom`,
+  from the fragments' `bf`); they are fetched alone (one range each, through the leaf pool), the
+  engine's `tqProbe` drops the groups whose filter rules the id out, and only the rest are fetched
+  with the footer. The filters' bytes count against `maxFetchBytes`, their files against
+  `maxFiles`, both checked before they are fetched. A file whose fragment names no filter (all
+  files written before D81) is read as before. Cost headers `X-Viz-Bloom-Files`,
+  `X-Viz-Bloom-Bytes` (also in `X-Viz-Bytes-Read`), `X-Viz-Bloom-Skipped` (groups ruled out).
+- **Search and whole-trace metrics hold only the spans inside the found traces' pieces**: the
+  `ranges` of `tqExtent` go to the span call (`SignalBudget.ranges`), which passes over every other
+  span before decoding it. The answer is the same (tests below); `maxSpans` counts what is held.
+- **The row caps are checked before a fetch on the rows certain to be held** (`Round.certain`,
+  from `SignalFilePlan.certain`): row groups wholly inside the range (logs: and holding only
+  streams a selector admits). The engine counts the rest. So S10's blocks C and D (sent together,
+  hours apart, one row group) no longer refuse each other's queries before a fetch, and a TraceQL
+  rate over 10 s is not refused for the 235,913 rows of the row groups around it.
+
+**Measured here** (`engine/wasm-query`, `cargo test --release d81_measure -- --ignored
+--nocapture`; native release build, not WASM; 66 flush units of 10,500 synthetic single-span
+traces, one hour at 700,000 spans an hour, 24 B of `spans` and 36 B of `trace_index` per span;
+three rounds alternating without and with the filters, same ids):
+
+| Trace by ID over the hour | Bytes fetched | Spans files read | Engine time (native) |
+|---|---|---|---|
+| Without the filters (ABI 8's plan) | 41,719,840 (refused: over 16 MiB) | 66 | 3,598 / 3,915 / 3,649 ms |
+| With them | 3,427,699 / 2,796,293 / 2,796,265 (2,164,932 of filters: 16,401 B per unit and table) | 2 / 1 / 1 | 106 / 67 / 56 ms |
+
+Ceilings that follow (modelled from those bytes and S10's; not run on Cloudflare): hinted trace
+by ID up to about 2 M single-span traces an hour (the filters of the hint and both margins); a
+hintless one over about 14 hours of uncompacted units at 700,000 an hour, more once compacted;
+**search unchanged** for `trace_index` (about 620,000 single-span traces in the window and both
+margins; D81 "What is not built": waves).
+
+Tests (workerd, `test/signals.test.ts` "trace by ID by membership (D81)"): over all three seeds,
+every trace-by-ID case answers as the in-memory engine with the filters on and off; on fixtures
+written by this release the filters are read and rule out units and fewer bytes are read; on
+fixtures written before D81 (copied from the main tree's, `bf` absent) no filter is read and the
+bytes are the same. The full suites ran on both fixture sets (below, "Verification of D81").
+
 ### What remains before the flag
+
+0. **D81 on Cloudflare** (`spikes/s17-signals-volume/README.md`): not run; the plan is there.
+   Search at single-span volume stays refused above the ceiling above until waves are built.
 
 1. ~~A narrow re-check of R2-M1 to R2-M4(a)~~: done 2026-11-26, D62 approved
    (`design/reviews/signals-end-to-end-r3.md`: 0 blockers, 0 majors, 4 minors, all corrections to
@@ -1180,8 +1227,11 @@ were run again (the reads around them changed), 53, 86 and 96 name the new signa
   Grafana's Tempo source may read the first); partial results with a cursor; newest-first day
   waves for trace by ID without a time hint (every day is planned at once, under the caps:
   D62 "Cost of it" states where that refuses, R2-M4(b)); expiring `trace_index` by the day of its
-  fragments' last end (R2-m1; retention is the janitor's); the trace id bloom filters and page
-  reads inside a unit (trace by ID decodes the unit's row group, holding only the trace's spans);
+  fragments' last end (R2-m1; retention is the janitor's); page reads inside a unit (trace by ID decodes a row group its bloom filter may hold the id in,
+  whole, holding only the trace's spans; D81 built the filters); searches that page `trace_index`
+  in waves (D81 "What is not built": a search's `trace_index` over the window and both margins is
+  still read at once, under `maxFetchBytes`); coalescing a file's bloom filters into one read
+  (one range each now);
   projection by the TraceQL plan's columns (the tag calls hold whole records for their keys or
   values); an exact count of what LogQL's vector operations hold (they run on viz-promql and are
   charged by an estimate, D62 1.); tag-based search (`tags`, `minDuration`,

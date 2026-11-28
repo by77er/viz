@@ -21,7 +21,7 @@
  */
 import type { LogReadPlan, Matcher, PromMatrix, PromScalar, PromString, PromVector, ScanInput, SeriesData, SignalBudget, SignalEngine, SignalFilePlan, TraceReadPlan } from '../../../contracts/engine'
 
-export const ABI_VERSION = 8
+export const ABI_VERSION = 9
 
 /** Bounds on one query (`engine/query` `Limits`, plus the step cap of `viz-promql`). */
 export interface QueryLimits {
@@ -226,7 +226,7 @@ export type { SignalBudget }
 /** The default of `SignalBudget.maxBytes` (query/src/config.ts `maxDecodedBytes` sets the Worker's). */
 export const DEFAULT_SIGNAL_BYTES = 32 << 20
 
-/** The PromQL operations and, since ABI 6, the span and log ones (`contracts/engine.ts` `SignalEngine`, as declared there: ABI 7 added `SignalBudget`, ABI 8 gave it to `lqLabels`, and `ranges` to `tqExtent` and `tqFilePlan`). */
+/** The PromQL operations and, since ABI 6, the span and log ones (`contracts/engine.ts` `SignalEngine`, as declared there: ABI 7 added `SignalBudget`, ABI 8 gave it to `lqLabels`, and `ranges` to `tqExtent` and `tqFilePlan`; ABI 9 added `tqProbe` and `bloom` to `tqFilePlan`'s plans). */
 export interface QueryEngine extends SignalEngine {
   /** What to fetch before evaluating: merged, clamped ranges. `startMs === endMs` plans an instant query. */
   plan(promql: string, startMs: number, endMs: number, stepMs: number, limits?: QueryLimits): FetchRange[]
@@ -351,6 +351,7 @@ type Op =
   | 'viz_q_meta_part'
   | 'viz_q_tq_plan'
   | 'viz_q_tq_file_plan'
+  | 'viz_q_tq_probe'
   | 'viz_q_tq_extent'
   | 'viz_q_tq_search'
   | 'viz_q_tq_metrics'
@@ -662,21 +663,35 @@ export function createQueryEngine(module: WebAssembly.Module): QueryEngine {
     return req.i64(nanos('bound.lo', lo)).i64(nanos('bound.hi', hi))
   }
   /** `u64 max_spans, u64 max_bytes, i64 bound_lo, i64 bound_hi`. */
-  const spanBudget = (req: Request, maxSpans: number, b: SignalBudget | undefined): Request => bound(maxBytes(req.u64(limit('maxSpans', maxSpans)), b), b)
+  /** `u64 max_spans, u64 max_bytes, i64 bound_lo, i64 bound_hi, u32 k, (i64 lo, i64 hi)*k` (ABI 9: `ranges`, none by default). */
+  const spanBudget = (req: Request, maxSpans: number, b: SignalBudget | undefined): Request => {
+    const out = bound(maxBytes(req.u64(limit('maxSpans', maxSpans)), b), b).u32(b?.ranges?.length ?? 0)
+    for (const r of b?.ranges ?? []) {
+      if (r.lo > r.hi) throw new RangeError('engine: a range ends before it starts')
+      out.i64(nanos('range.lo', r.lo)).i64(nanos('range.hi', r.hi))
+    }
+    return out
+  }
+
+  /** `u64 gap, u8 table, i64 lo, i64 hi, u8 has_id, [id], u32 k, (i64 lo, i64 hi)*k` (ABI 8: none, every row group of `[lo, hi]`). */
+  const fileQuery = (table: 'spans' | 'trace_index', lo: bigint, hi: bigint, id: Uint8Array | undefined, ranges: { lo: bigint; hi: bigint }[] | undefined): Request => {
+    const req = traceId(new Request().u64(BigInt(RANGE_GAP)).u8(table === 'spans' ? 0 : 1).i64(nanos('lo', lo)).i64(nanos('hi', hi)), id).u32(ranges?.length ?? 0)
+    for (const r of ranges ?? []) {
+      if (r.lo > r.hi) throw new RangeError('engine: a range ends before it starts')
+      req.i64(nanos('range.lo', r.lo)).i64(nanos('range.hi', r.hi))
+    }
+    return req
+  }
 
   const signals: Pick<QueryEngine, keyof SignalEngine> = {
     tqPlan: (kind, query, startNs, endNs, stepNs) => {
       const k = kind === 'search' ? 0 : kind === 'range' ? 1 : 2
       return call('viz_q_tq_plan', new Request().u8(k).i64(nanos('start', startNs)).i64(nanos('end', endNs)).i64(nanos('step', stepNs)).str(query), json<TraceReadPlan>)
     },
-    tqFilePlan: (table, indexes, lo, hi, id, ranges) => {
-      // ABI 8: `u32 k, (i64 lo, i64 hi)*` (none: every row group of `[lo, hi]`).
-      const req = traceId(new Request().u64(BigInt(RANGE_GAP)).u8(table === 'spans' ? 0 : 1).i64(nanos('lo', lo)).i64(nanos('hi', hi)), id).u32(ranges?.length ?? 0)
-      for (const r of ranges ?? []) {
-        if (r.lo > r.hi) throw new RangeError('engine: a range ends before it starts')
-        req.i64(nanos('range.lo', r.lo)).i64(nanos('range.hi', r.hi))
-      }
-      return call('viz_q_tq_file_plan', req.strs(indexes), json<SignalFilePlan[]>)
+    tqFilePlan: (table, indexes, lo, hi, id, ranges) => call('viz_q_tq_file_plan', fileQuery(table, lo, hi, id, ranges).strs(indexes), json<SignalFilePlan[]>),
+    tqProbe: (table, indexes, lo, hi, id, ranges, blooms) => {
+      if (blooms.length !== indexes.length) throw new RangeError('engine: tqProbe takes one bloom container per fragment')
+      return call('viz_q_tq_probe', fileQuery(table, lo, hi, id, ranges).strs(indexes).files(blooms), json<SignalFilePlan[]>)
     },
     tqExtent: (indexFiles, tailBatches, lo, hi, id, budget) =>
       call('viz_q_tq_extent', maxBytes(bound(traceId(new Request().i64(nanos('lo', lo)).i64(nanos('hi', hi)), id), budget), budget).files(indexFiles).files(tailBatches), json<{ traces: number; lo?: string; hi?: string; hours: number[]; ranges?: [string, string][] }>),

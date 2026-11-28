@@ -590,7 +590,14 @@ budget held (isolate at most 70.8 MiB) but every trace query refused at about 69
 minutes, by `maxFetchBytes` against one hour's bytes: one place serves trace by ID up to about
 240,000 spans in the trace's hour, and searches up to about 620,000 spans in the window plus four
 hours. D62 "What volume this serves" has the ceilings and the follow-up design (bloom filters on
-`spans.trace_id`, `trace_index` read in waves, smaller row groups), not built.
+`spans.trace_id`, `trace_index` read in waves, smaller row groups). **D81 (2026-11-28) built the
+first and the log pre-check**: trace by ID reads each candidate row group's `trace_id` bloom filter
+alone (named in the fragment, `bf`) and fetches only the groups that may hold the id, in both
+tables; span calls hold only the spans inside the found traces' pieces; the row caps are checked
+before a fetch on the rows certain to be held. Measured here (native, one hour of 66 units of
+single-span traces at 700,000 an hour): trace by ID fetched 41.7 MB without the filters (refused)
+and 2.8 to 3.4 MB with them. Searches paging `trace_index` in waves are not built: a search's
+ceiling is unchanged. Not yet run on Cloudflare (`spikes/s17-signals-volume/README.md`).
 The write side of stage 2
 (D63) flushes and lists the `spans`, `trace_index` and `logs` tables, and tail reads choose
 batches by signal (`signals`) and, given a time range, skip span and log batches whose time
@@ -634,12 +641,15 @@ another signal refuses the query, never misread).
   starts in the window while search uses the later write, so the two can disagree for one window.
   Only a sender that changes a span's start between retries reaches it. Structural operators are evaluated per trace in one place.
 - **Trace by ID:** the `trace_index` row groups whose trace-id range (from the index fragment)
-  holds the id are read, over all time without a hint and over the hint and the margin with one;
-  the trace's fragments name its extent and the `spans` hours that hold it, and only those hours'
-  files are read, their row groups chosen by the trace's pieces. Inside them a flush unit's row
-  group is decoded whole to find the trace (the bloom filters are not used yet): the cost of a
-  call is the unit's spans, but only the trace's are held and counted against `maxSpans`, so a
-  large unit does not refuse it (R2-M4a). Without a time hint every day is planned (newest-first
+  holds the id are chosen, over all time without a hint and over the hint and the margin with one;
+  their `trace_id` bloom filters (located by the fragment's `bf`, one range read each) rule out
+  those that cannot hold it, and only the rest are read (D81). The trace's fragments name its
+  extent and the `spans` hours that hold it; those hours' row groups are chosen by the trace's
+  pieces and probed by their filters the same way. A row group the filter keeps is decoded whole
+  to find the trace: only the trace's spans are held and counted against `maxSpans` (R2-M4a). A
+  file written before D81 names no filter and is read as before. Measured ceilings (D81, modelled
+  from bytes measured here): with a hint, about 2 M single-span traces an hour; without one, about
+  14 hours of uncompacted flush units at 700,000 an hour. Without a time hint every day is planned (newest-first
   waves are not built): modelled, every uncompacted `trace_index` file is read whole and a
   compacted one by a row group of up to 2 MiB, so `maxFetchBytes` refuses a hintless lookup past
   about 8 days of compacted retention above about 2.7 spans a second (D62, "Cost of it").
@@ -656,8 +666,12 @@ another signal refuses the query, never misread).
   r3-m1). A LogQL query that makes a series per line is refused well under the row cap: `sum by
   (level) (count_over_time({…} | logfmt [1m]))` over lines with a unique field at about 6,000 rows
   in the window, and at 30,000 with `| keep level` (r3-m2).
-  The row caps (`maxSpans` 18,000, `maxLogRows` 30,000) count rows held and are checked from the
-  fragments before any fetch (trace by ID by bytes). Split execution by trace-id hash, partial
+  The row caps (`maxSpans` 18,000, `maxLogRows` 30,000) count rows held; before any fetch they are
+  checked on the rows the fragments show are certain to be held (row groups wholly inside the
+  range; logs: holding only streams a selector admits), and the engine counts the rest as it holds
+  them (D81; before, every row of the row groups chosen counted, so logs sent together but hours
+  apart refused each other's queries). A search or whole-trace metrics query holds only the spans
+  that start inside its found traces' pieces (`tqExtent`'s ranges), not their row groups' others. Split execution by trace-id hash, partial
   results with a cursor, and pushing predicates to sorted and promoted columns are not built. A
   span or log query sends its range to the shards, which skip span and log batches outside it
   (D72; measured here: a one-hour query takes 2.3 MB instead of 18.7 MB from an eight-hour span

@@ -94,6 +94,9 @@ const COST_HEADERS: [string, keyof Cost][] = [
   ['X-Viz-Series-Reads', 'seriesReads'],
   ['X-Viz-Scan-Rows', 'scanRows'],
   ['X-Viz-Rows-Decoded', 'rowsDecoded'],
+  ['X-Viz-Bloom-Files', 'bloomFiles'],
+  ['X-Viz-Bloom-Bytes', 'bloomBytes'],
+  ['X-Viz-Bloom-Skipped', 'bloomSkipped'],
 ]
 
 const allowedOrigins = (env: Env): string[] => (env.CORS_ORIGINS ?? '').split(',').map((s) => s.trim()).filter((s) => s !== '' && s !== '*')

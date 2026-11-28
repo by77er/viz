@@ -358,6 +358,7 @@ fn check_span_fragment(f: &viz_storage::SignalFile, rows: &[viz_storage::SpanRec
         prop_assert_eq!(e.get("max_ts").int(), part.iter().map(|r| r.start_unix_nano).max().unwrap());
         prop_assert_eq!(e.get("min_dur").int(), part.iter().map(|r| r.duration_nano).min().unwrap());
         prop_assert_eq!(e.get("max_dur").int(), part.iter().map(|r| r.duration_nano).max().unwrap());
+        check_bf(e, &md, g, &f.bytes, part.iter().map(|r| r.trace_id))?;
     }
     prop_assert_eq!(at, rows.len());
     let foot = j.get("foot").arr();
@@ -367,10 +368,29 @@ fn check_span_fragment(f: &viz_storage::SignalFile, rows: &[viz_storage::SpanRec
     Ok(())
 }
 
+/// D81: a row group's `bf` is exactly its `trace_id` bloom filter as the footer places it, it
+/// parses on its own (no footer needed), and it holds every id of the group (no false negative).
+fn check_bf(e: &serde_like::J, md: &parquet::file::metadata::ParquetMetaData, g: usize, bytes: &[u8], ids: impl Iterator<Item = [u8; 16]>) -> Result<(), TestCaseError> {
+    let c = md.row_group(g).column(0);
+    let bf = e.opt("bf").expect("every row group of a spans or trace_index file names its bloom filter").arr();
+    prop_assert_eq!(bf[0].int(), c.bloom_filter_offset().unwrap());
+    prop_assert_eq!(bf[1].int(), c.bloom_filter_length().unwrap() as i64);
+    let (o, l) = (bf[0].int() as usize, bf[1].int() as usize);
+    // Between this group's column chunks and the next group's (or the footer).
+    let end = md.row_group(g).columns().iter().map(|c| c.byte_range().0 + c.byte_range().1).max().unwrap();
+    prop_assert_eq!(o as u64, end);
+    let filter = parquet::bloom_filter::Sbbf::from_bytes(&bytes[o..o + l]).unwrap();
+    for id in ids {
+        prop_assert!(filter.check(&id[..]), "the filter of row group {} misses a trace id it holds", g);
+    }
+    Ok(())
+}
+
 fn check_index_fragment(f: &viz_storage::SignalFile, rows: &[Fragment]) -> Result<(), TestCaseError> {
     let j = json(&f.index);
+    let md = SerializedFileReader::new(bytes::Bytes::from(f.bytes.clone())).unwrap().metadata().clone();
     let mut at = 0usize;
-    for e in j.get("rg").arr() {
+    for (g, e) in j.get("rg").arr().iter().enumerate() {
         let n = e.get("rows").int() as usize;
         let part = &rows[at..at + n];
         at += n;
@@ -378,6 +398,7 @@ fn check_index_fragment(f: &viz_storage::SignalFile, rows: &[Fragment]) -> Resul
         prop_assert_eq!(e.get("max_tid").str(), hex(&part[n - 1].trace_id));
         prop_assert_eq!(e.get("min_ts").int(), part.iter().map(|r| r.min_start).min().unwrap());
         prop_assert_eq!(e.get("max_ts").int(), part.iter().map(|r| r.max_end).max().unwrap());
+        check_bf(e, &md, g, &f.bytes, part.iter().map(|r| r.trace_id))?;
     }
     prop_assert_eq!(at, rows.len());
     Ok(())

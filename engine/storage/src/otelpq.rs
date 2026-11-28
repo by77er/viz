@@ -297,6 +297,16 @@ pub(crate) fn write_group(w: &mut SerializedFileWriter<Sink>, leaves: Vec<Leaf>)
     Ok((offset, end - offset))
 }
 
+/// The byte range of the bloom filter of column `col` in the row group written last, when it
+/// has one (`contracts/TRACES.md`, "Index fragments": `bf`). The writer puts each row group's
+/// filters right after its column chunks, so this lies between the group and the next one (or,
+/// for the last group, at the start of `foot`).
+pub(crate) fn last_bloom(w: &SerializedFileWriter<Sink>, col: usize) -> Option<(u64, u64)> {
+    let c = w.flushed_row_groups().last()?.columns().get(col)?;
+    let (o, l) = (c.bloom_filter_offset()?, c.bloom_filter_length()?);
+    (o >= 0 && l > 0).then_some((o as u64, l as u64))
+}
+
 pub(crate) fn schema(text: &str) -> Arc<Type> {
     Arc::new(parquet::schema::parser::parse_message_type(text).expect("static schema"))
 }

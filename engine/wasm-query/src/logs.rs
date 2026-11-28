@@ -228,6 +228,24 @@ pub(crate) fn do_lq_file_plan(mut r: Req<'_>) -> Res<Vec<u8>> {
         .map(|b| {
             let Some(f) = std::str::from_utf8(b).ok().and_then(sigfiles::Frag::parse) else { return crate::plan_json(&sigfiles::unknown()) };
             let mut keep = BTreeSet::new();
+            // ABI 9 (D81): the groups whose every row the call is sure to hold: wholly inside a
+            // selector's range, and every stream they hold (from the stream list) admitted by its
+            // matchers. Their rows are a lower bound of what the engine counts against `max_rows`.
+            let mut sure = BTreeSet::new();
+            for (s, c) in sels.iter().zip(&compiled) {
+                let inside = |lo: i64, hi: i64| lo >= s.start && hi < s.end;
+                if let Some(streams) = &f.streams {
+                    for (g, rg) in f.rg.iter().enumerate() {
+                        if !inside(rg.min_ts, rg.max_ts) {
+                            continue;
+                        }
+                        let mut held = streams.iter().filter(|st| st.first_rg <= g && g <= st.last_rg).peekable();
+                        if held.peek().is_some() && held.all(|st| c.as_ref().is_none_or(|c| c.matches(&st.labels))) {
+                            sure.insert(g);
+                        }
+                    }
+                }
+            }
             for (s, c) in sels.iter().zip(&compiled) {
                 let overlaps = |lo: i64, hi: i64| hi >= s.start && lo < s.end;
                 match (&f.streams, c) {
@@ -253,7 +271,10 @@ pub(crate) fn do_lq_file_plan(mut r: Req<'_>) -> Res<Vec<u8>> {
                     }
                 }
             }
-            crate::plan_json(&f.decide(&keep.into_iter().collect::<Vec<_>>(), gap))
+            let certain: u64 = sure.iter().filter(|g| keep.contains(g)).filter_map(|g| f.rg.get(*g)).map(|g| g.rows).sum();
+            let mut plan = crate::plan_json(&f.decide(&keep.into_iter().collect::<Vec<_>>(), gap));
+            plan["certain"] = serde_json::json!(certain);
+            plan
         })
         .collect();
     Ok(serde_json::Value::Array(plans).to_string().into_bytes())

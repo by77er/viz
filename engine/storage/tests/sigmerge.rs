@@ -94,6 +94,28 @@ fn check_fragment(f: &SignalFile) -> Result<serde_like::J, TestCaseError> {
         last_end = end;
     }
     prop_assert_eq!(total as u64, f.rows);
+    // D81: a compaction output of spans or trace_index names each row group's trace_id bloom
+    // filter exactly as the footer places it, and the filter holds every id of its group.
+    if matches!(f.table, SignalTable::Spans | SignalTable::TraceIndex) {
+        let ids: Vec<[u8; 16]> = match f.table {
+            SignalTable::Spans => viz_storage::read_spans(&f.bytes).unwrap().iter().map(|r| r.trace_id).collect(),
+            _ => read_trace_index(&f.bytes).unwrap().iter().map(|r| r.trace_id).collect(),
+        };
+        let mut at = 0usize;
+        for (g, e) in rg.iter().enumerate() {
+            let c = md.row_group(g).column(0);
+            let bf = e.opt("bf").expect("a compaction output names its bloom filters").arr();
+            prop_assert_eq!(bf[0].int(), c.bloom_filter_offset().unwrap());
+            prop_assert_eq!(bf[1].int(), c.bloom_filter_length().unwrap() as i64);
+            let (o, l) = (bf[0].int() as usize, bf[1].int() as usize);
+            let filter = parquet::bloom_filter::Sbbf::from_bytes(&f.bytes[o..o + l]).unwrap();
+            let n = e.get("rows").int() as usize;
+            for id in &ids[at..at + n] {
+                prop_assert!(filter.check(&id[..]), "row group {} of a merge output misses an id", g);
+            }
+            at += n;
+        }
+    }
     let foot = j.get("foot").arr();
     prop_assert_eq!((foot[0].int() + foot[1].int()) as usize, f.bytes.len());
     match j.opt("tok") {

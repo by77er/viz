@@ -109,6 +109,21 @@ New modules; the metrics code and its outputs are untouched (the golden files of
   expected one (doubles by their bits in PyArrow), each unit's `trace_index` recomputed from
   its spans, and DuckDB's value of every cell equal to PyArrow's.
 
+### Bloom filters named in the fragment (D81, 2026-11-28)
+
+`spans` row groups always carried a Parquet bloom filter on `trace_id` (1%, sized by
+`max_row_group_rows` and folded by the `parquet` crate to the group's distinct ids); `trace_index`
+row groups now carry one too. Both writers (`SpansFileWriter`, `IndexFileWriter`, used by flush and
+by compaction alike) add `"bf":[offset,length]` to each row group's fragment entry: the column
+chunk's `bloom_filter_offset`/`bloom_filter_length` from the footer the writer is building
+(`otelpq::last_bloom`). The filter lies right after the group's column chunks, so `off`, `len` and
+`foot` are unchanged. Additive within fragment version 1 (`contracts/TRACES.md`).
+Verified: `tests/otel.rs` (every flush file, both tables: `bf` equals the footer's, the bytes parse
+alone with `Sbbf::from_bytes`, every id of the group checks true) and `tests/sigmerge.rs` (the same
+for every compaction output); all suites pass (`cargo test --release`: batch 11, contract_v2 6,
+encode 11, export 1, merge 4, otel 19, pruning 8, select 8, sigmerge 10). Measured here: a flush
+unit of 10,500 single-span traces has a 16,401-byte filter per table (16 KiB bitset and header).
+
 ## What is not implemented
 
 - `queryRange`, `queryInstant`, `selectors` from `contracts/engine.ts` (PromQL): not this

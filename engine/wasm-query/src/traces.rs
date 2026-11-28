@@ -167,6 +167,12 @@ pub(crate) struct Budget {
     pub spans: u64,
     pub decoded: u64,
     pub bound: (i64, i64),
+    /// ABI 9 (D81): when not empty, a span is part of the data only if it also starts inside one
+    /// of these (sorted, disjoint, inclusive): the ranges `viz_q_tq_extent` gave for the traces a
+    /// search or whole-trace metrics query found. Every span of a found trace that starts in the
+    /// bound starts in one of them, so the cut changes no answer; it stops the spans of other
+    /// traces in the same row groups from being held and counted against `max_spans`.
+    pub ranges: Vec<(i64, i64)>,
     pub only: Option<[u8; 16]>,
     pub mem: Mem,
     pub res: Resources,
@@ -177,16 +183,37 @@ pub(crate) struct Budget {
 
 impl Budget {
     pub fn new(max_spans: u64, max_bytes: u64, bound: (i64, i64)) -> Budget {
-        Budget { max_spans, spans: 0, decoded: 0, bound, only: None, mem: Mem::new(max_bytes), res: Resources::default(), engine_res: EngineResources::default(), help: "Narrow the time range." }
+        Budget { max_spans, spans: 0, decoded: 0, bound, ranges: Vec::new(), only: None, mem: Mem::new(max_bytes), res: Resources::default(), engine_res: EngineResources::default(), help: "Narrow the time range." }
     }
-    /// `u64 max_spans, u64 max_bytes, i64 bound_lo, i64 bound_hi` (ABI 7).
+    /// `u64 max_spans, u64 max_bytes, i64 bound_lo, i64 bound_hi` (ABI 7), `u32 k, (i64 lo, i64
+    /// hi)*k` (ABI 9: the ranges; none, the whole bound).
     fn read(r: &mut Req<'_>) -> Res<Budget> {
         let (max_spans, max_bytes) = (r.u64("max_spans")?, r.u64("max_bytes")?);
         let (lo, hi) = (r.i64("bound_lo")?, r.i64("bound_hi")?);
         if lo > hi {
             return Err(Fail::Malformed(format!("bound [{lo}, {hi}] is empty")));
         }
-        Ok(Budget::new(max_spans, max_bytes, (lo, hi)))
+        let n = r.u32("n_ranges")?;
+        let mut ranges: Vec<(i64, i64)> = Vec::with_capacity((n as usize).min(4096));
+        for _ in 0..n {
+            let (a, z) = (r.i64("range lo")?, r.i64("range hi")?);
+            if a > z {
+                return Err(Fail::Malformed(format!("range [{a}, {z}] is empty")));
+            }
+            ranges.push((a, z));
+        }
+        ranges.sort_unstable();
+        // Overlapping or touching ranges are joined, so `in_ranges` may look at one.
+        let mut joined: Vec<(i64, i64)> = Vec::with_capacity(ranges.len());
+        for (a, z) in ranges {
+            match joined.last_mut() {
+                Some(last) if a <= last.1.saturating_add(1) => last.1 = last.1.max(z),
+                _ => joined.push((a, z)),
+            }
+        }
+        let mut b = Budget::new(max_spans, max_bytes, (lo, hi));
+        b.ranges = joined;
+        Ok(b)
     }
     /// What a refusal advises, for `max_spans` and `max_decoded_bytes` alike.
     fn advise(&mut self, help: &'static str) {
@@ -217,8 +244,15 @@ const RECORD_BYTES: u64 = 256;
 fn each_span(files: &[&[u8]], tails: &[&[u8]], budget: &mut Budget, mut visit: impl FnMut(SpanRec, &mut Mem, &mut EngineResources) -> Res<()>) -> Res<()> {
     let (lo, hi) = budget.bound;
     let only = budget.only;
-    let classify = move |t: &[u8; 16], start: i64| if start < lo || start > hi || only.is_some_and(|x| x != *t) { Take::Skip } else { Take::Full };
-    let Budget { max_spans, spans, decoded, mem, res, engine_res, help, .. } = budget;
+    let Budget { max_spans, spans, decoded, mem, res, engine_res, help, ranges, .. } = budget;
+    let ranges: &[(i64, i64)] = ranges;
+    let classify = move |t: &[u8; 16], start: i64| {
+        if start < lo || start > hi || only.is_some_and(|x| x != *t) || (!ranges.is_empty() && !in_ranges(ranges, start, start)) {
+            Take::Skip
+        } else {
+            Take::Full
+        }
+    };
     let (max_spans, help) = (*max_spans, *help);
     let mut on = |r: SpanRec, mem: &mut Mem| -> Res<()> {
         take(max_spans, spans, help)?;
@@ -364,45 +398,145 @@ pub(crate) fn do_tq_plan(mut r: Req<'_>) -> Res<Vec<u8>> {
 /// overlap `[lo, hi]`, or of a `trace_index` file whose fragments overlap it and (with an id)
 /// whose trace id range holds the id. With `ranges` (ABI 8; none: all of `[lo, hi]`), a row group
 /// must also overlap one of them: the ranges `viz_q_tq_extent` gave, so that a trace query reads
-/// the flush units its traces' pieces lie in, not every unit of their hull.
+/// the flush units its traces' pieces lie in, not every unit of their hull. With an id (ABI 9,
+/// D81), each plan also lists `bloom`: the `[offset, length]` of the chosen row groups' `trace_id`
+/// bloom filters that the fragment names; a reader that fetches them and passes them to
+/// `viz_q_tq_probe` reads only the groups whose filter may hold the id.
 pub(crate) fn do_tq_file_plan(mut r: Req<'_>) -> Res<Vec<u8>> {
-    let gap = r.u64("gap")?;
-    let table = r.u8("table")?;
-    let (lo, hi) = (r.i64("lo")?, r.i64("hi")?);
-    let id = read_id(&mut r)?;
-    let n = r.u32("n_ranges")?;
-    let mut ranges: Vec<(i64, i64)> = Vec::with_capacity((n as usize).min(4096));
-    for _ in 0..n {
-        ranges.push((r.i64("range lo")?, r.i64("range hi")?));
-    }
-    ranges.sort_unstable();
+    let q = FileQuery::read(&mut r)?;
     let raw = r.files("index fragment")?;
     r.end()?;
-    if table > 1 {
-        return Err(Fail::Malformed(format!("unknown table {table}")));
-    }
     let plans: Vec<serde_json::Value> = raw
         .iter()
         .map(|b| {
             let Some(f) = std::str::from_utf8(b).ok().and_then(sigfiles::Frag::parse) else { return crate::plan_json(&sigfiles::unknown()) };
-            let groups: Vec<usize> = f
-                .rg
-                .iter()
-                .enumerate()
-                .filter(|(_, g)| {
-                    let time = g.max_ts >= lo && g.min_ts <= hi && (ranges.is_empty() || in_ranges(&ranges, g.min_ts, g.max_ts));
-                    let tid = match (table, id) {
-                        (1, Some(id)) => g.min_tid.is_none_or(|a| a <= id) && g.max_tid.is_none_or(|b| id <= b),
-                        _ => true,
-                    };
-                    time && tid
-                })
-                .map(|(i, _)| i)
-                .collect();
-            crate::plan_json(&f.decide(&groups, gap))
+            let groups = q.chosen(&f);
+            let mut plan = crate::plan_json(&f.decide(&groups, q.gap));
+            if q.table == 0 {
+                plan["certain"] = serde_json::json!(q.certain(&f, &groups));
+            }
+            if q.id.is_some() {
+                let bloom: Vec<[u64; 2]> = groups.iter().filter_map(|g| f.rg[*g].bf).map(|(o, l)| [o, l]).collect();
+                plan["bloom"] = serde_json::json!(bloom);
+            }
+            plan
         })
         .collect();
     Ok(serde_json::Value::Array(plans).to_string().into_bytes())
+}
+
+/// `viz_q_tq_probe` (ABI 9, D81): the plans `viz_q_tq_file_plan` gives for the same request, with
+/// the row groups dropped whose `trace_id` bloom filter, read from the file's container, cannot
+/// hold the id. A container per fragment (empty: none was read): the file's bytes at the ranges
+/// its plan's `bloom` listed, as a sparse file container. A group keeps its place when its fragment
+/// names no filter, when the container does not hold the filter's bytes, or when they do not parse
+/// as one: a filter only ever saves reads, never decides an answer.
+pub(crate) fn do_tq_probe(mut r: Req<'_>) -> Res<Vec<u8>> {
+    let q = FileQuery::read(&mut r)?;
+    let raw = r.files("index fragment")?;
+    let blooms = r.files("bloom container")?;
+    r.end()?;
+    let Some(id) = q.id else { return Err(Fail::Malformed("a probe needs a trace id".into())) };
+    if blooms.len() != raw.len() {
+        return Err(Fail::Malformed(format!("{} bloom containers for {} fragments", blooms.len(), raw.len())));
+    }
+    let plans: Vec<serde_json::Value> = raw
+        .iter()
+        .zip(&blooms)
+        .map(|(b, c)| {
+            let Some(f) = std::str::from_utf8(b).ok().and_then(sigfiles::Frag::parse) else { return crate::plan_json(&sigfiles::unknown()) };
+            let mut groups = q.chosen(&f);
+            let before = groups.len();
+            if !c.is_empty() {
+                // A container that does not parse holds no filter: every group stays.
+                if let Ok(src) = viz_storage::sparse::Source::from_bytes(bytes::Bytes::copy_from_slice(c), None) {
+                    groups.retain(|g| match f.rg[*g].bf {
+                        Some((o, l)) => may_hold(&src, o, l, &id),
+                        None => true,
+                    });
+                }
+            }
+            let mut plan = crate::plan_json(&f.decide(&groups, q.gap));
+            plan["skipped"] = serde_json::json!(before - groups.len());
+            plan
+        })
+        .collect();
+    Ok(serde_json::Value::Array(plans).to_string().into_bytes())
+}
+
+/// Whether the bloom filter at `[o, o + l)` of `src` may hold `id`: true unless the bytes are
+/// held, parse as a Parquet split-block bloom filter (header and bitset, nothing else), and say no.
+fn may_hold(src: &viz_storage::sparse::Source, o: u64, l: u64, id: &[u8; 16]) -> bool {
+    use parquet::file::reader::ChunkReader;
+    if !src.has(o, l) {
+        return true;
+    }
+    let Ok(bytes) = src.get_bytes(o, l as usize) else { return true };
+    match parquet::bloom_filter::Sbbf::from_bytes(&bytes) {
+        Ok(filter) => filter.check(&id[..]),
+        Err(_) => true,
+    }
+}
+
+/// What `viz_q_tq_file_plan` and `viz_q_tq_probe` are asked: `u64 gap, u8 table, i64 lo, i64 hi,
+/// u8 has_id, [id], u32 k, (i64, i64)*k`.
+struct FileQuery {
+    gap: u64,
+    table: u8,
+    lo: i64,
+    hi: i64,
+    id: Option<[u8; 16]>,
+    ranges: Vec<(i64, i64)>,
+}
+
+impl FileQuery {
+    fn read(r: &mut Req<'_>) -> Res<FileQuery> {
+        let gap = r.u64("gap")?;
+        let table = r.u8("table")?;
+        let (lo, hi) = (r.i64("lo")?, r.i64("hi")?);
+        let id = read_id(r)?;
+        let n = r.u32("n_ranges")?;
+        let mut ranges: Vec<(i64, i64)> = Vec::with_capacity((n as usize).min(4096));
+        for _ in 0..n {
+            ranges.push((r.i64("range lo")?, r.i64("range hi")?));
+        }
+        ranges.sort_unstable();
+        if table > 1 {
+            return Err(Fail::Malformed(format!("unknown table {table}")));
+        }
+        Ok(FileQuery { gap, table, lo, hi, id, ranges })
+    }
+
+    /// ABI 9 (D81): rows of these `spans` row groups that a call cut to `[lo, hi]` (and the
+    /// ranges) is sure to hold: those of the groups whose span starts all lie inside `[lo, hi]`
+    /// (and inside one range). A lower bound of what the engine counts against `max_spans`
+    /// (it counts every copy it holds, before de-duplication), so a pre-check on it refuses only
+    /// what the engine would refuse.
+    fn certain(&self, f: &sigfiles::Frag, groups: &[usize]) -> u64 {
+        groups
+            .iter()
+            .filter_map(|g| f.rg.get(*g))
+            .filter(|g| g.min_ts >= self.lo && g.max_ts <= self.hi && (self.ranges.is_empty() || within_one(&self.ranges, g.min_ts, g.max_ts)))
+            .map(|g| g.rows)
+            .sum()
+    }
+
+    /// The row groups of `f` by time (and ranges), and for `trace_index` by the id's range.
+    fn chosen(&self, f: &sigfiles::Frag) -> Vec<usize> {
+        f.rg
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| {
+                let time = g.max_ts >= self.lo && g.min_ts <= self.hi && (self.ranges.is_empty() || in_ranges(&self.ranges, g.min_ts, g.max_ts));
+                let tid = match (self.table, self.id) {
+                    (1, Some(id)) => g.min_tid.is_none_or(|a| a <= id) && g.max_tid.is_none_or(|b| id <= b),
+                    _ => true,
+                };
+                time && tid
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
 }
 
 /// Whether `[a, b]` overlaps one of `ranges` (sorted by start, disjoint).
@@ -411,6 +545,13 @@ fn in_ranges(ranges: &[(i64, i64)], a: i64, b: i64) -> bool {
     // at or after `a`: disjoint and sorted, so only the last one can.
     let k = ranges.partition_point(|x| x.0 <= b);
     k > 0 && ranges[k - 1].1 >= a
+}
+
+/// Whether `[a, b]` lies inside one of `ranges` (sorted by start; overlapping ones are not
+/// assumed joined, so this may say no where a union would hold it: a lower bound stays one).
+fn within_one(ranges: &[(i64, i64)], a: i64, b: i64) -> bool {
+    let k = ranges.partition_point(|x| x.0 <= a);
+    ranges[..k].iter().any(|x| x.1 >= b)
 }
 
 fn read_id(r: &mut Req<'_>) -> Res<Option<[u8; 16]>> {

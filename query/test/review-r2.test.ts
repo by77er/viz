@@ -161,11 +161,19 @@ describe('R2-M3: the margin\'s cost is the found traces\' own pieces, and its re
     expect(cost(r.res, 'Rows-Decoded')).toBeLessThanOrEqual(2 * 301)
     const found = JSON.parse(r.text).traces.find((x: { traceID: string }) => x.traceID === long)
     expect(found.durationMs).toBe(110 * 60_000)
-    // Where the margin's pieces do not fit and the window's do, the refusal names the margin.
+    // D81: only the spans inside the found traces' pieces are held (the window's five minutes and
+    // the child's minute, about 180), not the two units' 600: at maxSpans 450 it answers, the long
+    // trace whole (before D81: 422, naming the margin). Below what the pieces hold, the engine
+    // refuses as it holds the spans; the fragments cannot tell (no row group lies inside a piece).
     await env.CONFIG.put(`limits:${t.name}`, JSON.stringify({ maxSpans: 450 }))
     clearLimitsCache()
+    const cut = await query(t, '/api/search', params)
+    expect(cut.status, cut.text.slice(0, 300)).toBe(200)
+    expect(JSON.parse(cut.text).traces.find((x: { traceID: string }) => x.traceID === long).durationMs).toBe(110 * 60_000)
+    await env.CONFIG.put(`limits:${t.name}`, JSON.stringify({ maxSpans: 100 }))
+    clearLimitsCache()
     const over = await query(t, '/api/search', params)
-    expect([over.status, /max_spans: the traces that overlap the window have spans up to traceMarginMs/.test(over.text), over.text.includes('Narrow the time range')], over.text.slice(0, 400)).toEqual([422, true, false])
+    expect([over.status, /max_spans/.test(over.text)], over.text.slice(0, 400)).toEqual([422, true])
   }, 240_000)
 })
 

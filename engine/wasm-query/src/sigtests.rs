@@ -117,7 +117,7 @@ fn unit(spans: &[Sp]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
 }
 
 fn search(files: &[Vec<u8>], tails: &[Vec<u8>], q: &str, bound: (i64, i64), max_bytes: u64) -> Result<String, String> {
-    let w = W::default().u64(1_000_000).u64(max_bytes).i64(bound.0).i64(bound.1).u32(100).u32(100).i64(T0 - 5 * MIN).i64(T0 + 10 * MIN).item(q.as_bytes()).files(files).files(tails);
+    let w = W::default().u64(1_000_000).u64(max_bytes).i64(bound.0).i64(bound.1).u32(0).u32(100).u32(100).i64(T0 - 5 * MIN).i64(T0 + 10 * MIN).item(q.as_bytes()).files(files).files(tails);
     run(traces::do_tq_search, w).map(|b| String::from_utf8(b[16..].to_vec()).unwrap())
 }
 
@@ -198,7 +198,7 @@ fn trace_by_id_charges_its_answer_as_it_is_written() {
     let req = |max: u64| {
         let mut w = W::default().u8(1);
         w.0.extend_from_slice(&tid(0xa));
-        w.u64(1_000_000).u64(max).i64(ALL.0).i64(ALL.1).files(&[]).files(&[b.clone()])
+        w.u64(1_000_000).u64(max).i64(ALL.0).i64(ALL.1).u32(0).files(&[]).files(&[b.clone()])
     };
     let ok = run(traces::do_tq_trace, req(BIG)).unwrap();
     assert_eq!(ok[0], 1);
@@ -291,7 +291,7 @@ fn a_trace_metric_query_whose_series_do_not_fit_the_budget_is_refused_by_it() {
     let spans: Vec<Sp> = (0..500).map(|i| Sp { trace: (i % 200) as u8 + 1, span: (i / 200) as u8 + 1, parent: 0, name: names[i], from: 0, to: 1 }).collect();
     let b = batch(&spans, &api(), |_| Vec::new());
     // `u64 max_spans, u64 max_bytes, i64 bound_lo, i64 bound_hi, u64 max_series, u64 max_points, u8 instant, i64 start, i64 end, i64 step, str, files, tails`.
-    let w = |max_bytes: u64| W::default().u64(1_000_000).u64(max_bytes).i64(ALL.0).i64(ALL.1).u64(10_000).u64(11_000).u8(0).i64(T0 - MIN).i64(T0 + 10_000 * 1_000_000_000).i64(1_000_000_000).item(b"{ } | count_over_time() by (name)").files(&[]).files(std::slice::from_ref(&b));
+    let w = |max_bytes: u64| W::default().u64(1_000_000).u64(max_bytes).i64(ALL.0).i64(ALL.1).u32(0).u64(10_000).u64(11_000).u8(0).i64(T0 - MIN).i64(T0 + 10_000 * 1_000_000_000).i64(1_000_000_000).item(b"{ } | count_over_time() by (name)").files(&[]).files(std::slice::from_ref(&b));
     let r = w(8 << 20);
     match traces::do_tq_metrics(Req { b: &r.0, at: 0 }) {
         Err(Fail::Limit("max_decoded_bytes", _, _, m)) => assert!(m.contains("the series it makes"), "{m}"),
@@ -418,7 +418,7 @@ fn metrics_req(files: &[Vec<u8>], q: &str, max_bytes: u64, points: Option<i64>) 
         Some(n) => (60_000_000_000, n),
     };
     let start = T0 - (n / 2) * step;
-    W::default().u64(18_000).u64(max_bytes).i64(ALL.0).i64(ALL.1).u64(10_000).u64(11_000).u8(0).i64(start).i64(start + (n - 1) * step).i64(step).item(q.as_bytes()).files(files).files(&[])
+    W::default().u64(18_000).u64(max_bytes).i64(ALL.0).i64(ALL.1).u32(0).u64(10_000).u64(11_000).u8(0).i64(start).i64(start + (n - 1) * step).i64(step).item(q.as_bytes()).files(files).files(&[])
 }
 
 fn metrics(files: &[Vec<u8>], q: &str, max_bytes: u64) -> (Result<Vec<u8>, String>, u64) {
@@ -690,7 +690,7 @@ fn r2_m4a_trace_by_id_counts_only_the_trace_s_spans() {
     assert_eq!(files.len(), 1);
     let mut w = W::default().u8(1);
     w.0.extend_from_slice(&id16(7));
-    let w = w.u64(18_000).u64(BUDGET).i64(ALL.0).i64(ALL.1).files(&files).files(&[]);
+    let w = w.u64(18_000).u64(BUDGET).i64(ALL.0).i64(ALL.1).u32(0).files(&files).files(&[]);
     let (r, held) = peak(|| run(traces::do_tq_trace, w));
     eprintln!("PEAK r2_m4a_trace_by_id_counts_only_the_trace_s_spans r: {} bytes, {}", held, limit_name(&r.as_ref().map(|_| Vec::new()).map_err(|e| e.clone())));
     let out = r.expect("found");
@@ -702,7 +702,7 @@ fn r2_m4a_trace_by_id_counts_only_the_trace_s_spans() {
     let files: Vec<Vec<u8>> = span_files(&spans_of(&big)).0.into_iter().map(|f| f.bytes).collect();
     let mut w = W::default().u8(1);
     w.0.extend_from_slice(&id16(1));
-    let w = w.u64(39).u64(BUDGET).i64(ALL.0).i64(ALL.1).files(&files).files(&[]);
+    let w = w.u64(39).u64(BUDGET).i64(ALL.0).i64(ALL.1).u32(0).files(&files).files(&[]);
     match traces::do_tq_trace(Req { b: &w.0, at: 0 }) {
         Err(Fail::Limit("max_spans", 39, 40, m)) => assert!(m.contains("trace's own spans") && !m.contains("Narrow the time range"), "{m}"),
         _ => panic!("expected max_spans"),
@@ -736,7 +736,7 @@ fn d72_m2_span_local_calls_cut_to_their_window_before_de_duplication() {
     let tags = |tails: &[Vec<u8>]| run(traces::do_tq_tags, W::default().u8(1).item(b"").i64(lo).i64(hi).u32(0).u64(18_000).u64(BUDGET).files(&[]).files(tails)).map(|b| String::from_utf8(b).unwrap());
     let values = |tails: &[Vec<u8>]| run(traces::do_tq_tag_values, W::default().u8(2).item(b"span.first.copy").item(b"").i64(lo).i64(hi).u32(0).u64(18_000).u64(BUDGET).files(&[]).files(tails)).map(|b| String::from_utf8(b).unwrap());
     let count = |tails: &[Vec<u8>]| {
-        let w = W::default().u64(18_000).u64(BUDGET).i64(ALL.0).i64(ALL.1).u64(100).u64(1000).u8(1).i64(lo).i64(hi).i64(hi - lo).item(b"{ } | count_over_time()").files(&[]).files(tails);
+        let w = W::default().u64(18_000).u64(BUDGET).i64(ALL.0).i64(ALL.1).u32(0).u64(100).u64(1000).u8(1).i64(lo).i64(hi).i64(hi - lo).item(b"{ } | count_over_time()").files(&[]).files(tails);
         run(traces::do_tq_metrics, w).map(|b| String::from_utf8(b[16..].to_vec()).unwrap())
     };
     let both = [first.clone(), later];
@@ -784,7 +784,7 @@ fn r2_m2_tag_names_search_answers_and_kept_log_lines_are_charged_before_they_gro
     let rows: Vec<_> = (1..=n).map(|i| (id16(1), i.to_be_bytes(), None, T0 + i as i64 * 1_000_000, T0 + i as i64 * 1_000_000 + 1000, vec![("blob".to_string(), format!("{i}{}", "x".repeat(60_000)))])).collect();
     let files: Vec<Vec<u8>> = rows.chunks(10).flat_map(|c| span_files(&spans_of(c)).0.into_iter().map(|f| f.bytes)).collect();
     let q = br#"{ span.blob != "" }"#;
-    let w = W::default().u64(18_000).u64(BUDGET).i64(ALL.0).i64(ALL.1).u32(20).u32(1000).i64(T0 - 5 * MIN).i64(T0 + 60 * MIN).item(q).files(&files).files(&[]);
+    let w = W::default().u64(18_000).u64(BUDGET).i64(ALL.0).i64(ALL.1).u32(0).u32(20).u32(1000).i64(T0 - 5 * MIN).i64(T0 + 60 * MIN).item(q).files(&files).files(&[]);
     let (r, held) = peak(|| traces::do_tq_search(Req { b: &w.0, at: 0 }));
     eprintln!("PEAK r2_m2 search answer of {n} spans: {held} bytes");
     match r {
@@ -802,4 +802,334 @@ fn r2_m2_tag_names_search_answers_and_kept_log_lines_are_charged_before_they_gro
     eprintln!("PEAK r2_m2 log lines kept: {held} bytes, {}", limit_name(&r));
     assert_eq!(limit_name(&r), "limit max_decoded_bytes");
     assert!(held <= BUDGET + SLACK, "held {held}");
+}
+
+// ───────────────────────────── D81 ─────────────────────────────
+
+/// A file plan request (`viz_q_tq_file_plan` / `viz_q_tq_probe`), all time, with an id.
+fn fq(table: u8, id: Option<&[u8; 16]>, ranges: &[(i64, i64)], lo: i64, hi: i64) -> W {
+    let mut w = W::default().u64(0).u8(table).i64(lo).i64(hi);
+    match id {
+        Some(id) => {
+            w = w.u8(1);
+            w.0.extend_from_slice(id);
+        }
+        None => w = w.u8(0),
+    }
+    w = w.u32(ranges.len() as u32);
+    for (a, b) in ranges {
+        w = w.i64(*a).i64(*b);
+    }
+    w
+}
+
+fn plans_of(b: Result<Vec<u8>, String>) -> Vec<serde_json::Value> {
+    serde_json::from_slice(&b.expect("plan")).unwrap()
+}
+
+fn pairs(v: &serde_json::Value) -> Vec<(u64, u64)> {
+    v.as_array().map(|a| a.iter().map(|x| (x[0].as_u64().unwrap(), x[1].as_u64().unwrap())).collect()).unwrap_or_default()
+}
+
+/// The file as a plan reads it: skipped (None), whole, or its ranges.
+fn as_read(file: &[u8], p: &serde_json::Value) -> Option<Vec<u8>> {
+    match &p["read"] {
+        serde_json::Value::String(s) if s == "skip" => None,
+        serde_json::Value::String(_) => Some(file.to_vec()),
+        r => Some(viz_storage::sparse::cut(file, &pairs(r))),
+    }
+}
+
+/// Probe `files` (with their fragments) for `id`: the plans after the bloom filters.
+fn probe(table: u8, files: &[viz_storage::SignalFile], id: &[u8; 16]) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    let idx: Vec<Vec<u8>> = files.iter().map(|f| f.index.clone().into_bytes()).collect();
+    let first = plans_of(run(traces::do_tq_file_plan, fq(table, Some(id), &[], ALL.0, ALL.1).files(&idx)));
+    let blooms: Vec<Vec<u8>> = files.iter().zip(&first).map(|(f, p)| if p["read"] == "skip" { Vec::new() } else { viz_storage::sparse::cut(&f.bytes, &pairs(&p["bloom"])) }).collect();
+    let after = plans_of(run(traces::do_tq_probe, fq(table, Some(id), &[], ALL.0, ALL.1).files(&idx).files(&blooms)));
+    (first, after)
+}
+
+/// A random-looking trace id (splitmix64): ids of one unit spread over the whole id range, as
+/// real ones do, so a `trace_index` row group's id range prunes nothing.
+fn rid(n: u64) -> [u8; 16] {
+    let mix = |mut z: u64| {
+        z = z.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    };
+    let mut t = [0u8; 16];
+    t[..8].copy_from_slice(&mix(n).to_be_bytes());
+    t[8..].copy_from_slice(&mix(n ^ 0x5555).to_be_bytes());
+    t
+}
+
+/// 30 flush units of 400 single-span traces each, every id distinct.
+fn units() -> (Vec<viz_storage::SignalFile>, Vec<viz_storage::SignalFile>) {
+    let (mut spans, mut index) = (Vec::new(), Vec::new());
+    for u in 0..30u64 {
+        let rows: Vec<_> = (0..400u64).map(|i| (rid(u * 1000 + i + 1), [1u8; 8], None, T0 + (u * 400 + i) as i64 * 1_000_000, T0 + (u * 400 + i) as i64 * 1_000_000 + 1000, Vec::new())).collect();
+        let (s, t) = span_files(&spans_of(&rows));
+        spans.extend(s);
+        index.extend(t);
+    }
+    (spans, index)
+}
+
+#[test]
+fn d81_trace_by_id_keeps_every_row_group_that_holds_the_id_and_few_others() {
+    let (spans, index) = units();
+    for (table, files) in [(0u8, &spans), (1u8, &index)] {
+        let mut kept_others = 0usize;
+        let mut probed = 0usize;
+        for u in 0..30u64 {
+            for i in [0u64, 137, 399] {
+                let id = rid(u * 1000 + i + 1);
+                let (first, after) = probe(table, files, &id);
+                // Every file read lists its filter (one row group per unit).
+                assert!(first.iter().all(|p| p["bloom"].as_array().unwrap().len() == (p["read"] != "skip") as usize), "{first:?}");
+                for (k, p) in after.iter().enumerate() {
+                    let holds = k as u64 == u;
+                    if holds {
+                        assert_ne!(p["read"], "skip", "table {table}: the unit holding the id was dropped");
+                        assert_eq!(p["skipped"], 0);
+                    } else if p["read"] != "skip" {
+                        kept_others += 1;
+                    }
+                    probed += 1;
+                }
+            }
+        }
+        // 1% filters, sized for the group: a false positive now and then, not every file.
+        assert!(kept_others * 20 < probed, "table {table}: {kept_others} of {probed} kept without the id");
+        // An id held nowhere: nearly every file is skipped.
+        let (_, after) = probe(table, files, &rid(999_999_999));
+        assert!(after.iter().filter(|p| p["read"] != "skip").count() <= 3, "{after:?}");
+    }
+}
+
+#[test]
+fn d81_trace_by_id_answers_the_same_from_the_probed_row_groups() {
+    let (spans, _) = units();
+    let whole: Vec<Vec<u8>> = spans.iter().map(|f| f.bytes.clone()).collect();
+    let trace = |files: &[Vec<u8>], id: &[u8; 16]| {
+        let mut w = W::default().u8(2);
+        w.0.extend_from_slice(id);
+        run(traces::do_tq_trace, w.u64(18_000).u64(BUDGET).i64(ALL.0).i64(ALL.1).u32(0).files(files).files(&[])).unwrap()
+    };
+    for id in [rid(1), rid(5_200), rid(29_400), rid(999_999)] {
+        let (_, after) = probe(0, &spans, &id);
+        let read: Vec<Vec<u8>> = spans.iter().zip(&after).filter_map(|(f, p)| as_read(&f.bytes, p)).collect();
+        let (a, b) = (trace(&whole, &id), trace(&read, &id));
+        assert_eq!(a[0], b[0]);
+        assert_eq!(&a[9..], &b[9..], "the trace's answer differs");
+        assert!(read.len() <= 2, "{} files read", read.len());
+    }
+}
+
+#[test]
+fn d81_a_filter_that_is_not_named_not_read_or_does_not_parse_keeps_its_row_group() {
+    let (spans, _) = units();
+    let id = rid(999_999_999);
+    let idx: Vec<Vec<u8>> = spans.iter().map(|f| f.index.clone().into_bytes()).collect();
+    let first = plans_of(run(traces::do_tq_file_plan, fq(0, Some(&id), &[], ALL.0, ALL.1).files(&idx)));
+    let count = |after: &[serde_json::Value]| after.iter().filter(|p| p["read"] != "skip").count();
+    // No container: nothing is dropped.
+    let none: Vec<Vec<u8>> = spans.iter().map(|_| Vec::new()).collect();
+    assert_eq!(count(&plans_of(run(traces::do_tq_probe, fq(0, Some(&id), &[], ALL.0, ALL.1).files(&idx).files(&none)))), 30);
+    // A container of other bytes (the footer), or a filter whose header is damaged: nothing is dropped.
+    let other: Vec<Vec<u8>> = spans.iter().map(|f| viz_storage::sparse::cut(&f.bytes, &[(f.bytes.len() as u64 - 8, 8)])).collect();
+    assert_eq!(count(&plans_of(run(traces::do_tq_probe, fq(0, Some(&id), &[], ALL.0, ALL.1).files(&idx).files(&other)))), 30);
+    let damaged: Vec<Vec<u8>> = spans
+        .iter()
+        .zip(&first)
+        .map(|(f, p)| {
+            let (o, l) = pairs(&p["bloom"])[0];
+            let mut b = f.bytes.clone();
+            b[o as usize] ^= 0xff;
+            viz_storage::sparse::cut(&b, &[(o, l)])
+        })
+        .collect();
+    assert_eq!(count(&plans_of(run(traces::do_tq_probe, fq(0, Some(&id), &[], ALL.0, ALL.1).files(&idx).files(&damaged)))), 30);
+    // A fragment without `bf` (a file written before D81): no filter is listed or used.
+    let old: Vec<Vec<u8>> = spans.iter().map(|f| strip_bf(&f.index).into_bytes()).collect();
+    let p = plans_of(run(traces::do_tq_file_plan, fq(0, Some(&id), &[], ALL.0, ALL.1).files(&old)));
+    assert!(p.iter().all(|x| x["bloom"].as_array().unwrap().is_empty()));
+    let blooms: Vec<Vec<u8>> = spans.iter().zip(&first).map(|(f, p)| viz_storage::sparse::cut(&f.bytes, &pairs(&p["bloom"]))).collect();
+    assert_eq!(count(&plans_of(run(traces::do_tq_probe, fq(0, Some(&id), &[], ALL.0, ALL.1).files(&old).files(&blooms)))), 30);
+    // The same fragments with their filters: all 30 are dropped or nearly so.
+    assert!(count(&plans_of(run(traces::do_tq_probe, fq(0, Some(&id), &[], ALL.0, ALL.1).files(&idx).files(&blooms)))) <= 3);
+}
+
+/// A fragment as a writer before D81 wrote it: no `bf`.
+fn strip_bf(index: &str) -> String {
+    let mut out = String::new();
+    let mut rest = index;
+    while let Some(at) = rest.find(",\"bf\":[") {
+        out.push_str(&rest[..at]);
+        let end = rest[at..].find(']').unwrap();
+        rest = &rest[at + end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+#[test]
+fn d81_a_search_cut_to_its_traces_ranges_answers_the_same_and_holds_only_their_neighbourhood() {
+    // Two units of 6,000 spans over ten minutes each; the search window is two seconds of them.
+    let mut files = Vec::new();
+    let mut idx = Vec::new();
+    for u in 0..2i64 {
+        let rows: Vec<_> = (0..6000i64).map(|i| (id16((u * 10_000 + i + 1) as u64), [1u8; 8], None, T0 + u * 10 * MIN + i * 100_000_000, T0 + u * 10 * MIN + i * 100_000_000 + 5_000, Vec::new())).collect();
+        let (s, t) = span_files(&spans_of(&rows));
+        files.extend(s.into_iter().map(|f| f.bytes));
+        idx.extend(t.into_iter().map(|f| f.bytes));
+    }
+    let (lo, hi) = (T0 + 3 * MIN, T0 + 3 * MIN + 2_000_000_000);
+    let bound = (lo - 120 * MIN, hi + 120 * MIN);
+    let e: serde_json::Value = serde_json::from_slice(&run(traces::do_tq_extent, W::default().i64(lo).i64(hi).u8(0).i64(bound.0).i64(bound.1).u64(BUDGET).files(&idx).files(&[])).unwrap()).unwrap();
+    let ranges: Vec<(i64, i64)> = e["ranges"].as_array().unwrap().iter().map(|r| (r[0].as_str().unwrap().parse().unwrap(), r[1].as_str().unwrap().parse().unwrap())).collect();
+    assert!(!ranges.is_empty());
+    let search = |max_spans: u64, rs: &[(i64, i64)]| {
+        let mut w = W::default().u64(max_spans).u64(BUDGET).i64(bound.0).i64(bound.1).u32(rs.len() as u32);
+        for (a, b) in rs {
+            w = w.i64(*a).i64(*b);
+        }
+        run(traces::do_tq_search, w.u32(100).u32(3).i64(lo).i64(hi).item(b"{ }").files(&files).files(&[])).map(|b| String::from_utf8(b[16..].to_vec()).unwrap())
+    };
+    // Tempo's `metrics` (what was inspected) differ by design; the traces must not.
+    let traces = |s: String| s[..s.rfind(",\"metrics\":{").unwrap()].to_string();
+    let all = traces(search(1_000_000, &[]).unwrap());
+    assert!(all.contains("traceID"), "{all}");
+    // Without the ranges every span of the units' row groups is held (12,000): refused at 1,000.
+    assert_eq!(search(1_000, &[]), Err("limit max_spans".into()));
+    // With them only the spans that start inside the found traces' pieces: the same traces.
+    assert_eq!(traces(search(1_000, &ranges).unwrap()), all);
+}
+
+#[test]
+fn d81_certain_rows_are_the_row_groups_wholly_inside_the_range() {
+    // One unit, row groups of 100 spans, one span every second for 1,000 s.
+    let rows: Vec<_> = (0..1000i64).map(|i| (id16(i as u64 + 1), [1u8; 8], None, T0 + i * 1_000_000_000, T0 + i * 1_000_000_000 + 1, Vec::new())).collect();
+    let b = spans_of(&rows);
+    let opts = viz_storage::SignalWriteOptions { max_row_group_rows: 100, ..Default::default() };
+    let files: Vec<_> = viz_storage::encode_spans_with(&[&b], &opts).unwrap().into_iter().filter(|f| f.table == viz_storage::SignalTable::Spans).collect();
+    let idx: Vec<Vec<u8>> = files.iter().map(|f| f.index.clone().into_bytes()).collect();
+    let plan = |lo: i64, hi: i64| {
+        let p = &plans_of(run(traces::do_tq_file_plan, fq(0, None, &[], lo, hi).files(&idx)))[0];
+        (p["rows"].as_u64().unwrap(), p["certain"].as_u64().unwrap())
+    };
+    let s = 1_000_000_000i64;
+    assert_eq!(plan(T0, T0 + 999 * s), (1000, 1000));
+    // Seconds 150..=449: groups 1..=4 overlap (400 rows), groups 2 and 3 lie inside (200).
+    assert_eq!(plan(T0 + 150 * s, T0 + 449 * s), (400, 200));
+    // Two seconds inside one group: 100 rows read, none certain.
+    assert_eq!(plan(T0 + 150 * s, T0 + 151 * s), (100, 0));
+}
+
+#[test]
+fn d81_certain_log_rows_need_the_range_and_every_stream_of_the_group() {
+    // S10's blocks C and D: sent together, far apart in time, one row group.
+    let labels = vec![("job".to_string(), "a".to_string())];
+    let other = vec![("job".to_string(), "b".to_string())];
+    let streams = vec![LogStream { stream_id: otel::stream_id(&labels), labels: labels.clone() }, LogStream { stream_id: otel::stream_id(&other), labels: other }];
+    let row = |entry: u32, ts: i64| LogRow { entry, ts, observed_ts: 0, trace_id: [0; 16], span_id: [0; 8], flags: 0, severity_number: 0, line: format!("l{ts}"), severity_text: String::new(), metadata: Vec::new() };
+    let mut rows: Vec<LogRow<String>> = (0..300).map(|i| row(0, T0 + i)).collect();
+    rows.extend((0..300).map(|i| row(0, T0 + 6 * 60 * MIN + i)));
+    let b = otel::encode_logs(&streams[..1], &rows).unwrap();
+    let files = viz_storage::encode_logs(&[&b]).unwrap();
+    assert_eq!(files.len(), 1);
+    let idx = vec![files[0].index.clone().into_bytes()];
+    let plan = |start: i64, end: i64, job: &str| {
+        let w = W::default().u64(0).u32(1).i64(start).i64(end).u32(1).u8(0).item(b"job").item(job.as_bytes()).files(&idx);
+        let p = &plans_of(run(logs::do_lq_file_plan, w))[0];
+        (p["rows"].as_u64().unwrap(), p["certain"].as_u64().unwrap())
+    };
+    // Block C's hour: the group straddles it (C and D), so nothing is certain; the engine counts.
+    assert_eq!(plan(T0, T0 + 60 * MIN, "a"), (600, 0));
+    // Both blocks: certain.
+    assert_eq!(plan(T0, T0 + 7 * 60 * MIN, "a"), (600, 600));
+    // A selector the group's stream does not match reads nothing.
+    assert_eq!(plan(T0, T0 + 7 * 60 * MIN, "b").1, 0);
+    // A group with a stream the selector does not admit is not certain (one group, both streams).
+    let mut mixed = rows.clone();
+    mixed.extend((0..10).map(|i| row(1, T0 + 100 + i)));
+    let b = otel::encode_logs(&streams, &mixed).unwrap();
+    let files = viz_storage::encode_logs(&[&b]).unwrap();
+    let idx = vec![files[0].index.clone().into_bytes()];
+    let w = W::default().u64(0).u32(1).i64(T0).i64(T0 + 7 * 60 * MIN).u32(1).u8(0).item(b"job").item(b"a").files(&idx);
+    let p = &plans_of(run(logs::do_lq_file_plan, w))[0];
+    assert_eq!(p["certain"], 0, "{p}");
+}
+
+/// D81's measurement (measured here, native release build, not WASM): S10's realistic shape
+/// scaled to one hour at about 700,000 single-span traces, as 66 flush units of 10,500 spans with
+/// S10's attributes; the bytes trace by ID fetches without and with the bloom filters (exact, the
+/// same in WASM), and the engine's time for each, alternated. Run with
+/// `cargo test --release d81_measure -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn d81_measure_trace_by_id_over_an_hour_of_units() {
+    let units: usize = std::env::var("D81_UNITS").ok().and_then(|v| v.parse().ok()).unwrap_or(66);
+    let per = 10_500u64;
+    let (mut spans, mut index) = (Vec::new(), Vec::new());
+    for u in 0..units as u64 {
+        let rows: Vec<_> = (0..per)
+            .map(|i| {
+                let n = u * per + i;
+                let t = T0 + (n as i64) * 5_140_000; // 700,000 an hour
+                (rid(n + 1), (n + 1).to_be_bytes(), None, t, t + 2_000_000 + (n % 97) as i64 * 1_000_000, vec![("http.route".to_string(), format!("/api/v1/items/{}", n % 50)), ("http.request.method".to_string(), "GET".to_string())])
+            })
+            .collect();
+        let (s, t) = span_files(&spans_of(&rows));
+        spans.extend(s);
+        index.extend(t);
+    }
+    let size = |v: &[viz_storage::SignalFile]| v.iter().map(|f| f.bytes.len()).sum::<usize>();
+    let bf: Vec<u64> = spans.iter().flat_map(|f| pairs(&serde_json::from_str::<serde_json::Value>(&f.index).unwrap()["rg"].as_array().unwrap().iter().map(|g| g["bf"].clone()).collect::<serde_json::Value>()).into_iter().map(|p| p.1)).collect();
+    eprintln!("MEASURE units {units} spans {} B ({} B/span), trace_index {} B ({} B/span); spans bloom per unit {:?} B", size(&spans), size(&spans) as f64 / (units as f64 * per as f64), size(&index), size(&index) as f64 / (units as f64 * per as f64), bf.iter().min().zip(bf.iter().max()));
+    let fetched = |files: &[viz_storage::SignalFile], plans: &[serde_json::Value]| -> u64 {
+        files
+            .iter()
+            .zip(plans)
+            .map(|(f, p)| match &p["read"] {
+                serde_json::Value::String(s) if s == "skip" => 0,
+                serde_json::Value::String(_) => f.bytes.len() as u64,
+                r => pairs(r).iter().map(|x| x.1).sum(),
+            })
+            .sum()
+    };
+    let trace = |files: &[Vec<u8>], id: &[u8; 16]| {
+        let mut w = W::default().u8(2);
+        w.0.extend_from_slice(id);
+        run(traces::do_tq_trace, w.u64(18_000).u64(BUDGET).i64(ALL.0).i64(ALL.1).u32(0).files(files).files(&[])).unwrap()
+    };
+    for round in 0..3 {
+        for with in [false, true] {
+            let id = rid((round as u64 * 7919 + 13) % (units as u64 * per) + 1);
+            let t0 = std::time::Instant::now();
+            let (ti_bytes, sp_bytes, bloom_bytes, sp_read): (u64, u64, u64, Vec<Vec<u8>>);
+            if with {
+                let (f1, a1) = probe(1, &index, &id);
+                let (f2, a2) = probe(0, &spans, &id);
+                bloom_bytes = f1.iter().chain(&f2).map(|p| pairs(&p["bloom"]).iter().map(|x| x.1).sum::<u64>()).sum();
+                ti_bytes = fetched(&index, &a1);
+                sp_bytes = fetched(&spans, &a2);
+                sp_read = spans.iter().zip(&a2).filter_map(|(f, p)| as_read(&f.bytes, p)).collect();
+            } else {
+                let idx1: Vec<Vec<u8>> = index.iter().map(|f| f.index.clone().into_bytes()).collect();
+                let p1 = plans_of(run(traces::do_tq_file_plan, fq(1, Some(&id), &[], ALL.0, ALL.1).files(&idx1)));
+                let idx0: Vec<Vec<u8>> = spans.iter().map(|f| f.index.clone().into_bytes()).collect();
+                let p0 = plans_of(run(traces::do_tq_file_plan, fq(0, None, &[], ALL.0, ALL.1).files(&idx0)));
+                bloom_bytes = 0;
+                ti_bytes = fetched(&index, &p1);
+                sp_bytes = fetched(&spans, &p0);
+                sp_read = spans.iter().zip(&p0).filter_map(|(f, p)| as_read(&f.bytes, p)).collect();
+            }
+            let out = trace(&sp_read, &id);
+            let ms = t0.elapsed().as_secs_f64() * 1000.0;
+            assert_eq!(out[0], 1, "found");
+            eprintln!("MEASURE round {round} blooms {with}: trace_index {ti_bytes} B, spans {sp_bytes} B, blooms {bloom_bytes} B, total {} B; spans files read {}; plan+probe+trace {ms:.1} ms", ti_bytes + sp_bytes + bloom_bytes, sp_read.len());
+        }
+    }
 }

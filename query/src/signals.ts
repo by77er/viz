@@ -56,19 +56,27 @@ interface Round {
   files: { f: LiveFile; plan: SignalFilePlan }[]
   bytes: number
   rows: number
+  /**
+   * Of `rows`, those the engine is sure to hold (D81): the rows of the row groups wholly inside
+   * the call's range (logs: and holding only streams a selector admits). The row caps are checked
+   * before any fetch on these, so a pre-check refuses only what the engine would refuse; the
+   * engine counts the rest as it holds them. An engine before ABI 9 gives none: then all `rows`.
+   */
+  certain: number
   listed: number
 }
 
 /** Files of a plan to read: those the fragments do not skip (all of them, whole, with pruning off). */
 function round(files: LiveFile[], plans: SignalFilePlan[] | null): Round {
   const ordered = inPrecedenceOrder(files)
-  const out: Round = { files: [], bytes: 0, rows: 0, listed: files.length }
+  const out: Round = { files: [], bytes: 0, rows: 0, certain: 0, listed: files.length }
   for (const f of ordered) {
     const plan = plans ? plans[files.indexOf(f)]! : ({ rows: null, read: 'whole' } as SignalFilePlan)
     if (plan.read === 'skip') continue
     out.files.push({ f, plan })
     out.bytes += plannedBytes(planned(f, plan))
     out.rows += plan.rows ?? f.rows
+    out.certain += plan.certain ?? plan.rows ?? f.rows
   }
   return out
 }
@@ -77,6 +85,12 @@ const planned = (f: FileEntry, p: SignalFilePlan): Planned => ({ f, read: p.read
 
 /** Whether the index fragments prune (a test turns it off to show that the answers do not change). */
 const pruning = (): boolean => hooks.signalPruning !== false
+
+/** Whether trace by ID reads bloom filters (D81; a test turns them off to show that the answers do not change). */
+const blooms = (): boolean => hooks.signalBlooms !== false
+
+/** Bytes already fetched for a query (its bloom filters), as a round of no files, for the caps. */
+const spent = (bytes: number): Round => ({ files: [], bytes, rows: 0, certain: 0, listed: 0 })
 
 /**
  * The refusals before anything is fetched: files and bytes of every round so far from the
@@ -89,14 +103,14 @@ const pruning = (): boolean => hooks.signalPruning !== false
 function capsBeforeFetch(c: Context, rounds: Round[], rowsLimit: number, rowsName: 'max_spans' | 'max_log_rows', rowRounds: Round[], help: string): void {
   const files = rounds.reduce((a, r) => a + r.files.length, 0)
   const bytes = rounds.reduce((a, r) => a + r.bytes, 0)
-  const rows = rowRounds.reduce((a, r) => a + r.rows, 0)
+  const rows = rowRounds.reduce((a, r) => a + r.certain, 0)
   c.cost.filesListed = rounds.reduce((a, r) => a + r.listed, 0)
   c.cost.filesSkipped = c.cost.filesListed - files
   c.cost.scanRows = rounds.reduce((a, r) => a + r.rows, 0)
   if (files > c.limits.maxFiles) throw new ApiError('execution', `query exceeded limit max_files: ${files} data files to read, the limit is ${c.limits.maxFiles}. ${help}`)
   if (bytes > c.limits.maxFetchBytes) throw tooMuchSignal(c, 'the data files to read', bytes, help)
   if (rows > rowsLimit) {
-    throw new ApiError('execution', `query exceeded limit ${rowsName}: the data files to read hold ${rows} rows the query would hold, the limit is ${rowsLimit}. ${help}`)
+    throw new ApiError('execution', `query exceeded limit ${rowsName}: the data files to read hold at least ${rows} rows the query would hold, the limit is ${rowsLimit}. ${help}`)
   }
 }
 
@@ -116,7 +130,8 @@ const HELP = {
 }
 
 /** What an engine call may hold (`maxDecodedBytes`, README "Memory"), and for traces the spans that are its data. */
-const budget = (c: Context, bound?: { lo: bigint; hi: bigint }): SignalBudget => (bound ? { maxBytes: c.limits.maxDecodedBytes, bound } : { maxBytes: c.limits.maxDecodedBytes })
+const budget = (c: Context, bound?: { lo: bigint; hi: bigint }, ranges?: { lo: bigint; hi: bigint }[]): SignalBudget =>
+  bound ? { maxBytes: c.limits.maxDecodedBytes, bound, ...(ranges ? { ranges } : {}) } : { maxBytes: c.limits.maxDecodedBytes }
 
 /** A query's re-plan bookkeeping, as for metrics: each shard or missing file may send it back to the ledger `MAX_REFUSALS` times. */
 function refusals(): { refused: (who: string, why: string) => void; known: Map<string, number> } {
@@ -288,6 +303,50 @@ export function traceBound(c: Context, window: { lo: bigint; hi: bigint }): { lo
 }
 
 /**
+ * Trace by ID by membership (D81): the plans of `files` for `id`, without the row groups whose
+ * `trace_id` bloom filter rules the id out. The filters the plans list (`bloom`, from the
+ * fragments' `bf`) are fetched, one range per filter, and handed to the engine (`tqProbe`), which
+ * keeps every group whose fragment names no filter, whose filter was not read or does not parse:
+ * a filter only saves reads. Their bytes count against `maxFetchBytes` with everything else the
+ * query reads (`spent`), and are refused before they are fetched past it; their files count
+ * against `maxFiles`. Null: a file was missing (the plan is stale, read the ledger again).
+ */
+async function probed(
+  c: Context,
+  table: 'spans' | 'trace_index',
+  files: LiveFile[],
+  plans: SignalFilePlan[],
+  q: { lo: bigint; hi: bigint; id: Uint8Array; ranges?: { lo: bigint; hi: bigint }[] },
+  spent: number,
+  help: string,
+  have: Map<string, Uint8Array>,
+  refused: (who: string, why: string) => void,
+): Promise<{ plans: SignalFilePlan[]; bytes: number; files: number } | null> {
+  const want = files.map((f, i) => ({ f, i, p: plans[i]! })).filter(({ p }) => p.read !== 'skip' && (p.bloom?.length ?? 0) > 0)
+  if (want.length === 0) return { plans, bytes: 0, files: 0 }
+  const reads: Planned[] = want.map(({ f, p }) => ({ f, read: p.bloom! }))
+  const bytes = reads.reduce((a, r) => a + plannedBytes(r), 0)
+  if (want.length > c.limits.maxFiles) throw new ApiError('execution', `query exceeded limit max_files: ${want.length} bloom filters to read, the limit is ${c.limits.maxFiles}. ${help}`)
+  if (spent + bytes > c.limits.maxFetchBytes) throw tooMuchSignal(c, `the ${table} bloom filters to read plus what the query read before them`, spent + bytes, help)
+  let got: Uint8Array[]
+  try {
+    got = await fetchFiles(c, reads, have)
+  } catch (e) {
+    if (!(e instanceof MissingFile)) throw e
+    refused(`file ${e.key}`, e.message)
+    return null
+  }
+  const containers: Uint8Array[] = files.map(() => new Uint8Array(0))
+  want.forEach(({ i }, k) => (containers[i] = got[k]!))
+  const out = engineCall(c, () => c.engine.tqProbe(table, files.map((f) => f.index), q.lo, q.hi, q.id, q.ranges, containers))
+  c.cost.bloomFiles += want.length
+  c.cost.bloomBytes += bytes
+  c.cost.bytesRead += bytes
+  c.cost.bloomSkipped += out.reduce((a, p) => a + (p.skipped ?? 0), 0)
+  return { plans: out, bytes, files: want.length }
+}
+
+/**
  * One ledger version of `trace_index` and `spans` for a search, a metrics query that needs
  * whole traces, or a trace by ID (D62):
  *
@@ -311,7 +370,7 @@ async function traceRounds<T>(
   window: { lo: bigint; hi: bigint },
   bound: { lo: bigint; hi: bigint },
   id: Uint8Array | undefined,
-  finish: (spanFiles: Uint8Array[], tails: Uint8Array[], bound: { lo: bigint; hi: bigint }) => T,
+  finish: (spanFiles: Uint8Array[], tails: Uint8Array[], bound: { lo: bigint; hi: bigint }, ranges?: { lo: bigint; hi: bigint }[]) => T,
   empty: () => T,
 ): Promise<T> {
   const rf = refusals()
@@ -323,11 +382,21 @@ async function traceRounds<T>(
     const first = await planTable(c, 'trace_index', b.minTs, b.maxTs)
     c.cost.ledgerVersion = first.version
     if (hooks.afterPlan) await hooks.afterPlan(c.tenant, attempt)
-    const r1 = round(first.files, pruning() ? c.engine.tqFilePlan('trace_index', first.files.map((f) => f.index), bound.lo, bound.hi, id) : null)
+    const help = hintless ? HELP.allTime : HELP.bound(c)
+    let plans1 = pruning() ? c.engine.tqFilePlan('trace_index', first.files.map((f) => f.index), bound.lo, bound.hi, id) : null
+    // By ID (D81): only the `trace_index` row groups whose bloom filter may hold the id.
+    let probeBytes = 0
+    if (id && plans1 && blooms()) {
+      const p = await probed(c, 'trace_index', first.files, plans1, { lo: bound.lo, hi: bound.hi, id }, 0, help, have, rf.refused)
+      if (!p) continue
+      plans1 = p.plans
+      probeBytes += p.bytes
+    }
+    const r1 = round(first.files, plans1)
     // Files and bytes only: a fragment is not a span. The engine holds the traces it finds under
     // the byte budget (`tqExtent`).
-    capsBeforeFetch(c, [r1], c.limits.maxSpans, 'max_spans', [], hintless ? HELP.allTime : HELP.bound(c))
-    const [indexFiles, tails] = await Promise.all([fetchRound(c, r1, have, rf.refused), readSignalTail(c, 'traces', first.watermarks, r1.bytes, rf, bound)])
+    capsBeforeFetch(c, [r1, spent(probeBytes)], c.limits.maxSpans, 'max_spans', [], help)
+    const [indexFiles, tails] = await Promise.all([fetchRound(c, r1, have, rf.refused), readSignalTail(c, 'traces', first.watermarks, r1.bytes + probeBytes, rf, bound)])
     if (!indexFiles || !tails) continue
     const ext = engineCall(c, () => c.engine.tqExtent(indexFiles, tails, window.lo, window.hi, id, budget(c, bound)))
     if (ext.traces === 0 || ext.lo === undefined || ext.hi === undefined) return empty()
@@ -341,21 +410,30 @@ async function traceRounds<T>(
     // By ID: only the hours the trace's fragments (and its tail spans) name hold its spans.
     const hours = new Set(ext.hours)
     const candidates = id && pruning() ? second.files.filter((f) => { const x = hourOf(f); return x === null || hours.has(x) }) : second.files
-    const r2 = round(candidates, pruning() ? c.engine.tqFilePlan('spans', candidates.map((f) => f.index), hull.lo, hull.hi, undefined, ranges) : null)
-    r2.listed = second.files.length
     const tailBytes = tails.reduce((a, b) => a + b.byteLength, 0)
+    let plans2 = pruning() ? c.engine.tqFilePlan('spans', candidates.map((f) => f.index), hull.lo, hull.hi, id, ranges) : null
+    // By ID (D81): only the `spans` row groups whose bloom filter may hold the id, not the hours'.
+    if (id && plans2 && blooms()) {
+      const p = await probed(c, 'spans', candidates, plans2, { lo: hull.lo, hi: hull.hi, id, ranges }, r1.bytes + probeBytes + tailBytes, help, have, rf.refused)
+      if (!p) continue
+      plans2 = p.plans
+      probeBytes += p.bytes
+    }
+    const r2 = round(candidates, plans2)
+    r2.listed = second.files.length
     // Trace by ID counts no rows here: a row group holds other traces' spans, which the engine
     // reads and passes over without holding them; it counts the trace's own (review r2, R2-M4a).
     // Its cost is bounded by the bytes fetched. A search's rows are checked with what would help.
     if (!id) spanRows(c, window, candidates, r2)
-    capsBeforeFetch(c, [r1, r2], c.limits.maxSpans, 'max_spans', [], hintless ? HELP.allTime : HELP.bound(c))
-    if (r1.bytes + r2.bytes + tailBytes > c.limits.maxFetchBytes) throw tooMuchSignal(c, 'the trace_index and span files to read plus the unflushed span batches', r1.bytes + r2.bytes + tailBytes, hintless ? HELP.allTime : HELP.bound(c))
+    capsBeforeFetch(c, [r1, r2, spent(probeBytes)], c.limits.maxSpans, 'max_spans', [], help)
+    const total = r1.bytes + r2.bytes + tailBytes + probeBytes
+    if (total > c.limits.maxFetchBytes) throw tooMuchSignal(c, `the trace_index and span files to read plus the unflushed span batches${probeBytes > 0 ? ' and the bloom filters read' : ''}`, total, help)
     const release = reserveBytes(r2.bytes)
     try {
       const spanFiles = await fetchRound(c, r2, have, rf.refused)
       if (!spanFiles) continue
       checkDeadline(c)
-      return finish(spanFiles, tails, bound)
+      return finish(spanFiles, tails, bound, ranges)
     } finally {
       release()
     }
@@ -372,14 +450,15 @@ async function traceRounds<T>(
 function spanRows(c: Context, window: { lo: bigint; hi: bigint }, files: LiveFile[], r: Round): void {
   const limit = c.limits.maxSpans
   c.cost.scanRows = r.rows
-  if (r.rows <= limit) return
-  const inWindow = round(files, c.engine.tqFilePlan('spans', files.map((f) => f.index), window.lo, window.hi)).rows
+  // The spans the engine is sure to hold (D81): the engine counts the rest as it holds them.
+  if (r.certain <= limit) return
+  const inWindow = round(files, c.engine.tqFilePlan('spans', files.map((f) => f.index), window.lo, window.hi)).certain
   if (inWindow > limit) {
-    throw new ApiError('execution', `query exceeded limit max_spans: the span files of the window alone hold ${inWindow} spans the query would hold, the limit is ${limit}. Narrow the time range: every span of every trace that overlaps the window is held, whatever the query's conditions.`)
+    throw new ApiError('execution', `query exceeded limit max_spans: the span files of the window alone hold at least ${inWindow} spans the query would hold, the limit is ${limit}. Narrow the time range: every span of every trace that overlaps the window is held, whatever the query's conditions.`)
   }
   throw new ApiError(
     'execution',
-    `query exceeded limit max_spans: the traces that overlap the window have spans up to traceMarginMs (${c.limits.traceMarginMs} ms) outside it, and the span files that hold those pieces hold ${r.rows} spans (${inWindow} in the window's own files); the limit is ${limit}. A shorter window helps only if it leaves out the traces that reach far outside it; a smaller traceMarginMs (the operator's limit) reads less around them and answers longer traces in part.`,
+    `query exceeded limit max_spans: the traces that overlap the window have spans up to traceMarginMs (${c.limits.traceMarginMs} ms) outside it, and the span files that hold those pieces hold at least ${r.certain} spans the query would hold (${inWindow} in the window); the limit is ${limit}. A shorter window helps only if it leaves out the traces that reach far outside it; a smaller traceMarginMs (the operator's limit) reads less around them and answers longer traces in part.`,
   )
 }
 
@@ -406,8 +485,8 @@ export async function traceSearch(c: Context, q: TraceSearch): Promise<string> {
   const plan = c.engine.tqPlan('search', q.query, q.startNs, q.endNs, 0n)
   const window = { lo: BigInt(plan.lo), hi: BigInt(plan.hi) }
   const bound = traceBound(c, window)
-  const run = (files: Uint8Array[], tails: Uint8Array[], b: { lo: bigint; hi: bigint }) => {
-    const out = engineCall(c, () => c.engine.tqSearch(files, tails, q.query, { limit: q.limit, spss: q.spss, startNs: q.startNs, endNs: q.endNs, maxSpans: c.limits.maxSpans }, budget(c, b)))
+  const run = (files: Uint8Array[], tails: Uint8Array[], b: { lo: bigint; hi: bigint }, ranges?: { lo: bigint; hi: bigint }[]) => {
+    const out = engineCall(c, () => c.engine.tqSearch(files, tails, q.query, { limit: q.limit, spss: q.spss, startNs: q.startNs, endNs: q.endNs, maxSpans: c.limits.maxSpans }, budget(c, b, ranges)))
     c.cost.rowsDecoded = out.spans
     return out.json
   }
@@ -426,8 +505,8 @@ export interface TraceMetrics {
 export async function traceMetrics(c: Context, q: TraceMetrics): Promise<string> {
   const plan = c.engine.tqPlan(q.instant ? 'instant' : 'range', q.query, q.startNs, q.endNs, q.stepNs)
   const req = { instant: q.instant, startNs: BigInt(plan.start!), endNs: BigInt(plan.end!), stepNs: BigInt(plan.step!), maxSpans: c.limits.maxSpans, maxSeries: c.limits.maxTraceSeries, maxPoints: c.limits.maxTracePoints }
-  const run = (files: Uint8Array[], tails: Uint8Array[], b?: { lo: bigint; hi: bigint }) => {
-    const out = engineCall(c, () => c.engine.tqMetrics(files, tails, q.query, req, budget(c, b)))
+  const run = (files: Uint8Array[], tails: Uint8Array[], b?: { lo: bigint; hi: bigint }, ranges?: { lo: bigint; hi: bigint }[]) => {
+    const out = engineCall(c, () => c.engine.tqMetrics(files, tails, q.query, req, budget(c, b, ranges)))
     c.cost.rowsDecoded = out.spans
     return out.json
   }
