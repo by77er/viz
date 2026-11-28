@@ -11,7 +11,9 @@ interface Env {
   EXPIRES_AT: string
 }
 
-const api = createMockApi()
+// Made on the first request, not at module load: a Worker's clock reads 0 outside a request, and the
+// mock fixes its monitors' times when it is created.
+let api: ReturnType<typeof createMockApi> | undefined
 const NO_INDEX = { 'X-Robots-Tag': 'noindex, nofollow' }
 
 function text(status: number, body: string, headers: Record<string, string> = {}): Response {
@@ -38,6 +40,7 @@ export default {
 
     if (path.startsWith('/api/')) {
       const body = request.method === 'POST' ? await request.text() : ''
+      api ??= createMockApi()
       const res = api.handle(request.method, path + url.search, body, {
         authorization: request.headers.get('authorization') ?? undefined,
         'content-type': request.headers.get('content-type') ?? undefined,
