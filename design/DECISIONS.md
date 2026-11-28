@@ -4545,3 +4545,34 @@ fingerprint recorded in `VIZ_APP_FILES`. The override is used without a reason t
 the rule is theatre and should be replaced by the workflow deploying a stage itself. GitHub
 offers the build job's output with provenance the deploy job can verify (artifact attestations):
 then the handover's description becomes a signed statement instead of a self-description.
+
+## D76. The chart takes a series' values in either of two forms: an array with null for a gap, or a Float64Array with a value that is not finite for a gap
+
+**Decision** (2026-11-28, the lead's decision on the app-v9 review's B1; built in the design system's
+Chart, `project/components/Chart/preview.html`, and so in `dist/viz-chart.js`). `spec.series[k].values`
+is either the first form, an array of numbers in which `null` is a gap, or a `Float64Array` in which a
+value that is not finite (NaN, ±Infinity) is a gap. The chart reads a series' window once on entry
+(`windowOf`): a typed series with no gap in the window is held as a view of the caller's array, with no
+copy; one with a gap becomes an array with `null` for each gap, the first form. Everything after that
+point reads one form, so the picture, the legend, the readout and the text form are the same for the
+same values in either form (checked over 600 random results: `design-system/reviews/chart-speed/
+model-equivalence.test.mjs`, and in the browser by `design-system/reviews/chart-speed/tools/identity.cjs`).
+The chart never writes to what it is given. The first form stays: the system's own preview and fixture
+and the app's dashboards use it. The app's Explore view passes its result's own Float64Arrays
+(`app/src/charts/spec.ts`, `toSpec(…, typed: true)`), copied only when the unit is scaled.
+
+**Alternatives.** (a) Arrays only, as before: the app copied every value of a result into a new array
+before the chart copied its window again, 144,000 values twice at 200 series, after the last byte of
+the answer (about 14 ms of the 100 ms budget at 4x CPU, and young-generation collection after it).
+(b) Typed arrays only: every caller and the system's own demos and fixture would change at once, for no
+gain where results are small. (c) Typed arrays with every test for a gap in the chart made to accept
+NaN (about a dozen places): no copy even with gaps, but every one of those places is a new way for the
+two forms to draw differently, and a result with gaps is the uncommon case.
+
+**Why.** The budget ("Receives a result: paint it … 100 ms after it arrives") is spent after the last
+byte, and the copy did nothing a person sees. Converting at one place, on entry, keeps one form inside
+the chart, so identity between the forms is a property of one function.
+
+**Would change if** results with gaps become common at many series (then (c), with the identity check
+extended to gaps), or the chart moves its drawing to a worker or a canvas (then the form it is handed
+is decided there).
