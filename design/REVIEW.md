@@ -119,8 +119,19 @@ the miss; no real phone was tested), and a confirmation review approved v9 on 20
 blocker waived, not withdrawn, with eight minors recorded (`confirmation.md` there). The app's move
 onto v9 was rejected by an independent review (`design-system/reviews/app-v9/review.md`); the fixes
 are verified (`response.md` there). Its blocker B1, a result of many series painted late, has a
-second reviewer's conditional waiver at 37 to 200 series in Explore, with conditions to meet and
-rules that reopen it (`design-system/reviews/chart-speed/second-review.md`); one reopen rule tripped in
-the conditions' second session, and its state at the merge is recorded there and in the pull request.
-Explore, dashboards read-only and monitors were then reviewed again, together, by a reviewer who
-wrote none of them, before they merged to `main` (the verdict is in that pull request).
+second reviewer's conditional waiver at 37 to 200 series in Explore (`design-system/reviews/chart-speed/
+second-review.md`). One reopen rule tripped in the conditions' second session; a third review
+(`third-review.md` there) kept the waiver, replaced the two reopen rules R1 and R2 with R1′, R2′ and a
+session rule (two sessions agree, or a third and all runs pooled), and added C5: B1's unwaived rows met
+by that rule. After it the desktop's 36-series row read 92 and 99.7 ms (met, by the author's
+measurement, not yet judged by a reviewer), and the phone's chart to table at 36 and 200 series did not
+meet it (101.1 and 103.1 ms pooled over three sessions). So the waiver has not taken effect; it lapses on
+2026-12-31 unless F1 is decided. Explore, dashboards read-only and monitors were then reviewed again,
+together, by a reviewer who wrote none of them (round 3, `design-system/reviews/app-v9/rereview.md`):
+Explore, Help, Settings and the palette **rejected on one speed row only** ("Show 50 more", 102 / 105 ms
+against 100, the author's figures), everything a person sees there at approve level; dashboards and
+monitors **rejected** (speed blockers, and an agent-written dashboard shown unmarked); the waiting line's
+one-frame change **approved** from its records. The app merged on the owner's decision of 2026-11-28
+(D78), not on an approval: Explore, Help and Settings are listed, dashboards and monitors are served
+but unlisted until their fixes pass re-review, and the open speed rows are known issues
+(`app/README.md`, "Released in this version").

@@ -112,6 +112,22 @@ Spikes run since under numbers this table does not use, each with its README:
   mock API on a workers.dev address, for the owner to look at before the gateway served the real
   one (D74). Synthetic data only, bound to no viz resource; it answers 410 after 2026-12-04, and is
   deleted once `viz.bitcru.sh` serves the app (its README records that).
+- **S16** (`spikes/s16-app-stage/`): the web app on a stage before its first production release
+  (D74 point 6). **Measured 2026-11-28** (on Cloudflare, stage `viz-s16-*`, workers.dev only, destroyed
+  afterwards; about US$0.003 from the analytics API, 12:45 to 13:56 UTC): the UI branch at 2846fb8,
+  serving fingerprint `90565874…`, which the branch as merged still has (the release switch of D78 is in
+  `app/src`, which the fingerprint does not cover). The smoke test with the app passed on every release
+  (checks 1 to 5); checks 6 (20 page loads were 20 Worker requests and 160 unbilled asset requests),
+  7 (a changed chunk's predecessor kept and served), 9 (raw dot-segment paths) and 10 (304s through the
+  edge's compression) passed by hand. **Check 8 is half made**: the gateway-only rollback to the first
+  build passed; the rollback to a version without the app was **not run**, because the session's
+  permission check refused the release without the app that it needed. So the evidence entry in
+  `deploy/records/app-stage-evidence.json` is incomplete, `release.mjs` refuses the first production
+  release with the app on it, and that release goes out on **the owner's logged override,
+  `app_without_stage_evidence`** (a manual Deploy run; the push's run is refused at the plan). Not seen
+  on Cloudflare before production, then: the 404s after a rollback to a version without the app, and
+  the app's files on `vis.bitcru.sh`. Finding S16-1: the admin-only key `bootstrap.mjs` prints cannot
+  sign in to the app, which asks for the read scope.
 
 ## 5. Evidence required per milestone
 

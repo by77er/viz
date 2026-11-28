@@ -4,7 +4,7 @@ Status: draft 3.1, 2026-11-18. Draft 2 was reviewed by two independent reviewers
 findings) and rewritten as draft 3; draft 3 was re-reviewed (12 findings) and amended here.
 `REVIEW.md` lists what changed and what is still open.
 
-Status (2026-11-28, `main` after pull request #9, D75 and the web app): the backend described here is built and
+Status (2026-11-28, `main` after pull request #9, D75 and the web app, Explore released): the backend described here is built and
 on `main`. Production has been live since 2026-11-19: it ran fb77292 (pull request #8, deployed by
 the owner) from 2026-11-19 to 2026-11-28, and 375e9ba (pull request #9) from 2026-11-28, deployed by
 the Deploy workflow (run 46125868615, 08:27–08:36 UTC; `/healthz` then reported 375e9ba with every
@@ -33,12 +33,25 @@ with `namespace_id`, as the deploy reads them (review of D69, round 2, M2-2, set
 
 The interface (`app/`, `design-system/`, §8) is on `main` and served by viz-gateway at
 `https://viz.bitcru.sh/` from the release that carries D74 (on `vis.bitcru.sh` its pages are a 308
-to viz, D75). That release was the first with the app, refused until a stage run of the same serving
-code was recorded (D74 point 6). The app's design reviews are in `design-system/reviews/`. One budget
-row is not met: a result of many series in Explore paints more than 100 ms after it arrives (blocker
-B1 of the app's review). A second reviewer offered a waiver on conditions, with rules that reopen it
-(`chart-speed/second-review.md`), and its state at the merge is recorded in that directory and in the
-pull request that brought the app to `main`. Self-monitoring is proposed, not built.
+to viz, D75). That release lists **Explore, Help and Settings**, with sign-in by API key.
+**Dashboards (read-only) and monitors (the on-call slice) are built and served, but unlisted**: they
+open at `/dashboards` and `/monitors`, and the navigation, the command palette and Help do not name
+them (`app/src/shell/released.ts`), until the fixes for their design re-review pass; a second pull
+request lists them. The owner decided this on 2026-11-28: ship Explore now, with its speed misses
+recorded as known issues (`app/README.md`, "Released in this version"). So the app merged on the
+owner's decision, not on an approving design review: the round 3 re-review
+(`design-system/reviews/app-v9/rereview.md`) found everything a person sees in Explore, Help and
+Settings at approve level but rejected it on one speed row ("Show 50 more", 102 / 105 ms against
+100), rejected dashboards and monitors, and approved the waiting-line change. Blocker B1 (a result
+of many series painted late) has a waiver for 37 to 200 series whose conditions are not all met, so
+it has not taken effect (`design-system/reviews/chart-speed/second-review.md`, `third-review.md`);
+the phone's chart to table at 36 and 200 series is not met (101.1 and 103.1 ms pooled over three
+sessions, measured here); the waiver lapses on 2026-12-31 unless F1 is decided. The first release
+with the app needs a stage run of the same serving code (D74 point 6): stage S16 ran it before the
+merge (`spikes/s16-app-stage/`) with check 8 half made (the rollback to a version without the app
+was not run: the session's permission check refused the release without the app that it needed), so
+the evidence entry is incomplete and the first production release goes out on the owner's logged
+override, `app_without_stage_evidence`. Self-monitoring is proposed, not built.
 
 ## 1. What viz is, and how it is deployed
 

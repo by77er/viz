@@ -54,9 +54,12 @@ and `design/DECISIONS.md` (each decision, its alternatives and what would change
 Each component has a README with what is implemented, what is not, how it was verified
 and its known risks.
 
-The web app is at `https://viz.bitcru.sh/`: Explore, dashboards (read-only), monitors (acknowledge
-and silence), Help and Settings, signed in with an API key. Changes to it and to its design system
-merge after a design review approves them (`AGENTS.md`, "Design changes").
+The web app is at `https://viz.bitcru.sh/`: Explore, Help and Settings, signed in with an API key.
+Dashboards (read-only) and monitors (acknowledge and silence) are built and served at their addresses
+but not yet listed, until their design re-review passes (D78; `app/README.md`, "Released in this
+version"). Changes to the app and to its design system merge after a design review approves them
+(`AGENTS.md`, "Design changes"); its first release merged on the owner's decision instead, with its
+open speed rows recorded as known issues.
 
 ## Licence
 
