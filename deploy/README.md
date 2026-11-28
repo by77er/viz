@@ -1,6 +1,6 @@
 # Deploy
 
-How viz gets from a commit on `main` to `vis.bitcru.sh`, and back again. This directory holds
+How viz gets from a commit on `main` to `viz.bitcru.sh` (and `vis.bitcru.sh`, kept for data senders during a transition: "Hostnames", D75), and back again. This directory holds
 the deploy tooling, the public gateway Worker, and the record of the trial on Cloudflare. It
 changes no component: everything it needs from one is under "Needed changes".
 
@@ -13,12 +13,13 @@ changes no component: everything it needs from one is under "Needed changes".
 | `lib/formats.mjs` | Reads each Worker's format versions (written and read) from its components' `FORMATS` maps and read lists, for the manifest, the `VIZ_FORMATS` var of each version, and the rollback check (D69) |
 | `lib/floors.mjs` | Rollback floors a switch raises (`INGEST_SIGNALS`; `OAUTH_PUBLIC`): which Workers, how each is judged (schema version or a `VIZ_FLOORS` stamp), and the deploy and rollback refusals, or a forward-only mark where a rule says so (D64, D69) |
 | `lib/secrets.mjs` | Worker secrets the deploy generates (viz-control's `OAUTH_CLIENT_KEY`): put on the release's upload only where missing, value on wrangler's stdin, replaced only when asked, never on another run's upload, never on a viz-control without its rate limits (D70); rollbacks across its creation or rotation refused ("Worker secrets the deploy generates") |
+| `lib/domains.mjs` | The custom domains a release gives the gateway, checked against the account's before anything is uploaded: never detach one it holds, never take another Worker's, exactly the manifest's (D75, "Hostnames") |
 | `lib/schemas.mjs` | Reads every Durable Object class's `SchemaSpec` from the component sources (esbuild, no Worker run) for the manifest, the `VIZ_SCHEMAS` var of each version, and the rollback check |
 | `deploy.sh` | The whole deploy: WASM, `npm ci`, resources, configure, release, smoke test, automatic rollback |
-| `smoke.mjs` | `/healthz` until the release just promoted answers, then a real Remote Write and a query that must return it within 60 s |
+| `smoke.mjs` | `/healthz` until the release just promoted answers; in production the hosts (viz the issuer; vis serves a data path and 308s OAuth, D75); then a real Remote Write and a query that must return it within 60 s |
 | `bootstrap.mjs` | A tenant's first API key, through a one-time token |
 | `load.mjs` | Steady write and read load with a cutover report (used by the trial) |
-| `gateway/` | `viz-gateway`, the Worker on `vis.bitcru.sh`, and its tests |
+| `gateway/` | `viz-gateway`, the Worker on `viz.bitcru.sh` and `vis.bitcru.sh` (D75), and its tests |
 | `stage/` | The one shim a staged deployment needs (queue names, see "Needed changes" 1) |
 | `trial/` | Trial 2: `sink/index.ts`, a webhook receiver Worker for a stage, and `trial2.mjs`, which drives a stage end to end (monitors, alerting, MCP) and reports. Trial 3: `probe/index.ts`, a stand-in for the ruler's `SINK` binding |
 | `ci/matrix.mjs` | Which components CI checks in this checkout |
@@ -69,8 +70,8 @@ with `rollback_to: <sha>`, restores the release recorded for that commit instead
 ## Topology and routes
 
 ```
-                       vis.bitcru.sh (Workers custom domain; no DNS record is created by hand)
-                                   │
+        viz.bitcru.sh (canonical) + vis.bitcru.sh (alias, D75): Workers custom domains of viz-gateway;
+                                   │       no DNS record is created by hand
                               viz-gateway  ── routes by path, adds x-viz-route, nothing else
      ┌───────────────┬─────────────┼──────────────┬─────────────────┬──────────────┬──────────────────────┐
   INGEST           QUERY         CONTROL          RULER             MCP          TENANT (DO, by script_name)
@@ -104,7 +105,7 @@ with `rollback_to: <sha>`, restores the release recorded for that commit instead
 | `GET /api/v1/rules`, `GET /api/v1/alerts`, `/api/v1/monitors`, `/api/v1/monitors/*` | viz-ruler | Prometheus' rule and alert reads, and the monitors API (monitors, groups, rule files, backtest, detectors, notifier config, silences): `ruler/src/http.ts` `ROUTES`. `/api/v2/alerts` (Alertmanager ingestion) is not served |
 | `/mcp` (exactly), `/api/v1/agent`, `/api/v1/agent/*` | viz-mcp | MCP over Streamable HTTP, and the same tools as JSON. `/mcp/` and `/mcp/x` are 404 at the gateway |
 | `/.well-known/oauth-protected-resource`, `/.well-known/oauth-protected-resource/mcp` (exactly) | viz-mcp | OAuth protected resource metadata of `/mcp` (RFC 9728, D44) |
-| `/.well-known/oauth-authorization-server`, `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke` (exactly) | viz-control | The OAuth authorization server for MCP clients (D44; methods in `control/README.md`). `/oauth/register` answers 503 and is not advertised while viz-control has no `OAUTH_CLIENT_KEY`, which the deploy generates ("Worker secrets the deploy generates"), and only on a viz-control with its six Rate Limiting bindings ("Rate limits in front of OAuth"). In production `configure.mjs` sets `PUBLIC_URL` for viz-control (the issuer) and viz-mcp (the resource's origin) from `workers.json`'s `domain`, overriding a component that disagrees with a warning, so the two cannot differ; a stage keeps the component's value |
+| `/.well-known/oauth-authorization-server`, `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke` (exactly) | viz-control | The OAuth authorization server for MCP clients (D44; methods in `control/README.md`). `/oauth/register` answers 503 and is not advertised while viz-control has no `OAUTH_CLIENT_KEY`, which the deploy generates ("Worker secrets the deploy generates"), and only on a viz-control with its six Rate Limiting bindings ("Rate limits in front of OAuth"). `configure.mjs` sets `PUBLIC_URL` for viz-control (the issuer), viz-mcp (the resource's origin) and the gateway, and `APP_URL` for viz-mcp, from the deployment's one origin (production: `https://` + `workers.json` `domain`; a stage: its gateway's workers.dev URL), overriding a component that disagrees (with a warning in production), so they cannot differ. Served on viz only: on vis these paths are a 308 ("Hostnames") |
 | `GET /healthz` | the gateway | asks each backend's own `GET /healthz` through its service binding (ingest, query, control, ruler, mcp; none is public, since the gateway answers `/healthz` itself); 200 `healthy` or 503 naming the backend. The ruler's and mcp's say 503 when a binding they need is missing |
 | `POST /api/v1/bootstrap` | the gateway | exists only while the one-time secret is set ("Bootstrap") |
 | anything else | the gateway | 404, JSON listing the entry points. No web UI and no page: the UI comes later, through design review |
@@ -112,8 +113,72 @@ with `rollback_to: <sha>`, restores the release recorded for that commit instead
 The gateway is transparent: the incoming `Request` is handed to the backend as it arrived
 (method, URL with query string, headers, body stream) and the backend's `Response` comes back
 with its status, status text and every header, body streamed, plus `x-viz-route:
-ingest|query|control|ruler|mcp|health|bootstrap|gateway`. A backend that throws becomes a retryable
+ingest|query|control|ruler|mcp|health|bootstrap|gateway|redirect`. A backend that throws becomes a retryable
 502 with `Retry-After: 1`.
+
+## Hostnames (D75)
+
+`viz.bitcru.sh` is the address. `vis.bitcru.sh`, the address until D75, stays attached to
+viz-gateway for a transition that ends only on the owner's word; removing it is a change of its own.
+The gateway decides by host (`gateway/src/index.ts`, `PUBLIC_URL` and `VIZ_HOST_ALIASES` from
+`configure.mjs`):
+
+| Host | Path | Answer |
+|---|---|---|
+| `viz.bitcru.sh` | everything | as in the table above |
+| `vis.bitcru.sh` | the data paths: ingest (`/api/v1/write`, `/api/v1/push`, `/v1/metrics`, `/v1/traces`, `/v1/logs`, `/loki/api/v1/push`), every viz-query path above (Prometheus, Tempo, Loki), and `/api/v1/rules`, `/api/v1/alerts` | served exactly as on viz, **no redirect** (a Remote Write sender may not follow one on POST, and most clients drop `Authorization` when a redirect changes host), with `Deprecation: @1795824000` (RFC 9745 §2.1: 2026-11-28T00:00:00Z, when vis was deprecated) and `Link: <https://viz.bitcru.sh<path>>; rel="successor-version"` added (a backend's own `Link` is kept) |
+| `vis.bitcru.sh` | everything else: OAuth and its metadata, `/mcp`, `/api/v1/agent…`, `/api/v1/control…`, `/api/v1/monitors…`, `/api/v1/bootstrap`, `/healthz`, any other path | **308** to the same path and query on viz (method and body kept; never 301/302, which may turn POST into GET), `Cache-Control: no-store` (a rollback to a release before D75 serves vis again), `x-viz-route: redirect`, no backend asked. OAuth is never answered under vis: one issuer |
+| any other host | everything | as on viz (only the custom domains reach the production gateway; a stage is reached on workers.dev) |
+
+**What this means.** Data senders and data sources on vis keep working; API keys are not bound to a
+host. A script calling control, monitors or the agent API on vis gets a 308 and, as most clients drop
+`Authorization` across hosts, a 401 at viz: it must change its base URL. **OAuth clients connected
+through vis must reconnect at `https://viz.bitcru.sh/mcp`**: their client id still verifies at viz
+(a signed registration names no issuer; `OAUTH_CLIENT_KEY` is kept), but asking for
+`resource=https://vis.bitcru.sh/mcp` is `invalid_target`, their access tokens are `inactive`
+(`audience`) at viz's `/mcp` (401 `invalid_token`), their refresh tokens and any code approved before
+the switch are `invalid_grant`, and discovery that starts at vis ends at metadata naming viz, which
+RFC 9728 §3.3 and RFC 8414 §3.3 tell a client to reject (`control/test/moved.test.ts`,
+`gateway/test/hosts.test.ts`). D75 has the alternatives and the rest.
+
+**How the tooling holds both, and no other.** `configure.mjs` gives production's gateway one
+`routes` list, `domain` first, then each `domain_aliases` host, all `custom_domain: true`, and no
+other Worker any route; a stage none. `wrangler triggers deploy` (after each promotion) and
+`wrangler deploy` (a new or migrating Worker) send that list in one `PUT …/domains/records` with
+`override_scope: true`: the Worker's set of custom domains **becomes** the list, so a host left out
+is detached; and run without a terminal (the workflow) they also send `override_existing_origin` and
+`override_existing_dns_record`, so a listed host that is another Worker's custom domain, or has a DNS
+record already, is taken over (wrangler 4.164.0, `publishCustomDomains` in `wrangler-dist/cli.js`,
+read here). So before anything is uploaded (and in `release.mjs plan`) the account's custom domains
+are read (`GET /workers/domains`, as `resources.mjs` reads them) and `lib/domains.mjs` refuses a
+production release whose gateway config would detach a host the gateway holds now, would take a host
+another Worker holds, differs from the manifest's hosts, or has a zone route; and any route on
+another Worker or in a stage. A rollback restores versions only (`versions deploy --name`) and never
+applies triggers, so it changes no hostname. `resources.mjs destroy` is for stages only and deletes
+only the custom domains of the stage's own Workers.
+
+**Not checked by the tooling: a DNS record that already exists for `viz.bitcru.sh`.** It would be
+replaced without a question (`override_existing_dns_record`). The token is not known to read the
+zone's DNS records, so the owner checks the zone before the first deploy of this change (dashboard:
+bitcru.sh → DNS → Records, no record named `viz`).
+
+**Stages** are unaffected (workers.dev only, no custom domain); their `PUBLIC_URL` (issuer, resource)
+and `APP_URL` are their gateway's workers.dev URL (finding S13-1, `spikes/s13-upgrade-trial/`). The
+account's workers.dev subdomain is read from the API when `configure.mjs --stage` runs (as `smoke.mjs`
+reads it), or taken from `VIZ_WORKERS_SUBDOMAIN`; it is never written into the repository. With
+`--ids-optional` and neither, a placeholder stands in (such a manifest is never deployed).
+
+**After the first production deploy of D75**, `smoke.mjs` checks, retrying until the health timeout:
+`https://viz.bitcru.sh/.well-known/oauth-authorization-server` is 200 with issuer
+`https://viz.bitcru.sh`; `POST https://vis.bitcru.sh/api/v1/write` (no credential) is answered by
+ingest (`x-viz-route: ingest`, a 401), not redirected, with `Deprecation` and the successor `Link`;
+`GET https://vis.bitcru.sh/.well-known/oauth-authorization-server` is a 308 to the same path on viz.
+A failed check fails the smoke test, which rolls the release back as any failed smoke test does. The
+smoke test after a rollback skips these checks (`--no-hosts`): the release restored may predate D75.
+
+**Ending the transition** (a separate change, on the owner's word or when analytics show no traffic
+to vis for the agreed days): remove the entry from `domain_aliases` and change `lib/domains.mjs` to
+allow that one detachment; the next production deploy detaches vis.
 
 **Six connections.** Spike S1 (`spikes/s1-fanout-r2/README.md`, measured on Cloudflare,
 2026-11-18) found that the six-connection limit applies to R2 binding reads and that a callee
@@ -385,7 +450,7 @@ is set.
 
 The gateway forwards each request unchanged (`forward` passes `req`), so `CF-Connecting-IP` reaches
 viz-control, and it reads no `x-real-ip`: nothing changed there. Optional and by hand, outside the
-deploy: a WAF rate-limiting rule on `vis.bitcru.sh` for the four `/oauth/` paths, above the Worker's
+deploy: a WAF rate-limiting rule on `viz.bitcru.sh` (vis only redirects them since D75) for the four `/oauth/` paths, above the Worker's
 source limit, that leaves Cloudflare's Workers address alone (`control/README.md`).
 
 ## Class bindings across Workers (`binds_classes`)
@@ -757,7 +822,7 @@ that happens, dispatch it again.
 2. **First deploy**: run the Deploy workflow on `main` with `acknowledge_migrations` =
    `viz-publisher@v1 viz-ingest@v1 viz-control@v1 viz-query@v1 viz-ruler@v2` (see above). It
    creates `viz-lake`, `viz-config` and the four queues, deploys the seven Workers and attaches
-   `vis.bitcru.sh`. It also generates viz-control's `OAUTH_CLIENT_KEY` right after viz-control's
+   the custom domains of `workers.json` (`viz.bitcru.sh`, and `vis.bitcru.sh` while D75's transition lasts). It also generates viz-control's `OAUTH_CLIENT_KEY` right after viz-control's
    first `wrangler deploy` ("Worker secrets the deploy generates"); nothing to set by hand.
    Without `SMOKE_KEY` the smoke test checks health only.
 3. **First tenant**, from a machine with the two Cloudflare variables set and `npm ci` done
@@ -906,6 +971,57 @@ module proxy and cross-checked against GitHub's tag pages). Rust comes from the 
 ## How it was verified
 
 All measured here unless it says Cloudflare.
+
+- **D75, the address moves to viz.bitcru.sh (2026-11-28).** Nothing deployed; no Cloudflare call
+  (every command ran with the Cloudflare variables unset). New tests: `gateway/test/hosts.test.ts`
+  (103: every data path on vis served by its backend with `Deprecation: @1795824000` and the successor
+  `Link`, the request untouched; a backend's status, `Retry-After` and own `Link` kept, a throwing
+  backend's 502 with the headers; every other path on vis a 308 to viz for GET, HEAD, POST, PUT,
+  DELETE and OPTIONS with the query string kept byte for byte, no backend asked, `no-store`; a client
+  that follows it reaches the same backend with the same method, body and query; OAuth metadata and
+  registration never answered on vis; viz serves everything without the headers; other hosts served
+  as canonical; no aliases configured serves every host; unreadable aliases or a `PUBLIC_URL` that is
+  no origin give 500 on a possible alias and serve viz); `test/configure.test.mjs` (4: both custom
+  domains, viz first, on the gateway only; `PUBLIC_URL`/`VIZ_HOST_ALIASES` of the gateway and the
+  manifest's hosts; the plan's hostnames checked; a stage's `PUBLIC_URL` and `APP_URL` its gateway's
+  workers.dev URL, refused without a subdomain, a placeholder only with `--ids-optional`,
+  `VIZ_STAGE_VARS` may not set them); `test/domains.test.mjs` (4, end to end against the fake
+  account: a production release with vis attached deploys and its gateway's triggers come from a
+  config naming both; one that would detach vis, take another Worker's hostname or deploy hostnames
+  the manifest does not name is refused before any wrangler call, by `plan` too; stages and other
+  Workers hold no route); `test/smoke.test.mjs` (3: the host checks pass on D75's production and fail
+  on a redirected data path, OAuth answered on vis, a 301/302/307, a wrong issuer, missing headers;
+  retried to a deadline). Control: `control/test/moved.test.ts` (4, see control/README.md).
+
+  Mutants, on a scratch copy outside git (`…/scratchpad/domain-mutants/`), at most 2 workers:
+  **24 of 24 killed**, one only after a test was added. Gateway (killer: `gateway/test/hosts.test.ts`):
+  a data path redirected on vis (31 tests failed); OAuth and its metadata served on vis (10); the
+  redirect drops the query string (23); 302 instead of 308 (23); 301 instead of 308 (23); no
+  `Deprecation` (30); `Link` naming vis (29); `Link` replacing a backend's own (1, "Link is added to,
+  not replaced"); any non-canonical host treated as an alias (2, "a host that is neither"); unreadable
+  aliases taken as none (1, "unreadable aliases"). Configure (killer: `test/configure.test.mjs`): vis
+  detached (2, "holds both custom domains"; `domains.test.mjs` too); vis listed first (2); no aliases
+  on the production gateway (2, "the gateway decides by host"); a stage's `PUBLIC_URL` production's
+  again, in `generateWorker` (1), in `configure()` (1), or the component's kept (1), each by "S13-1".
+  Release (killer: `test/domains.test.mjs`): detaching not refused (1); taking another Worker's
+  hostname not refused (1); the account's custom domains not read (2); hostnames other than the
+  manifest's not refused (2). Smoke (killer: `test/smoke.test.mjs`): the data-path check follows
+  redirects (3); any redirect of OAuth on vis accepted (**survived at first**: the only redirect case
+  had a wrong `Location` too; killed after the 301/302/307-to-the-right-place cases were added).
+  Control (killer: `control/test/moved.test.ts`): a moved grant refreshed (1); a moved code exchanged
+  (1). The gateway's ten are in `gateway/scripts/mutants.mjs`, the deploy's twelve in
+  `scripts/mutants-release.mjs`.
+
+  Suites (`cd deploy`, `env -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_ACCOUNT_ID`): `npx tsc --noEmit`
+  clean; `npx vitest run --maxWorkers=2` **286 of 286**; `node --test --test-concurrency=2
+  'test/*.test.mjs'` **147 of 147**; `bash -n deploy.sh` clean. `control` 227 of 227, `mcp` 225 of
+  225, `ruler` `test/http.test.ts` and `test/golden.test.ts` 25 of 25; `tsc` clean in control, mcp,
+  ruler and stack. **Not run to a result here**: `stack`'s gateway end-to-end suite and `query`'s
+  `test/http.test.ts` fail before any assertion of theirs that D75 touches, at engine load
+  ("module ABI 2, binding expects 4": this machine's only engine builds next to the shared
+  `node_modules` are older than the binding, and no Rust build was allowed); `query`'s `tsc` reports
+  only its generated signal fixtures as missing. D75 changes there only a URL constant in a test and
+  the CORS origin in two configs.
 
 - **The review of D69, round 2, its findings fixed (2026-11-26)** (`design/reviews/d69-deploy-safety-r2.md`,
   approve with changes: 2 majors, 4 minors). Nothing deployed; the Cloudflare API only read (an
@@ -1737,8 +1853,8 @@ From the generated OAuth key (D53; none made here):
   across the key's creation can be done on purpose from CI.
 - **`control/README.md` "Needed changes" 9**: the deploy now generates `OAUTH_CLIENT_KEY`; that
   item's owner can mark the key part done. Its other part, `PUBLIC_URL` equal for viz-control and
-  viz-mcp, is not enforced by the deploy: both component configs say `https://vis.bitcru.sh`, which
-  is right for production and wrong for a stage (whose gateway is on workers.dev).
+  viz-mcp, is enforced by the deploy since D75: `configure.mjs` sets both (and the gateway's, and
+  viz-mcp's `APP_URL`) from the deployment's one origin, in production and in a stage.
 
 From Trial 2 and the ruler (none made here):
 
@@ -1812,8 +1928,15 @@ deployment and nothing here needs it: the gateway has no page and no static asse
 
 ## Not implemented
 
-- **A WAF rate-limiting rule** on `vis.bitcru.sh` for the `/oauth/` paths (D70 (c)): by hand, outside
-  the deploy; not made.
+- **A WAF rate-limiting rule** on `viz.bitcru.sh` for the `/oauth/` paths (D70 (c)): by hand, outside
+  the deploy; not made. (On `vis.bitcru.sh` those paths only answer a 308 since D75.)
+- **D75: a check for a DNS record that already exists at a new hostname** (`viz.bitcru.sh` before its
+  first deploy): wrangler replaces it without asking; the account's custom-domain list does not show
+  it, and the token is not known to read DNS records. The owner checks by hand ("Hostnames").
+- **D75: detaching an alias on purpose.** The tooling refuses every detachment; the change that ends
+  the transition must change `lib/domains.mjs` too.
+- **D75: per-host traffic.** Nothing here reads how much traffic vis still gets; the end of the
+  transition is to be decided from Cloudflare's analytics for the host, not modelled.
 - **A check that the account's rate-limit ids stay clear between deploys**: the scan runs at each
   `resources.mjs ensure`, not continuously; an unrelated script that starts binding viz's id is seen
   only at the next deploy.

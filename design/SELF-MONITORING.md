@@ -129,7 +129,7 @@ The spikes measured one thing at a time for a few minutes. With this running con
 3. The **freshness prober**.
 4. **Dashboards**: ingest (exists), query, cost.
 
-All four need viz deployed under `vis.bitcru.sh` first; none needs anything else.
+All four need viz deployed under `viz.bitcru.sh` first; none needs anything else.
 
 ## 7. Measure before relying on it
 

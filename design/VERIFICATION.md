@@ -106,7 +106,8 @@ Spikes run since under numbers this table does not use, each with its README:
   **Measured 2026-11-28** (on Cloudflare, a `viz-s13-*` stage, destroyed afterwards): Cloudflare
   accepted viz-control's six Rate Limiting bindings at upload, and its version API lists them as
   `type: ratelimit` with `namespace_id` (review of D69, round 2, M2-2, settled). #9's release was
-  deployed to production the same day.
+  deployed to production the same day. Finding S13-1 (a stage advertised production's issuer) is
+  fixed by D75: a stage's `PUBLIC_URL` is its gateway's workers.dev URL.
 
 ## 5. Evidence required per milestone
 

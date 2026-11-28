@@ -131,8 +131,8 @@ also holds unrelated Workers, buckets and KV namespaces.
 - **Only create, change or delete resources whose names start with `viz-`.** Never touch
   anything else in the account, including resources that happen to share a binding name
   (there is an unrelated KV namespace called `CONFIG`).
-- The product is served under **`vis.bitcru.sh`**. Do not change DNS or routes for any other
-  hostname in that zone.
+- The product is served under **`viz.bitcru.sh`** (`vis.bitcru.sh` is kept as an alias during the
+  transition, D75). Do not change DNS or routes for any other hostname in that zone.
 - Never print, log or commit the token, an API key, or a Worker secret. Generate secrets at
   deploy time and set them with `wrangler secret put`.
 - Experiments live under `spikes/<name>/`, each with a README that says what is deployed,

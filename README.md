@@ -46,7 +46,7 @@ and `design/DECISIONS.md` (each decision, its alternatives and what would change
 | `spec/` | Protocol models of the write and read path, checked against the invariants |
 | `bench/` | Rust/WASM versus JavaScript engine benchmark, with results |
 | `spikes/` | Experiments deployed to Cloudflare, each with its result and cleanup state |
-| `deploy/` | How a push to `main` becomes a deployment at `vis.bitcru.sh`, and how to roll back |
+| `deploy/` | How a push to `main` becomes a deployment at `viz.bitcru.sh` (`vis.bitcru.sh` kept for data senders during a transition, D75), and how to roll back |
 
 Each component has a README with what is implemented, what is not, how it was verified
 and its known risks.
