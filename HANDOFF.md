@@ -1,4 +1,4 @@
-# Paused 2026-11-27: where everything stands
+# Paused 2026-11-27, resumed 2026-11-28: where everything stands
 
 Written for whoever resumes this work (the owner said about a week). It lives on the development
 branch only and is deleted when the work it lists is done; it is not for `main`. The session's
@@ -58,6 +58,15 @@ No stage exists. Nothing runs on a timer.
 | design text | `7a4cdfe`, then `384e513`, `3134cbc` | `design/artifact/viz-design.html` is edited but the published page was not republished (do it after the merge) |
 
 Commits titled "Work in progress" are snapshots and are not green.
+
+## Resumed 2026-11-28
+
+Three builders run under a shared lock for heavy jobs (`flock` on the scratch directory's
+`machine.lock`), so browser timings do not overlap: the app's review fixes are being verified (mutants,
+suites, images, response.md); B1 is being re-measured with a harness that no longer counts DevTools'
+own copy of the body, and fixed with identical rendering (or a waiver request written); the monitors
+view (list, one monitor, acknowledge, silence with undo) is built in a separate worktree and merged
+afterwards as a patch. The owner's decisions above are still open.
 
 ## In progress when paused
 
