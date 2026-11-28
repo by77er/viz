@@ -1,0 +1,37 @@
+
+
+load average 5.25 7.07 7.84 on 4 cores
+
+| Mutant | What was broken | Run | Expected | Result | First line the check printed |
+|---|---|---|---|---|---|
+| Z6 | the legend's action row without its touch padding: wrapped buttons' hit areas reach the row above | audit | caught | **SURVIVED** |  |
+| U7 | the navigation's focus ring outside its links again: cut by the strip with a coarse pointer | audit | caught | caught | focus         400 coarse      light: <a> "Explore" focused: its ring is cut by <nav.vz-nav> "Sections" (overflow auto auto) |
+| U11 | "Other" in the legend allowed to shrink: cut beside a wide range at 320 px | audit | caught | caught | cut           320 coarse      "Other" in <span.vz-series-name> "Other" is cut (60 to 95, visible 60 to 93)  (and at 320 coarse, 320 coarse, 320 coarse |
+| U12 | charts restyled off screen again: content-visibility removed from .vz-chart (the theme change restyles every chart) | check | caught | caught | FAIL  .vz-chart is not content-visibility: auto with an overflow-clip-margin: a change of theme restyles every chart on the page, on screen or not (th |
+| U13 | a chart's clip margin removed: rings and small controls' hit areas at its edges cut by its paint containment | audit | caught | caught | focus         400 coarse      light: <svg> "Latency by route, p99, ms, 09:16" focused: its ring is cut by <div.vz-chart> "02505007501,000ms09:1615:161 |
+| U15 | a hover that eases a colour again (a change of theme would then start a transition on every control) | check | caught | caught | FAIL  .vz-segmentedbutton:hover transitions background-color var(--duration-fast) var(--ease) (line 670): no colour is eased; a hover, like a press an |
+| Q2b | a colour eased through a custom property in transition-property (the v8 review's V2b): check.mjs | check | caught | caught | FAIL  .vz-button transitions var(--vz-p) (line 670): no colour is eased; a hover, like a press and a change of theme, is drawn in the next frame (a pr |
+| Q2b.audit | the same, as rendered: the audit reads what each control eases, computed, and counts the transitions a change of theme starts | audit | caught | caught | motion        320 coarse      a change of theme to dark leaves 30 transition(s) running in the frame it is drawn (the first: <button.vz-button> backgr |
+| Q3 | logical border colours eased on an input (the v8 review's V3): check.mjs | check | caught | caught | FAIL  .vz-input transitions border-block-end-color var(--duration-slow) var(--ease),border-inline-start-color var(--duration-slow) var(--ease) (line 6 |
+| Q3.audit | the same, as rendered on the Field preview (the fixture has no input) | audit | caught | caught | motion        320 coarse      a change of theme to dark leaves 12 transition(s) running in the frame it is drawn (the first: <input.vz-input> border-b |
+| Q4 | the skipping of charts off screen undone by a later rule (the v8 review's V4): check.mjs, as written | check | caught | caught | FAIL  .vz-panel.vz-chart sets content-visibility: visible (line 670): a chart is skipped off screen (auto), or a change of theme restyles it there |
+| Q4.render | the same, as computed by check.mjs's rendered pass | check | caught | caught | FAIL  .vz-panel.vz-chart sets content-visibility: visible (line 670): a chart is skipped off screen (auto), or a change of theme restyles it there |
+| Q4.audit | the same, as computed on the Chart preview by the audit | audit | caught | caught | skip          320 coarse      the chart "Latency by route, p99" computes content-visibility: visible: off screen it is restyled on every change of the |
+| Q10 | the navigation's side padding removed: its ring, drawn inside, over the first pixels of "Explore" (the v8 review's V10) | audit | caught | caught | focus         400 coarse      light: <a> "Explore" focused: its ring is drawn inside it and lies 1.8 px over its letters (a ring drawn inside keeps a  |
+| T1 | the chart script no longer keeps its reservation: a legend that grows after load ("Show 20 more of Other") reserves its first height | check | caught | caught | FAIL  rendered fine pointer, 1200 px: Chart "CPU by pod" chart, after "Show 20 more of Other", reserves 558.5 px and draws 1058.5 px: skipped off scre |
+| T2 | the legend's two actions back in one row: at 320 px they wrap, 44 px past what the rows reserve | check | caught | caught | FAIL  rendered fine pointer, 1200 px: Chart "CPU by pod, against the limit" chart reserves 583.5 px in its markup and draws 558.5 px: the first frame  |
+| T3 | a chart of the Chart preview with no reservation in its markup (as v8's were): check.mjs | check | caught | caught | FAIL  rendered fine pointer, 1200 px: Chart "CPU by pod" chart draws 10 legend row(s) and its markup sets no --legend-rows: it has no reservation befo |
+| T3.audit | four charts of the Chart preview with no reservation in their markup: reloaded while scrolled to the middle chart, the page moves | audit | caught | caught | reload-shift  400 coarse      reloaded while scrolled to chart 10 of 10 ("Request rate by service"): layout shift 0.0000, and the chart lands 1178 px  |
+| T4 | the legend heads' sort buttons without their room: a ring drawn inside on the descenders again | audit | caught | caught | focus         1500            light: <button.vz-sort> "Last, ms" focused: its ring is drawn inside it and comes within 0 px of its letters (a ring dra |
+| T5 | the navigation links without their room above and below: a ring drawn inside on the descender of "Explore" | audit | caught | caught | focus         1500            light: <a> "Explore" focused: its ring is drawn inside it and comes within 0 px of its letters (a ring drawn inside keep |
+| T6 | the font no longer preloaded by the pages tools/reference.mjs builds | audit | caught | caught | font          1500            the page does not preload the sans face (link rel="preload" as="font" in its head): its text rewraps when the face arriv |
+| T7 | a colour eased by a duration alone, whose property list is the initial all | check | caught | caught | FAIL  .vz-menu sets transition-duration: var(--duration-slow) (line 670) with no transition-property in its rule: it eases every property (the initial |
+| C15 | harmless under v9: v7's offer, only when a member of Other is larger than a coloured series (equivalent to v9's rule but for ties) | chart | passes | passes |  |
+| C16 | "Colour the eight largest" offered whenever Other has members, also when pressing it would change nothing (v8; the v8 review's m3) | chart | caught | caught | not ok 2 - B2, sequence D as the reviewer ran it (36 pods): hiding the newcomer gives its slot to the largest grey pod at once; the returning pod find |
+
+Z: 0 of 1 as expected; U: 5 of 5 as expected; Q: 8 of 8 as expected; T: 8 of 8 as expected; C: 2 of 2 as expected
+1 mutant(s) not as expected: Z6
+
+real	7m53.258s
+user	0m39.412s
+sys	0m9.529s

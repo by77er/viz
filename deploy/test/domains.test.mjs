@@ -1,7 +1,10 @@
 // node --test deploy/test/: D75's custom domains through the real configure.mjs and release.mjs, against
 // the fake account (test/fake-account.mjs). viz-gateway holds viz.bitcru.sh and vis.bitcru.sh; a release
 // that would detach vis, take over another Worker's hostname, or deploy hostnames other than the plan's is
-// refused before anything is uploaded. Nothing reaches Cloudflare.
+// refused before anything is uploaded. Nothing reaches Cloudflare. Production serves the web app (D74):
+// each release here is configured with the fixture build staged as deploy/app.mjs stages it, and is the
+// first with the app over fb77292, so it carries a stage-evidence entry for this checkout's serving code
+// (D74 point 6); the last test holds the two gates apart (D75 with D74).
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -13,10 +16,11 @@ process.env.VIZ_GENERATED_DIR = join(tmp, 'generated')
 process.env.VIZ_RESOURCES_FILE = join(tmp, 'resources.json')
 mkdirSync(process.env.VIZ_GENERATED_DIR, { recursive: true })
 const { DEPLOY_DIR, REPO_ROOT, readJsonc } = await import('../lib/common.mjs')
-const { callsLike, captured, installFakeAccount, serving } = await import('./fake-account.mjs')
-const { configure } = await import('../configure.mjs')
-const { deploy, planOnly } = await import('../release.mjs')
+const { appBuilt, callsLike, captured, installFakeAccount, serving } = await import('./fake-account.mjs')
+const { configure: configureOnly } = await import('../configure.mjs')
+const { APP_STAGE_BY_HAND, deploy: deployOnly, planOnly: planOnlyOnly } = await import('../release.mjs')
 const { customDomainProblems, customDomainsOf, domainsNow } = await import('../lib/domains.mjs')
+const A = await import('../lib/app.mjs')
 
 const FB = JSON.parse(readFileSync(join(DEPLOY_DIR, 'test', 'fixtures', 'production-fb77292.json'), 'utf8'))
 const account = installFakeAccount(tmp)
@@ -41,6 +45,19 @@ function production(domains) {
   }
   return { calls: [], counter: 1000, workers, domains }
 }
+
+// The web app (D74): every production release here is configured with the fixture build staged for it,
+// and is judged against a stage-evidence file of this test's own (complete for this checkout's serving
+// code unless a test says otherwise).
+const PLAN = JSON.parse(readFileSync(join(DEPLOY_DIR, 'workers.json'), 'utf8'))
+const fingerprint = () => A.servingFingerprint({ repoRoot: REPO_ROOT, serve: A.readServe(join(REPO_ROOT, A.appWorker(PLAN).app.serve)), worker: A.appWorker(PLAN).worker }).fingerprint
+const entry = () => ({ serving: fingerprint(), stage: 'pretrial', release: 'a'.repeat(40), deployedAt: '2026-11-28T10:00:00.000Z', smoke: { passed: true, app: true, requests: 30 }, byHand: Object.fromEntries(APP_STAGE_BY_HAND.map((n) => [n, { result: 'pass', note: `seen ${n}` }])), by: 'a test' })
+const EVIDENCE = join(tmp, 'app-stage-evidence.json')
+writeFileSync(EVIDENCE, JSON.stringify({ v: 1, evidence: [entry()] }))
+const NO_EVIDENCE = join(tmp, 'no-app-stage-evidence.json')
+const configure = (opts) => (appBuilt({ stage: opts.stage ?? null, release: opts.release }), configureOnly(opts))
+const deploy = (opts) => deployOnly({ appStageEvidence: EVIDENCE, ...opts })
+const planOnly = (opts) => planOnlyOnly({ appStageEvidence: EVIDENCE, ...opts })
 
 const VIS = { hostname: 'vis.bitcru.sh', service: 'viz-gateway', zone_name: 'bitcru.sh' }
 const OTHER = { hostname: 'blog.bitcru.sh', service: 'unrelated-app', zone_name: 'bitcru.sh' }
@@ -127,4 +144,68 @@ test('customDomainProblems: stages hold none, only the public Worker holds any, 
   assert.equal(await domainsNow(stage, list), null)
   assert.deepEqual(await domainsNow(manifest, list), [])
   assert.equal(asked, 1)
+})
+
+test('D75 with D74: the hostnames and the first-release stage evidence are two gates; neither excuses the other, and a stage\'s evidence (no custom domain) is evidence for production (two)', async () => {
+  // The serving fingerprint is the same for a stage configured without any custom domain and for
+  // production with both: the hosts are configuration, not serving code, so a stage can vouch for it.
+  writeState(production([VIS]))
+  const prod = configure({ release: 'rel-fp', quiet: true })
+  const gwProd = prod.workers.find((w) => w.canonical === 'viz-gateway')
+  const stage = configure({ stage: 'fptest', release: 'rel-fp', quiet: true, idsOptional: true, workersSubdomain: 'example' })
+  const gwStage = stage.workers.find((w) => w.canonical === 'viz-gateway')
+  assert.deepEqual([prod.domain, prod.domainAliases, stage.domain, stage.domainAliases], ['viz.bitcru.sh', ['vis.bitcru.sh'], null, []])
+  assert.equal(gwProd.app.serving.fingerprint, fingerprint())
+  assert.equal(gwStage.app.serving.fingerprint, gwProd.app.serving.fingerprint)
+  const detach = () => {
+    const cfg = readJsonc(gatewayConfigFile())
+    cfg.routes = [{ pattern: 'viz.bitcru.sh', custom_domain: true }]
+    writeFileSync(gatewayConfigFile(), JSON.stringify(cfg))
+  }
+  const DOMAIN = /viz-gateway holds vis\.bitcru\.sh now, and this release does not list it/
+  const STAGE = /this is the first production release that carries the web app .* and no stage is recorded to have gone before it/
+  // Complete evidence, a config that would detach vis: refused for the hostname alone.
+  writeState(production([VIS]))
+  configure({ release: 'rel-gates-1', quiet: true })
+  detach()
+  for (const run of [() => planOnly({ stage: undefined }), () => deploy({ stage: undefined })]) {
+    const r = await captured(run)
+    assert.equal(r.result?.exit, 3, r.log)
+    assert.match(r.log, DOMAIN)
+    assert.doesNotMatch(r.log, STAGE)
+    assert.match(r.log, /stage "pretrial" went before it/)
+  }
+  assert.equal(readState().calls.length, 0, 'nothing uploaded or promoted')
+  // The hostnames right, no evidence: refused for the stage alone.
+  writeState(production([VIS]))
+  configure({ release: 'rel-gates-2', quiet: true })
+  for (const run of [() => planOnly({ stage: undefined, appStageEvidence: NO_EVIDENCE }), () => deploy({ stage: undefined, appStageEvidence: NO_EVIDENCE })]) {
+    const r = await captured(run)
+    assert.equal(r.result?.exit, 3, r.log)
+    assert.match(r.log, STAGE)
+    assert.doesNotMatch(r.log, DOMAIN)
+  }
+  assert.equal(readState().calls.length, 0)
+  // Both wrong: both reasons, in one refusal.
+  configure({ release: 'rel-gates-3', quiet: true })
+  detach()
+  const both = await captured(() => deploy({ stage: undefined, appStageEvidence: NO_EVIDENCE }))
+  assert.equal(both.result?.exit, 3, both.log)
+  assert.match(both.log, DOMAIN)
+  assert.match(both.log, STAGE)
+  assert.equal(readState().calls.length, 0)
+  // Evidence for other serving code (the gateway's host rules changed since the stage, say) is no evidence.
+  writeFileSync(join(tmp, 'other-evidence.json'), JSON.stringify({ v: 1, evidence: [{ ...entry(), serving: 'f'.repeat(64) }] }))
+  configure({ release: 'rel-gates-4', quiet: true })
+  const other = await captured(() => deploy({ stage: undefined, appStageEvidence: join(tmp, 'other-evidence.json') }))
+  assert.equal(other.result?.exit, 3, other.log)
+  assert.match(other.log, /none for this release's serving code/)
+  // Both right: released, holding both hostnames, with the evidence in its record.
+  writeState(production([VIS]))
+  configure({ release: 'rel-gates-5', quiet: true })
+  const ok = await captured(() => deploy({ stage: undefined }))
+  assert.equal(ok.result?.exit, 0, ok.log)
+  assert.deepEqual(customDomainsOf(readJsonc(gatewayConfigFile())), ['viz.bitcru.sh', 'vis.bitcru.sh'])
+  assert.equal(ok.result.record.appStage.evidence.stage, 'pretrial')
+  assert.equal(JSON.parse(serving(readState(), 'viz-gateway').vars.VIZ_APP).build, gwProd.app.build)
 })

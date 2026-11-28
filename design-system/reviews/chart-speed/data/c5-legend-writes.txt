@@ -1,0 +1,17 @@
+legend-writes.test.cjs and its mutants (tools/legend-mutants.sh), measured here. Earlier runs, 13:44 to 13:57 UTC:
+- 13:44, the first version of the change: FAILED (width 900, seed 1, step 23, a sort: the head's words differ; the sort's handler does not call legendState()).
+- 13:54, the change as fixed (sort and Show more write afresh), the test without the width step: pass, 2,480 steps; mutants 1 to 4, 6, 7 caught; mutant 5 (the head not written again) SURVIVED.
+The run below: the test with the step 'the other width' added.
+
+[lw] the change: 14:03:43
+# \# 2480 steps compared
+# pass 1
+# fail 0
+[lw] mutant 1 (a changed figure is not written): # fail 1 width 900, seed 1, step 4 (the same result): markup differs
+[lw] mutant 2 (focus in the legend is not looked at): # fail 1 width 900, seed 1, step 11 (focus on a row, then new figures): markup differs
+[lw] mutant 3 (the note is not written again): # fail 1 width 900, seed 1, step 8 (other series): markup differs
+[lw] mutant 4 (a row whose first cell changed is not written): # fail 1 
+[lw] mutant 5 (the head is not written again): # fail 1 width 900, seed 1, step 9 (the other width): markup differs
+[lw] mutant 6 (the column widths are not written again): # fail 1 width 900, seed 1, step 4 (the same result): markup differs
+[lw] mutant 7 (a sort or Show more keeps what is written): # fail 1 
+[lw] done 14:06:12

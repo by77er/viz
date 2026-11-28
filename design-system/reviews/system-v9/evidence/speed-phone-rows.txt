@@ -1,0 +1,28 @@
+
+
+BEFORE: http://127.0.0.1:8901/fixture/index.html
+20 runs, CPU 4x, Fast 4G, 400x800, coarse pointer and touch (presses and taps by CDP touch events). p75 is the budgeted figure.
+Load: 1-minute load average at the start of each run 0.3 to 2.2 (median 1.0) on 4 cores; at the end 2.5 1.9 4.0. Calibration task 281 ms (about 100 ms on an idle core). A timing row is judged only when most of its samples were taken at a load of 4 or less.
+
+| What | Budget | p75 | Median | Worst | Samples | Load when taken (median, range) | |
+|---|---|---|---|---|---|---|---|
+| Crosshair by touch drag, 36 series | 50 ms | 51 ms | 45 ms | 68 ms | 20 | 1.0 (0.3 to 2.4) | **OVER** |
+| Change theme (to dark) | 100 ms | 68 ms | 59 ms | 116 ms | 20 | 1.0 (0.3 to 2.4) | within |
+| Change theme: transitions still running when it is drawn | 0 | 0 | 0 | 0 | 20 | 1.0 (0.3 to 2.4) | within |
+
+
+AFTER: http://127.0.0.1:8900/fixture/index.html
+20 runs, CPU 4x, Fast 4G, 400x800, coarse pointer and touch (presses and taps by CDP touch events). p75 is the budgeted figure.
+Load: 1-minute load average at the start of each run 0.3 to 2.4 (median 1.1) on 4 cores; at the end 2.5 1.9 4.0. Calibration task 281 ms (about 100 ms on an idle core). A timing row is judged only when most of its samples were taken at a load of 4 or less.
+
+| What | Budget | p75 | Median | Worst | Samples | Load when taken (median, range) | |
+|---|---|---|---|---|---|---|---|
+| Crosshair by touch drag, 36 series | 50 ms | 44 ms | 40 ms | 57 ms | 20 | 1.1 (0.3 to 2.4) | within |
+| Change theme (to dark) | 100 ms | 69 ms | 60 ms | 109 ms | 20 | 1.1 (0.3 to 2.4) | within |
+| Change theme: transitions still running when it is drawn | 0 | 0 | 0 | 0 | 20 | 1.1 (0.3 to 2.5) | within |
+
+Every judged 75th percentile is within its budget (rows not judged are neither passed nor failed).
+
+real	2m36.228s
+user	0m11.910s
+sys	0m4.088s

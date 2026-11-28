@@ -1,0 +1,296 @@
+{
+ "name": "v6",
+ "themes": [
+  "light",
+  "dark"
+ ],
+ "states": [
+  {
+   "name": "dashboard-1440",
+   "url": "reviews/system-v6/compositions/dashboard.html",
+   "scale": 1
+  },
+  {
+   "name": "dashboard-400",
+   "url": "reviews/system-v6/compositions/dashboard.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1
+  },
+  {
+   "name": "dialog-1440",
+   "url": "reviews/system-v6/compositions/dialog.html",
+   "scale": 1
+  },
+  {
+   "name": "dialog-400",
+   "url": "reviews/system-v6/compositions/dialog.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1
+  },
+  {
+   "name": "monitor-1440",
+   "url": "reviews/system-v6/compositions/monitor.html",
+   "scale": 1
+  },
+  {
+   "name": "monitor-400",
+   "url": "reviews/system-v6/compositions/monitor.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1
+  },
+  {
+   "name": "states-1440",
+   "url": "reviews/system-v6/compositions/states.html",
+   "scale": 1
+  },
+  {
+   "name": "states-400",
+   "url": "reviews/system-v6/compositions/states.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1
+  },
+  {
+   "name": "long-table-1440",
+   "url": "reviews/system-v6/compositions/long-table.html",
+   "scale": 1
+  },
+  {
+   "name": "long-table-400",
+   "url": "reviews/system-v6/compositions/long-table.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1
+  },
+  {
+   "name": "logs-1440",
+   "url": "reviews/system-v6/compositions/logs.html",
+   "scale": 1
+  },
+  {
+   "name": "logs-400",
+   "url": "reviews/system-v6/compositions/logs.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1
+  },
+  {
+   "name": "traces-1440",
+   "url": "reviews/system-v6/compositions/traces.html",
+   "scale": 1
+  },
+  {
+   "name": "traces-400",
+   "url": "reviews/system-v6/compositions/traces.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1
+  },
+  {
+   "name": "secret-1440",
+   "url": "reviews/system-v6/compositions/secret.html",
+   "scale": 1
+  },
+  {
+   "name": "secret-400",
+   "url": "reviews/system-v6/compositions/secret.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1
+  },
+  {
+   "name": "charts-1440",
+   "url": "reviews/system-v6/compositions/charts.html",
+   "scale": 1
+  },
+  {
+   "name": "charts-400",
+   "url": "reviews/system-v6/compositions/charts.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1
+  },
+  {
+   "name": "table-preview-1440",
+   "url": "dist/preview/Table.html",
+   "scale": 1
+  },
+  {
+   "name": "table-preview-400",
+   "url": "dist/preview/Table.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1
+  },
+  {
+   "name": "field-preview-1440",
+   "url": "dist/preview/Field.html",
+   "scale": 1
+  },
+  {
+   "name": "field-preview-400",
+   "url": "dist/preview/Field.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1
+  },
+  {
+   "name": "chart-preview-1440",
+   "url": "dist/preview/Chart.html",
+   "scale": 1
+  },
+  {
+   "name": "chart-preview-400",
+   "url": "dist/preview/Chart.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1
+  },
+  {
+   "name": "b1-filter-new-pod-clear-1440",
+   "url": "dist/preview/Chart.html",
+   "scale": 1,
+   "steps": [
+    {
+     "eval": "document.querySelector('[data-filter-for=\"demo-pods\"] [data-filter=\"top3\"]').click(); document.querySelector('[data-add-pod=\"demo-pods\"]').click(); document.querySelector('[data-filter-for=\"demo-pods\"] [data-filter=\"\"]').click()"
+    },
+    {
+     "wait": 300
+    }
+   ],
+   "clip": "section:has([data-view=\"demo-pods\"])",
+   "pad": 8
+  },
+  {
+   "name": "b1-filter-new-pod-clear-400",
+   "url": "dist/preview/Chart.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "steps": [
+    {
+     "eval": "document.querySelector('[data-filter-for=\"demo-pods\"] [data-filter=\"top3\"]').click(); document.querySelector('[data-add-pod=\"demo-pods\"]').click(); document.querySelector('[data-filter-for=\"demo-pods\"] [data-filter=\"\"]').click()"
+    },
+    {
+     "wait": 300
+    }
+   ],
+   "clip": "section:has([data-view=\"demo-pods\"])",
+   "pad": 8
+  },
+  {
+   "name": "b1-query-edit-and-back-1440",
+   "url": "dist/preview/Chart.html",
+   "scale": 1,
+   "steps": [
+    {
+     "eval": "const el = document.querySelector('[data-view=\"demo-pods\"]'); const s = vzChartDemos.many(36, 37); s.series.forEach((x) => { x.labels.service = 'search'; x.labels.pod = x.labels.pod.replace(/^[a-z-]+?-7d9f8c6b5/, 'search-7d9f8c6b5') }); el.vz.setData(s); el.vz.setData(vzChartDemos.s36())"
+    },
+    {
+     "wait": 300
+    }
+   ],
+   "clip": "section:has([data-view=\"demo-pods\"])",
+   "pad": 8
+  },
+  {
+   "name": "b1-query-edit-and-back-400",
+   "url": "dist/preview/Chart.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "steps": [
+    {
+     "eval": "const el = document.querySelector('[data-view=\"demo-pods\"]'); const s = vzChartDemos.many(36, 37); s.series.forEach((x) => { x.labels.service = 'search'; x.labels.pod = x.labels.pod.replace(/^[a-z-]+?-7d9f8c6b5/, 'search-7d9f8c6b5') }); el.vz.setData(s); el.vz.setData(vzChartDemos.s36())"
+    },
+    {
+     "wait": 300
+    }
+   ],
+   "clip": "section:has([data-view=\"demo-pods\"])",
+   "pad": 8
+  },
+  {
+   "name": "m2-values-below-zero-1440",
+   "url": "dist/preview/Chart.html",
+   "scale": 1,
+   "steps": [
+    {
+     "eval": "const el = document.querySelector('[data-view=\"demo-bytes\"]'); const n = 61, t0 = Date.UTC(2026, 10, 18, 9, 16), w = (i) => 2 * Math.PI * i / 36; el.vz.setData({ unit: 'req/s', agg: 'mean', t0, step: 360000, series: [{ labels: { service: 'checkout-api' }, values: Array.from({ length: n }, (_, i) => +(120 * Math.sin(w(i))).toFixed(2)) }, { labels: { service: 'cart' }, values: Array.from({ length: n }, (_, i) => +(60 * Math.cos(w(i))).toFixed(2)) }] })"
+    },
+    {
+     "wait": 300
+    }
+   ],
+   "clip": "section:has([data-view=\"demo-bytes\"])",
+   "pad": 8
+  },
+  {
+   "name": "m2-values-below-zero-400",
+   "url": "dist/preview/Chart.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "steps": [
+    {
+     "eval": "const el = document.querySelector('[data-view=\"demo-bytes\"]'); const n = 61, t0 = Date.UTC(2026, 10, 18, 9, 16), w = (i) => 2 * Math.PI * i / 36; el.vz.setData({ unit: 'req/s', agg: 'mean', t0, step: 360000, series: [{ labels: { service: 'checkout-api' }, values: Array.from({ length: n }, (_, i) => +(120 * Math.sin(w(i))).toFixed(2)) }, { labels: { service: 'cart' }, values: Array.from({ length: n }, (_, i) => +(60 * Math.cos(w(i))).toFixed(2)) }] })"
+    },
+    {
+     "wait": 300
+    }
+   ],
+   "clip": "section:has([data-view=\"demo-bytes\"])",
+   "pad": 8
+  },
+  {
+   "name": "dialog-720-zoom-200",
+   "url": "reviews/system-v6/compositions/dialog.html",
+   "width": 1440,
+   "zoom": 2,
+   "scale": 1,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "dialog-list-closed-1440",
+   "url": "reviews/system-v6/compositions/dialog.html",
+   "scale": 1,
+   "steps": [
+    {
+     "eval": "document.getElementById('dlg').close()"
+    }
+   ]
+  },
+  {
+   "name": "dialog-list-closed-400",
+   "url": "reviews/system-v6/compositions/dialog.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "steps": [
+    {
+     "eval": "document.getElementById('dlg').close()"
+    }
+   ]
+  },
+  {
+   "name": "dialog-list-closed-zoom-200",
+   "url": "reviews/system-v6/compositions/dialog.html",
+   "width": 1440,
+   "zoom": 2,
+   "scale": 1,
+   "steps": [
+    {
+     "eval": "document.getElementById('dlg').close()"
+    }
+   ],
+   "themes": [
+    "light"
+   ]
+  }
+ ]
+}

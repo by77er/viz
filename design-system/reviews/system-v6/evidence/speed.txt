@@ -1,0 +1,151 @@
+ 03:57:51 up  3:16,  0 user,  load average: 10.12, 9.59, 9.79
+Call log:
+[2m  - waiting for locator('#share').first()[22m
+
+Call log:
+[2m  - waiting for locator('#theme [data-theme-choice="dark"]').first()[22m
+
+Call log:
+[2m  - waiting for locator('#nav-pods').first()[22m
+
+
+Call log:
+[2m  - waiting for locator('#share').first()[22m
+
+Call log:
+[2m  - waiting for locator('#theme [data-theme-choice="dark"]').first()[22m
+
+Call log:
+[2m  - waiting for locator('#nav-pods').first()[22m
+
+
+Call log:
+[2m  - waiting for locator('#share').first()[22m
+
+Call log:
+[2m  - waiting for locator('#theme [data-theme-choice="dark"]').first()[22m
+
+Call log:
+[2m  - waiting for locator('#nav-pods').first()[22m
+
+
+
+BEFORE: http://127.0.0.1:8901/fixture/index.html
+3 runs, CPU 4x, Fast 4G, 400x800, coarse pointer and touch (presses and taps by CDP touch events). p75 is the budgeted figure.
+Load: 1-minute load average at the start of each run 6.5 to 10.1 (median 9.3) on 4 cores; at the end 6.1 7.4 8.8. Calibration task 411 ms (about 100 ms on an idle core). A timing row is judged only when most of its samples were taken at a load of 4 or less.
+
+| What | Budget | p75 | Median | Worst | Samples | Load when taken (median, range) | |
+|---|---|---|---|---|---|---|---|
+| Press: Run query | 50 ms | 1000 ms | 1000 ms | 1000 ms | 3 | 9.6 (5.6 to 10.0) | over, not judged (load above 4) |
+| Typing in the query editor | 50 ms | 27 ms | 16 ms | 27 ms | 3 | 9.6 (5.6 to 9.7) | within, not judged (load above 4) |
+| Crosshair by touch drag, 36 series | 50 ms | 58 ms | 53 ms | 58 ms | 3 | 9.6 (5.6 to 9.7) | over, not judged (load above 4) |
+| Legend row toggle, 36 series | 100 ms | 244 ms | 77 ms | 244 ms | 3 | 9.6 (5.6 to 9.7) | over, not judged (load above 4) |
+| Legend row toggle, 200 series | 100 ms | 54 ms | 47 ms | 54 ms | 3 | 9.4 (5.6 to 9.7) | within, not judged (load above 4) |
+| One panel to table, 36 series | 100 ms | 62 ms | 62 ms | 62 ms | 3 | 9.4 (5.6 to 9.7) | within, not judged (load above 4) |
+| One panel to chart, 36 series | 100 ms | 55 ms | 51 ms | 55 ms | 3 | 9.4 (5.4 to 9.7) | within, not judged (load above 4) |
+| One panel to table, 200 series | 100 ms | 111 ms | 76 ms | 111 ms | 3 | 9.4 (5.4 to 9.7) | over, not judged (load above 4) |
+| Open a menu (Share…) | 100 ms | no data | no data | no data | 0 | - | no data |
+| Change theme (to dark) | 100 ms | no data | no data | no data | 0 | - | no data |
+| Run a query: request sent and waiting state shown | 100 ms | 53 ms | 40 ms | 53 ms | 3 | 6.8 (5.0 to 11.5) | within, not judged (load above 4) |
+| Move to a view whose data is not loaded: its shell and waiting state | 100 ms | no data | no data | no data | 0 | - | no data |
+| Response to paint, 36 series | 100 ms | 20 ms | 19 ms | 20 ms | 3 | 7.2 (5.5 to 10.8) | within, not judged (load above 4) |
+| Response to paint, 200 series | 100 ms | 34 ms | 24 ms | 34 ms | 3 | 7.2 (5.5 to 10.7) | within, not judged (load above 4) |
+| Layout shift, load and run | 0.05 | 0.0000 | 0.0000 | 0.0000 | 3 | 7.2 (5.5 to 10.7) | within |
+| Layout shift, loaded scrolled to CPU by pod | 0.05 | 0.0000 | 0.0000 | 0.0000 | 3 | 9.3 (6.5 to 10.1) | within |
+| Layout shift, loaded scrolled to Latency by route | 0.05 | 0.0000 | 0.0000 | 0.0000 | 3 | 9.3 (6.5 to 10.1) | within |
+| Layout shift, loaded scrolled to Request rate | 0.05 | 0.0000 | 0.0000 | 0.0000 | 3 | 9.3 (6.5 to 10.1) | within |
+| Layout shift, loaded scrolled to CPU by pod, every namespace | 0.05 | 0.0000 | 0.0000 | 0.0000 | 3 | 9.3 (6.5 to 10.1) | within |
+| Layout shift, loaded scrolled to the backtest | 0.05 | 0.0000 | 0.0000 | 0.0000 | 3 | 9.3 (6.5 to 10.1) | within |
+| Worst interaction (Event Timing) | 200 ms | 240 ms | 80 ms | 240 ms | 3 | 7.2 (5.5 to 10.7) | over, not judged (load above 4) |
+
+
+AFTER: http://127.0.0.1:8900/fixture/index.html
+3 runs, CPU 4x, Fast 4G, 400x800, coarse pointer and touch (presses and taps by CDP touch events). p75 is the budgeted figure.
+Load: 1-minute load average at the start of each run 5.5 to 10.7 (median 7.2) on 4 cores; at the end 6.1 7.4 8.8. Calibration task 411 ms (about 100 ms on an idle core). A timing row is judged only when most of its samples were taken at a load of 4 or less.
+
+| What | Budget | p75 | Median | Worst | Samples | Load when taken (median, range) | |
+|---|---|---|---|---|---|---|---|
+| Press: Run query | 50 ms | 31 ms | 30 ms | 31 ms | 3 | 6.9 (5.8 to 10.2) | within, not judged (load above 4) |
+| Typing in the query editor | 50 ms | 26 ms | 22 ms | 26 ms | 3 | 6.7 (6.2 to 10.2) | within, not judged (load above 4) |
+| Crosshair by touch drag, 36 series | 50 ms | 72 ms | 54 ms | 72 ms | 3 | 6.7 (6.2 to 10.2) | over, not judged (load above 4) |
+| Legend row toggle, 36 series | 100 ms | 145 ms | 89 ms | 145 ms | 3 | 6.7 (6.2 to 10.2) | over, not judged (load above 4) |
+| Legend row toggle, 200 series | 100 ms | 81 ms | 63 ms | 81 ms | 3 | 6.7 (6.2 to 9.8) | within, not judged (load above 4) |
+| One panel to table, 36 series | 100 ms | 191 ms | 100 ms | 191 ms | 3 | 6.7 (6.2 to 9.8) | over, not judged (load above 4) |
+| One panel to chart, 36 series | 100 ms | 70 ms | 67 ms | 70 ms | 3 | 6.7 (6.2 to 9.8) | within, not judged (load above 4) |
+| One panel to table, 200 series | 100 ms | 83 ms | 76 ms | 83 ms | 3 | 6.7 (6.2 to 9.8) | within, not judged (load above 4) |
+| Open a menu (Share…) | 100 ms | 92 ms | 62 ms | 92 ms | 3 | 6.7 (6.2 to 9.8) | within, not judged (load above 4) |
+| Change theme (to dark) | 100 ms | 153 ms | 153 ms | 153 ms | 3 | 6.7 (6.2 to 9.8) | over, not judged (load above 4) |
+| Run a query: request sent and waiting state shown | 100 ms | 66 ms | 64 ms | 66 ms | 3 | 6.7 (6.2 to 9.8) | within, not judged (load above 4) |
+| Move to a view whose data is not loaded: its shell and waiting state | 100 ms | 62 ms | 59 ms | 62 ms | 3 | 6.7 (6.2 to 9.8) | within, not judged (load above 4) |
+| Response to paint, 36 series | 100 ms | 56 ms | 28 ms | 56 ms | 3 | 6.7 (6.2 to 9.3) | within, not judged (load above 4) |
+| Response to paint, 200 series | 100 ms | 33 ms | 33 ms | 33 ms | 3 | 6.7 (6.1 to 9.3) | within, not judged (load above 4) |
+| Layout shift, load and run | 0.05 | 0.0000 | 0.0000 | 0.0000 | 3 | 6.7 (6.1 to 9.3) | within |
+| Layout shift, loaded scrolled to CPU by pod | 0.05 | 0.0000 | 0.0000 | 0.0000 | 3 | 7.2 (5.5 to 10.7) | within |
+| Layout shift, loaded scrolled to Latency by route | 0.05 | 0.0000 | 0.0000 | 0.0000 | 3 | 7.2 (5.5 to 10.7) | within |
+| Layout shift, loaded scrolled to Request rate | 0.05 | 0.0000 | 0.0000 | 0.0000 | 3 | 7.2 (5.5 to 10.7) | within |
+| Layout shift, loaded scrolled to CPU by pod, every namespace | 0.05 | 0.0000 | 0.0000 | 0.0000 | 3 | 7.2 (5.5 to 10.7) | within |
+| Layout shift, loaded scrolled to the backtest | 0.05 | 0.0000 | 0.0000 | 0.0000 | 3 | 7.2 (5.5 to 10.7) | within |
+| Worst interaction (Event Timing) | 200 ms | 184 ms | 160 ms | 184 ms | 3 | 6.5 (6.1 to 9.3) | within, not judged (load above 4) |
+
+Every judged 75th percentile is within its budget (rows not judged are neither passed nor failed).
+ 04:05:01 up  3:24,  0 user,  load average: 6.14, 7.39, 8.81
+
+
+
+
+BEFORE: http://127.0.0.1:8901/fixture/index.html
+3 runs, CPU 4x, Fast 4G, 1440x900. p75 is the budgeted figure.
+Load: 1-minute load average at the start of each run 6.1 to 7.0 (median 6.4) on 4 cores; at the end 6.8 7.3 8.7. Calibration task 291 ms (about 100 ms on an idle core). A timing row is judged only when most of its samples were taken at a load of 4 or less.
+
+| What | Budget | p75 | Median | Worst | Samples | Load when taken (median, range) | |
+|---|---|---|---|---|---|---|---|
+| Press: Run query | 50 ms | 18 ms | 16 ms | 18 ms | 3 | 6.9 (6.3 to 7.0) | within, not judged (load above 4) |
+| Typing in the query editor | 50 ms | 44 ms | 24 ms | 44 ms | 3 | 6.9 (6.7 to 7.0) | within, not judged (load above 4) |
+| Crosshair, 3 series | 50 ms | 135 ms | 52 ms | 135 ms | 3 | 6.9 (6.7 to 7.0) | over, not judged (load above 4) |
+| Crosshair, 36 series | 50 ms | 33 ms | 31 ms | 33 ms | 3 | 6.9 (6.7 to 7.0) | within, not judged (load above 4) |
+| Crosshair, 200 series | 50 ms | 36 ms | 31 ms | 36 ms | 3 | 6.7 (6.7 to 6.9) | within, not judged (load above 4) |
+| Legend row toggle, 36 series | 100 ms | 82 ms | 67 ms | 82 ms | 3 | 6.7 (6.7 to 6.9) | within, not judged (load above 4) |
+| Legend row toggle, 200 series | 100 ms | 95 ms | 43 ms | 95 ms | 3 | 6.7 (6.7 to 6.8) | within, not judged (load above 4) |
+| One panel to table, 36 series | 100 ms | 100 ms | 57 ms | 100 ms | 3 | 6.7 (6.7 to 6.8) | over, not judged (load above 4) |
+| One panel to chart, 36 series | 100 ms | 61 ms | 33 ms | 61 ms | 3 | 6.7 (6.7 to 6.8) | within, not judged (load above 4) |
+| One panel to table, 200 series | 100 ms | 55 ms | 50 ms | 55 ms | 3 | 6.8 (6.7 to 7.0) | within, not judged (load above 4) |
+| Open a menu (Share…) | 100 ms | no data | no data | no data | 0 | - | no data |
+| Change theme (to dark) | 100 ms | no data | no data | no data | 0 | - | no data |
+| Run a query: request sent and waiting state shown | 100 ms | 32 ms | 17 ms | 32 ms | 3 | 6.8 (6.7 to 7.0) | within, not judged (load above 4) |
+| Move to a view whose data is not loaded: its shell and waiting state | 100 ms | no data | no data | no data | 0 | - | no data |
+| Response to paint, 36 series | 100 ms | 35 ms | 34 ms | 35 ms | 3 | 6.8 (6.8 to 7.0) | within, not judged (load above 4) |
+| Response to paint, 200 series | 100 ms | 36 ms | 30 ms | 36 ms | 3 | 6.9 (6.8 to 7.0) | within, not judged (load above 4) |
+| Layout shift, load and run | 0.05 | 0.0005 | 0.0004 | 0.0005 | 3 | 6.9 (6.8 to 7.0) | within |
+| Layout shift, loaded scrolled to CPU by pod | 0.05 | 0.0002 | 0.0002 | 0.0002 | 3 | 6.4 (6.1 to 7.0) | within |
+| Worst interaction (Event Timing) | 200 ms | 144 ms | 112 ms | 144 ms | 3 | 6.9 (6.8 to 7.0) | within, not judged (load above 4) |
+
+
+AFTER: http://127.0.0.1:8900/fixture/index.html
+3 runs, CPU 4x, Fast 4G, 1440x900. p75 is the budgeted figure.
+Load: 1-minute load average at the start of each run 6.8 to 7.0 (median 6.9) on 4 cores; at the end 6.8 7.3 8.7. Calibration task 291 ms (about 100 ms on an idle core). A timing row is judged only when most of its samples were taken at a load of 4 or less.
+
+| What | Budget | p75 | Median | Worst | Samples | Load when taken (median, range) | |
+|---|---|---|---|---|---|---|---|
+| Press: Run query | 50 ms | 38 ms | 28 ms | 38 ms | 3 | 7.2 (7.0 to 7.5) | within, not judged (load above 4) |
+| Typing in the query editor | 50 ms | 29 ms | 29 ms | 29 ms | 3 | 7.2 (6.7 to 7.5) | within, not judged (load above 4) |
+| Crosshair, 3 series | 50 ms | 57 ms | 22 ms | 57 ms | 3 | 7.2 (6.7 to 7.5) | over, not judged (load above 4) |
+| Crosshair, 36 series | 50 ms | 32 ms | 26 ms | 32 ms | 3 | 7.2 (6.7 to 7.3) | within, not judged (load above 4) |
+| Crosshair, 200 series | 50 ms | 36 ms | 25 ms | 36 ms | 3 | 7.2 (6.7 to 7.3) | within, not judged (load above 4) |
+| Legend row toggle, 36 series | 100 ms | 90 ms | 86 ms | 90 ms | 3 | 7.2 (6.7 to 7.3) | within, not judged (load above 4) |
+| Legend row toggle, 200 series | 100 ms | 69 ms | 48 ms | 69 ms | 3 | 6.9 (6.7 to 7.3) | within, not judged (load above 4) |
+| One panel to table, 36 series | 100 ms | 117 ms | 74 ms | 117 ms | 3 | 6.9 (6.7 to 7.3) | over, not judged (load above 4) |
+| One panel to chart, 36 series | 100 ms | 62 ms | 52 ms | 62 ms | 3 | 6.9 (6.7 to 7.3) | within, not judged (load above 4) |
+| One panel to table, 200 series | 100 ms | 67 ms | 46 ms | 67 ms | 3 | 6.9 (6.7 to 7.3) | within, not judged (load above 4) |
+| Open a menu (Share…) | 100 ms | 47 ms | 42 ms | 47 ms | 3 | 6.9 (6.6 to 7.3) | within, not judged (load above 4) |
+| Change theme (to dark) | 100 ms | 121 ms | 119 ms | 121 ms | 3 | 6.9 (6.6 to 7.3) | over, not judged (load above 4) |
+| Run a query: request sent and waiting state shown | 100 ms | 49 ms | 44 ms | 49 ms | 3 | 6.9 (6.6 to 7.2) | within, not judged (load above 4) |
+| Move to a view whose data is not loaded: its shell and waiting state | 100 ms | 56 ms | 43 ms | 56 ms | 3 | 6.8 (6.6 to 7.2) | within, not judged (load above 4) |
+| Response to paint, 36 series | 100 ms | 40 ms | 33 ms | 40 ms | 3 | 6.8 (6.6 to 7.2) | within, not judged (load above 4) |
+| Response to paint, 200 series | 100 ms | 137 ms | 48 ms | 137 ms | 3 | 6.8 (6.4 to 7.2) | over, not judged (load above 4) |
+| Layout shift, load and run | 0.05 | 0.0004 | 0.0004 | 0.0004 | 3 | 6.8 (6.4 to 7.2) | within |
+| Layout shift, loaded scrolled to CPU by pod | 0.05 | 0.0002 | 0.0002 | 0.0002 | 3 | 6.9 (6.8 to 7.0) | within |
+| Worst interaction (Event Timing) | 200 ms | 232 ms | 128 ms | 232 ms | 3 | 6.8 (6.4 to 7.0) | over, not judged (load above 4) |
+
+Every judged 75th percentile is within its budget (rows not judged are neither passed nor failed).
+ 04:06:43 up  3:25,  0 user,  load average: 6.84, 7.34, 8.65
+exit 0

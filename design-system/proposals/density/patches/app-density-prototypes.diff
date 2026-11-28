@@ -1,0 +1,744 @@
+diff --git a/app/src/charts/Chart.tsx b/app/src/charts/Chart.tsx
+index 6f468f2..5ba6d5e 100644
+--- a/app/src/charts/Chart.tsx
++++ b/app/src/charts/Chart.tsx
+@@ -34,6 +34,8 @@ export interface ChartProps {
+   day?: string
+   /** The head's sentence about a result that may be incomplete (the API's warnings), for the text form; null when there is none. */
+   partial?: string | null
++  /** Density prototype: the legend as a wrapped list of toggles (name and last value) instead of a table. */
++  legend?: 'list'
+ }
+ 
+ const RESERVE = 'viz.chart.reserve:'
+@@ -41,8 +43,8 @@ const RESERVE = 'viz.chart.reserve:'
+ /** The legend rows and note lines the view's last result drew, so the next load reserves them before its data arrives (Chart, "Reserved height"). */
+ function reserved(view: string): CSSProperties {
+   try {
+-    const v = JSON.parse(sessionStorage.getItem(RESERVE + view) ?? 'null') as { rows?: unknown; notes?: unknown } | null
+-    if (v && Number.isInteger(v.rows) && Number.isInteger(v.notes)) return { '--legend-rows': v.rows, '--legend-notes': v.notes } as CSSProperties
++    const v = JSON.parse(sessionStorage.getItem(RESERVE + view) ?? 'null') as { rows?: unknown; notes?: unknown; lines?: unknown } | null
++    if (v && Number.isInteger(v.rows) && Number.isInteger(v.notes)) return { '--legend-rows': v.rows, '--legend-notes': v.notes, ...(Number.isInteger(v.lines) ? { '--legend-lines': v.lines } : {}) } as CSSProperties
+   } catch {
+     // Nothing remembered.
+   }
+@@ -52,8 +54,16 @@ function remember(view: string, root: HTMLElement): void {
+   const rows = Number(root.style.getPropertyValue('--legend-rows'))
+   const notes = Number(root.style.getPropertyValue('--legend-notes'))
+   if (!Number.isInteger(rows) || !Number.isInteger(notes)) return
++  // A list legend wraps: the lines it drew, counted from its height, are what the next load reserves.
++  let lines: number | undefined
++  const wrap = root.dataset.legend === 'list' ? root.querySelector<HTMLElement>('.vz-table-wrap') : null
++  const row = wrap?.querySelector<HTMLElement>('tbody tr')
++  if (wrap && row && row.offsetHeight > 0) {
++    lines = Math.max(1, Math.round(wrap.offsetHeight / row.offsetHeight))
++    root.style.setProperty('--legend-lines', String(lines))
++  }
+   try {
+-    sessionStorage.setItem(RESERVE + view, JSON.stringify({ rows, notes }))
++    sessionStorage.setItem(RESERVE + view, JSON.stringify({ rows, notes, lines }))
+   } catch {
+     // Not remembered: the next load reserves the chart's fixed parts only.
+   }
+@@ -66,7 +76,7 @@ export const reservedStyle = reserved
+  * The design system's chart for one result. This component owns no drawing: it hands the
+  * system's chart the result, tells it of an error, and listens for the range it shows.
+  */
+-export const Chart = memo(function Chart({ spec, shiftMs, stepWords, view, textFormId, error, onShownRange, parked, day = '', partial = null }: ChartProps) {
++export const Chart = memo(function Chart({ spec, shiftMs, stepWords, view, textFormId, error, onShownRange, parked, day = '', partial = null, legend }: ChartProps) {
+   const rootRef = useRef<HTMLDivElement>(null)
+   const handle = useRef<ChartHandle | null>(null)
+   const [reserve] = useState(() => reserved(view))
+@@ -188,7 +198,7 @@ export const Chart = memo(function Chart({ spec, shiftMs, stepWords, view, textF
+ 
+   return (
+     <>
+-      <div ref={rootRef} className={parked ? 'vz-chart is-parked' : 'vz-chart'} inert={parked} data-view={view} data-text-form={textFormId} style={reserve} data-testid="chart" />
++      <div ref={rootRef} className={parked ? 'vz-chart is-parked' : 'vz-chart'} inert={parked} data-view={view} data-text-form={textFormId} data-legend={legend} style={reserve} data-testid="chart" />
+       {error && errorHost && createPortal(error.node, errorHost)}
+     </>
+   )
+diff --git a/app/src/dashboards/DashboardsPage.tsx b/app/src/dashboards/DashboardsPage.tsx
+index 5d408cf..8355f7f 100644
+--- a/app/src/dashboards/DashboardsPage.tsx
++++ b/app/src/dashboards/DashboardsPage.tsx
+@@ -6,8 +6,10 @@ import { PromApiError } from '../api/client'
+ import { answerLine, errorKind } from '../api/errors'
+ import type { DashboardDocument, DashboardList, DashboardSummary } from '../api/types'
+ import { CopyButton } from '../explore/CopyButton'
+-import { RangeControls, TimeRangeField } from '../explore/TimeRangeField'
+-import { useWaiting } from '../explore/waiting'
++import { RangeControls, RangePicker, ShiftButtons, TimeRangeField } from '../explore/TimeRangeField'
++import { DENSITY } from '../density'
++import { stepWords } from '../lib/time'
++import { Age, useWaiting } from '../explore/waiting'
+ import type { QueryWindow } from '../lib/step'
+ import type { TimeSpec } from '../lib/time'
+ import { momentText } from '../lib/timeInput'
+@@ -161,6 +163,48 @@ function DashboardPage({ id, search }: { id: string; search: DashboardsSearch })
+     )
+   }
+ 
++  const switchAndRefresh = (
++    <>
++      <div className="vz-segmented" role="group" aria-label="Show the dashboard as">
++        <button aria-pressed={form === 'panels'} onClick={() => setForm('panels')} data-testid="form-panels">
++          Panels
++        </button>
++        <button aria-pressed={form === 'text'} onClick={() => setForm('text')} data-testid="form-text">
++          Text
++        </button>
++      </div>
++      <button className="vz-button" data-size={DENSITY ? 'sm' : undefined} onClick={refresh} aria-busy={loading} data-testid="refresh">
++        Refresh
++      </button>
++    </>
++  )
++  const stepNow = window_ ? stepWords(window_.step) : null
++  // The age the bar states is the oldest answer's, so it is never younger than any panel's data.
++  let oldest: number | null = null
++  if (resolved) for (const pid of resolved.order) { const r = store.get(pid).result; if (r && (oldest === null || r.receivedAt < oldest)) oldest = r.receivedAt }
++  const facts = (
++    <p className="vz-secondary" data-size="sm" data-testid="dashboard-facts">
++      {doc.data ? (
++        <>
++          Revision <span className="vz-qty">{doc.data.number}</span>, changed <ChangedAt iso={doc.data.dashboard.lastChangedAt} now={now} /> by {actorWords(doc.data.dashboard.lastChangedBy)}.{' '}
++        </>
++      ) : null}
++      <span role="status" data-testid="load-summary">
++        <span className="vz-qty">{summary.total}</span> {summary.total === 1 ? 'panel' : 'panels'}
++        {summary.waiting > 0 ? (
++          <>
++            , <span className="vz-qty">{summary.total - summary.waiting}</span> answered so far.
++          </>
++        ) : summary.failed > 0 ? (
++          <>
++            , <span className="vz-qty">{summary.answered}</span> answered and <span className="vz-qty">{summary.failed}</span> not.
++          </>
++        ) : (
++          ', all answered.'
++        )}
++      </span>
++    </p>
++  )
+   return (
+     <div className="vz-page" data-testid="dashboard-page" data-dashboard={id}>
+       <header className="vz-page-head">
+@@ -171,8 +215,9 @@ function DashboardPage({ id, search }: { id: string; search: DashboardsSearch })
+           <p className="vz-page-sub" data-testid="dashboard-intent">
+             {intent ?? ' '}
+           </p>
++          {DENSITY && spec && resolved ? facts : null}
+         </div>
+-        <div className="vz-controls">
++        {!DENSITY && <div className="vz-controls">
+           <div className="vz-segmented" role="group" aria-label="Show the dashboard as">
+             <button aria-pressed={form === 'panels'} onClick={() => setForm('panels')} data-testid="form-panels">
+               Panels
+@@ -184,7 +229,7 @@ function DashboardPage({ id, search }: { id: string; search: DashboardsSearch })
+           <button className="vz-button" onClick={refresh} aria-busy={loading} data-testid="refresh">
+             Refresh
+           </button>
+-        </div>
++        </div>}
+       </header>
+ 
+       {read && !read.ok ? (
+@@ -218,7 +263,24 @@ function DashboardPage({ id, search }: { id: string; search: DashboardsSearch })
+         </section>
+       ) : (
+         <>
+-          <p className="vz-secondary" data-size="sm" data-testid="dashboard-facts">
++          {DENSITY ? (
++            <div className="vz-controls vz-bar" data-sticky={DENSITY === 'C' ? '' : undefined} role="group" aria-label="Range, variables and view" data-testid="dashboard-bar">
++              <RangePicker from={from} to={to} onChange={onRange} shiftInside={DENSITY === 'C'} />
++              {DENSITY === 'B' && <ShiftButtons from={from} to={to} onChange={onRange} />}
++              {Object.entries(spec.variables ?? {}).map(([name, def]) => (
++                <VariableField key={name} name={name} def={def} resolved={resolved} window={window_} store={store} inline onChange={(value) => setSearch({ [`var.${name}`]: value } as DashboardsSearch)} />
++              ))}
++              <span className="vz-bar-end" />
++              {DENSITY === 'C' && summary.waiting === 0 && summary.failed === 0 && stepNow ? (
++                <span className="vz-panel-meta" data-testid="bar-meta">
++                  <span>every <span className="vz-qty">{stepNow}</span></span>
++                  {oldest !== null && <Age at={oldest} />}
++                </span>
++              ) : null}
++              {switchAndRefresh}
++            </div>
++          ) : null}
++          {!DENSITY && <p className="vz-secondary" data-size="sm" data-testid="dashboard-facts">
+             {doc.data ? (
+               <>
+                 Revision <span className="vz-qty">{doc.data.number}</span>, changed <ChangedAt iso={doc.data.dashboard.lastChangedAt} now={now} /> by {actorWords(doc.data.dashboard.lastChangedBy)}.{' '}
+@@ -238,9 +300,9 @@ function DashboardPage({ id, search }: { id: string; search: DashboardsSearch })
+                 ', all answered.'
+               )}
+             </span>
+-          </p>
++          </p>}
+ 
+-          <div className="vz-stack">
++          {!DENSITY && <div className="vz-stack">
+             <RangeControls from={from} to={to} onChange={onRange} shown={null} />
+             <div className="vz-dashboard">
+               <div className="vz-grid">
+@@ -250,7 +312,7 @@ function DashboardPage({ id, search }: { id: string; search: DashboardsSearch })
+                 ))}
+               </div>
+             </div>
+-          </div>
++          </div>}
+ 
+           {resolved.issues.length > 0 && (
+             <div role="status" className="vz-banner" data-testid="dashboard-issues">
+@@ -343,7 +405,8 @@ const ALL = '*'
+  * the API (through the page's six-request limit) in the window on screen. Several values at
+  * once are not offered: one value, or all.
+  */
+-function VariableField({ name, def, resolved, window: w, store, onChange }: { name: string; def: Variable; resolved: ResolvedDashboard; window: QueryWindow | null; store: DashboardStore; onChange: (value: string) => void }) {
++function VariableField({ name, def, resolved, window: w, store, onChange, inline = false }: { name: string; def: Variable; resolved: ResolvedDashboard; window: QueryWindow | null; store: DashboardStore; onChange: (value: string) => void; inline?: boolean }) {
++  const inl = inline ? '' : undefined
+   const { client, connectionId } = useSession()
+   const bound = resolved.variables[name]
+   const value = bound?.all ? ALL : (bound?.values[0] ?? '')
+@@ -368,7 +431,7 @@ function VariableField({ name, def, resolved, window: w, store, onChange }: { na
+ 
+   if (def.kind === 'text')
+     return (
+-      <div className="vz-field" data-span="3" data-testid={`variable-${name}`}>
++      <div className="vz-field" data-span="3" data-inline={inl} data-testid={`variable-${name}`}>
+         <span className="vz-label">{label}</span>
+         <span className="vz-qty">{value || 'empty'}</span>
+       </div>
+@@ -382,7 +445,7 @@ function VariableField({ name, def, resolved, window: w, store, onChange }: { na
+   // A choice among a few fixed values is a segmented control; a list whose length is the data's is a select (Field).
+   if (def.kind !== 'query' && options.length + (all ? 1 : 0) <= 6)
+     return (
+-      <div className="vz-field" data-span="3" data-testid={`variable-${name}`}>
++      <div className="vz-field" data-span="3" data-inline={inl} data-testid={`variable-${name}`}>
+         <span className="vz-label" id={id}>
+           {label}
+         </span>
+@@ -401,11 +464,11 @@ function VariableField({ name, def, resolved, window: w, store, onChange }: { na
+       </div>
+     )
+   return (
+-    <div className="vz-field" data-span="3" data-testid={`variable-${name}`}>
++    <div className="vz-field" data-span="3" data-inline={inl} data-testid={`variable-${name}`}>
+       <label className="vz-label" htmlFor={id}>
+         {label}
+       </label>
+-      <select id={id} className="vz-select" value={value} onChange={(e) => onChange(e.target.value)} aria-busy={asked.isFetching} aria-describedby={unread || asked.isError ? `${id}-help` : undefined}>
++      <select id={id} className="vz-select" data-size={inline ? 'sm' : undefined} value={value} onChange={(e) => onChange(e.target.value)} aria-busy={asked.isFetching} aria-describedby={unread || asked.isError ? `${id}-help` : undefined}>
+         {all && <option value={ALL}>All</option>}
+         {options.map((v) => (
+           <option key={v} value={v}>
+diff --git a/app/src/dashboards/PanelView.tsx b/app/src/dashboards/PanelView.tsx
+index 5ab1dab..0921b07 100644
+--- a/app/src/dashboards/PanelView.tsx
++++ b/app/src/dashboards/PanelView.tsx
+@@ -8,9 +8,11 @@ import { chartRules } from '../charts/systemChart'
+ import { Age, useWaiting, WAIT } from '../explore/waiting'
+ import { alignSeries, seriesKey, type AlignedData, type SampleColumns } from '../lib/series'
+ import { stepWords, type TimeSpec } from '../lib/time'
+-import { LOCAL, zoneShiftMs } from '../lib/timeInput'
++import { LOCAL, momentText, zoneShiftMs } from '../lib/timeInput'
+ import { chartUnitOf, digestOf, exploreSearch, isDrawn, panelText, queryWords, rangeWords, type PanelDigest, type ResolvedDashboard, type ResolvedPanel, type Span } from './model'
+ import { NotSent, type DashboardStore, type PanelResult, type PanelState } from './store'
++import { DENSITY } from '../density'
++import { Popover } from '../shell/Popover'
+ 
+ /** The series a stat panel shows as figures; the rest are in its text form, and the panel says how many. */
+ const STAT_FIGURES = 4
+@@ -49,6 +51,7 @@ export const PanelView = memo(function PanelView({ id, span, resolved, store, fr
+   const current = resolved.panels[id]!
+   const wait = useWaiting(state.waiting)
+   const [textOpen, setTextOpen] = useState(false)
++  const [aboutOpen, setAboutOpen] = useState(false)
+   const drawn = isDrawn(panel.kind)
+   const titleId = `panel-${id.replace(/\./g, '-')}`
+   const Heading = level === 2 ? 'h2' : 'h3'
+@@ -91,6 +94,48 @@ export const PanelView = memo(function PanelView({ id, span, resolved, store, fr
+   else body = null
+ 
+   const queries = current.kind === 'text' ? [] : current.queries
++  const explore = queries
++    .map((qid) => ({ qid, q: resolved.queries[qid] }))
++    .filter((x): x is { qid: string; q: NonNullable<typeof x.q> } => !!x.q && !x.q.error && x.q.lang === 'promql')
++    .map(({ qid, q }) => ({ qid, words: queries.length > 1 ? `Open ${queryWords(current, qid, q.legend)} in Explore` : 'Open in Explore', search: exploreSearch(q.expr, from, to) }))
++  const canText = drawn && !!result && !failed
++  const hasAbout = 'description' in panel && !!panel.description
++  // Density prototype B: the panel's commands as quiet small buttons on its head line, every one visible.
++  // Density prototype C: one "Actions…" menu on the head line holding them, and the description.
++  const tools =
++    DENSITY === 'B' ? (
++      <div className="vz-panel-tools">
++        <button className="vz-button" data-size="sm" data-quiet="" aria-expanded={textOpen} aria-controls={`${titleId}-text`} disabled={!canText} onClick={() => setTextOpen((v) => !v)} data-testid="panel-text-toggle" aria-label={`Text form of ${panel.title}`}>
++          Text form
++        </button>
++        {explore.length === 1 ? (
++          <Link to="/explore" search={explore[0]!.search} className="vz-button" data-size="sm" data-quiet="" data-testid="open-in-explore" aria-label={`Open ${panel.title} in Explore`}>
++            Explore
++          </Link>
++        ) : explore.length > 1 ? (
++          <Popover kind="menu" title={`Open ${panel.title} in Explore`} label="Explore…" small quiet align="end" testId="open-in-explore-menu">
++            {(close) => explore.map((e) => (
++              <Link key={e.qid} role="menuitem" to="/explore" search={e.search} onClick={close} data-testid="open-in-explore">{e.words}</Link>
++            ))}
++          </Popover>
++        ) : null}
++      </div>
++    ) : DENSITY === 'C' ? (
++      <div className="vz-panel-tools">
++        <Popover kind="menu" title={`Actions for ${panel.title}`} name={`Actions for ${panel.title}`} label="Actions…" small quiet align="end" testId="panel-actions">
++          {(close) => (
++            <>
++              {hasAbout && <button role="menuitemcheckbox" aria-checked={aboutOpen} onClick={() => { setAboutOpen((v) => !v); close() }} data-testid="panel-about">Show what it is for</button>}
++              <button role="menuitemcheckbox" aria-checked={textOpen} aria-disabled={!canText || undefined} onClick={() => { if (canText) setTextOpen((v) => !v); close() }} data-testid="panel-text-toggle">Show the text form</button>
++              {explore.length > 0 && <div role="separator" />}
++              {explore.map((e) => (
++                <Link key={e.qid} role="menuitem" to="/explore" search={e.search} onClick={close} data-testid="open-in-explore">{e.words}</Link>
++              ))}
++            </>
++          )}
++        </Popover>
++      </div>
++    ) : null
+ 
+   return (
+     <section className="vz-panel" data-span={span === 6 ? undefined : span} aria-labelledby={titleId} aria-busy={state.waiting} data-testid="panel" data-panel={id} data-kind={panel.kind} data-state={state.waiting ? 'waiting' : failed ? 'failed' : result ? 'answered' : 'idle'}>
+@@ -102,7 +147,7 @@ export const PanelView = memo(function PanelView({ id, span, resolved, store, fr
+           The meta has one place for both things it can say, as wide and as tall as the longer of them, so the head is the same
+           height before the first answer, with an answer, and while a new range waits: nothing under it moves when the words change.
+         */}
+-        <span className="meta-hold">
++        {DENSITY === 'C' && result && !failed && !state.stale && !state.waiting ? null : <span className="meta-hold">
+           {state.stale && result && !failed ? (
+             <span className="vz-panel-meta" data-testid="panel-meta">
+               <span className="vz-panel-note" data-testid="panel-stale" title={rangeWords(result.window.start, result.window.end, now)}>
+@@ -127,20 +172,26 @@ export const PanelView = memo(function PanelView({ id, span, resolved, store, fr
+               <span>· updated just now</span>
+             </span>
+           )}
+-        </span>
++        </span>}
++        {DENSITY ? tools : null}
+       </div>
+-      {'description' in panel && panel.description ? <p className="vz-panel-desc">{panel.description}</p> : null}
++      {'description' in panel && panel.description && (DENSITY !== 'C' || aboutOpen) ? <p className="vz-panel-desc" id={`${titleId}-about`}>{panel.description}</p> : null}
+       <div className="vz-panel-body" data-view={panel.kind === 'timeseries' ? 'chart' : panel.kind}>
+         {progress}
+         {body}
+       </div>
++      {DENSITY && textOpen && text !== null && (
++        <pre className="vz-query code-scroll" tabIndex={0} id={`${titleId}-text`} aria-label={`Text form of ${panel.title}`} data-testid="panel-digest">
++          {text}
++        </pre>
++      )}
+       {/* Its place is kept before the first answer (not seen, not reachable), so the panel is as tall waiting as answered. */}
+-      {drawn && !failed && !result && (
++      {!DENSITY && drawn && !failed && !result && (
+         <div className="vz-details is-reserved" aria-hidden="true">
+           <summary>Text form</summary>
+         </div>
+       )}
+-      {drawn && result && !failed && (
++      {!DENSITY && drawn && result && !failed && (
+         <details className="vz-details" onToggle={(e) => setTextOpen((e.target as HTMLDetailsElement).open)} data-testid="panel-text">
+           <summary>Text form</summary>
+           {text !== null && (
+@@ -150,7 +201,7 @@ export const PanelView = memo(function PanelView({ id, span, resolved, store, fr
+           )}
+         </details>
+       )}
+-      {queries.length > 0 && (
++      {!DENSITY && queries.length > 0 && (
+         <ul className="vz-links" data-testid="panel-links">
+           {queries.map((qid) => {
+             const q = resolved.queries[qid]
+@@ -218,11 +269,13 @@ const ChartBody = memo(function ChartBody({ id, result, panel }: { id: string; r
+     let max = 0
+     if (panel.kind === 'timeseries' && panel.unit === 'bytes/s') for (const s of aligned.series) for (let i = 0; i < s.values.length; i++) if (Math.abs(s.values[i]!) > max) max = Math.abs(s.values[i]!)
+     const unit = chartUnitOf(panel.kind === 'timeseries' ? panel.unit : undefined, max)
+-    return { ...toSpec({ data: aligned, start: result.window.start, step: result.window.step, unit: 'none', as: unit, query, shiftMs }), shiftMs }
++    return { ...toSpec({ data: aligned, start: result.window.start, step: result.window.step, unit: 'none', as: unit, query, shiftMs }), shiftMs, list: !!DENSITY && aligned.series.length <= 8 }
+   }, [result, panel])
+-  return <Chart spec={drawn.spec} shiftMs={drawn.shiftMs} stepWords={stepWords(result.window.step)} view={viewName(result.resolved, id)} textFormId={`chart-text-${id}`} error={null} parked={false} />
++  return <Chart legend={drawn.list ? 'list' : undefined} spec={drawn.spec} shiftMs={drawn.shiftMs} stepWords={stepWords(result.window.step)} view={viewName(result.resolved, id)} textFormId={`chart-text-${id}`} error={null} parked={false} />
+ })
+ 
++/** Density prototype: the state's word beside the figure, shorter (the shape and word still carry it). */
++const COMPACT_STATE: Record<string, string> = { ok: 'Within thresholds', info: 'Past information threshold', warn: 'Past warning threshold', critical: 'Past critical threshold' }
+ const REDUCER_WORDS: Record<string, string> = { last: 'Last value', mean: 'Mean', min: 'Lowest value', max: 'Highest value', sum: 'Sum' }
+ const STATE: Record<string, { state: string; words: string }> = {
+   ok: { state: 'ok', words: 'Within its thresholds' },
+@@ -255,6 +308,35 @@ function StatBody({ digest, panel, result, now }: { digest: PanelDigest; panel:
+         return (
+           <div className="vz-stat" key={seriesKey(s.labels) + (s.query ?? '')}>
+             {digest.seriesCount > 1 && <span className="vz-label">{s.name}</span>}
++            {DENSITY ? (
++              <>
++                <span className="vz-stat-line">
++                  <span className="vz-stat-value" data-testid="stat-value">
++                    {f.text}
++                    {f.unit && <span className="vz-stat-unit">{f.unit}</span>}
++                  </span>
++                  {st && (
++                    <span className="vz-status" data-state={st.state} data-testid="stat-state">
++                      <span>
++                        {COMPACT_STATE[st.state] ?? st.words}
++                        {limit && s.breached ? (
++                          <>
++                            {' '}{s.breached.startsWith('>') ? 'above' : 'below'}{' '}
++                            <span className="vz-qty">
++                              {limit.text}
++                              {limit.unit === '%' ? '%' : limit.unit ? ` ${limit.unit}` : ''}
++                            </span>
++                          </>
++                        ) : null}
++                      </span>
++                    </span>
++                  )}
++                </span>
++                <span className="vz-stat-context" data-testid="stat-context">
++                  {reducer === 'Last value' ? <>Last value at <span className="vz-qty">{momentText(w.end, now)}</span>.</> : <>{reducer} over the dashboard's range.</>}
++                </span>
++              </>
++            ) : <>
+             <span className="vz-stat-value" data-testid="stat-value">
+               {f.text}
+               {f.unit && <span className="vz-stat-unit">{f.unit}</span>}
+@@ -278,6 +360,7 @@ function StatBody({ digest, panel, result, now }: { digest: PanelDigest; panel:
+                 </span>
+               )}
+             </span>
++            </>}
+           </div>
+         )
+       })}
+diff --git a/app/src/density.ts b/app/src/density.ts
+new file mode 100644
+index 0000000..b8a4885
+--- /dev/null
++++ b/app/src/density.ts
+@@ -0,0 +1,6 @@
++/**
++ * The density prototype a build shows (design-system/proposals/density): '' is v9 as it is; 'B' quiet chrome with every
++ * command visible; 'C' a menu per panel and the controls in one sticky bar. Set at build time with VITE_DENSITY. A prototype
++ * switch, not a setting: the proposal recommends one density for everyone, adapted by pointer.
++ */
++export const DENSITY: '' | 'B' | 'C' = ((import.meta as unknown as { env: Record<string, string | undefined> }).env.VITE_DENSITY ?? '') as '' | 'B' | 'C'
+diff --git a/app/src/explore/ExplorePage.tsx b/app/src/explore/ExplorePage.tsx
+index dec79ca..b22a623 100644
+--- a/app/src/explore/ExplorePage.tsx
++++ b/app/src/explore/ExplorePage.tsx
+@@ -26,7 +26,11 @@ import { CopyButton } from './CopyButton'
+ import { JsonView } from './JsonView'
+ import { ResultTable, type TableRow } from './ResultTable'
+ import { TextView } from './TextView'
+-import { PRESETS, presetWords, RangeControls, StepField, TimeRangeField } from './TimeRangeField'
++import { PRESETS, presetWords, RangeControls, RangePicker, ShiftButtons, StepField, TimeRangeField } from './TimeRangeField'
++import { DENSITY } from '../density'
++import { parseSpan, spanWords } from '../lib/timeInput'
++const spanWordsOf = (v: string) => spanWords(parseSpan(v) ?? 0)
++import { Popover } from '../shell/Popover'
+ 
+ const exploreRoute = getRouteApi('/explore')
+ const PromqlEditor = lazy(() => import('../editor/PromqlEditor'))
+@@ -79,7 +83,9 @@ const QueryRow = memo(function QueryRow({
+   editorRef,
+   rangeRef,
+   onEditorReady,
++  extra,
+ }: {
++  extra?: React.ReactNode
+   committed: string
+   loading: boolean
+   run: () => void
+@@ -97,6 +103,7 @@ const QueryRow = memo(function QueryRow({
+           <PromqlEditor value={committed} onRun={run} client={client} handleRef={editorRef} rangeRef={rangeRef} onReady={onEditorReady} />
+         </Suspense>
+       </div>
++      {extra}
+       <button className="vz-button" data-tone="blue" onClick={run} aria-busy={loading} data-testid="run" aria-keyshortcuts="Control+Enter Meta+Enter">
+         Run query
+       </button>
+@@ -543,6 +550,25 @@ export function ExplorePage() {
+       </div>
+     ) : null
+ 
++  const unitWords = search.unit === 'auto' ? `automatic, ${UNITS.find((u) => u.id === (shown && result ? result.inferredUnit : inferUnit(q)))?.label ?? 'number'}` : (UNITS.find((u) => u.id === search.unit)?.label ?? search.unit)
++  const stepField = <StepField value={search.step} auto={window_ && search.step === 'auto' ? window_.step : null} onChange={(step) => setSearch({ step })} />
++  const unitField = (inline: boolean) => (
++            <div className="vz-field" data-span="3" data-inline={inline ? '' : undefined}>
++
++              <label className="vz-label" htmlFor="unit">
++                Unit
++              </label>
++              <select id="unit" data-testid="unit" className="vz-select" value={search.unit} onChange={(e) => setSearch({ unit: e.target.value }, true)}>
++                {/* "Automatic" names the unit of what is on screen while a result is shown, and of the query otherwise. */}
++                <option value="auto">Automatic: {UNITS.find((u) => u.id === (shown && result ? result.inferredUnit : inferUnit(q)))?.label ?? 'number'}</option>
++                {UNITS.map((u) => (
++                  <option key={u.id} value={u.id}>
++                    {u.label}
++                  </option>
++                ))}
++              </select>
++            </div>
++  )
+   return (
+     <div className="vz-page">
+       <header className="vz-page-head">
+@@ -557,28 +583,29 @@ export function ExplorePage() {
+ 
+       <div className="vz-stack" ref={toolsRef}>
+         {/* The query and the view's one blue button. */}
+-        <QueryRow committed={search.q} loading={loading} run={run} client={client} editorRef={editorRef} rangeRef={lookupRange} onEditorReady={onEditorReady} />
+-        <RangeControls from={search.from} to={search.to} onChange={onRange} shown={shownRange} />
++        <QueryRow committed={search.q} loading={loading} run={run} client={client} editorRef={editorRef} rangeRef={lookupRange} onEditorReady={onEditorReady} extra={DENSITY === 'C' ? <>
++          <RangePicker from={search.from} to={search.to} onChange={onRange} shiftInside />
++          <Popover kind="dialog" title="Step and unit" label={<>Step {search.step === 'auto' ? (window_ ? `${stepWords(window_.step)} (auto)` : 'auto') : spanWordsOf(search.step)} · unit {search.unit === 'auto' ? 'auto' : (UNITS.find((u) => u.id === search.unit)?.label ?? search.unit)}…</>} name={`Step and unit: step ${search.step === 'auto' ? `automatic${window_ ? `, now ${stepWords(window_.step)}` : ''}` : search.step}, unit ${unitWords}. Change them`} testId="options">
++            {() => <div className="vz-stack">{stepField}{unitField(false)}</div>}
++          </Popover>
++        </> : undefined} />
++        {DENSITY === 'B' && (
++          <div className="vz-controls vz-bar" data-testid="explore-bar">
++            <RangePicker from={search.from} to={search.to} onChange={onRange} shiftInside={false} />
++            <ShiftButtons from={search.from} to={search.to} onChange={onRange} />
++            <span className="vz-bar-end" />
++            <StepField inline value={search.step} auto={window_ && search.step === 'auto' ? window_.step : null} onChange={(step) => setSearch({ step })} />
++            {unitField(true)}
++          </div>
++        )}
++        {!DENSITY && <><RangeControls from={search.from} to={search.to} onChange={onRange} shown={shownRange} />
+         <div className="vz-dashboard">
+           <div className="vz-grid">
+             <TimeRangeField from={search.from} to={search.to} onChange={onRange} />
+-            <StepField value={search.step} auto={window_ && search.step === 'auto' ? window_.step : null} onChange={(step) => setSearch({ step })} />
+-            <div className="vz-field" data-span="3">
+-              <label className="vz-label" htmlFor="unit">
+-                Unit
+-              </label>
+-              <select id="unit" data-testid="unit" className="vz-select" value={search.unit} onChange={(e) => setSearch({ unit: e.target.value }, true)}>
+-                {/* "Automatic" names the unit of what is on screen while a result is shown, and of the query otherwise. */}
+-                <option value="auto">Automatic: {UNITS.find((u) => u.id === (shown && result ? result.inferredUnit : inferUnit(q)))?.label ?? 'number'}</option>
+-                {UNITS.map((u) => (
+-                  <option key={u.id} value={u.id}>
+-                    {u.label}
+-                  </option>
+-                ))}
+-              </select>
+-            </div>
++            {stepField}
++            {unitField(false)}
+           </div>
+-        </div>
++        </div></>}
+       </div>
+ 
+       {q === '' && !result ? (
+diff --git a/app/src/explore/TimeRangeField.tsx b/app/src/explore/TimeRangeField.tsx
+index 2e530fe..2882171 100644
+--- a/app/src/explore/TimeRangeField.tsx
++++ b/app/src/explore/TimeRangeField.tsx
+@@ -1,4 +1,5 @@
+ import { memo, useEffect, useId, useRef, useState } from 'react'
++import { Popover } from '../shell/Popover'
+ import { absoluteSpec, parseDuration, resolveTimeSpec, stepWords, type TimeSpec } from '../lib/time'
+ import { LOCAL, parseSpan, parseTime, readRange, spanSpec, spanWords, timeText, type Zone } from '../lib/timeInput'
+ 
+@@ -103,6 +104,8 @@ interface ShiftProps {
+   onChange: (from: TimeSpec, to: TimeSpec) => void
+   /** The range the chart shows after a zoom (epoch ms), when it is not the whole result; null otherwise. */
+   shown: { fromMs: number; toMs: number } | null
++  /** Density prototype: only the presets (Show earlier and later stand elsewhere). */
++  presetsOnly?: boolean
+ }
+ 
+ /**
+@@ -111,16 +114,9 @@ interface ShiftProps {
+  * (half the range), and, while the chart is zoomed into its result, asking for that range
+  * itself, which a zoom on the chart does not do (Chart: zoom never leaves the data).
+  */
+-export const RangeControls = memo(function RangeControls({ from, to, onChange, shown }: ShiftProps) {
++export const RangeControls = memo(function RangeControls({ from, to, onChange, shown, presetsOnly = false }: ShiftProps) {
+   const id = useId()
+   const current = to === 'now' && from.startsWith('now-') ? from : null
+-  const shift = (dir: -1 | 1) => {
+-    const now = Date.now() / 1000
+-    const start = resolveTimeSpec(from, now)
+-    const end = resolveTimeSpec(to, now)
+-    const half = (end - start) / 2
+-    onChange(absoluteSpec(start + dir * half), absoluteSpec(end + dir * half))
+-  }
+   return (
+     <div className="vz-controls" data-testid="range-controls">
+       <span className="vz-label" id={`${id}-last`}>
+@@ -133,14 +129,9 @@ export const RangeControls = memo(function RangeControls({ from, to, onChange, s
+           </button>
+         ))}
+       </div>
+-      <button className="vz-button" data-size="sm" onClick={() => shift(-1)} aria-label="Show earlier: move the time range back by half its length" data-testid="earlier">
+-        Show earlier
+-      </button>
+-      <button className="vz-button" data-size="sm" onClick={() => shift(1)} aria-label="Show later: move the time range forward by half its length" data-testid="later">
+-        Show later
+-      </button>
++      {!presetsOnly && <ShiftButtons from={from} to={to} onChange={onChange} />}
+       {/* Offered only while it would change something: its place is kept, so nothing moves when the chart is zoomed. */}
+-      <button
++      {!presetsOnly && <button
+         className={shown ? 'vz-button' : 'vz-button is-reserved'}
+         data-size="sm"
+         aria-hidden={shown ? undefined : true}
+@@ -150,16 +141,56 @@ export const RangeControls = memo(function RangeControls({ from, to, onChange, s
+         data-testid="query-shown"
+       >
+         Query the chart's range
+-      </button>
++      </button>}
+     </div>
+   )
+ })
+ 
++/** Show earlier and Show later: the range moved by half its length. */
++export function ShiftButtons({ from, to, onChange }: { from: TimeSpec; to: TimeSpec; onChange: (from: TimeSpec, to: TimeSpec) => void }) {
++  const shift = (dir: -1 | 1) => {
++    const now = Date.now() / 1000
++    const start = resolveTimeSpec(from, now)
++    const end = resolveTimeSpec(to, now)
++    const half = (end - start) / 2
++    onChange(absoluteSpec(start + dir * half), absoluteSpec(end + dir * half))
++  }
++  return (
++    <>
++      <button className="vz-button" data-size="sm" onClick={() => shift(-1)} aria-label="Show earlier: move the time range back by half its length" data-testid="earlier">
++        Show earlier
++      </button>
++      <button className="vz-button" data-size="sm" onClick={() => shift(1)} aria-label="Show later: move the time range forward by half its length" data-testid="later">
++        Show later
++      </button>
++    </>
++  )
++}
++
++/**
++ * Density prototype: the time range as one control. The button's words are the range as it was read (the echo line, always
++ * visible); it opens the presets, the two typed times and, unless they stand beside it, Show earlier and Show later.
++ */
++export const RangePicker = memo(function RangePicker({ from, to, onChange, shiftInside, zone = LOCAL }: { from: TimeSpec; to: TimeSpec; onChange: (from: TimeSpec, to: TimeSpec) => void; shiftInside: boolean; zone?: Zone }) {
++  const read = readRange(from, to, Date.now(), zone)
++  const relative = to === 'now' && from.startsWith('now-') ? `Last ${presetWords(from.slice(4))}` : null
++  return (
++    <Popover kind="dialog" title="Time range" name={`Time range: ${relative ? `${relative}, ` : ''}${read.text}. Change the range`} label={<>{relative ? <b>{relative}</b> : null}{relative ? ' · ' : ''}{read.text}…</>} testId="range-button">
++      {(close) => (
++        <div className="vz-stack">
++          <RangeControls from={from} to={to} onChange={(a, b) => { onChange(a, b); if (b === 'now') close() }} shown={null} presetsOnly={!shiftInside} />
++          <TimeRangeField from={from} to={to} onChange={onChange} zone={zone} />
++        </div>
++      )}
++    </Popover>
++  )
++})
++
+ /**
+  * The step: empty for the automatic one, or a duration in any form ("30 s", "1 min", "5m").
+  * The help line says the automatic step in use, or what the typed one was read as.
+  */
+-export const StepField = memo(function StepField({ value, auto, onChange }: { value: string; auto: number | null; onChange: (v: string) => void }) {
++export const StepField = memo(function StepField({ value, auto, onChange, inline = false }: { value: string; auto: number | null; onChange: (v: string) => void; inline?: boolean }) {
+   const id = useId()
+   const shown = (v: string) => (v === 'auto' ? '' : spanWords(parseSpan(v) ?? 0))
+   const [text, setText] = useState(() => shown(value))
+@@ -183,7 +214,7 @@ export const StepField = memo(function StepField({ value, auto, onChange }: { va
+     else setText(shown(spec))
+   }
+   return (
+-    <div className="vz-field" data-span="3">
++    <div className="vz-field" data-span="3" data-inline={inline ? '' : undefined}>
+       <label className="vz-label" htmlFor={id}>
+         Step
+       </label>
+diff --git a/app/src/shell/Popover.tsx b/app/src/shell/Popover.tsx
+new file mode 100644
+index 0000000..6c4fbf8
+--- /dev/null
++++ b/app/src/shell/Popover.tsx
+@@ -0,0 +1,77 @@
++import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
++
++interface Props {
++  /** The words of the button that opens it; it ends in "…" (it opens something). */
++  label: ReactNode
++  /** The button's accessible name, when its words alone do not say what it is for. */
++  name?: string
++  /** 'menu': rows of commands (role menu, arrow keys); 'dialog': controls and fields (a non-modal dialog, Tab moves through it). */
++  kind: 'menu' | 'dialog'
++  /** The popover's accessible name. */
++  title: string
++  quiet?: boolean
++  small?: boolean
++  testId?: string
++  align?: 'start' | 'end'
++  children: (close: () => void) => ReactNode
++}
++
++/**
++ * A button and what it opens, on the design system's Menu (vz-menu-anchor, vz-menu): under the button, left edges aligned
++ * (right edges with align="end"); with a coarse pointer below 640 px, a sheet across the bottom of the screen. It closes on
++ * Escape, on a press outside and on choosing a command; focus returns to the button.
++ */
++export function Popover({ label, name, kind, title, quiet, small, testId, align = 'start', children }: Props) {
++  const [open, setOpen] = useState(false)
++  const id = useId()
++  const button = useRef<HTMLButtonElement>(null)
++  const box = useRef<HTMLDivElement>(null)
++  const close = useCallback((refocus = true) => {
++    setOpen(false)
++    if (refocus) button.current?.focus()
++  }, [])
++  useEffect(() => {
++    if (!open) return
++    const first = box.current?.querySelector<HTMLElement>(kind === 'menu' ? '[role^=menuitem]' : '[aria-pressed=true], button, input, select, a[href]')
++    first?.focus()
++    const onDown = (e: PointerEvent) => {
++      const t = e.target as Node
++      if (!box.current?.contains(t) && !button.current?.contains(t)) close(false)
++    }
++    document.addEventListener('pointerdown', onDown, true)
++    return () => document.removeEventListener('pointerdown', onDown, true)
++  }, [open, kind, close])
++  const onKey = (e: React.KeyboardEvent) => {
++    if (e.key === 'Escape') {
++      e.stopPropagation()
++      close()
++      return
++    }
++    if (kind !== 'menu' || (e.key !== 'ArrowDown' && e.key !== 'ArrowUp')) return
++    const rows = [...(box.current?.querySelectorAll<HTMLElement>('[role^=menuitem]') ?? [])]
++    const at = rows.indexOf(document.activeElement as HTMLElement)
++    rows[(at + (e.key === 'ArrowDown' ? 1 : rows.length - 1)) % rows.length]?.focus()
++    e.preventDefault()
++  }
++  return (
++    <div className="vz-menu-anchor" onKeyDown={onKey}>
++      <button
++        ref={button}
++        className="vz-button"
++        data-size={small ? 'sm' : undefined}
++        data-quiet={quiet ? '' : undefined}
++        aria-haspopup={kind}
++        aria-expanded={open}
++        aria-controls={id}
++        aria-label={name}
++        onClick={() => setOpen((v) => !v)}
++        data-testid={testId}
++      >
++        {label}
++      </button>
++      <div ref={box} id={id} className={kind === 'dialog' ? 'vz-menu vz-popover' : 'vz-menu'} role={kind} aria-label={title} data-open={open ? '' : undefined} data-align={align === 'end' ? 'end' : undefined}>
++        {open && children(() => close())}
++      </div>
++    </div>
++  )
++}

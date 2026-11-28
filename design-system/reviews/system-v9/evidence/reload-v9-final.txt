@@ -1,0 +1,125 @@
+ 04:40:33 up 8 min,  0 user,  load average: 9.00, 4.53, 1.86
+
+
+Reload while scrolled to a chart, and a jump to it after load (106 loads; fails at a layout shift of 0.05 or more, or a chart that moves or lands more than 1 px away):
+
+| Page | Layout | Chart | Jump: shift | Jump: moved, px | Reload: shift | Reload: landed, px |
+|---|---|---|---|---|---|---|
+| dist/preview/Chart.html | 1500 | 1 of 10, Latency by route, p99 | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 2 of 10, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 3 of 10, CPU by pod | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 4 of 10, CPU by pod, against the limit | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 5 of 10, CPU by pod, three of Other picked out | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 6 of 10, CPU by pod, the query narrowed to node-b | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 7 of 10, Request rate, change on last week | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 8 of 10, Memory by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 9 of 10, Error ratio, if this rule had existed | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 10 of 10, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Panel.html | 1500 | 1 of 1, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 1 of 22, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 2 of 22, Latency by route, p99 | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 3 of 22, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 4 of 22, CPU by pod | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 5 of 22, CPU by pod, against the limit | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 6 of 22, CPU by pod, three of Other picked out | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 7 of 22, CPU by pod, the query narrowed to node-b | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 8 of 22, Request rate, change on last week | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 9 of 22, Memory by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 10 of 22, Error ratio, if this rule had existed | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 11 of 22, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 12 of 22, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 13 of 22, Latency by route, p99 | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 14 of 22, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 15 of 22, CPU by pod | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 16 of 22, CPU by pod, against the limit | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 17 of 22, CPU by pod, three of Other picked out | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 18 of 22, CPU by pod, the query narrowed to node-b | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 19 of 22, Request rate, change on last week | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 20 of 22, Memory by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 21 of 22, Error ratio, if this rule had existed | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 22 of 22, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/fixture/index.html | 1500 | 1 of 6, Latency by route, p99 | 0.0000 | 0 | 0.0000 | 0 |
+| dist/fixture/index.html | 1500 | 2 of 6, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/fixture/index.html | 1500 | 3 of 6, CPU by pod | 0.0000 | 0 | 0.0000 | 0 |
+| dist/fixture/index.html | 1500 | 4 of 6, CPU by pod, every namespace | 0.0000 | 0 | 0.0000 | 0 |
+| dist/fixture/index.html | 1500 | 5 of 6, Error ratio by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/fixture/index.html | 1500 | 6 of 6, Error ratio of cart, 7 d | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v9/compositions/charts.html | 1500 | 1 of 4, CPU by pod | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v9/compositions/charts.html | 1500 | 2 of 4, CPU by pod | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v9/compositions/charts.html | 1500 | 3 of 4, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v9/compositions/charts.html | 1500 | 4 of 4, Latency by route, p99 | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v9/compositions/claims.html | 1500 | 1 of 1, Latency by route, p99 | 0.0000 | 0 | 0.0000 | 1 |
+| reviews/system-v9/compositions/dashboard.html | 1500 | 1 of 7, Latency by route, p99 | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v9/compositions/dashboard.html | 1500 | 2 of 7, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v9/compositions/dashboard.html | 1500 | 3 of 7, CPU by pod | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v9/compositions/dashboard.html | 1500 | 4 of 7, CPU by pod, every service | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v9/compositions/dashboard.html | 1500 | 5 of 7, Memory by service | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v9/compositions/dashboard.html | 1500 | 6 of 7, Request rate by service, being edited | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v9/compositions/dashboard.html | 1500 | 7 of 7, Error ratio of cart, if the new rule had existed | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v9/compositions/monitor.html | 1500 | 1 of 1, p99 of checkout-api, by route | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v9/compositions/states.html | 1500 | 1 of 1, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 1 of 10, Latency by route, p99 | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 2 of 10, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 3 of 10, CPU by pod | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 4 of 10, CPU by pod, against the limit | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 5 of 10, CPU by pod, three of Other picked out | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 6 of 10, CPU by pod, the query narrowed to node-b | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 7 of 10, Request rate, change on last week | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 8 of 10, Memory by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 9 of 10, Error ratio, if this rule had existed | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 10 of 10, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/preview/Panel.html | 400 coarse | 1 of 1, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 1 of 22, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 2 of 22, Latency by route, p99 | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 3 of 22, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 4 of 22, CPU by pod | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 5 of 22, CPU by pod, against the limit | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 6 of 22, CPU by pod, three of Other picked out | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 7 of 22, CPU by pod, the query narrowed to node-b | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 8 of 22, Request rate, change on last week | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 9 of 22, Memory by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 10 of 22, Error ratio, if this rule had existed | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 11 of 22, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 12 of 22, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 13 of 22, Latency by route, p99 | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 14 of 22, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 15 of 22, CPU by pod | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 16 of 22, CPU by pod, against the limit | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 17 of 22, CPU by pod, three of Other picked out | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 18 of 22, CPU by pod, the query narrowed to node-b | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 19 of 22, Request rate, change on last week | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 20 of 22, Memory by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 21 of 22, Error ratio, if this rule had existed | 0.0000 | 0 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 22 of 22, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/fixture/index.html | 400 coarse | 1 of 6, Latency by route, p99 | 0.0000 | 0 | 0.0000 | 0 |
+| dist/fixture/index.html | 400 coarse | 2 of 6, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/fixture/index.html | 400 coarse | 3 of 6, CPU by pod | 0.0000 | 0 | 0.0000 | 0 |
+| dist/fixture/index.html | 400 coarse | 4 of 6, CPU by pod, every namespace | 0.0000 | 0 | 0.0000 | 0 |
+| dist/fixture/index.html | 400 coarse | 5 of 6, Error ratio by service | 0.0000 | 0 | 0.0000 | 0 |
+| dist/fixture/index.html | 400 coarse | 6 of 6, Error ratio of cart, 7 d | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v9/compositions/charts.html | 400 coarse | 1 of 4, CPU by pod | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v9/compositions/charts.html | 400 coarse | 2 of 4, CPU by pod | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v9/compositions/charts.html | 400 coarse | 3 of 4, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v9/compositions/charts.html | 400 coarse | 4 of 4, Latency by route, p99 | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v9/compositions/claims.html | 400 coarse | 1 of 1, Latency by route, p99 | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v9/compositions/dashboard.html | 400 coarse | 1 of 7, Latency by route, p99 | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v9/compositions/dashboard.html | 400 coarse | 2 of 7, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v9/compositions/dashboard.html | 400 coarse | 3 of 7, CPU by pod | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v9/compositions/dashboard.html | 400 coarse | 4 of 7, CPU by pod, every service | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v9/compositions/dashboard.html | 400 coarse | 5 of 7, Memory by service | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v9/compositions/dashboard.html | 400 coarse | 6 of 7, Request rate by service, being edited | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v9/compositions/dashboard.html | 400 coarse | 7 of 7, Error ratio of cart, if the new rule had existed | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v9/compositions/monitor.html | 400 coarse | 1 of 1, p99 of checkout-api, by route | 0.0000 | 0 | 0.0000 | 0 |
+| reviews/system-v9/compositions/states.html | 400 coarse | 1 of 1, Request rate by service | 0.0000 | 0 | 0.0000 | 0 |
+
+
+56 pages x 14 configurations (320; 400; 560; 640; 800; 1024; 1280; 1500; 320 coarse; 400 coarse; 768 coarse; 640 at 200%; 720 at 200%; 750 at 200%)
+
+System pages: 0 finding(s)
+
+Flow screens (read only, reported): 0 finding(s)
+
+real	6m40.505s
+user	0m11.390s
+sys	0m2.916s
+ 04:47:13 up 15 min,  0 user,  load average: 9.05, 7.88, 4.47

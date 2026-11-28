@@ -24,7 +24,20 @@
  *   /healthz                                                    → this Worker: asks each backend's health route
  *   /api/v1/bootstrap (POST)                                    → this Worker: first key of a tenant, only while
  *                                                                 the one-time secret VIZ_BOOTSTRAP is set
- *   anything else                                               → 404, JSON listing the entry points
+ *   the web app's documents (/, /explore, …: GET and HEAD)      → this Worker: the document of the build this
+ *                                                                 version was released with, from VIZ_APP
+ *   the app's hashed assets and files (/assets/…, /favicon.svg) → never reach this Worker while they exist: they
+ *                                                                 are this version's static assets, served by
+ *                                                                 Cloudflare by exact path (deploy/lib/app.mjs)
+ *   anything else                                               → 404, JSON listing the entry points; also a
+ *                                                                 hashed asset this version does not hold
+ *
+ * The API comes first: a path `routeOf` routes is never the app's, whatever VIZ_APP says, and an
+ * unknown API path is the JSON 404, never a page (design/DECISIONS.md D74). The API's part of the
+ * path space is `api-roots.json` (`/api/`, `/v1/`, `/loki/`, `/oauth/`, `/.well-known/`, `/mcp`,
+ * `/healthz`): `routeOf` routes nothing outside it, no document may lie inside it, and
+ * deploy/lib/app.mjs reads the same file to refuse an app/serve.json that would put a static file
+ * there (the asset layer answers a file before this Worker runs; review of D74, m-4).
  *
  * Hosts (D75): the canonical host is PUBLIC_URL's (viz.bitcru.sh in production, a stage's
  * workers.dev URL). A host named in VIZ_HOST_ALIASES (vis.bitcru.sh, the old address) gets:
@@ -43,6 +56,8 @@
  * stream), and the backend's response is returned with its status, status text, headers and
  * body stream; the only change is the added `x-viz-route` header. Nothing is buffered.
  */
+
+import API_ROOTS from './api-roots.json'
 
 export interface Env {
   INGEST: Fetcher
@@ -67,10 +82,26 @@ export interface Env {
    * `domain_aliases`: JSON `[{ "host": "vis.bitcru.sh", "deprecated": <unix seconds> }]`. Absent or `[]`: none.
    */
   VIZ_HOST_ALIASES?: string
+  /**
+   * The web app this version serves, set by deploy/configure.mjs from app/serve.json and the build
+   * (deploy/lib/app.mjs `appVar`): JSON `{ "v": 1, "build": "<hash>", "etag": "\"…\"", "documents":
+   * ["/", …], "headers": { … }, "document": "<!doctype html>…" }`. Without it there is no app and
+   * every such path is the ordinary 404.
+   */
+  VIZ_APP?: string
 }
 
 export type Backend = 'ingest' | 'query' | 'control' | 'ruler' | 'mcp'
 export type Route = Backend | 'health' | 'bootstrap'
+
+/** The web app as VIZ_APP describes it. */
+export interface App {
+  build: string
+  etag: string
+  documents: ReadonlySet<string>
+  headers: Readonly<Record<string, string>>
+  document: string
+}
 
 const INGEST_PATHS = new Set(['/api/v1/write', '/api/v1/push', '/v1/metrics'])
 /**
@@ -116,8 +147,19 @@ const AGENT_ROOT = '/api/v1/agent'
 const MCP_OAUTH_PATHS = new Set(['/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/mcp'])
 const CONTROL_OAUTH_PATHS = new Set(['/.well-known/oauth-authorization-server', '/oauth/register', '/oauth/authorize', '/oauth/token', '/oauth/revoke'])
 
+/**
+ * Whether a path is in the API's part of the path space (api-roots.json): under a prefix (or the
+ * prefix without its slash), or an exact root or anything under it. The web app has nothing there.
+ */
+export function underApiRoot(path: string): boolean {
+  return API_ROOTS.prefixes.some((p) => path.startsWith(p) || `${path}/` === p) || API_ROOTS.exact.some((p) => path === p || path.startsWith(`${p}/`))
+}
+
 /** Which handler a path goes to, or null for 404. Exact paths (one segment for a path parameter), except the prefixes. */
 export function routeOf(path: string): Route | null {
+  // Nothing outside the API's roots is ever routed to a backend: a new route under a new root must
+  // be added to api-roots.json, where the app's serve.json is then held clear of it.
+  if (!underApiRoot(path)) return null
   if (path === '/healthz') return 'health'
   if (path === '/api/v1/bootstrap') return 'bootstrap'
   if (INGEST_PATHS.has(path) || SIGNAL_INGEST_PATHS.has(path)) return 'ingest'
@@ -368,6 +410,76 @@ async function onAlias(req: Request, env: Env, url: URL, alias: HostAlias, origi
   return json(308, { status: 'moved', error: `${url.host} has moved to ${new URL(origin).host}; use ${location}`, location }, 'redirect', { Location: location })
 }
 
+// ---- the web app ----
+
+/**
+ * VIZ_APP, parsed and checked; null when it is absent or not what configure.mjs writes (then there
+ * is no app, rather than a page with headers guessed). A document path is a plain path outside the
+ * API's roots (so one `routeOf` can never route, now or after a route is added): the API's paths
+ * are never the app's.
+ */
+export function parseApp(raw: string | undefined): App | null {
+  if (!raw) return null
+  try {
+    const v = JSON.parse(raw) as { v?: unknown; build?: unknown; etag?: unknown; documents?: unknown; headers?: unknown; document?: unknown }
+    if (v.v !== 1 || typeof v.build !== 'string' || typeof v.document !== 'string' || v.document === '') return null
+    if (typeof v.etag !== 'string' || !/^"[0-9a-f]{8,64}"$/.test(v.etag)) return null
+    if (!Array.isArray(v.documents) || v.documents.length === 0 || !v.documents.every((p) => typeof p === 'string' && p.startsWith('/') && !underApiRoot(p) && routeOf(p) === null)) return null
+    if (typeof v.headers !== 'object' || v.headers === null || Array.isArray(v.headers)) return null
+    const headers: Record<string, string> = {}
+    for (const [name, value] of Object.entries(v.headers)) {
+      if (typeof value !== 'string' || !/^[\x20-\x7e]+$/.test(value)) return null
+      headers[name] = value
+    }
+    const lower = new Map(Object.entries(headers).map(([k, x]) => [k.toLowerCase(), x]))
+    // A document without its policy, or one a cache may keep, is not served at all.
+    if (!lower.get('content-security-policy') || !/^text\/html\b/.test(lower.get('content-type') ?? '') || !/\bno-cache\b|\bno-store\b/.test(lower.get('cache-control') ?? '')) return null
+    return { build: v.build, etag: v.etag, documents: new Set(v.documents as string[]), headers, document: v.document }
+  } catch {
+    return null
+  }
+}
+
+/** The app of the var last seen: an isolate parses each value once. */
+let appCache: { raw: string | undefined; app: App | null } | null = null
+function appOf(env: Env): App | null {
+  if (appCache === null || appCache.raw !== env.VIZ_APP) {
+    appCache = { raw: env.VIZ_APP, app: parseApp(env.VIZ_APP) }
+    if (env.VIZ_APP && appCache.app === null) console.error('gateway: VIZ_APP is not a description of the web app; no page is served')
+  }
+  return appCache.app
+}
+
+/** `If-None-Match` names this entity tag (weak comparison: a compressing proxy weakens the tag), or `*`. */
+function matchesEtag(header: string | null, etag: string): boolean {
+  if (!header) return false
+  return header.split(',').some((t) => {
+    const tag = t.trim()
+    return tag === '*' || tag === etag || tag === `W/${etag}`
+  })
+}
+
+/**
+ * A document of the web app: 200 with the build's document and exactly the headers app/serve.json
+ * gives a document, for GET and HEAD of a listed path; null for everything else (the caller
+ * answers 404). The path is compared exactly, as the URL parser gives it: `/explore/`, `/Explore`,
+ * `/%65xplore` and `/index.html` are not documents. That parser has already removed dot segments
+ * (also percent-encoded ones), so `/assets/..` and `/api/v1/%2e%2e/%2e%2e/explore` arrive here as
+ * `/` and `/explore` and ARE the document, with its policy; the same parsing sends
+ * `/assets/../api/v1/query` to the API, as before D74 (review of D74, n-2; observed in local
+ * workerd). A revalidation that names the document's entity tag gets 304.
+ */
+function appDocument(req: Request, env: Env, path: string): Response | null {
+  const app = appOf(env)
+  if (app === null || !app.documents.has(path)) return null
+  if (req.method !== 'GET' && req.method !== 'HEAD') return null
+  const headers = new Headers(app.headers)
+  headers.set('ETag', app.etag)
+  headers.set('x-viz-route', 'app')
+  if (matchesEtag(req.headers.get('If-None-Match'), app.etag)) return new Response(null, { status: 304, headers })
+  return new Response(req.method === 'HEAD' ? null : app.document, { status: 200, headers })
+}
+
 export async function handle(req: Request, env: Env, now = Date.now()): Promise<Response> {
   const url = new URL(req.url)
   const aliases = hostAliases(env.VIZ_HOST_ALIASES)
@@ -380,10 +492,16 @@ export async function handle(req: Request, env: Env, now = Date.now()): Promise<
     }
   } else {
     const alias = aliases.find((a) => a.host === url.hostname)
+    // An alias host gets its data paths and a 308 for everything else, the app's documents included
+    // (D75 with D74): the app is served on the canonical host only. Its static assets never reach
+    // this Worker while they exist (deploy/README.md, "The app on vis.bitcru.sh").
     if (alias && origin !== null && url.host !== new URL(origin).host) return onAlias(req, env, url, alias, origin)
   }
-  const route = routeOf(url.pathname)
-  if (route === null) return notFound()
+  const path = url.pathname
+  const route = routeOf(path)
+  // Not the API's: a document of the app, or the 404 (also for an asset this version does not hold,
+  // which Cloudflare hands to the Worker: never the document, never cached).
+  if (route === null) return appDocument(req, env, path) ?? notFound()
   if (route === 'health') return health(req, env)
   if (route === 'bootstrap') return bootstrap(req, env, now)
   return forward(req, env, route)

@@ -1,0 +1,179 @@
+TAP version 13
+# Subtest: B2, sequence D: a pod comes back while its slot is held only by a hidden series: it takes its slot back
+ok 1 - B2, sequence D: a pod comes back while its slot is held only by a hidden series: it takes its slot back
+  ---
+  duration_ms: 34.459912
+  type: 'test'
+  ...
+# Subtest: B2, sequence D as the reviewer ran it (36 pods): hiding the newcomer gives its slot to the largest grey pod at once; the returning pod finds it held on screen
+ok 2 - B2, sequence D as the reviewer ran it (36 pods): hiding the newcomer gives its slot to the largest grey pod at once; the returning pod finds it held on screen
+  ---
+  duration_ms: 65.053421
+  type: 'test'
+  ...
+# Subtest: B2, sequence E: "Without the three largest", a larger pod arrives, "Colour the eight largest", clear: each step follows what is on screen
+ok 3 - B2, sequence E: "Without the three largest", a larger pod arrives, "Colour the eight largest", clear: each step follows what is on screen
+  ---
+  duration_ms: 12.856752
+  type: 'test'
+  ...
+# Subtest: Rubric blocker: a readout naming a smaller series as highest
+ok 4 - Rubric blocker: a readout naming a smaller series as highest
+  ---
+  duration_ms: 3.665872
+  type: 'test'
+  ...
+# Subtest: Rubric blocker: a series on screen changing colour while it stays on screen (deploy churn, a filter, a query edit)
+ok 5 - Rubric blocker: a series on screen changing colour while it stays on screen (deploy churn, a filter, a query edit)
+  ---
+  duration_ms: 7.204684
+  type: 'test'
+  ...
+# Subtest: Rubric blocker: the largest series on screen grey while a slot is open (here held only by a hidden series)
+ok 6 - Rubric blocker: the largest series on screen grey while a slot is open (here held only by a hidden series)
+  ---
+  duration_ms: 4.272913
+  type: 'test'
+  ...
+# Subtest: Rubric blocker: a series coming back grey or in another colour while no series on screen holds its slot
+ok 7 - Rubric blocker: a series coming back grey or in another colour while no series on screen holds its slot
+  ---
+  duration_ms: 2.343939
+  type: 'test'
+  ...
+# Subtest: v8: a pod that misses one result while pods are grey: its slot goes to the largest grey pod; it comes back in Other, offered the recolour
+ok 8 - v8: a pod that misses one result while pods are grey: its slot goes to the largest grey pod; it comes back in Other, offered the recolour
+  ---
+  duration_ms: 5.089153
+  type: 'test'
+  ...
+# Subtest: Rubric blocker: a query edited to series it does not share and edited back not returning every colour (v5 review, image 02)
+ok 9 - Rubric blocker: a query edited to series it does not share and edited back not returning every colour (v5 review, image 02)
+  ---
+  duration_ms: 6.098147
+  type: 'test'
+  ...
+# Subtest: v5 image 01 under v7: filter out the three largest, a larger pod arrives, clear: the three take colours back only where nothing on screen holds them
+ok 10 - v5 image 01 under v7: filter out the three largest, a larger pod arrives, clear: the three take colours back only where nothing on screen holds them
+  ---
+  duration_ms: 11.948427
+  type: 'test'
+  ...
+# Subtest: A filter round trip with nothing grey on screen returns every colour (eight services, filter in the query)
+ok 11 - A filter round trip with nothing grey on screen returns every colour (eight services, filter in the query)
+  ---
+  duration_ms: 6.493936
+  type: 'test'
+  ...
+# Subtest: Flow screen 5: one series, a query that returns 36 pods, and back: the one series returns in slot 1
+ok 12 - Flow screen 5: one series, a query that returns 36 pods, and back: the one series returns in slot 1
+  ---
+  duration_ms: 1.140918
+  type: 'test'
+  ...
+# Subtest: M1 (v7 review), image 03: a query narrowed to node-b colours the eight largest on screen, as the same dashboard filter does
+not ok 13 - M1 (v7 review), image 03: a query narrowed to node-b colours the eight largest on screen, as the same dashboard filter does
+  ---
+  duration_ms: 14.204321
+  type: 'test'
+  location: '/home/user/viz/design-system/tools/test/chart-rules.test.mjs:303:1'
+  failureType: 'testCodeFailure'
+  error: `the eight largest on node-b are coloured: "Colour the eight largest" would change nothing and is not offered (v9: the v8 review's m3)`
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: true
+  actual: false
+  operator: '=='
+  stack: |-
+    TestContext.<anonymous> (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:313:10)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: m3 (v8 review), image 02: "Colour the eight largest" is offered only when pressing it would change a colour
+not ok 14 - m3 (v8 review), image 02: "Colour the eight largest" is offered only when pressing it would change a colour
+  ---
+  duration_ms: 4.625796
+  type: 'test'
+  location: '/home/user/viz/design-system/tools/test/chart-rules.test.mjs:318:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    at load the eight largest are coloured: only "Show 20 more of Other" is offered (v8 offered the recolour too, image 02 panel 1)
+    + actual - expected
+    
+      [
+        'more',
+    +   'recolour'
+      ]
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    0: 'more'
+  actual:
+    0: 'more'
+    1: 'recolour'
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:321:10)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: v8 twins: 300 random sequences of 30 steps narrowing and widening by query edit and by dashboard filter, with legend toggles: the same colours, every property held
+ok 15 - v8 twins: 300 random sequences of 30 steps narrowing and widening by query edit and by dashboard filter, with legend toggles: the same colours, every property held
+  ---
+  duration_ms: 9540.750184
+  type: 'test'
+  ...
+# Subtest: Random sequences of arrivals, departures, filters, query edits, Other opened and picked, recolouring (400 of 30 steps)
+ok 16 - Random sequences of arrivals, departures, filters, query edits, Other opened and picked, recolouring (400 of 30 steps)
+  ---
+  duration_ms: 9888.134975
+  type: 'test'
+  ...
+# Subtest: M2: values below zero: the axis extends below zero and every value lies on the plot
+ok 17 - M2: values below zero: the axis extends below zero and every value lies on the plot
+  ---
+  duration_ms: 0.493231
+  type: 'test'
+  ...
+# Subtest: M2: a threshold is on the axis and does not inflate it
+ok 18 - M2: a threshold is on the axis and does not inflate it
+  ---
+  duration_ms: 0.144967
+  type: 'test'
+  ...
+# Subtest: M2: precision is one decimal place finer than the place of the step's leading digit
+ok 19 - M2: precision is one decimal place finer than the place of the step's leading digit
+  ---
+  duration_ms: 0.261638
+  type: 'test'
+  ...
+# Subtest: M2: negative values keep their sign, and a small one says which side of zero it is
+ok 20 - M2: negative values keep their sign, and a small one says which side of zero it is
+  ---
+  duration_ms: 0.23772
+  type: 'test'
+  ...
+# Subtest: M1 (v5), image 06: a member of Other above the threshold is in the text form
+ok 21 - M1 (v5), image 06: a member of Other above the threshold is in the text form
+  ---
+  duration_ms: 3.113147
+  type: 'test'
+  ...
+1..21
+# tests 21
+# suites 0
+# pass 19
+# fail 2
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 19741.648192

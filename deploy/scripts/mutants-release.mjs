@@ -133,7 +133,8 @@ const MUTANTS = [
   ['D75: hostnames other than the manifest\'s are not refused', 'lib/domains.mjs', '    if (planned && JSON.stringify(planned) !== JSON.stringify(hosts)) {', '    if (false) {'],
   ['D75: deploy does not read the account\'s custom domains', 'release.mjs', "  const domains = customDomainProblems(manifest, configOfGenerated, await domainsNow(manifest, listCustomDomains))\n  log(`run ${run}`)", "  const domains = customDomainProblems(manifest, configOfGenerated, null)\n  log(`run ${run}`)"],
   ['D75: smoke follows the data-path redirect on vis', 'smoke.mjs', "body: new Uint8Array(0), redirect: 'manual' })", 'body: new Uint8Array(0) })'],
-  ['D75: smoke accepts any redirect of OAuth on vis', 'smoke.mjs', "if (r.status !== 308 || r.headers.get('Location')", "if (r.status < 300 || r.status > 399 || r.headers.get('Location')"],
+  // (The pattern starts at its line, six spaces in: the web app's check below it has the same test, further in.)
+  ['D75: smoke accepts any redirect of OAuth on vis', 'smoke.mjs', "\n      if (r.status !== 308 || r.headers.get('Location')", "\n      if (r.status < 300 || r.status > 399 || r.headers.get('Location')"],
   // The review of D69, round 2: M2-1 (a release from before format records) and m2-1 (what the scan cannot read)
   ['M2-1: a rollback target from before format records does not get its release\'s formats record', 'release.mjs', '  const full = withRecordedFormats(record ?? JSON.parse(readFileSync(recordFile, \'utf8\')), stage)', '  const full = record ?? JSON.parse(readFileSync(recordFile, \'utf8\'))'],
   ['M2-1: a version that declares no formats does not get its release\'s formats record', 'release.mjs', "  const rec = recordedFormats(plainVarOf(info, 'VIZ_RELEASE') ?? annotation(info, 'workers/tag'))", '  const rec = null'],

@@ -1,0 +1,130 @@
+{
+ "name": "4-monitor",
+ "url": "flows/dist/4-monitor.html",
+ "states": [
+  {
+   "name": "1440",
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "400",
+   "width": 400,
+   "coarse": true,
+   "measure": true
+  },
+  {
+   "name": "grey",
+   "scale": 1,
+   "greyscale": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "focus",
+   "steps": [
+    {
+     "focus": ".vz-button[data-tone=\"green\"]"
+    }
+   ],
+   "clip": "header",
+   "pad": 24,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "400-hit-areas",
+   "url": "flows/dist/4-monitor.html#",
+   "width": 400,
+   "coarse": true,
+   "measure": true,
+   "themes": [
+    "light"
+   ],
+   "outline": true
+  },
+  {
+   "name": "silence-menu-400",
+   "url": "flows/dist/4-monitor.html#silence-menu",
+   "width": 400,
+   "coarse": true,
+   "measure": true,
+   "themes": [
+    "light",
+    "dark"
+   ],
+   "height": 800
+  },
+  {
+   "name": "ack-400",
+   "url": "flows/dist/4-monitor.html#ack",
+   "width": 400,
+   "coarse": true,
+   "measure": true,
+   "themes": [
+    "light",
+    "dark"
+   ]
+  },
+  {
+   "name": "silenced-400",
+   "url": "flows/dist/4-monitor.html#silenced",
+   "width": 400,
+   "coarse": true,
+   "measure": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "notice-400",
+   "url": "flows/dist/4-monitor.html#notice",
+   "width": 400,
+   "coarse": true,
+   "measure": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "error-400",
+   "url": "flows/dist/4-monitor.html#error",
+   "width": 400,
+   "coarse": true,
+   "measure": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "nodata-400",
+   "url": "flows/dist/4-monitor.html#nodata",
+   "width": 400,
+   "coarse": true,
+   "measure": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "silence-menu-1440",
+   "url": "flows/dist/4-monitor.html#silence-menu",
+   "scale": 1,
+   "measure": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "zoom-200",
+   "zoom": 2,
+   "scale": 1,
+   "measure": true,
+   "themes": [
+    "light"
+   ]
+  }
+ ]
+}

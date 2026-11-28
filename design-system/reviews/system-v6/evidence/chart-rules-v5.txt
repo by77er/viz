@@ -1,0 +1,237 @@
+TAP version 13
+# Subtest: B1, image 01: filter out the three largest, a larger pod arrives, clear: the largest returns in its own colour
+not ok 1 - B1, image 01: filter out the three largest, a larger pod arrives, clear: the largest returns in its own colour
+  ---
+  duration_ms: 40.405758
+  type: 'test'
+  location: '/home/user/viz/design-system/tools/test/chart-rules.test.mjs:145:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    checkout-api-7d9f8c6b5-3742c came back in slot 0, had 1
+    
+    0 !== 1
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 1
+  actual: 0
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:153:43)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.start (node:internal/test_runner/test:944:17)
+    startSubtestAfterBootstrap (node:internal/test_runner/harness:296:17)
+  ...
+# Subtest: B1, image 02: edit the query to another service and back: every colour returns, and the note stays true
+not ok 2 - B1, image 02: edit the query to another service and back: every colour returns, and the note stays true
+  ---
+  duration_ms: 10.5164
+  type: 'test'
+  location: '/home/user/viz/design-system/tools/test/chart-rules.test.mjs:157:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    checkout-api-7d9f8c6b5-b2d84: slot 0, had 4
+    
+    0 !== 4
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 4
+  actual: 0
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:163:39)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+# Subtest: B1, flow screen 5: one series, a query that returns 36 pods, and back: the one series returns in slot 1
+not ok 3 - B1, flow screen 5: one series, a query that returns 36 pods, and back: the one series returns in slot 1
+  ---
+  duration_ms: 4.517988
+  type: 'test'
+  location: '/home/user/viz/design-system/tools/test/chart-rules.test.mjs:167:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    cart came back grey or in another colour
+    
+    0 !== 1
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 1
+  actual: 0
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:171:10)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: B1: a filter in the query (not the chart) applied and cleared, with pods arriving meanwhile
+not ok 4 - B1: a filter in the query (not the chart) applied and cleared, with pods arriving meanwhile
+  ---
+  duration_ms: 8.458643
+  type: 'test'
+  location: '/home/user/viz/design-system/tools/test/chart-rules.test.mjs:174:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    
+    0 !== 4
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 4
+  actual: 0
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:182:31)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: B1: random sequences of arrivals, departures, filters, query edits, Other opened and picked, recolouring
+not ok 5 - B1: random sequences of arrivals, departures, filters, query edits, Other opened and picked, recolouring
+  ---
+  duration_ms: 2.098957
+  type: 'test'
+  location: '/home/user/viz/design-system/tools/test/chart-rules.test.mjs:185:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    P2 first result > arrive node=node-d,pod=pod-035 > leave node=node-d,pod=pod-007 > leave node=node-a,pod=pod-004 > arrive node=node-d,pod=pod-031 > values move > edit the query > edit it back: node=node-a,pod=pod-000 came back in slot 0, had 2
+    
+    0 !== 2
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 2
+  actual: 0
+  operator: 'strictEqual'
+  stack: |-
+    runSequence (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:137:43)
+    TestContext.<anonymous> (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:186:55)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: M2: values below zero: the axis extends below zero and every value lies on the plot
+not ok 6 - M2: values below zero: the axis extends below zero and every value lies on the plot
+  ---
+  duration_ms: 0.264893
+  type: 'test'
+  location: '/home/user/viz/design-system/tools/test/chart-rules.test.mjs:189:1'
+  failureType: 'testCodeFailure'
+  error: 'axis undefined to NaN'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: true
+  actual: false
+  operator: '=='
+  stack: |-
+    TestContext.<anonymous> (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:191:10)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: M2: a threshold is on the axis and does not inflate it
+not ok 7 - M2: a threshold is on the axis and does not inflate it
+  ---
+  duration_ms: 0.166249
+  type: 'test'
+  location: '/home/user/viz/design-system/tools/test/chart-rules.test.mjs:197:1'
+  failureType: 'testCodeFailure'
+  error: 'top NaN (v5 put it at 6 from threshold x 1.15 then a step of 2)'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: true
+  actual: false
+  operator: '=='
+  stack: |-
+    TestContext.<anonymous> (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:199:10)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: M2: precision is one decimal place finer than the place of the step's leading digit
+ok 8 - M2: precision is one decimal place finer than the place of the step's leading digit
+  ---
+  duration_ms: 32.103291
+  type: 'test'
+  ...
+# Subtest: M2: negative values keep their sign, and a small one says which side of zero it is
+not ok 9 - M2: negative values keep their sign, and a small one says which side of zero it is
+  ---
+  duration_ms: 8.727768
+  type: 'test'
+  location: '/home/user/viz/design-system/tools/test/chart-rules.test.mjs:209:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    
+    '< 0.1' !== '> −0.1'
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: '> −0.1'
+  actual: '< 0.1'
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:210:10)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: M1, image 06: a member of Other above the threshold is in the text form
+not ok 10 - M1, image 06: a member of Other above the threshold is in the text form
+  ---
+  duration_ms: 0.373691
+  type: 'test'
+  location: '/home/user/viz/design-system/tools/test/chart-rules.test.mjs:215:1'
+  failureType: 'testCodeFailure'
+  error: 'v5 has no text form outside a page'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: true
+  actual: false
+  operator: '=='
+  stack: |-
+    TestContext.<anonymous> (file:///home/user/viz/design-system/tools/test/chart-rules.test.mjs:216:10)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+1..10
+# tests 10
+# suites 0
+# pass 1
+# fail 9
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 283.204618

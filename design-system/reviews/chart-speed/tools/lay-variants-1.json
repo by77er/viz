@@ -1,0 +1,8 @@
+{"base": "",
+ "noContainer": ".vz-chart .vz-table-wrap { container-type: normal; }",
+ "noScrollAnim": ".vz-chart .vz-table-wrap { animation: none; }",
+ "cvVisible": ".vz-chart { content-visibility: visible; }",
+ "noSticky": ".vz-chart .vz-table th:first-child, .vz-chart .vz-table td:first-child { position: static; }",
+ "noOverflow": ".vz-chart .vz-table.vz-legend-table th, .vz-chart .vz-table.vz-legend-table td { overflow: visible; }",
+ "autoLayout": ".vz-chart .vz-table.vz-legend-table { table-layout: auto; }"
+}

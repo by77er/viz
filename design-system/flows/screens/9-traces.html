@@ -1,0 +1,81 @@
+<!-- nav: Traces -->
+<!-- title: Traces -->
+<main class="vz-page" id="main">
+  <header class="vz-page-head">
+    <div><h1 class="vz-page-title">Traces</h1>
+      <p class="vz-page-sub">POST /v2/orders on checkout-api, slower than <span class="vz-qty">500 ms</span>, 13:02 to 15:16: 3,412 of 17,046 traces. 1 request in 100 is traced.</p></div>
+    <div class="vz-controls"><a class="vz-link" href="#">Edit the search in Explore</a></div>
+  </header>
+  <div class="vz-query" aria-label="Search">{service=&quot;checkout-api&quot;, route=&quot;POST /v2/orders&quot;} | duration &gt; 500ms | since 13:02</div>
+
+  <section class="vz-panel"><div class="vz-panel-head"><h2 class="vz-panel-title">Duration of POST /v2/orders</h2><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min max</span><span>· updated <span class="vz-qty">12 s</span> ago</span></span></div>
+    <p class="vz-panel-desc">All requests, not only the traced ones. The trace below is marked where it happened.</p>
+    <div class="vz-panel-body"><div class="vz-chart" id="dur" data-view="traces-duration" style="--legend-rows:2;--legend-notes:0"></div></div></section>
+
+  <div class="vz-split">
+    <div>
+      <section class="vz-panel"><div class="vz-panel-head"><h2 class="vz-panel-title">Trace 4bf9…4736</h2><span class="vz-panel-meta"><span>started 15:14:52</span><span>· <span class="vz-qty">1,204 ms</span></span><span>· 8 spans</span><span>· pod checkout-api-7d9f…x2k4p</span></span></div>
+        <p class="vz-panel-desc" data-unless="error">payments-db took <span class="vz-qty">957 ms</span> of the <span class="vz-qty">1,204 ms</span>, in two calls. Everything else together took <span class="vz-qty">247 ms</span>.</p>
+        <div class="vz-panel-body" data-when="error"><div class="vz-empty"><p class="vz-empty-title"><span class="vz-mark" data-state="critical"></span>Could not load the spans of this trace</p><p>The trace store answered 503, overloaded, at 15:16. The list of slow traces is complete; only this trace's spans are missing.</p><div class="vz-controls"><button class="vz-button" data-size="sm">Try again</button></div></div></div>
+        <div class="vz-panel-body" data-unless="error"><p class="vz-table-caption">8 spans in the order they started. The strongest bars and names are where the time went.</p>
+        <div class="vz-table-wrap"><table class="vz-table vz-waterfall" data-fold role="treegrid" aria-label="Spans of trace 4bf9…4736">
+          <thead><tr role="row"><th role="columnheader" class="vz-label">Span</th><th role="columnheader" class="vz-label vz-right" data-priority="1">Took, ms</th><th role="columnheader" class="vz-label vz-right">Own, ms</th><th role="columnheader" class="vz-label vz-waterfall-time" data-priority="1"><span class="vz-waterfall-scale" aria-label="From 0 to 1,204 ms"><span>0</span><span>1,204 ms</span></span></th><th role="columnheader" class="vz-label vz-right">Starts at, ms</th></tr></thead>
+          <tbody>
+            <tr role="row" data-span="1" aria-level="1" aria-expanded="true"><td role="gridcell" data-key><button class="vz-tree-toggle" tabindex="-1" aria-expanded="true" aria-label="Spans inside checkout-api: POST /v2/orders"></button><button class="vz-waterfall-span" tabindex="0" aria-label="checkout-api: POST /v2/orders, started at 0 ms, took 1,204 ms, own time 26 ms, 7 spans inside"><span class="vz-waterfall-name">checkout-api: POST /v2/orders</span><span class="vz-waterfall-inside">7 spans inside</span></button></td><td role="gridcell" class="vz-num vz-right" data-priority="1">1,204</td><td role="gridcell" class="vz-num vz-right" data-label="Own, ms">26</td><td role="gridcell" class="vz-waterfall-time" data-priority="1"><span class="vz-waterfall-bar" style="--at: 0.0000; --len: 1.0000"></span></td><td role="gridcell" class="vz-num vz-right" data-label="Starts at, ms">0</td></tr>
+            <tr role="row" data-span="2" aria-level="2" data-parent="1"><td role="gridcell" data-key><span class="vz-tree-gap"></span><button class="vz-waterfall-span" tabindex="-1" aria-label="auth: verify session, started at 4 ms, took 18 ms, own time 18 ms"><span class="vz-waterfall-name">auth: verify session</span></button></td><td role="gridcell" class="vz-num vz-right" data-priority="1">18</td><td role="gridcell" class="vz-num vz-right" data-label="Own, ms">18</td><td role="gridcell" class="vz-waterfall-time" data-priority="1"><span class="vz-waterfall-bar" style="--at: 0.0033; --len: 0.0150"></span></td><td role="gridcell" class="vz-num vz-right" data-label="Starts at, ms">4</td></tr>
+            <tr role="row" data-span="3" aria-level="2" data-parent="1"><td role="gridcell" data-key><span class="vz-tree-gap"></span><button class="vz-waterfall-span" tabindex="-1" aria-label="cart: load cart, started at 24 ms, took 37 ms, own time 37 ms"><span class="vz-waterfall-name">cart: load cart</span></button></td><td role="gridcell" class="vz-num vz-right" data-priority="1">37</td><td role="gridcell" class="vz-num vz-right" data-label="Own, ms">37</td><td role="gridcell" class="vz-waterfall-time" data-priority="1"><span class="vz-waterfall-bar" style="--at: 0.0199; --len: 0.0307"></span></td><td role="gridcell" class="vz-num vz-right" data-label="Starts at, ms">24</td></tr>
+            <tr role="row" data-span="4" aria-level="2" data-parent="1"><td role="gridcell" data-key><span class="vz-tree-gap"></span><button class="vz-waterfall-span" tabindex="-1" aria-label="inventory: reserve items, started at 63 ms, took 118 ms, own time 118 ms"><span class="vz-waterfall-name">inventory: reserve items</span></button></td><td role="gridcell" class="vz-num vz-right" data-priority="1">118</td><td role="gridcell" class="vz-num vz-right" data-label="Own, ms">118</td><td role="gridcell" class="vz-waterfall-time" data-priority="1"><span class="vz-waterfall-bar" style="--at: 0.0523; --len: 0.0980"></span></td><td role="gridcell" class="vz-num vz-right" data-label="Starts at, ms">63</td></tr>
+            <tr role="row" data-span="5" aria-level="2" data-parent="1" data-heavy aria-selected="true"><td role="gridcell" data-key><span class="vz-tree-gap"></span><button class="vz-waterfall-span" tabindex="-1" aria-label="payments-db: SELECT payment_intents, started at 184 ms, took 702 ms, own time 702 ms"><span class="vz-waterfall-name">payments-db: SELECT payment_intents</span></button></td><td role="gridcell" class="vz-num vz-right" data-priority="1">702</td><td role="gridcell" class="vz-num vz-right" data-label="Own, ms">702</td><td role="gridcell" class="vz-waterfall-time" data-priority="1"><span class="vz-waterfall-bar" style="--at: 0.1528; --len: 0.5831"></span></td><td role="gridcell" class="vz-num vz-right" data-label="Starts at, ms">184</td></tr>
+            <tr role="row" data-span="6" aria-level="2" data-parent="1" data-heavy><td role="gridcell" data-key><span class="vz-tree-gap"></span><button class="vz-waterfall-span" tabindex="-1" aria-label="payments-db: UPDATE payment_intents, started at 888 ms, took 255 ms, own time 255 ms"><span class="vz-waterfall-name">payments-db: UPDATE payment_intents</span></button></td><td role="gridcell" class="vz-num vz-right" data-priority="1">255</td><td role="gridcell" class="vz-num vz-right" data-label="Own, ms">255</td><td role="gridcell" class="vz-waterfall-time" data-priority="1"><span class="vz-waterfall-bar" style="--at: 0.7375; --len: 0.2118"></span></td><td role="gridcell" class="vz-num vz-right" data-label="Starts at, ms">888</td></tr>
+            <tr role="row" data-span="7" aria-level="2" data-parent="1"><td role="gridcell" data-key><span class="vz-tree-gap"></span><button class="vz-waterfall-span" tabindex="-1" aria-label="orders-db: INSERT orders, started at 1,146 ms, took 34 ms, own time 34 ms"><span class="vz-waterfall-name">orders-db: INSERT orders</span></button></td><td role="gridcell" class="vz-num vz-right" data-priority="1">34</td><td role="gridcell" class="vz-num vz-right" data-label="Own, ms">34</td><td role="gridcell" class="vz-waterfall-time" data-priority="1"><span class="vz-waterfall-bar" style="--at: 0.9518; --len: 0.0282"></span></td><td role="gridcell" class="vz-num vz-right" data-label="Starts at, ms">1,146</td></tr>
+            <tr role="row" data-span="8" aria-level="2" data-parent="1"><td role="gridcell" data-key><span class="vz-tree-gap"></span><button class="vz-waterfall-span" tabindex="-1" aria-label="queue: publish order.created, started at 1,182 ms, took 14 ms, own time 14 ms"><span class="vz-waterfall-name">queue: publish order.created</span></button></td><td role="gridcell" class="vz-num vz-right" data-priority="1">14</td><td role="gridcell" class="vz-num vz-right" data-label="Own, ms">14</td><td role="gridcell" class="vz-waterfall-time" data-priority="1"><span class="vz-waterfall-bar" style="--at: 0.9817; --len: 0.0116"></span></td><td role="gridcell" class="vz-num vz-right" data-label="Starts at, ms">1,182</td></tr>
+          </tbody></table></div>
+        <div class="vz-stack" data-span-detail aria-live="polite"><p class="vz-text vz-text-ui-strong">payments-db: SELECT payment_intents</p>
+          <dl class="vz-kv"><dt>Started at</dt><dd><span class="vz-qty">184 ms</span> into the trace</dd><dt>Took</dt><dd><span class="vz-qty">702 ms</span>, all of it its own: <span class="vz-qty">58%</span> of the trace</dd></dl>
+          <ul class="vz-links"><li><a class="vz-link" href="10-logs.html">Logs from this span</a></li></ul></div></div>
+        <ul class="vz-links"><li><a class="vz-link" href="6-investigation.html">The agent's report on this alert</a></li></ul></section>
+    </div>
+    <div>
+      <section class="vz-panel"><div class="vz-panel-head"><h2 class="vz-panel-title">Slowest traces</h2><span class="vz-panel-meta"><span>13:02 to 15:16</span></span></div>
+        <div class="vz-panel-body"><p class="vz-table-caption">5 of 3,412, slowest first.</p>
+        <div class="vz-table-wrap"><table class="vz-table" data-fold role="table" aria-label="Slowest traces">
+          <thead><tr role="row"><th role="columnheader" class="vz-label">Trace</th><th role="columnheader" class="vz-label vz-right" data-priority="1">Took, ms</th><th role="columnheader" class="vz-label">Started</th><th role="columnheader" class="vz-label">Slowest span</th></tr></thead>
+          <tbody>
+            <tr role="row" aria-current="true"><td role="cell" data-key><a class="vz-link" href="#" aria-current="true" id="first-trace">4bf9…4736</a></td><td role="cell" class="vz-num vz-right" data-priority="1">1,204</td><td role="cell" class="vz-num" data-label="Started">15:14:52</td><td role="cell" data-label="Slowest">payments-db, <span class="vz-qty">702 ms</span></td></tr>
+            <tr role="row"><td role="cell" data-key><a class="vz-link" href="#">a3c1…09be</a></td><td role="cell" class="vz-num vz-right" data-priority="1">1,188</td><td role="cell" class="vz-num" data-label="Started">14:51:07</td><td role="cell" data-label="Slowest">payments-db, <span class="vz-qty">690 ms</span></td></tr>
+            <tr role="row"><td role="cell" data-key><a class="vz-link" href="#">77e0…5d21</a></td><td role="cell" class="vz-num vz-right" data-priority="1">1,151</td><td role="cell" class="vz-num" data-label="Started">15:02:44</td><td role="cell" data-label="Slowest">payments-db, <span class="vz-qty">655 ms</span></td></tr>
+            <tr role="row"><td role="cell" data-key><a class="vz-link" href="#">c90b…e113</a></td><td role="cell" class="vz-num vz-right" data-priority="1">1,137</td><td role="cell" class="vz-num" data-label="Started">14:38:19</td><td role="cell" data-label="Slowest">payments-db, <span class="vz-qty">671 ms</span></td></tr>
+            <tr role="row"><td role="cell" data-key><a class="vz-link" href="#">1f4d…8a70</a></td><td role="cell" class="vz-num vz-right" data-priority="1">1,129</td><td role="cell" class="vz-num" data-label="Started">15:11:30</td><td role="cell" data-label="Slowest">payments-db, <span class="vz-qty">640 ms</span></td></tr>
+          </tbody></table></div></div>
+        <ul class="vz-links"><li><a class="vz-link" href="#">Show the next 20</a></li></ul></section>
+    </div>
+  </div>
+</main>
+<script>
+(function () { const el = document.getElementById('dur'); el.vz = vzChart(el, { ...flows.traceDurations(), threshold: { value: 500, label: '500 ms, this search' }, markers: [flows.markers.above, flows.markers.trace] }) })()
+/* The waterfall's behaviour, as the Waterfall preview does it (the system ships it as a preview script, not a module): collapse and expand, the
+   span whose detail is shown, and the keyboard (one tab stop; Up and Down move, Right opens or goes in, Left closes or goes to the parent,
+   Enter or Space shows the detail). The detail's figures come from the fixture's trace, the same numbers as the rows. */
+;(function () {
+  const tr0 = flows.trace, facts = Object.fromEntries(tr0.spans.map((s) => [String(s.id), s]))
+  const qty = (s) => '<span class="vz-qty">' + s + '</span>', n = (x) => x.toLocaleString('en-US')
+  for (const table of document.querySelectorAll('.vz-waterfall')) {
+    const rows = () => [...table.tBodies[0].rows], kids = (id) => rows().filter((r) => r.dataset.parent === id)
+    const show = (id, open) => { for (const r of kids(id)) { r.hidden = !open; show(r.dataset.span, open && r.getAttribute('aria-expanded') !== 'false') } }
+    const expand = (tr, open) => { tr.setAttribute('aria-expanded', String(open)); tr.querySelector('.vz-tree-toggle')?.setAttribute('aria-expanded', String(open)); show(tr.dataset.span, open) }
+    const buttons = () => rows().filter((r) => !r.hidden).map((r) => r.querySelector('.vz-waterfall-span'))
+    const detail = table.closest('.vz-panel-body').querySelector('[data-span-detail]')
+    const select = (tr) => { for (const r of rows()) r.removeAttribute('aria-selected'); tr.setAttribute('aria-selected', 'true'); const f = facts[tr.dataset.span]
+      detail.innerHTML = '<p class="vz-text vz-text-ui-strong">' + f.name + '</p><dl class="vz-kv"><dt>Started at</dt><dd>' + qty(n(f.start) + ' ms') + ' into the trace</dd><dt>Took</dt><dd>' + qty(n(f.took) + ' ms') + (f.own === f.took ? ', all of it its own' : ', ' + qty(n(f.own) + ' ms') + ' of it its own') + ': ' + qty(Math.round((100 * f.own) / tr0.took) + '%') + ' of the trace</dd></dl><ul class="vz-links"><li><a class="vz-link" href="10-logs.html">Logs from this span</a></li></ul>' }
+    table.addEventListener('click', (e) => { const t = e.target.closest('.vz-tree-toggle'); if (t) { const tr = t.closest('tr'); expand(tr, tr.getAttribute('aria-expanded') !== 'true'); return }
+      const b = e.target.closest('.vz-waterfall-span'); if (b) select(b.closest('tr')) })
+    table.addEventListener('keydown', (e) => { const b = e.target.closest('.vz-waterfall-span'); if (!b) return; const list = buttons(), i = list.indexOf(b), tr = b.closest('tr'), open = tr.getAttribute('aria-expanded'); let to = -1
+      if (e.key === 'ArrowDown') to = Math.min(list.length - 1, i + 1); else if (e.key === 'ArrowUp') to = Math.max(0, i - 1); else if (e.key === 'Home') to = 0; else if (e.key === 'End') to = list.length - 1
+      else if (e.key === 'ArrowRight' && open) { if (open === 'false') expand(tr, true); else to = i + 1 }
+      else if (e.key === 'ArrowLeft') { if (open === 'true') expand(tr, false); else if (tr.dataset.parent) to = list.indexOf(table.querySelector('tr[data-span="' + tr.dataset.parent + '"] .vz-waterfall-span')) }
+      else if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(tr); return }
+      else return
+      e.preventDefault(); if (to >= 0) { const now = buttons(); now.forEach((x) => (x.tabIndex = -1)); now[to].tabIndex = 0; now[to].focus() } })
+  }
+})()
+</script>

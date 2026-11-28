@@ -1,0 +1,16 @@
+320              done, 0 finding(s) so far, 14 s400              done, 0 finding(s) so far, 27 s560              done, 0 finding(s) so far, 40 s640              done, 0 finding(s) so far, 54 s800              done, 3 finding(s) so far, 67 s1024             done, 4 finding(s) so far, 81 s1280             done, 4 finding(s) so far, 95 s1500             done, 4 finding(s) so far, 110 s320 coarse       done, 5 finding(s) so far, 125 s400 coarse       done, 6 finding(s) so far, 141 s768 coarse       done, 10 finding(s) so far, 158 s640 at 200%      done, 10 finding(s) so far, 172 s720 at 200%      done, 14 finding(s) so far, 186 s750 at 200%      done, 18 finding(s) so far, 200 s
+
+55 pages x 14 configurations (320; 400; 560; 640; 800; 1024; 1280; 1500; 320 coarse; 400 coarse; 768 coarse; 640 at 200%; 720 at 200%; 750 at 200%)
+
+System pages: 0 finding(s)
+
+Flow screens (read only, reported): 18 finding(s)
+  flows/dist/1-dashboards.html
+    fold-scroll   800             <table.vz-table> "Dashboards" folds (data-fold) but scrolls 273 px sideways at this width  (and at 1024, 768 coarse, 720 at 200%, 750 at 200%)
+    sentence-link 320 coarse      <a.vz-link> "1 proposal waiting" is inside a sentence in <td> "6 Nov, by Dana. 1 proposal waiti" but drawn 44 px tall: it breaks its line  (and at 400 coarse, 768 coarse)
+  flows/dist/12-routes.html
+    fold-scroll   800             <table.vz-table> "Silences" folds (data-fold) but scrolls 184 px sideways at this width  (and at 768 coarse, 720 at 200%, 750 at 200%)
+    fold-scroll   720 at 200%     <table.vz-table> "Routes" folds (data-fold) but scrolls 48 px sideways at this width  (and at 750 at 200%)
+  flows/dist/8-keys.html
+    fold-scroll   800             <table.vz-table> "Keys" folds (data-fold) but scrolls 16 px sideways at this width  (and at 768 coarse, 720 at 200%, 750 at 200%)
+exit 0

@@ -1,0 +1,221 @@
+{
+ "name": "v7",
+ "themes": [
+  "light",
+  "dark"
+ ],
+ "states": [
+  {
+   "name": "folded-list-1440",
+   "url": "reviews/system-v7/compositions/folded-list.html",
+   "scale": 1,
+   "height": 1700
+  },
+  {
+   "name": "folded-list-400",
+   "url": "reviews/system-v7/compositions/folded-list.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "height": 1700
+  },
+  {
+   "name": "dialog-list-closed-1440",
+   "url": "reviews/system-v7/compositions/dialog.html",
+   "scale": 1,
+   "steps": [
+    {
+     "eval": "document.getElementById('dlg').close()"
+    }
+   ]
+  },
+  {
+   "name": "dialog-list-closed-400",
+   "url": "reviews/system-v7/compositions/dialog.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "steps": [
+    {
+     "eval": "document.getElementById('dlg').close()"
+    }
+   ]
+  },
+  {
+   "name": "table-preview-1440",
+   "url": "dist/preview/Table.html",
+   "scale": 1
+  },
+  {
+   "name": "table-preview-400",
+   "url": "dist/preview/Table.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1
+  },
+  {
+   "name": "segmented-preview-1440",
+   "url": "dist/preview/Segmented.html",
+   "scale": 1
+  },
+  {
+   "name": "segmented-preview-400",
+   "url": "dist/preview/Segmented.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1
+  },
+  {
+   "name": "monitor-1440",
+   "url": "reviews/system-v7/compositions/monitor.html",
+   "scale": 1
+  },
+  {
+   "name": "monitor-400",
+   "url": "reviews/system-v7/compositions/monitor.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1
+  },
+  {
+   "name": "dashboard-1440",
+   "url": "reviews/system-v7/compositions/dashboard.html",
+   "scale": 1
+  },
+  {
+   "name": "dashboard-400",
+   "url": "reviews/system-v7/compositions/dashboard.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1
+  },
+  {
+   "name": "b2-filter-three-largest-1440",
+   "url": "dist/preview/Chart.html",
+   "scale": 1,
+   "steps": [
+    {
+     "eval": "document.querySelector('[data-filter-for=\"demo-pods\"] [data-filter=\"top3\"]').click()"
+    },
+    {
+     "wait": 300
+    }
+   ],
+   "clip": "section:has([data-view=\"demo-pods\"])",
+   "pad": 8
+  },
+  {
+   "name": "b2-filter-three-largest-400",
+   "url": "dist/preview/Chart.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "steps": [
+    {
+     "eval": "document.querySelector('[data-filter-for=\"demo-pods\"] [data-filter=\"top3\"]').click()"
+    },
+    {
+     "wait": 300
+    }
+   ],
+   "clip": "section:has([data-view=\"demo-pods\"])",
+   "pad": 8
+  },
+  {
+   "name": "b2-v5-sequence-filter-new-pod-clear-1440",
+   "url": "dist/preview/Chart.html",
+   "scale": 1,
+   "steps": [
+    {
+     "eval": "document.querySelector('[data-filter-for=\"demo-pods\"] [data-filter=\"top3\"]').click(); document.querySelector('[data-add-pod=\"demo-pods\"]').click(); document.querySelector('[data-filter-for=\"demo-pods\"] [data-filter=\"\"]').click()"
+    },
+    {
+     "wait": 300
+    }
+   ],
+   "clip": "section:has([data-view=\"demo-pods\"])",
+   "pad": 8
+  },
+  {
+   "name": "b2-v5-sequence-filter-new-pod-clear-400",
+   "url": "dist/preview/Chart.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "steps": [
+    {
+     "eval": "document.querySelector('[data-filter-for=\"demo-pods\"] [data-filter=\"top3\"]').click(); document.querySelector('[data-add-pod=\"demo-pods\"]').click(); document.querySelector('[data-filter-for=\"demo-pods\"] [data-filter=\"\"]').click()"
+    },
+    {
+     "wait": 300
+    }
+   ],
+   "clip": "section:has([data-view=\"demo-pods\"])",
+   "pad": 8
+  },
+  {
+   "name": "b2-e-filter-pod-recolour-clear-1440",
+   "url": "dist/preview/Chart.html",
+   "scale": 1,
+   "steps": [
+    {
+     "eval": "document.querySelector('[data-filter-for=\"demo-pods\"] [data-filter=\"top3\"]').click(); document.querySelector('[data-add-pod=\"demo-pods\"]').click(); document.querySelector('[data-view=\"demo-pods\"] [data-recolour]').click(); document.querySelector('[data-filter-for=\"demo-pods\"] [data-filter=\"\"]').click()"
+    },
+    {
+     "wait": 300
+    }
+   ],
+   "clip": "section:has([data-view=\"demo-pods\"])",
+   "pad": 8
+  },
+  {
+   "name": "b2-e-filter-pod-recolour-clear-400",
+   "url": "dist/preview/Chart.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "steps": [
+    {
+     "eval": "document.querySelector('[data-filter-for=\"demo-pods\"] [data-filter=\"top3\"]').click(); document.querySelector('[data-add-pod=\"demo-pods\"]').click(); document.querySelector('[data-view=\"demo-pods\"] [data-recolour]').click(); document.querySelector('[data-filter-for=\"demo-pods\"] [data-filter=\"\"]').click()"
+    },
+    {
+     "wait": 300
+    }
+   ],
+   "clip": "section:has([data-view=\"demo-pods\"])",
+   "pad": 8
+  },
+  {
+   "name": "b2-eight-services-filter-and-clear-1440",
+   "url": "dist/preview/Chart.html",
+   "scale": 1,
+   "steps": [
+    {
+     "eval": "document.querySelector('[data-filter-for=\"demo-services\"] [data-filter=\"top3\"]').click(); document.querySelector('[data-filter-for=\"demo-services\"] [data-filter=\"\"]').click()"
+    },
+    {
+     "wait": 300
+    }
+   ],
+   "clip": "section:has([data-view=\"demo-services\"])",
+   "pad": 8
+  },
+  {
+   "name": "b2-eight-services-filter-and-clear-400",
+   "url": "dist/preview/Chart.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "steps": [
+    {
+     "eval": "document.querySelector('[data-filter-for=\"demo-services\"] [data-filter=\"top3\"]').click(); document.querySelector('[data-filter-for=\"demo-services\"] [data-filter=\"\"]').click()"
+    },
+    {
+     "wait": 300
+    }
+   ],
+   "clip": "section:has([data-view=\"demo-services\"])",
+   "pad": 8
+  }
+ ]
+}

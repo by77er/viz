@@ -1,0 +1,14 @@
+// Spike s14: the web app's current build with the MOCK API, on workers.dev, so the owner can look at it
+// before the gateway serves the real one. No bindings to any viz Worker, bucket or namespace; no route on
+// any zone. It answers 410 after EXPIRES_AT. See README.md for what it costs and how to delete it.
+{
+  "name": "viz-preview-app",
+  "main": "worker.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  // The Worker answers every path: it serves the files by app/serve.json's rules and the mock under /api.
+  "assets": { "directory": "./public", "binding": "ASSETS", "html_handling": "none", "not_found_handling": "none", "run_worker_first": true },
+  "vars": { "EXPIRES_AT": "2026-12-04T00:00:00Z" },
+  "observability": { "enabled": false }
+}

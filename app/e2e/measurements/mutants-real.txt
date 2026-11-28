@@ -1,0 +1,57 @@
+# MUTANTS=real node e2e/mutants.cjs, 2026-11-19 (scratch copy; unit tests and e2e/errors.cjs). First run: 25 mutants, 23 killed, 2 survived.
+KILLED    parser: a number is scaled by multiplying by a power of ten below 1 (inexact)
+            caught by: unit: the matrix parser (typed arrays, as the body arrives) property: reads exactly what JSON.parse and Number read, cut into pieces anywhere; unit: the matrix parser (typed arrays, as the body arrives) reads the real API's and the mock's bodies on the fast path; unit: the matrix parser (typed arrays, as the body arrives) reads numbers as Number does, by the fast path where it is exact; unit: alignMatrix in one pass (B3) property: the body read into typed arrays (api/matrix.ts) aligns to exactly what the previous implementation gave
+KILLED    parser: digits past 2^53 are computed, not read by Number()
+            caught by: unit: the matrix parser (typed arrays, as the body arrives) property: reads exactly what JSON.parse and Number read, cut into pieces anywhere; unit: the matrix parser (typed arrays, as the body arrives) reads numbers as Number does, by the fast path where it is exact; unit: alignMatrix in one pass (B3) property: the body read into typed arrays (api/matrix.ts) aligns to exactly what the previous implementation gave
+KILLED    parser: "+Inf" is read as NaN
+            caught by: unit: the matrix parser (typed arrays, as the body arrives) property: reads exactly what JSON.parse and Number read, cut into pieces anywhere; unit: the matrix parser (typed arrays, as the body arrives) reads the real API's and the mock's bodies on the fast path
+KILLED    parser: a sample cut in two by the network loses its first character
+            caught by: unit: the matrix parser (typed arrays, as the body arrives) property: takes the fast path for the bodies APIs send, and keeps each values array as it arrived
+KILLED    parser: an escaped quote in a label value ends the metric object early
+            caught by: unit: the matrix parser (typed arrays, as the body arrives) property: takes the fast path for the bodies APIs send, and keeps each values array as it arrived
+SURVIVED  parser: a time that is not a JSON number is accepted
+KILLED    alignment: a gap is 0, not NaN
+            caught by: unit: series aligns a matrix on the step grid and leaves missing steps as gaps; unit: alignMatrix in one pass (B3) property: gives exactly what the previous implementation gave, on and off the grid; unit: alignMatrix in one pass (B3) property: the body read into typed arrays (api/matrix.ts) aligns to exactly what the previous implementation gave; unit: alignMatrix in one pass (B3) keeps the API's millisecond grid for a sub-second step: a missing step is a gap, not a bridged line
+KILLED    chart: a NaN gap reaches the renderer as a value (and is bridged)
+            caught by: unit: downsampleMinMax hands gaps given as NaN (Float64Array series) to the renderer as null, which it never bridges
+KILLED    statistics: a NaN gap counts as a value
+            caught by: unit: series aligns a matrix on the step grid and leaves missing steps as gaps
+KILLED    errors: the API's time limit (503 timeout) is retried as if busy
+            caught by: unit: what an API failure means (errors.ts) sorts every answer of the real API into its kind; unit: what an API failure means (errors.ts) asks again only when the API was busy, at most three times, and never past the stop; unit: what an API failure means (errors.ts) advises by kind, never "change the query" for a key, a busy API or its time limit; e2e/errors.cjs exited 1: }
+KILLED    errors: Retry-After is ignored
+            caught by: unit: what an API failure means (errors.ts) asks again only when the API was busy, at most three times, and never past the stop; unit: what an API failure means (errors.ts) waits as long as Retry-After says, and 1, 2, 4 s when it says nothing; e2e: busy with Retry-After: 1 (the real API's): asked again after 1 s each time, four tries in about 3 s; e2e: 429 (not the viz API: a rate limit in front of it): "limiting requests", asking again after Retry-After
+KILLED    errors: retries ignore the 60 s stop
+            caught by: unit: what an API failure means (errors.ts) asks again only when the API was busy, at most three times, and never past the stop
+KILLED    errors: the waiting line does not say the API is busy
+            caught by: e2e/errors.cjs exited 1: }
+KILLED    errors: a refused key is told to change the query
+            caught by: unit: what an API failure means (errors.ts) advises by kind, never "change the query" for a key, a busy API or its time limit; unit: what an API failure means (errors.ts) a 401 with no key set asks for a key; with one, for a valid one; e2e: 401 (a key the API does not know): the advice names the key, and the button opens Settings
+KILLED    errors: the button of a refused key runs the query again instead of opening Settings
+            caught by: e2e: 401 (no key): the advice names the key, and the button opens Settings
+KILLED    errors: Retry-After as an HTTP date is not read
+            caught by: unit: parseRetryAfter reads seconds and HTTP dates, and nothing else
+KILLED    warnings: the banner does not say the result may be incomplete
+            caught by: e2e: a warning: the banner says the result may be incomplete, then gives the API's words
+KILLED    autocomplete: lookups are not bounded by the page's time range
+            caught by: unit: autocomplete lookups are bounded by the page's time range sends the window widened to whole hours, and caches per window
+KILLED    errors: a step too small for the range is advised as a change to the query
+            caught by: unit: what an API failure means (errors.ts) sorts every answer of the real API into its kind; unit: what an API failure means (errors.ts) a step too small for the range is about the step, not the query
+KILLED    errors: every limit is advised as "narrow the time range" (a 16 KiB query too)
+            caught by: unit: what an API failure means (errors.ts) advises by kind, never "change the query" for a key, a busy API or its time limit; unit: what an API failure means (errors.ts) says what to change for each limit: the text, the nesting, the points, or what the query reads
+KILLED    errors: a 401 with no key set says the key was refused
+            caught by: unit: what an API failure means (errors.ts) a 401 with no key set asks for a key; with one, for a valid one; e2e: 401 (no key): the advice names the key, and the button opens Settings
+KILLED    errors: an answer that is not the API's is reported as "the API answered"
+            caught by: e2e: busy four times: four tries in about 7 s (1 + 2 + 4), then the error state says so, and that the answer was not the API's
+KILLED    window: computed in fractional seconds (a 0.1 s step asks for another grid than the API evaluates)
+            caught by: unit: step selection works in whole milliseconds, as the API evaluates (a 0.1 s step gives the API's grid, not 1794994200.0000002)
+KILLED    parser: the body text the JSON form reads is the first piece only (the lazy join)
+            caught by: unit: the matrix parser (typed arrays, as the body arrives) property: reads exactly what JSON.parse and Number read, cut into pieces anywhere; unit: the matrix parser (typed arrays, as the body arrives) property: takes the fast path for the bodies APIs send, and keeps each values array as it arrived
+SURVIVED  alignment: the grid tolerance is a fraction of a step (sub-second steps leave the grid)
+
+# After the two survivors: a test of times JSON does not allow (matrix.test.ts) and of steps of a few milliseconds (series.test.ts, which found the grid's point count bug), and one new mutant for that count. Re-run with ONLY=<name>, one at a time:
+KILLED    parser: a time that is not a JSON number is accepted
+            caught by: unit: the matrix parser (typed arrays, as the body arrives) gives up the fast path, not the answer, for what it does not read
+KILLED    alignment: the grid tolerance is a fraction of a step (steps of a few milliseconds leave the grid)
+            caught by: unit: alignMatrix in one pass (B3) keeps the API's millisecond grid for steps of milliseconds: a missing step is a gap, not a bridged line
+KILLED    alignment: the grid's points are counted with 1e-9 of a step (a millisecond step can lose the last point)
+            caught by: unit: alignMatrix in one pass (B3) keeps the API's millisecond grid for steps of milliseconds: a missing step is a gap, not a bridged line

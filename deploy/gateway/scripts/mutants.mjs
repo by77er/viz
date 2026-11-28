@@ -24,6 +24,9 @@ const MUTANTS = [
   ['healthy when any backend is', 'const healthy = results.every((r) => r.ok)', 'const healthy = results.some((r) => r.ok)'],
   ['control health probes the OpenAPI document again', "  control: '/healthz',", "  control: '/api/v1/control/openapi.json',"],
   ['bootstrap answers a schema_too_new refusal with 500', '    if (/^schema_too_new/.test(message)) {', '    if (false) {'],
+  ["a document inside the API's roots is accepted where no route exists today (m-4)", "p.startsWith('/') && !underApiRoot(p) && routeOf(p) === null", "p.startsWith('/') && routeOf(p) === null"],
+  ["an exact root does not cover what lies under it (/mcp/x is the app's to take)", 'API_ROOTS.exact.some((p) => path === p || path.startsWith(`${p}/`))', 'API_ROOTS.exact.some((p) => path === p)'],
+  ["a prefix root does not cover itself without its slash (/api is the app's to take)", 'API_ROOTS.prefixes.some((p) => path.startsWith(p) || `${path}/` === p)', 'API_ROOTS.prefixes.some((p) => path.startsWith(p))'],
   ['a throwing backend crashes the gateway', 'res = await env[BINDING[backend]].fetch(req)\n  } catch (e) {', 'res = await env[BINDING[backend]].fetch(req)\n  } catch (e) {\n    throw e'],
   ['monitors prefix matches /api/v1/monitorsx', 'path.startsWith(`${MONITORS_ROOT}/`)', 'path.startsWith(MONITORS_ROOT)'],
   ['/mcp matched as a prefix (/mcpx, /mcp/x reach the agent surface)', 'if (path === MCP_PATH || path === AGENT_ROOT', 'if (path.startsWith(MCP_PATH) || path === AGENT_ROOT'],
@@ -54,11 +57,36 @@ const MUTANTS = [
   ['D75: Link replaces a backend\'s own Link', "res.headers.append('Link'", "res.headers.set('Link'"],
   ['D75: any non-canonical host is treated as an alias', 'if (alias && origin !== null && url.host !== new URL(origin).host) return onAlias(req, env, url, alias, origin)', 'if (origin !== null && url.host !== new URL(origin).host) return onAlias(req, env, url, alias ?? { host: url.hostname, deprecated: 0 }, origin)'],
   ['D75: unreadable aliases are taken as none', '  const aliases = hostAliases(env.VIZ_HOST_ALIASES)', '  const aliases = hostAliases(env.VIZ_HOST_ALIASES) ?? []'],
+  // D75 with D74: the app is served on the canonical host only
+  ['D75×D74: the app\'s documents are served on the alias', 'if (alias && origin !== null && url.host !== new URL(origin).host) return onAlias(req, env, url, alias, origin)', 'if (alias && origin !== null && url.host !== new URL(origin).host && appDocument(req, env, url.pathname) === null) return onAlias(req, env, url, alias, origin)'],
+  ['D75×D74: a document on a host that may be an alias is served when the aliases are unreadable', '    if (origin === null || url.host !== new URL(origin).host) {', '    if ((origin === null || url.host !== new URL(origin).host) && appDocument(req, env, url.pathname) === null) {'],
+  ['D75×D74: the app is routed before the hosts (documents and a missing asset never redirected)', '  const url = new URL(req.url)\n  const aliases = hostAliases(env.VIZ_HOST_ALIASES)', "  const url = new URL(req.url)\n  if (routeOf(url.pathname) === null) return appDocument(req, env, url.pathname) ?? notFound()\n  const aliases = hostAliases(env.VIZ_HOST_ALIASES)"],
+  // The web app (D74): the documents, and what every other path gets
+  ['app: an unknown path is answered with the document (a single-page fallback: an unknown API path, a missing asset get HTML)', '  if (route === null) return appDocument(req, env, path) ?? notFound()', "  if (route === null) return appDocument(req, env, path) ?? (appOf(env) && req.method === 'GET' ? new Response(appOf(env)!.document, { headers: appOf(env)!.headers }) : notFound())"],
+  ['app: only an unknown path under /api/ keeps the JSON 404; any other unknown path gets the document', '  if (route === null) return appDocument(req, env, path) ?? notFound()', "  if (route === null) return appDocument(req, env, path) ?? (appOf(env) && req.method === 'GET' && !path.startsWith('/api') ? new Response(appOf(env)!.document, { headers: appOf(env)!.headers }) : notFound())"],
+  ['app: the document is served without its Content-Security-Policy', "  headers.set('ETag', app.etag)\n", "  headers.set('ETag', app.etag)\n  headers.delete('Content-Security-Policy')\n"],
+  ['app: the document is served to be kept for good (an asset\'s caching)', "  headers.set('ETag', app.etag)\n", "  headers.set('ETag', app.etag)\n  headers.set('Cache-Control', 'public, max-age=31536000, immutable')\n"],
+  ['app: the document loses one of its other headers (X-Frame-Options)', "  headers.set('ETag', app.etag)\n", "  headers.set('ETag', app.etag)\n  headers.delete('X-Frame-Options')\n"],
+  ['app: any method is served the document (POST, DELETE)', "  if (req.method !== 'GET' && req.method !== 'HEAD') return null\n", ''],
+  ['app: a trailing slash is the document too (/explore/)', '  if (app === null || !app.documents.has(path)) return null', "  if (app === null || !app.documents.has(path.replace(/\\/+$/, '') || '/')) return null"],
+  ['app: document paths compared without case (/Explore)', '  if (app === null || !app.documents.has(path)) return null', '  if (app === null || !app.documents.has(path.toLowerCase())) return null'],
+  ['app: a path is decoded before it is compared (/%65xplore)', '  if (app === null || !app.documents.has(path)) return null', '  if (app === null || !app.documents.has(decodeURIComponent(path))) return null'],
+  ['app: document paths matched as prefixes (/explorer, /explore/x, /index.html under /)', '  if (app === null || !app.documents.has(path)) return null', '  if (app === null || ![...app.documents].some((d) => path.startsWith(d))) return null'],
+  ['app: a VIZ_APP without a Content-Security-Policy is served', "    if (!lower.get('content-security-policy') || !/^text", '    if (!/^text'],
+  ['app: a VIZ_APP whose document a cache may keep is served', " || !/\\bno-cache\\b|\\bno-store\\b/.test(lower.get('cache-control') ?? '')) return null", ') return null'],
+  ['app: a VIZ_APP that names an API path as a document is accepted', " && p.startsWith('/') && !underApiRoot(p) && routeOf(p) === null)) return null", " && p.startsWith('/'))) return null"],
+  ['app: HEAD of a document answers with the body', "  return new Response(req.method === 'HEAD' ? null : app.document, { status: 200, headers })", '  return new Response(app.document, { status: 200, headers })'],
+  ['app: any If-None-Match gets 304 (a page holding another build is told it is current)', "    return tag === '*' || tag === etag || tag === `W/${etag}`", '    return true'],
+  ['app: a revalidation never gets 304', "  if (matchesEtag(req.headers.get('If-None-Match'), app.etag)) return new Response(null, { status: 304, headers })\n", ''],
+  ['app: a weakened entity tag (a compressing proxy) is not recognised', "    return tag === '*' || tag === etag || tag === `W/${etag}`", "    return tag === '*' || tag === etag"],
+  ['app: the document carries no entity tag', "  headers.set('ETag', app.etag)\n", ''],
+  ['app: documents answer without x-viz-route', "  headers.set('x-viz-route', 'app')\n", ''],
 ]
 
 // It edits gateway/src/index.ts in place: run it in a copy outside any git work tree
 // (AGENTS.md: a mutant caught in a commit ships). The copy needs deploy/ (with node_modules),
-// control/{src,openapi.json}, edge/src, dashboard/src and contracts/, which the tests import.
+// control/{src,openapi.json}, edge/src, dashboard/src and contracts/, which the tests import, and
+// app/serve.json, which the tests and vitest.config.ts read.
 try {
   execFileSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: DEPLOY_DIR, stdio: 'pipe' })
   console.error('Refusing to mutate sources inside a git work tree. Copy the tree first (see above).')

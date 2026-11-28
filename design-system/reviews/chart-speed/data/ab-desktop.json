@@ -1,0 +1,3619 @@
+{
+ "when": "2026-11-28T09:19:26.866Z",
+ "layout": "desktop",
+ "setup": "Chromium, CPU 4x, Fast 4G, 1440x900, fine pointer, fresh context per run; builds alternated run by run; DevTools keeps no copy of response bodies",
+ "cores": 4,
+ "calibrationMs": 325.16434000000004,
+ "builds": [
+  {
+   "name": "before",
+   "root": "/tmp/claude-0/-home-user-viz/3c79101e-93fd-5a8e-90a7-fca4d8b40aab/scratchpad/b1/before/app"
+  },
+  {
+   "name": "after",
+   "root": "/tmp/claude-0/-home-user-viz/3c79101e-93fd-5a8e-90a7-fca4d8b40aab/scratchpad/b1/after/app"
+  }
+ ],
+ "cases": {
+  "4": {
+   "before": {
+    "summary": {
+     "runs": 20,
+     "judged": 20,
+     "load1": {
+      "median": 1.23,
+      "min": 1.16,
+      "max": 1.62
+     },
+     "response": {
+      "p75": 61.5,
+      "median": 53.19999999925494,
+      "min": 36.89999999944121,
+      "max": 76.6000000005588,
+      "n": 20
+     },
+     "responseFull": {
+      "p75": 70.5,
+      "median": 58.39999999944121,
+      "min": 40.39999999944121,
+      "max": 85.6000000005588,
+      "n": 20
+     },
+     "runToPaint": {
+      "p75": 526.7000000001863,
+      "median": 518.5,
+      "min": 499,
+      "max": 554.3999999994412,
+      "n": 20
+     },
+     "chartToTable": {
+      "p75": 36.90000000037253,
+      "median": 33.40000000037253,
+      "min": 30.59999999962747,
+      "max": 50.10000000055879,
+      "n": 20
+     },
+     "press": {
+      "p75": 12.200000000186265,
+      "median": 10,
+      "min": 7.7999999998137355,
+      "max": 16.5,
+      "n": 20
+     },
+     "busy": {
+      "p75": 31.700000000186265,
+      "median": 24.40000000037253,
+      "min": 22,
+      "max": 43.299999999813735,
+      "n": 20
+     },
+     "clsLoad": {
+      "p75": 0,
+      "median": 0,
+      "min": 0,
+      "max": 0,
+      "n": 20
+     },
+     "clsRunAll": {
+      "p75": 0,
+      "median": 0,
+      "min": 0,
+      "max": 0,
+      "n": 20
+     }
+    },
+    "raw": [
+     {
+      "build": "before",
+      "at": "2026-11-28T09:19:29.917Z",
+      "load1": 1.62,
+      "clsLoad": 0,
+      "press": 9.100000000558794,
+      "busy": 22.59999999962747,
+      "runToPaint": 499,
+      "response": 37.299999999813735,
+      "responseFull": 42.40000000037253,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 33.40000000037253,
+      "loadEnd": 1.49
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:19:45.142Z",
+      "load1": 1.49,
+      "clsLoad": 0,
+      "press": 10,
+      "busy": 25.40000000037253,
+      "runToPaint": 513.4000000003725,
+      "response": 40.700000000186265,
+      "responseFull": 45.299999999813735,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 31.59999999962747,
+      "loadEnd": 1.45
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:19:50.307Z",
+      "load1": 1.45,
+      "clsLoad": 0,
+      "press": 13.799999999813735,
+      "busy": 22,
+      "runToPaint": 517.4000000003725,
+      "response": 56.799999999813735,
+      "responseFull": 63.299999999813735,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 38.09999999962747,
+      "loadEnd": 1.49
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:20:05.553Z",
+      "load1": 1.45,
+      "clsLoad": 0,
+      "press": 14,
+      "busy": 24.40000000037253,
+      "runToPaint": 511.09999999962747,
+      "response": 53.5,
+      "responseFull": 58.39999999944121,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 31,
+      "loadEnd": 1.41
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:20:10.542Z",
+      "load1": 1.41,
+      "clsLoad": 0,
+      "press": 9.799999999813735,
+      "busy": 24.09999999962747,
+      "runToPaint": 505.5,
+      "response": 39.299999999813735,
+      "responseFull": 43.299999999813735,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 31.5,
+      "loadEnd": 1.38
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:20:25.876Z",
+      "load1": 1.32,
+      "clsLoad": 0,
+      "press": 9.300000000745058,
+      "busy": 31.700000000186265,
+      "runToPaint": 526.6000000005588,
+      "response": 53.19999999925494,
+      "responseFull": 66.19999999925494,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 43.200000000186265,
+      "loadEnd": 1.29
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:20:30.946Z",
+      "load1": 1.29,
+      "clsLoad": 0,
+      "press": 8.900000000372529,
+      "busy": 22.700000000186265,
+      "runToPaint": 526.7000000001863,
+      "response": 57.200000000186265,
+      "responseFull": 67,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 32.39999999944121,
+      "loadEnd": 1.35
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:20:46.089Z",
+      "load1": 1.22,
+      "clsLoad": 0,
+      "press": 9.700000000186265,
+      "busy": 35.59999999962747,
+      "runToPaint": 524.8999999994412,
+      "response": 39.799999999813735,
+      "responseFull": 43.69999999925494,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 30.600000000558794,
+      "loadEnd": 1.21
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:20:51.101Z",
+      "load1": 1.21,
+      "clsLoad": 0,
+      "press": 7.7999999998137355,
+      "busy": 24.09999999962747,
+      "runToPaint": 523.5,
+      "response": 72,
+      "responseFull": 77.20000000018626,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 45.40000000037253,
+      "loadEnd": 1.27
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:21:06.425Z",
+      "load1": 1.23,
+      "clsLoad": 0,
+      "press": 10,
+      "busy": 25.899999999441206,
+      "runToPaint": 511.29999999981374,
+      "response": 45.299999999813735,
+      "responseFull": 49.59999999962747,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 34,
+      "loadEnd": 1.21
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:21:11.617Z",
+      "load1": 1.21,
+      "clsLoad": 0,
+      "press": 10.5,
+      "busy": 31.299999999813735,
+      "runToPaint": 518.5,
+      "response": 40.799999999813735,
+      "responseFull": 45.89999999944121,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 36.90000000037253,
+      "loadEnd": 1.19
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:21:26.752Z",
+      "load1": 1.16,
+      "clsLoad": 0,
+      "press": 9.400000000372529,
+      "busy": 23.799999999813735,
+      "runToPaint": 525.2000000001863,
+      "response": 69.1000000005588,
+      "responseFull": 80.20000000018626,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 44.200000000186265,
+      "loadEnd": 1.22
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:21:31.856Z",
+      "load1": 1.22,
+      "clsLoad": 0,
+      "press": 10,
+      "busy": 43.299999999813735,
+      "runToPaint": 554.3999999994412,
+      "response": 75.6000000005588,
+      "responseFull": 85.20000000018626,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 30.59999999962747,
+      "loadEnd": 1.21
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:21:47.136Z",
+      "load1": 1.17,
+      "clsLoad": 0,
+      "press": 9.800000000745058,
+      "busy": 31.59999999962747,
+      "runToPaint": 500.20000000018626,
+      "response": 36.89999999944121,
+      "responseFull": 40.39999999944121,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 31.59999999962747,
+      "loadEnd": 1.24
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:21:52.353Z",
+      "load1": 1.24,
+      "clsLoad": 0,
+      "press": 12.399999999441206,
+      "busy": 22.59999999962747,
+      "runToPaint": 532.2999999998137,
+      "response": 62.59999999962747,
+      "responseFull": 73.90000000037253,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 31.5,
+      "loadEnd": 1.14
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:22:07.496Z",
+      "load1": 1.2,
+      "clsLoad": 0,
+      "press": 16.5,
+      "busy": 41.200000000186265,
+      "runToPaint": 515.2999999998137,
+      "response": 40.200000000186265,
+      "responseFull": 44.09999999962747,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 33.299999999813735,
+      "loadEnd": 1.18
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:22:12.590Z",
+      "load1": 1.18,
+      "clsLoad": 0,
+      "press": 10.600000000558794,
+      "busy": 42.10000000055879,
+      "runToPaint": 535,
+      "response": 54.89999999944121,
+      "responseFull": 58.89999999944121,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 33.700000000186265,
+      "loadEnd": 1.25
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:22:28.062Z",
+      "load1": 1.29,
+      "clsLoad": 0,
+      "press": 12.200000000186265,
+      "busy": 40.40000000037253,
+      "runToPaint": 511.09999999962747,
+      "response": 45.299999999813735,
+      "responseFull": 49.700000000186265,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 35.40000000037253,
+      "loadEnd": 1.27
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:22:33.099Z",
+      "load1": 1.27,
+      "clsLoad": 0,
+      "press": 8.700000000186265,
+      "busy": 24.399999999441206,
+      "runToPaint": 536.8999999994412,
+      "response": 76.6000000005588,
+      "responseFull": 85.6000000005588,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 35,
+      "loadEnd": 1.25
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:22:48.353Z",
+      "load1": 1.21,
+      "clsLoad": 0,
+      "press": 12.700000000186265,
+      "busy": 23.800000000745058,
+      "runToPaint": 537.5,
+      "response": 61.5,
+      "responseFull": 70.5,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 50.10000000055879,
+      "loadEnd": 1.19
+     }
+    ]
+   },
+   "after": {
+    "summary": {
+     "runs": 20,
+     "judged": 20,
+     "load1": {
+      "median": 1.25,
+      "min": 1.13,
+      "max": 1.53
+     },
+     "response": {
+      "p75": 39.799999999813735,
+      "median": 37,
+      "min": 34,
+      "max": 64.3999999994412,
+      "n": 20
+     },
+     "responseFull": {
+      "p75": 46.30000000074506,
+      "median": 41.5,
+      "min": 38.39999999944121,
+      "max": 77.5,
+      "n": 20
+     },
+     "runToPaint": {
+      "p75": 517.3000000007451,
+      "median": 512.5999999996275,
+      "min": 493.59999999962747,
+      "max": 536.4000000003725,
+      "n": 20
+     },
+     "chartToTable": {
+      "p75": 42.09999999962747,
+      "median": 35.89999999944121,
+      "min": 29.09999999962747,
+      "max": 72.09999999962747,
+      "n": 20
+     },
+     "press": {
+      "p75": 12.400000000372529,
+      "median": 10.200000000186265,
+      "min": 9.100000000558794,
+      "max": 21.5,
+      "n": 20
+     },
+     "busy": {
+      "p75": 30,
+      "median": 24.800000000745058,
+      "min": 21.200000000186265,
+      "max": 40.80000000074506,
+      "n": 20
+     },
+     "clsLoad": {
+      "p75": 0,
+      "median": 0,
+      "min": 0,
+      "max": 0,
+      "n": 20
+     },
+     "clsRunAll": {
+      "p75": 0,
+      "median": 0,
+      "min": 0,
+      "max": 0,
+      "n": 20
+     }
+    },
+    "raw": [
+     {
+      "build": "after",
+      "at": "2026-11-28T09:19:34.986Z",
+      "load1": 1.49,
+      "clsLoad": 0,
+      "press": 12.400000000372529,
+      "busy": 23.90000000037253,
+      "runToPaint": 514.4000000003725,
+      "response": 34.89999999944121,
+      "responseFull": 38.700000000186265,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 35.89999999944121,
+      "loadEnd": 1.53
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:19:40.107Z",
+      "load1": 1.53,
+      "clsLoad": 0,
+      "press": 9.299999999813735,
+      "busy": 23.800000000745058,
+      "runToPaint": 517.3000000007451,
+      "response": 37.89999999944121,
+      "responseFull": 42.89999999944121,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 36.700000000186265,
+      "loadEnd": 1.49
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:19:55.488Z",
+      "load1": 1.49,
+      "clsLoad": 0,
+      "press": 11,
+      "busy": 21.200000000186265,
+      "runToPaint": 501.79999999981374,
+      "response": 36,
+      "responseFull": 39.90000000037253,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 33.299999999813735,
+      "loadEnd": 1.53
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:20:00.490Z",
+      "load1": 1.49,
+      "clsLoad": 0,
+      "press": 12.400000000372529,
+      "busy": 38.39999999944121,
+      "runToPaint": 516.5999999996275,
+      "response": 34.200000000186265,
+      "responseFull": 40.40000000037253,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 36.89999999944121,
+      "loadEnd": 1.45
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:20:15.627Z",
+      "load1": 1.38,
+      "clsLoad": 0,
+      "press": 13.799999999813735,
+      "busy": 40.80000000074506,
+      "runToPaint": 536.4000000003725,
+      "response": 60.700000000186265,
+      "responseFull": 69.1000000005588,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 36,
+      "loadEnd": 1.35
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:20:20.843Z",
+      "load1": 1.35,
+      "clsLoad": 0,
+      "press": 9.700000000186265,
+      "busy": 25.399999999441206,
+      "runToPaint": 504.5,
+      "response": 36.799999999813735,
+      "responseFull": 40.09999999962747,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 31.899999999441206,
+      "loadEnd": 1.32
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:20:35.954Z",
+      "load1": 1.35,
+      "clsLoad": 0,
+      "press": 10.799999999813735,
+      "busy": 22.200000000186265,
+      "runToPaint": 498.90000000037253,
+      "response": 37,
+      "responseFull": 40.89999999944121,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 31.09999999962747,
+      "loadEnd": 1.24
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:20:40.972Z",
+      "load1": 1.24,
+      "clsLoad": 0,
+      "press": 21.5,
+      "busy": 40.40000000037253,
+      "runToPaint": 529.4000000003725,
+      "response": 36.299999999813735,
+      "responseFull": 45.799999999813735,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 29.09999999962747,
+      "loadEnd": 1.22
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:20:56.230Z",
+      "load1": 1.27,
+      "clsLoad": 0,
+      "press": 9.200000000186265,
+      "busy": 24.800000000745058,
+      "runToPaint": 532.9000000003725,
+      "response": 60.90000000037253,
+      "responseFull": 73.80000000074506,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 42.09999999962747,
+      "loadEnd": 1.25
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:21:01.285Z",
+      "load1": 1.25,
+      "clsLoad": 0,
+      "press": 13.099999999627471,
+      "busy": 30,
+      "runToPaint": 512.5999999996275,
+      "response": 35.5,
+      "responseFull": 40,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 44.59999999962747,
+      "loadEnd": 1.23
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:21:16.673Z",
+      "load1": 1.19,
+      "clsLoad": 0,
+      "press": 9.400000000372529,
+      "busy": 30.5,
+      "runToPaint": 506.20000000018626,
+      "response": 37.200000000186265,
+      "responseFull": 41.5,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 31.5,
+      "loadEnd": 1.26
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:21:21.724Z",
+      "load1": 1.26,
+      "clsLoad": 0,
+      "press": 9.5,
+      "busy": 32.40000000037253,
+      "runToPaint": 507.1000000005588,
+      "response": 39.60000000055879,
+      "responseFull": 46.30000000074506,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 30.399999999441206,
+      "loadEnd": 1.16
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:21:36.946Z",
+      "load1": 1.21,
+      "clsLoad": 0,
+      "press": 10.399999999441206,
+      "busy": 27,
+      "runToPaint": 504.5,
+      "response": 34,
+      "responseFull": 38.39999999944121,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 31.09999999962747,
+      "loadEnd": 1.19
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:21:41.985Z",
+      "load1": 1.19,
+      "clsLoad": 0,
+      "press": 13,
+      "busy": 23.700000000186265,
+      "runToPaint": 499.79999999981374,
+      "response": 35.10000000055879,
+      "responseFull": 39.10000000055879,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 62.60000000055879,
+      "loadEnd": 1.17
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:21:57.398Z",
+      "load1": 1.14,
+      "clsLoad": 0,
+      "press": 12.899999999441206,
+      "busy": 24.100000000558794,
+      "runToPaint": 513.7000000001863,
+      "response": 45.200000000186265,
+      "responseFull": 52.5,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 33,
+      "loadEnd": 1.13
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:22:02.428Z",
+      "load1": 1.13,
+      "clsLoad": 0,
+      "press": 10.200000000186265,
+      "busy": 25.300000000745058,
+      "runToPaint": 512.6000000005588,
+      "response": 39.799999999813735,
+      "responseFull": 45.200000000186265,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 36.59999999962747,
+      "loadEnd": 1.2
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:22:17.664Z",
+      "load1": 1.25,
+      "clsLoad": 0,
+      "press": 10,
+      "busy": 23.799999999813735,
+      "runToPaint": 493.59999999962747,
+      "response": 34.39999999944121,
+      "responseFull": 38.89999999944121,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 33.200000000186265,
+      "loadEnd": 1.23
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:22:22.828Z",
+      "load1": 1.23,
+      "clsLoad": 0,
+      "press": 9.599999999627471,
+      "busy": 30,
+      "runToPaint": 523,
+      "response": 40.39999999944121,
+      "responseFull": 47.89999999944121,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 72.09999999962747,
+      "loadEnd": 1.29
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:22:38.149Z",
+      "load1": 1.25,
+      "clsLoad": 0,
+      "press": 9.799999999813735,
+      "busy": 24,
+      "runToPaint": 531,
+      "response": 64.3999999994412,
+      "responseFull": 77.5,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 42.60000000055879,
+      "loadEnd": 1.23
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:22:43.289Z",
+      "load1": 1.23,
+      "clsLoad": 0,
+      "press": 9.100000000558794,
+      "busy": 24.40000000037253,
+      "runToPaint": 505.40000000037253,
+      "response": 38.90000000037253,
+      "responseFull": 45,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 53.59999999962747,
+      "loadEnd": 1.21
+     }
+    ]
+   }
+  },
+  "12": {
+   "before": {
+    "summary": {
+     "runs": 20,
+     "judged": 20,
+     "load1": {
+      "median": 1.24,
+      "min": 1.04,
+      "max": 1.92
+     },
+     "response": {
+      "p75": 84.20000000018626,
+      "median": 73,
+      "min": 60.700000000186265,
+      "max": 120.20000000018626,
+      "n": 20
+     },
+     "responseFull": {
+      "p75": 91.8999999994412,
+      "median": 80.29999999981374,
+      "min": 64.40000000037253,
+      "max": 127.90000000037253,
+      "n": 20
+     },
+     "runToPaint": {
+      "p75": 602.1000000005588,
+      "median": 588.7000000001863,
+      "min": 574.7000000001863,
+      "max": 617.3999999994412,
+      "n": 20
+     },
+     "chartToTable": {
+      "p75": 60.799999999813735,
+      "median": 48.10000000055879,
+      "min": 35.799999999813735,
+      "max": 81.6000000005588,
+      "n": 20
+     },
+     "press": {
+      "p75": 13.299999999813735,
+      "median": 10.599999999627471,
+      "min": 9.100000000558794,
+      "max": 18.200000000186265,
+      "n": 20
+     },
+     "busy": {
+      "p75": 34.40000000037253,
+      "median": 30.200000000186265,
+      "min": 21.90000000037253,
+      "max": 45.39999999944121,
+      "n": 20
+     },
+     "clsLoad": {
+      "p75": 0,
+      "median": 0,
+      "min": 0,
+      "max": 0,
+      "n": 20
+     },
+     "clsRunAll": {
+      "p75": 0,
+      "median": 0,
+      "min": 0,
+      "max": 0,
+      "n": 20
+     }
+    },
+    "raw": [
+     {
+      "build": "before",
+      "at": "2026-11-28T09:22:53.465Z",
+      "load1": 1.19,
+      "clsLoad": 0,
+      "press": 10,
+      "busy": 23.5,
+      "runToPaint": 606.7000000001863,
+      "response": 84.20000000018626,
+      "responseFull": 91.8999999994412,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 35.799999999813735,
+      "loadEnd": 1.09
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:23:09.312Z",
+      "load1": 1.08,
+      "clsLoad": 0,
+      "press": 10.299999999813735,
+      "busy": 26.90000000037253,
+      "runToPaint": 597.5,
+      "response": 71.70000000018626,
+      "responseFull": 80.29999999981374,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 48.10000000055879,
+      "loadEnd": 1.07
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:23:14.667Z",
+      "load1": 1.07,
+      "clsLoad": 0,
+      "press": 18.200000000186265,
+      "busy": 33.89999999944121,
+      "runToPaint": 579.7999999998137,
+      "response": 62.60000000055879,
+      "responseFull": 70.70000000018626,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 60.799999999813735,
+      "loadEnd": 1.15
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:23:30.441Z",
+      "load1": 1.04,
+      "clsLoad": 0,
+      "press": 9.100000000558794,
+      "busy": 42.299999999813735,
+      "runToPaint": 602.1000000005588,
+      "response": 81.59999999962747,
+      "responseFull": 87.70000000018626,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 73.40000000037253,
+      "loadEnd": 1.12
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:23:35.686Z",
+      "load1": 1.12,
+      "clsLoad": 0,
+      "press": 17.200000000186265,
+      "busy": 35.299999999813735,
+      "runToPaint": 592.7999999998137,
+      "response": 77.69999999925494,
+      "responseFull": 82.19999999925494,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 43.10000000055879,
+      "loadEnd": 1.18
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:23:51.413Z",
+      "load1": 1.23,
+      "clsLoad": 0,
+      "press": 13.299999999813735,
+      "busy": 33.59999999962747,
+      "runToPaint": 584.5,
+      "response": 88.29999999981374,
+      "responseFull": 93.90000000037253,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 59.700000000186265,
+      "loadEnd": 1.13
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:23:56.718Z",
+      "load1": 1.13,
+      "clsLoad": 0,
+      "press": 10,
+      "busy": 21.90000000037253,
+      "runToPaint": 589.4000000003725,
+      "response": 78.1000000005588,
+      "responseFull": 83.1000000005588,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 58.59999999962747,
+      "loadEnd": 1.2
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:24:12.543Z",
+      "load1": 1.25,
+      "clsLoad": 0,
+      "press": 12.599999999627471,
+      "busy": 34,
+      "runToPaint": 574.7000000001863,
+      "response": 63.80000000074506,
+      "responseFull": 70.90000000037253,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 69.8999999994412,
+      "loadEnd": 1.23
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:24:17.900Z",
+      "load1": 1.23,
+      "clsLoad": 0,
+      "press": 10,
+      "busy": 23.59999999962747,
+      "runToPaint": 587.5,
+      "response": 70.40000000037253,
+      "responseFull": 78.90000000037253,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 66.8999999994412,
+      "loadEnd": 1.21
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:24:33.831Z",
+      "load1": 1.18,
+      "clsLoad": 0,
+      "press": 10.599999999627471,
+      "busy": 32,
+      "runToPaint": 588.6000000005588,
+      "response": 68.29999999981374,
+      "responseFull": 73.09999999962747,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 40.700000000186265,
+      "loadEnd": 1.24
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:24:39.064Z",
+      "load1": 1.24,
+      "clsLoad": 0,
+      "press": 13.700000000186265,
+      "busy": 30.200000000186265,
+      "runToPaint": 615.5,
+      "response": 111.1000000005588,
+      "responseFull": 118.5,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 39.299999999813735,
+      "loadEnd": 1.3
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:24:55.291Z",
+      "load1": 1.71,
+      "clsLoad": 0,
+      "press": 15,
+      "busy": 39.200000000186265,
+      "runToPaint": 589.8000000007451,
+      "response": 71.6000000005588,
+      "responseFull": 76.1000000005588,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 71,
+      "loadEnd": 1.74
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:25:00.757Z",
+      "load1": 1.74,
+      "clsLoad": 0,
+      "press": 17.399999999441206,
+      "busy": 43.799999999813735,
+      "runToPaint": 588.2000000001863,
+      "response": 73,
+      "responseFull": 79.09999999962747,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 81.6000000005588,
+      "loadEnd": 1.99
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:25:16.882Z",
+      "load1": 1.92,
+      "clsLoad": 0,
+      "press": 10.400000000372529,
+      "busy": 27.59999999962747,
+      "runToPaint": 604.0999999996275,
+      "response": 108.29999999981374,
+      "responseFull": 115,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 44.5,
+      "loadEnd": 1.85
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:25:22.441Z",
+      "load1": 1.85,
+      "clsLoad": 0,
+      "press": 11.400000000372529,
+      "busy": 45.39999999944121,
+      "runToPaint": 617.3999999994412,
+      "response": 89,
+      "responseFull": 94.09999999962747,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 48.40000000037253,
+      "loadEnd": 1.78
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:25:38.454Z",
+      "load1": 1.5,
+      "clsLoad": 0,
+      "press": 9.400000000372529,
+      "busy": 25.700000000186265,
+      "runToPaint": 605.5,
+      "response": 120.20000000018626,
+      "responseFull": 127.90000000037253,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 39.799999999813735,
+      "loadEnd": 1.46
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:25:43.728Z",
+      "load1": 1.46,
+      "clsLoad": 0,
+      "press": 10.599999999627471,
+      "busy": 24,
+      "runToPaint": 580.2000000001863,
+      "response": 63,
+      "responseFull": 67.09999999962747,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 44.799999999813735,
+      "loadEnd": 1.43
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:25:59.685Z",
+      "load1": 1.51,
+      "clsLoad": 0,
+      "press": 11.899999999441206,
+      "busy": 34.40000000037253,
+      "runToPaint": 585.3000000007451,
+      "response": 60.700000000186265,
+      "responseFull": 64.40000000037253,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 41.299999999813735,
+      "loadEnd": 1.55
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:26:04.868Z",
+      "load1": 1.55,
+      "clsLoad": 0,
+      "press": 10.099999999627471,
+      "busy": 25.09999999962747,
+      "runToPaint": 588.7000000001863,
+      "response": 77.6000000005588,
+      "responseFull": 85.90000000037253,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 53.5,
+      "loadEnd": 1.58
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:26:20.727Z",
+      "load1": 1.73,
+      "clsLoad": 0,
+      "press": 11.400000000372529,
+      "busy": 25.799999999813735,
+      "runToPaint": 587.4000000003725,
+      "response": 62.09999999962747,
+      "responseFull": 66.3999999994412,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 40.89999999944121,
+      "loadEnd": 2
+     }
+    ]
+   },
+   "after": {
+    "summary": {
+     "runs": 20,
+     "judged": 20,
+     "load1": {
+      "median": 1.25,
+      "min": 1.09,
+      "max": 1.99
+     },
+     "response": {
+      "p75": 71,
+      "median": 60,
+      "min": 50.39999999944121,
+      "max": 107.90000000037253,
+      "n": 20
+     },
+     "responseFull": {
+      "p75": 79.70000000018626,
+      "median": 66.70000000018626,
+      "min": 56.09999999962747,
+      "max": 114.80000000074506,
+      "n": 20
+     },
+     "runToPaint": {
+      "p75": 590.1000000005588,
+      "median": 580.9000000003725,
+      "min": 565.3999999994412,
+      "max": 607.0999999996275,
+      "n": 20
+     },
+     "chartToTable": {
+      "p75": 62.5,
+      "median": 54.09999999962747,
+      "min": 40.5,
+      "max": 79.29999999981374,
+      "n": 20
+     },
+     "press": {
+      "p75": 18.399999999441206,
+      "median": 11.899999999441206,
+      "min": 8.299999999813735,
+      "max": 21.90000000037253,
+      "n": 20
+     },
+     "busy": {
+      "p75": 35.5,
+      "median": 29.59999999962747,
+      "min": 23,
+      "max": 46.5,
+      "n": 20
+     },
+     "clsLoad": {
+      "p75": 0,
+      "median": 0,
+      "min": 0,
+      "max": 0,
+      "n": 20
+     },
+     "clsRunAll": {
+      "p75": 0,
+      "median": 0,
+      "min": 0,
+      "max": 0,
+      "n": 20
+     }
+    },
+    "raw": [
+     {
+      "build": "after",
+      "at": "2026-11-28T09:22:58.692Z",
+      "load1": 1.09,
+      "clsLoad": 0,
+      "press": 9.799999999813735,
+      "busy": 23,
+      "runToPaint": 569.8999999994412,
+      "response": 55.799999999813735,
+      "responseFull": 59.200000000186265,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 51.5,
+      "loadEnd": 1.09
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:23:03.899Z",
+      "load1": 1.09,
+      "clsLoad": 0,
+      "press": 9.599999999627471,
+      "busy": 46.5,
+      "runToPaint": 590.2000000001863,
+      "response": 57.10000000055879,
+      "responseFull": 63,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 54.09999999962747,
+      "loadEnd": 1.08
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:23:19.978Z",
+      "load1": 1.15,
+      "clsLoad": 0,
+      "press": 15.200000000186265,
+      "busy": 38.799999999813735,
+      "runToPaint": 583.1999999992549,
+      "response": 65,
+      "responseFull": 71.8999999994412,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 40.5,
+      "loadEnd": 1.14
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:23:25.196Z",
+      "load1": 1.14,
+      "clsLoad": 0,
+      "press": 16.799999999813735,
+      "busy": 36.5,
+      "runToPaint": 607.0999999996275,
+      "response": 107.90000000037253,
+      "responseFull": 114.80000000074506,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 78.59999999962747,
+      "loadEnd": 1.04
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:23:40.946Z",
+      "load1": 1.18,
+      "clsLoad": 0,
+      "press": 11.599999999627471,
+      "busy": 25.40000000037253,
+      "runToPaint": 571.1000000005588,
+      "response": 53.299999999813735,
+      "responseFull": 57.39999999944121,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 41.89999999944121,
+      "loadEnd": 1.25
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:23:46.105Z",
+      "load1": 1.25,
+      "clsLoad": 0,
+      "press": 11.899999999441206,
+      "busy": 35.5,
+      "runToPaint": 581.0999999996275,
+      "response": 57.700000000186265,
+      "responseFull": 62.90000000037253,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 41.90000000037253,
+      "loadEnd": 1.23
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:24:01.990Z",
+      "load1": 1.2,
+      "clsLoad": 0,
+      "press": 13,
+      "busy": 25.59999999962747,
+      "runToPaint": 565.3999999994412,
+      "response": 53.10000000055879,
+      "responseFull": 61.200000000186265,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 47.30000000074506,
+      "loadEnd": 1.18
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:24:07.270Z",
+      "load1": 1.18,
+      "clsLoad": 0,
+      "press": 19.100000000558794,
+      "busy": 39.799999999813735,
+      "runToPaint": 602.9000000003725,
+      "response": 97.5,
+      "responseFull": 103.6000000005588,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 41.90000000037253,
+      "loadEnd": 1.25
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:24:23.175Z",
+      "load1": 1.21,
+      "clsLoad": 0,
+      "press": 8.299999999813735,
+      "busy": 28.5,
+      "runToPaint": 590.1000000005588,
+      "response": 61.39999999944121,
+      "responseFull": 72.29999999981374,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 66.1000000005588,
+      "loadEnd": 1.19
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:24:28.407Z",
+      "load1": 1.19,
+      "clsLoad": 0,
+      "press": 18.399999999441206,
+      "busy": 28.5,
+      "runToPaint": 575.7999999998137,
+      "response": 51.90000000037253,
+      "responseFull": 56.30000000074506,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 47.60000000055879,
+      "loadEnd": 1.18
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:24:44.405Z",
+      "load1": 1.3,
+      "clsLoad": 0,
+      "press": 10.299999999813735,
+      "busy": 26.899999999441206,
+      "runToPaint": 575.0999999996275,
+      "response": 60,
+      "responseFull": 68.70000000018626,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 58.39999999944121,
+      "loadEnd": 1.6
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:24:49.719Z",
+      "load1": 1.6,
+      "clsLoad": 0,
+      "press": 21.90000000037253,
+      "busy": 27.299999999813735,
+      "runToPaint": 575,
+      "response": 61.40000000037253,
+      "responseFull": 66.70000000018626,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 61,
+      "loadEnd": 1.71
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:25:06.071Z",
+      "load1": 1.99,
+      "clsLoad": 0,
+      "press": 20.700000000186265,
+      "busy": 39.5,
+      "runToPaint": 576,
+      "response": 65,
+      "responseFull": 69.40000000037253,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 53.30000000074506,
+      "loadEnd": 1.91
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:25:11.479Z",
+      "load1": 1.91,
+      "clsLoad": 0,
+      "press": 19.09999999962747,
+      "busy": 34.5,
+      "runToPaint": 580.9000000003725,
+      "response": 76.40000000037253,
+      "responseFull": 82,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 79.29999999981374,
+      "loadEnd": 1.92
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:25:27.820Z",
+      "load1": 1.78,
+      "clsLoad": 0,
+      "press": 11.5,
+      "busy": 23.09999999962747,
+      "runToPaint": 603.7999999998137,
+      "response": 94.8999999994412,
+      "responseFull": 101.5,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 62.5,
+      "loadEnd": 1.64
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:25:33.137Z",
+      "load1": 1.64,
+      "clsLoad": 0,
+      "press": 20.90000000037253,
+      "busy": 34,
+      "runToPaint": 578.8999999994412,
+      "response": 59.799999999813735,
+      "responseFull": 66.09999999962747,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 54.19999999925494,
+      "loadEnd": 1.5
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:25:49.075Z",
+      "load1": 1.43,
+      "clsLoad": 0,
+      "press": 10,
+      "busy": 35.200000000186265,
+      "runToPaint": 588.0999999996275,
+      "response": 71,
+      "responseFull": 79.70000000018626,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 64.6000000005588,
+      "loadEnd": 1.55
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:25:54.388Z",
+      "load1": 1.55,
+      "clsLoad": 0,
+      "press": 10.699999999254942,
+      "busy": 27.699999999254942,
+      "runToPaint": 567.5,
+      "response": 50.39999999944121,
+      "responseFull": 56.09999999962747,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 69,
+      "loadEnd": 1.51
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:26:10.107Z",
+      "load1": 1.58,
+      "clsLoad": 0,
+      "press": 11,
+      "busy": 33.09999999962747,
+      "runToPaint": 602.2000000001863,
+      "response": 101.20000000018626,
+      "responseFull": 107.6000000005588,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 41.299999999813735,
+      "loadEnd": 1.54
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:26:15.458Z",
+      "load1": 1.54,
+      "clsLoad": 0,
+      "press": 13.299999999813735,
+      "busy": 29.59999999962747,
+      "runToPaint": 581.0999999996275,
+      "response": 57,
+      "responseFull": 63.700000000186265,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 61.39999999944121,
+      "loadEnd": 1.73
+     }
+    ]
+   }
+  },
+  "36": {
+   "before": {
+    "summary": {
+     "runs": 20,
+     "judged": 20,
+     "load1": {
+      "median": 1.29,
+      "min": 1.12,
+      "max": 2
+     },
+     "response": {
+      "p75": 112.59999999962747,
+      "median": 94.1000000005588,
+      "min": 71.20000000018626,
+      "max": 141.5,
+      "n": 20
+     },
+     "responseFull": {
+      "p75": 126.5,
+      "median": 107.5,
+      "min": 79.59999999962747,
+      "max": 158.29999999981374,
+      "n": 20
+     },
+     "runToPaint": {
+      "p75": 697.1999999992549,
+      "median": 683.2000000001863,
+      "min": 652.5,
+      "max": 720.5,
+      "n": 20
+     },
+     "chartToTable": {
+      "p75": 86.5,
+      "median": 61.09999999962747,
+      "min": 49,
+      "max": 95.70000000018626,
+      "n": 20
+     },
+     "press": {
+      "p75": 13.700000000186265,
+      "median": 12.600000000558794,
+      "min": 9.100000000558794,
+      "max": 20.899999999441206,
+      "n": 20
+     },
+     "busy": {
+      "p75": 39,
+      "median": 32.5,
+      "min": 23,
+      "max": 44.5,
+      "n": 20
+     },
+     "clsLoad": {
+      "p75": 0,
+      "median": 0,
+      "min": 0,
+      "max": 0,
+      "n": 20
+     },
+     "clsRunAll": {
+      "p75": 0,
+      "median": 0,
+      "min": 0,
+      "max": 0,
+      "n": 20
+     }
+    },
+    "raw": [
+     {
+      "build": "before",
+      "at": "2026-11-28T09:26:26.033Z",
+      "load1": 2,
+      "clsLoad": 0,
+      "press": 13.300000000745058,
+      "busy": 31,
+      "runToPaint": 652.7000000001863,
+      "response": 83,
+      "responseFull": 91.29999999981374,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 51.200000000186265,
+      "loadEnd": 1.84
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:26:42.405Z",
+      "load1": 1.63,
+      "clsLoad": 0,
+      "press": 13,
+      "busy": 35.799999999813735,
+      "runToPaint": 657.0999999996275,
+      "response": 75.90000000037253,
+      "responseFull": 87.20000000018626,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 55.299999999813735,
+      "loadEnd": 1.66
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:26:47.802Z",
+      "load1": 1.66,
+      "clsLoad": 0,
+      "press": 9.400000000372529,
+      "busy": 23,
+      "runToPaint": 674.7000000001863,
+      "response": 111.29999999981374,
+      "responseFull": 126.5,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 49.799999999813735,
+      "loadEnd": 1.69
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:27:04.230Z",
+      "load1": 1.58,
+      "clsLoad": 0,
+      "press": 10.799999999813735,
+      "busy": 28.199999999254942,
+      "runToPaint": 697.1999999992549,
+      "response": 132.59999999962747,
+      "responseFull": 147.20000000018626,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 69.8999999994412,
+      "loadEnd": 1.54
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:27:09.742Z",
+      "load1": 1.54,
+      "clsLoad": 0,
+      "press": 10.200000000186265,
+      "busy": 25.799999999813735,
+      "runToPaint": 655.2999999998137,
+      "response": 72.29999999981374,
+      "responseFull": 79.59999999962747,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 95.70000000018626,
+      "loadEnd": 1.49
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:27:26.366Z",
+      "load1": 1.46,
+      "clsLoad": 0,
+      "press": 14.399999999441206,
+      "busy": 33.5,
+      "runToPaint": 703.2999999998137,
+      "response": 109.79999999981374,
+      "responseFull": 121,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 49.59999999962747,
+      "loadEnd": 1.42
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:27:31.854Z",
+      "load1": 1.42,
+      "clsLoad": 0,
+      "press": 10,
+      "busy": 27,
+      "runToPaint": 657,
+      "response": 71.20000000018626,
+      "responseFull": 80.09999999962747,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 78.29999999981374,
+      "loadEnd": 1.31
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:27:48.704Z",
+      "load1": 1.18,
+      "clsLoad": 0,
+      "press": 14.199999999254942,
+      "busy": 34.799999999813735,
+      "runToPaint": 683.2000000001863,
+      "response": 94.1000000005588,
+      "responseFull": 107.5,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 73.3999999994412,
+      "loadEnd": 1.16
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:27:54.182Z",
+      "load1": 1.16,
+      "clsLoad": 0,
+      "press": 10,
+      "busy": 39.299999999813735,
+      "runToPaint": 673.0999999996275,
+      "response": 81.20000000018626,
+      "responseFull": 93.79999999981374,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 86.5,
+      "loadEnd": 1.15
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:28:10.654Z",
+      "load1": 1.2,
+      "clsLoad": 0,
+      "press": 10.700000000186265,
+      "busy": 27.59999999962747,
+      "runToPaint": 702.5,
+      "response": 112.59999999962747,
+      "responseFull": 134.20000000018626,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 91.40000000037253,
+      "loadEnd": 1.41
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:28:16.338Z",
+      "load1": 1.41,
+      "clsLoad": 0,
+      "press": 13,
+      "busy": 24.700000000186265,
+      "runToPaint": 654.2000000001863,
+      "response": 76,
+      "responseFull": 85.5,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 55.90000000037253,
+      "loadEnd": 1.38
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:28:33.176Z",
+      "load1": 1.32,
+      "clsLoad": 0,
+      "press": 13.599999999627471,
+      "busy": 44.5,
+      "runToPaint": 712.5,
+      "response": 141.5,
+      "responseFull": 158.29999999981374,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 81.29999999981374,
+      "loadEnd": 1.29
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:28:39.017Z",
+      "load1": 1.29,
+      "clsLoad": 0,
+      "press": 14.799999999813735,
+      "busy": 40.40000000037253,
+      "runToPaint": 687.3000000007451,
+      "response": 103.30000000074506,
+      "responseFull": 115.5,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 51.799999999813735,
+      "loadEnd": 1.27
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:28:55.777Z",
+      "load1": 1.23,
+      "clsLoad": 0,
+      "press": 9.100000000558794,
+      "busy": 43.69999999925494,
+      "runToPaint": 688,
+      "response": 103.79999999981374,
+      "responseFull": 115.59999999962747,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 91.40000000037253,
+      "loadEnd": 1.27
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:29:01.392Z",
+      "load1": 1.27,
+      "clsLoad": 0,
+      "press": 10.900000000372529,
+      "busy": 39,
+      "runToPaint": 720.5,
+      "response": 138.5,
+      "responseFull": 152.6000000005588,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 94.09999999962747,
+      "loadEnd": 1.25
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:29:18.521Z",
+      "load1": 1.13,
+      "clsLoad": 0,
+      "press": 15.5,
+      "busy": 32.5,
+      "runToPaint": 673.7999999998137,
+      "response": 84.80000000074506,
+      "responseFull": 97.1000000005588,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 49,
+      "loadEnd": 1.12
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:29:24.244Z",
+      "load1": 1.12,
+      "clsLoad": 0,
+      "press": 12.600000000558794,
+      "busy": 30.40000000037253,
+      "runToPaint": 699.2999999998137,
+      "response": 125.1000000005588,
+      "responseFull": 138.79999999981374,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 54.10000000055879,
+      "loadEnd": 1.19
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:29:40.664Z",
+      "load1": 1.38,
+      "clsLoad": 0,
+      "press": 13.700000000186265,
+      "busy": 34,
+      "runToPaint": 652.5,
+      "response": 74.79999999981374,
+      "responseFull": 82.29999999981374,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 61.09999999962747,
+      "loadEnd": 1.27
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:29:46.279Z",
+      "load1": 1.27,
+      "clsLoad": 0,
+      "press": 20.899999999441206,
+      "busy": 43.09999999962747,
+      "runToPaint": 691.6999999992549,
+      "response": 93.29999999981374,
+      "responseFull": 104.79999999981374,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 52.90000000037253,
+      "loadEnd": 1.15
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:30:02.884Z",
+      "load1": 1.29,
+      "clsLoad": 0,
+      "press": 10,
+      "busy": 24.40000000037253,
+      "runToPaint": 689.7999999998137,
+      "response": 114.70000000018626,
+      "responseFull": 125,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 93.09999999962747,
+      "loadEnd": 1.26
+     }
+    ]
+   },
+   "after": {
+    "summary": {
+     "runs": 20,
+     "judged": 20,
+     "load1": {
+      "median": 1.28,
+      "min": 1.14,
+      "max": 1.84
+     },
+     "response": {
+      "p75": 79.69999999925494,
+      "median": 69.6000000005588,
+      "min": 55.299999999813735,
+      "max": 109.20000000018626,
+      "n": 20
+     },
+     "responseFull": {
+      "p75": 90,
+      "median": 81.6000000005588,
+      "min": 62.69999999925494,
+      "max": 122.30000000074506,
+      "n": 20
+     },
+     "runToPaint": {
+      "p75": 658,
+      "median": 649.8999999994412,
+      "min": 632.2000000001863,
+      "max": 685.6000000005588,
+      "n": 20
+     },
+     "chartToTable": {
+      "p75": 58.5,
+      "median": 54.59999999962747,
+      "min": 49.700000000186265,
+      "max": 101.1000000005588,
+      "n": 20
+     },
+     "press": {
+      "p75": 16.700000000186265,
+      "median": 14.599999999627471,
+      "min": 9.200000000186265,
+      "max": 23.799999999813735,
+      "n": 20
+     },
+     "busy": {
+      "p75": 31.09999999962747,
+      "median": 25.90000000037253,
+      "min": 21.300000000745058,
+      "max": 47.200000000186265,
+      "n": 20
+     },
+     "clsLoad": {
+      "p75": 0,
+      "median": 0,
+      "min": 0,
+      "max": 0,
+      "n": 20
+     },
+     "clsRunAll": {
+      "p75": 0,
+      "median": 0,
+      "min": 0,
+      "max": 0,
+      "n": 20
+     }
+    },
+    "raw": [
+     {
+      "build": "after",
+      "at": "2026-11-28T09:26:31.496Z",
+      "load1": 1.84,
+      "clsLoad": 0,
+      "press": 23.799999999813735,
+      "busy": 28.799999999813735,
+      "runToPaint": 654.9000000003725,
+      "response": 67.3999999994412,
+      "responseFull": 75.8999999994412,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 55.799999999813735,
+      "loadEnd": 1.69
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:26:36.973Z",
+      "load1": 1.69,
+      "clsLoad": 0,
+      "press": 11.700000000186265,
+      "busy": 25.300000000745058,
+      "runToPaint": 646.4000000003725,
+      "response": 59.700000000186265,
+      "responseFull": 72.79999999981374,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 57.30000000074506,
+      "loadEnd": 1.63
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:26:53.259Z",
+      "load1": 1.69,
+      "clsLoad": 0,
+      "press": 17.09999999962747,
+      "busy": 21.300000000745058,
+      "runToPaint": 665.8000000007451,
+      "response": 96.5,
+      "responseFull": 109.09999999962747,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 58.5,
+      "loadEnd": 1.64
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:26:58.677Z",
+      "load1": 1.64,
+      "clsLoad": 0,
+      "press": 10.5,
+      "busy": 29.09999999962747,
+      "runToPaint": 648.5999999996275,
+      "response": 74.80000000074506,
+      "responseFull": 85.1000000005588,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 54.200000000186265,
+      "loadEnd": 1.58
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:27:15.313Z",
+      "load1": 1.49,
+      "clsLoad": 0,
+      "press": 16.100000000558794,
+      "busy": 25.09999999962747,
+      "runToPaint": 637.1999999992549,
+      "response": 61,
+      "responseFull": 69.40000000037253,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 50,
+      "loadEnd": 1.45
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:27:20.880Z",
+      "load1": 1.45,
+      "clsLoad": 0,
+      "press": 10.099999999627471,
+      "busy": 25.90000000037253,
+      "runToPaint": 651.8000000007451,
+      "response": 69.6000000005588,
+      "responseFull": 84.6000000005588,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 80,
+      "loadEnd": 1.46
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:27:37.439Z",
+      "load1": 1.31,
+      "clsLoad": 0,
+      "press": 15.5,
+      "busy": 39.700000000186265,
+      "runToPaint": 658.8999999994412,
+      "response": 70,
+      "responseFull": 78.09999999962747,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 95.5,
+      "loadEnd": 1.28
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:27:42.972Z",
+      "load1": 1.28,
+      "clsLoad": 0,
+      "press": 16.700000000186265,
+      "busy": 25.200000000186265,
+      "runToPaint": 668.6000000005588,
+      "response": 96.90000000037253,
+      "responseFull": 107.6000000005588,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 52.19999999925494,
+      "loadEnd": 1.18
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:27:59.663Z",
+      "load1": 1.15,
+      "clsLoad": 0,
+      "press": 18.299999999813735,
+      "busy": 25.300000000745058,
+      "runToPaint": 632.2000000001863,
+      "response": 59.799999999813735,
+      "responseFull": 67.59999999962747,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 54.59999999962747,
+      "loadEnd": 1.22
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:28:05.173Z",
+      "load1": 1.22,
+      "clsLoad": 0,
+      "press": 11.100000000558794,
+      "busy": 33.59999999962747,
+      "runToPaint": 641.3999999994412,
+      "response": 55.299999999813735,
+      "responseFull": 65.5,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 62.200000000186265,
+      "loadEnd": 1.2
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:28:21.992Z",
+      "load1": 1.38,
+      "clsLoad": 0,
+      "press": 16.5,
+      "busy": 24.90000000037253,
+      "runToPaint": 643.9000000003725,
+      "response": 61.09999999962747,
+      "responseFull": 74.09999999962747,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 49.700000000186265,
+      "loadEnd": 1.35
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:28:27.511Z",
+      "load1": 1.35,
+      "clsLoad": 0,
+      "press": 18,
+      "busy": 30.700000000186265,
+      "runToPaint": 685.6000000005588,
+      "response": 109.20000000018626,
+      "responseFull": 122.30000000074506,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 57.5,
+      "loadEnd": 1.32
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:28:44.500Z",
+      "load1": 1.27,
+      "clsLoad": 0,
+      "press": 11.400000000372529,
+      "busy": 24,
+      "runToPaint": 649.8999999994412,
+      "response": 67.29999999981374,
+      "responseFull": 81.79999999981374,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 97.3999999994412,
+      "loadEnd": 1.25
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:28:50.176Z",
+      "load1": 1.25,
+      "clsLoad": 0,
+      "press": 14.599999999627471,
+      "busy": 24.699999999254942,
+      "runToPaint": 646.0999999996275,
+      "response": 71.90000000037253,
+      "responseFull": 81.6000000005588,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 101.1000000005588,
+      "loadEnd": 1.23
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:29:07.029Z",
+      "load1": 1.25,
+      "clsLoad": 0,
+      "press": 12.900000000372529,
+      "busy": 32.299999999813735,
+      "runToPaint": 653.7999999998137,
+      "response": 79.69999999925494,
+      "responseFull": 92.09999999962747,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 54.5,
+      "loadEnd": 1.23
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:29:12.579Z",
+      "load1": 1.23,
+      "clsLoad": 0,
+      "press": 21.299999999813735,
+      "busy": 47.200000000186265,
+      "runToPaint": 675.2000000001863,
+      "response": 99.8999999994412,
+      "responseFull": 111.59999999962747,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 57.19999999925494,
+      "loadEnd": 1.13
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:29:29.782Z",
+      "load1": 1.19,
+      "clsLoad": 0,
+      "press": 9.200000000186265,
+      "busy": 23.699999999254942,
+      "runToPaint": 658,
+      "response": 81.5,
+      "responseFull": 90,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 50,
+      "loadEnd": 1.42
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:29:35.275Z",
+      "load1": 1.42,
+      "clsLoad": 0,
+      "press": 13.5,
+      "busy": 38.700000000186265,
+      "runToPaint": 636,
+      "response": 55.299999999813735,
+      "responseFull": 62.69999999925494,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 51.09999999962747,
+      "loadEnd": 1.38
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:29:51.746Z",
+      "load1": 1.15,
+      "clsLoad": 0,
+      "press": 14.899999999441206,
+      "busy": 31.09999999962747,
+      "runToPaint": 634.7000000001863,
+      "response": 64.20000000018626,
+      "responseFull": 72.90000000037253,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 52.200000000186265,
+      "loadEnd": 1.14
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:29:57.175Z",
+      "load1": 1.14,
+      "clsLoad": 0,
+      "press": 9.899999999441206,
+      "busy": 26.799999999813735,
+      "runToPaint": 654.5,
+      "response": 70.79999999981374,
+      "responseFull": 84.29999999981374,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 51.299999999813735,
+      "loadEnd": 1.29
+     }
+    ]
+   }
+  },
+  "200": {
+   "before": {
+    "summary": {
+     "runs": 20,
+     "judged": 20,
+     "load1": {
+      "median": 1.8,
+      "min": 1.26,
+      "max": 2.69
+     },
+     "response": {
+      "p75": 189.79999999981374,
+      "median": 163.90000000037253,
+      "min": 95.79999999981374,
+      "max": 223.09999999962747,
+      "n": 20
+     },
+     "responseFull": {
+      "p75": 217.8999999994412,
+      "median": 191.5,
+      "min": 115.29999999981374,
+      "max": 252,
+      "n": 20
+     },
+     "runToPaint": {
+      "p75": 1816.4000000003725,
+      "median": 1756.8999999994412,
+      "min": 1672.7000000001863,
+      "max": 1902.2000000001863,
+      "n": 20
+     },
+     "chartToTable": {
+      "p75": 98.19999999925494,
+      "median": 74.70000000018626,
+      "min": 49,
+      "max": 134.59999999962747,
+      "n": 20
+     },
+     "press": {
+      "p75": 14.200000000186265,
+      "median": 12.900000000372529,
+      "min": 9,
+      "max": 19,
+      "n": 20
+     },
+     "busy": {
+      "p75": 34.700000000186265,
+      "median": 29.5,
+      "min": 20.800000000745058,
+      "max": 43.700000000186265,
+      "n": 20
+     },
+     "clsLoad": {
+      "p75": 0,
+      "median": 0,
+      "min": 0,
+      "max": 0,
+      "n": 20
+     },
+     "clsRunAll": {
+      "p75": 0,
+      "median": 0,
+      "min": 0,
+      "max": 0,
+      "n": 20
+     }
+    },
+    "raw": [
+     {
+      "build": "before",
+      "at": "2026-11-28T09:30:09.157Z",
+      "load1": 1.26,
+      "clsLoad": 0,
+      "press": 9.600000000558794,
+      "busy": 22.300000000745058,
+      "runToPaint": 1816.4000000003725,
+      "response": 145.90000000037253,
+      "responseFull": 171.59999999962747,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 89.79999999981374,
+      "loadEnd": 1.24
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:30:31.844Z",
+      "load1": 1.33,
+      "clsLoad": 0,
+      "press": 10.799999999813735,
+      "busy": 39.200000000186265,
+      "runToPaint": 1832.2000000001863,
+      "response": 180,
+      "responseFull": 208.6000000005588,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 70,
+      "loadEnd": 1.35
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:30:39.840Z",
+      "load1": 1.35,
+      "clsLoad": 0,
+      "press": 12.700000000186265,
+      "busy": 23.699999999254942,
+      "runToPaint": 1754.199999999255,
+      "response": 188.1000000005588,
+      "responseFull": 217.6000000005588,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 64.09999999962747,
+      "loadEnd": 1.3
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:31:02.224Z",
+      "load1": 1.38,
+      "clsLoad": 0,
+      "press": 17,
+      "busy": 34.40000000037253,
+      "runToPaint": 1747.5,
+      "response": 184.20000000018626,
+      "responseFull": 208.90000000037253,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 64.8999999994412,
+      "loadEnd": 1.43
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:31:09.940Z",
+      "load1": 1.43,
+      "clsLoad": 0,
+      "press": 10.5,
+      "busy": 29.5,
+      "runToPaint": 1712.7000000001863,
+      "response": 134.40000000037253,
+      "responseFull": 153.5,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 66.8999999994412,
+      "loadEnd": 1.36
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:31:32.563Z",
+      "load1": 1.28,
+      "clsLoad": 0,
+      "press": 9,
+      "busy": 24.600000000558794,
+      "runToPaint": 1751.5,
+      "response": 189.79999999981374,
+      "responseFull": 215.59999999962747,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 80.59999999962747,
+      "loadEnd": 1.34
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:31:39.983Z",
+      "load1": 1.34,
+      "clsLoad": 0,
+      "press": 12.400000000372529,
+      "busy": 30.299999999813735,
+      "runToPaint": 1750.5,
+      "response": 185.20000000018626,
+      "responseFull": 228.40000000037253,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 134.59999999962747,
+      "loadEnd": 1.52
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:32:02.809Z",
+      "load1": 1.76,
+      "clsLoad": 0,
+      "press": 11.600000000558794,
+      "busy": 23.700000000186265,
+      "runToPaint": 1758.7999999998137,
+      "response": 136.1000000005588,
+      "responseFull": 163.1000000005588,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 61.5,
+      "loadEnd": 1.78
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:32:10.331Z",
+      "load1": 1.78,
+      "clsLoad": 0,
+      "press": 12.099999999627471,
+      "busy": 20.800000000745058,
+      "runToPaint": 1786.7000000001863,
+      "response": 115.79999999981374,
+      "responseFull": 136.5,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 49,
+      "loadEnd": 2.27
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:32:33.170Z",
+      "load1": 2.35,
+      "clsLoad": 0,
+      "press": 12.900000000372529,
+      "busy": 27.299999999813735,
+      "runToPaint": 1763.0999999996275,
+      "response": 194.09999999962747,
+      "responseFull": 217.8999999994412,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 93.20000000018626,
+      "loadEnd": 2.56
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:32:40.901Z",
+      "load1": 2.56,
+      "clsLoad": 0,
+      "press": 15.399999999441206,
+      "busy": 33.200000000186265,
+      "runToPaint": 1736.300000000745,
+      "response": 163.90000000037253,
+      "responseFull": 191.5,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 107.29999999981374,
+      "loadEnd": 2.79
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:33:03.900Z",
+      "load1": 2.69,
+      "clsLoad": 0,
+      "press": 19,
+      "busy": 43.700000000186265,
+      "runToPaint": 1700.5,
+      "response": 95.79999999981374,
+      "responseFull": 115.29999999981374,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 92.79999999981374,
+      "loadEnd": 2.55
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:33:11.456Z",
+      "load1": 2.55,
+      "clsLoad": 0,
+      "press": 14.5,
+      "busy": 22.40000000037253,
+      "runToPaint": 1849.1000000005588,
+      "response": 143.80000000074506,
+      "responseFull": 169.90000000037253,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 100.5,
+      "loadEnd": 2.63
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:33:33.571Z",
+      "load1": 2.4,
+      "clsLoad": 0,
+      "press": 14,
+      "busy": 32.90000000037253,
+      "runToPaint": 1798.7000000001863,
+      "response": 204.59999999962747,
+      "responseFull": 233.20000000018626,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 101.20000000018626,
+      "loadEnd": 2.45
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:33:41.326Z",
+      "load1": 2.45,
+      "clsLoad": 0,
+      "press": 13.199999999254942,
+      "busy": 22.59999999962747,
+      "runToPaint": 1680.7000000001863,
+      "response": 141.70000000018626,
+      "responseFull": 164.09999999962747,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 70.1000000005588,
+      "loadEnd": 2.38
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:34:03.746Z",
+      "load1": 2.39,
+      "clsLoad": 0,
+      "press": 14.200000000186265,
+      "busy": 41.30000000074506,
+      "runToPaint": 1672.7000000001863,
+      "response": 128.1000000005588,
+      "responseFull": 148.40000000037253,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 72,
+      "loadEnd": 2.28
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:34:11.405Z",
+      "load1": 2.28,
+      "clsLoad": 0,
+      "press": 16.299999999813735,
+      "busy": 37.799999999813735,
+      "runToPaint": 1902.2000000001863,
+      "response": 131.3999999994412,
+      "responseFull": 159.8999999994412,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 101.5,
+      "loadEnd": 2.16
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:34:34.090Z",
+      "load1": 2.06,
+      "clsLoad": 0,
+      "press": 13.700000000186265,
+      "busy": 27.199999999254942,
+      "runToPaint": 1756.8999999994412,
+      "response": 206.20000000018626,
+      "responseFull": 235.70000000018626,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 67,
+      "loadEnd": 1.97
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:34:41.764Z",
+      "load1": 1.97,
+      "clsLoad": 0,
+      "press": 13.599999999627471,
+      "busy": 34.700000000186265,
+      "runToPaint": 1828.300000000745,
+      "response": 223.09999999962747,
+      "responseFull": 252,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 98.19999999925494,
+      "loadEnd": 1.82
+     },
+     {
+      "build": "before",
+      "at": "2026-11-28T09:35:04.589Z",
+      "load1": 1.8,
+      "clsLoad": 0,
+      "press": 12.899999999441206,
+      "busy": 39.10000000055879,
+      "runToPaint": 1852.2999999998137,
+      "response": 218.5,
+      "responseFull": 240.69999999925494,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 74.70000000018626,
+      "loadEnd": 1.82
+     }
+    ]
+   },
+   "after": {
+    "summary": {
+     "runs": 20,
+     "judged": 20,
+     "load1": {
+      "median": 1.82,
+      "min": 1.24,
+      "max": 2.79
+     },
+     "response": {
+      "p75": 127.29999999981374,
+      "median": 110.20000000018626,
+      "min": 75.59999999962747,
+      "max": 144.5,
+      "n": 18
+     },
+     "responseFull": {
+      "p75": 156.19999999925494,
+      "median": 136.3999999994412,
+      "min": 97.59999999962747,
+      "max": 173.79999999981374,
+      "n": 20
+     },
+     "runToPaint": {
+      "p75": 1777.2999999998137,
+      "median": 1721.300000000745,
+      "min": 1588.0999999996275,
+      "max": 1835.8999999994412,
+      "n": 20
+     },
+     "chartToTable": {
+      "p75": 93.79999999981374,
+      "median": 67.3999999994412,
+      "min": 57.299999999813735,
+      "max": 104.90000000037253,
+      "n": 20
+     },
+     "press": {
+      "p75": 17.40000000037253,
+      "median": 13.899999999441206,
+      "min": 10.200000000186265,
+      "max": 23.5,
+      "n": 20
+     },
+     "busy": {
+      "p75": 34.90000000037253,
+      "median": 30.90000000037253,
+      "min": 22.5,
+      "max": 53,
+      "n": 20
+     },
+     "clsLoad": {
+      "p75": 0,
+      "median": 0,
+      "min": 0,
+      "max": 0,
+      "n": 20
+     },
+     "clsRunAll": {
+      "p75": 0,
+      "median": 0,
+      "min": 0,
+      "max": 0,
+      "n": 20
+     }
+    },
+    "raw": [
+     {
+      "build": "after",
+      "at": "2026-11-28T09:30:16.893Z",
+      "load1": 1.24,
+      "clsLoad": 0,
+      "press": 10.700000000186265,
+      "busy": 27.699999999254942,
+      "runToPaint": 1732.5,
+      "response": 123.20000000018626,
+      "responseFull": 160.6000000005588,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 57.89999999944121,
+      "loadEnd": 1.36
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:30:24.244Z",
+      "load1": 1.36,
+      "clsLoad": 0,
+      "press": 17.40000000037253,
+      "busy": 36.60000000055879,
+      "runToPaint": 1715,
+      "response": 80.29999999981374,
+      "responseFull": 99,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 101.8999999994412,
+      "loadEnd": 1.33
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:30:47.440Z",
+      "load1": 1.3,
+      "clsLoad": 0,
+      "press": 13.899999999441206,
+      "busy": 48.5,
+      "runToPaint": 1683.0999999996275,
+      "response": 128.70000000018626,
+      "responseFull": 156.20000000018626,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 69.90000000037253,
+      "loadEnd": 1.35
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:30:54.993Z",
+      "load1": 1.35,
+      "clsLoad": 0,
+      "press": 12.5,
+      "busy": 44.200000000186265,
+      "runToPaint": 1648.4000000003725,
+      "response": 88.90000000037253,
+      "responseFull": 119,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 61.30000000074506,
+      "loadEnd": 1.38
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:31:17.429Z",
+      "load1": 1.36,
+      "clsLoad": 0,
+      "press": 16.300000000745058,
+      "busy": 32.299999999813735,
+      "runToPaint": 1777.5,
+      "response": 76.5,
+      "responseFull": 106.6000000005588,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 57.299999999813735,
+      "loadEnd": 1.33
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:31:25.053Z",
+      "load1": 1.33,
+      "clsLoad": 0,
+      "press": 14.600000000558794,
+      "busy": 40.39999999944121,
+      "runToPaint": 1709.0999999996275,
+      "response": 126.09999999962747,
+      "responseFull": 156.19999999925494,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 67.3999999994412,
+      "loadEnd": 1.28
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:31:47.524Z",
+      "load1": 1.52,
+      "clsLoad": 0,
+      "press": 23.5,
+      "busy": 34.299999999813735,
+      "runToPaint": 1716.9000000003725,
+      "response": 81.5,
+      "responseFull": 107.5,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 97.5,
+      "loadEnd": 1.72
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:31:55.154Z",
+      "load1": 1.72,
+      "clsLoad": 0,
+      "press": 19.299999999813735,
+      "busy": 53,
+      "runToPaint": 1780.4000000003725,
+      "response": 104.3999999994412,
+      "responseFull": 136.3999999994412,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 96.70000000018626,
+      "loadEnd": 1.76
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:32:17.944Z",
+      "load1": 2.27,
+      "clsLoad": 0,
+      "press": 10.700000000186265,
+      "busy": 30.90000000037253,
+      "runToPaint": 1668.4000000003725,
+      "response": 129.20000000018626,
+      "responseFull": 156.79999999981374,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 67.29999999981374,
+      "loadEnd": 2.24
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:32:25.448Z",
+      "load1": 2.24,
+      "clsLoad": 0,
+      "press": 13.399999999441206,
+      "busy": 31,
+      "runToPaint": 1768.0999999996275,
+      "response": 124.59999999962747,
+      "responseFull": 143.3999999994412,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 91,
+      "loadEnd": 2.35
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:32:48.584Z",
+      "load1": 2.79,
+      "clsLoad": 0,
+      "press": 10.400000000372529,
+      "busy": 22.5,
+      "runToPaint": 1766.5999999996275,
+      "response": 110.20000000018626,
+      "responseFull": 134.30000000074506,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 93.20000000018626,
+      "loadEnd": 2.72
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:32:56.277Z",
+      "load1": 2.72,
+      "clsLoad": 0,
+      "press": 14.200000000186265,
+      "busy": 29.799999999813735,
+      "runToPaint": 1792.3999999994412,
+      "response": 86.5,
+      "responseFull": 113.90000000037253,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 103.29999999981374,
+      "loadEnd": 2.69
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:33:18.979Z",
+      "load1": 2.63,
+      "clsLoad": 0,
+      "press": 16.799999999813735,
+      "busy": 32.40000000037253,
+      "runToPaint": 1693.7999999998137,
+      "response": null,
+      "responseFull": 101.70000000018626,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 61.60000000055879,
+      "loadEnd": 2.66
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:33:26.315Z",
+      "load1": 2.66,
+      "clsLoad": 0,
+      "press": 17.5,
+      "busy": 22.90000000037253,
+      "runToPaint": 1675.7000000001863,
+      "response": 127.29999999981374,
+      "responseFull": 155,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 58,
+      "loadEnd": 2.4
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:33:48.693Z",
+      "load1": 2.38,
+      "clsLoad": 0,
+      "press": 10.899999999441206,
+      "busy": 23.899999999441206,
+      "runToPaint": 1777.2999999998137,
+      "response": 129.09999999962747,
+      "responseFull": 159.20000000018626,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 104.90000000037253,
+      "loadEnd": 2.27
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:33:56.205Z",
+      "load1": 2.27,
+      "clsLoad": 0,
+      "press": 10.200000000186265,
+      "busy": 24.299999999813735,
+      "runToPaint": 1835.8999999994412,
+      "response": 75.59999999962747,
+      "responseFull": 97.59999999962747,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 69.19999999925494,
+      "loadEnd": 2.39
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:34:19.248Z",
+      "load1": 2.16,
+      "clsLoad": 0,
+      "press": 10.400000000372529,
+      "busy": 24.5,
+      "runToPaint": 1738.699999999255,
+      "response": 119.5,
+      "responseFull": 150.79999999981374,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 65,
+      "loadEnd": 2.07
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:34:26.622Z",
+      "load1": 2.07,
+      "clsLoad": 0,
+      "press": 21.5,
+      "busy": 25.100000000558794,
+      "runToPaint": 1793.300000000745,
+      "response": 144.5,
+      "responseFull": 173.79999999981374,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 66.1000000005588,
+      "loadEnd": 2.06
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:34:49.512Z",
+      "load1": 1.82,
+      "clsLoad": 0,
+      "press": 18.5,
+      "busy": 34.90000000037253,
+      "runToPaint": 1721.300000000745,
+      "response": null,
+      "responseFull": 149.29999999981374,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 93.79999999981374,
+      "loadEnd": 1.76
+     },
+     {
+      "build": "after",
+      "at": "2026-11-28T09:34:57.141Z",
+      "load1": 1.76,
+      "clsLoad": 0,
+      "press": 11.100000000558794,
+      "busy": 24.700000000186265,
+      "runToPaint": 1588.0999999996275,
+      "response": 82.40000000037253,
+      "responseFull": 102.40000000037253,
+      "clsRun": 0,
+      "clsRunAll": 0,
+      "bodyCopies": {
+       "devtools": false,
+       "playwright": false
+      },
+      "chartToTable": 61.299999999813735,
+      "loadEnd": 1.8
+     }
+    ]
+   }
+  }
+ }
+}

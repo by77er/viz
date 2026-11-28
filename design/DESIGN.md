@@ -4,7 +4,7 @@ Status: draft 3.1, 2026-11-18. Draft 2 was reviewed by two independent reviewers
 findings) and rewritten as draft 3; draft 3 was re-reviewed (12 findings) and amended here.
 `REVIEW.md` lists what changed and what is still open.
 
-Status (2026-11-28, `main` after pull request #9 and D75): the backend described here is built and
+Status (2026-11-28, `main` after pull request #9, D75 and the web app, Explore released): the backend described here is built and
 on `main`. Production has been live since 2026-11-19: it ran fb77292 (pull request #8, deployed by
 the owner) from 2026-11-19 to 2026-11-28, and 375e9ba (pull request #9) from 2026-11-28, deployed by
 the Deploy workflow (run 46125868615, 08:27–08:36 UTC; `/healthz` then reported 375e9ba with every
@@ -31,8 +31,27 @@ on a stage before #9 merged (`spikes/s13-upgrade-trial/`, 2026-11-28, measured o
 Cloudflare accepted the bindings at upload and its version API lists them as `type: ratelimit`
 with `namespace_id`, as the deploy reads them (review of D69, round 2, M2-2, settled; §11b, §13).
 
-The interface (`app/`, `design-system/`, §8) is on the development branch only. Self-monitoring is
-proposed, not built.
+The interface (`app/`, `design-system/`, §8) is on `main` and served by viz-gateway at
+`https://viz.bitcru.sh/` from the release that carries D74 (on `vis.bitcru.sh` its pages are a 308
+to viz, D75). That release lists **Explore, Help and Settings**, with sign-in by API key.
+**Dashboards (read-only) and monitors (the on-call slice) are built and served, but unlisted**: they
+open at `/dashboards` and `/monitors`, and the navigation, the command palette and Help do not name
+them (`app/src/shell/released.ts`), until the fixes for their design re-review pass; a second pull
+request lists them. The owner decided this on 2026-11-28: ship Explore now, with its speed misses
+recorded as known issues (`app/README.md`, "Released in this version"). So the app merged on the
+owner's decision, not on an approving design review: the round 3 re-review
+(`design-system/reviews/app-v9/rereview.md`) found everything a person sees in Explore, Help and
+Settings at approve level but rejected it on one speed row ("Show 50 more", 102 / 105 ms against
+100), rejected dashboards and monitors, and approved the waiting-line change. Blocker B1 (a result
+of many series painted late) has a waiver for 37 to 200 series whose conditions are not all met, so
+it has not taken effect (`design-system/reviews/chart-speed/second-review.md`, `third-review.md`);
+the phone's chart to table at 36 and 200 series is not met (101.1 and 103.1 ms pooled over three
+sessions, measured here); the waiver lapses on 2026-12-31 unless F1 is decided. The first release
+with the app needs a stage run of the same serving code (D74 point 6): stage S16 ran it before the
+merge (`spikes/s16-app-stage/`) with check 8 half made (the rollback to a version without the app
+was not run: the session's permission check refused the release without the app that it needed), so
+the evidence entry is incomplete and the first production release goes out on the owner's logged
+override, `app_without_stage_evidence`. Self-monitoring is proposed, not built.
 
 ## 1. What viz is, and how it is deployed
 
@@ -105,7 +124,7 @@ per-tenant ledger has none of those problems and is a far smaller thing to prove
 | `Notifier` | Durable Object, one per tenant | Routing, grouping, inhibition, silences, and the delivery outbox. One per tenant because grouping spans that tenant's rulers | when alerts change, and on its group timers |
 | `Scraper` | Durable Object, one per target group | Pull ingest | every scrape interval |
 | `Tenant` | Durable Object, one per tenant | Keys, dashboards and revisions, proposed changes, settings (retention, limits, pool, notifications), audit log; publishes what the data path needs to KV; issues service keys to the ruler and gives it the default notification destination over its binding (`contracts/control.ts`, D39); OAuth grants and tokens (D44), which the agent surface checks through control's `OAuthIntrospection` entrypoint, never through this object's binding. Rule groups are held by the `Ruler` | per control-plane request; the data path reads its KV records, never the object; the ruler asks it when it has no key and at most once a minute while notifying |
-| `app` | Worker + static assets | UI, REST and Prometheus/Tempo-compatible APIs, OAuth | per request |
+| `app` | Worker + static assets | UI, REST and Prometheus/Tempo-compatible APIs, OAuth. As built, this is the gateway (`deploy/gateway`, viz-gateway on `viz.bitcru.sh`, with `vis.bitcru.sh` kept for data senders, D75): it routes each API path to the Worker that serves it and serves the web app's build, the hashed files as its own static assets without running, the document itself (D74) | per request |
 | `mcp` | Worker | The agent surface: a stateless MCP server and the same tools as JSON under `/api/v1/agent/…`; no Durable Object (§8, D25–D27) | per agent call |
 | `LiveTail` | Durable Object | Hibernating WebSockets for live log tail | while a viewer is connected |
 | `jobs` | Workflows | Compaction, rollups, retention, orphan sweep, scrubbing, investigations. As built, compaction, retention and deletion are a per-tenant maintenance run on a queue (§5.2) | scheduled or triggered |
@@ -804,9 +823,28 @@ refusal it would get) from one ledger read, touching no shard, leaf or R2 object
 - **Compatibility.** The Prometheus and Tempo HTTP APIs are served, so Grafana and existing
   tooling work against viz from day one.
 - **Stack.** React 19 single-page app on Workers static assets; Hono; TanStack Router and
-  Query; CodeMirror 6 with PromQL and TraceQL grammars; uPlot behind an internal chart
-  interface; custom canvas for heatmap, flame graph and trace waterfall. Arrow IPC for large
-  results. Coarse data first, refined in place.
+  Query; CodeMirror 6 with PromQL and TraceQL grammars; the design system's own chart behind
+  an internal chart interface (as built; uPlot was the plan and was removed when the app moved
+  onto design system v9, `app/README.md`); custom canvas for heatmap, flame graph and trace
+  waterfall. Arrow IPC for large results. Coarse data first, refined in place.
+- **Serving, as built (D74, 2026-11-26; on `main` with the web app).** `app/serve.json` says how the
+  build is served and the gateway serves by it: files under `/assets/` (content-hashed, kept
+  for good) and the icon are viz-gateway's static assets, answered by Cloudflare by exact path
+  without invoking the Worker; the documents serve.json lists come from the Worker with the
+  content security policy and `no-cache`; the API's paths come first, for static files too (the
+  API's part of the path space is one file both the gateway and the deploy read), and every
+  other path, an unknown API path and a missing asset included, is the JSON 404, never the
+  document. A release carries the build it was made with: built by a job that holds no secret,
+  handed to the job that holds the Cloudflare token as data, and verified there against the
+  release's sources and file by file before upload; and the files of the three builds before
+  it, for at most thirty days, for pages still open. A rollback of the gateway brings back the
+  build its version held. The first production release with the app is refused until a stage is
+  recorded to have gone before it, or the owner overrides with a reason
+  (`deploy/README.md`, "The web app", "Who can read the Cloudflare token", "A stage before
+  production"; review: `design/reviews/d74-gateway-app.md`). The app is served on `viz.bitcru.sh`
+  only: on `vis.bitcru.sh` its documents and a missing asset are a 308 to viz, and its files, which
+  Cloudflare's asset layer answers before the Worker runs on every hostname, are served as on viz
+  (D75, "The web app on vis.bitcru.sh").
 
 ## 9. Auth, tenancy, limits
 

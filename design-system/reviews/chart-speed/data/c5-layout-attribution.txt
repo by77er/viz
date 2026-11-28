@@ -1,0 +1,38 @@
+Where the browser's work after a 36-series draw goes, desktop (1440 x 900), the merged tree (HEAD 4dea3c5's app/ and design-system/).
+Measured here, 2026-11-28 12:44 to 13:05 UTC, under the shared lock. tools/lay.cjs: Explore at 36 series, then in the page one part of
+the chart is written again with its own markup and the forced style + layout after it is timed (document.documentElement.offsetHeight),
+median of N rounds, the parts (and with --variants the CSS variants) alternated round by round. Printed output, copied as printed.
+
+1. CPU 4x, N = 15 (12:44 UTC, load 0.7)
+   counts: svg nodes 70, legend rows 10, cells 37, page nodes 355, path text 105,216 characters
+   part                write ms  layout ms
+   none                   0        0
+   svg (plot markup)      3.7      4.3
+   tbody (legend rows)    2.1      9.1
+   legend (colgroup, head, rows, note)  2.5   8.7
+   both                   5.9     11.6
+   a custom property set on the chart root (style only)   0.1   9.2
+
+2. CPU 4x, N = 11, CSS variants (lay-variants-1.json; 12:46 UTC, load 1.6). Layout ms after the legend rows are written again:
+   base 11.8 | container-type: normal on the legend's wrap 13.9 | no scroll-driven edge animation 10.7 | content-visibility: visible 9.7
+   | first column not sticky 9.6 | cells overflow: visible 8.9 | table-layout: auto 8.0
+   A custom property set on the legend's wrap alone (restyles only the table): base 9.9, the variants 6.5 to 8.4.
+   Between two blocks of the same build ("base" and the base of run 3 below) the same figure read 7.4 and 10.8 ms: none of the
+   variants is outside that spread.
+
+3. CPU 4x, N = 11 (lay-variants-2.json; 12:48 UTC, load 1.8): every rule with :has( removed, every rule with :hover removed,
+   container-type and the edge animation both off: legend rows 9.5, 10.8, 10.9 ms against 7.4 and 10.8 for two blocks of base.
+
+4. CPU 1x, N = 41 (lay-variants-3.json; 13:04 UTC, load 1.1): the same parts unthrottled
+   base: svg 0.8, legend rows 1.6, legend 1.7, both 2.3 ms; overflow: clip on the cells, names and note 1.8 / 1.9 / 2.1;
+   overflow: clip on the cells 1.7 / 1.9 / 2.4; first column not sticky 1.4 / 1.9 / 2.7; base again 2.0 / 2.0 / 2.3.
+
+5. The frame itself (tools/profile.cjs --raw --inval --noprofiler, a trace with layout invalidation tracking; 3 runs, 13:00 UTC; the
+   tracing slows the page, so read the structure, not the times): between the last byte and the paint there is one Layout, 15.9 ms,
+   in the frame after the draw (the draw's own read of clientWidth needed style only: 1.2 ms, 3 elements). Its invalidations: the
+   plot's 70 elements and the legend's colgroup, head and 10 rows (their buttons, figure cells and text) all removed and added
+   again, every draw, whatever changed.
+
+Reading: the legend's cost is not its column algorithm (table-layout: fixed is already set, components.css line 387, which is why the
+2026-11-27 attempt with it "did not help") nor any one CSS feature: it is laying out a table whose every element is new on every
+draw (parsed, styled, given layout objects, laid out with nothing cached). Writing again only what changed is the remedy tried.

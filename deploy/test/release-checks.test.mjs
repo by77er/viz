@@ -17,7 +17,7 @@ import { join, relative } from 'node:path'
 import { after, beforeEach, test } from 'node:test'
 import { GENERATED_DIR, REPO_ROOT } from '../lib/common.mjs'
 import { deploy, planOnly, rollback } from '../release.mjs'
-import { callsLike, captured, cmd, installFakeAccount, serving } from './fake-account.mjs'
+import { WITHOUT_APP, callsLike, captured, cmd, installFakeAccount, serving } from './fake-account.mjs'
 
 const STAGE = 'checkstest'
 const N = (w) => `viz-${STAGE}-${w}`
@@ -79,8 +79,9 @@ function release(name, { publisher = 5, query = true, ingest = true, signals = n
   add(QUERY, 'viz-query', { ...(query ? { VIZ_FLOORS: stamp } : {}), ...none.vars }, { floors: query ? ['signal-data'] : [], formats: none.formats })
   const rulerFormats = formatsOf(anomaly ? { 'store.anomaly-state': { w: anomaly.w, r: anomaly.r } } : {})
   add(RULER, 'viz-ruler', rulerFormats.vars, { formats: rulerFormats.formats })
-  if (gateway) add(GATEWAY, 'viz-gateway', none.vars, { formats: none.formats })
-  const manifest = { target: `stage-${STAGE}`, stage: STAGE, release: name, durableObjectsCodeUpdate: 'deferred 30s', order: workers.map((w) => w.name), releaseFrom: INGEST, workers }
+  // The web app is not this file's subject: a stage configured --without-app (D74).
+  if (gateway) add(GATEWAY, 'viz-gateway', none.vars, { formats: none.formats, ...WITHOUT_APP.worker })
+  const manifest = { target: `stage-${STAGE}`, stage: STAGE, release: name, durableObjectsCodeUpdate: 'deferred 30s', order: workers.map((w) => w.name), releaseFrom: INGEST, workers, ...WITHOUT_APP.manifest }
   writeFileSync(join(stageDir, 'manifest.json'), JSON.stringify(manifest))
   return { name, dir }
 }

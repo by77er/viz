@@ -1,0 +1,57 @@
+{
+ "name": "11-notification",
+ "url": "flows/dist/11-notification.html",
+ "states": [
+  {
+   "name": "1440",
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "400",
+   "width": 400,
+   "coarse": true,
+   "measure": true
+  },
+  {
+   "name": "grey",
+   "scale": 1,
+   "greyscale": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "focus",
+   "steps": [
+    {
+     "focus": "main a"
+    }
+   ],
+   "clip": "header",
+   "pad": 24,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "error-400",
+   "url": "flows/dist/11-notification.html#error",
+   "width": 400,
+   "coarse": true,
+   "measure": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "ack-1440",
+   "url": "flows/dist/11-notification.html#ack",
+   "scale": 1,
+   "measure": true,
+   "themes": [
+    "light"
+   ]
+  }
+ ]
+}

@@ -1,0 +1,55 @@
+{
+  // LOCAL ONLY (`wrangler dev --local`, started by real/stack.mjs). Never deployed: no account,
+  // no route, placeholder KV id. The real viz API in one script: deploy/gateway in front of
+  // viz-ingest (stack/), viz-query (query/) and viz-control (control/), bound to each other
+  // the way deploy/workers.json binds the four Workers. Values follow the production configs
+  // (query/wrangler.jsonc, stack/wrangler.jsonc, control/wrangler.jsonc, deploy/workers.json)
+  // except where a comment says otherwise.
+  "name": "viz-app-realstack",
+  "main": "worker.ts",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "SHARD", "class_name": "Shard" },
+      { "name": "LEDGER", "class_name": "Ledger" },
+      { "name": "LEAF", "class_name": "Leaf" },
+      { "name": "TENANT", "class_name": "Tenant" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Shard", "Ledger", "Leaf", "Tenant"] }],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "viz-lake" }],
+  "kv_namespaces": [{ "binding": "CONFIG", "id": "viz-app-realstack-config" }],
+  // The gateway's three backends: entrypoints of this same script.
+  "services": [
+    { "binding": "INGEST", "service": "viz-app-realstack", "entrypoint": "Ingest" },
+    { "binding": "QUERY", "service": "viz-app-realstack", "entrypoint": "Query" },
+    { "binding": "CONTROL", "service": "viz-app-realstack", "entrypoint": "Control" }
+  ],
+  "queues": {
+    "producers": [
+      { "binding": "FLUSH_QUEUE", "queue": "viz-flush" },
+      { "binding": "MAINT_QUEUE", "queue": "viz-maint" }
+    ],
+    "consumers": [
+      { "queue": "viz-flush", "max_batch_size": 50, "max_batch_timeout": 1, "max_retries": 8, "dead_letter_queue": "viz-flush-dlq" },
+      { "queue": "viz-maint", "max_batch_size": 20, "max_batch_timeout": 1, "max_retries": 5, "dead_letter_queue": "viz-maint-dlq" },
+      { "queue": "viz-flush-dlq", "max_batch_size": 50, "max_batch_timeout": 5 },
+      { "queue": "viz-maint-dlq", "max_batch_size": 50, "max_batch_timeout": 5 }
+    ]
+  },
+  "vars": {
+    "CELL": "cell-0",
+    "DEFAULT_POOL": "{\"pool\":\"shared/c1\",\"slots\":8,\"spread\":2,\"epoch\":1}",
+    // Production has 32; 8 keeps one local process small (query/test uses 8 too).
+    "LEAF_POOL_SIZE": "8",
+    // The app's local origins, so the Settings base URL can point here directly (CORS).
+    "CORS_ORIGINS": "http://127.0.0.1:8820,http://127.0.0.1:8840,https://vis.bitcru.sh",
+    "CORS_ALLOW_ORIGINS": "http://127.0.0.1:8820,http://127.0.0.1:8840,https://vis.bitcru.sh",
+    "FILE_CACHE_TTL_S": "3600",
+    "VIZ_RELEASE": "local",
+    // NOT production: the app's fixed e2e window (2026-11-18 09:30 to 12:30 UTC) is older than
+    // edge's default one-hour acceptance window, so edge is told to accept any timestamp
+    // (query/test/wrangler.jsonc does the same for its fixed workload).
+    "INGEST_LIMITS": "{\"acceptBackMs\":9000000000000000,\"acceptAheadMs\":9000000000000000,\"maxSamples\":5000000,\"maxBodyBytes\":67108864,\"maxDecompressedBytes\":268435456}"
+  }
+}

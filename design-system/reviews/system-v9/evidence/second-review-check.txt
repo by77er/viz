@@ -1,0 +1,37 @@
+tools/check.mjs after the second review's changes. Measured here, 26 Nov, on the tree.
+
+=== node tools/check.mjs (tokens, structure, rendered audit, lint), 2026-11-26T22:45:43Z, load 1.99 1.83 1.67
+reserved height, fine pointer, 1200 px: 11 chart(s), reserved in the markup / once drawn / drawn: 365.5/365.5/365.5, 490.5/490.5/490.5, 558.5/558.5/558.5, 583.5/583.5/583.5, 1058.5/1058.5/1058.5, 558.5/558.5/558.5, 314.5/314.5/314.5, 339.5/339.5/339.5, 209.5/209.5/209.5, 490.5/490.5/490.5, 490.5/490.5/490.5
+reserved height, coarse pointer, 400 px: 11 chart(s), reserved in the markup / once drawn / drawn: 486.5/486.5/486.5, 711.5/711.5/711.5, 819.5/819.5/819.5, 864.5/864.5/864.5, 1719.5/1719.5/1719.5, 819.5/819.5/819.5, 415.5/415.5/415.5, 460.5/460.5/460.5, 290.5/290.5/290.5, 711.5/711.5/711.5, 711.5/711.5/711.5
+reserved height, coarse pointer, 320 px: 11 chart(s), reserved in the markup / once drawn / drawn: 486.5/486.5/486.5, 711.5/711.5/711.5, 819.5/819.5/819.5, 864.5/864.5/864.5, 1719.5/1719.5/1719.5, 819.5/819.5/819.5, 415.5/415.5/415.5, 460.5/460.5/460.5, 290.5/290.5/290.5, 711.5/711.5/711.5, 711.5/711.5/711.5
+rendered audit: 30 previews, both themes, at rest, hover, press and a finger's press, and reserved heights: 0 failure(s)
+contrast and structure: 873/873 checks pass
+literal values: 0 in 1 file(s)
+exit status 0
+
+=== node tools/check.mjs --no-render project/components reviews/system-v9/compositions
+contrast and structure: 759/759 checks pass
+literal values: 0 in 43 file(s)
+exit status 0
+
+=== the lint on the changed tools (node tools/check.mjs --no-render <file>), and on the same files as committed before the change. The lint is a gate for the
+component CSS, the previews, the compositions and application code, not for the tools; these are reported so that nothing is hidden.
+tools/audit.mjs now: 12 literal(s); as committed before: 12
+tools/speed.mjs now: 0 literal(s); as committed before: 0
+tools/mutants-corpus.mjs now: 21 literal(s); as committed before: 19
+tools/audit.mjs: the same 13 before and after (values the audit itself sets or compares in order to measure):
+  LITERAL colour  tools/audit.mjs:262  rgb(
+  LITERAL colour  tools/audit.mjs:272  rgb(
+  LITERAL colour  tools/audit.mjs:295  rgb(
+  LITERAL colour  tools/audit.mjs:298  rgb(
+  LITERAL length  tools/audit.mjs:383  0px
+  LITERAL length  tools/audit.mjs:384  0px
+  LITERAL length  tools/audit.mjs:387  0px
+  LITERAL length  tools/audit.mjs:413  0px
+  LITERAL colour  tools/audit.mjs:442  rgba(
+  LITERAL colour  tools/audit.mjs:454  rgb(
+  LITERAL colour  tools/audit.mjs:474  rgb( rgb(
+  LITERAL length  tools/audit.mjs:582  0px
+tools/mutants-corpus.mjs: a file of planted violations; the two new ones are T8.audit's:
+  LITERAL length  tools/mutants-corpus.mjs:198  25vh
+  LITERAL length  tools/mutants-corpus.mjs:198  height: 25vh

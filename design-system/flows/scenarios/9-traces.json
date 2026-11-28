@@ -1,0 +1,74 @@
+{
+ "name": "9-traces",
+ "url": "flows/dist/9-traces.html",
+ "states": [
+  {
+   "name": "1440",
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "400",
+   "width": 400,
+   "coarse": true,
+   "measure": true
+  },
+  {
+   "name": "grey",
+   "scale": 1,
+   "greyscale": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "focus",
+   "steps": [
+    {
+     "focus": "#first-trace"
+    }
+   ],
+   "clip": ".vz-split > :last-child",
+   "pad": 24,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "error-1440",
+   "url": "flows/dist/9-traces.html#error",
+   "scale": 1,
+   "measure": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "waterfall-focus",
+   "steps": [
+    {
+     "focus": ".vz-waterfall-span[tabindex=\"0\"]"
+    },
+    {
+     "key": "ArrowDown"
+    },
+    {
+     "key": "ArrowDown"
+    },
+    {
+     "key": "ArrowDown"
+    },
+    {
+     "key": "ArrowDown"
+    }
+   ],
+   "clip": ".vz-waterfall",
+   "pad": 24,
+   "scale": 1,
+   "themes": [
+    "light",
+    "dark"
+   ]
+  }
+ ]
+}

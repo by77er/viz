@@ -101,13 +101,33 @@ Spikes run since under numbers this table does not use, each with its README:
 - **S11** (`spikes/s11-large-ledger/`): the S4 row above.
 - **S12** (`spikes/s12-reload-on-a-phone/`, deployed 2026-11-26): the design system's pages on
   a public address, to see whether a phone loses its scroll position on reload as the emulator
-  did in the v9 review. For the interface, which is on the development branch, not on `main`.
+  did in the v9 review. Still deployed until the owner has run the phone test or decided not to.
 - **S13** (`spikes/s13-upgrade-trial/`): the first release over production, on a stage.
   **Measured 2026-11-28** (on Cloudflare, a `viz-s13-*` stage, destroyed afterwards): Cloudflare
   accepted viz-control's six Rate Limiting bindings at upload, and its version API lists them as
   `type: ratelimit` with `namespace_id` (review of D69, round 2, M2-2, settled). #9's release was
   deployed to production the same day. Finding S13-1 (a stage advertised production's issuer) is
   fixed by D75: a stage's `PUBLIC_URL` is its gateway's workers.dev URL.
+- **S14** (`spikes/s14-app-preview/`, deployed 2026-11-27): the web app's build with the app's
+  mock API on a workers.dev address, for the owner to look at before the gateway served the real
+  one (D74). Synthetic data only, bound to no viz resource; it answers 410 after 2026-12-04, and is
+  deleted once `viz.bitcru.sh` serves the app (its README records that).
+- **S16** (`spikes/s16-app-stage/`): the web app on a stage before its first production release
+  (D74 point 6). **Measured 2026-11-28** (on Cloudflare, stage `viz-s16-*`, workers.dev only, destroyed
+  afterwards; about US$0.003 from the analytics API, 12:45 to 13:56 UTC): the UI branch at 2846fb8,
+  serving fingerprint `90565874…`, which the branch as merged still has (the release switch of D78 is in
+  `app/src`, which the fingerprint does not cover). The smoke test with the app passed on every release
+  (checks 1 to 5); checks 6 (20 page loads were 20 Worker requests and 160 unbilled asset requests),
+  7 (a changed chunk's predecessor kept and served), 9 (raw dot-segment paths) and 10 (304s through the
+  edge's compression) passed by hand. **Check 8 is half made**: the gateway-only rollback to the first
+  build passed; the rollback to a version without the app was **not run**, because the session's
+  permission check refused the release without the app that it needed. So the evidence entry in
+  `deploy/records/app-stage-evidence.json` is incomplete, `release.mjs` refuses the first production
+  release with the app on it, and that release goes out on **the owner's logged override,
+  `app_without_stage_evidence`** (a manual Deploy run; the push's run is refused at the plan). Not seen
+  on Cloudflare before production, then: the 404s after a rollback to a version without the app, and
+  the app's files on `vis.bitcru.sh`. Finding S16-1: the admin-only key `bootstrap.mjs` prints cannot
+  sign in to the app, which asks for the read scope.
 
 ## 5. Evidence required per milestone
 

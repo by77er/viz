@@ -1,0 +1,247 @@
+The full audit after the second review's changes. Measured here, 26 Nov, on the tree: npm run audit (node tools/audit.mjs): 56 pages x 14 configurations, the
+reduced-motion pass, then the reload pass with the 400 px pointer coarse in Blink and every layout-shift entry counted. Playwright 1.63.0, chromium_headless_shell
+157.0.8103.78. System pages: 0 findings; exit status 0. Flow screens (read only, reported apart): 122 findings, as before.
+
+=== npm run audit (the full audit), 2026-11-26T22:33:00Z, load before: 1.32 1.54 1.53
+
+> audit
+> node tools/audit.mjs --json <scratch>/out/audit-full.json
+
+
+
+Reload while scrolled to a chart, and a jump to it after load (106 loads; fails at a layout shift of 0.05 or more, every entry counted, or a chart that moves or lands more than 1 px away). "Marked" is the sum of the entries the browser marks hadRecentInput; the pass gives no input, so they count:
+
+| Page | Layout | Chart | Jump: shift | Jump: marked | Jump: moved, px | Reload: shift | Reload: marked | Reload: landed, px |
+|---|---|---|---|---|---|---|---|---|
+| dist/preview/Chart.html | 1500 | 1 of 10, Latency by route, p99 | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 2 of 10, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 3 of 10, CPU by pod | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 4 of 10, CPU by pod, against the limit | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 5 of 10, CPU by pod, three of Other picked out | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 6 of 10, CPU by pod, the query narrowed to node-b | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 7 of 10, Request rate, change on last week | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 8 of 10, Memory by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 9 of 10, Error ratio, if this rule had existed | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 1500 | 10 of 10, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Panel.html | 1500 | 1 of 1, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 1 of 22, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 2 of 22, Latency by route, p99 | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 3 of 22, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 4 of 22, CPU by pod | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 5 of 22, CPU by pod, against the limit | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 6 of 22, CPU by pod, three of Other picked out | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 7 of 22, CPU by pod, the query narrowed to node-b | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 8 of 22, Request rate, change on last week | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 9 of 22, Memory by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 10 of 22, Error ratio, if this rule had existed | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 11 of 22, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 12 of 22, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 13 of 22, Latency by route, p99 | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 14 of 22, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 15 of 22, CPU by pod | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 16 of 22, CPU by pod, against the limit | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 17 of 22, CPU by pod, three of Other picked out | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 18 of 22, CPU by pod, the query narrowed to node-b | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 19 of 22, Request rate, change on last week | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 20 of 22, Memory by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 21 of 22, Error ratio, if this rule had existed | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 1500 | 22 of 22, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/fixture/index.html | 1500 | 1 of 6, Latency by route, p99 | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/fixture/index.html | 1500 | 2 of 6, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/fixture/index.html | 1500 | 3 of 6, CPU by pod | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/fixture/index.html | 1500 | 4 of 6, CPU by pod, every namespace | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/fixture/index.html | 1500 | 5 of 6, Error ratio by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/fixture/index.html | 1500 | 6 of 6, Error ratio of cart, 7 d | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| reviews/system-v9/compositions/charts.html | 1500 | 1 of 4, CPU by pod | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| reviews/system-v9/compositions/charts.html | 1500 | 2 of 4, CPU by pod | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| reviews/system-v9/compositions/charts.html | 1500 | 3 of 4, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| reviews/system-v9/compositions/charts.html | 1500 | 4 of 4, Latency by route, p99 | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| reviews/system-v9/compositions/claims.html | 1500 | 1 of 1, Latency by route, p99 | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| reviews/system-v9/compositions/dashboard.html | 1500 | 1 of 7, Latency by route, p99 | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| reviews/system-v9/compositions/dashboard.html | 1500 | 2 of 7, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| reviews/system-v9/compositions/dashboard.html | 1500 | 3 of 7, CPU by pod | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| reviews/system-v9/compositions/dashboard.html | 1500 | 4 of 7, CPU by pod, every service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| reviews/system-v9/compositions/dashboard.html | 1500 | 5 of 7, Memory by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| reviews/system-v9/compositions/dashboard.html | 1500 | 6 of 7, Request rate by service, being edited | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| reviews/system-v9/compositions/dashboard.html | 1500 | 7 of 7, Error ratio of cart, if the new rule had existed | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| reviews/system-v9/compositions/monitor.html | 1500 | 1 of 1, p99 of checkout-api, by route | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| reviews/system-v9/compositions/states.html | 1500 | 1 of 1, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 1 of 10, Latency by route, p99 | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 2 of 10, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 3 of 10, CPU by pod | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 4 of 10, CPU by pod, against the limit | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 5 of 10, CPU by pod, three of Other picked out | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 6 of 10, CPU by pod, the query narrowed to node-b | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 7 of 10, Request rate, change on last week | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 8 of 10, Memory by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 9 of 10, Error ratio, if this rule had existed | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Chart.html | 400 coarse | 10 of 10, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/preview/Panel.html | 400 coarse | 1 of 1, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 1 of 22, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 2 of 22, Latency by route, p99 | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 3 of 22, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 4 of 22, CPU by pod | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 5 of 22, CPU by pod, against the limit | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 6 of 22, CPU by pod, three of Other picked out | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 7 of 22, CPU by pod, the query narrowed to node-b | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 8 of 22, Request rate, change on last week | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 9 of 22, Memory by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 10 of 22, Error ratio, if this rule had existed | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 11 of 22, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 12 of 22, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 13 of 22, Latency by route, p99 | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 14 of 22, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 15 of 22, CPU by pod | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 16 of 22, CPU by pod, against the limit | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 17 of 22, CPU by pod, three of Other picked out | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 18 of 22, CPU by pod, the query narrowed to node-b | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 19 of 22, Request rate, change on last week | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 20 of 22, Memory by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 21 of 22, Error ratio, if this rule had existed | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/reference.html | 400 coarse | 22 of 22, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/fixture/index.html | 400 coarse | 1 of 6, Latency by route, p99 | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/fixture/index.html | 400 coarse | 2 of 6, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/fixture/index.html | 400 coarse | 3 of 6, CPU by pod | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/fixture/index.html | 400 coarse | 4 of 6, CPU by pod, every namespace | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/fixture/index.html | 400 coarse | 5 of 6, Error ratio by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| dist/fixture/index.html | 400 coarse | 6 of 6, Error ratio of cart, 7 d | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| reviews/system-v9/compositions/charts.html | 400 coarse | 1 of 4, CPU by pod | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| reviews/system-v9/compositions/charts.html | 400 coarse | 2 of 4, CPU by pod | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| reviews/system-v9/compositions/charts.html | 400 coarse | 3 of 4, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| reviews/system-v9/compositions/charts.html | 400 coarse | 4 of 4, Latency by route, p99 | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| reviews/system-v9/compositions/claims.html | 400 coarse | 1 of 1, Latency by route, p99 | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| reviews/system-v9/compositions/dashboard.html | 400 coarse | 1 of 7, Latency by route, p99 | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| reviews/system-v9/compositions/dashboard.html | 400 coarse | 2 of 7, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| reviews/system-v9/compositions/dashboard.html | 400 coarse | 3 of 7, CPU by pod | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| reviews/system-v9/compositions/dashboard.html | 400 coarse | 4 of 7, CPU by pod, every service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| reviews/system-v9/compositions/dashboard.html | 400 coarse | 5 of 7, Memory by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| reviews/system-v9/compositions/dashboard.html | 400 coarse | 6 of 7, Request rate by service, being edited | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| reviews/system-v9/compositions/dashboard.html | 400 coarse | 7 of 7, Error ratio of cart, if the new rule had existed | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| reviews/system-v9/compositions/monitor.html | 400 coarse | 1 of 1, p99 of checkout-api, by route | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+| reviews/system-v9/compositions/states.html | 400 coarse | 1 of 1, Request rate by service | 0.0000 | 0.0000 | 0 | 0.0000 | 0.0000 | 0 |
+
+1500: 53 reloads on 9 page(s); 0 of 53 landed elsewhere (more than 1 px); 0 moved after the jump; largest reload shift 0.0000 unmarked and 0.0000 marked; largest jump shift 0.0000 unmarked and 0.0000 marked
+400 coarse: 53 reloads on 9 page(s); 0 of 53 landed elsewhere (more than 1 px); 0 moved after the jump; largest reload shift 0.0000 unmarked and 0.0000 marked; largest jump shift 0.0000 unmarked and 0.0000 marked
+Browsers: 1500: Chromium 157.0.8103.78; 400 coarse (coarse in Blink, isMobile, no touch emulation): Chromium 157.0.8103.78
+
+
+56 pages x 14 configurations (320; 400; 560; 640; 800; 1024; 1280; 1500; 320 coarse; 400 coarse; 768 coarse; 640 at 200%; 720 at 200%; 750 at 200%)
+
+System pages: 0 finding(s)
+
+Flow screens (read only, reported): 122 finding(s)
+  flows/dist/1-dashboards.html
+    fold-scroll   800             <table.vz-table> "Dashboards" folds (data-fold) but scrolls 273 px sideways at this width  (and at 1024, 768 coarse, 720 at 200%, 750 at 200%)
+    sentence-link 320 coarse      <a.vz-link> "1 proposal waiting" is inside a sentence in <td> "6 Nov, by Dana. 1 proposal waiti" but drawn 44 px tall: it breaks its line  (and at 400 coarse, 768 coarse)
+    press         400 coarse      light: a finger held on button.vz-button "New dashboard" paints rgb(18, 87, 255) (at rest rgb(18, 87, 255)); its press is rgb(9, 53, 173)
+    press         400 coarse      light: a finger held on button. "All" paints rgb(228, 228, 228) (at rest rgb(228, 228, 228)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button. "Mine" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(214, 214, 214)
+    press         400 coarse      dark: a finger held on button.vz-button "New dashboard" paints rgb(18, 87, 255) (at rest rgb(18, 87, 255)); its press is rgb(9, 53, 173)
+    press         400 coarse      dark: a finger held on button. "All" paints rgb(43, 43, 43) (at rest rgb(43, 43, 43)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button. "Mine" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(51, 51, 51)
+  flows/dist/12-routes.html
+    fold-scroll   800             <table.vz-table> "Silences" folds (data-fold) but scrolls 184 px sideways at this width  (and at 768 coarse, 720 at 200%, 750 at 200%)
+    press         400 coarse      light: a finger held on button.vz-button "End silence" paints rgb(255, 255, 255) (at rest rgb(255, 255, 255)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button.vz-button "New route" paints rgb(18, 87, 255) (at rest rgb(18, 87, 255)); its press is rgb(9, 53, 173)
+    press         400 coarse      dark: a finger held on button.vz-button "End silence" paints rgb(18, 18, 18) (at rest rgb(18, 18, 18)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button.vz-button "New route" paints rgb(18, 87, 255) (at rest rgb(18, 87, 255)); its press is rgb(9, 53, 173)
+    fold-scroll   720 at 200%     <table.vz-table> "Routes" folds (data-fold) but scrolls 48 px sideways at this width  (and at 750 at 200%)
+  flows/dist/8-keys.html
+    fold-scroll   800             <table.vz-table> "Keys" folds (data-fold) but scrolls 16 px sideways at this width  (and at 768 coarse, 720 at 200%, 750 at 200%)
+    press         400 coarse      light: a finger held on button.vz-button "Copy" paints rgb(255, 255, 255) (at rest rgb(255, 255, 255)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button.vz-button "Actions…" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(214, 214, 214)  (and at 400 coarse)
+    press         400 coarse      light: a finger held on button.vz-button "New key" paints rgb(18, 87, 255) (at rest rgb(18, 87, 255)); its press is rgb(9, 53, 173)
+    press         400 coarse      dark: a finger held on button.vz-button "Copy" paints rgb(18, 18, 18) (at rest rgb(18, 18, 18)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button.vz-button "Actions…" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(51, 51, 51)  (and at 400 coarse)
+    press         400 coarse      dark: a finger held on button.vz-button "New key" paints rgb(18, 87, 255) (at rest rgb(18, 87, 255)); its press is rgb(9, 53, 173)
+  flows/dist/10-logs.html
+    press         400 coarse      light: a finger held on button.vz-button "Zoom in" paints rgb(255, 255, 255) (at rest rgb(255, 255, 255)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button.vz-sort "Series (level · service)" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button.vz-sort "Last, lines/min" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button.vz-series "error · checkout-api" paints rgb(255, 255, 255) (at rest rgb(255, 255, 255)); its press is rgb(214, 214, 214)
+    press         400 coarse      dark: a finger held on button.vz-button "Zoom in" paints rgb(18, 18, 18) (at rest rgb(18, 18, 18)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button.vz-sort "Series (level · service)" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button.vz-sort "Last, lines/min" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button.vz-series "error · checkout-api" paints rgb(18, 18, 18) (at rest rgb(18, 18, 18)); its press is rgb(51, 51, 51)
+  flows/dist/2-dashboard.html
+    press         400 coarse      light: a finger held on button.vz-button "Edit" paints rgb(255, 255, 255) (at rest rgb(255, 255, 255)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button. "6 h" paints rgb(228, 228, 228) (at rest rgb(228, 228, 228)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button. "Charts" paints rgb(228, 228, 228) (at rest rgb(228, 228, 228)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button. "1 h" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(214, 214, 214)  (and at 400 coarse)
+    press         400 coarse      light: a finger held on button.vz-sort "Series" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(214, 214, 214)
+    press         400 coarse      dark: a finger held on button.vz-button "Edit" paints rgb(18, 18, 18) (at rest rgb(18, 18, 18)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button. "6 h" paints rgb(43, 43, 43) (at rest rgb(43, 43, 43)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button. "Charts" paints rgb(43, 43, 43) (at rest rgb(43, 43, 43)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button. "1 h" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(51, 51, 51)  (and at 400 coarse)
+    press         400 coarse      dark: a finger held on button.vz-sort "Series" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(51, 51, 51)
+  flows/dist/3-monitors.html
+    press         400 coarse      light: a finger held on button.vz-button "New monitor" paints rgb(18, 87, 255) (at rest rgb(18, 87, 255)); its press is rgb(9, 53, 173)
+    press         400 coarse      light: a finger held on button. "Needs attention" paints rgb(228, 228, 228) (at rest rgb(228, 228, 228)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button. "All" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button. "Silenced" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(214, 214, 214)
+    press         400 coarse      dark: a finger held on button.vz-button "New monitor" paints rgb(18, 87, 255) (at rest rgb(18, 87, 255)); its press is rgb(9, 53, 173)
+    press         400 coarse      dark: a finger held on button. "Needs attention" paints rgb(43, 43, 43) (at rest rgb(43, 43, 43)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button. "All" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button. "Silenced" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(51, 51, 51)
+  flows/dist/4-monitor.html
+    press         400 coarse      light: a finger held on button.vz-button "Silence…" paints rgb(255, 255, 255) (at rest rgb(255, 255, 255)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button.vz-button "Acknowledge" paints rgb(10, 128, 56) (at rest rgb(10, 128, 56)); its press is rgb(5, 79, 33)
+    press         400 coarse      light: a finger held on button.vz-sort "Series" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button.vz-sort "Last, ms" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button.vz-series "POST /v2/orders" paints rgb(255, 255, 255) (at rest rgb(255, 255, 255)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button.vz-series "GET /v2/cart/{id}" paints rgb(255, 255, 255) (at rest rgb(255, 255, 255)); its press is rgb(214, 214, 214)
+    press         400 coarse      dark: a finger held on button.vz-button "Silence…" paints rgb(18, 18, 18) (at rest rgb(18, 18, 18)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button.vz-button "Acknowledge" paints rgb(10, 128, 56) (at rest rgb(10, 128, 56)); its press is rgb(5, 79, 33)
+    press         400 coarse      dark: a finger held on button.vz-sort "Series" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button.vz-sort "Last, ms" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button.vz-series "POST /v2/orders" paints rgb(18, 18, 18) (at rest rgb(18, 18, 18)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button.vz-series "GET /v2/cart/{id}" paints rgb(18, 18, 18) (at rest rgb(18, 18, 18)); its press is rgb(51, 51, 51)
+  flows/dist/5-new-monitor.html
+    press         400 coarse      light: a finger held on button.vz-button "Zoom in" paints rgb(255, 255, 255) (at rest rgb(255, 255, 255)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button.vz-button "Cancel" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button.vz-button "Save monitor" paints rgb(18, 87, 255) (at rest rgb(18, 87, 255)); its press is rgb(9, 53, 173)
+    press         400 coarse      light: a finger held on button. "Page and message" paints rgb(228, 228, 228) (at rest rgb(228, 228, 228)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button. "Message only" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button.vz-sort "Series" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(214, 214, 214)
+    press         400 coarse      dark: a finger held on button.vz-button "Zoom in" paints rgb(18, 18, 18) (at rest rgb(18, 18, 18)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button.vz-button "Cancel" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button.vz-button "Save monitor" paints rgb(18, 87, 255) (at rest rgb(18, 87, 255)); its press is rgb(9, 53, 173)
+    press         400 coarse      dark: a finger held on button. "Page and message" paints rgb(43, 43, 43) (at rest rgb(43, 43, 43)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button. "Message only" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button.vz-sort "Series" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(51, 51, 51)
+  flows/dist/6-investigation.html
+    press         400 coarse      light: a finger held on button.vz-button "Investigate again…" paints rgb(255, 255, 255) (at rest rgb(255, 255, 255)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button.vz-sort "Series" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button.vz-sort "Last, ms" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button.vz-series "payments-db" paints rgb(255, 255, 255) (at rest rgb(255, 255, 255)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button.vz-series "inventory" paints rgb(255, 255, 255) (at rest rgb(255, 255, 255)); its press is rgb(214, 214, 214)
+    press         400 coarse      dark: a finger held on button.vz-button "Investigate again…" paints rgb(18, 18, 18) (at rest rgb(18, 18, 18)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button.vz-sort "Series" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button.vz-sort "Last, ms" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button.vz-series "payments-db" paints rgb(18, 18, 18) (at rest rgb(18, 18, 18)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button.vz-series "inventory" paints rgb(18, 18, 18) (at rest rgb(18, 18, 18)); its press is rgb(51, 51, 51)
+  flows/dist/7-proposed-change.html
+    press         400 coarse      light: a finger held on button.vz-button "Zoom in" paints rgb(255, 255, 255) (at rest rgb(255, 255, 255)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button.vz-button "Apply 2 changes" paints rgb(18, 87, 255) (at rest rgb(18, 87, 255)); its press is rgb(9, 53, 173)
+    press         400 coarse      light: a finger held on button.vz-sort "Series" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button.vz-sort "Last, ms" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button.vz-series "payments-db" paints rgb(255, 255, 255) (at rest rgb(255, 255, 255)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button.vz-series "inventory" paints rgb(255, 255, 255) (at rest rgb(255, 255, 255)); its press is rgb(214, 214, 214)
+    press         400 coarse      dark: a finger held on button.vz-button "Zoom in" paints rgb(18, 18, 18) (at rest rgb(18, 18, 18)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button.vz-button "Apply 2 changes" paints rgb(18, 87, 255) (at rest rgb(18, 87, 255)); its press is rgb(9, 53, 173)
+    press         400 coarse      dark: a finger held on button.vz-sort "Series" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button.vz-sort "Last, ms" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button.vz-series "payments-db" paints rgb(18, 18, 18) (at rest rgb(18, 18, 18)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button.vz-series "inventory" paints rgb(18, 18, 18) (at rest rgb(18, 18, 18)); its press is rgb(51, 51, 51)
+  flows/dist/9-traces.html
+    press         400 coarse      light: a finger held on button.vz-button "Zoom in" paints rgb(255, 255, 255) (at rest rgb(255, 255, 255)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button.vz-sort "Series" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button.vz-sort "Last, ms" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button.vz-tree-toggle "" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(214, 214, 214)
+    press         400 coarse      light: a finger held on button.vz-series "p99" paints rgb(255, 255, 255) (at rest rgb(255, 255, 255)); its press is rgb(214, 214, 214)  (and at 400 coarse)
+    press         400 coarse      dark: a finger held on button.vz-button "Zoom in" paints rgb(18, 18, 18) (at rest rgb(18, 18, 18)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button.vz-sort "Series" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button.vz-sort "Last, ms" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button.vz-tree-toggle "" paints rgba(0, 0, 0, 0) (at rest rgba(0, 0, 0, 0)); its press is rgb(51, 51, 51)
+    press         400 coarse      dark: a finger held on button.vz-series "p99" paints rgb(18, 18, 18) (at rest rgb(18, 18, 18)); its press is rgb(51, 51, 51)  (and at 400 coarse)
+exit status 0; load after: 2.20 1.85 1.67; 2026-11-26T22:45:26Z

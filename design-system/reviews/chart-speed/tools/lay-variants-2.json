@@ -1,0 +1,6 @@
+{"base": "",
+ "noHas": "drop::has(",
+ "noHover": "drop::hover",
+ "noCQnoAnim": ".vz-chart .vz-table-wrap { container-type: normal; animation: none; }",
+ "base2": ""
+}

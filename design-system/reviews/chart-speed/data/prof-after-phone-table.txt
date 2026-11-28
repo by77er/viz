@@ -1,0 +1,217 @@
+[200 phone] run 1: load 0.9 bodyRead->paint 3 ms, lastByte->paint 151 ms, lastByte->bodyRead 147, bodyRead->firstChange -140, frames 3
+[200 phone] run 1: chart->table 90 ms
+[200 phone] run 2: load 1.0 bodyRead->paint 117 ms, lastByte->paint 137 ms, lastByte->bodyRead 20, bodyRead->firstChange 64, frames 3
+[200 phone] run 2: chart->table 153 ms
+[200 phone] run 3: load 0.9 bodyRead->paint 126 ms, lastByte->paint 150 ms, lastByte->bodyRead 24, bodyRead->firstChange 68, frames 3
+[200 phone] run 3: chart->table 135 ms
+[200 phone] run 4: load 0.9 bodyRead->paint 93 ms, lastByte->paint 130 ms, lastByte->bodyRead 37, bodyRead->firstChange 58, frames 3
+[200 phone] run 4: chart->table 83 ms
+[200 phone] run 5: load 1.0 bodyRead->paint 71 ms, lastByte->paint 94 ms, lastByte->bodyRead 23, bodyRead->firstChange 39, frames 3
+[200 phone] run 5: chart->table 166 ms
+
+== 200 series, phone: median of 5 runs; load 0.9 1.0 0.9 0.9 1.0
+  body read -> painted 93 ms (3, 117, 126, 93, 71); last byte -> painted 137 ms (151, 137, 150, 130, 94); last byte -> body read 24 ms
+  timeline, self time, from body read
+       60.7 ms  FunctionCall
+       12.2 ms  Layout
+        4.3 ms  RunTask
+        3.9 ms  Paint
+        3.5 ms  ParseHTML
+        2.2 ms  PrePaint
+        1.6 ms  Layerize
+        1.2 ms  UpdateLayoutTree
+        0.6 ms  (idle: no task)
+        0.5 ms  v8.callFunction
+        0.4 ms  Commit
+  timeline, self time, from last byte
+       73.2 ms  FunctionCall
+       23.1 ms  RunTask
+       12.5 ms  Layout
+        3.9 ms  Paint
+        3.9 ms  ParseHTML
+        3.3 ms  v8.callFunction
+        2.2 ms  PrePaint
+        1.6 ms  Layerize
+        1.4 ms  HitTest
+        1.2 ms  UpdateLayoutTree
+        0.8 ms  Commit
+        0.6 ms  (idle: no task)
+  JS self, from body read
+       31.2 ms  (program)
+        4.1 ms  legend @index.js:25412
+        3.1 ms  drawPlot @index.js:25247
+        2.8 ms  chartModel @index.js:24818
+        2.2 ms  path @index.js:25223
+        1.9 ms  seriesKey @index.js:21122
+        1.9 ms  (anonymous) @index.js:24820
+        1.8 ms  lineMarkup @index.js:25242
+        1.5 ms  say
+        1.2 ms  model @index.js:25131
+        1.0 ms  abs @index.js:24788
+        1.0 ms  textLines @index.js:24995
+        1.0 ms  requestAnimationFrame
+        1.0 ms  y @index.js:25178
+        1.0 ms  get clientWidth
+        0.9 ms  querySelector
+        0.9 ms  windowOf @index.js:24802
+        0.9 ms  setAttribute
+        0.8 ms  seriesName @index.js:21126
+        0.7 ms  key @index.js:24360
+        0.7 ms  assignSeries @index.js:24629
+        0.6 ms  alignSeries @index.js:21175
+        0.6 ms  x @index.js:25196
+        0.6 ms  renderWithHooks @index.js:3819
+        0.6 ms  commitHostUpdate @index.js:6320
+        0.6 ms  legendActions @index.js:24926
+        0.5 ms  textForm @index.js:25569
+        0.5 ms  cursor @index.js:25525
+  JS inclusive, from body read
+       94.0 ms  (root)
+       59.1 ms  performWorkOnRoot @index.js:7791
+       55.2 ms  performSyncWorkOnRoot @index.js:8620
+       55.2 ms  flushSyncWorkAcrossRoots_impl @index.js:8529
+       55.2 ms  processRootScheduleInMicrotask @index.js:8555
+       55.2 ms  (anonymous) @index.js:8625
+       46.3 ms  completeRoot @index.js:8230
+       46.3 ms  completeRootWhenReady @index.js:7870
+       45.4 ms  commitRoot @index.js:8247
+       41.6 ms  commitHookEffectListMount @index.js:6167
+       41.4 ms  commitLayoutEffectOnFiber @index.js:6682
+       41.4 ms  recursivelyTraverseLayoutEffects @index.js:7334
+       41.4 ms  flushLayoutEffects @index.js:8344
+       40.9 ms  (anonymous) @index.js:26063
+       40.7 ms  drawChart @index.js:25949
+       40.5 ms  draw @index.js:25332
+       40.5 ms  setData @index.js:25804
+       31.2 ms  (program)
+       14.6 ms  drawPlot @index.js:25247
+       12.7 ms  beginWork @index.js:5640
+       12.7 ms  workLoopSync @index.js:8041
+       12.7 ms  renderRootSync @index.js:7993
+       12.7 ms  model @index.js:25131
+       11.1 ms  renderWithHooks @index.js:3819
+       11.1 ms  updateFunctionComponent @index.js:5218
+       10.3 ms  chartModel @index.js:24818
+        8.4 ms  ExplorePage @index.js:27229
+        7.4 ms  legend @index.js:25412
+        5.4 ms  updateMemo @index.js:4423
+        5.4 ms  exports.useMemo @index.js:416
+        5.2 ms  (anonymous) @index.js:24820
+        5.1 ms  lineMarkup @index.js:25242
+        5.1 ms  (anonymous) @index.js:25269
+        5.1 ms  (anonymous) @index.js:27382
+        4.8 ms  performWorkUntilDeadline @index.js:532
+        3.9 ms  performWorkOnRootViaSchedulerTask @index.js:8609
+        3.9 ms  path @index.js:25223
+        3.7 ms  alignSeries @index.js:21175
+        2.4 ms  textForm @index.js:25569
+        2.0 ms  (anonymous)
+        1.9 ms  seriesKey @index.js:21122
+        1.8 ms  flushPassiveEffects @index.js:8414
+        1.7 ms  commitMutationEffectsOnFiber @index.js:7006
+        1.7 ms  flushMutationEffects @index.js:8285
+        1.7 ms  recursivelyTraverseMutationEffects @index.js:6970
+  JS inclusive, from last byte
+      138.8 ms  (root)
+       65.8 ms  performWorkOnRoot @index.js:7791
+       60.4 ms  performSyncWorkOnRoot @index.js:8620
+       60.4 ms  flushSyncWorkAcrossRoots_impl @index.js:8529
+       55.8 ms  (program)
+       55.2 ms  processRootScheduleInMicrotask @index.js:8555
+       55.2 ms  (anonymous) @index.js:8625
+       51.3 ms  commitRoot @index.js:8247
+       51.3 ms  completeRoot @index.js:8230
+       51.3 ms  completeRootWhenReady @index.js:7870
+       47.6 ms  commitHookEffectListMount @index.js:6167
+       46.8 ms  commitLayoutEffectOnFiber @index.js:6682
+       46.8 ms  recursivelyTraverseLayoutEffects @index.js:7334
+       46.8 ms  flushLayoutEffects @index.js:8344
+       46.6 ms  drawChart @index.js:25949
+       46.6 ms  (anonymous) @index.js:26063
+       45.6 ms  draw @index.js:25332
+       45.6 ms  setData @index.js:25804
+       17.4 ms  drawPlot @index.js:25247
+       14.5 ms  workLoopSync @index.js:8041
+       14.5 ms  renderRootSync @index.js:7993
+       13.5 ms  beginWork @index.js:5640
+       13.4 ms  model @index.js:25131
+       12.0 ms  renderWithHooks @index.js:3819
+       12.0 ms  updateFunctionComponent @index.js:5218
+       10.7 ms  chartModel @index.js:24818
+       10.2 ms  ExplorePage @index.js:27229
+        9.2 ms  (anonymous) @index.js:25269
+        9.1 ms  lineMarkup @index.js:25242
+        7.9 ms  legend @index.js:25412
+  chart -> table 135 ms (90, 153, 135, 83, 166)
+  timeline, self time
+       37.0 ms  FunctionCall
+       29.7 ms  Layout
+       18.3 ms  UpdateLayoutTree
+       14.9 ms  RunTask
+        8.8 ms  Paint
+        5.0 ms  PrePaint
+        3.3 ms  (idle: no task)
+        3.2 ms  Layerize
+        2.6 ms  v8.callFunction
+        2.0 ms  Commit
+        2.0 ms  HitTest
+        1.0 ms  EventDispatch
+  JS self
+       94.8 ms  (program)
+        4.4 ms  (idle)
+        2.9 ms  renderWithHooks @index.js:3819
+        2.3 ms  setInitialProperties @index.js:9288
+        1.4 ms  getClientRects
+        1.0 ms  SyntheticBaseEvent @index.js:2071
+        0.9 ms  (anonymous) @index.js:26544
+        0.9 ms  setProp @index.js:9054
+        0.9 ms  (anonymous) @index.js:8809
+        0.8 ms  completeUnitOfWork @index.js:8189
+        0.8 ms  postMessage
+        0.8 ms  (anonymous)
+        0.6 ms  stepWords @index.js:22328
+        0.6 ms  workLoopSync @index.js:8041
+        0.5 ms  appendChild
+        0.4 ms  (anonymous) @index.js:26564
+        0.3 ms  removeAttribute
+  JS inclusive
+      137.0 ms  (root)
+       94.8 ms  (program)
+       23.6 ms  processRootScheduleInMicrotask @index.js:8555
+       23.6 ms  (anonymous) @index.js:8625
+       22.7 ms  performWorkOnRoot @index.js:7791
+       22.7 ms  performSyncWorkOnRoot @index.js:8620
+       22.7 ms  flushSyncWorkAcrossRoots_impl @index.js:8529
+       19.8 ms  workLoopSync @index.js:8041
+       19.8 ms  renderRootSync @index.js:7993
+       11.7 ms  beginWork @index.js:5640
+       10.4 ms  renderWithHooks @index.js:3819
+       10.4 ms  updateFunctionComponent @index.js:5218
+        8.1 ms  updateSimpleMemoComponent @index.js:5080
+        7.4 ms  updateMemoComponent @index.js:5058
+        6.9 ms  completeUnitOfWork @index.js:8189
+        5.0 ms  completeWork @index.js:5829
+        4.8 ms  dispatchEvent @index.js:11013
+        4.5 ms  ResultTable @index.js:26555
+        4.4 ms  (idle)
+        4.4 ms  (anonymous) @index.js:8809
+        4.4 ms  batchedUpdates$1 @index.js:1997
+        4.4 ms  dispatchEventForPluginEventSystem @index.js:8783
+        3.5 ms  setInitialProperties @index.js:9288
+        2.9 ms  commitRoot @index.js:8247
+        2.9 ms  completeRoot @index.js:8230
+        2.9 ms  completeRootWhenReady @index.js:7870
+        2.6 ms  exports.useMemo @index.js:416
+        2.6 ms  reconcileChildren @index.js:5039
+        2.5 ms  setProp @index.js:9054
+        2.3 ms  useMemo @index.js:4671
+        2.0 ms  dispatchDiscreteEvent @index.js:10993
+        2.0 ms  dispatchContinuousEvent @index.js:11003
+        1.8 ms  poll
+        1.8 ms  reconcileChildFibersImpl @index.js:3457
+        1.8 ms  (anonymous) @index.js:3527
+        1.8 ms  reconcileChildrenArray @index.js:3402
+        1.8 ms  (anonymous)
+        1.7 ms  createChild @index.js:3356
+        1.4 ms  visible
+        1.4 ms  ExplorePage @index.js:27229

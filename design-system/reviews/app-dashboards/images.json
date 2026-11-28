@@ -1,0 +1,369 @@
+{
+ "when": "2026-11-28T11:18:49.113Z",
+ "range": [
+  "2026-11-18T09:30:00.000Z",
+  "2026-11-18T12:30:00.000Z"
+ ],
+ "images": [
+  {
+   "file": "01-list-dark-1440.png",
+   "what": "The list of dashboards: four, by name",
+   "bytes": 106614,
+   "height": 900
+  },
+  {
+   "file": "01-list-dark-400.png",
+   "what": "The list of dashboards: four, by name",
+   "bytes": 93006,
+   "height": 991
+  },
+  {
+   "file": "01-list-light-1440.png",
+   "what": "The list of dashboards: four, by name",
+   "bytes": 106945,
+   "height": 900
+  },
+  {
+   "file": "01-list-light-400.png",
+   "what": "The list of dashboards: four, by name",
+   "bytes": 93329,
+   "height": 991
+  },
+  {
+   "file": "02-list-filtered-dark-1440.png",
+   "what": "The list, searched for \"capacity\": one of four",
+   "bytes": 64728,
+   "height": 900
+  },
+  {
+   "file": "02-list-filtered-dark-400.png",
+   "what": "The list, searched for \"capacity\": one of four",
+   "bytes": 46399,
+   "height": 800
+  },
+  {
+   "file": "02-list-filtered-light-1440.png",
+   "what": "The list, searched for \"capacity\": one of four",
+   "bytes": 64891,
+   "height": 900
+  },
+  {
+   "file": "02-list-filtered-light-400.png",
+   "what": "The list, searched for \"capacity\": one of four",
+   "bytes": 46597,
+   "height": 800
+  },
+  {
+   "file": "03-list-empty-dark-1440.png",
+   "what": "Empty: a search that matches no dashboard",
+   "bytes": 58582,
+   "height": 900
+  },
+  {
+   "file": "03-list-empty-dark-400.png",
+   "what": "Empty: a search that matches no dashboard",
+   "bytes": 40319,
+   "height": 800
+  },
+  {
+   "file": "03-list-empty-light-1440.png",
+   "what": "Empty: a search that matches no dashboard",
+   "bytes": 58894,
+   "height": 900
+  },
+  {
+   "file": "03-list-empty-light-400.png",
+   "what": "Empty: a search that matches no dashboard",
+   "bytes": 40551,
+   "height": 800
+  },
+  {
+   "file": "04-list-first-run-dark-1440.png",
+   "what": "First run: a tenant with no dashboards",
+   "bytes": 74955,
+   "height": 900
+  },
+  {
+   "file": "04-list-first-run-dark-400.png",
+   "what": "First run: a tenant with no dashboards",
+   "bytes": 54305,
+   "height": 800
+  },
+  {
+   "file": "04-list-first-run-light-1440.png",
+   "what": "First run: a tenant with no dashboards",
+   "bytes": 75171,
+   "height": 900
+  },
+  {
+   "file": "04-list-first-run-light-400.png",
+   "what": "First run: a tenant with no dashboards",
+   "bytes": 54673,
+   "height": 800
+  },
+  {
+   "file": "05-list-error-dark-1440.png",
+   "what": "Error: the API failed to list the dashboards",
+   "bytes": 64046,
+   "height": 900
+  },
+  {
+   "file": "05-list-error-dark-400.png",
+   "what": "Error: the API failed to list the dashboards",
+   "bytes": 44563,
+   "height": 800
+  },
+  {
+   "file": "05-list-error-light-1440.png",
+   "what": "Error: the API failed to list the dashboards",
+   "bytes": 64258,
+   "height": 900
+  },
+  {
+   "file": "05-list-error-light-400.png",
+   "what": "Error: the API failed to list the dashboards",
+   "bytes": 44794,
+   "height": 800
+  },
+  {
+   "file": "06-list-waiting-dark-1440.png",
+   "what": "Loading: the list 0.9 s into a slow answer (nothing is shown before 0.4 s)",
+   "bytes": 48012,
+   "height": 900
+  },
+  {
+   "file": "06-list-waiting-dark-400.png",
+   "what": "Loading: the list 0.9 s into a slow answer (nothing is shown before 0.4 s)",
+   "bytes": 30220,
+   "height": 800
+  },
+  {
+   "file": "06-list-waiting-light-1440.png",
+   "what": "Loading: the list 0.9 s into a slow answer (nothing is shown before 0.4 s)",
+   "bytes": 48235,
+   "height": 900
+  },
+  {
+   "file": "06-list-waiting-light-400.png",
+   "what": "Loading: the list 0.9 s into a slow answer (nothing is shown before 0.4 s)",
+   "bytes": 30496,
+   "height": 800
+  },
+  {
+   "file": "07-list-no-permission-dark-1440.png",
+   "what": "No permission: a key that reads metrics and not dashboards",
+   "bytes": 67490,
+   "height": 900
+  },
+  {
+   "file": "07-list-no-permission-dark-400.png",
+   "what": "No permission: a key that reads metrics and not dashboards",
+   "bytes": 46321,
+   "height": 800
+  },
+  {
+   "file": "07-list-no-permission-light-1440.png",
+   "what": "No permission: a key that reads metrics and not dashboards",
+   "bytes": 67741,
+   "height": 900
+  },
+  {
+   "file": "07-list-no-permission-light-400.png",
+   "what": "No permission: a key that reads metrics and not dashboards",
+   "bytes": 46552,
+   "height": 800
+  },
+  {
+   "file": "08-dashboard-dark-1440.png",
+   "what": "A full dashboard: twelve panels (four stats, six charts, two tables), 18 Nov 09:30 to 12:30",
+   "bytes": 714500,
+   "height": 3335
+  },
+  {
+   "file": "08-dashboard-dark-400.png",
+   "what": "A full dashboard: twelve panels (four stats, six charts, two tables), 18 Nov 09:30 to 12:30",
+   "bytes": 612330,
+   "height": 8173
+  },
+  {
+   "file": "08-dashboard-light-1440.png",
+   "what": "A full dashboard: twelve panels (four stats, six charts, two tables), 18 Nov 09:30 to 12:30",
+   "bytes": 715095,
+   "height": 3335
+  },
+  {
+   "file": "08-dashboard-light-400.png",
+   "what": "A full dashboard: twelve panels (four stats, six charts, two tables), 18 Nov 09:30 to 12:30",
+   "bytes": 611733,
+   "height": 8173
+  },
+  {
+   "file": "09-dashboard-variables-dark-1440.png",
+   "what": "A dashboard with variables: Service (from a query) set to orders, Status (an enum) to 500; one panel's text form open",
+   "bytes": 310111,
+   "height": 1889
+  },
+  {
+   "file": "09-dashboard-variables-dark-400.png",
+   "what": "A dashboard with variables: Service (from a query) set to orders, Status (an enum) to 500; one panel's text form open",
+   "bytes": 253543,
+   "height": 3825
+  },
+  {
+   "file": "09-dashboard-variables-light-1440.png",
+   "what": "A dashboard with variables: Service (from a query) set to orders, Status (an enum) to 500; one panel's text form open",
+   "bytes": 311368,
+   "height": 1889
+  },
+  {
+   "file": "09-dashboard-variables-light-400.png",
+   "what": "A dashboard with variables: Service (from a query) set to orders, Status (an enum) to 500; one panel's text form open",
+   "bytes": 253935,
+   "height": 3825
+  },
+  {
+   "file": "10-dashboard-panel-states-dark-1440.png",
+   "what": "Panel states on one dashboard: a kind not drawn (heatmap; text note), a query the API refuses (error), a query that matches nothing (empty), beside a chart and a stat",
+   "bytes": 397399,
+   "height": 1941
+  },
+  {
+   "file": "10-dashboard-panel-states-dark-400.png",
+   "what": "Panel states on one dashboard: a kind not drawn (heatmap; text note), a query the API refuses (error), a query that matches nothing (empty), beside a chart and a stat",
+   "bytes": 292389,
+   "height": 3796
+  },
+  {
+   "file": "10-dashboard-panel-states-light-1440.png",
+   "what": "Panel states on one dashboard: a kind not drawn (heatmap; text note), a query the API refuses (error), a query that matches nothing (empty), beside a chart and a stat",
+   "bytes": 398615,
+   "height": 1941
+  },
+  {
+   "file": "10-dashboard-panel-states-light-400.png",
+   "what": "Panel states on one dashboard: a kind not drawn (heatmap; text note), a query the API refuses (error), a query that matches nothing (empty), beside a chart and a stat",
+   "bytes": 294109,
+   "height": 3796
+  },
+  {
+   "file": "11-dashboard-waiting-dark-1440.png",
+   "what": "Waiting: the range was changed to the last 6 h and the API is slow; 2.6 s in, every panel keeps its previous answer and says so",
+   "bytes": 218277,
+   "height": 1497
+  },
+  {
+   "file": "11-dashboard-waiting-dark-400.png",
+   "what": "Waiting: the range was changed to the last 6 h and the API is slow; 2.6 s in, every panel keeps its previous answer and says so",
+   "bytes": 194616,
+   "height": 3172
+  },
+  {
+   "file": "11-dashboard-waiting-light-1440.png",
+   "what": "Waiting: the range was changed to the last 6 h and the API is slow; 2.6 s in, every panel keeps its previous answer and says so",
+   "bytes": 218325,
+   "height": 1497
+  },
+  {
+   "file": "11-dashboard-waiting-light-400.png",
+   "what": "Waiting: the range was changed to the last 6 h and the API is slow; 2.6 s in, every panel keeps its previous answer and says so",
+   "bytes": 194080,
+   "height": 3172
+  },
+  {
+   "file": "12-dashboard-first-load-dark-1440.png",
+   "what": "Waiting: a dashboard opened on a slow API, 1 s in: the panels' places are reserved, each says what it waits for",
+   "bytes": 237883,
+   "height": 2645
+  },
+  {
+   "file": "12-dashboard-first-load-dark-400.png",
+   "what": "Waiting: a dashboard opened on a slow API, 1 s in: the panels' places are reserved, each says what it waits for",
+   "bytes": 248008,
+   "height": 6195
+  },
+  {
+   "file": "12-dashboard-first-load-light-1440.png",
+   "what": "Waiting: a dashboard opened on a slow API, 1 s in: the panels' places are reserved, each says what it waits for",
+   "bytes": 239059,
+   "height": 2645
+  },
+  {
+   "file": "12-dashboard-first-load-light-400.png",
+   "what": "Waiting: a dashboard opened on a slow API, 1 s in: the panels' places are reserved, each says what it waits for",
+   "bytes": 249390,
+   "height": 6195
+  },
+  {
+   "file": "13-dashboard-text-dark-1440.png",
+   "what": "The whole dashboard as text (the model's digest)",
+   "bytes": 168581,
+   "height": 1016
+  },
+  {
+   "file": "13-dashboard-text-dark-400.png",
+   "what": "The whole dashboard as text (the model's digest)",
+   "bytes": 109313,
+   "height": 1282
+  },
+  {
+   "file": "13-dashboard-text-light-1440.png",
+   "what": "The whole dashboard as text (the model's digest)",
+   "bytes": 169074,
+   "height": 1016
+  },
+  {
+   "file": "13-dashboard-text-light-400.png",
+   "what": "The whole dashboard as text (the model's digest)",
+   "bytes": 109678,
+   "height": 1282
+  },
+  {
+   "file": "14-dashboard-missing-dark-1440.png",
+   "what": "Error: an id no dashboard has",
+   "bytes": 56030,
+   "height": 900
+  },
+  {
+   "file": "14-dashboard-missing-dark-400.png",
+   "what": "Error: an id no dashboard has",
+   "bytes": 38095,
+   "height": 800
+  },
+  {
+   "file": "14-dashboard-missing-light-1440.png",
+   "what": "Error: an id no dashboard has",
+   "bytes": 56185,
+   "height": 900
+  },
+  {
+   "file": "14-dashboard-missing-light-400.png",
+   "what": "Error: an id no dashboard has",
+   "bytes": 38294,
+   "height": 800
+  },
+  {
+   "file": "15-dashboard-fragments-dark-1440.png",
+   "what": "A dashboard made of one fragment used twice",
+   "bytes": 211831,
+   "height": 1497
+  },
+  {
+   "file": "15-dashboard-fragments-dark-400.png",
+   "what": "A dashboard made of one fragment used twice",
+   "bytes": 183758,
+   "height": 3172
+  },
+  {
+   "file": "15-dashboard-fragments-light-1440.png",
+   "what": "A dashboard made of one fragment used twice",
+   "bytes": 212192,
+   "height": 1497
+  },
+  {
+   "file": "15-dashboard-fragments-light-400.png",
+   "what": "A dashboard made of one fragment used twice",
+   "bytes": 183359,
+   "height": 3172
+  }
+ ]
+}

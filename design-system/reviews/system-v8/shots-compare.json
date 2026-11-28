@@ -1,0 +1,129 @@
+{
+ "name": "v8",
+ "themes": [
+  "light",
+  "dark"
+ ],
+ "states": [
+  {
+   "name": "m1-query-narrowed-to-node-b-1440",
+   "url": "dist/preview/Chart.html",
+   "scale": 1,
+   "steps": [
+    {
+     "eval": "const el = document.querySelector('[data-view=\"demo-pods\"]'); const d = window.vzChartDemos.s36(); d.series = d.series.filter((s) => s.labels.node === 'node-b'); el.vz.setData(d); el.closest('.vz-panel').scrollIntoView()"
+    },
+    {
+     "wait": 300
+    }
+   ],
+   "clip": ".vz-panel:has([data-view=\"demo-pods\"])",
+   "pad": 8
+  },
+  {
+   "name": "m1-query-narrowed-to-node-b-400",
+   "url": "dist/preview/Chart.html",
+   "scale": 1,
+   "width": 400,
+   "coarse": true,
+   "steps": [
+    {
+     "eval": "const el = document.querySelector('[data-view=\"demo-pods\"]'); const d = window.vzChartDemos.s36(); d.series = d.series.filter((s) => s.labels.node === 'node-b'); el.vz.setData(d); el.closest('.vz-panel').scrollIntoView()"
+    },
+    {
+     "wait": 300
+    }
+   ],
+   "clip": ".vz-panel:has([data-view=\"demo-pods\"])",
+   "pad": 8
+  },
+  {
+   "name": "m2-table-preview-1440",
+   "url": "dist/preview/Table.html",
+   "scale": 1
+  },
+  {
+   "name": "m2-table-preview-400",
+   "url": "dist/preview/Table.html",
+   "scale": 1,
+   "width": 400,
+   "coarse": true
+  },
+  {
+   "name": "m2-m1-folded-list-1440",
+   "url": "reviews/system-v8/compositions/folded-list.html",
+   "scale": 1,
+   "height": 1700
+  },
+  {
+   "name": "m2-m1-folded-list-400",
+   "url": "reviews/system-v8/compositions/folded-list.html",
+   "scale": 1,
+   "width": 400,
+   "coarse": true,
+   "height": 1700
+  },
+  {
+   "name": "m3-segmented-preview-1440",
+   "url": "dist/preview/Segmented.html",
+   "scale": 1
+  },
+  {
+   "name": "m3-segmented-preview-400",
+   "url": "dist/preview/Segmented.html",
+   "scale": 1,
+   "width": 400,
+   "coarse": true
+  },
+  {
+   "name": "m3-nav-focus-1440",
+   "url": "dist/preview/Nav.html",
+   "scale": 1,
+   "steps": [
+    {
+     "focus": ".vz-nav a"
+    }
+   ],
+   "clip": ".vz-nav",
+   "pad": 24
+  },
+  {
+   "name": "m3-nav-focus-400",
+   "url": "dist/preview/Nav.html",
+   "scale": 1,
+   "width": 400,
+   "coarse": true,
+   "steps": [
+    {
+     "focus": ".vz-nav a"
+    }
+   ],
+   "clip": ".vz-nav",
+   "pad": 24
+  },
+  {
+   "name": "m3-section-strong-words-1440",
+   "url": "dist/preview/Section.html",
+   "scale": 1
+  },
+  {
+   "name": "m3-section-strong-words-400",
+   "url": "dist/preview/Section.html",
+   "scale": 1,
+   "width": 400,
+   "coarse": true
+  },
+  {
+   "name": "dashboard-1440",
+   "url": "reviews/system-v8/compositions/dashboard.html",
+   "scale": 1
+  },
+  {
+   "name": "dashboard-400",
+   "url": "reviews/system-v8/compositions/dashboard.html",
+   "scale": 1,
+   "width": 400,
+   "coarse": true
+  }
+ ]
+}

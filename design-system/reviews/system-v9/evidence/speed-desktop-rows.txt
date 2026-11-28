@@ -1,0 +1,30 @@
+
+
+BEFORE: http://127.0.0.1:8901/fixture/index.html
+20 runs, CPU 4x, Fast 4G, 1440x900. p75 is the budgeted figure.
+Load: 1-minute load average at the start of each run 1.7 to 4.5 (median 2.2) on 4 cores; at the end 4.5 2.6 3.9. Calibration task 238 ms (about 100 ms on an idle core). A timing row is judged only when most of its samples were taken at a load of 4 or less.
+
+| What | Budget | p75 | Median | Worst | Samples | Load when taken (median, range) | |
+|---|---|---|---|---|---|---|---|
+| Crosshair, 36 series | 50 ms | 33 ms | 26 ms | 37 ms | 20 | 2.2 (1.7 to 4.5) | within |
+| Crosshair, 200 series | 50 ms | 32 ms | 28 ms | 42 ms | 20 | 2.2 (1.7 to 4.3) | within |
+| Change theme (to dark) | 100 ms | 79 ms | 73 ms | 96 ms | 20 | 2.3 (1.7 to 4.3) | within |
+| Change theme: transitions still running when it is drawn | 0 | 0 | 0 | 0 | 20 | 2.3 (1.7 to 4.3) | within |
+
+
+AFTER: http://127.0.0.1:8900/fixture/index.html
+20 runs, CPU 4x, Fast 4G, 1440x900. p75 is the budgeted figure.
+Load: 1-minute load average at the start of each run 1.7 to 4.3 (median 2.3) on 4 cores; at the end 4.5 2.6 3.9. Calibration task 238 ms (about 100 ms on an idle core). A timing row is judged only when most of its samples were taken at a load of 4 or less.
+
+| What | Budget | p75 | Median | Worst | Samples | Load when taken (median, range) | |
+|---|---|---|---|---|---|---|---|
+| Crosshair, 36 series | 50 ms | 27 ms | 24 ms | 31 ms | 20 | 2.3 (1.7 to 4.5) | within |
+| Crosshair, 200 series | 50 ms | 27 ms | 23 ms | 58 ms | 20 | 2.3 (1.7 to 4.5) | within |
+| Change theme (to dark) | 100 ms | 81 ms | 68 ms | 118 ms | 20 | 2.3 (1.7 to 4.5) | within |
+| Change theme: transitions still running when it is drawn | 0 | 0 | 0 | 0 | 20 | 2.3 (1.7 to 4.5) | within |
+
+Every judged 75th percentile is within its budget (rows not judged are neither passed nor failed).
+
+real	2m55.942s
+user	0m12.045s
+sys	0m3.494s

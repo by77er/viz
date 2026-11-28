@@ -1,0 +1,29 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>viz · Charts</title><link rel="preload" as="font" type="font/woff2" crossorigin href="../../../dist/fonts/SchibstedGrotesk-Variable.woff2"><link rel="stylesheet" href="../../../dist/viz.css"><style>html{background:var(--ground)}body{margin:0}</style></head><body class="vz"><a class="vz-button vz-skip" href="#main">Skip to content</a><nav class="vz-nav" aria-label="Sections"><span class="vz-nav-name">viz</span><a href="#" aria-current="page">Explore</a><a href="#">Dashboards</a><a href="#">Monitors</a><a href="#">Traces</a><a href="#">Logs</a><a href="#" class="vz-nav-end">acme-prod</a><a href="#">Settings</a></nav>
+<main class="vz-page" id="main">
+  <header class="vz-page-head"><div><h1 class="vz-page-title">checkout-api</h1><p class="vz-page-sub">The same charts after a filter was applied and cleared, after a new pod appeared, and in many-series cases.</p></div></header>
+  <div class="vz-dashboard"><div class="vz-grid">
+    <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">CPU by pod</h3><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min max</span></span></div>
+      <p class="vz-panel-desc">Filtered to "without the three largest", then the filter cleared; the crosshair at 12:04.</p>
+      <div class="vz-panel-body"><div class="vz-chart" data-demo="s36" data-view="ch-trip" id="trip"></div></div></section>
+    <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">CPU by pod</h3><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min max</span></span></div>
+      <p class="vz-panel-desc">A new pod, larger than every pod in the view, arrived after the colours were given; the crosshair at 14:58.</p>
+      <div class="vz-panel-body"><div class="vz-chart" data-demo="s36" data-view="ch-new" id="newpod"></div></div></section>
+    <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">Request rate by service</h3><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min mean</span></span></div>
+      <p class="vz-panel-desc">Eight series; "search" (slot 5, dashed) brought forward by focusing its legend row.</p>
+      <div class="vz-panel-body"><div class="vz-chart" data-demo="s8" data-view="ch-8" id="c8"></div></div></section>
+    <section class="vz-panel"><div class="vz-panel-head"><h3 class="vz-panel-title">Latency by route, p99</h3><span class="vz-panel-meta"><span data-range>09:16 to 15:16</span><span>· 6 min max</span></span></div>
+      <p class="vz-panel-desc">Five routes ending within 41 ms of each other: no direct labels fit.</p>
+      <div class="vz-panel-body"><div class="vz-chart" data-view="ch-5" id="c5"></div></div></section>
+  </div></div>
+</main>
+<script src="../../../dist/viz-chart.js"></script>
+<script>vzChartInit(); (function () {
+  const top3 = (spec) => new Set(spec.series.map((s) => [Object.keys(s.labels).sort().map((k) => k + '=' + s.labels[k]).join(','), Math.max(...s.values)]).sort((a, b) => b[1] - a[1]).slice(0, 3).map((x) => x[0]))
+  const trip = document.getElementById('trip'), t3 = top3(vzChartDemos.s36()); trip.vz.setFilter((s) => !t3.has(s.key)); trip.vz.setFilter(null)
+  const np = document.getElementById('newpod'), spec = vzChartDemos.s36(); let v = 3.1; const vals = Array.from({ length: 61 }, (_, i) => (v += Math.sin(i / 5) * 0.06, +v.toFixed(3)))
+  spec.series.push({ labels: { __name__: 'pod_cpu_usage_cores', namespace: 'prod', service: 'checkout-api', pod: 'checkout-api-7d9f8c6b5-new01', node: 'node-b' }, values: vals }); np.vz.setData(spec)
+  // five routes whose lines end close together (the v4 review's image 04)
+  const MIN = 60000, t0 = Date.UTC(2026, 10, 18, 9, 16), n = 61, routes = ['POST /v2/orders', 'GET /v2/cart/{id}', 'GET /v2/products', 'POST /v2/checkout', 'GET /v2/search'], base = [399, 410, 395, 401, 374]
+  const c5 = document.getElementById('c5'); c5.vz = vzChart(c5, { unit: 'ms', agg: 'max', t0, step: 6 * MIN, threshold: { value: 500, label: '500 ms objective' }, markers: [{ t: Date.UTC(2026, 10, 18, 9, 41), label: 'Deploy 09:41' }, { t: Date.UTC(2026, 10, 18, 9, 50), label: 'Config change 09:50' }, { t: Date.UTC(2026, 10, 18, 13, 2), label: 'Above 13:02' }, { t: Date.UTC(2026, 10, 18, 13, 7), label: 'Fired 13:07' }],
+    series: routes.map((r, k) => ({ labels: { service: 'checkout-api', route: r }, values: Array.from({ length: n }, (_, i) => +(base[k] + 25 * Math.sin(i / 9 + k * 1.3)).toFixed(1)) })) })
+})()</script></body></html>

@@ -1,0 +1,265 @@
+{
+ "when": "2026-11-28T10:26:01.943Z",
+ "images": [
+  {
+   "file": "01-list-light-1440.png",
+   "what": "The list on \"Needs attention\" (the default): five of seven, firing first; the one someone has after the one nobody has",
+   "bytes": 109701
+  },
+  {
+   "file": "01-list-light-400.png",
+   "what": "The list on \"Needs attention\" (the default): five of seven, firing first; the one someone has after the one nobody has",
+   "bytes": 111417
+  },
+  {
+   "file": "01-list-dark-1440.png",
+   "what": "The list on \"Needs attention\" (the default): five of seven, firing first; the one someone has after the one nobody has",
+   "bytes": 109484
+  },
+  {
+   "file": "01-list-dark-400.png",
+   "what": "The list on \"Needs attention\" (the default): five of seven, firing first; the one someone has after the one nobody has",
+   "bytes": 111029
+  },
+  {
+   "file": "02-list-all-light-1440.png",
+   "what": "The list on \"All\": seven monitors, attention first, the quiet last",
+   "bytes": 124466
+  },
+  {
+   "file": "02-list-all-light-400.png",
+   "what": "The list on \"All\": seven monitors, attention first, the quiet last",
+   "bytes": 136924
+  },
+  {
+   "file": "02-list-all-dark-1440.png",
+   "what": "The list on \"All\": seven monitors, attention first, the quiet last",
+   "bytes": 124232
+  },
+  {
+   "file": "02-list-all-dark-400.png",
+   "what": "The list on \"All\": seven monitors, attention first, the quiet last",
+   "bytes": 136499
+  },
+  {
+   "file": "03-monitor-firing-light-1440.png",
+   "what": "A firing monitor nobody has acknowledged: state line, who was told, actions, the query with its threshold and markers over the last 3 h, its alert, its history",
+   "bytes": 238565
+  },
+  {
+   "file": "03-monitor-firing-light-400.png",
+   "what": "A firing monitor nobody has acknowledged: state line, who was told, actions, the query with its threshold and markers over the last 3 h, its alert, its history",
+   "bytes": 195456
+  },
+  {
+   "file": "03-monitor-firing-dark-1440.png",
+   "what": "A firing monitor nobody has acknowledged: state line, who was told, actions, the query with its threshold and markers over the last 3 h, its alert, its history",
+   "bytes": 237709
+  },
+  {
+   "file": "03-monitor-firing-dark-400.png",
+   "what": "A firing monitor nobody has acknowledged: state line, who was told, actions, the query with its threshold and markers over the last 3 h, its alert, its history",
+   "bytes": 195065
+  },
+  {
+   "file": "04-acknowledged-light-1440.png",
+   "what": "After Acknowledge: the button replaced in place by \"Acknowledged by you at …\" with Unacknowledge; the state line keeps its words and takes the acknowledged mark",
+   "bytes": 246287
+  },
+  {
+   "file": "04-acknowledged-light-400.png",
+   "what": "After Acknowledge: the button replaced in place by \"Acknowledged by you at …\" with Unacknowledge; the state line keeps its words and takes the acknowledged mark",
+   "bytes": 203197
+  },
+  {
+   "file": "04-acknowledged-dark-1440.png",
+   "what": "After Acknowledge: the button replaced in place by \"Acknowledged by you at …\" with Unacknowledge; the state line keeps its words and takes the acknowledged mark",
+   "bytes": 245368
+  },
+  {
+   "file": "04-acknowledged-dark-400.png",
+   "what": "After Acknowledge: the button replaced in place by \"Acknowledged by you at …\" with Unacknowledge; the state line keeps its words and takes the acknowledged mark",
+   "bytes": 202941
+  },
+  {
+   "file": "05-silence-menu-light-1440.png",
+   "what": "Silence…: the durations, what will happen, and the yellow button that carries the choice",
+   "bytes": 169308
+  },
+  {
+   "file": "05-silence-menu-light-400.png",
+   "what": "Silence…: the durations, what will happen, and the yellow button that carries the choice",
+   "bytes": 62904
+  },
+  {
+   "file": "05-silence-menu-dark-1440.png",
+   "what": "Silence…: the durations, what will happen, and the yellow button that carries the choice",
+   "bytes": 168974
+  },
+  {
+   "file": "05-silence-menu-dark-400.png",
+   "what": "Silence…: the durations, what will happen, and the yellow button that carries the choice",
+   "bytes": 62325
+  },
+  {
+   "file": "06-silenced-undo-light-1440.png",
+   "what": "After Silence for 1 h: \"Silenced by you until …\" with Undo, and how long the undo stays open",
+   "bytes": 251227
+  },
+  {
+   "file": "06-silenced-undo-light-400.png",
+   "what": "After Silence for 1 h: \"Silenced by you until …\" with Undo, and how long the undo stays open",
+   "bytes": 208731
+  },
+  {
+   "file": "06-silenced-undo-dark-1440.png",
+   "what": "After Silence for 1 h: \"Silenced by you until …\" with Undo, and how long the undo stays open",
+   "bytes": 250317
+  },
+  {
+   "file": "06-silenced-undo-dark-400.png",
+   "what": "After Silence for 1 h: \"Silenced by you until …\" with Undo, and how long the undo stays open",
+   "bytes": 208213
+  },
+  {
+   "file": "07-undo-expired-light-1440.png",
+   "what": "Undo pressed after the API's 60 s window: the API's 410 in its words under the actions, the silence kept, Undo gone",
+   "bytes": 273839
+  },
+  {
+   "file": "07-undo-expired-light-400.png",
+   "what": "Undo pressed after the API's 60 s window: the API's 410 in its words under the actions, the silence kept, Undo gone",
+   "bytes": 232090
+  },
+  {
+   "file": "07-undo-expired-dark-1440.png",
+   "what": "Undo pressed after the API's 60 s window: the API's 410 in its words under the actions, the silence kept, Undo gone",
+   "bytes": 273026
+  },
+  {
+   "file": "07-undo-expired-dark-400.png",
+   "what": "Undo pressed after the API's 60 s window: the API's 410 in its words under the actions, the silence kept, Undo gone",
+   "bytes": 231448
+  },
+  {
+   "file": "08-write-failed-light-1440.png",
+   "what": "Acknowledge refused (the API answered 503): the notice under the button in the API's words; nothing else changed",
+   "bytes": 254503
+  },
+  {
+   "file": "08-write-failed-light-400.png",
+   "what": "Acknowledge refused (the API answered 503): the notice under the button in the API's words; nothing else changed",
+   "bytes": 214478
+  },
+  {
+   "file": "08-write-failed-dark-1440.png",
+   "what": "Acknowledge refused (the API answered 503): the notice under the button in the API's words; nothing else changed",
+   "bytes": 253645
+  },
+  {
+   "file": "08-write-failed-dark-400.png",
+   "what": "Acknowledge refused (the API answered 503): the notice under the button in the API's words; nothing else changed",
+   "bytes": 214251
+  },
+  {
+   "file": "09-no-ack-scope-light-1440.png",
+   "what": "A key that may read monitors and not act (no monitors:ack): the actions say why before any press",
+   "bytes": 245432
+  },
+  {
+   "file": "09-no-ack-scope-light-400.png",
+   "what": "A key that may read monitors and not act (no monitors:ack): the actions say why before any press",
+   "bytes": 204168
+  },
+  {
+   "file": "09-no-ack-scope-dark-1440.png",
+   "what": "A key that may read monitors and not act (no monitors:ack): the actions say why before any press",
+   "bytes": 244543
+  },
+  {
+   "file": "09-no-ack-scope-dark-400.png",
+   "what": "A key that may read monitors and not act (no monitors:ack): the actions say why before any press",
+   "bytes": 203635
+  },
+  {
+   "file": "10-no-permission-light-1440.png",
+   "what": "No permission: a key without monitors:read, on the list",
+   "bytes": 63214
+  },
+  {
+   "file": "10-no-permission-light-400.png",
+   "what": "No permission: a key without monitors:read, on the list",
+   "bytes": 44212
+  },
+  {
+   "file": "10-no-permission-dark-1440.png",
+   "what": "No permission: a key without monitors:read, on the list",
+   "bytes": 62995
+  },
+  {
+   "file": "10-no-permission-dark-400.png",
+   "what": "No permission: a key without monitors:read, on the list",
+   "bytes": 44106
+  },
+  {
+   "file": "11-list-error-light-1440.png",
+   "what": "Error: the API could not list the monitors (503)",
+   "bytes": 62906
+  },
+  {
+   "file": "11-list-error-light-400.png",
+   "what": "Error: the API could not list the monitors (503)",
+   "bytes": 44346
+  },
+  {
+   "file": "11-list-error-dark-1440.png",
+   "what": "Error: the API could not list the monitors (503)",
+   "bytes": 62875
+  },
+  {
+   "file": "11-list-error-dark-400.png",
+   "what": "Error: the API could not list the monitors (503)",
+   "bytes": 44197
+  },
+  {
+   "file": "12-empty-light-1440.png",
+   "what": "Empty: a tenant with no monitors (first run)",
+   "bytes": 70871
+  },
+  {
+   "file": "12-empty-light-400.png",
+   "what": "Empty: a tenant with no monitors (first run)",
+   "bytes": 50680
+  },
+  {
+   "file": "12-empty-dark-1440.png",
+   "what": "Empty: a tenant with no monitors (first run)",
+   "bytes": 70762
+  },
+  {
+   "file": "12-empty-dark-400.png",
+   "what": "Empty: a tenant with no monitors (first run)",
+   "bytes": 50440
+  },
+  {
+   "file": "13-monitor-error-light-1440.png",
+   "what": "A monitor that cannot be evaluated: the ruler's last error, the query's refusal in the chart's place, nothing to act on",
+   "bytes": 158144
+  },
+  {
+   "file": "13-monitor-error-light-400.png",
+   "what": "A monitor that cannot be evaluated: the ruler's last error, the query's refusal in the chart's place, nothing to act on",
+   "bytes": 140476
+  },
+  {
+   "file": "13-monitor-error-dark-1440.png",
+   "what": "A monitor that cannot be evaluated: the ruler's last error, the query's refusal in the chart's place, nothing to act on",
+   "bytes": 157259
+  },
+  {
+   "file": "13-monitor-error-dark-400.png",
+   "what": "A monitor that cannot be evaluated: the ruler's last error, the query's refusal in the chart's place, nothing to act on",
+   "bytes": 140090
+  }
+ ]
+}

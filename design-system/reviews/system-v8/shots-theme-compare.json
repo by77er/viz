@@ -1,0 +1,89 @@
+{
+ "name": "v8-theme",
+ "states": [
+  {
+   "url": "dist/fixture/index.html",
+   "scale": 1,
+   "height": 900,
+   "name": "theme-change-drawn-to-dark-1440",
+   "themes": [
+    "light"
+   ],
+   "steps": [
+    {
+     "wait": 300
+    },
+    {
+     "click": "#theme [data-theme-choice=\"dark\"]"
+    },
+    {
+     "wait": 25
+    }
+   ]
+  },
+  {
+   "url": "dist/fixture/index.html",
+   "scale": 1,
+   "height": 900,
+   "name": "theme-change-drawn-to-light-1440",
+   "themes": [
+    "dark"
+   ],
+   "steps": [
+    {
+     "wait": 300
+    },
+    {
+     "click": "#theme [data-theme-choice=\"light\"]"
+    },
+    {
+     "wait": 25
+    }
+   ]
+  },
+  {
+   "url": "dist/fixture/index.html",
+   "scale": 1,
+   "height": 800,
+   "width": 400,
+   "coarse": true,
+   "name": "theme-change-drawn-to-dark-400",
+   "themes": [
+    "light"
+   ],
+   "steps": [
+    {
+     "wait": 300
+    },
+    {
+     "click": "#theme [data-theme-choice=\"dark\"]"
+    },
+    {
+     "wait": 25
+    }
+   ]
+  },
+  {
+   "url": "dist/fixture/index.html",
+   "scale": 1,
+   "height": 800,
+   "width": 400,
+   "coarse": true,
+   "name": "theme-change-drawn-to-light-400",
+   "themes": [
+    "dark"
+   ],
+   "steps": [
+    {
+     "wait": 300
+    },
+    {
+     "click": "#theme [data-theme-choice=\"light\"]"
+    },
+    {
+     "wait": 25
+    }
+   ]
+  }
+ ]
+}

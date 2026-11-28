@@ -1,0 +1,23 @@
+<!-- @dsCard group="Agent" height=640 -->
+<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0}body{padding:var(--space-6)}</style></head><body class="vz">
+<div class="vz-claims">
+  <article class="vz-claim" data-verdict="unverified">
+    <p class="vz-claim-by"><span>Agent's claim, confidence high</span><span class="vz-status">Not verified</span></p>
+    <p class="vz-claim-text"><b>payments-db</b> has been slow to respond since 12:58. Calls from checkout-api went from <span class="vz-qty">40 ms</span> to <span class="vz-qty">610 ms</span> at the 99th percentile, four minutes before checkout's own latency crossed its threshold.</p>
+    <div class="vz-claim-evidence"><span class="vz-label">Evidence: the query the agent ran, 12:00 to 13:09</span><div class="vz-query">histogram_quantile(0.99, sum by (le) (rate(db_client_duration_seconds_bucket{service="checkout-api",db="payments-db"}[5m])))</div></div>
+    <div class="vz-controls"><a class="vz-link" href="#">Open the query in Explore</a><button class="vz-button" data-size="sm">Confirm claim</button><button class="vz-button" data-size="sm">Reject claim</button></div>
+  </article>
+  <article class="vz-claim" data-verdict="confirmed">
+    <p class="vz-claim-by"><span>Agent's claim, confidence high</span><span class="vz-status" data-state="ack">Confirmed by Dana at 15:20</span></p>
+    <p class="vz-claim-text">Only <b>POST /v2/orders</b> is affected. The other two routes do not call payments-db and stayed under <span class="vz-qty">500 ms</span>.</p>
+    <div class="vz-claim-evidence"><span class="vz-label">Evidence: the query the agent ran, 12:00 to 13:09</span><div class="vz-query">histogram_quantile(0.99, sum by (le, route) (rate(http_request_duration_seconds_bucket{service="checkout-api"}[5m])))</div></div>
+    <div class="vz-controls"><a class="vz-link" href="#">Open the query in Explore</a><button class="vz-button" data-size="sm">Undo</button></div>
+  </article>
+  <article class="vz-claim" data-verdict="unverified">
+    <p class="vz-claim-by"><span>Agent's claim</span><span class="vz-status" data-state="ruled-out">Ruled out by the agent</span><span class="vz-status">Not verified</span></p>
+    <p class="vz-claim-text"><b>A deploy</b> did not cause it. The last checkout-api deploy was at 09:41, more than three hours before.</p>
+    <div class="vz-claim-evidence"><span class="vz-label">Evidence: the query the agent ran, 09:00 to 13:09</span><div class="vz-query">changes(deploy_info{service="checkout-api"}[4h])</div></div>
+    <div class="vz-controls"><a class="vz-link" href="#">Open the query in Explore</a></div>
+  </article>
+</div>
+</body></html>

@@ -1,0 +1,45 @@
+
+
+2 pages x 4 configurations (320 coarse; 400 coarse; 720 at 200%; 1500)
+
+System pages: 49 finding(s)
+  reviews/system-v7/compositions/folded-list.html
+    cut           320 coarse      "checkout-api" in <a.vz-link> "checkout-api p99 latency, POST /" is outside its cell, over its neighbour (24 to 92, visible 16 to 61)
+    cut           320 coarse      "p99" in <a.vz-link> "checkout-api p99 latency, POST /" is outside its cell, over its neighbour (48 to 74, visible 16 to 61)
+    cut           320 coarse      "latency," in <a.vz-link> "checkout-api p99 latency, POST /" is outside its cell, over its neighbour (24 to 76, visible 16 to 61)
+    cut           320 coarse      "POST" in <a.vz-link> "checkout-api p99 latency, POST /" is outside its cell, over its neighbour (24 to 62, visible 16 to 61)
+    cut           320 coarse      "/v2/orders" in <a.vz-link> "checkout-api p99 latency, POST /" is outside its cell, over its neighbour (24 to 96, visible 16 to 61)
+    cut           320 coarse      "cart-service" in <a.vz-link> "cart-service error rate, every r" is outside its cell, over its neighbour (24 to 57, visible 16 to 53)
+    overlap       320 coarse      "912" in <span.vz-qty> "912 ms" lies under or over <a.vz-link> "checkout-api p99 latency, POST /" at 81, 342: one is drawn over the other's words
+    overlap       320 coarse      "1.3" in <span.vz-qty> "1.3 %" lies under or over <a.vz-link> "cart-service error rate, every r" at 73, 504: one is drawn over the other's words
+    overlap       320 coarse      "184" in <span.vz-qty> "184 ms" lies under or over <a.vz-link> "catalog search p95 latency, GET " at 73, 687: one is drawn over the other's words
+    overlap       320 coarse      "41" in <span.vz-qty> "41 s" lies under or over <a.vz-link> "ingest pipeline lag, every parti" at 69, 869: one is drawn over the other's words
+    overlap       320 coarse      "2.87" in <td.vz-num.vz-right> "2.87" lies under or over <span> "c6b5-73b1d" at 116, 1202: one is drawn over the other's words
+    overlap       320 coarse      "2.57" in <td.vz-num.vz-right> "2.57" lies under or over <span> "c6b5-19c19" at 116, 1300: one is drawn over the other's words  (and at 400 coarse)
+    overlap       320 coarse      "2.48" in <td.vz-num.vz-right> "2.48" lies under or over <span> "c6b5-2bb61" at 116, 1398: one is drawn over the other's words  (and at 320 coarse, 400 coarse)
+    key-width     320 coarse      <td> "checkout-api p99 latency, POST /" is 45 px of a 286 px row, under key-min (50%): the name is squeezed by the kept columns or the actions  (and at 400 coarse, 720 at 200%)
+    key-width     320 coarse      <td> "cart-7d9f8c6b5-73b1d" is 49 px of a 286 px row, under key-min (50%): the name is squeezed by the kept columns or the actions  (and at 400 coarse, 720 at 200%)
+    hit-area      320 coarse      <a.vz-link> "cart-7d9f8c6b5-73b1d": hit area under 44 px tall with a coarse pointer (drawn 146 x 20 px)
+    hit-area      320 coarse      <a.vz-link> "search-7d9f8c6b5-19c19": hit area under 44 px tall with a coarse pointer (drawn 163 x 20 px)  (and at 400 coarse)
+    hit-area      320 coarse      <a.vz-link> "catalog-7d9f8c6b5-2bb61": hit area under 44 px tall with a coarse pointer (drawn 170 x 20 px)  (and at 400 coarse)
+    hit-area      320 coarse      <a.vz-link> "checkout-api-7d9f8c6b5-c6553": hit area under 44 px tall with a coarse pointer (drawn 213 x 20 px)  (and at 400 coarse)
+    hit-area      320 coarse      <a.vz-link> "cart-7d9f8c6b5-f6370": hit area under 44 px tall with a coarse pointer (drawn 147 x 20 px)
+    hit-area      320 coarse      <a.vz-link> "checkout-api-7d9f8c6b5-3e9e0": hit area under 44 px tall with a coarse pointer (drawn 213 x 20 px)  (and at 400 coarse)
+    cut           400 coarse      "c6b5-73b1d" in <span> "c6b5-73b1d" is outside its cell, over its neighbour (93 to 170, visible 16 to 103)
+    cut           400 coarse      "c6b5-19c19" in <span> "c6b5-19c19" is outside its cell, over its neighbour (112 to 187, visible 16 to 103)
+    cut           400 coarse      "c6b5-2bb61" in <span> "c6b5-2bb61" is outside its cell, over its neighbour (116 to 194, visible 16 to 103)
+    cut           400 coarse      "c6b5-c6553" in <span> "c6b5-c6553" is outside its cell, over its neighbour (155 to 237, visible 16 to 103)
+    cut           400 coarse      "c6b5-f6370" in <span> "c6b5-f6370" is outside its cell, over its neighbour (93 to 171, visible 16 to 103)
+    cut           400 coarse      "c6b5-3e9e0" in <span> "c6b5-3e9e0" is outside its cell, over its neighbour (155 to 237, visible 16 to 103)
+    overlap       400 coarse      "2.24" in <td.vz-num.vz-right> "2.24" lies under or over <span> "c6b5-c6553" at 175, 1254: one is drawn over the other's words
+    overlap       400 coarse      "2.16" in <td.vz-num.vz-right> "2.16" lies under or over <span> "c6b5-3e9e0" at 175, 1406: one is drawn over the other's words
+    overlap       400 coarse      "2.13" in <td.vz-num.vz-right> "2.13" lies under or over <span> "c6b5-4623a" at 175, 1482: one is drawn over the other's words
+    overlap       400 coarse      "1.53" in <td.vz-num.vz-right> "1.53" lies under or over <span> "c6b5-b802e" at 175, 1710: one is drawn over the other's words
+    overlap       400 coarse      "1.46" in <td.vz-num.vz-right> "1.46" lies under or over <span> "c6b5-74466" at 175, 1786: one is drawn over the other's words
+    overlap       400 coarse      "1.37" in <td.vz-num.vz-right> "1.37" lies under or over <span> "c6b5-03f9c" at 175, 1938: one is drawn over the other's words
+    hit-area      400 coarse      <a.vz-link> "checkout-api-7d9f8c6b5-4623a": hit area under 44 px tall with a coarse pointer (drawn 212 x 20 px)
+    hit-area      400 coarse      <a.vz-link> "search-7d9f8c6b5-b802e": hit area under 44 px tall with a coarse pointer (drawn 170 x 20 px)
+  dist/preview/Table.html
+    key-width     320 coarse      <td> "checkout p99 latency" is 122 px of a 270 px row, under key-min (50%): the name is squeezed by the kept columns or the actions  (and at 400 coarse, 720 at 200%)
+
+Flow screens (read only, reported): 0 finding(s)

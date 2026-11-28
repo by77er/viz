@@ -1,0 +1,55 @@
+{
+  "v": 1,
+  "evidence": [
+    {
+      "serving": "90565874546a75b90dedb05457525cc82faaec6e94765fa280dd3d8c9d228f05",
+      "parts": {
+        "worker": "3a2ae6206804471aa6b7bd1cbf87c4bba7b0d1ccec6267757c41b66bb55e89d3",
+        "assets": "f6c0df0c07c829f77710a12e0a8383da0810a714724da6923cd325b4bb8b362f",
+        "headers": "ea5d04c402e03a85952006393e5c9e0fd79d5dd4b7c41ab13946e5039a273e46",
+        "document": "4ef8d258c7ad51ce48dabe22380f59ce7666738d6633441fd4f1a4fd345cb5a9",
+        "wrangler": "4.164.0"
+      },
+      "stage": "s16",
+      "release": "s16-r3",
+      "deployedAt": "2026-11-28T13:11:04.918Z",
+      "build": "55295e17ba2d4ed082f0e38e914427b3e524bbd744ef42d62791d9f922455d0e",
+      "smoke": {
+        "passed": true,
+        "app": true,
+        "requests": 24,
+        "data": true,
+        "at": "2026-11-28T13:11:07.620Z"
+      },
+      "byHand": {
+        "6": {
+          "what": "Workers requests and asset requests of the stage's gateway for a known number of page loads, from Cloudflare's analytics API: assets are not billed as Worker requests",
+          "result": "pass",
+          "note": "Release s16-r1, 2026-11-28T12:50:36Z to 12:50:44Z: 20 page loads, each GET / plus GET of all 8 files of build 55295e17ba2d (20 document 200s with x-viz-route app, 160 file 200s). Analytics API for 12:50:30Z to 12:50:50Z: workersInvocationsAdaptive, scriptName viz-s16-gateway: 20 requests (fetch, success); workersAssetsRequestsAdaptiveGroups, hostname of the stage gateway: 160 requests (200, cacheStatus HIT). The files are not counted as Worker requests. (The first read, about 2 minutes after the loads, showed 92 asset requests; the full 160 a few minutes later.) Also seen earlier in the stage: the smoke test POST to an asset counts as an asset request with status 405, not as a Worker request."
+        },
+        "7": {
+          "what": "a second release that changes a chunk: the first build's chunk still answers 200 from the new version, and the release record lists it under kept",
+          "result": "pass",
+          "note": "Release s16-r2: the worktree with one string in app/src/monitors/MonitorsPage.tsx changed (never committed; reverted after the release) gave build 04ca949842fc with new index-D8Xa2Du2.js, MonitorsPage-DZMHCAGT.js and PromqlEditor-Brx-NWrk.js. The release record lists under kept, age 1: /assets/index-dLTlkQ5n.js, /assets/MonitorsPage-CcInk74W.js and /assets/PromqlEditor-DiMmR-g6.js (\"3 of 3 files kept\"; carry from serving build 55295e17ba2d, wanted 3), dropped none. From s16-r2, each of the three answered 200 with its recorded SHA-256, Cache-Control public, max-age=31536000, immutable and text/javascript; the new document (sha b28fe6cc1d93) names index-D8Xa2Du2.js. The smoke test of s16-r2 passed with 27 requests (the kept files included)."
+        },
+        "8": {
+          "what": "release.mjs rollback --only the gateway to the first release (its document and chunks serve again) and to a version without the app (the 404s; the next release's carry says why nothing was kept)",
+          "result": null,
+          "note": "PARTLY MADE, so not marked pass. Made: release.mjs rollback --stage s16 --record release-s16-r1.json --only viz-s16-gateway (from s16-r2): exit 0; the log notes the gateway goes back to build 55295e17ba2d from 04ca949842fc. After it, / served the first build document again (sha 5ff1ef0f8e5e, ETag bece61da78b441648ef5837f091e58d3, naming index-dLTlkQ5n.js), the first build chunks index-dLTlkQ5n.js, MonitorsPage-CcInk74W.js and PromqlEditor-DiMmR-g6.js answered 200 with their bytes, and the second build chunks index-D8Xa2Du2.js and MonitorsPage-DZMHCAGT.js answered the JSON 404, no-store (three passes of the same requests). The next release (s16-r3, same build as the gateway now served) recorded carry {servingBuild 55295e17ba2d, wanted 0}, kept none. NOT made: the rollback to a version from before the app. The stage is new, so no gateway version without the app existed; making one needs a release with VIZ_WITHOUT_APP=1, and that release was refused in this session (permission check) and not attempted again. So the 404s after such a rollback, and the next release carry saying why nothing was kept, were not seen on Cloudflare."
+        },
+        "9": {
+          "what": "raw paths with dot segments and encoded separators against the deployed stage (curl --path-as-is): never a page, never anything but a file of the build",
+          "result": "pass",
+          "note": "Against s16-r1, 44 raw paths with curl --path-as-is (through this sandbox egress proxy, which re-terminates TLS; the 307s for encoded forms show encoded paths reached Cloudflare). Every answer was one of: the JSON 404 no-store from the Worker (/assets/../index.html, /assets/..%2findex.html and %2F, /assets/x/..%2f<file>, /assets/%5c..%5cindex.html, /assets/..%5c<file>, another case of a file or of /assets/, /assets/%252e%252e/<file>, /assets/, /assets, /favicon.svg/, /favicon.svg%2f, /..;/, /_headers, /assets/../_headers, /assets/..%2f_headers, /explore/, /%65xplore, /Explore, /explore%2f, /index.html); a file of the build by SHA-256 (/assets/%2e%2e/assets/<file>, /assets/./<file>, /assets/%2e/<file>, /assets/x/../<file>: theme-D3RbAjXO.js, immutable); a 307 whose Location is a file of the build (/assets//<file> and /assets/<name>%2ejs, both with the immutable Cache-Control; //assets/<file> with no Cache-Control); the API 401 (/assets/../api/v1/query, /assets/%2e%2e/api/v1/query: route query); the document with its policy only where the URL parser makes the path a document path (/.., /./, /%2e/, /assets/.., /favicon.svg/.., /explore/.., /api/v1/../../explore, /api/v1/%2e%2e/%2e%2e/explore, /assets/../dashboards), as deploy/README.md documents (review of D74, n-2); and Cloudflare edge 400 HTML (server cloudflare, cf-ray -, before any routing) for paths that climb above the root (/assets/../../etc/passwd, /assets/%2e%2e/%2e%2e/etc/passwd) and for %00. Never the document at a path that is not a document path, never a file outside the build, never a redirect off the origin."
+        },
+        "10": {
+          "what": "the response headers of a 304 from Cloudflare for an asset and for the document through the edge's compression",
+          "result": "pass",
+          "note": "Against s16-r1. With Accept-Encoding gzip, deflate, br: /assets/index-dLTlkQ5n.js, /assets/index-D7ZsqCRP.css, /favicon.svg, / and /explore came back br-compressed with a WEAK tag (W/\"04eaedb1...\", and for the documents W/\"bece61da78b441648ef5837f091e58d3\"). If-None-Match with the weak tag: 304 for each, with the STRONG tag in the 304. Asset 304 headers: Content-Type (text/javascript, text/css, image/svg+xml), Cache-Control public, max-age=31536000, immutable (favicon public, max-age=86400), ETag, X-Content-Type-Options nosniff. Document 304 headers (/ and /explore, from the Worker, x-viz-route app): Content-Type text/html, Cache-Control no-cache, ETag, the full Content-Security-Policy, Cross-Origin-Opener-Policy same-origin, Referrer-Policy no-referrer, X-Content-Type-Options nosniff, X-Frame-Options DENY. With Accept-Encoding identity: strong tags, and 304s with the same headers."
+        }
+      },
+      "by": "Claude (stage run, 2026-11-28)",
+      "writtenAt": "2026-11-28T13:21:27.903Z"
+    }
+  ]
+}

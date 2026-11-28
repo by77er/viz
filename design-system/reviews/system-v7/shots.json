@@ -1,0 +1,173 @@
+{
+ "name": "v7",
+ "themes": [
+  "light",
+  "dark"
+ ],
+ "states": [
+  {
+   "name": "dashboard-1500",
+   "url": "reviews/system-v7/compositions/dashboard.html",
+   "width": 1500,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "dashboard-400-coarse",
+   "url": "reviews/system-v7/compositions/dashboard.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "dialog-1500",
+   "url": "reviews/system-v7/compositions/dialog.html",
+   "width": 1500,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "dialog-400-coarse",
+   "url": "reviews/system-v7/compositions/dialog.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "states-1500",
+   "url": "reviews/system-v7/compositions/states.html",
+   "width": 1500,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "states-400-coarse",
+   "url": "reviews/system-v7/compositions/states.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "long-table-1500",
+   "url": "reviews/system-v7/compositions/long-table.html",
+   "width": 1500,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "long-table-400-coarse",
+   "url": "reviews/system-v7/compositions/long-table.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "folded-list-1500",
+   "url": "reviews/system-v7/compositions/folded-list.html",
+   "width": 1500,
+   "scale": 1,
+   "measure": true,
+   "height": 2200
+  },
+  {
+   "name": "folded-list-400-coarse",
+   "url": "reviews/system-v7/compositions/folded-list.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true,
+   "height": 2600
+  },
+  {
+   "name": "monitor-1500",
+   "url": "reviews/system-v7/compositions/monitor.html",
+   "width": 1500,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "monitor-400-coarse",
+   "url": "reviews/system-v7/compositions/monitor.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "charts-1500",
+   "url": "reviews/system-v7/compositions/charts.html",
+   "width": 1500,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "charts-400-coarse",
+   "url": "reviews/system-v7/compositions/charts.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "folded-list-320-coarse",
+   "url": "reviews/system-v7/compositions/folded-list.html",
+   "width": 320,
+   "coarse": true,
+   "scale": 1,
+   "measure": true,
+   "height": 2400
+  },
+  {
+   "name": "folded-list-400-coarse-hit-areas",
+   "url": "reviews/system-v7/compositions/folded-list.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true,
+   "outline": true,
+   "height": 1800,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "folded-list-zoom-200",
+   "url": "reviews/system-v7/compositions/folded-list.html",
+   "width": 1440,
+   "zoom": 2,
+   "scale": 1,
+   "measure": true,
+   "height": 1100,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "dialog-list-closed-400-coarse",
+   "url": "reviews/system-v7/compositions/dialog.html",
+   "width": 400,
+   "coarse": true,
+   "scale": 1,
+   "measure": true,
+   "steps": [
+    {
+     "eval": "document.getElementById('dlg').close()"
+    }
+   ]
+  },
+  {
+   "name": "dashboard-1500-grey",
+   "url": "reviews/system-v7/compositions/dashboard.html",
+   "width": 1500,
+   "scale": 1,
+   "greyscale": true,
+   "themes": [
+    "light"
+   ]
+  }
+ ]
+}

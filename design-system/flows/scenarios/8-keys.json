@@ -1,0 +1,117 @@
+{
+ "name": "8-keys",
+ "url": "flows/dist/8-keys.html",
+ "states": [
+  {
+   "name": "1440",
+   "scale": 1,
+   "measure": true
+  },
+  {
+   "name": "400",
+   "width": 400,
+   "coarse": true,
+   "measure": true
+  },
+  {
+   "name": "grey",
+   "scale": 1,
+   "greyscale": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "focus",
+   "steps": [
+    {
+     "focus": "#new-key"
+    }
+   ],
+   "clip": "header",
+   "pad": 24,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "new-400",
+   "url": "flows/dist/8-keys.html#new",
+   "width": 400,
+   "coarse": true,
+   "measure": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "secret-1440",
+   "url": "flows/dist/8-keys.html#secret",
+   "scale": 1,
+   "measure": true,
+   "themes": [
+    "light",
+    "dark"
+   ]
+  },
+  {
+   "name": "saved-400",
+   "url": "flows/dist/8-keys.html#saved",
+   "width": 400,
+   "coarse": true,
+   "measure": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "error-400",
+   "url": "flows/dist/8-keys.html#error",
+   "width": 400,
+   "coarse": true,
+   "measure": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "revoke-400",
+   "url": "flows/dist/8-keys.html#revoke",
+   "width": 400,
+   "coarse": true,
+   "measure": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "menu-1440",
+   "url": "flows/dist/8-keys.html#menu",
+   "scale": 1,
+   "measure": true,
+   "themes": [
+    "light"
+   ]
+  },
+  {
+   "name": "menu-400",
+   "url": "flows/dist/8-keys.html#menu",
+   "width": 400,
+   "coarse": true,
+   "measure": true,
+   "themes": [
+    "light"
+   ],
+   "height": 800
+  },
+  {
+   "name": "arrived-1440",
+   "url": "flows/dist/8-keys.html#arrived",
+   "scale": 1,
+   "measure": true,
+   "themes": [
+    "light"
+   ]
+  }
+ ]
+}
